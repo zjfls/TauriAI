@@ -1,22 +1,61 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>用例规划 - TauriAI</title>
   <link rel="stylesheet" href="../assets/styles.css">
   <style>
-    .uc-card { background: #f8f9fa; border-radius: 8px; padding: 16px; margin: 12px 0; }
-    .uc-card h4 { margin: 0 0 8px; color: #333; }
-    .uc-id { color: #007aff; font-weight: bold; }
-    .uc-meta { font-size: 13px; color: #666; margin-bottom: 8px; }
-    .uc-flow { background: #fff; padding: 12px; border-radius: 6px; margin-top: 8px; }
-    .uc-flow ol { margin: 0; padding-left: 20px; }
-    .uc-flow li { margin: 4px 0; }
-    .priority-p0 { border-left: 4px solid #dc3545; }
-    .priority-p1 { border-left: 4px solid #ffc107; }
+    .uc-card {
+      background: #f8f9fa;
+      border-radius: 8px;
+      padding: 16px;
+      margin: 12px 0;
+    }
+
+    .uc-card h4 {
+      margin: 0 0 8px;
+      color: #333;
+    }
+
+    .uc-id {
+      color: #007aff;
+      font-weight: bold;
+    }
+
+    .uc-meta {
+      font-size: 13px;
+      color: #666;
+      margin-bottom: 8px;
+    }
+
+    .uc-flow {
+      background: #fff;
+      padding: 12px;
+      border-radius: 6px;
+      margin-top: 8px;
+    }
+
+    .uc-flow ol {
+      margin: 0;
+      padding-left: 20px;
+    }
+
+    .uc-flow li {
+      margin: 4px 0;
+    }
+
+    .priority-p0 {
+      border-left: 4px solid #dc3545;
+    }
+
+    .priority-p1 {
+      border-left: 4px solid #ffc107;
+    }
   </style>
 </head>
+
 <body class="doc-page">
   <div class="container">
     <nav class="breadcrumb">
@@ -26,8 +65,8 @@
     <header class="doc-header">
       <h1>📝 用例规划</h1>
       <p class="doc-meta">
-        版本: v0.1 MVP | 
-        状态: <span class="status review">评审中</span> | 
+        版本: v0.1 MVP |
+        状态: <span class="status review">评审中</span> |
         更新: 2026-01-03
       </p>
     </header>
@@ -37,11 +76,31 @@
       <h2>概览</h2>
       <p>本文档定义 TauriAI MVP 版本的核心用例，共 16 个用例，分为 4 个模块。</p>
       <table>
-        <tr><th>模块</th><th>用例数</th><th>优先级</th></tr>
-        <tr><td>应用生命周期</td><td>4</td><td>P0</td></tr>
-        <tr><td>对话交互</td><td>6</td><td>P0</td></tr>
-        <tr><td>模型配置</td><td>5</td><td>P0</td></tr>
-        <tr><td>快捷操作</td><td>1</td><td>P1</td></tr>
+        <tr>
+          <th>模块</th>
+          <th>用例数</th>
+          <th>优先级</th>
+        </tr>
+        <tr>
+          <td>应用生命周期</td>
+          <td>4</td>
+          <td>P0</td>
+        </tr>
+        <tr>
+          <td>对话交互</td>
+          <td>6</td>
+          <td>P0</td>
+        </tr>
+        <tr>
+          <td>模型配置</td>
+          <td>5</td>
+          <td>P0</td>
+        </tr>
+        <tr>
+          <td>快捷操作</td>
+          <td>1</td>
+          <td>P1</td>
+        </tr>
       </table>
 
       <h2>1. 应用生命周期</h2>
@@ -72,6 +131,9 @@
             <li>主窗口显示并获得焦点</li>
             <li>输入框自动聚焦，准备输入</li>
           </ol>
+          <p style="margin-top:8px;color:#856404;background:#fff3cd;padding:8px;border-radius:4px;font-size:13px;">
+            <strong>⚠️ macOS 注意</strong>：由于系统限制，macOS 上需通过托盘菜单「显示窗口」操作，左键单击可能不触发。
+          </p>
         </div>
       </div>
 
@@ -317,4 +379,5 @@
     </main>
   </div>
 </body>
+
 </html>

@@ -1,20 +1,52 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>系统架构 - TauriAI</title>
   <link rel="stylesheet" href="../assets/styles.css">
   <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
-  <script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+  <script>mermaid.initialize({ startOnLoad: true, theme: 'default' });</script>
   <style>
-    .mermaid { background: #fff; padding: 20px; border-radius: 8px; border: 1px solid #e9ecef; margin: 16px 0; }
-    .module-card { background: #f8f9fa; border-radius: 8px; padding: 16px; margin: 12px 0; border-left: 4px solid #007aff; }
-    .module-card h4 { margin: 0 0 8px; color: #333; }
-    .module-card p { margin: 0 0 8px; color: #666; }
-    .tech-badge { display: inline-block; background: #e7f3ff; color: #007aff; padding: 2px 8px; border-radius: 4px; font-size: 12px; margin-right: 4px; }
+    .mermaid {
+      background: #fff;
+      padding: 20px;
+      border-radius: 8px;
+      border: 1px solid #e9ecef;
+      margin: 16px 0;
+    }
+
+    .module-card {
+      background: #f8f9fa;
+      border-radius: 8px;
+      padding: 16px;
+      margin: 12px 0;
+      border-left: 4px solid #007aff;
+    }
+
+    .module-card h4 {
+      margin: 0 0 8px;
+      color: #333;
+    }
+
+    .module-card p {
+      margin: 0 0 8px;
+      color: #666;
+    }
+
+    .tech-badge {
+      display: inline-block;
+      background: #e7f3ff;
+      color: #007aff;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      margin-right: 4px;
+    }
   </style>
 </head>
+
 <body class="doc-page">
   <div class="container">
     <nav class="breadcrumb">
@@ -24,8 +56,8 @@
     <header class="doc-header">
       <h1>🏗️ 系统架构</h1>
       <p class="doc-meta">
-        版本: v0.1 | 
-        状态: <span class="status review">评审中</span> | 
+        版本: v0.1 |
+        状态: <span class="status review">评审中</span> |
         更新: 2026-01-03
       </p>
     </header>
@@ -33,78 +65,83 @@
     <main class="doc-content">
 
       <h2>1. 整体架构</h2>
-      
+
       <h3>1.1 架构图</h3>
       <div class="mermaid">
-graph TB
-    subgraph Frontend["前端 (React + TypeScript)"]
-        ChatView[Chat View<br/>对话界面]
-        Settings[Settings<br/>设置页面]
-        History[History<br/>历史记录]
-        Store[Zustand Store<br/>状态管理]
+        graph TB
+        subgraph Frontend["前端 (React + TypeScript)"]
+        ChatView[Chat View<br />对话界面]
+        Settings[Settings<br />设置页面]
+        History[History<br />历史记录]
+        Store[Zustand Store<br />状态管理]
         ChatView --> Store
         Settings --> Store
         History --> Store
-    end
+        end
 
-    subgraph Bridge["Tauri Bridge"]
-        Commands[Commands<br/>命令调用]
-        Events[Events<br/>事件监听]
-        Window[Window<br/>窗口管理]
-    end
+        subgraph Bridge["Tauri Bridge"]
+        Commands[Commands<br />命令调用]
+        Events[Events<br />事件监听]
+        Window[Window<br />窗口管理]
+        end
 
-    subgraph Backend["后端 (Rust)"]
-        CmdEntry[commands.rs<br/>Command 入口]
-        AIClient[ai_client<br/>AI 客户端]
-        Config[config<br/>配置管理]
-        Storage[storage<br/>数据存储]
-        System[system<br/>系统功能]
-        
+        subgraph Backend["后端 (Rust)"]
+        CmdEntry[commands.rs<br />Command 入口]
+        AIClient[ai_client<br />AI 客户端]
+        Config[config<br />配置管理]
+        Storage[storage<br />数据存储]
+        System[system<br />系统功能]
+
         CmdEntry --> AIClient
         CmdEntry --> Config
         CmdEntry --> Storage
         CmdEntry --> System
-    end
+        end
 
-    subgraph External["外部服务"]
+        subgraph External["外部服务"]
         OpenAI[OpenAI API]
         Anthropic[Anthropic API]
-        Ollama[Ollama<br/>本地模型]
-    end
+        Ollama[Ollama<br />本地模型]
+        end
 
-    Store -->|invoke| Commands
-    Events -->|listen| Store
-    Commands --> CmdEntry
-    
-    AIClient -->|HTTP/SSE| OpenAI
-    AIClient -->|HTTP/SSE| Anthropic
-    AIClient -->|HTTP| Ollama
+        Store -->|invoke| Commands
+        Events -->|listen| Store
+        Commands --> CmdEntry
+
+        AIClient -->|HTTP/SSE| OpenAI
+        AIClient -->|HTTP/SSE| Anthropic
+        AIClient -->|HTTP| Ollama
       </div>
 
       <h3>1.2 模块交互图</h3>
       <div class="mermaid">
-flowchart LR
-    subgraph Rust["Rust 后端模块"]
-        A[ai_client] 
+        flowchart LR
+        subgraph Rust["Rust 后端模块"]
+        A[ai_client]
         B[config]
         C[storage]
         D[system]
-    end
-    
-    A -->|读取配置| B
-    A -->|保存对话| C
-    D -->|托盘/快捷键| Window[窗口控制]
-    
-    B -->|JSON| ConfigFile[(config.json)]
-    C -->|SQL| DB[(SQLite)]
+        end
+
+        A -->|读取配置| B
+        A -->|保存对话| C
+        D -->|托盘/快捷键| Window[窗口控制]
+
+        B -->|JSON| ConfigFile[(config.json)]
+        C -->|SQL| DB[(SQLite)]
       </div>
 
       <h3>1.2 技术栈</h3>
       <table>
-        <tr><th>层级</th><th>技术</th><th>说明</th></tr>
+        <tr>
+          <th>层级</th>
+          <th>技术</th>
+          <th>说明</th>
+        </tr>
         <tr>
           <td>前端</td>
-          <td><span class="tech-badge">React 19</span><span class="tech-badge">TypeScript</span><span class="tech-badge">Vite</span><span class="tech-badge">Zustand</span></td>
+          <td><span class="tech-badge">React 19</span><span class="tech-badge">TypeScript</span><span
+              class="tech-badge">Vite</span><span class="tech-badge">Zustand</span></td>
           <td>UI 渲染、状态管理</td>
         </tr>
         <tr>
@@ -114,7 +151,8 @@ flowchart LR
         </tr>
         <tr>
           <td>后端</td>
-          <td><span class="tech-badge">Rust 2021</span><span class="tech-badge">Tokio</span><span class="tech-badge">Reqwest</span></td>
+          <td><span class="tech-badge">Rust 2021</span><span class="tech-badge">Tokio</span><span
+              class="tech-badge">Reqwest</span></td>
           <td>业务逻辑、AI 调用</td>
         </tr>
         <tr>
@@ -332,7 +370,11 @@ UI 渲染（显示当前模型等）
       <h2>5. 技术决策</h2>
 
       <table>
-        <tr><th>决策点</th><th>选择</th><th>理由</th></tr>
+        <tr>
+          <th>决策点</th>
+          <th>选择</th>
+          <th>理由</th>
+        </tr>
         <tr>
           <td>本地存储</td>
           <td>SQLite</td>
@@ -386,4 +428,5 @@ UI 渲染（显示当前模型等）
     </main>
   </div>
 </body>
+
 </html>

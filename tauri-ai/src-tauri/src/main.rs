@@ -8,6 +8,7 @@ use tauri::{
 };
 
 fn main() {
+    println!("start tauri-ai app");
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
@@ -21,9 +22,11 @@ fn main() {
 
             // 创建系统托盘
             let _tray = TrayIconBuilder::new()
+                .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
-                .show_menu_on_left_click(false)
+                .show_menu_on_left_click(true)
                 .on_menu_event(|app, event| {
+                    println!("menu event: {:?}", event);
                     match event.id.as_ref() {
                         "quit" => {
                             std::process::exit(0);
@@ -74,6 +77,27 @@ fn main() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                println!("close requested");
+                // 阻止默认关闭行为
+                api.prevent_close();
+                // 隐藏窗口
+                let _ = window.hide();
+            }
+        })
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let tauri::RunEvent::Reopen { has_visible_windows, .. } = event {
+                if !has_visible_windows {
+                    // 窗口隐藏时，点击 Dock 图标重新显示
+                    if let Some(window) = app.get_webview_window("main") {
+                        println!("reopen");
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                }
+            }
+        });
 }

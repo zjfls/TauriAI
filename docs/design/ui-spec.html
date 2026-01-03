@@ -1,11 +1,41 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>UI 规范 - TauriAI</title>
   <link rel="stylesheet" href="../assets/styles.css">
+  <style>
+    .color-swatch {
+      width: 40px;
+      height: 40px;
+      border-radius: 6px;
+      display: inline-block;
+      vertical-align: middle;
+      margin-right: 8px;
+      border: 1px solid #ddd;
+    }
+
+    .layout-box {
+      border: 2px dashed #cbd5e1;
+      background: #f8fafc;
+      padding: 20px;
+      text-align: center;
+      color: #64748b;
+      border-radius: 8px;
+      margin: 10px 0;
+    }
+
+    .component-preview {
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 20px;
+      margin: 10px 0;
+    }
+  </style>
 </head>
+
 <body class="doc-page">
   <div class="container">
     <nav class="breadcrumb">
@@ -15,25 +45,163 @@
     <header class="doc-header">
       <h1>🎨 UI 规范</h1>
       <p class="doc-meta">
-        版本: v0.1 | 
-        状态: <span class="status draft">草稿</span> | 
-        更新: 2026-01-03
+        版本: v0.1 |
+        状态: <span class="status review">评审中</span> |
+        更新: 2026-01-04
       </p>
     </header>
 
     <main class="doc-content">
-      <h2>1. 页面结构</h2>
-      <div class="placeholder">待填写</div>
 
-      <h2>2. 交互流程</h2>
-      <div class="placeholder">待填写</div>
+      <h2>1. 技术选型</h2>
+      <table>
+        <tr>
+          <th>模块</th>
+          <th>方案</th>
+          <th>说明</th>
+        </tr>
+        <tr>
+          <td>CSS 框架</td>
+          <td>Tailwind CSS</td>
+          <td>原子化 CSS，灵活高效</td>
+        </tr>
+        <tr>
+          <td>Markdown 渲染</td>
+          <td>react-markdown</td>
+          <td>安全、可定制</td>
+        </tr>
+        <tr>
+          <td>代码高亮</td>
+          <td>react-syntax-highlighter</td>
+          <td>Prism 异步模式，支持多种主题</td>
+        </tr>
+        <tr>
+          <td>排版插件</td>
+          <td>@tailwindcss/typography</td>
+          <td>提供 <code>prose</code> 类，一键美化 Markdown</td>
+        </tr>
+        <tr>
+          <td>图标库</td>
+          <td>lucide-react</td>
+          <td>风格统一、体积小</td>
+        </tr>
+      </table>
 
-      <h2>3. 视觉风格</h2>
-      <div class="placeholder">待填写</div>
+      <h2>2. 页面结构 (Layout)</h2>
 
-      <h2>4. 组件规范</h2>
-      <div class="placeholder">待填写</div>
+      <h3>主窗口布局</h3>
+      <div class="layout-box" style="display: flex; height: 300px;">
+        <div
+          style="width: 60px; border-right: 2px dashed #cbd5e1; display: flex; flex-direction: column; align-items: center; justify-content: space-between; padding: 10px 0;">
+          <div>Sidebar<br />(Nav)</div>
+          <div>User</div>
+        </div>
+        <div style="flex: 1; display: flex; flex-direction: column;">
+          <div
+            style="height: 40px; border-bottom: 2px dashed #cbd5e1; display: flex; align-items: center; justify-content: center;">
+            Header (Title / Model Select)
+          </div>
+          <div style="flex: 1; display: flex; align-items: center; justify-content: center;">
+            Chat Area (Message List)
+          </div>
+          <div
+            style="height: 80px; border-top: 2px dashed #cbd5e1; display: flex; align-items: center; justify-content: center;">
+            Input Area
+          </div>
+        </div>
+      </div>
+
+      <ul>
+        <li><strong>Sidebar (侧边栏)</strong>: 极简设计，仅显示图标（对话、通过 Cmd+K 呼出的历史、设置）。</li>
+        <li><strong>Header (顶部栏)</strong>: 显示当前对话标题、模型选择器。可拖拽移动窗口。</li>
+        <li><strong>Chat Area (内容区)</strong>: 消息流列表，自动滚动。</li>
+        <li><strong>Input Area (输入区)</strong>: 自动增高文本框，支持文件拖拽。</li>
+      </ul>
+
+      <h2>3. 关键组件 (Components)</h2>
+
+      <h3>3.1 消息气泡 (Message Bubble)</h3>
+      <div class="component-preview">
+        <div style="display: flex; gap: 12px; margin-bottom: 16px;">
+          <div
+            style="width: 32px; height: 32px; background: #e2e8f0; border-radius: 50%; text-align: center; line-height: 32px;">
+            U</div>
+          <div style="background: #eff6ff; padding: 8px 12px; border-radius: 12px; max-width: 80%;">
+            用户消息内容
+          </div>
+        </div>
+        <div style="display: flex; gap: 12px;">
+          <div
+            style="width: 32px; height: 32px; background: #cffafe; border-radius: 50%; text-align: center; line-height: 32px;">
+            AI</div>
+          <div style="flex: 1;">
+            <div style="font-size: 12px; color: #64748b; margin-bottom: 4px;">GPT-4o</div>
+            <div class="prose prose-sm" style="background: white; padding: 0; border: none;">
+              <p>AI 回复内容，支持 <strong>Markdown</strong>。</p>
+              <pre
+                style="background: #1e293b; color: #e2e8f0; padding: 8px; border-radius: 4px;"><code>console.log('Code Block');</code></pre>
+            </div>
+            <div style="margin-top: 4px; display: flex; gap: 8px;">
+              <button
+                style="font-size: 10px; border: 1px solid #e2e8f0; padding: 2px 6px; border-radius: 4px;">复制</button>
+              <button
+                style="font-size: 10px; border: 1px solid #e2e8f0; padding: 2px 6px; border-radius: 4px;">重试</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <ul>
+        <li><strong>Markdown 样式</strong>: 使用 <code>prose-sm</code> (Tailwind Typography) 快速应用标准排版。</li>
+        <li><strong>代码块</strong>: 使用 <code>react-syntax-highlighter</code> 渲染，右上角带“复制”按钮。</li>
+        <li><strong>流式光标</strong>: 生成过程中，最后显示闪烁光标。</li>
+      </ul>
+
+      <h3>3.2 输入框 (Input)</h3>
+      <div class="component-preview">
+        <div
+          style="border: 1px solid #cbd5e1; border-radius: 12px; padding: 8px; background: white; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);">
+          <textarea style="width: 100%; border: none; resize: none; outline: none; height: 24px;"
+            placeholder="发送消息..."></textarea>
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px;">
+            <div style="font-size: 12px; color: #94a3b8;">+ 附件</div>
+            <button
+              style="background: #3b82f6; color: white; border: none; padding: 4px 12px; border-radius: 6px; font-size: 12px;">发送
+              ↵</button>
+          </div>
+        </div>
+      </div>
+
+      <h2>4. 视觉风格 (Visuals)</h2>
+
+      <h3>主题色 (Palette)</h3>
+      <div style="margin-bottom: 20px;">
+        <div>
+          <span class="color-swatch" style="background: #3b82f6;"></span> Primary Blue (#3b82f6)
+        </div>
+        <div>
+          <span class="color-swatch" style="background: #f8fafc;"></span> Background Light (#f8fafc)
+        </div>
+        <div>
+          <span class="color-swatch" style="background: #0f172a;"></span> Background Dark (#0f172a)
+        </div>
+      </div>
+
+      <h3>字体 (Typography)</h3>
+      <ul>
+        <li><strong>San Francisco</strong> (macOS 默认) / Inter (Web Font)</li>
+        <li>代码字体: <strong>JetBrains Mono</strong> / Fira Code</li>
+      </ul>
+
+      <h3>深色模式 (Dark Mode)</h3>
+      <p>完全支持系统级深色模式切换。使用 Tailwind <code>dark:</code> 前缀实现。</p>
+      <ul>
+        <li>背景: <code>bg-slate-50</code> (Light) / <code>dark:bg-slate-950</code> (Dark)</li>
+        <li>文本: <code>text-slate-900</code> (Light) / <code>dark:text-slate-100</code> (Dark)</li>
+      </ul>
+
     </main>
   </div>
 </body>
+
 </html>

@@ -5,6 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>数据模型 - TauriAI</title>
   <link rel="stylesheet" href="../assets/styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+  <script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+  <style>
+    .model-card { background: #f8f9fa; border-radius: 8px; padding: 16px; margin: 12px 0; border-left: 4px solid #17a2b8; }
+    .model-card h4 { margin: 0 0 8px; color: #333; }
+    .type-badge { display: inline-block; background: #e2e3e5; color: #383d41; padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 12px; }
+    .sql-block { background: #f1f3f5; padding: 12px; border-radius: 4px; font-family: monospace; font-size: 13px; color: #333; }
+  </style>
 </head>
 <body class="doc-page">
   <div class="container">
@@ -16,20 +24,214 @@
       <h1>💾 数据模型</h1>
       <p class="doc-meta">
         版本: v0.1 | 
-        状态: <span class="status draft">草稿</span> | 
-        更新: 2026-01-03
+        状态: <span class="status review">评审中</span> | 
+        更新: 2026-01-04
       </p>
     </header>
 
     <main class="doc-content">
-      <h2>1. 数据实体</h2>
-      <div class="placeholder">待填写</div>
 
-      <h2>2. 本地存储</h2>
-      <div class="placeholder">待填写</div>
+      <h2>1. 概览</h2>
+      <p>TauriAI 使用混合存储策略：</p>
+      <ul>
+        <li><strong>SQLite (data.db)</strong>: 存储大量结构化数据（对话历史、消息记录），利用关系型数据库的查询能力。</li>
+        <li><strong>JSON (config.json)</strong>: 存储应用配置和用户偏好，保持便携性和可读性。</li>
+      </ul>
 
-      <h2>3. 状态管理</h2>
-      <div class="placeholder">待填写</div>
+      <h3>实体关系图 (ERD)</h3>
+      <div class="mermaid">
+erDiagram
+    Conversation ||--|{ Message : contains
+    Conversation {
+        string id PK
+        string title
+        string model_id
+        datetime created_at
+        datetime updated_at
+    }
+    Message {
+        string id PK
+        string conversation_id FK
+        string role
+        string content
+        string meta
+        datetime created_at
+    }
+    
+    %% JSON Configuration Entities (Conceptual)
+    AppConfig ||--|{ ModelConfig : manages
+    AppConfig ||--|{ Preset : contains
+    AppConfig {
+        string current_model_id
+        string theme
+        string language
+    }
+    ModelConfig {
+        string id PK
+        string provider
+        string api_key
+        object parameters
+    }
+    Preset {
+        string id PK
+        string name
+        string model_config_id FK
+        string system_prompt
+    }
+      </div>
+
+      <h2>2. 数据库模型 (SQLite)</h2>
+      <p>存储路径: <code>~/.tauri-ai/data.db</code></p>
+
+      <div class="model-card">
+        <h4>Conversation (对话)</h4>
+        <p>表示一个完整的对话会话。</p>
+        <div class="sql-block">
+CREATE TABLE conversations (
+    id          TEXT PRIMARY KEY,  -- UUID v4
+    title       TEXT NOT NULL,     -- 对话标题 (自动生成或用户修改)
+    model_id    TEXT,              -- 使用的模型 ID (快照)
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+        </div>
+        <p><strong>Rust 结构定义:</strong></p>
+        <pre><code class="language-rust">pub struct Conversation {
+    pub id: String,
+    pub title: String,
+    pub created_at: DateTime&lt;Utc&gt;,
+    pub updated_at: DateTime&lt;Utc&gt;,
+    // 关联的模型快照，用于恢复上下文时的参数
+    pub model_snapshot: Option&lt;ModelConfig&gt;, 
+}</code></pre>
+      </div>
+
+      <div class="model-card">
+        <h4>Message (消息)</h4>
+        <p>表示对话中的一条消息。支持多模态内容（文本/图片）通过 JSON 序列化存储在 content 字段，或简单文本存储。</p>
+        <div class="sql-block">
+CREATE TABLE messages (
+    id              TEXT PRIMARY KEY,  -- UUID v4
+    conversation_id TEXT NOT NULL,     -- 外键 -> conversations.id
+    role            TEXT NOT NULL,     -- 'user' | 'assistant' | 'system'
+    content         TEXT NOT NULL,     -- 消息内容 (可能为 JSON 结构以支持多模态)
+    meta            TEXT,              -- 元数据 JSON (token数,耗时,模型版本等)
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_messages_conversation_id ON messages(conversation_id);
+        </div>
+        <p><strong>Rust 结构定义:</strong></p>
+        <pre><code class="language-rust">pub struct Message {
+    pub id: String,
+    pub conversation_id: String,
+    pub role: MessageRole, // Enum: User, Assistant, System
+    pub content: MessageContent, // Enum: Text(String), Array(Vec&lt;ContentItem&gt;)
+    pub meta: Option&lt;MessageMeta&gt;,
+    pub created_at: DateTime&lt;Utc&gt;,
+}
+
+#[derive(Serialize, Deserialize)]
+pub enum MessageContent {
+    Text(String),
+    Parts(Vec&lt;ContentPart&gt;) // 支持混合 文本+图片
+}
+</code></pre>
+      </div>
+
+      <h2>3. 配置模型 (JSON)</h2>
+      <p>存储路径: <code>~/.tauri-ai/config.json</code></p>
+
+      <div class="model-card">
+        <h4>AppConfig (应用配置)</h4>
+        <p>应用的全局配置根对象。</p>
+        <pre><code class="language-json">{
+  "appearance": {
+    "theme": "system", // system, light, dark
+    "alwaysOnTop": false
+  },
+  "general": {
+    "language": "zh-CN",
+    "autoStart": true
+  },
+  "activeModelId": "gpt-4o-default", // 当前选中的模型配置 ID
+  "models": [ ... ], // 模型配置列表
+  "presets": [ ... ] // 预设列表
+}</code></pre>
+        <p><strong>Rust 结构定义:</strong></p>
+        <pre><code class="language-rust">#[derive(Serialize, Deserialize)]
+pub struct AppConfig {
+    pub appearance: AppearanceSettings,
+    pub general: GeneralSettings,
+    pub active_model_id: String,
+    pub models: Vec&lt;ModelConfig&gt;,
+    pub presets: Vec&lt;Preset&gt;,
+}</code></pre>
+      </div>
+
+      <div class="model-card">
+        <h4>ModelConfig (模型配置)</h4>
+        <p>定义一个具体的 AI 模型连接参数。</p>
+        <pre><code class="language-rust">#[derive(Serialize, Deserialize)]
+pub struct ModelConfig {
+    pub id: String,          // 唯一标识，如 "gpt-4o-personal"
+    pub name: String,        // 显示名称，如 "GPT-4o (Personal)"
+    pub provider: String,    // "openai", "anthropic", "ollama"
+    pub api_base: Option&lt;String&gt;,
+    pub api_key: Option&lt;String&gt;, // 运行时解密/从 Keychain 读取
+    pub context_length: Option&lt;usize&gt;,
+    
+    // Provider 特定参数
+    pub parameters: ModelParameters, 
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ModelParameters {
+    pub temperature: f32,    // 0.0 - 2.0
+    pub max_tokens: Option&lt;u32&gt;,
+    pub top_p: Option&lt;f32&gt;,
+    // ... 其他参数
+}</code></pre>
+      </div>
+
+      <div class="model-card">
+        <h4>Preset (预设)</h4>
+        <p>预设是"模型配置 + 系统提示词"的组合，用于快速切换场景。</p>
+        <pre><code class="language-rust">#[derive(Serialize, Deserialize)]
+pub struct Preset {
+    pub id: String,
+    pub name: String,        // 如 "代码助手", "翻译官"
+    pub model_config_id: String, // 关联的 ModelConfig ID
+    pub system_prompt: String,   // 预设的 System Prompt
+    
+    // 可选：覆盖模型参数
+    pub parameters_override: Option&lt;ModelParameters&gt;,
+}</code></pre>
+      </div>
+
+      <h2>4. 状态管理 (Zustand)</h2>
+      <p>前端 React 应用的运行时状态设计。</p>
+      
+      <h3>Store 结构</h3>
+      
+      <h4>useConfigStore</h4>
+      <ul>
+        <li><code>config: AppConfig</code> - 完整的配置对象</li>
+        <li><code>activeModel: ModelConfig</code> - (Computed) 当前激活的模型配置</li>
+        <li><code>actions</code>: <code>setConfig</code>, <code>updateModel</code>, <code>addPreset</code>, etc.</li>
+      </ul>
+
+      <h4>useConversationStore</h4>
+      <ul>
+        <li><code>conversations: Conversation[]</code> - 对话列表（摘要）</li>
+        <li><code>currentConversationId: string | null</code></li>
+        <li><code>messages: Message[]</code> - 当前对话的消息列表</li>
+        <li><code>streamingMessage: string | null</code> - 正在生成的流式消息内容</li>
+        <li><code>isGenerating: boolean</code></li>
+        <li><code>actions</code>: <code>loadConversation</code>, <code>sendMessage</code>, <code>abortGeneration</code>, etc.</li>
+      </ul>
+
     </main>
   </div>
 </body>

@@ -1,11 +1,75 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Tauri Commands - TauriAI</title>
   <link rel="stylesheet" href="../assets/styles.css">
+  <style>
+    .cmd-card {
+      background: #fff;
+      border: 1px solid #e9ecef;
+      border-radius: 8px;
+      margin: 12px 0;
+      overflow: hidden;
+    }
+
+    .cmd-header {
+      background: #f8f9fa;
+      padding: 12px 16px;
+      border-bottom: 1px solid #e9ecef;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .cmd-name {
+      font-family: monospace;
+      font-weight: bold;
+      color: #007aff;
+      font-size: 16px;
+    }
+
+    .cmd-module {
+      font-size: 12px;
+      color: #666;
+      background: #e9ecef;
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+
+    .cmd-body {
+      padding: 16px;
+    }
+
+    .param-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+      margin-top: 8px;
+    }
+
+    .param-table th,
+    .param-table td {
+      text-align: left;
+      padding: 8px;
+      border-bottom: 1px solid #eee;
+    }
+
+    .param-table th {
+      color: #666;
+      font-weight: 500;
+      font-size: 13px;
+    }
+
+    .type-code {
+      font-family: monospace;
+      color: #e83e8c;
+    }
+  </style>
 </head>
+
 <body class="doc-page">
   <div class="container">
     <nav class="breadcrumb">
@@ -15,22 +79,306 @@
     <header class="doc-header">
       <h1>🔌 Tauri Commands</h1>
       <p class="doc-meta">
-        版本: v0.1 | 
-        状态: <span class="status draft">草稿</span> | 
-        更新: 2026-01-03
+        版本: v0.1 |
+        状态: <span class="status review">评审中</span> |
+        更新: 2026-01-04
       </p>
     </header>
 
     <main class="doc-content">
-      <h2>1. 命令列表</h2>
-      <div class="placeholder">待填写</div>
 
-      <h2>2. 通信协议</h2>
-      <div class="placeholder">待填写</div>
+      <h2>1. 通用约定</h2>
+      <ul>
+        <li>所有 Command 均异步返回 Promise。</li>
+        <li>错误返回为 Invoke 异常，需使用 <code>try...catch</code> 捕获。</li>
+        <li>流式数据通过 <code>chat_stream</code> 命令触发，通过 <code>listen</code> 监听事件接收。</li>
+      </ul>
 
-      <h2>3. 错误处理</h2>
-      <div class="placeholder">待填写</div>
+      <h2>2. 命令列表</h2>
+
+      <h3>2.1 Chat (对话)</h3>
+
+      <div class="cmd-card">
+        <div class="cmd-header">
+          <span class="cmd-name">chat_stream</span>
+          <span class="cmd-module">chat</span>
+        </div>
+        <div class="cmd-body">
+          <p>向 AI 发送消息并获取流式响应。此命令立即返回，不等待生成结束。</p>
+          <h4>参数 (Arguments)</h4>
+          <table class="param-table">
+            <tr>
+              <th>名称</th>
+              <th>类型</th>
+              <th>说明</th>
+            </tr>
+            <tr>
+              <td>message</td>
+              <td><span class="type-code">MessageInput</span></td>
+              <td>用户发送的消息对象</td>
+            </tr>
+            <tr>
+              <td>conversation_id</td>
+              <td><span class="type-code">string</span></td>
+              <td>当前对话 ID</td>
+            </tr>
+            <tr>
+              <td>model_id</td>
+              <td><span class="type-code">string?</span></td>
+              <td>指定使用的模型配置 ID (可选，默认使用当前激活)</td>
+            </tr>
+          </table>
+          <h4>事件 (Events)</h4>
+          <ul>
+            <li><code>chat:token</code> - 收到新的文本片段 <code>{ id: string, content: string }</code></li>
+            <li><code>chat:end</code> - 生成结束 <code>{ id: string, full_content: string }</code></li>
+            <li><code>chat:error</code> - 生成出错 <code>{ id: string, error: string }</code></li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="cmd-card">
+        <div class="cmd-header">
+          <span class="cmd-name">abort_chat</span>
+          <span class="cmd-module">chat</span>
+        </div>
+        <div class="cmd-body">
+          <p>中断当前正在进行的对话生成。</p>
+          <h4>参数</h4>
+          <table class="param-table">
+            <tr>
+              <th>名称</th>
+              <th>类型</th>
+              <th>说明</th>
+            </tr>
+            <tr>
+              <td>conversation_id</td>
+              <td><span class="type-code">string</span></td>
+              <td>目标对话 ID</td>
+            </tr>
+          </table>
+        </div>
+      </div>
+
+      <h3>2.2 Conversation (对话管理)</h3>
+
+      <div class="cmd-card">
+        <div class="cmd-header">
+          <span class="cmd-name">get_conversations</span>
+          <span class="cmd-module">conversation</span>
+        </div>
+        <div class="cmd-body">
+          <p>获取对话列表（按更新时间倒序）。</p>
+          <h4>返回值</h4>
+          <p><span class="type-code">Promise&lt;Conversation[]&gt;</span> - 对话摘要列表</p>
+        </div>
+      </div>
+
+      <div class="cmd-card">
+        <div class="cmd-header">
+          <span class="cmd-name">get_messages</span>
+          <span class="cmd-module">conversation</span>
+        </div>
+        <div class="cmd-body">
+          <p>获取指定对话的所有消息记录。</p>
+          <h4>参数</h4>
+          <table class="param-table">
+            <tr>
+              <th>名称</th>
+              <th>类型</th>
+              <th>说明</th>
+            </tr>
+            <tr>
+              <td>conversation_id</td>
+              <td><span class="type-code">string</span></td>
+              <td>对话 ID</td>
+            </tr>
+            <tr>
+              <td>limit</td>
+              <td><span class="type-code">number?</span></td>
+              <td>限制条数（默认 50）</td>
+            </tr>
+            <tr>
+              <td>before_id</td>
+              <td><span class="type-code">string?</span></td>
+              <td>分页游标：获取此 ID 之前的消息</td>
+            </tr>
+          </table>
+          <h4>返回值</h4>
+          <p><span class="type-code">Promise&lt;Message[]&gt;</span></p>
+        </div>
+      </div>
+
+      <div class="cmd-card">
+        <div class="cmd-header">
+          <span class="cmd-name">create_conversation</span>
+          <span class="cmd-module">conversation</span>
+        </div>
+        <div class="cmd-body">
+          <p>创建一个新的空对话。</p>
+          <h4>参数</h4>
+          <table class="param-table">
+            <tr>
+              <th>名称</th>
+              <th>类型</th>
+              <th>说明</th>
+            </tr>
+            <tr>
+              <td>title</td>
+              <td><span class="type-code">string?</span></td>
+              <td>可选标题</td>
+            </tr>
+            <tr>
+              <td>preset_id</td>
+              <td><span class="type-code">string?</span></td>
+              <td>可选预设 ID</td>
+            </tr>
+          </table>
+          <h4>返回值</h4>
+          <p><span class="type-code">Promise&lt;Conversation&gt;</span></p>
+        </div>
+      </div>
+
+      <div class="cmd-card">
+        <div class="cmd-header">
+          <span class="cmd-name">delete_conversation</span>
+          <span class="cmd-module">conversation</span>
+        </div>
+        <div class="cmd-body">
+          <p>删除一个对话及其所有消息。</p>
+          <h4>参数</h4>
+          <table class="param-table">
+            <tr>
+              <th>名称</th>
+              <th>类型</th>
+              <th>说明</th>
+            </tr>
+            <tr>
+              <td>conversation_id</td>
+              <td><span class="type-code">string</span></td>
+              <td>对话 ID</td>
+            </tr>
+          </table>
+        </div>
+      </div>
+
+      <div class="cmd-card">
+        <div class="cmd-header">
+          <span class="cmd-name">update_conversation_title</span>
+          <span class="cmd-module">conversation</span>
+        </div>
+        <div class="cmd-body">
+          <p>修改对话标题。</p>
+          <h4>参数</h4>
+          <table class="param-table">
+            <tr>
+              <th>名称</th>
+              <th>类型</th>
+              <th>说明</th>
+            </tr>
+            <tr>
+              <td>conversation_id</td>
+              <td><span class="type-code">string</span></td>
+              <td>对话 ID</td>
+            </tr>
+            <tr>
+              <td>title</td>
+              <td><span class="type-code">string</span></td>
+              <td>新标题</td>
+            </tr>
+          </table>
+        </div>
+      </div>
+
+      <h3>2.3 Config (配置)</h3>
+
+      <div class="cmd-card">
+        <div class="cmd-header">
+          <span class="cmd-name">get_app_config</span>
+          <span class="cmd-module">config</span>
+        </div>
+        <div class="cmd-body">
+          <p>获取完整应用配置。</p>
+          <h4>返回值</h4>
+          <p><span class="type-code">Promise&lt;AppConfig&gt;</span></p>
+        </div>
+      </div>
+
+      <div class="cmd-card">
+        <div class="cmd-header">
+          <span class="cmd-name">save_app_config</span>
+          <span class="cmd-module">config</span>
+        </div>
+        <div class="cmd-body">
+          <p>保存应用配置（全量覆盖更新）。</p>
+          <h4>参数</h4>
+          <table class="param-table">
+            <tr>
+              <th>名称</th>
+              <th>类型</th>
+              <th>说明</th>
+            </tr>
+            <tr>
+              <td>config</td>
+              <td><span class="type-code">AppConfig</span></td>
+              <td>新的完整配置对象</td>
+            </tr>
+          </table>
+        </div>
+      </div>
+
+      <div class="cmd-card">
+        <div class="cmd-header">
+          <span class="cmd-name">test_connection</span>
+          <span class="cmd-module">config</span>
+        </div>
+        <div class="cmd-body">
+          <p>测试模型连接是否可用。</p>
+          <h4>参数</h4>
+          <table class="param-table">
+            <tr>
+              <th>名称</th>
+              <th>类型</th>
+              <th>说明</th>
+            </tr>
+            <tr>
+              <td>config</td>
+              <td><span class="type-code">ModelConfig</span></td>
+              <td>待测试的模型配置</td>
+            </tr>
+          </table>
+          <h4>返回值</h4>
+          <p><span class="type-code">Promise&lt;{ success: boolean, message: string }&gt;</span></p>
+        </div>
+      </div>
+
+      <h3>2.4 System (系统)</h3>
+
+      <div class="cmd-card">
+        <div class="cmd-header">
+          <span class="cmd-name">set_window_visible</span>
+          <span class="cmd-module">system</span>
+        </div>
+        <div class="cmd-body">
+          <p>控制主窗口显示/隐藏。</p>
+          <h4>参数</h4>
+          <table class="param-table">
+            <tr>
+              <th>名称</th>
+              <th>类型</th>
+              <th>说明</th>
+            </tr>
+            <tr>
+              <td>visible</td>
+              <td><span class="type-code">boolean</span></td>
+              <td>是否显示</td>
+            </tr>
+          </table>
+        </div>
+      </div>
+
     </main>
   </div>
 </body>
+
 </html>
