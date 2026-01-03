@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>系统架构 - TauriAI</title>
+  <link rel="stylesheet" href="../assets/styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+  <script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+  <style>
+    .mermaid { background: #fff; padding: 20px; border-radius: 8px; border: 1px solid #e9ecef; margin: 16px 0; }
+    .module-card { background: #f8f9fa; border-radius: 8px; padding: 16px; margin: 12px 0; border-left: 4px solid #007aff; }
+    .module-card h4 { margin: 0 0 8px; color: #333; }
+    .module-card p { margin: 0 0 8px; color: #666; }
+    .tech-badge { display: inline-block; background: #e7f3ff; color: #007aff; padding: 2px 8px; border-radius: 4px; font-size: 12px; margin-right: 4px; }
+  </style>
+</head>
+<body class="doc-page">
+  <div class="container">
+    <nav class="breadcrumb">
+      <a href="../index.html">← 返回文档首页</a>
+    </nav>
+
+    <header class="doc-header">
+      <h1>🏗️ 系统架构</h1>
+      <p class="doc-meta">
+        版本: v0.1 | 
+        状态: <span class="status review">评审中</span> | 
+        更新: 2026-01-03
+      </p>
+    </header>
+
+    <main class="doc-content">
+
+      <h2>1. 整体架构</h2>
+      
+      <h3>1.1 架构图</h3>
+      <div class="mermaid">
+graph TB
+    subgraph Frontend["前端 (React + TypeScript)"]
+        ChatView[Chat View<br/>对话界面]
+        Settings[Settings<br/>设置页面]
+        History[History<br/>历史记录]
+        Store[Zustand Store<br/>状态管理]
+        ChatView --> Store
+        Settings --> Store
+        History --> Store
+    end
+
+    subgraph Bridge["Tauri Bridge"]
+        Commands[Commands<br/>命令调用]
+        Events[Events<br/>事件监听]
+        Window[Window<br/>窗口管理]
+    end
+
+    subgraph Backend["后端 (Rust)"]
+        CmdEntry[commands.rs<br/>Command 入口]
+        AIClient[ai_client<br/>AI 客户端]
+        Config[config<br/>配置管理]
+        Storage[storage<br/>数据存储]
+        System[system<br/>系统功能]
+        
+        CmdEntry --> AIClient
+        CmdEntry --> Config
+        CmdEntry --> Storage
+        CmdEntry --> System
+    end
+
+    subgraph External["外部服务"]
+        OpenAI[OpenAI API]
+        Anthropic[Anthropic API]
+        Ollama[Ollama<br/>本地模型]
+    end
+
+    Store -->|invoke| Commands
+    Events -->|listen| Store
+    Commands --> CmdEntry
+    
+    AIClient -->|HTTP/SSE| OpenAI
+    AIClient -->|HTTP/SSE| Anthropic
+    AIClient -->|HTTP| Ollama
+      </div>
+
+      <h3>1.2 模块交互图</h3>
+      <div class="mermaid">
+flowchart LR
+    subgraph Rust["Rust 后端模块"]
+        A[ai_client] 
+        B[config]
+        C[storage]
+        D[system]
+    end
+    
+    A -->|读取配置| B
+    A -->|保存对话| C
+    D -->|托盘/快捷键| Window[窗口控制]
+    
+    B -->|JSON| ConfigFile[(config.json)]
+    C -->|SQL| DB[(SQLite)]
+      </div>
+
+      <h3>1.2 技术栈</h3>
+      <table>
+        <tr><th>层级</th><th>技术</th><th>说明</th></tr>
+        <tr>
+          <td>前端</td>
+          <td><span class="tech-badge">React 19</span><span class="tech-badge">TypeScript</span><span class="tech-badge">Vite</span><span class="tech-badge">Zustand</span></td>
+          <td>UI 渲染、状态管理</td>
+        </tr>
+        <tr>
+          <td>桥接</td>
+          <td><span class="tech-badge">Tauri v2</span><span class="tech-badge">@tauri-apps/api</span></td>
+          <td>前后端通信、系统能力</td>
+        </tr>
+        <tr>
+          <td>后端</td>
+          <td><span class="tech-badge">Rust 2021</span><span class="tech-badge">Tokio</span><span class="tech-badge">Reqwest</span></td>
+          <td>业务逻辑、AI 调用</td>
+        </tr>
+        <tr>
+          <td>存储</td>
+          <td><span class="tech-badge">SQLite</span><span class="tech-badge">rusqlite</span></td>
+          <td>本地数据持久化</td>
+        </tr>
+      </table>
+
+      <h2>2. 模块设计</h2>
+
+      <h3>2.1 后端模块 (Rust)</h3>
+
+      <div class="module-card">
+        <h4>ai_client</h4>
+        <p><strong>职责</strong>：AI API 调用、流式处理、多 Provider 支持</p>
+        <p><strong>核心功能</strong>：</p>
+        <ul>
+          <li>统一的 AI Client trait，支持多种 Provider</li>
+          <li>OpenAI / Anthropic / Ollama 实现</li>
+          <li>SSE 流式响应处理</li>
+          <li>请求重试、超时处理</li>
+          <li>Token 计数（可选）</li>
+        </ul>
+        <p><strong>关键结构</strong>：</p>
+        <pre><code>trait AiClient {
+    async fn chat(&self, messages: Vec&lt;Message&gt;, config: &ModelConfig) -> Result&lt;String&gt;;
+    async fn chat_stream(&self, messages: Vec&lt;Message&gt;, config: &ModelConfig) -> Result&lt;impl Stream&lt;Item = String&gt;&gt;;
+}</code></pre>
+      </div>
+
+      <div class="module-card">
+        <h4>config</h4>
+        <p><strong>职责</strong>：模型配置管理、预设管理、持久化</p>
+        <p><strong>核心功能</strong>：</p>
+        <ul>
+          <li>模型配置 CRUD</li>
+          <li>预设保存/加载</li>
+          <li>配置导入/导出</li>
+          <li>配置验证</li>
+        </ul>
+        <p><strong>存储位置</strong>：<code>~/.tauri-ai/config.json</code></p>
+      </div>
+
+      <div class="module-card">
+        <h4>storage</h4>
+        <p><strong>职责</strong>：对话历史存储、查询</p>
+        <p><strong>核心功能</strong>：</p>
+        <ul>
+          <li>对话创建/更新/删除</li>
+          <li>消息追加</li>
+          <li>历史查询（分页、搜索）</li>
+          <li>数据迁移</li>
+        </ul>
+        <p><strong>存储位置</strong>：<code>~/.tauri-ai/data.db</code> (SQLite)</p>
+      </div>
+
+      <div class="module-card">
+        <h4>system</h4>
+        <p><strong>职责</strong>：系统级功能（托盘、快捷键、窗口）</p>
+        <p><strong>核心功能</strong>：</p>
+        <ul>
+          <li>系统托盘图标和菜单</li>
+          <li>全局快捷键注册</li>
+          <li>窗口显示/隐藏控制</li>
+          <li>开机自启（可选）</li>
+        </ul>
+      </div>
+
+      <div class="module-card">
+        <h4>commands</h4>
+        <p><strong>职责</strong>：Tauri Command 入口，连接前端与各模块</p>
+        <p><strong>核心 Commands</strong>：</p>
+        <ul>
+          <li><code>send_message</code> - 发送消息并获取 AI 回复</li>
+          <li><code>send_message_stream</code> - 流式发送消息</li>
+          <li><code>get_conversations</code> - 获取对话列表</li>
+          <li><code>get_config</code> / <code>save_config</code> - 配置管理</li>
+          <li><code>test_connection</code> - 测试模型连接</li>
+        </ul>
+      </div>
+
+      <h3>2.2 前端模块 (React)</h3>
+
+      <div class="module-card">
+        <h4>状态管理 (Zustand Store)</h4>
+        <p><strong>Store 划分</strong>：</p>
+        <ul>
+          <li><code>useConversationStore</code> - 对话状态（当前对话、消息列表）</li>
+          <li><code>useConfigStore</code> - 配置状态（模型配置、当前模型）</li>
+          <li><code>useUIStore</code> - UI 状态（加载中、侧边栏展开）</li>
+        </ul>
+      </div>
+
+      <div class="module-card">
+        <h4>页面组件</h4>
+        <ul>
+          <li><code>ChatView</code> - 主对话界面</li>
+          <li><code>SettingsView</code> - 设置页面</li>
+          <li><code>HistoryPanel</code> - 历史对话侧边栏</li>
+        </ul>
+      </div>
+
+      <h2>3. 数据流设计</h2>
+
+      <h3>3.1 发送消息流程</h3>
+      <pre class="arch-diagram">
+用户输入消息
+    │
+    ▼
+前端: useConversationStore.sendMessage()
+    │
+    ▼
+前端: invoke("send_message_stream", { message, conversationId })
+    │
+    ▼
+Rust: commands::send_message_stream()
+    │
+    ├─► storage: 保存用户消息
+    │
+    ▼
+Rust: ai_client.chat_stream()
+    │
+    ▼
+AI Service: SSE 流式响应
+    │
+    ▼
+Rust: 通过 Tauri Event 发送 token
+    │
+    ▼
+前端: listen("chat_token") → 更新 UI
+    │
+    ▼
+Rust: 流结束 → storage: 保存 AI 回复
+    │
+    ▼
+前端: 显示完整回复
+      </pre>
+
+      <h3>3.2 配置加载流程</h3>
+      <pre class="arch-diagram">
+应用启动
+    │
+    ▼
+Rust: config::load_config()
+    │
+    ├─► 读取 ~/.tauri-ai/config.json
+    │
+    ▼
+前端: invoke("get_config")
+    │
+    ▼
+前端: useConfigStore.setConfig()
+    │
+    ▼
+UI 渲染（显示当前模型等）
+      </pre>
+
+      <h2>4. 目录结构</h2>
+
+      <h3>4.1 Rust 后端</h3>
+      <pre><code>src-tauri/src/
+├── main.rs              # 入口
+├── lib.rs               # Tauri 初始化
+├── commands/            # Tauri Commands
+│   ├── mod.rs
+│   ├── chat.rs          # 对话相关命令
+│   ├── config.rs        # 配置相关命令
+│   └── system.rs        # 系统相关命令
+├── ai_client/           # AI 客户端
+│   ├── mod.rs
+│   ├── traits.rs        # AiClient trait
+│   ├── openai.rs
+│   ├── anthropic.rs
+│   └── ollama.rs
+├── config/              # 配置管理
+│   ├── mod.rs
+│   └── models.rs        # 配置数据结构
+├── storage/             # 存储
+│   ├── mod.rs
+│   ├── db.rs            # SQLite 操作
+│   └── models.rs        # 数据模型
+└── system/              # 系统功能
+    ├── mod.rs
+    ├── tray.rs          # 托盘
+    └── hotkey.rs        # 快捷键</code></pre>
+
+      <h3>4.2 React 前端</h3>
+      <pre><code>src/
+├── main.tsx             # 入口
+├── App.tsx              # 根组件
+├── components/          # UI 组件
+│   ├── Chat/
+│   │   ├── ChatView.tsx
+│   │   ├── MessageList.tsx
+│   │   ├── MessageItem.tsx
+│   │   └── InputArea.tsx
+│   ├── Settings/
+│   │   ├── SettingsView.tsx
+│   │   └── ModelConfig.tsx
+│   └── common/
+│       └── ...
+├── stores/              # Zustand stores
+│   ├── conversationStore.ts
+│   ├── configStore.ts
+│   └── uiStore.ts
+├── services/            # Tauri 调用封装
+│   ├── chatService.ts
+│   └── configService.ts
+├── types/               # TypeScript 类型
+│   └── index.ts
+└── styles/              # 样式
+    └── ...</code></pre>
+
+      <h2>5. 技术决策</h2>
+
+      <table>
+        <tr><th>决策点</th><th>选择</th><th>理由</th></tr>
+        <tr>
+          <td>本地存储</td>
+          <td>SQLite</td>
+          <td>查询灵活、支持复杂查询、Rust 生态成熟 (rusqlite)</td>
+        </tr>
+        <tr>
+          <td>前端状态管理</td>
+          <td>Zustand</td>
+          <td>轻量、简洁、TypeScript 友好、无 boilerplate</td>
+        </tr>
+        <tr>
+          <td>AI 流式传输</td>
+          <td>SSE + Tauri Events</td>
+          <td>标准协议、Rust 侧处理后通过 Event 推送前端</td>
+        </tr>
+        <tr>
+          <td>配置存储</td>
+          <td>JSON 文件</td>
+          <td>人类可读、易于调试、配置量小</td>
+        </tr>
+        <tr>
+          <td>HTTP 客户端</td>
+          <td>reqwest</td>
+          <td>Rust 生态标准、支持异步、支持 SSE</td>
+        </tr>
+      </table>
+
+      <h2>6. 扩展性考虑</h2>
+
+      <h3>6.1 新增 AI Provider</h3>
+      <ol>
+        <li>实现 <code>AiClient</code> trait</li>
+        <li>在 <code>ai_client/mod.rs</code> 注册</li>
+        <li>前端配置界面添加 Provider 选项</li>
+      </ol>
+
+      <h3>6.2 MCP 协议支持（v0.2）</h3>
+      <ul>
+        <li>新增 <code>mcp/</code> 模块</li>
+        <li>实现 MCP Client</li>
+        <li>Tool 调用集成到对话流程</li>
+      </ul>
+
+      <h3>6.3 插件系统（v0.3+）</h3>
+      <ul>
+        <li>定义插件接口</li>
+        <li>插件加载机制</li>
+        <li>沙箱隔离</li>
+      </ul>
+
+    </main>
+  </div>
+</body>
+</html>

@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>用例规划 - TauriAI</title>
+  <link rel="stylesheet" href="../assets/styles.css">
+  <style>
+    .uc-card { background: #f8f9fa; border-radius: 8px; padding: 16px; margin: 12px 0; }
+    .uc-card h4 { margin: 0 0 8px; color: #333; }
+    .uc-id { color: #007aff; font-weight: bold; }
+    .uc-meta { font-size: 13px; color: #666; margin-bottom: 8px; }
+    .uc-flow { background: #fff; padding: 12px; border-radius: 6px; margin-top: 8px; }
+    .uc-flow ol { margin: 0; padding-left: 20px; }
+    .uc-flow li { margin: 4px 0; }
+    .priority-p0 { border-left: 4px solid #dc3545; }
+    .priority-p1 { border-left: 4px solid #ffc107; }
+  </style>
+</head>
+<body class="doc-page">
+  <div class="container">
+    <nav class="breadcrumb">
+      <a href="../index.html">← 返回文档首页</a>
+    </nav>
+
+    <header class="doc-header">
+      <h1>📝 用例规划</h1>
+      <p class="doc-meta">
+        版本: v0.1 MVP | 
+        状态: <span class="status review">评审中</span> | 
+        更新: 2026-01-03
+      </p>
+    </header>
+
+    <main class="doc-content">
+
+      <h2>概览</h2>
+      <p>本文档定义 TauriAI MVP 版本的核心用例，共 16 个用例，分为 4 个模块。</p>
+      <table>
+        <tr><th>模块</th><th>用例数</th><th>优先级</th></tr>
+        <tr><td>应用生命周期</td><td>4</td><td>P0</td></tr>
+        <tr><td>对话交互</td><td>6</td><td>P0</td></tr>
+        <tr><td>模型配置</td><td>5</td><td>P0</td></tr>
+        <tr><td>快捷操作</td><td>1</td><td>P1</td></tr>
+      </table>
+
+      <h2>1. 应用生命周期</h2>
+
+      <div class="uc-card priority-p0">
+        <h4><span class="uc-id">UC-01</span> 启动应用</h4>
+        <p class="uc-meta">优先级: P0 | 参与者: 用户</p>
+        <p><strong>描述</strong>：用户启动应用，应用最小化到系统托盘</p>
+        <div class="uc-flow">
+          <strong>主流程</strong>
+          <ol>
+            <li>用户双击应用图标或从开始菜单启动</li>
+            <li>应用初始化，加载配置</li>
+            <li>托盘图标出现在系统托盘区</li>
+            <li>主窗口默认隐藏（或根据设置显示）</li>
+          </ol>
+        </div>
+      </div>
+
+      <div class="uc-card priority-p0">
+        <h4><span class="uc-id">UC-02</span> 打开主窗口</h4>
+        <p class="uc-meta">优先级: P0 | 参与者: 用户</p>
+        <p><strong>描述</strong>：用户点击托盘图标，打开主窗口</p>
+        <div class="uc-flow">
+          <strong>主流程</strong>
+          <ol>
+            <li>用户单击托盘图标</li>
+            <li>主窗口显示并获得焦点</li>
+            <li>输入框自动聚焦，准备输入</li>
+          </ol>
+        </div>
+      </div>
+
+      <div class="uc-card priority-p0">
+        <h4><span class="uc-id">UC-03</span> 关闭窗口保持运行</h4>
+        <p class="uc-meta">优先级: P0 | 参与者: 用户</p>
+        <p><strong>描述</strong>：用户关闭窗口，应用继续在托盘运行</p>
+        <div class="uc-flow">
+          <strong>主流程</strong>
+          <ol>
+            <li>用户点击窗口关闭按钮</li>
+            <li>主窗口隐藏</li>
+            <li>应用继续在托盘运行</li>
+            <li>托盘图标保持可见</li>
+          </ol>
+        </div>
+      </div>
+
+      <div class="uc-card priority-p0">
+        <h4><span class="uc-id">UC-04</span> 完全退出应用</h4>
+        <p class="uc-meta">优先级: P0 | 参与者: 用户</p>
+        <p><strong>描述</strong>：用户从托盘菜单退出，完全关闭应用</p>
+        <div class="uc-flow">
+          <strong>主流程</strong>
+          <ol>
+            <li>用户右键点击托盘图标</li>
+            <li>选择「退出」菜单项</li>
+            <li>保存当前状态和配置</li>
+            <li>应用完全退出，托盘图标消失</li>
+          </ol>
+        </div>
+      </div>
+
+      <h2>2. 对话交互</h2>
+
+      <div class="uc-card priority-p0">
+        <h4><span class="uc-id">UC-05</span> 发送消息获取回复</h4>
+        <p class="uc-meta">优先级: P0 | 参与者: 用户, AI 服务</p>
+        <p><strong>描述</strong>：用户发送消息，获取 AI 回复</p>
+        <div class="uc-flow">
+          <strong>主流程</strong>
+          <ol>
+            <li>用户在输入框输入消息</li>
+            <li>按 Enter 或点击发送按钮</li>
+            <li>消息显示在对话区域</li>
+            <li>显示加载状态</li>
+            <li>调用 AI API 获取回复</li>
+            <li>AI 回复显示在对话区域</li>
+          </ol>
+          <strong>异常流程</strong>
+          <ol>
+            <li>API 调用失败 → 显示错误提示，允许重试</li>
+            <li>网络超时 → 显示超时提示</li>
+          </ol>
+        </div>
+      </div>
+
+      <div class="uc-card priority-p0">
+        <h4><span class="uc-id">UC-06</span> 流式输出显示</h4>
+        <p class="uc-meta">优先级: P0 | 参与者: 用户, AI 服务</p>
+        <p><strong>描述</strong>：AI 回复以流式方式实时显示</p>
+        <div class="uc-flow">
+          <strong>主流程</strong>
+          <ol>
+            <li>发送请求后，建立 SSE/Stream 连接</li>
+            <li>收到第一个 token，开始显示回复</li>
+            <li>持续接收 token，实时追加显示</li>
+            <li>流结束，回复完成</li>
+          </ol>
+        </div>
+      </div>
+
+      <div class="uc-card priority-p0">
+        <h4><span class="uc-id">UC-07</span> 多轮对话</h4>
+        <p class="uc-meta">优先级: P0 | 参与者: 用户</p>
+        <p><strong>描述</strong>：用户进行多轮对话，AI 保持上下文</p>
+        <div class="uc-flow">
+          <strong>主流程</strong>
+          <ol>
+            <li>用户发送第一条消息，获取回复</li>
+            <li>用户继续发送后续消息</li>
+            <li>系统将历史消息作为上下文发送给 AI</li>
+            <li>AI 基于上下文生成连贯回复</li>
+          </ol>
+        </div>
+      </div>
+
+      <div class="uc-card priority-p0">
+        <h4><span class="uc-id">UC-08</span> 新建对话</h4>
+        <p class="uc-meta">优先级: P0 | 参与者: 用户</p>
+        <p><strong>描述</strong>：用户新建对话，清空当前上下文</p>
+        <div class="uc-flow">
+          <strong>主流程</strong>
+          <ol>
+            <li>用户点击「新建对话」按钮</li>
+            <li>当前对话自动保存到历史</li>
+            <li>对话区域清空</li>
+            <li>上下文重置，准备新对话</li>
+          </ol>
+        </div>
+      </div>
+
+      <div class="uc-card priority-p0">
+        <h4><span class="uc-id">UC-09</span> 查看历史对话</h4>
+        <p class="uc-meta">优先级: P0 | 参与者: 用户</p>
+        <p><strong>描述</strong>：用户查看和恢复历史对话</p>
+        <div class="uc-flow">
+          <strong>主流程</strong>
+          <ol>
+            <li>用户点击「历史」按钮或侧边栏</li>
+            <li>显示历史对话列表（按时间排序）</li>
+            <li>用户选择某条历史对话</li>
+            <li>加载该对话内容和上下文</li>
+          </ol>
+        </div>
+      </div>
+
+      <div class="uc-card priority-p0">
+        <h4><span class="uc-id">UC-10</span> 复制消息内容</h4>
+        <p class="uc-meta">优先级: P0 | 参与者: 用户</p>
+        <p><strong>描述</strong>：用户复制对话中的消息内容</p>
+        <div class="uc-flow">
+          <strong>主流程</strong>
+          <ol>
+            <li>用户将鼠标悬停在消息上</li>
+            <li>显示复制按钮</li>
+            <li>用户点击复制按钮</li>
+            <li>内容复制到剪贴板，显示成功提示</li>
+          </ol>
+        </div>
+      </div>
+
+      <h2>3. 模型配置</h2>
+
+      <div class="uc-card priority-p0">
+        <h4><span class="uc-id">UC-11</span> 添加模型配置</h4>
+        <p class="uc-meta">优先级: P0 | 参与者: 用户</p>
+        <p><strong>描述</strong>：用户添加新的 AI 模型配置</p>
+        <div class="uc-flow">
+          <strong>主流程</strong>
+          <ol>
+            <li>用户打开设置页面</li>
+            <li>点击「添加模型」按钮</li>
+            <li>选择 Provider（OpenAI / Anthropic / Ollama / 自定义）</li>
+            <li>填写 API Base URL（可选）</li>
+            <li>填写 API Key</li>
+            <li>选择具体模型</li>
+            <li>保存配置</li>
+          </ol>
+        </div>
+      </div>
+
+      <div class="uc-card priority-p0">
+        <h4><span class="uc-id">UC-12</span> 编辑模型参数</h4>
+        <p class="uc-meta">优先级: P0 | 参与者: 用户</p>
+        <p><strong>描述</strong>：用户调整模型生成参数</p>
+        <div class="uc-flow">
+          <strong>主流程</strong>
+          <ol>
+            <li>用户选择已有模型配置</li>
+            <li>点击「编辑」进入参数设置</li>
+            <li>调整参数（Temperature、Top P、Max Tokens 等）</li>
+            <li>可选：设置 System Prompt</li>
+            <li>可选：配置高级选项（Timeout、Retry 等）</li>
+            <li>保存更改</li>
+          </ol>
+        </div>
+      </div>
+
+      <div class="uc-card priority-p0">
+        <h4><span class="uc-id">UC-13</span> 切换当前模型</h4>
+        <p class="uc-meta">优先级: P0 | 参与者: 用户</p>
+        <p><strong>描述</strong>：用户在对话中切换使用的模型</p>
+        <div class="uc-flow">
+          <strong>主流程</strong>
+          <ol>
+            <li>用户点击模型选择器（在输入框附近）</li>
+            <li>显示已配置的模型列表</li>
+            <li>用户选择目标模型</li>
+            <li>后续对话使用新模型</li>
+          </ol>
+        </div>
+      </div>
+
+      <div class="uc-card priority-p0">
+        <h4><span class="uc-id">UC-14</span> 保存/加载配置预设</h4>
+        <p class="uc-meta">优先级: P0 | 参与者: 用户</p>
+        <p><strong>描述</strong>：用户保存和加载模型配置预设</p>
+        <div class="uc-flow">
+          <strong>主流程（保存）</strong>
+          <ol>
+            <li>用户配置好模型参数</li>
+            <li>点击「保存为预设」</li>
+            <li>输入预设名称（如：创意写作、代码生成）</li>
+            <li>预设保存到本地</li>
+          </ol>
+          <strong>主流程（加载）</strong>
+          <ol>
+            <li>用户打开预设列表</li>
+            <li>选择目标预设</li>
+            <li>参数自动填充</li>
+          </ol>
+        </div>
+      </div>
+
+      <div class="uc-card priority-p0">
+        <h4><span class="uc-id">UC-15</span> 测试模型连接</h4>
+        <p class="uc-meta">优先级: P0 | 参与者: 用户, AI 服务</p>
+        <p><strong>描述</strong>：用户测试模型配置是否正确</p>
+        <div class="uc-flow">
+          <strong>主流程</strong>
+          <ol>
+            <li>用户填写模型配置</li>
+            <li>点击「测试连接」按钮</li>
+            <li>发送测试请求到 AI 服务</li>
+            <li>显示测试结果（成功/失败）</li>
+            <li>失败时显示错误详情</li>
+          </ol>
+        </div>
+      </div>
+
+      <h2>4. 快捷操作</h2>
+
+      <div class="uc-card priority-p1">
+        <h4><span class="uc-id">UC-16</span> 全局快捷键呼出</h4>
+        <p class="uc-meta">优先级: P1 | 参与者: 用户</p>
+        <p><strong>描述</strong>：用户通过全局快捷键快速呼出窗口</p>
+        <div class="uc-flow">
+          <strong>主流程</strong>
+          <ol>
+            <li>用户在任意应用中按下快捷键（如 Ctrl+Space）</li>
+            <li>TauriAI 主窗口显示并获得焦点</li>
+            <li>输入框自动聚焦</li>
+            <li>用户可立即输入</li>
+          </ol>
+          <strong>备选流程</strong>
+          <ol>
+            <li>窗口已显示时按快捷键 → 隐藏窗口</li>
+          </ol>
+        </div>
+      </div>
+
+    </main>
+  </div>
+</body>
+</html>

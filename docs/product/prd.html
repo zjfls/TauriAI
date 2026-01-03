@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>产品需求文档 - TauriAI</title>
+  <link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body class="doc-page">
+  <div class="container">
+    <nav class="breadcrumb">
+      <a href="../index.html">← 返回文档首页</a>
+    </nav>
+
+    <header class="doc-header">
+      <h1>📋 产品需求文档 (PRD)</h1>
+      <p class="doc-meta">
+        版本: v0.1 | 
+        状态: <span class="status review">评审中</span> | 
+        更新: 2026-01-03
+      </p>
+    </header>
+
+    <main class="doc-content">
+
+      <h2>1. 项目背景</h2>
+      <p>
+        随着 AI 技术的发展，用户需要一个能够深度集成系统环境的智能助手。
+        现有的 AI 聊天工具（如 ChatGPT Web）无法访问本地文件、系统应用和上下文信息，
+        限制了 AI 在个人电脑场景下的实用性。
+      </p>
+      <p>
+        TauriAI 旨在打造一个类似 Raycast 的系统级 AI 助手，
+        能够感知并操作本地环境，成为用户的个人电脑智能中枢。
+      </p>
+
+      <h2>2. 项目目标</h2>
+      <h3>2.1 愿景</h3>
+      <p>成为个人电脑上最强大的 AI 系统助手，连接用户与所有本地应用。</p>
+      
+      <h3>2.2 核心目标</h3>
+      <ul>
+        <li><strong>系统级集成</strong>：获取系统上下文，操作本地应用（Excel、日历、文件系统等）</li>
+        <li><strong>多模型支持</strong>：同时支持云端 API（OpenAI/Claude）和本地模型（Ollama）</li>
+        <li><strong>可扩展架构</strong>：支持 MCP 协议、Claude Skills 等主流扩展机制</li>
+        <li><strong>随时待命</strong>：常驻托盘，快速呼出</li>
+      </ul>
+
+      <h3>2.3 成功指标（MVP）</h3>
+      <table>
+        <tr><th>指标</th><th>目标</th></tr>
+        <tr><td>基础聊天功能</td><td>完成</td></tr>
+        <tr><td>托盘常驻</td><td>完成</td></tr>
+        <tr><td>多模型切换</td><td>支持 ≥2 种</td></tr>
+        <tr><td>响应延迟</td><td>首字 &lt; 2s</td></tr>
+      </table>
+
+      <h2>3. 用户画像</h2>
+      <h3>3.1 主要用户</h3>
+      <table>
+        <tr><th>用户类型</th><th>特征</th><th>核心需求</th></tr>
+        <tr>
+          <td>开发者</td>
+          <td>熟悉技术，追求效率</td>
+          <td>代码辅助、文档查询、自动化脚本</td>
+        </tr>
+        <tr>
+          <td>知识工作者</td>
+          <td>日常使用 Office、笔记软件</td>
+          <td>文档处理、日程管理、信息整理</td>
+        </tr>
+        <tr>
+          <td>创意工作者</td>
+          <td>使用设计/3D 软件（如虚幻引擎）</td>
+          <td>素材管理、工作流自动化</td>
+        </tr>
+      </table>
+
+      <h2>4. 使用场景</h2>
+      
+      <h3>4.1 MVP 场景：AI 对话</h3>
+      <div style="background:#f0f7ff;padding:16px;border-radius:8px;margin:16px 0;">
+        <p><strong>场景</strong>：用户想快速询问 AI 问题</p>
+        <p><strong>流程</strong>：</p>
+        <ol>
+          <li>点击托盘图标或使用快捷键呼出聊天窗口</li>
+          <li>输入问题，选择 AI 模型（云端/本地）</li>
+          <li>获得 AI 回复，支持 Markdown 渲染</li>
+          <li>可继续多轮对话或关闭窗口</li>
+        </ol>
+      </div>
+
+      <h3>4.2 未来场景（规划）</h3>
+      <ul>
+        <li><strong>文件操作</strong>：「帮我整理下载文件夹，按类型分类」</li>
+        <li><strong>日历集成</strong>：「查看我明天的日程」</li>
+        <li><strong>应用控制</strong>：「打开 Excel 并创建一个销售报表模板」</li>
+        <li><strong>云盘同步</strong>：「把这个文件上传到我的云盘」</li>
+      </ul>
+
+      <h2>5. 功能列表</h2>
+      
+      <h3>5.1 MVP 功能（v0.1）</h3>
+      <table>
+        <tr><th>功能</th><th>描述</th><th>优先级</th></tr>
+        <tr>
+          <td>托盘常驻</td>
+          <td>应用启动后常驻系统托盘，点击呼出主窗口</td>
+          <td>P0</td>
+        </tr>
+        <tr>
+          <td>聊天界面</td>
+          <td>支持多轮对话，Markdown 渲染，代码高亮</td>
+          <td>P0</td>
+        </tr>
+        <tr>
+          <td>云端 AI</td>
+          <td>支持 OpenAI API / Claude API 调用</td>
+          <td>P0</td>
+        </tr>
+        <tr>
+          <td>本地 AI</td>
+          <td>支持 Ollama 本地模型</td>
+          <td>P0</td>
+        </tr>
+        <tr>
+          <td>模型切换</td>
+          <td>用户可在设置中切换 AI 模型</td>
+          <td>P0</td>
+        </tr>
+        <tr>
+          <td>LLM 详细配置</td>
+          <td>提供完整的模型参数配置界面（见 5.1.1）</td>
+          <td>P0</td>
+        </tr>
+        <tr>
+          <td>对话历史</td>
+          <td>本地保存对话记录</td>
+          <td>P1</td>
+        </tr>
+        <tr>
+          <td>快捷键呼出</td>
+          <td>全局快捷键快速打开聊天窗口</td>
+          <td>P1</td>
+        </tr>
+      </table>
+
+      <h3>5.1.1 LLM 详细配置选项</h3>
+      <p>模型配置界面需支持以下参数设置：</p>
+      
+      <h4>基础配置</h4>
+      <table>
+        <tr><th>配置项</th><th>说明</th><th>默认值</th></tr>
+        <tr><td>Provider</td><td>服务商选择（OpenAI / Anthropic / Ollama / 自定义）</td><td>OpenAI</td></tr>
+        <tr><td>API Base URL</td><td>API 端点地址，支持自定义代理</td><td>官方地址</td></tr>
+        <tr><td>API Key</td><td>密钥输入，支持安全存储</td><td>-</td></tr>
+        <tr><td>Model</td><td>模型选择（gpt-4o / claude-3.5 / llama3 等）</td><td>gpt-4o-mini</td></tr>
+      </table>
+
+      <h4>生成参数</h4>
+      <table>
+        <tr><th>参数</th><th>说明</th><th>范围</th><th>默认值</th></tr>
+        <tr><td>Temperature</td><td>随机性控制</td><td>0 - 2</td><td>0.7</td></tr>
+        <tr><td>Top P</td><td>核采样概率</td><td>0 - 1</td><td>1</td></tr>
+        <tr><td>Max Tokens</td><td>最大输出长度</td><td>1 - 128000</td><td>4096</td></tr>
+        <tr><td>Frequency Penalty</td><td>频率惩罚</td><td>-2 - 2</td><td>0</td></tr>
+        <tr><td>Presence Penalty</td><td>存在惩罚</td><td>-2 - 2</td><td>0</td></tr>
+      </table>
+
+      <h4>高级配置</h4>
+      <table>
+        <tr><th>配置项</th><th>说明</th></tr>
+        <tr><td>System Prompt</td><td>自定义系统提示词</td></tr>
+        <tr><td>Stop Sequences</td><td>停止生成的标记序列</td></tr>
+        <tr><td>Timeout</td><td>请求超时时间（秒）</td></tr>
+        <tr><td>Retry Count</td><td>失败重试次数</td></tr>
+        <tr><td>Stream</td><td>是否启用流式输出</td></tr>
+      </table>
+
+      <h4>多配置管理</h4>
+      <ul>
+        <li>支持保存多个模型配置（预设）</li>
+        <li>快速切换不同配置</li>
+        <li>导入/导出配置文件</li>
+        <li>配置模板（如：创意写作、代码生成、精确问答）</li>
+      </ul>
+
+      <h3>5.2 扩展能力（v0.2+）</h3>
+      <table>
+        <tr><th>功能</th><th>描述</th><th>参考</th></tr>
+        <tr>
+          <td>MCP 协议支持</td>
+          <td>实现 MCP Client，连接外部 MCP Server</td>
+          <td>Anthropic MCP</td>
+        </tr>
+        <tr>
+          <td>Skills 系统</td>
+          <td>支持加载 Claude Skills 格式的扩展包</td>
+          <td>Claude Skills</td>
+        </tr>
+        <tr>
+          <td>插件市场</td>
+          <td>类似 Raycast Store 的扩展分发机制</td>
+          <td>Raycast Extensions</td>
+        </tr>
+        <tr>
+          <td>系统集成</td>
+          <td>文件系统、日历、剪贴板等系统能力</td>
+          <td>-</td>
+        </tr>
+      </table>
+
+      <h2>6. 非功能性需求</h2>
+      <table>
+        <tr><th>类别</th><th>要求</th></tr>
+        <tr>
+          <td>性能</td>
+          <td>应用启动 &lt; 3s，内存占用 &lt; 200MB（空闲时）</td>
+        </tr>
+        <tr>
+          <td>兼容性</td>
+          <td>Windows 10+（MVP），后续支持 macOS、Linux</td>
+        </tr>
+        <tr>
+          <td>可用性</td>
+          <td>界面简洁，操作直观，无需学习成本</td>
+        </tr>
+        <tr>
+          <td>扩展性</td>
+          <td>架构支持后续添加新的 AI 模型和系统集成</td>
+        </tr>
+      </table>
+
+      <h2>7. 技术约束</h2>
+      <ul>
+        <li><strong>框架</strong>：Tauri v2 + React 19 + TypeScript + Rust</li>
+        <li><strong>AI 接口</strong>：OpenAI API、Anthropic API、Ollama REST API</li>
+        <li><strong>扩展协议</strong>：MCP (Model Context Protocol)</li>
+        <li><strong>本地存储</strong>：SQLite 或 JSON 文件</li>
+      </ul>
+
+      <h2>8. 里程碑</h2>
+      <table>
+        <tr><th>版本</th><th>目标</th><th>预计时间</th></tr>
+        <tr>
+          <td>v0.1 MVP</td>
+          <td>基础聊天 + 托盘 + 多模型</td>
+          <td>-</td>
+        </tr>
+        <tr>
+          <td>v0.2</td>
+          <td>MCP 协议 + Skills 系统</td>
+          <td>-</td>
+        </tr>
+        <tr>
+          <td>v0.3</td>
+          <td>系统集成（文件、日历）</td>
+          <td>-</td>
+        </tr>
+        <tr>
+          <td>v1.0</td>
+          <td>插件市场 + 跨平台</td>
+          <td>-</td>
+        </tr>
+      </table>
+
+    </main>
+  </div>
+</body>
+</html>

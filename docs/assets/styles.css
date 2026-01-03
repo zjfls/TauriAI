@@ -1,0 +1,83 @@
+/* TauriAI 文档样式 */
+:root {
+  --color-bg: #f8f9fa;
+  --color-card: #ffffff;
+  --color-text: #333333;
+  --color-text-secondary: #666666;
+  --color-border: #e9ecef;
+  --color-link: #007aff;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--color-bg);
+  color: var(--color-text);
+  line-height: 1.6;
+}
+
+.container { max-width: 900px; margin: 0 auto; padding: 40px 20px; }
+
+/* Header */
+.header { text-align: center; margin-bottom: 48px; }
+.header h1 { font-size: 2rem; margin-bottom: 8px; }
+.subtitle { color: var(--color-text-secondary); margin-bottom: 4px; }
+.version { font-size: 14px; color: #999; }
+
+/* Navigation */
+.doc-nav { display: flex; flex-direction: column; gap: 24px; }
+.doc-section {
+  background: var(--color-card);
+  border-radius: 12px;
+  padding: 24px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+}
+.doc-section h2 {
+  font-size: 1.1rem;
+  margin-bottom: 16px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--color-border);
+}
+.doc-list { list-style: none; }
+.doc-list li { padding: 8px 0; display: flex; align-items: center; justify-content: space-between; }
+.doc-list a { color: var(--color-link); text-decoration: none; }
+.doc-list a:hover { text-decoration: underline; }
+
+/* Status badges */
+.status { font-size: 12px; padding: 2px 8px; border-radius: 4px; }
+.status.draft { background: #fff3cd; color: #856404; }
+.status.review { background: #d1ecf1; color: #0c5460; }
+.status.done { background: #d4edda; color: #155724; }
+
+/* Footer */
+.footer { margin-top: 48px; text-align: center; font-size: 14px; color: #999; }
+
+/* 文档页面 */
+.doc-page { padding: 40px 20px; }
+.doc-page .container { max-width: 800px; }
+.breadcrumb { margin-bottom: 24px; }
+.breadcrumb a { color: var(--color-link); text-decoration: none; }
+.doc-header { margin-bottom: 40px; }
+.doc-header h1 { margin-bottom: 8px; }
+.doc-meta { color: #999; font-size: 14px; }
+.doc-content h2 { margin: 32px 0 16px; padding-bottom: 8px; border-bottom: 1px solid var(--color-border); }
+.doc-content p { margin-bottom: 16px; color: #555; }
+
+.placeholder {
+  background: #f9f9f9;
+  border: 2px dashed #ddd;
+  border-radius: 8px;
+  padding: 32px;
+  text-align: center;
+  color: #999;
+  margin: 16px 0;
+}
+
+table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+th, td { border: 1px solid var(--color-border); padding: 12px; text-align: left; }
+th { background: #f8f9fa; }
+
+code { background: #f1f3f5; padding: 2px 6px; border-radius: 4px; font-family: 'SF Mono', Monaco, Consolas, monospace; font-size: 0.9em; color: #333; }
+pre { background: #f8f9fa; color: #333; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 16px 0; border: 1px solid #e9ecef; }
+pre code { background: none; padding: 0; color: inherit; }
