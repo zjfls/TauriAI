@@ -10,11 +10,16 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "trayIcon": {
+      "iconPath": "icons/icon.png",
+      "iconAsTemplate": true
+    },
     "windows": [
       {
         "title": "tauri-ai",
         "width": 800,
-        "height": 600
+        "height": 600,
+        "skipTaskbar": false
       }
     ],
     "security": {
