@@ -88,16 +88,8 @@ fn main() {
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app, event| {
-            if let tauri::RunEvent::Reopen { has_visible_windows, .. } = event {
-                if !has_visible_windows {
-                    // 窗口隐藏时，点击 Dock 图标重新显示
-                    if let Some(window) = app.get_webview_window("main") {
-                        println!("reopen");
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                    }
-                }
-            }
+        .run(|_app, _event| {
+            // Tauri v2 handles reopen events differently
+            // The tray icon click handler above manages window visibility
         });
 }

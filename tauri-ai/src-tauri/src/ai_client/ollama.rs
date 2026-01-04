@@ -1,0 +1,245 @@
+//! Ollama API client implementation
+
+use async_trait::async_trait;
+use futures::StreamExt;
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
+
+use super::traits::{AiClient, AiError, StreamEvent};
+use crate::models::{Message, MessageRole, ModelConfig};
+
+/// Ollama API client
+pub struct OllamaClient {
+    client: Client,
+}
+
+impl OllamaClient {
+    pub fn new() -> Self {
+        Self {
+            client: Client::new(),
+        }
+    }
+}
+
+impl Default for OllamaClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Ollama message format
+#[derive(Debug, Serialize)]
+struct OllamaMessage {
+    role: String,
+    content: String,
+}
+
+/// Ollama chat API request
+#[derive(Debug, Serialize)]
+struct ChatRequest {
+    model: String,
+    messages: Vec<OllamaMessage>,
+    stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    options: Option<OllamaOptions>,
+}
+
+/// Ollama model options
+#[derive(Debug, Serialize)]
+struct OllamaOptions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    num_predict: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top_p: Option<f32>,
+}
+
+
+/// Ollama chat API response (non-streaming)
+#[derive(Debug, Deserialize)]
+struct ChatResponse {
+    message: OllamaMessageResponse,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaMessageResponse {
+    content: String,
+}
+
+/// Ollama streaming response chunk
+#[derive(Debug, Deserialize)]
+struct StreamResponse {
+    message: Option<OllamaMessageResponse>,
+    done: bool,
+}
+
+/// Ollama error response
+#[derive(Debug, Deserialize)]
+struct OllamaErrorResponse {
+    error: String,
+}
+
+fn convert_messages(messages: &[Message], system_prompt: Option<&str>) -> Vec<OllamaMessage> {
+    let mut result = Vec::new();
+
+    // Add system prompt if provided
+    if let Some(prompt) = system_prompt {
+        result.push(OllamaMessage {
+            role: "system".to_string(),
+            content: prompt.to_string(),
+        });
+    }
+
+    // Convert messages
+    for msg in messages {
+        let role = match msg.role {
+            MessageRole::User => "user",
+            MessageRole::Assistant => "assistant",
+            MessageRole::System => "system",
+        };
+        result.push(OllamaMessage {
+            role: role.to_string(),
+            content: msg.content.clone(),
+        });
+    }
+
+    result
+}
+
+
+#[async_trait]
+impl AiClient for OllamaClient {
+    async fn chat(
+        &self,
+        messages: Vec<Message>,
+        config: &ModelConfig,
+    ) -> Result<String, AiError> {
+        let api_base = config
+            .api_base
+            .as_deref()
+            .unwrap_or("http://localhost:11434");
+
+        let ollama_messages = convert_messages(&messages, config.parameters.system_prompt.as_deref());
+
+        let options = OllamaOptions {
+            temperature: Some(config.parameters.temperature),
+            num_predict: config.parameters.max_tokens,
+            top_p: config.parameters.top_p,
+        };
+
+        let request = ChatRequest {
+            model: config.model.clone(),
+            messages: ollama_messages,
+            stream: false,
+            options: Some(options),
+        };
+
+        let response = self
+            .client
+            .post(format!("{api_base}/api/chat"))
+            .header("Content-Type", "application/json")
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| AiError::ConnectionError(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            if let Ok(error_response) = serde_json::from_str::<OllamaErrorResponse>(&error_text) {
+                return Err(AiError::RequestFailed(error_response.error));
+            }
+            return Err(AiError::RequestFailed(error_text));
+        }
+
+        let completion: ChatResponse = response
+            .json()
+            .await
+            .map_err(|e| AiError::InvalidResponse(e.to_string()))?;
+
+        Ok(completion.message.content)
+    }
+
+
+    async fn chat_stream(
+        &self,
+        messages: Vec<Message>,
+        config: &ModelConfig,
+        token_sender: mpsc::Sender<StreamEvent>,
+    ) -> Result<(), AiError> {
+        let api_base = config
+            .api_base
+            .as_deref()
+            .unwrap_or("http://localhost:11434");
+
+        let ollama_messages = convert_messages(&messages, config.parameters.system_prompt.as_deref());
+
+        let options = OllamaOptions {
+            temperature: Some(config.parameters.temperature),
+            num_predict: config.parameters.max_tokens,
+            top_p: config.parameters.top_p,
+        };
+
+        let request = ChatRequest {
+            model: config.model.clone(),
+            messages: ollama_messages,
+            stream: true,
+            options: Some(options),
+        };
+
+        let response = self
+            .client
+            .post(format!("{api_base}/api/chat"))
+            .header("Content-Type", "application/json")
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| AiError::ConnectionError(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            if let Ok(error_response) = serde_json::from_str::<OllamaErrorResponse>(&error_text) {
+                let _ = token_sender
+                    .send(StreamEvent::Error(error_response.error.clone()))
+                    .await;
+                return Err(AiError::RequestFailed(error_response.error));
+            }
+            let _ = token_sender.send(StreamEvent::Error(error_text.clone())).await;
+            return Err(AiError::RequestFailed(error_text));
+        }
+
+        let mut full_content = String::new();
+        let mut stream = response.bytes_stream();
+
+
+        while let Some(chunk_result) = stream.next().await {
+            let chunk = chunk_result.map_err(|e| AiError::StreamError(e.to_string()))?;
+            let chunk_str = String::from_utf8_lossy(&chunk);
+
+            // Ollama sends newline-delimited JSON
+            for line in chunk_str.lines() {
+                if line.trim().is_empty() {
+                    continue;
+                }
+
+                if let Ok(stream_response) = serde_json::from_str::<StreamResponse>(line) {
+                    if let Some(message) = stream_response.message {
+                        if !message.content.is_empty() {
+                            full_content.push_str(&message.content);
+                            let _ = token_sender.send(StreamEvent::Token(message.content)).await;
+                        }
+                    }
+
+                    if stream_response.done {
+                        let _ = token_sender.send(StreamEvent::Done(full_content.clone())).await;
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
+        let _ = token_sender.send(StreamEvent::Done(full_content)).await;
+        Ok(())
+    }
+}
