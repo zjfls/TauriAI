@@ -1,50 +1,74 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import { invoke } from "@tauri-apps/api/core";
-import "./App.css";
+/**
+ * App Component
+ * Main application entry point that wires up all components
+ * Requirements: 2.1-2.6, 5.1, 5.2
+ */
+
+import { useEffect } from 'react';
+import { MainLayout } from './components/Layout/MainLayout';
+import { ChatView } from './components/Chat/ChatView';
+import { SettingsView } from './components/Settings/SettingsView';
+import { HistoryPanel } from './components/History/HistoryPanel';
+import { useConfigStore } from './stores/configStore';
+import { useConversationStore } from './stores/conversationStore';
+import { useUIStore } from './stores/uiStore';
+import './App.css';
 
 function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+  const { loadConfig } = useConfigStore();
+  const { loadConversations, setupStreamListener, currentConversationId } = useConversationStore();
+  const { activeView } = useUIStore();
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
-  }
+  /**
+   * Initialize stores on app load
+   * Requirements: 5.1, 5.2
+   */
+  useEffect(() => {
+    // Load configuration from backend
+    loadConfig();
+    // Load conversations from backend
+    loadConversations();
+  }, [loadConfig, loadConversations]);
+
+  /**
+   * Set up event listeners for streaming
+   * Requirements: 5.2
+   */
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+
+    const setup = async () => {
+      unlisten = await setupStreamListener();
+    };
+
+    setup();
+
+    return () => {
+      unlisten?.();
+    };
+  }, [setupStreamListener]);
+
+  /**
+   * Render the active view based on UI state
+   * Requirements: 2.1-2.6
+   */
+  const renderActiveView = () => {
+    switch (activeView) {
+      case 'chat':
+        return <ChatView conversationId={currentConversationId} />;
+      case 'history':
+        return <HistoryPanel />;
+      case 'settings':
+        return <SettingsView />;
+      default:
+        return <ChatView conversationId={currentConversationId} />;
+    }
+  };
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
-
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
-
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
-    </main>
+    <MainLayout>
+      {renderActiveView()}
+    </MainLayout>
   );
 }
 

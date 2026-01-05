@@ -1,6 +1,7 @@
 # TauriAI Agent Guide
+## 规则
+1.必须说中文
 
-本文件依据 `CLAUDE.MD` 生成，用于帮助（人类或 AI）快速理解项目结构与常见改动路径。
 
 ## 项目概述
 TauriAI 是一个使用 **Tauri v2 + React 19 + TypeScript + Rust 2021** 构建的桌面应用程序。

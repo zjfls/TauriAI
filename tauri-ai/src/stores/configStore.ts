@@ -7,6 +7,7 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import type { AppConfig, ModelConfig } from '../types';
+import { useUIStore } from './uiStore';
 
 interface ConfigState {
   config: AppConfig | null;
@@ -36,6 +37,12 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
     try {
       const config = await invoke<AppConfig>('get_app_config');
       set({ config, isLoading: false });
+      
+      // Sync theme to UI store
+      // Requirements: 2.6 - Initialize theme from persisted config
+      if (config.appearance?.theme) {
+        useUIStore.getState().initializeTheme(config.appearance.theme);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       set({ error: message, isLoading: false });

@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>界面导航设计 - TauriAI</title>
+  <link rel="stylesheet" href="../assets/styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+  <script>mermaid.initialize({ startOnLoad: true, theme: 'default' });</script>
+  <style>
+    .nav-diagram {
+      background: #fff;
+      padding: 20px;
+      border-radius: 8px;
+      border: 1px solid #e9ecef;
+      margin: 16px 0;
+    }
+
+    .component-tree {
+      font-family: 'SF Mono', Monaco, Consolas, monospace;
+      background: #f8f9fa;
+      padding: 16px;
+      border-radius: 8px;
+      line-height: 1.8;
+    }
+
+    .component-tree .highlight {
+      color: #007aff;
+      font-weight: 600;
+    }
+
+    .component-tree .dim {
+      color: #999;
+    }
+
+    .state-box {
+      display: inline-block;
+      background: #e7f3ff;
+      color: #007aff;
+      padding: 4px 12px;
+      border-radius: 6px;
+      font-family: 'SF Mono', Monaco, Consolas, monospace;
+      font-size: 14px;
+      margin: 2px;
+    }
+
+    .view-card {
+      background: #fff;
+      border: 1px solid #e9ecef;
+      border-radius: 8px;
+      padding: 16px;
+      margin: 12px 0;
+    }
+
+    .view-card h4 {
+      margin: 0 0 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .view-card .icon {
+      width: 24px;
+      height: 24px;
+      background: #f1f3f5;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+    }
+
+    .layout-preview {
+      display: flex;
+      border: 2px solid #e9ecef;
+      border-radius: 8px;
+      height: 200px;
+      overflow: hidden;
+      margin: 16px 0;
+    }
+
+    .layout-sidebar {
+      width: 48px;
+      background: #f8f9fa;
+      border-right: 1px solid #e9ecef;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 12px 0;
+      gap: 8px;
+    }
+
+    .layout-sidebar .nav-icon {
+      width: 32px;
+      height: 32px;
+      background: #e9ecef;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    .layout-sidebar .nav-icon.active {
+      background: #007aff;
+      color: white;
+    }
+
+    .layout-main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .layout-header {
+      height: 40px;
+      background: #fff;
+      border-bottom: 1px solid #e9ecef;
+      display: flex;
+      align-items: center;
+      padding: 0 12px;
+      font-size: 14px;
+      font-weight: 500;
+    }
+
+    .layout-content {
+      flex: 1;
+      background: #f8f9fa;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #999;
+      font-size: 12px;
+    }
+
+    .flow-step {
+      display: flex;
+      align-items: flex-start;
+      gap: 16px;
+      margin: 16px 0;
+      padding: 16px;
+      background: #f8f9fa;
+      border-radius: 8px;
+    }
+
+    .flow-step .step-num {
+      width: 28px;
+      height: 28px;
+      background: #007aff;
+      color: white;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 600;
+      flex-shrink: 0;
+    }
+
+    .flow-step .step-content h4 {
+      margin: 0 0 4px;
+    }
+
+    .flow-step .step-content p {
+      margin: 0;
+      color: #666;
+      font-size: 14px;
+    }
+  </style>
+</head>
+
+<body class="doc-page">
+  <div class="container">
+    <nav class="breadcrumb">
+      <a href="../index.html">← 返回文档首页</a>
+    </nav>
+
+    <header class="doc-header">
+      <h1>🧭 界面导航设计</h1>
+      <p class="doc-meta">
+        版本: v0.1 |
+        状态: <span class="status review">评审中</span> |
+        更新: 2026-01-05
+      </p>
+    </header>
+
+    <main class="doc-content">
+
+      <h2>1. 信息架构</h2>
+      <p>TauriAI 采用扁平化的信息架构，主要包含三个顶级视图：</p>
+
+      <div class="component-tree">
+        <span class="highlight">TauriAI</span><br>
+        ├── <span class="highlight">聊天 (Chat)</span> <span class="dim">← 默认视图，核心功能</span><br>
+        │   ├── 消息列表<br>
+        │   ├── 输入区域<br>
+        │   └── 模型选择器<br>
+        ├── <span class="highlight">历史 (History)</span><br>
+        │   ├── 对话列表<br>
+        │   └── 搜索/筛选<br>
+        └── <span class="highlight">设置 (Settings)</span><br>
+        &nbsp;&nbsp;&nbsp;&nbsp;├── 模型配置<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;├── 外观设置<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;└── 通用设置
+      </div>
+
+      <h2>2. 导航模式</h2>
+      <p>采用<strong>侧边栏图标导航</strong>模式，适合桌面应用的操作习惯：</p>
+
+      <div class="layout-preview">
+        <div class="layout-sidebar">
+          <div class="nav-icon active">💬</div>
+          <div class="nav-icon">📜</div>
+          <div class="nav-icon">⚙️</div>
+        </div>
+        <div class="layout-main">
+          <div class="layout-header">新对话</div>
+          <div class="layout-content">Chat View Content</div>
+        </div>
+      </div>
+
+      <h3>导航元素</h3>
+      <table>
+        <tr>
+          <th>图标</th>
+          <th>视图</th>
+          <th>快捷键</th>
+          <th>说明</th>
+        </tr>
+        <tr>
+          <td>💬 MessageSquare</td>
+          <td>Chat</td>
+          <td>Cmd/Ctrl + 1</td>
+          <td>聊天界面，发送消息与 AI 对话</td>
+        </tr>
+        <tr>
+          <td>📜 History</td>
+          <td>History</td>
+          <td>Cmd/Ctrl + 2</td>
+          <td>历史对话列表，可选择恢复</td>
+        </tr>
+        <tr>
+          <td>⚙️ Settings</td>
+          <td>Settings</td>
+          <td>Cmd/Ctrl + ,</td>
+          <td>应用设置和模型配置</td>
+        </tr>
+      </table>
+
+      <h2>3. 页面状态流转</h2>
+
+      <div class="nav-diagram">
+        <div class="mermaid">
+          stateDiagram-v2
+            [*] --> Chat: 应用启动
+            
+            Chat --> History: 点击历史图标
+            Chat --> Settings: 点击设置图标
+            
+            History --> Chat: 选择对话
+            History --> Chat: 点击聊天图标
+            History --> Settings: 点击设置图标
+            
+            Settings --> Chat: 点击聊天图标
+            Settings --> History: 点击历史图标
+            
+            note right of Chat: 默认视图<br/>核心交互区域
+            note right of History: 对话管理<br/>选择后跳转到 Chat
+            note right of Settings: 配置管理<br/>保存后可返回
+        </div>
+      </div>
+
+      <h3>状态管理</h3>
+      <p>界面状态由 <code>uiStore</code> 管理：</p>
+      <pre><code>// stores/uiStore.ts
+interface UIState {
+  activeView: 'chat' | 'history' | 'settings';  // 当前视图
+  sidebarExpanded: boolean;                      // 侧边栏展开状态
+  theme: 'light' | 'dark' | 'system';           // 主题
+}</code></pre>
+
+      <h2>4. 视图详情</h2>
+
+      <div class="view-card">
+        <h4><span class="icon">💬</span> Chat View (聊天视图)</h4>
+        <p><strong>路径</strong>: <span class="state-box">activeView === 'chat'</span></p>
+        <p><strong>组件</strong>: <code>ChatView</code> → <code>MessageList</code> + <code>InputArea</code></p>
+        <p><strong>功能</strong>:</p>
+        <ul>
+          <li>显示当前对话的消息列表</li>
+          <li>发送新消息，接收 AI 流式响应</li>
+          <li>Header 显示对话标题和模型选择器</li>
+        </ul>
+      </div>
+
+      <div class="view-card">
+        <h4><span class="icon">📜</span> History View (历史视图)</h4>
+        <p><strong>路径</strong>: <span class="state-box">activeView === 'history'</span></p>
+        <p><strong>组件</strong>: <code>HistoryPanel</code></p>
+        <p><strong>功能</strong>:</p>
+        <ul>
+          <li>显示所有历史对话列表（按更新时间排序）</li>
+          <li>点击对话 → 加载消息 → 跳转到 Chat 视图</li>
+          <li>支持删除对话、重命名对话</li>
+        </ul>
+      </div>
+
+      <div class="view-card">
+        <h4><span class="icon">⚙️</span> Settings View (设置视图)</h4>
+        <p><strong>路径</strong>: <span class="state-box">activeView === 'settings'</span></p>
+        <p><strong>组件</strong>: <code>SettingsView</code></p>
+        <p><strong>功能</strong>:</p>
+        <ul>
+          <li>模型配置：添加/编辑/删除 AI 模型</li>
+          <li>外观设置：主题切换、窗口置顶</li>
+          <li>通用设置：语言、开机自启</li>
+        </ul>
+      </div>
+
+      <h2>5. 组件层次结构</h2>
+
+      <div class="component-tree">
+        <span class="highlight">App</span><br>
+        └── <span class="highlight">MainLayout</span><br>
+        &nbsp;&nbsp;&nbsp;&nbsp;├── <span class="highlight">Sidebar</span> <span class="dim">← 导航控制</span><br>
+        &nbsp;&nbsp;&nbsp;&nbsp;│   ├── Logo/Brand<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;│   ├── NavItem (Chat)<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;│   ├── NavItem (History)<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;│   └── NavItem (Settings)<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;├── <span class="highlight">Header</span> <span class="dim">← 标题 + 模型选择</span><br>
+        &nbsp;&nbsp;&nbsp;&nbsp;│   ├── Title (动态)<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;│   └── ModelSelector<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;└── <span class="highlight">Content</span> <span class="dim">← 根据 activeView 渲染</span><br>
+        &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── ChatView <span class="dim">(activeView === 'chat')</span><br>
+        &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── HistoryPanel <span class="dim">(activeView === 'history')</span><br>
+        &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└── SettingsView <span class="dim">(activeView === 'settings')</span>
+      </div>
+
+      <h2>6. 典型用户流程</h2>
+
+      <h3>6.1 新用户首次使用</h3>
+      <div class="flow-step">
+        <div class="step-num">1</div>
+        <div class="step-content">
+          <h4>启动应用</h4>
+          <p>应用启动，默认进入 Chat 视图，显示空对话状态</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="step-num">2</div>
+        <div class="step-content">
+          <h4>配置模型</h4>
+          <p>点击设置图标 → 进入 Settings → 添加 AI 模型配置（API Key 等）</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="step-num">3</div>
+        <div class="step-content">
+          <h4>开始对话</h4>
+          <p>返回 Chat 视图 → 在 Header 选择模型 → 输入消息发送</p>
+        </div>
+      </div>
+
+      <h3>6.2 恢复历史对话</h3>
+      <div class="flow-step">
+        <div class="step-num">1</div>
+        <div class="step-content">
+          <h4>打开历史</h4>
+          <p>点击历史图标 → 进入 History 视图</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="step-num">2</div>
+        <div class="step-content">
+          <h4>选择对话</h4>
+          <p>浏览对话列表 → 点击目标对话</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="step-num">3</div>
+        <div class="step-content">
+          <h4>继续对话</h4>
+          <p>自动跳转到 Chat 视图 → 加载历史消息 → 可继续发送新消息</p>
+        </div>
+      </div>
+
+      <h2>7. 实现代码参考</h2>
+
+      <h3>视图切换逻辑</h3>
+      <pre><code>// MainLayout.tsx
+const { activeView, setActiveView } = useUIStore();
+
+// 根据 activeView 渲染不同内容
+const renderContent = () => {
+  switch (activeView) {
+    case 'chat':
+      return &lt;ChatView /&gt;;
+    case 'history':
+      return &lt;HistoryPanel /&gt;;
+    case 'settings':
+      return &lt;SettingsView /&gt;;
+  }
+};</code></pre>
+
+      <h3>从历史选择对话</h3>
+      <pre><code>// HistoryPanel.tsx
+const handleSelectConversation = async (conversationId: string) => {
+  // 1. 加载对话消息
+  await conversationStore.loadMessages(conversationId);
+  
+  // 2. 设置当前对话
+  conversationStore.setCurrentConversation(conversationId);
+  
+  // 3. 切换到聊天视图
+  uiStore.setActiveView('chat');
+};</code></pre>
+
+    </main>
+  </div>
+</body>
+
+</html>

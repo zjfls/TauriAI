@@ -264,34 +264,64 @@
     - _Requirements: 2.6_
 
 - [ ] 11. Create Tauri service layer
-  - [ ] 11.1 Create chatService.ts
+
+
+
+
+
+  - [x] 11.1 Create chatService.ts
+
+
     - Wrap invoke calls for chat commands
     - Set up event listeners for streaming
     - _Requirements: 10.1, 10.2_
-  - [ ] 11.2 Create configService.ts
+  - [x] 11.2 Create configService.ts
+
+
     - Wrap invoke calls for config commands
     - _Requirements: 10.6, 10.7, 10.8_
-  - [ ] 11.3 Create conversationService.ts
+  - [x] 11.3 Create conversationService.ts
+
+
     - Wrap invoke calls for conversation commands
     - _Requirements: 10.3, 10.4, 10.5_
 
 ## Phase 6: UI Components
 
-- [ ] 12. Implement layout components
-  - [ ] 12.1 Create MainLayout component
+- [x] 12. Implement layout components
+
+
+
+  - [x] 12.1 Create MainLayout component
+
+
     - Implement flex layout with sidebar and main content
     - _Requirements: 2.1, 2.2, 2.3, 2.4_
-  - [ ] 12.2 Create Sidebar component
+  - [x] 12.2 Create Sidebar component
+
+
     - Implement navigation icons with lucide-react
     - Handle view switching
     - _Requirements: 2.1_
-  - [ ] 12.3 Create Header component
+
+  - [x] 12.3 Create Header component
+
+
+
     - Implement title display and model selector dropdown
     - Add data-tauri-drag-region for window dragging
     - _Requirements: 2.2, 2.5_
 
-- [ ] 13. Implement chat components
-  - [ ] 13.1 Create MessageItem component
+- [x] 13. Implement chat components
+
+
+
+
+
+
+  - [x] 13.1 Create MessageItem component
+
+
     - Implement user and assistant message styling
     - Add avatar, role indicator, action buttons
     - _Requirements: 3.1, 3.2, 3.6_
@@ -301,7 +331,10 @@
   - [ ]* 13.3 Write property test for assistant message rendering
     - **Property 2: Assistant message rendering consistency**
     - **Validates: Requirements 3.2**
-  - [ ] 13.4 Implement Markdown rendering
+  - [x] 13.4 Implement Markdown rendering
+
+
+
     - Configure react-markdown with prose styling
     - Add custom code block renderer with syntax highlighting
     - _Requirements: 3.3, 3.4_
@@ -311,27 +344,42 @@
   - [ ]* 13.6 Write property test for code block rendering
     - **Property 4: Code block detection and rendering**
     - **Validates: Requirements 3.4**
-  - [ ] 13.7 Create MessageList component
+  - [x] 13.7 Create MessageList component
+
+
     - Implement auto-scrolling message container
     - Handle streaming cursor display
     - _Requirements: 2.3, 3.5_
-  - [ ] 13.8 Create ChatView component
+  - [x] 13.8 Create ChatView component
+
+
     - Compose MessageList and InputArea
     - Connect to conversationStore
     - _Requirements: 2.3, 2.4_
 
-- [ ] 14. Implement input area
-  - [ ] 14.1 Create InputArea component
+- [x] 14. Implement input area
+
+
+
+
+
+  - [x] 14.1 Create InputArea component
+
+
     - Implement auto-expanding textarea
     - Add send button with loading state
     - _Requirements: 4.1, 4.4, 4.5_
   - [ ]* 14.2 Write property test for textarea auto-expansion
     - **Property 5: Textarea auto-expansion**
     - **Validates: Requirements 4.1**
-  - [ ] 14.3 Implement keyboard handling
+  - [x] 14.3 Implement keyboard handling
+
+
     - Handle Enter to send, Shift+Enter for newline
     - _Requirements: 4.2, 4.3_
-  - [ ] 14.4 Implement input validation
+  - [x] 14.4 Implement input validation
+
+
     - Disable send for empty/whitespace input
     - _Requirements: 4.6_
   - [ ]* 14.5 Write property test for whitespace validation
@@ -339,27 +387,49 @@
     - **Validates: Requirements 4.6**
 
 - [ ] 15. Checkpoint - Ensure all tests pass
+
+
+
+
   - Ensure all tests pass, ask the user if questions arise.
 
 ## Phase 7: Settings and History
 
-- [ ] 16. Implement settings view
-  - [ ] 16.1 Create SettingsView component
+- [x] 16. Implement settings view
+
+
+
+
+
+  - [x] 16.1 Create SettingsView component
+
+
     - Implement tabbed interface for different settings
     - _Requirements: 2.1_
-  - [ ] 16.2 Create ModelConfigForm component
+  - [x] 16.2 Create ModelConfigForm component
+
+
     - Implement form for model configuration
     - Add test connection button
     - _Requirements: 6.6_
-  - [ ] 16.3 Create PresetManager component
+  - [x] 16.3 Create PresetManager component
+
+
     - Implement preset list and creation
     - _Requirements: 8.4_
   - [ ]* 16.4 Write property test for preset persistence
     - **Property 18: Preset persistence round-trip**
     - **Validates: Requirements 8.4**
 
-- [ ] 17. Implement history panel
-  - [ ] 17.1 Create HistoryPanel component
+- [x] 17. Implement history panel
+
+
+
+
+
+  - [x] 17.1 Create HistoryPanel component
+
+
     - Display conversation list
     - Handle conversation selection and deletion
     - _Requirements: 7.3, 7.4_
@@ -372,50 +442,101 @@
 
 ## Phase 8: System Integration
 
-- [ ] 18. Implement system tray
-  - [ ] 18.1 Configure tray icon and menu
+- [-] 18. Implement system tray
+
+
+
+
+
+
+  - [x] 18.1 Configure tray icon and menu
+
+
+
+
+
     - Set up tray icon in tauri.conf.json
     - Implement tray menu with Show/Quit options
     - _Requirements: 9.1, 9.3_
-  - [ ] 18.2 Implement tray event handlers
+  - [x] 18.2 Implement tray event handlers
+
+
+
+
+
     - Handle tray click to toggle window
     - Handle quit to save state and exit
     - _Requirements: 9.2, 9.5_
-  - [ ] 18.3 Implement window close behavior
+  - [x] 18.3 Implement window close behavior
+
+
+
+
+
     - Override close to hide instead of quit
     - _Requirements: 9.4_
 
-- [ ] 19. Implement dark mode support
-  - [ ] 19.1 Configure Tailwind dark mode
+- [x] 19. Implement dark mode support
+
+
+
+
+
+  - [x] 19.1 Configure Tailwind dark mode
+
+
     - Set up dark: variants in tailwind.config.js
     - _Requirements: 2.6_
-  - [ ] 19.2 Implement theme detection and switching
+  - [x] 19.2 Implement theme detection and switching
+
+
     - Detect system theme preference
     - Apply theme classes to root element
     - _Requirements: 2.6_
 
-- [ ] 20. Wire up App.tsx
-  - [ ] 20.1 Replace template with MainLayout
+- [x] 20. Wire up App.tsx
+
+
+
+
+
+
+  - [x] 20.1 Replace template with MainLayout
+
     - Remove default Tauri template code
     - Integrate all components
     - _Requirements: 2.1-2.6_
-  - [ ] 20.2 Initialize stores on app load
+
+  - [x] 20.2 Initialize stores on app load
+
     - Load config and conversations on mount
     - Set up event listeners for streaming
     - _Requirements: 5.1, 5.2_
 
-- [ ] 21. Final Checkpoint - Ensure all tests pass
+- [x] 21. Final Checkpoint - Ensure all tests pass
+
+
+
+
+
   - Ensure all tests pass, ask the user if questions arise.
 
 ## Phase 9: Documentation
 
-- [ ] 22. Update project documentation
-  - [ ] 22.1 Update README.md
+- [-] 22. Update project documentation
+
+
+
+
+  - [x] 22.1 Update README.md
+
     - Add project description and features
     - Add installation and build instructions
     - Add usage guide with screenshots
     - _Requirements: Project documentation_
-  - [ ] 22.2 Update CLAUDE.MD / AGENTS.md
+
+  - [x] 22.2 Update CLAUDE.MD / AGENTS.md
+
     - Document new project structure
     - Add common development commands
     - Document Tauri commands and their usage
