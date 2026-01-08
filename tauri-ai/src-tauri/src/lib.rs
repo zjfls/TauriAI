@@ -27,9 +27,13 @@ fn get_database_path() -> std::path::PathBuf {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    println!("[Backend] TauriAI starting...");
+
     // Initialize database
     let db_path = get_database_path();
+    println!("[Backend] Database path: {:?}", db_path);
     let database = Database::new(db_path).expect("Failed to initialize database");
+    println!("[Backend] Database initialized");
     let database = Arc::new(Mutex::new(database));
 
     // Initialize config manager

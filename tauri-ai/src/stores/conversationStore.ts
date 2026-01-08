@@ -9,12 +9,6 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { Conversation, Message } from '../types';
 
-interface StreamEvent {
-  conversation_id: string;
-  event_type: 'token' | 'done' | 'error';
-  content: string;
-}
-
 interface ConversationState {
   conversations: Conversation[];
   currentConversationId: string | null;
@@ -295,22 +289,29 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
    * Set up the event listener for streaming tokens
    */
   setupStreamListener: async () => {
-    const unlisten = await listen<StreamEvent>('chat-stream', (event) => {
-      const { event_type, content } = event.payload;
+    const unlisteners: (() => void)[] = [];
 
-      switch (event_type) {
-        case 'token':
-          get().appendStreamingToken(content);
-          break;
-        case 'done':
-          get().finalizeStreaming(content);
-          break;
-        case 'error':
-          set({ error: content, isGenerating: false, streamingMessage: null });
-          break;
-      }
+    // Listen for token events
+    const unlistenToken = await listen<{ conversation_id: string; token: string }>('chat:token', (event) => {
+      get().appendStreamingToken(event.payload.token);
     });
+    unlisteners.push(unlistenToken);
 
-    return unlisten;
+    // Listen for done events
+    const unlistenDone = await listen<{ conversation_id: string; full_content: string }>('chat:done', (event) => {
+      get().finalizeStreaming(event.payload.full_content);
+    });
+    unlisteners.push(unlistenDone);
+
+    // Listen for error events
+    const unlistenError = await listen<{ conversation_id: string; error: string }>('chat:error', (event) => {
+      set({ error: event.payload.error, isGenerating: false, streamingMessage: null });
+    });
+    unlisteners.push(unlistenError);
+
+    // Return a combined unlisten function
+    return () => {
+      unlisteners.forEach(unlisten => unlisten());
+    };
   },
 }));

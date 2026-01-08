@@ -30,6 +30,7 @@ pub struct MessageMeta {
 
 /// A single message in a conversation
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Message {
     pub id: String,
     pub conversation_id: String,
@@ -42,6 +43,7 @@ pub struct Message {
 
 /// A conversation containing multiple messages
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Conversation {
     pub id: String,
     pub title: String,
@@ -53,6 +55,7 @@ pub struct Conversation {
 
 /// Parameters for model configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ModelParameters {
     pub temperature: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -82,6 +85,7 @@ impl Default for ModelParameters {
 
 /// Configuration for an AI model
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ModelConfig {
     pub id: String,
     pub name: String,
@@ -96,6 +100,7 @@ pub struct ModelConfig {
 
 /// A preset combining model config and system prompt
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Preset {
     pub id: String,
     pub name: String,
@@ -107,6 +112,7 @@ pub struct Preset {
 
 /// Appearance settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AppearanceSettings {
     pub theme: String,
     pub always_on_top: bool,
@@ -123,6 +129,7 @@ impl Default for AppearanceSettings {
 
 /// General application settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GeneralSettings {
     pub language: String,
     pub auto_start: bool,
@@ -139,6 +146,7 @@ impl Default for GeneralSettings {
 
 /// Application configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AppConfig {
     pub appearance: AppearanceSettings,
     pub general: GeneralSettings,

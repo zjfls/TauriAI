@@ -15,6 +15,7 @@ pub async fn get_conversations(
     db: tauri::State<'_, Arc<Mutex<Database>>>,
 ) -> Result<Vec<Conversation>, String> {
     let db = db.lock().await;
+    println!("[Conversation] Getting all conversations");
     db.get_conversations().map_err(|e| e.to_string())
 }
 
@@ -33,6 +34,7 @@ pub async fn get_messages(
 ) -> Result<Vec<Message>, String> {
     let db = db.lock().await;
     let limit = limit.unwrap_or(50);
+    println!("[Conversation] Fetching messages for: {}", conversation_id);
     db.get_messages(&conversation_id, limit, before_id.as_deref())
         .map_err(|e| e.to_string())
 }
@@ -48,7 +50,14 @@ pub async fn create_conversation(
 ) -> Result<Conversation, String> {
     let db = db.lock().await;
     let title = title.unwrap_or_else(|| "New Conversation".to_string());
-    db.create_conversation(&title).map_err(|e| e.to_string())
+    println!("[Conversation] Creating new conversation: {}", title);
+    let result = db.create_conversation(&title).map_err(|e| e.to_string());
+    if let Ok(ref conv) = result {
+        println!("[Conversation] Created conversation: {}", conv.id);
+    } else {
+        println!("[Conversation] Failed to create conversation");
+    }
+    result
 }
 
 /// Delete a conversation and all its messages

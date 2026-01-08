@@ -108,21 +108,9 @@ impl ConfigManager {
 
     /// Creates a default application configuration
     fn create_default_config() -> AppConfig {
-        let default_model = ModelConfig {
-            id: uuid::Uuid::new_v4().to_string(),
-            name: "GPT-4".to_string(),
-            provider: "openai".to_string(),
-            api_base: Some("https://api.openai.com/v1".to_string()),
-            api_key: None,
-            model: "gpt-4".to_string(),
-            parameters: ModelParameters::default(),
-        };
-
-        let active_model_id = default_model.id.clone();
-
         AppConfig {
-            active_model_id,
-            models: vec![default_model],
+            active_model_id: String::new(),
+            models: vec![],
             ..Default::default()
         }
     }
@@ -159,11 +147,11 @@ mod tests {
         // Config file should now exist
         assert!(manager.config_path().exists());
 
-        // Should have at least one model
-        assert!(!config.models.is_empty());
+        // Should be empty initially
+        assert!(config.models.is_empty());
 
-        // Active model ID should match the first model
-        assert_eq!(config.active_model_id, config.models[0].id);
+        // Active model ID should be empty
+        assert!(config.active_model_id.is_empty());
     }
 
     #[test]
@@ -236,7 +224,11 @@ mod tests {
     #[test]
     fn test_save_creates_parent_directories() {
         let temp_dir = TempDir::new().unwrap();
-        let config_path = temp_dir.path().join("nested").join("dir").join("config.json");
+        let config_path = temp_dir
+            .path()
+            .join("nested")
+            .join("dir")
+            .join("config.json");
         let manager = ConfigManager::with_path(config_path.clone());
 
         let config = AppConfig::default();

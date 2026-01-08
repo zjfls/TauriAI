@@ -36,11 +36,20 @@ pub struct TestConnectionResult {
 
 /// Test a model configuration by sending a minimal request
 #[tauri::command]
-pub async fn test_connection(
-    model_config: ModelConfig,
-) -> Result<TestConnectionResult, String> {
-    let client = get_client(&model_config.provider)
-        .map_err(|e| e.to_string())?;
+pub async fn test_connection(model_config: ModelConfig) -> Result<TestConnectionResult, String> {
+    println!("[TestConnection] Testing model: {}", model_config.name);
+    println!("[TestConnection] Provider: {}", model_config.provider);
+    println!("[TestConnection] API Base: {:?}", model_config.api_base);
+    println!(
+        "[TestConnection] API Key present: {}",
+        model_config
+            .api_key
+            .as_ref()
+            .map(|k| !k.is_empty())
+            .unwrap_or(false)
+    );
+
+    let client = get_client(&model_config.provider).map_err(|e| e.to_string())?;
 
     // Create a minimal test message
     let test_message = Message {
@@ -53,7 +62,7 @@ pub async fn test_connection(
     };
 
     let start = std::time::Instant::now();
-    
+
     match client.chat(vec![test_message], &model_config).await {
         Ok(_) => {
             let elapsed = start.elapsed().as_millis() as u64;
@@ -63,12 +72,10 @@ pub async fn test_connection(
                 response_time_ms: Some(elapsed),
             })
         }
-        Err(e) => {
-            Ok(TestConnectionResult {
-                success: false,
-                message: e.to_string(),
-                response_time_ms: None,
-            })
-        }
+        Err(e) => Ok(TestConnectionResult {
+            success: false,
+            message: e.to_string(),
+            response_time_ms: None,
+        }),
     }
 }

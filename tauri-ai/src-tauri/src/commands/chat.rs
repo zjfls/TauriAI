@@ -96,6 +96,7 @@ pub async fn chat_stream(
         meta: None,
         created_at: chrono::Utc::now(),
     };
+    println!("[Chat] Created user message: {:?}", user_message.id);
 
     // Save user message to database
     {
@@ -154,10 +155,12 @@ pub async fn chat_stream(
                         });
                     }
                     Some(StreamEvent::Done(content)) => {
+                        println!("[Chat] Stream done. Length: {}", content.len());
                         full_content = content;
                         break;
                     }
                     Some(StreamEvent::Error(error)) => {
+                        println!("[Chat] Stream error: {}", error);
                         let _ = app_handle.emit("chat:error", StreamErrorPayload {
                             conversation_id: conv_id.clone(),
                             error,

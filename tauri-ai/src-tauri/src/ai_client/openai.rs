@@ -53,7 +53,6 @@ struct ChatCompletionRequest {
     stream: bool,
 }
 
-
 /// OpenAI chat completion response (non-streaming)
 #[derive(Debug, Deserialize)]
 struct ChatCompletionResponse {
@@ -103,12 +102,14 @@ struct OpenAiErrorDetail {
 fn convert_messages(messages: &[Message], system_prompt: Option<&str>) -> Vec<OpenAiMessage> {
     let mut result = Vec::new();
 
-    // Add system prompt if provided
+    // Add system prompt if provided and not empty
     if let Some(prompt) = system_prompt {
-        result.push(OpenAiMessage {
-            role: "system".to_string(),
-            content: prompt.to_string(),
-        });
+        if !prompt.is_empty() {
+            result.push(OpenAiMessage {
+                role: "system".to_string(),
+                content: prompt.to_string(),
+            });
+        }
     }
 
     // Convert messages
@@ -127,14 +128,9 @@ fn convert_messages(messages: &[Message], system_prompt: Option<&str>) -> Vec<Op
     result
 }
 
-
 #[async_trait]
 impl AiClient for OpenAiClient {
-    async fn chat(
-        &self,
-        messages: Vec<Message>,
-        config: &ModelConfig,
-    ) -> Result<String, AiError> {
+    async fn chat(&self, messages: Vec<Message>, config: &ModelConfig) -> Result<String, AiError> {
         let api_base = config
             .api_base
             .as_deref()
@@ -142,9 +138,11 @@ impl AiClient for OpenAiClient {
         let api_key = config
             .api_key
             .as_ref()
+            .filter(|k| !k.is_empty())
             .ok_or_else(|| AiError::AuthenticationFailed("API key is required".to_string()))?;
 
-        let openai_messages = convert_messages(&messages, config.parameters.system_prompt.as_deref());
+        let openai_messages =
+            convert_messages(&messages, config.parameters.system_prompt.as_deref());
 
         let request = ChatCompletionRequest {
             model: config.model.clone(),
@@ -187,7 +185,6 @@ impl AiClient for OpenAiClient {
             .ok_or_else(|| AiError::InvalidResponse("No content in response".to_string()))
     }
 
-
     async fn chat_stream(
         &self,
         messages: Vec<Message>,
@@ -203,7 +200,8 @@ impl AiClient for OpenAiClient {
             .as_ref()
             .ok_or_else(|| AiError::AuthenticationFailed("API key is required".to_string()))?;
 
-        let openai_messages = convert_messages(&messages, config.parameters.system_prompt.as_deref());
+        let openai_messages =
+            convert_messages(&messages, config.parameters.system_prompt.as_deref());
 
         let request = ChatCompletionRequest {
             model: config.model.clone(),
@@ -234,7 +232,9 @@ impl AiClient for OpenAiClient {
                     .await;
                 return Err(AiError::RequestFailed(error_response.error.message));
             }
-            let _ = token_sender.send(StreamEvent::Error(error_text.clone())).await;
+            let _ = token_sender
+                .send(StreamEvent::Error(error_text.clone()))
+                .await;
             return Err(AiError::RequestFailed(error_text));
         }
 
@@ -249,7 +249,9 @@ impl AiClient for OpenAiClient {
             for line in chunk_str.lines() {
                 if let Some(data) = line.strip_prefix("data: ") {
                     if data.trim() == "[DONE]" {
-                        let _ = token_sender.send(StreamEvent::Done(full_content.clone())).await;
+                        let _ = token_sender
+                            .send(StreamEvent::Done(full_content.clone()))
+                            .await;
                         return Ok(());
                     }
 
@@ -257,7 +259,8 @@ impl AiClient for OpenAiClient {
                         if let Some(choice) = stream_chunk.choices.first() {
                             if let Some(content) = &choice.delta.content {
                                 full_content.push_str(content);
-                                let _ = token_sender.send(StreamEvent::Token(content.clone())).await;
+                                let _ =
+                                    token_sender.send(StreamEvent::Token(content.clone())).await;
                             }
                         }
                     }
