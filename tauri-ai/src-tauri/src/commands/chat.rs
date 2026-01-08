@@ -5,11 +5,12 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex, RwLock};
 use tauri::{AppHandle, Emitter};
+use tokio::sync::{mpsc, Mutex, RwLock};
 
 use crate::ai_client::{get_client, StreamEvent};
 use crate::config::ConfigManager;
+use crate::errors::{AppErrorCode, SerializableError};
 use crate::models::{Message, MessageRole};
 use crate::storage::Database;
 
@@ -68,23 +69,23 @@ pub async fn chat_stream(
     db: tauri::State<'_, Arc<Mutex<Database>>>,
     config_manager: tauri::State<'_, Arc<ConfigManager>>,
     chat_state: tauri::State<'_, Arc<ChatState>>,
-) -> Result<(), String> {
+) -> Result<(), SerializableError> {
     // Load config to get active model
     let config = config_manager
         .ensure_default()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
 
     // Find the active model config
     let model_config = config
         .models
         .iter()
         .find(|m| m.id == config.active_model_id)
-        .ok_or_else(|| "No active model configured".to_string())?
+        .ok_or_else(|| AppErrorCode::ModelConfigMissing)?
         .clone();
 
     // Get the AI client for this provider
     let client = get_client(&model_config.provider)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| AppErrorCode::AiServiceError(e.to_string()))?;
 
     // Create user message
     let user_message = Message {
@@ -100,19 +101,19 @@ pub async fn chat_stream(
     {
         let db = db.lock().await;
         db.add_message(&conversation_id, &user_message)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
     }
 
     // Get conversation history
     let messages = {
         let db = db.lock().await;
         db.get_messages(&conversation_id, 100, None)
-            .map_err(|e| e.to_string())?
+            .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?
     };
 
     // Create abort channel
     let (abort_tx, mut abort_rx) = mpsc::channel::<()>(1);
-    
+
     // Store abort sender
     {
         let mut senders = chat_state.abort_senders.write().await;
@@ -129,13 +130,12 @@ pub async fn chat_stream(
     let model_name = model_config.model.clone();
 
     // Spawn task to handle streaming
-    let stream_handle = tokio::spawn(async move {
-        client.chat_stream(messages, &model_config, token_tx).await
-    });
+    let stream_handle =
+        tokio::spawn(async move { client.chat_stream(messages, &model_config, token_tx).await });
 
     // Process stream events
     let mut full_content = String::new();
-    
+
     loop {
         tokio::select! {
             // Check for abort signal
@@ -193,14 +193,17 @@ pub async fn chat_stream(
 
         let db = db_clone.lock().await;
         db.add_message(&conv_id, &assistant_message)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
     }
 
     // Emit done event
-    let _ = app.emit("chat:done", StreamDonePayload {
-        conversation_id: conv_id,
-        full_content,
-    });
+    let _ = app.emit(
+        "chat:done",
+        StreamDonePayload {
+            conversation_id: conv_id,
+            full_content,
+        },
+    );
 
     Ok(())
 }
@@ -212,10 +215,10 @@ pub async fn abort_chat(
     chat_state: tauri::State<'_, Arc<ChatState>>,
 ) -> Result<(), String> {
     let senders = chat_state.abort_senders.read().await;
-    
+
     if let Some(sender) = senders.get(&conversation_id) {
         sender.send(()).await.map_err(|e| e.to_string())?;
     }
-    
+
     Ok(())
 }

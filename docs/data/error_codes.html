@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>业务错误码字典 - TauriAI</title>
+    <link rel="stylesheet" href="../assets/styles.css">
+    <style>
+        .error-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            background: white;
+        }
+
+        .error-table th,
+        .error-table td {
+            border: 1px solid #e1e4e8;
+            padding: 12px;
+            text-align: left;
+        }
+
+        .error-table th {
+            background-color: #f6f8fa;
+            font-weight: 600;
+        }
+
+        .code-pill {
+            background: #ffe3e3;
+            color: #cf222e;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-weight: bold;
+        }
+    </style>
+</head>
+
+<body class="doc-page">
+    <div class="container">
+        <nav class="breadcrumb">
+            <a href="../index.html">← 返回文档首页</a>
+        </nav>
+
+        <header class="doc-header">
+            <h1>📖 业务错误码字典</h1>
+            <p class="doc-meta">
+                版本: v0.1 |
+                状态: <span class="status draft">草稿</span> |
+                更新: 2026-01-08
+            </p>
+        </header>
+
+        <main class="doc-content">
+            <p>本文档记录了 TauriAI 系统中所有已定义的业务错误代码 (AppErrorCode)。</p>
+
+            <h2>1. 配置类错误 (Config Errors)</h2>
+            <table class="error-table">
+                <thead>
+                    <tr>
+                        <th>错误代码 (Code)</th>
+                        <th>含义 / 触发场景</th>
+                        <th>前端提示 (Message)</th>
+                        <th>建议操作 (Actions)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><span class="code-pill">ModelConfigMissing</span></td>
+                        <td>用户未选择任何模型，或当前选中的模型 ID 在配置文件中不存在。</td>
+                        <td>未找到有效的模型配置</td>
+                        <td>[去设置] -> 跳转设置页</td>
+                    </tr>
+                    <tr>
+                        <td><span class="code-pill">ConfigLoadFailed</span></td>
+                        <td>无法从磁盘读取 config.json 文件，可能是文件损坏或权限问题。</td>
+                        <td>无法加载配置文件</td>
+                        <td>[重置配置] -> 恢复默认值</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h2>2. AI 服务类错误 (AI Service Errors)</h2>
+            <table class="error-table">
+                <thead>
+                    <tr>
+                        <th>错误代码 (Code)</th>
+                        <th>含义 / 触发场景</th>
+                        <th>前端提示 (Message)</th>
+                        <th>建议操作 (Actions)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><span class="code-pill">OllamaServiceDown</span></td>
+                        <td>尝试连接 Ollama 本地服务 (localhost:11434) 失败。</td>
+                        <td>连接 Ollama 服务失败，请检查服务是否启动</td>
+                        <td>
+                            1. [重试]<br />
+                            2. [如何启动?] -> 打开 Ollama 官网
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><span class="code-pill">NetworkTimeout</span></td>
+                        <td>请求 AI API 超过了设定的时间（默认 30s）未响应。</td>
+                        <td>网络请求超时</td>
+                        <td>[重试]</td>
+                    </tr>
+                    <tr>
+                        <td><span class="code-pill">InvalidApiKey</span></td>
+                        <td>API Key 无效或过期（OpenAI/Anthropic 返回 401）。</td>
+                        <td>API Key 无效</td>
+                        <td>[去设置] -> 检查 Key</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h2>3. 系统类错误 (System Errors)</h2>
+            <table class="error-table">
+                <thead>
+                    <tr>
+                        <th>错误代码 (Code)</th>
+                        <th>含义 / 触发场景</th>
+                        <th>前端提示 (Message)</th>
+                        <th>建议操作 (Actions)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><span class="code-pill">DatabaseError</span></td>
+                        <td>SQLite 数据库读写失败。</td>
+                        <td>数据库操作失败</td>
+                        <td>[联系支持] / [查看日志]</td>
+                    </tr>
+                </tbody>
+            </table>
+
+        </main>
+    </div>
+</body>
+
+</html>

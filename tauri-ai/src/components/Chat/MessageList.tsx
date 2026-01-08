@@ -7,19 +7,23 @@
 import React, { useEffect, useRef } from 'react';
 import type { Message } from '../../types';
 import { MessageItem } from './MessageItem';
+import { ErrorBubble } from './ErrorBubble';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { Bot } from 'lucide-react';
+import type { Action } from '../../types';
 
 interface MessageListProps {
   messages: Message[];
   streamingContent: string | null;
   isGenerating: boolean;
+  onAction: (action: Action) => void;
 }
 
 export const MessageList: React.FC<MessageListProps> = ({
   messages,
   streamingContent,
   isGenerating: _isGenerating,
+  onAction,
 }) => {
   // Note: isGenerating is available for future use (e.g., loading indicators)
   void _isGenerating;
@@ -31,14 +35,10 @@ export const MessageList: React.FC<MessageListProps> = ({
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, streamingContent]);
 
-  const handleCopy = () => {
-    // Copy feedback handled in MessageItem
-  };
-
-  const handleRetry = (messageId: string) => {
-    // TODO: Implement retry functionality
-    console.log('Retry message:', messageId);
-  };
+  // Auto-scroll to bottom when new messages arrive or streaming content updates
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, streamingContent]);
 
   return (
     <div
@@ -55,18 +55,24 @@ export const MessageList: React.FC<MessageListProps> = ({
       )}
 
       {/* Message list */}
-      {messages.map((message) => (
-        <MessageItem
-          key={message.id}
-          message={message}
-          onCopy={handleCopy}
-          onRetry={
-            message.role === 'assistant'
-              ? () => handleRetry(message.id)
-              : undefined
-          }
-        />
-      ))}
+      {messages.map((message) => {
+        if (message.role === 'error') {
+          return (
+            <ErrorBubble
+              key={message.id}
+              message={message}
+              onAction={onAction}
+            />
+          );
+        }
+        return (
+          <MessageItem
+            key={message.id}
+            message={message}
+            onAction={onAction}
+          />
+        );
+      })}
 
       {/* Streaming message */}
       {streamingContent !== null && (

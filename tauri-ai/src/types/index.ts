@@ -4,7 +4,7 @@
  */
 
 // Message role enum
-export type MessageRole = 'user' | 'assistant' | 'system';
+export type MessageRole = 'user' | 'assistant' | 'system' | 'error';
 
 // AI Provider types
 export type Provider = 'openai' | 'anthropic' | 'ollama' | 'custom';
@@ -33,7 +33,29 @@ export interface Message {
   role: MessageRole;
   content: string;
   meta?: MessageMeta;
+  actions?: Action[];
   createdAt: string;
+}
+
+/**
+ * Action definition for Message Toolbar
+ */
+export interface Action {
+  id: string;
+  label: string;
+  icon?: string; // Lucide icon name
+  action_type: 'copy' | 'retry' | 'navigate' | 'link' | 'event';
+  payload?: string;
+  style?: 'default' | 'primary' | 'danger';
+}
+
+/**
+ * Structured Error from Backend
+ */
+export interface AppError {
+  code: string;
+  message: string;
+  actions: Action[];
 }
 
 /**

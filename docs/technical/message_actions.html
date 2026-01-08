@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>消息交互与动作系统 - TauriAI</title>
+    <link rel="stylesheet" href="../assets/styles.css">
+    <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+    <script>mermaid.initialize({ startOnLoad: true, theme: 'default' });</script>
+    <style>
+        .mermaid {
+            background: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+            margin: 16px 0;
+        }
+
+        .spec-card {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 16px;
+            margin: 16px 0;
+            border-left: 4px solid #10b981;
+        }
+
+        .code-block {
+            background: #2d2d2d;
+            color: #f8f8f2;
+            padding: 12px;
+            border-radius: 6px;
+            overflow-x: auto;
+            font-family: 'Fira Code', monospace;
+            font-size: 13px;
+        }
+    </style>
+</head>
+
+<body class="doc-page">
+    <div class="container">
+        <nav class="breadcrumb">
+            <a href="../index.html">← 返回文档首页</a>
+        </nav>
+
+        <header class="doc-header">
+            <h1>🕹️ 消息交互与动作系统</h1>
+            <p class="doc-meta">
+                版本: v0.1 |
+                状态: <span class="status draft">草稿</span> |
+                更新: 2026-01-08
+            </p>
+        </header>
+
+        <main class="doc-content">
+            <h2>1. 设计目标</h2>
+            <p>为了支持 Cherry Studio 风格的富交互体验，我们需要建立一套<strong>通用的动作 (Action) 协议</strong>。这套协议允许后端或前端为任何一条消息动态挂载操作按钮，从而实现：
+            </p>
+            <ul>
+                <li><strong>标准操作</strong>：复制、重新生成、语音朗读。</li>
+                <li><strong>错误恢复</strong>：配置模型、重试、查看日志。</li>
+                <li><strong>特定能力</strong>：Claude 的 "Show Thinking"、MCP Tool 的 "Approve/Reject"。</li>
+            </ul>
+
+            <h2>2. 协议定义 (The Protocol)</h2>
+
+            <div class="spec-card">
+                <h4>通用动作结构 (Action Struct)</h4>
+                <pre class="code-block">
+interface Action {
+    id: string;          // 唯一标识 (e.g. "retry_btn")
+    label: string;       // 按钮文案 (e.g. "重试")
+    icon?: string;       // Lucide图标名 (e.g. "RefreshCw")
+    type: ActionType;    // 动作类型
+    payload?: string;    // 动作参数
+    style?: 'default' | 'danger' | 'primary'; // 视觉样式
+}
+
+type ActionType = 
+    | 'copy'        // 复制内容 (Payload: 要复制的文本，默认 content)
+    | 'retry'       // 重试当前生成
+    | 'navigate'    // 内部路由跳转 (Payload: path)
+    | 'link'        // 打开外部链接 (Payload: url)
+    | 'event';      // 触发自定义事件 (Payload: event name)
+          </pre>
+            </div>
+
+            <h2>3. 消息工具栏 (Message Toolbar)</h2>
+            <p><code>MessageToolbar</code> 是一个纯 UI 组件，它接收 `actions` 数组并渲染。</p>
+
+            <div class="mermaid">
+                graph TD
+                Msg[消息对象 Message] -->|包含| ActionList[Actions List]
+                ActionList -->|渲染为| Toolbar[MessageToolbar 组件]
+
+                Toolbar -->|Button Click| Handler[Action Dispatcher]
+
+                Handler -->|Type: copy| Clipboard[剪贴板]
+                Handler -->|Type: retry| Backend[Rust 重试命令]
+                Handler -->|Type: navigate| Router[React Router]
+
+                style Toolbar fill:#e0e7ff,stroke:#4338ca
+            </div>
+
+            <h2>4. 场景示例</h2>
+
+            <h3>场景 A: 正常的 AI 回复</h3>
+            <p>后端可以直接注入，或者前端组件默认追加。</p>
+            <pre class="code-block">
+{
+  "role": "assistant",
+  "content": "Rust 是一门系统级编程语言...",
+  "actions": [
+    { "id": "copy", "type": "copy", "icon": "Copy", "label": "" },
+    { "id": "regen", "type": "retry", "icon": "RefreshCw", "label": "" }
+  ]
+}
+      </pre>
+
+            <h3>场景 B: 错误恢复 (Inline Error Bubble)</h3>
+            <p>这取代了旧的 Error Alert 设计，将错误视为一种特殊的消息。</p>
+            <pre class="code-block">
+{
+  "role": "error",
+  "content": "**配置缺失**\n你没有选择任何模型，无法回答。",
+  "actions": [
+    { 
+      "id": "fix_config", 
+      "type": "navigate", 
+      "payload": "/settings",
+      "label": "去设置",
+      "style": "primary"
+    }
+  ]
+}
+      </pre>
+
+            <h2>5. 构建策略与差异化 (Construction & Differentiation)</h2>
+            <p>ActionList 的构建采用 <strong>“后端注入 + 前端兜底”</strong> 的混合策略。差异化通过以下三个维度的工厂方法实现：</p>
+
+            <div class="layer-card">
+                <h4>维度 1: 错误类型的差异化 (Backend Error Registry)</h4>
+                <p>由 <code>AppErrorCode</code> 决定。这是强业务相关的。</p>
+                <pre class="code-block">
+// src-tauri/src/errors.rs
+impl AppErrorCode {
+    pub fn get_actions(&self) -> Vec&lt;Action&gt; {
+        match self {
+            Self::ModelConfigMissing => vec![
+                Action::navigate("fix_config", "去设置", "/settings").primary()
+            ],
+            Self::OllamaServiceDown => vec![
+                Action::retry("retry_btn", "重试"),
+                Action::link("help_btn", "排查指南", "https://...")
+            ],
+            // 差异化：网络错误只给重试，配置错误给跳转
+            Self::NetworkTimeout => vec![ Action::retry("retry_btn", "重试") ]
+        }
+    }
+}
+          </pre>
+            </div>
+
+            <div class="layer-card">
+                <h4>维度 2: 模型厂商的差异化 (Backend Provider Trait)</h4>
+                <p>由 <code>AiClient</code> Trait 决定。针对特定厂商注入特色功能。</p>
+                <pre class="code-block">
+// src-tauri/src/ai_client/traits.rs
+pub trait AiClient {
+    // 默认无动作，厂商可覆盖
+    fn get_provider_actions(&self) -> Vec&lt;Action&gt; { vec![] }
+}
+
+// src-tauri/src/ai_client/anthropic.rs
+impl AiClient for AnthropicClient {
+    fn get_provider_actions(&self) -> Vec&lt;Action&gt; {
+        vec![
+            // 差异化：只有 Claude 才有 "显示思考" 及其特定 Payload
+            Action::event("toggle_thinking", "显示思考过程", "SHOW_THOUGHTS")
+        ]
+    }
+}
+          </pre>
+            </div>
+
+            <div class="layer-card">
+                <h4>维度 3: 最终组装 (Frontend Merger)</h4>
+                <p>前端 <code>MessageAdapter</code> 负责将后端发来的 Actions 与前端通用 Actions 合并。</p>
+                <pre class="code-block">
+// src/utils/messageActionBuilder.ts
+export function buildMessageActions(msg: Message): Action[] {
+    const defaultActions = [
+        { type: 'copy', label: '复制' },
+        { type: 'regenerate', label: '重试' }
+    ];
+
+    // 后端注入的高优先级 Actions (如 Errors, Provider Specifics)
+    const backendActions = msg.actions || [];
+
+    // 合并策略：后端 Actions 优先展示
+    return [...backendActions, ...defaultActions];
+}
+          </pre>
+            </div>
+
+            <h2>5. 扩展性</h2>
+            <p>未来如果要支持新的 Plugin 或 Provider 特性，只需：</p>
+            <ol>
+                <li>在 Rust 后端 `ActionType` 枚举中添加新类型，或者使用通用的 `event` 类型。</li>
+                <li>在前端 `MessageToolbar` 的 Dispatcher 中添加对应的处理逻辑。</li>
+            </ol>
+
+        </main>
+    </div>
+</body>
+
+</html>

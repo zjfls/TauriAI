@@ -35,6 +35,7 @@ interface ConversationState {
   appendStreamingToken: (token: string) => void;
   finalizeStreaming: (fullContent: string) => void;
   clearError: () => void;
+  retry: (messageId: string) => Promise<void>;
   setupStreamListener: () => Promise<UnlistenFn>;
 }
 
@@ -182,9 +183,56 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
         conversationId,
         content,
       });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      set({ error: message, isGenerating: false, streamingMessage: null });
+    } catch (err) {
+      set({ isGenerating: false });
+
+      const errorMessage: Message = {
+        id: crypto.randomUUID(),
+        conversationId,
+        role: 'error',
+        content: (err as any).message || String(err),
+        actions: (err as any).actions || [],
+        createdAt: new Date().toISOString(),
+      };
+
+      set((state) => ({
+        messages: [...state.messages, errorMessage],
+        currentConversationId: conversationId,
+      }));
+    }
+  },
+
+  retry: async (messageId: string) => {
+    const state = get();
+    const { messages, sendMessage } = state;
+
+    const index = messages.findIndex(m => m.id === messageId);
+    if (index === -1) return;
+
+    const targetMsg = messages[index];
+    let promptToResend = '';
+
+    // If we are retrying an Assistant message or Error message,
+    // we want to roll back to the user message before it.
+    if (targetMsg.role === 'assistant' || targetMsg.role === 'error') {
+      // Search backwards for the user message
+      for (let i = index - 1; i >= 0; i--) {
+        if (messages[i].role === 'user') {
+          promptToResend = messages[i].content;
+          // Rollback state to before this user message 
+          // (effectively deleting the user message and everything after, so we can re-add it)
+          set({ messages: messages.slice(0, i) });
+          break;
+        }
+      }
+    } else if (targetMsg.role === 'user') {
+      // Retrying a user message (rare, but maybe if it failed to send?)
+      promptToResend = targetMsg.content;
+      set({ messages: messages.slice(0, index) });
+    }
+
+    if (promptToResend) {
+      await sendMessage(promptToResend);
     }
   },
 

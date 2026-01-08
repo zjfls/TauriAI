@@ -2,6 +2,7 @@
 pub mod ai_client;
 pub mod commands;
 pub mod config;
+pub mod errors;
 pub mod models;
 pub mod storage;
 pub mod tray;
@@ -61,7 +62,7 @@ pub fn run() {
         .setup(|app| {
             // 初始化系统托盘
             tray::create_tray(app.handle())?;
-            
+
             // 设置窗口关闭事件处理
             // 满足需求 9.4: 点击关闭按钮时隐藏窗口而非退出
             if let Some(window) = app.get_webview_window("main") {
@@ -75,7 +76,7 @@ pub fn run() {
                     }
                 });
             }
-            
+
             Ok(())
         })
         .run(tauri::generate_context!())
