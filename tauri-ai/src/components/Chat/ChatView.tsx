@@ -4,7 +4,7 @@
  * Requirements: 2.3, 2.4
  */
 
-import React, { useEffect } from 'react';
+import React from 'react';
 import { useConversationStore } from '../../stores/conversationStore';
 import { MessageList } from './MessageList';
 import { InputArea } from './InputArea';
@@ -21,19 +21,20 @@ export const ChatView: React.FC<ChatViewProps> = ({ conversationId }) => {
     isGenerating,
     sendMessage,
     abortGeneration,
-    loadMessages,
+    createConversation,
   } = useConversationStore();
 
-  // Load messages when conversation changes
-  useEffect(() => {
-    if (conversationId) {
-      loadMessages(conversationId);
-    }
-  }, [conversationId, loadMessages]);
+  // 消息加载由 setCurrentConversation 负责，这里不再调用 loadMessages
+  // 这样创建新对话时不会触发 loadMessages，避免竞态条件
 
   // Note: Stream listener is set up in App.tsx to avoid duplicate listeners
 
   const handleSend = async (content: string) => {
+    // 如果没有对话，先创建一个
+    if (!conversationId) {
+      await createConversation();
+      // createConversation 已设置 currentConversationId
+    }
     await sendMessage(content);
   };
 

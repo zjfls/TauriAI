@@ -9,6 +9,7 @@ import { Sidebar } from './Sidebar';
 import { Header } from './Header';
 import { useUIStore } from '../../stores/uiStore';
 import { useConfigStore } from '../../stores/configStore';
+import { useConversationStore } from '../../stores/conversationStore';
 
 interface MainLayoutProps {
   children: React.ReactNode;
@@ -17,11 +18,25 @@ interface MainLayoutProps {
 export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
   const { sidebarExpanded, activeView, setActiveView } = useUIStore();
   const { config, setActiveModel } = useConfigStore();
+  const { setCurrentConversation, currentConversationId, conversations } = useConversationStore();
+
+  // Handle new conversation
+  const handleNewConversation = () => {
+    // Clear current conversation to start a new one
+    setCurrentConversation(null);
+    // Switch to chat view
+    setActiveView('chat');
+  };
 
   // Get current conversation title based on active view
   const getTitle = () => {
     switch (activeView) {
       case 'chat':
+        // Get actual conversation title if exists
+        if (currentConversationId) {
+          const conversation = conversations.find(c => c.id === currentConversationId);
+          return conversation?.title || '新对话';
+        }
         return '新对话';
       case 'history':
         return '历史记录';
@@ -49,6 +64,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
           onModelSelect={setActiveModel}
           currentModelId={config?.activeModelId || ''}
           models={config?.models || []}
+          onNewConversation={activeView === 'chat' ? handleNewConversation : undefined}
         />
 
         {/* Content */}

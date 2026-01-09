@@ -16,7 +16,7 @@ import './App.css';
 
 function App() {
   const { loadConfig } = useConfigStore();
-  const { loadConversations, setupStreamListener, currentConversationId } = useConversationStore();
+  const { loadConversations, currentConversationId } = useConversationStore();
   const { activeView } = useUIStore();
 
   /**
@@ -30,23 +30,7 @@ function App() {
     loadConversations();
   }, [loadConfig, loadConversations]);
 
-  /**
-   * Set up event listeners for streaming
-   * Requirements: 5.2
-   */
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-
-    const setup = async () => {
-      unlisten = await setupStreamListener();
-    };
-
-    setup();
-
-    return () => {
-      unlisten?.();
-    };
-  }, [setupStreamListener]);
+  // 事件监听器已在 conversationStore 模块初始化时自动设置，无需在组件中处理
 
   /**
    * Render the active view based on UI state

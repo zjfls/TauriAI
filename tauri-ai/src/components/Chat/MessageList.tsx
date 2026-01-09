@@ -35,10 +35,7 @@ export const MessageList: React.FC<MessageListProps> = ({
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, streamingContent]);
 
-  // Auto-scroll to bottom when new messages arrive or streaming content updates
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, streamingContent]);
+
 
   return (
     <div

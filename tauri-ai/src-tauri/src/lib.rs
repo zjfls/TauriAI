@@ -11,9 +11,9 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use commands::{
-    abort_chat, chat_stream, create_conversation, delete_conversation, get_app_config,
-    get_conversations, get_messages, save_app_config, test_connection, update_conversation_title,
-    ChatState,
+    abort_chat, chat_stream, create_conversation, delete_conversation, generate_title,
+    get_app_config, get_conversations, get_messages, save_app_config, test_connection,
+    update_conversation_title, ChatState,
 };
 use config::ConfigManager;
 use storage::Database;
@@ -58,6 +58,7 @@ pub fn run() {
             create_conversation,
             delete_conversation,
             update_conversation_title,
+            generate_title,
             // Config commands
             get_app_config,
             save_app_config,

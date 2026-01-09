@@ -6,7 +6,7 @@
 
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { listen } from '@tauri-apps/api/event';
 import type { Conversation, Message } from '../types';
 
 interface ConversationState {
@@ -30,7 +30,7 @@ interface ConversationState {
   finalizeStreaming: (fullContent: string) => void;
   clearError: () => void;
   retry: (messageId: string) => Promise<void>;
-  setupStreamListener: () => Promise<UnlistenFn>;
+  generateTitle: () => Promise<void>;
 }
 
 export const useConversationStore = create<ConversationState>((set, get) => ({
@@ -76,8 +76,19 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
    */
   createConversation: async (title?: string) => {
     try {
+      // Generate default title with timestamp
+      let defaultTitle = title;
+      if (!defaultTitle) {
+        const now = new Date();
+        const month = (now.getMonth() + 1).toString().padStart(2, '0');
+        const day = now.getDate().toString().padStart(2, '0');
+        const hour = now.getHours().toString().padStart(2, '0');
+        const minute = now.getMinutes().toString().padStart(2, '0');
+        defaultTitle = `新对话 ${month}-${day} ${hour}:${minute}`;
+      }
+
       const conversation = await invoke<Conversation>('create_conversation', {
-        title: title || 'New Conversation',
+        title: defaultTitle,
       });
       set((state) => ({
         conversations: [conversation, ...state.conversations],
@@ -142,22 +153,19 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
   /**
    * Send a message and initiate streaming response
    * Requirements: 5.3
+   * 注意：调用前必须确保 currentConversationId 已设置
    */
   sendMessage: async (content: string) => {
-    const { currentConversationId, createConversation } = get();
+    const { currentConversationId } = get();
 
-    let conversationId = currentConversationId;
-
-    // Create a new conversation if none exists
-    if (!conversationId) {
-      const conversation = await createConversation();
-      conversationId = conversation.id;
+    if (!currentConversationId) {
+      throw new Error('No conversation selected. Please create a conversation first.');
     }
 
     // Create user message
     const userMessage: Message = {
       id: crypto.randomUUID(),
-      conversationId,
+      conversationId: currentConversationId,
       role: 'user',
       content,
       createdAt: new Date().toISOString(),
@@ -172,9 +180,8 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
     }));
 
     try {
-      // Initiate streaming chat
       await invoke('chat_stream', {
-        conversationId,
+        conversationId: currentConversationId,
         content,
       });
     } catch (err) {
@@ -182,7 +189,7 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
 
       const errorMessage: Message = {
         id: crypto.randomUUID(),
-        conversationId,
+        conversationId: currentConversationId,
         role: 'error',
         content: (err as any).message || String(err),
         actions: (err as any).actions || [],
@@ -191,7 +198,6 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
 
       set((state) => ({
         messages: [...state.messages, errorMessage],
-        currentConversationId: conversationId,
       }));
     }
   },
@@ -260,7 +266,7 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
    * Finalize the streaming message and add it to messages
    */
   finalizeStreaming: (fullContent: string) => {
-    const { currentConversationId } = get();
+    const { currentConversationId, messages } = get();
     if (!currentConversationId) return;
 
     const assistantMessage: Message = {
@@ -276,6 +282,16 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
       streamingMessage: null,
       isGenerating: false,
     }));
+
+    // Check if we should generate a title
+    // Trigger when: messages >= 3 OR response content >= 100 chars
+    const newMessagesCount = messages.length + 1; // +1 for the assistant message we just added
+    const shouldGenerateTitle = newMessagesCount >= 3 || fullContent.length >= 100;
+
+    if (shouldGenerateTitle) {
+      // Async - don't await, let it run in background
+      get().generateTitle();
+    }
   },
 
   /**
@@ -286,32 +302,77 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
   },
 
   /**
-   * Set up the event listener for streaming tokens
+   * Generate a title for the current conversation using AI
+   * Triggered when messages >= 3 or content is substantial
    */
-  setupStreamListener: async () => {
-    const unlisteners: (() => void)[] = [];
-
-    // Listen for token events
-    const unlistenToken = await listen<{ conversation_id: string; token: string }>('chat:token', (event) => {
-      get().appendStreamingToken(event.payload.token);
+  generateTitle: async () => {
+    console.log('[GenerateTitle] Called');
+    const { currentConversationId, messages, conversations } = get();
+    console.log('[GenerateTitle] State:', {
+      currentConversationId,
+      messagesCount: messages.length,
+      conversationsCount: conversations.length,
     });
-    unlisteners.push(unlistenToken);
+    if (!currentConversationId) {
+      console.log('[GenerateTitle] No currentConversationId, returning');
+      return;
+    }
 
-    // Listen for done events
-    const unlistenDone = await listen<{ conversation_id: string; full_content: string }>('chat:done', (event) => {
-      get().finalizeStreaming(event.payload.full_content);
-    });
-    unlisteners.push(unlistenDone);
+    // Find current conversation
+    const currentConversation = conversations.find(c => c.id === currentConversationId);
+    if (!currentConversation) {
+      console.log('[GenerateTitle] Conversation not found, returning');
+      return;
+    }
+    console.log('[GenerateTitle] Current conversation title:', currentConversation.title);
 
-    // Listen for error events
-    const unlistenError = await listen<{ conversation_id: string; error: string }>('chat:error', (event) => {
-      set({ error: event.payload.error, isGenerating: false, streamingMessage: null });
-    });
-    unlisteners.push(unlistenError);
+    // Only generate if title is still default
+    if (!currentConversation.title.startsWith('新对话')) {
+      console.log('[GenerateTitle] Title not default, returning');
+      return;
+    }
 
-    // Return a combined unlisten function
-    return () => {
-      unlisteners.forEach(unlisten => unlisten());
-    };
+    try {
+      const title = await invoke<string>('generate_title', {
+        conversationId: currentConversationId,
+        messages: messages.slice(0, 6), // Only send first 6 messages
+      });
+
+      // Update local state
+      set((state) => ({
+        conversations: state.conversations.map((c) =>
+          c.id === currentConversationId ? { ...c, title } : c
+        ),
+      }));
+    } catch (error) {
+      console.error('Failed to generate title:', error);
+      // Don't throw - title generation is not critical
+    }
   },
 }));
+
+// 模块级别的事件监听器初始化
+// 只执行一次，避免 React 生命周期带来的竞态问题
+const initStreamListeners = async () => {
+  // Listen for token events
+  await listen<{ conversation_id: string; token: string }>('chat:token', (event) => {
+    useConversationStore.getState().appendStreamingToken(event.payload.token);
+  });
+
+  // Listen for done events
+  await listen<{ conversation_id: string; full_content: string }>('chat:done', (event) => {
+    useConversationStore.getState().finalizeStreaming(event.payload.full_content);
+  });
+
+  // Listen for error events
+  await listen<{ conversation_id: string; error: string }>('chat:error', (event) => {
+    useConversationStore.setState({
+      error: event.payload.error,
+      isGenerating: false,
+      streamingMessage: null
+    });
+  });
+};
+
+// 立即执行初始化
+initStreamListeners();

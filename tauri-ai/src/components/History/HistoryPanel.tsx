@@ -4,7 +4,7 @@
  * Requirements: 7.3, 7.4
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { MessageSquare, Trash2, Edit2, Check, X, Plus } from 'lucide-react';
 import { useConversationStore } from '../../stores/conversationStore';
 import { useUIStore } from '../../stores/uiStore';
@@ -187,7 +187,6 @@ export const HistoryPanel: React.FC = () => {
   const {
     conversations,
     currentConversationId,
-    loadConversations,
     deleteConversation,
     updateConversationTitle,
     setCurrentConversation,
@@ -197,11 +196,6 @@ export const HistoryPanel: React.FC = () => {
   const { setActiveView } = useUIStore();
 
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
-
-  // Load conversations on mount
-  useEffect(() => {
-    loadConversations();
-  }, [loadConversations]);
 
   const handleSelectConversation = (conversation: Conversation) => {
     setCurrentConversation(conversation.id);
@@ -224,7 +218,9 @@ export const HistoryPanel: React.FC = () => {
   };
 
   const handleNewConversation = async () => {
-    await createConversation();
+    const conversation = await createConversation();
+    // createConversation 不再自动设置 currentConversationId，需要手动设置
+    setCurrentConversation(conversation.id);
     setActiveView('chat');
   };
 

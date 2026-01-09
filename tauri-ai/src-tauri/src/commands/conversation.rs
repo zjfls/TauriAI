@@ -82,3 +82,96 @@ pub async fn update_conversation_title(
     db.update_conversation_title(&conversation_id, &title)
         .map_err(|e| e.to_string())
 }
+
+/// Generate a title for a conversation based on its content
+///
+/// Uses AI to analyze the conversation and generate a concise, descriptive title.
+#[tauri::command]
+pub async fn generate_title(
+    conversation_id: String,
+    messages: Vec<Message>,
+    db: tauri::State<'_, Arc<Mutex<Database>>>,
+    config_manager: tauri::State<'_, Arc<crate::config::ConfigManager>>,
+) -> Result<String, String> {
+    use crate::ai_client::get_client;
+    use crate::models::MessageRole;
+
+    println!("[Conversation] Generating title for: {}", conversation_id);
+
+    // Load config to get active model
+    let config = config_manager.ensure_default().map_err(|e| e.to_string())?;
+
+    // Find the active model config
+    let model_config = config
+        .models
+        .iter()
+        .find(|m| m.id == config.active_model_id)
+        .ok_or("No active model configured")?
+        .clone();
+
+    // Get the AI client for this provider
+    let client = get_client(&model_config.provider).map_err(|e| e.to_string())?;
+
+    // Build the prompt message
+    let conversation_content = messages
+        .iter()
+        .take(6) // Only use first 6 messages
+        .map(|m| {
+            let role = match m.role {
+                MessageRole::User => "用户",
+                MessageRole::Assistant => "助手",
+                _ => "系统",
+            };
+            format!("{}: {}", role, m.content)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let prompt = format!(
+        "你是一个对话标题生成助手。根据下面的对话内容，生成一个简洁、准确的标题。\n\n\
+         要求：\n\
+         - 不超过 20 个字\n\
+         - 概括对话的核心主题\n\
+         - 使用中文\n\
+         - 不要加引号或标点\n\n\
+         对话内容：\n{}\n\n\
+         请直接输出标题，不要有任何其他文字。",
+        conversation_content
+    );
+
+    // Create a system prompt message
+    let prompt_message = Message {
+        id: uuid::Uuid::new_v4().to_string(),
+        conversation_id: conversation_id.clone(),
+        role: MessageRole::User,
+        content: prompt,
+        meta: None,
+        created_at: chrono::Utc::now(),
+    };
+
+    // Call AI to generate title
+    let title = client
+        .chat(vec![prompt_message], &model_config)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Clean up the title (remove quotes, newlines, etc.)
+    let title = title
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim_matches('《')
+        .trim_matches('》')
+        .to_string();
+
+    println!("[Conversation] Generated title: {}", title);
+
+    // Update the database
+    {
+        let db = db.lock().await;
+        db.update_conversation_title(&conversation_id, &title)
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(title)
+}
