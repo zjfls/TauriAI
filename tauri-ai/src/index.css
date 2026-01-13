@@ -3,3 +3,18 @@
 @plugin "@tailwindcss/typography";
 
 @custom-variant dark (&:where(.dark, .dark *));
+
+/* KaTeX overrides for dark mode */
+.dark .katex {
+  color: inherit;
+}
+
+/* Details/Summary styling */
+details > *:not(summary) {
+  padding: 0.5rem 1rem;
+}
+
+/* Mermaid diagram text color fix */
+.dark .mermaid text {
+  fill: #e0e0e0 !important;
+}

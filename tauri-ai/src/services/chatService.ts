@@ -8,6 +8,11 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 /**
+ * Format prompt types for different scenarios
+ */
+export type FormatPromptType = 'chat' | 'plain' | 'json' | 'none';
+
+/**
  * Payload for streaming token events
  */
 export interface StreamTokenPayload {
@@ -41,17 +46,31 @@ export interface StreamEventHandlers {
 }
 
 /**
+ * Options for chat stream
+ */
+export interface ChatStreamOptions {
+  /** Format prompt type: 'chat' (rich text), 'plain', 'json', 'none' */
+  formatType?: FormatPromptType;
+}
+
+/**
  * Start a streaming chat request
  * Requirements: 10.1
  * 
  * @param conversationId - The conversation ID to send the message to
  * @param content - The message content to send
+ * @param options - Optional settings including format type
  */
 export async function chatStream(
   conversationId: string,
-  content: string
+  content: string,
+  options?: ChatStreamOptions
 ): Promise<void> {
-  return invoke('chat_stream', { conversationId, content });
+  return invoke('chat_stream', { 
+    conversationId, 
+    content,
+    formatType: options?.formatType ?? 'chat'
+  });
 }
 
 /**

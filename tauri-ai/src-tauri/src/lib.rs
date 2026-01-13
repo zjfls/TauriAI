@@ -4,6 +4,7 @@ pub mod commands;
 pub mod config;
 pub mod errors;
 pub mod models;
+pub mod prompts;
 pub mod storage;
 pub mod tray;
 
