@@ -1,7 +1,6 @@
 /**
  * MainLayout Component
  * Main application layout with sidebar and content area
- * Requirements: 2.1, 2.2, 2.3, 2.4
  */
 
 import React from 'react';
@@ -17,14 +16,19 @@ interface MainLayoutProps {
 
 export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
   const { sidebarExpanded, activeView, setActiveView } = useUIStore();
-  const { config, setActiveModel } = useConfigStore();
+  const { 
+    config, 
+    setCurrentAgent, 
+    setCurrentModel,
+    getCurrentAgent,
+    getCurrentModelRef,
+    getModelOptions,
+  } = useConfigStore();
   const { setCurrentConversation, currentConversationId, conversations } = useConversationStore();
 
   // Handle new conversation
   const handleNewConversation = () => {
-    // Clear current conversation to start a new one
     setCurrentConversation(null);
-    // Switch to chat view
     setActiveView('chat');
   };
 
@@ -32,7 +36,6 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
   const getTitle = () => {
     switch (activeView) {
       case 'chat':
-        // Get actual conversation title if exists
         if (currentConversationId) {
           const conversation = conversations.find(c => c.id === currentConversationId);
           return conversation?.title || '新对话';
@@ -46,6 +49,13 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
         return 'TauriAI';
     }
   };
+
+  // Get agents for header dropdown
+  const agents = config?.agents || [];
+  const currentAgent = getCurrentAgent();
+  const currentAgentName = currentAgent?.name || config?.defaultAgent || '';
+  const currentModelRef = getCurrentModelRef() || '';
+  const modelOptions = getModelOptions();
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-gray-50 dark:bg-gray-900">
@@ -61,10 +71,13 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
         {/* Header */}
         <Header
           title={getTitle()}
-          onModelSelect={setActiveModel}
-          currentModelId={config?.activeModelId || ''}
-          models={config?.models || []}
+          onAgentSelect={setCurrentAgent}
+          currentAgentName={currentAgentName}
+          agents={agents}
           onNewConversation={activeView === 'chat' ? handleNewConversation : undefined}
+          modelOptions={modelOptions}
+          currentModelRef={currentModelRef}
+          onModelSelect={setCurrentModel}
         />
 
         {/* Content */}

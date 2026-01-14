@@ -1,7 +1,4 @@
-//! Chat commands for TauriAI
-//!
-//! This module contains Tauri commands for chat functionality including
-//! streaming chat and abort operations.
+﻿//! Chat commands for TauriAI
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -11,83 +8,83 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use crate::ai_client::{get_client, StreamEvent};
 use crate::config::ConfigManager;
 use crate::errors::{AppErrorCode, SerializableError};
-use crate::models::{Message, MessageRole};
+use crate::models::{Message, MessageRole, ModelConfig, ModelParameters};
+use crate::prompts::compose_system_prompt;
 use crate::storage::Database;
 
-/// Payload for streaming token events
 #[derive(Clone, serde::Serialize)]
 pub struct StreamTokenPayload {
     pub conversation_id: String,
     pub token: String,
 }
 
-/// Payload for stream completion events
 #[derive(Clone, serde::Serialize)]
 pub struct StreamDonePayload {
     pub conversation_id: String,
     pub full_content: String,
 }
 
-/// Payload for stream error events
 #[derive(Clone, serde::Serialize)]
 pub struct StreamErrorPayload {
     pub conversation_id: String,
     pub error: String,
 }
 
-/// Global state for managing active chat streams
 pub struct ChatState {
-    /// Map of conversation_id to abort sender
     abort_senders: RwLock<HashMap<String, mpsc::Sender<()>>>,
 }
 
 impl ChatState {
     pub fn new() -> Self {
-        Self {
-            abort_senders: RwLock::new(HashMap::new()),
-        }
+        Self { abort_senders: RwLock::new(HashMap::new()) }
     }
 }
 
 impl Default for ChatState {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
-/// Start a streaming chat request
-///
-/// Emits events:
-/// - `chat:token` - For each token received
-/// - `chat:done` - When streaming completes
-/// - `chat:error` - If an error occurs
 #[tauri::command]
 pub async fn chat_stream(
     app: AppHandle,
     conversation_id: String,
     content: String,
+    agent_name: Option<String>,
     db: tauri::State<'_, Arc<Mutex<Database>>>,
     config_manager: tauri::State<'_, Arc<ConfigManager>>,
     chat_state: tauri::State<'_, Arc<ChatState>>,
 ) -> Result<(), SerializableError> {
-    // Load config to get active model
-    let config = config_manager
-        .ensure_default()
+    let config = config_manager.ensure_default()
         .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
 
-    // Find the active model config
-    let model_config = config
-        .models
-        .iter()
-        .find(|m| m.id == config.active_model_id)
-        .ok_or_else(|| AppErrorCode::ModelConfigMissing)?
-        .clone();
+    let agent_name_str = agent_name.unwrap_or_else(|| config.default_agent.clone());
+    let (provider, model, agent) = config.resolve_agent(&agent_name_str)
+        .ok_or_else(|| AppErrorCode::ModelConfigMissing)?;
 
-    // Get the AI client for this provider
+    if !provider.enabled {
+        return Err(AppErrorCode::AiServiceError(format!("Provider '{}' is disabled", provider.display_name)).into());
+    }
+
+    let model_config = ModelConfig {
+        id: format!("{}/{}", provider.name, model.name),
+        name: model.name.clone(),
+        provider: provider.provider_type.to_client_str().to_string(),
+        api_base: Some(provider.api_base.clone()),
+        api_key: provider.api_key.clone(),
+        model: model.name.clone(),
+        parameters: ModelParameters {
+            temperature: model.temperature,
+            max_tokens: model.max_tokens,
+            top_p: model.top_p,
+            frequency_penalty: None,
+            presence_penalty: None,
+            system_prompt: None,
+        },
+    };
+
     let client = get_client(&model_config.provider)
         .map_err(|e| AppErrorCode::AiServiceError(e.to_string()))?;
 
-    // Create user message
     let user_message = Message {
         id: uuid::Uuid::new_v4().to_string(),
         conversation_id: conversation_id.clone(),
@@ -96,75 +93,48 @@ pub async fn chat_stream(
         meta: None,
         created_at: chrono::Utc::now(),
     };
-    println!("[Chat] Created user message: {:?}", user_message.id);
 
-    // Save user message to database
-    {
-        let db = db.lock().await;
-        db.add_message(&conversation_id, &user_message)
-            .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
+    { let db = db.lock().await; db.add_message(&conversation_id, &user_message).map_err(|e| AppErrorCode::UnknownError(e.to_string()))?; }
+
+    let mut messages = { let db = db.lock().await; db.get_messages(&conversation_id, 100, None).map_err(|e| AppErrorCode::UnknownError(e.to_string()))? };
+
+    let base_prompt = if agent.system_prompt.is_empty() { None } else { Some(agent.system_prompt.as_str()) };
+    if let Some(system_content) = compose_system_prompt(base_prompt, agent.format_type) {
+        let system_message = Message {
+            id: uuid::Uuid::new_v4().to_string(),
+            conversation_id: conversation_id.clone(),
+            role: MessageRole::System,
+            content: system_content,
+            meta: None,
+            created_at: chrono::Utc::now(),
+        };
+        messages.insert(0, system_message);
     }
 
-    // Get conversation history
-    let messages = {
-        let db = db.lock().await;
-        db.get_messages(&conversation_id, 100, None)
-            .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?
-    };
-
-    // Create abort channel
     let (abort_tx, mut abort_rx) = mpsc::channel::<()>(1);
+    { let mut senders = chat_state.abort_senders.write().await; senders.insert(conversation_id.clone(), abort_tx); }
 
-    // Store abort sender
-    {
-        let mut senders = chat_state.abort_senders.write().await;
-        senders.insert(conversation_id.clone(), abort_tx);
-    }
-
-    // Create token channel
     let (token_tx, mut token_rx) = mpsc::channel::<StreamEvent>(100);
-
-    // Clone values for the spawned task
     let conv_id = conversation_id.clone();
     let app_handle = app.clone();
     let db_clone = db.inner().clone();
     let model_name = model_config.model.clone();
 
-    // Spawn task to handle streaming
-    let stream_handle =
-        tokio::spawn(async move { client.chat_stream(messages, &model_config, token_tx).await });
+    let stream_handle = tokio::spawn(async move { client.chat_stream(messages, &model_config, token_tx).await });
 
-    // Process stream events
     let mut full_content = String::new();
-
     loop {
         tokio::select! {
-            // Check for abort signal
-            _ = abort_rx.recv() => {
-                stream_handle.abort();
-                break;
-            }
-            // Process stream events
+            _ = abort_rx.recv() => { stream_handle.abort(); break; }
             event = token_rx.recv() => {
                 match event {
                     Some(StreamEvent::Token(token)) => {
                         full_content.push_str(&token);
-                        let _ = app_handle.emit("chat:token", StreamTokenPayload {
-                            conversation_id: conv_id.clone(),
-                            token,
-                        });
+                        let _ = app_handle.emit("chat:token", StreamTokenPayload { conversation_id: conv_id.clone(), token });
                     }
-                    Some(StreamEvent::Done(content)) => {
-                        println!("[Chat] Stream done. Length: {}", content.len());
-                        full_content = content;
-                        break;
-                    }
+                    Some(StreamEvent::Done(content)) => { full_content = content; break; }
                     Some(StreamEvent::Error(error)) => {
-                        println!("[Chat] Stream error: {}", error);
-                        let _ = app_handle.emit("chat:error", StreamErrorPayload {
-                            conversation_id: conv_id.clone(),
-                            error,
-                        });
+                        let _ = app_handle.emit("chat:error", StreamErrorPayload { conversation_id: conv_id.clone(), error });
                         break;
                     }
                     None => break,
@@ -173,55 +143,33 @@ pub async fn chat_stream(
         }
     }
 
-    // Remove abort sender
-    {
-        let mut senders = chat_state.abort_senders.write().await;
-        senders.remove(&conv_id);
-    }
+    { let mut senders = chat_state.abort_senders.write().await; senders.remove(&conv_id); }
 
-    // Save assistant message if we have content
     if !full_content.is_empty() {
         let assistant_message = Message {
             id: uuid::Uuid::new_v4().to_string(),
             conversation_id: conv_id.clone(),
             role: MessageRole::Assistant,
             content: full_content.clone(),
-            meta: Some(crate::models::MessageMeta {
-                model: Some(model_name),
-                tokens: None,
-                duration: None,
-            }),
+            meta: Some(crate::models::MessageMeta { model: Some(model_name), tokens: None, duration: None }),
             created_at: chrono::Utc::now(),
         };
-
         let db = db_clone.lock().await;
-        db.add_message(&conv_id, &assistant_message)
-            .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
+        db.add_message(&conv_id, &assistant_message).map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
     }
 
-    // Emit done event
-    let _ = app.emit(
-        "chat:done",
-        StreamDonePayload {
-            conversation_id: conv_id,
-            full_content,
-        },
-    );
-
+    let _ = app.emit("chat:done", StreamDonePayload { conversation_id: conv_id, full_content });
     Ok(())
 }
 
-/// Abort an ongoing chat generation
 #[tauri::command]
 pub async fn abort_chat(
     conversation_id: String,
     chat_state: tauri::State<'_, Arc<ChatState>>,
 ) -> Result<(), String> {
     let senders = chat_state.abort_senders.read().await;
-
     if let Some(sender) = senders.get(&conversation_id) {
         sender.send(()).await.map_err(|e| e.to_string())?;
     }
-
     Ok(())
 }

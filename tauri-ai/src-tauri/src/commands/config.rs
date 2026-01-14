@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use crate::ai_client::get_client;
 use crate::config::ConfigManager;
-use crate::models::{AppConfig, Message, MessageRole, ModelConfig};
+use crate::models::{AppConfig, Message, MessageRole, ModelConfig, ModelParameters};
 
 /// Get the current application configuration
 #[tauri::command]
@@ -36,22 +36,26 @@ pub struct TestConnectionResult {
 
 /// Test a model configuration by sending a minimal request
 #[tauri::command]
-pub async fn test_connection(model_config: ModelConfig) -> Result<TestConnectionResult, String> {
-    println!("[TestConnection] Testing model: {}", model_config.name);
-    println!("[TestConnection] Provider: {}", model_config.provider);
-    println!("[TestConnection] API Base: {:?}", model_config.api_base);
-    println!(
-        "[TestConnection] API Key present: {}",
-        model_config
-            .api_key
-            .as_ref()
-            .map(|k| !k.is_empty())
-            .unwrap_or(false)
-    );
+pub async fn test_connection(
+    provider_type: String,
+    api_base: String,
+    api_key: Option<String>,
+    model_name: String,
+) -> Result<TestConnectionResult, String> {
+    println!("[TestConnection] Testing provider: {}, model: {}", provider_type, model_name);
 
-    let client = get_client(&model_config.provider).map_err(|e| e.to_string())?;
+    let model_config = ModelConfig {
+        id: "test".to_string(),
+        name: "test".to_string(),
+        provider: provider_type.clone(),
+        api_base: Some(api_base),
+        api_key,
+        model: model_name,
+        parameters: ModelParameters::default(),
+    };
 
-    // Create a minimal test message
+    let client = get_client(&provider_type).map_err(|e| e.to_string())?;
+
     let test_message = Message {
         id: "test".to_string(),
         conversation_id: "test".to_string(),
@@ -68,7 +72,7 @@ pub async fn test_connection(model_config: ModelConfig) -> Result<TestConnection
             let elapsed = start.elapsed().as_millis() as u64;
             Ok(TestConnectionResult {
                 success: true,
-                message: "Connection successful".to_string(),
+                message: "连接成功".to_string(),
                 response_time_ms: Some(elapsed),
             })
         }
@@ -78,4 +82,60 @@ pub async fn test_connection(model_config: ModelConfig) -> Result<TestConnection
             response_time_ms: None,
         }),
     }
+}
+
+/// Model info returned from provider API
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct ModelInfo {
+    pub id: String,
+    pub owned_by: Option<String>,
+}
+
+/// Response from OpenAI-compatible /models endpoint
+#[derive(serde::Deserialize)]
+struct ModelsResponse {
+    data: Vec<ModelData>,
+}
+
+#[derive(serde::Deserialize)]
+struct ModelData {
+    id: String,
+    owned_by: Option<String>,
+}
+
+/// Fetch available models from a provider's API
+#[tauri::command]
+pub async fn fetch_provider_models(
+    provider_type: String,
+    api_base: String,
+    api_key: Option<String>,
+) -> Result<Vec<ModelInfo>, String> {
+    println!("[FetchModels] Fetching models from: {}", api_base);
+
+    let client = reqwest::Client::new();
+    
+    let mut request = client.get(format!("{}/models", api_base));
+    
+    if let Some(key) = &api_key {
+        if !key.is_empty() {
+            request = request.header("Authorization", format!("Bearer {}", key));
+        }
+    }
+
+    let response = request.send().await.map_err(|e| e.to_string())?;
+
+    if !response.status().is_success() {
+        let error_text = response.text().await.unwrap_or_default();
+        return Err(format!("获取模型列表失败: {}", error_text));
+    }
+
+    let models_response: ModelsResponse = response.json().await.map_err(|e| e.to_string())?;
+
+    let models: Vec<ModelInfo> = models_response.data.into_iter().map(|m| ModelInfo {
+        id: m.id,
+        owned_by: m.owned_by,
+    }).collect();
+
+    println!("[FetchModels] Found {} models", models.len());
+    Ok(models)
 }

@@ -49,17 +49,16 @@ export interface StreamEventHandlers {
  * Options for chat stream
  */
 export interface ChatStreamOptions {
-  /** Format prompt type: 'chat' (rich text), 'plain', 'json', 'none' */
-  formatType?: FormatPromptType;
+  /** Agent name to use (uses default agent if not provided) */
+  agentName?: string;
 }
 
 /**
  * Start a streaming chat request
- * Requirements: 10.1
  * 
  * @param conversationId - The conversation ID to send the message to
  * @param content - The message content to send
- * @param options - Optional settings including format type
+ * @param options - Optional settings including agent name
  */
 export async function chatStream(
   conversationId: string,
@@ -69,7 +68,7 @@ export async function chatStream(
   return invoke('chat_stream', { 
     conversationId, 
     content,
-    formatType: options?.formatType ?? 'chat'
+    agentName: options?.agentName
   });
 }
 

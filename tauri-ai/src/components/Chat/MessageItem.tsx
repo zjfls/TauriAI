@@ -75,11 +75,12 @@ export const MessageItem: React.FC<MessageItemProps> = ({
           <span className="ml-1 inline-block h-4 w-2 animate-pulse bg-gray-400 dark:bg-gray-500" />
         )}
 
-        {/* Action buttons - shown on hover */}
-        {isHovered && !isStreaming && actions.length > 0 && (
+        {/* Action buttons - always rendered for layout stability, visible on hover */}
+        {!isStreaming && actions.length > 0 && (
           <div
-            className={`absolute -bottom-10 flex gap-1 ${isUser ? 'right-0' : 'left-0'
-              }`}
+            className={`mt-2 flex gap-1 transition-opacity ${
+              isHovered ? 'opacity-100' : 'opacity-0'
+            }`}
           >
             <MessageToolbar actions={actions} onAction={onAction} />
           </div>

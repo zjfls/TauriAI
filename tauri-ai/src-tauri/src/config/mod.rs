@@ -7,7 +7,7 @@ use std::fs;
 use std::path::PathBuf;
 use thiserror::Error;
 
-use crate::models::{AppConfig, ModelConfig, ModelParameters};
+use crate::models::AppConfig;
 
 /// Errors that can occur during configuration operations
 #[derive(Debug, Error)]
@@ -98,7 +98,13 @@ impl ConfigManager {
     /// If it doesn't exist, creates a default configuration, saves it, and returns it.
     pub fn ensure_default(&self) -> Result<AppConfig, ConfigError> {
         if self.config_path.exists() {
-            self.load()
+            let mut config = self.load()?;
+            // Auto-migrate if needed
+            if config.needs_migration() {
+                config.migrate();
+                self.save(&config)?;
+            }
+            Ok(config)
         } else {
             let config = Self::create_default_config();
             self.save(&config)?;
@@ -108,11 +114,7 @@ impl ConfigManager {
 
     /// Creates a default application configuration
     fn create_default_config() -> AppConfig {
-        AppConfig {
-            active_model_id: String::new(),
-            models: vec![],
-            ..Default::default()
-        }
+        AppConfig::default()
     }
 }
 
@@ -148,34 +150,41 @@ mod tests {
         assert!(manager.config_path().exists());
 
         // Should be empty initially
-        assert!(config.models.is_empty());
-
-        // Active model ID should be empty
-        assert!(config.active_model_id.is_empty());
+        assert!(config.providers.is_empty());
+        assert!(config.agents.is_empty());
     }
 
     #[test]
     fn test_save_and_load_roundtrip() {
+        use crate::models::{Provider, ProviderType, Model, Agent};
+        use crate::prompts::FormatPromptType;
+
         let (manager, _temp_dir) = create_test_config_manager();
 
         let config = AppConfig {
-            active_model_id: "test-model-id".to_string(),
-            models: vec![ModelConfig {
-                id: "test-model-id".to_string(),
-                name: "Test Model".to_string(),
-                provider: "openai".to_string(),
-                api_base: Some("https://api.example.com".to_string()),
+            providers: vec![Provider {
+                name: "test-provider".to_string(),
+                display_name: "Test Provider".to_string(),
+                provider_type: ProviderType::OpenaiCompatible,
+                api_base: "https://api.example.com".to_string(),
                 api_key: Some("test-key".to_string()),
-                model: "gpt-4".to_string(),
-                parameters: ModelParameters {
+                enabled: true,
+                models: vec![Model {
+                    name: "gpt-4".to_string(),
                     temperature: 0.5,
                     max_tokens: Some(1000),
                     top_p: Some(0.9),
-                    frequency_penalty: None,
-                    presence_penalty: None,
-                    system_prompt: Some("You are a helpful assistant.".to_string()),
-                },
+                }],
             }],
+            agents: vec![Agent {
+                name: "test-agent".to_string(),
+                display_name: "Test Agent".to_string(),
+                description: Some("A test agent".to_string()),
+                model_ref: "test-provider/gpt-4".to_string(),
+                system_prompt: "You are a helpful assistant.".to_string(),
+                format_type: FormatPromptType::Chat,
+            }],
+            default_agent: "test-agent".to_string(),
             ..Default::default()
         };
 
@@ -186,14 +195,11 @@ mod tests {
         let loaded_config = manager.load().unwrap();
 
         // Verify the loaded config matches
-        assert_eq!(loaded_config.active_model_id, config.active_model_id);
-        assert_eq!(loaded_config.models.len(), config.models.len());
-        assert_eq!(loaded_config.models[0].id, config.models[0].id);
-        assert_eq!(loaded_config.models[0].name, config.models[0].name);
-        assert_eq!(
-            loaded_config.models[0].parameters.temperature,
-            config.models[0].parameters.temperature
-        );
+        assert_eq!(loaded_config.providers.len(), 1);
+        assert_eq!(loaded_config.providers[0].name, "test-provider");
+        assert_eq!(loaded_config.agents.len(), 1);
+        assert_eq!(loaded_config.agents[0].name, "test-agent");
+        assert_eq!(loaded_config.default_agent, "test-agent");
     }
 
     #[test]
@@ -210,15 +216,14 @@ mod tests {
 
         // Create a custom config first
         let custom_config = AppConfig {
-            active_model_id: "custom-id".to_string(),
-            models: vec![],
+            default_agent: "custom-agent".to_string(),
             ..Default::default()
         };
         manager.save(&custom_config).unwrap();
 
         // ensure_default should load the existing config, not create a new one
         let loaded = manager.ensure_default().unwrap();
-        assert_eq!(loaded.active_model_id, "custom-id");
+        assert_eq!(loaded.default_agent, "custom-agent");
     }
 
     #[test]

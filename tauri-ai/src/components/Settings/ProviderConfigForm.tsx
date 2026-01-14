@@ -1,0 +1,522 @@
+/**
+ * ProviderConfigForm Component
+ * Form for managing AI service providers and their models
+ */
+
+import React, { useState, useEffect } from 'react';
+import { Plus, Trash2, ChevronDown, ChevronRight, Wifi, WifiOff, Loader2, Search, Download } from 'lucide-react';
+import { useConfigStore } from '../../stores/configStore';
+import { testConnection } from '../../services/configService';
+import { ModelPickerModal } from './ModelPickerModal';
+import type { Provider, Model, ProviderType } from '../../types';
+
+const defaultModel: Model = {
+  name: '',
+  temperature: 0.7,
+  maxTokens: 4096,
+  topP: 1,
+};
+
+const defaultProvider: Provider = {
+  name: '',
+  displayName: '',
+  type: 'openai_compatible',
+  apiBase: '',
+  apiKey: '',
+  enabled: true,
+  models: [],
+};
+
+export const ProviderConfigForm: React.FC = () => {
+  const { config, addProvider, updateProvider, deleteProvider, toggleProvider } = useConfigStore();
+  const [selectedProviderName, setSelectedProviderName] = useState<string | null>(null);
+  const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
+  const [isCreating, setIsCreating] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [expandedModels, setExpandedModels] = useState<Set<string>>(new Set());
+  const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
+  const [testMessage, setTestMessage] = useState('');
+  const [testModelName, setTestModelName] = useState('');
+  const [showModelPicker, setShowModelPicker] = useState(false);
+
+  const providers = config?.providers || [];
+  const filteredProviders = providers.filter(p => 
+    p.displayName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    p.name.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  useEffect(() => {
+    if (providers.length > 0 && !selectedProviderName) {
+      setSelectedProviderName(providers[0].name);
+    }
+  }, [providers, selectedProviderName]);
+
+  const handleSelectProvider = (name: string) => {
+    setSelectedProviderName(name);
+    setEditingProvider(null);
+    setIsCreating(false);
+    setTestStatus('idle');
+  };
+
+  const handleCreateNew = () => {
+    setIsCreating(true);
+    setEditingProvider({ ...defaultProvider, name: `provider_${Date.now()}` });
+    setSelectedProviderName(null);
+  };
+
+  const handleEdit = () => {
+    const provider = providers.find(p => p.name === selectedProviderName);
+    if (provider) {
+      setEditingProvider({ ...provider });
+    }
+  };
+
+  const handleSave = () => {
+    if (!editingProvider || !editingProvider.displayName.trim()) return;
+    if (isCreating) {
+      addProvider(editingProvider);
+      setSelectedProviderName(editingProvider.name);
+    } else {
+      updateProvider(editingProvider);
+    }
+    setEditingProvider(null);
+    setIsCreating(false);
+  };
+
+  const handleCancel = () => {
+    setEditingProvider(null);
+    setIsCreating(false);
+  };
+
+  const handleDelete = () => {
+    if (!selectedProviderName) return;
+    if (confirm('确定要删除这个提供商吗？')) {
+      deleteProvider(selectedProviderName);
+      setSelectedProviderName(providers.find(p => p.name !== selectedProviderName)?.name || null);
+    }
+  };
+
+  const handleToggleEnabled = (name: string, enabled: boolean) => {
+    toggleProvider(name, enabled);
+  };
+
+  const toggleModelExpand = (modelName: string) => {
+    const newExpanded = new Set(expandedModels);
+    if (newExpanded.has(modelName)) {
+      newExpanded.delete(modelName);
+    } else {
+      newExpanded.add(modelName);
+    }
+    setExpandedModels(newExpanded);
+  };
+
+  const handleAddModel = () => {
+    if (!editingProvider) return;
+    const newModel = { ...defaultModel, name: `model_${Date.now()}` };
+    setEditingProvider({
+      ...editingProvider,
+      models: [...editingProvider.models, newModel],
+    });
+  };
+
+  const handleUpdateModel = (index: number, model: Model) => {
+    if (!editingProvider) return;
+    const models = [...editingProvider.models];
+    models[index] = model;
+    setEditingProvider({ ...editingProvider, models });
+  };
+
+  const handleDeleteModel = (index: number) => {
+    if (!editingProvider) return;
+    const models = editingProvider.models.filter((_, i) => i !== index);
+    setEditingProvider({ ...editingProvider, models });
+  };
+
+  const handleTestConnection = async () => {
+    const provider = editingProvider || providers.find(p => p.name === selectedProviderName);
+    if (!provider) return;
+    if (!testModelName) {
+      setTestStatus('error');
+      setTestMessage('请先选择要测试的模型');
+      return;
+    }
+    setTestStatus('testing');
+    try {
+      const result = await testConnection(
+        provider.type,
+        provider.apiBase,
+        provider.apiKey,
+        testModelName
+      );
+      setTestStatus(result.success ? 'success' : 'error');
+      setTestMessage(result.message);
+    } catch (e) {
+      setTestStatus('error');
+      setTestMessage(e instanceof Error ? e.message : '连接失败');
+    }
+  };
+
+  const handleOpenModelPicker = () => {
+    setShowModelPicker(true);
+  };
+
+  const handleAddModelsFromPicker = (modelNames: string[]) => {
+    if (!editingProvider) return;
+    const existingNames = new Set(editingProvider.models.map(m => m.name));
+    const newModels: Model[] = modelNames
+      .filter(name => !existingNames.has(name))
+      .map(name => ({
+        name,
+        temperature: 0.7,
+        maxTokens: 4096,
+        topP: 1,
+      }));
+    if (newModels.length > 0) {
+      setEditingProvider({
+        ...editingProvider,
+        models: [...editingProvider.models, ...newModels],
+      });
+    }
+    setShowModelPicker(false);
+  };
+
+  const currentProvider = editingProvider || providers.find(p => p.name === selectedProviderName);
+
+  return (
+    <div className="flex gap-6 h-full">
+      {/* Provider List */}
+      <div className="w-64 flex-shrink-0 flex flex-col">
+        <div className="mb-3">
+          <div className="relative">
+            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+            <input
+              type="text"
+              placeholder="搜索提供商..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full pl-9 pr-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm"
+            />
+          </div>
+        </div>
+        
+        <div className="flex-1 space-y-1 overflow-auto">
+          {filteredProviders.map((provider) => (
+            <div
+              key={provider.name}
+              onClick={() => handleSelectProvider(provider.name)}
+              className={`flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer transition-colors ${
+                selectedProviderName === provider.name && !isCreating
+                  ? 'bg-blue-100 dark:bg-blue-900/50'
+                  : 'hover:bg-gray-100 dark:hover:bg-gray-700'
+              }`}
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                <span className={`w-2 h-2 rounded-full ${provider.enabled ? 'bg-green-500' : 'bg-gray-400'}`} />
+                <span className="text-sm truncate">{provider.displayName}</span>
+              </div>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleToggleEnabled(provider.name, !provider.enabled);
+                }}
+                className={`text-xs px-2 py-0.5 rounded ${
+                  provider.enabled
+                    ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+                    : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400'
+                }`}
+              >
+                {provider.enabled ? 'ON' : 'OFF'}
+              </button>
+            </div>
+          ))}
+          {isCreating && (
+            <div className="px-3 py-2 rounded-lg bg-blue-100 dark:bg-blue-900/50 text-sm">
+              新建提供商
+            </div>
+          )}
+        </div>
+
+        <button
+          onClick={handleCreateNew}
+          className="mt-3 flex items-center justify-center gap-2 w-full py-2 rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 text-gray-500 hover:border-blue-500 hover:text-blue-500 transition-colors"
+        >
+          <Plus size={16} />
+          <span className="text-sm">添加提供商</span>
+        </button>
+      </div>
+
+      {/* Provider Form */}
+      <div className="flex-1 min-w-0">
+        {currentProvider ? (
+          <ProviderForm
+            provider={currentProvider}
+            isEditing={!!editingProvider}
+            expandedModels={expandedModels}
+            testStatus={testStatus}
+            testMessage={testMessage}
+            testModelName={testModelName}
+            onEdit={handleEdit}
+            onSave={handleSave}
+            onCancel={handleCancel}
+            onDelete={handleDelete}
+            onFieldChange={(field, value) => editingProvider && setEditingProvider({ ...editingProvider, [field]: value })}
+            onToggleModelExpand={toggleModelExpand}
+            onAddModel={handleAddModel}
+            onUpdateModel={handleUpdateModel}
+            onDeleteModel={handleDeleteModel}
+            onTestConnection={handleTestConnection}
+            onOpenModelPicker={handleOpenModelPicker}
+            onTestModelChange={setTestModelName}
+          />
+        ) : (
+          <div className="flex items-center justify-center h-64 text-gray-500">
+            {providers.length === 0 ? '点击添加第一个提供商' : '选择一个提供商'}
+          </div>
+        )}
+      </div>
+
+      {/* Model Picker Modal */}
+      {showModelPicker && editingProvider && (
+        <ModelPickerModal
+          provider={editingProvider}
+          onClose={() => setShowModelPicker(false)}
+          onAddModels={handleAddModelsFromPicker}
+        />
+      )}
+    </div>
+  );
+};
+
+interface ProviderFormProps {
+  provider: Provider;
+  isEditing: boolean;
+  expandedModels: Set<string>;
+  testStatus: 'idle' | 'testing' | 'success' | 'error';
+  testMessage: string;
+  testModelName: string;
+  onEdit: () => void;
+  onSave: () => void;
+  onCancel: () => void;
+  onDelete: () => void;
+  onFieldChange: (field: keyof Provider, value: any) => void;
+  onToggleModelExpand: (modelName: string) => void;
+  onAddModel: () => void;
+  onUpdateModel: (index: number, model: Model) => void;
+  onDeleteModel: (index: number) => void;
+  onTestConnection: () => void;
+  onOpenModelPicker: () => void;
+  onTestModelChange: (modelName: string) => void;
+}
+
+const ProviderForm: React.FC<ProviderFormProps> = ({
+  provider,
+  isEditing,
+  expandedModels,
+  testStatus,
+  testMessage,
+  testModelName,
+  onEdit,
+  onSave,
+  onCancel,
+  onDelete,
+  onFieldChange,
+  onToggleModelExpand,
+  onAddModel,
+  onUpdateModel,
+  onDeleteModel,
+  onTestConnection,
+  onOpenModelPicker,
+  onTestModelChange,
+}) => {
+  const typeOptions: { value: ProviderType; label: string }[] = [
+    { value: 'openai', label: 'OpenAI' },
+    { value: 'openai_compatible', label: 'OpenAI Compatible' },
+    { value: 'anthropic', label: 'Anthropic' },
+    { value: 'ollama', label: 'Ollama' },
+  ];
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold text-gray-800 dark:text-white">
+          {provider.displayName || '提供商配置'}
+        </h2>
+        <div className="flex items-center gap-2">
+          {isEditing ? (
+            <>
+              <button onClick={onCancel} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">取消</button>
+              <button onClick={onSave} className="px-3 py-1.5 text-sm bg-blue-600 text-white hover:bg-blue-700 rounded-lg">保存</button>
+            </>
+          ) : (
+            <>
+              <button onClick={onEdit} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">编辑</button>
+              <button onClick={onDelete} className="px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg">删除</button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Form Fields */}
+      <div className="grid grid-cols-2 gap-4">
+        <div className="space-y-1">
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">显示名称</label>
+          <input
+            type="text"
+            value={provider.displayName}
+            onChange={(e) => onFieldChange('displayName', e.target.value)}
+            disabled={!isEditing}
+            placeholder="例如：硅基流动"
+            className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800"
+          />
+        </div>
+        <div className="space-y-1">
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">类型</label>
+          <select
+            value={provider.type}
+            onChange={(e) => onFieldChange('type', e.target.value as ProviderType)}
+            disabled={!isEditing}
+            className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800"
+          >
+            {typeOptions.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+          </select>
+        </div>
+        <div className="space-y-1">
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">API 地址</label>
+          <input
+            type="text"
+            value={provider.apiBase}
+            onChange={(e) => onFieldChange('apiBase', e.target.value)}
+            disabled={!isEditing}
+            placeholder="https://api.example.com/v1"
+            className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800"
+          />
+        </div>
+        <div className="space-y-1">
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">API Key</label>
+          <input
+            type="password"
+            value={provider.apiKey || ''}
+            onChange={(e) => onFieldChange('apiKey', e.target.value)}
+            disabled={!isEditing}
+            placeholder="sk-..."
+            className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800"
+          />
+        </div>
+      </div>
+
+      {/* Models Section */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300">模型列表</h3>
+          {isEditing && (
+            <div className="flex items-center gap-2">
+              <button onClick={onOpenModelPicker} className="flex items-center gap-1 text-sm text-green-600 hover:text-green-700">
+                <Download size={14} /> 获取模型
+              </button>
+              <button onClick={onAddModel} className="flex items-center gap-1 text-sm text-blue-600 hover:text-blue-700">
+                <Plus size={14} /> 手动添加
+              </button>
+            </div>
+          )}
+        </div>
+        <div className="border border-gray-200 dark:border-gray-700 rounded-lg divide-y divide-gray-200 dark:divide-gray-700">
+          {provider.models.length === 0 ? (
+            <div className="px-4 py-3 text-sm text-gray-500">暂无模型</div>
+          ) : (
+            provider.models.map((model, index) => (
+              <div key={model.name} className="px-4 py-2">
+                <div
+                  className="flex items-center justify-between cursor-pointer"
+                  onClick={() => onToggleModelExpand(model.name)}
+                >
+                  <div className="flex items-center gap-2">
+                    {expandedModels.has(model.name) ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                    <span className="text-sm font-medium">{model.name}</span>
+                  </div>
+                  {isEditing && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onDeleteModel(index); }}
+                      className="text-red-500 hover:text-red-600"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  )}
+                </div>
+                {expandedModels.has(model.name) && (
+                  <div className="mt-2 pl-6 grid grid-cols-3 gap-3">
+                    <div>
+                      <label className="block text-xs text-gray-500">名称</label>
+                      <input
+                        type="text"
+                        value={model.name}
+                        onChange={(e) => onUpdateModel(index, { ...model, name: e.target.value })}
+                        disabled={!isEditing}
+                        className="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-500">Temperature: {model.temperature}</label>
+                      <input
+                        type="range"
+                        min="0"
+                        max="2"
+                        step="0.1"
+                        value={model.temperature}
+                        onChange={(e) => onUpdateModel(index, { ...model, temperature: parseFloat(e.target.value) })}
+                        disabled={!isEditing}
+                        className="w-full"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-500">Max Tokens</label>
+                      <input
+                        type="number"
+                        value={model.maxTokens || ''}
+                        onChange={(e) => onUpdateModel(index, { ...model, maxTokens: parseInt(e.target.value) || undefined })}
+                        disabled={!isEditing}
+                        className="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
+      {/* Test Connection */}
+      <div className="flex items-center gap-4 pt-4 border-t border-gray-200 dark:border-gray-700">
+        <select
+          value={testModelName}
+          onChange={(e) => onTestModelChange(e.target.value)}
+          className="px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm"
+        >
+          <option value="">选择测试模型</option>
+          {provider.models.map(m => (
+            <option key={m.name} value={m.name}>{m.name}</option>
+          ))}
+        </select>
+        <button
+          onClick={onTestConnection}
+          disabled={testStatus === 'testing' || !testModelName}
+          className="flex items-center gap-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 rounded-lg disabled:opacity-50"
+        >
+          {testStatus === 'testing' ? <Loader2 size={18} className="animate-spin" /> :
+           testStatus === 'success' ? <Wifi size={18} className="text-green-500" /> :
+           testStatus === 'error' ? <WifiOff size={18} className="text-red-500" /> :
+           <Wifi size={18} />}
+          测试连接
+        </button>
+        {testMessage && (
+          <span className={`text-sm ${testStatus === 'success' ? 'text-green-600' : 'text-red-600'}`}>
+            {testMessage}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default ProviderConfigForm;

@@ -64,6 +64,7 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
         conversationId,
         limit: 100,
       });
+      
       set({ messages, currentConversationId: conversationId });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -108,7 +109,7 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
    */
   deleteConversation: async (id: string) => {
     try {
-      await invoke('delete_conversation', { id });
+      await invoke('delete_conversation', { conversationId: id });
       set((state) => ({
         conversations: state.conversations.filter((c) => c.id !== id),
         currentConversationId:
@@ -306,31 +307,15 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
    * Triggered when messages >= 3 or content is substantial
    */
   generateTitle: async () => {
-    console.log('[GenerateTitle] Called');
     const { currentConversationId, messages, conversations } = get();
-    console.log('[GenerateTitle] State:', {
-      currentConversationId,
-      messagesCount: messages.length,
-      conversationsCount: conversations.length,
-    });
-    if (!currentConversationId) {
-      console.log('[GenerateTitle] No currentConversationId, returning');
-      return;
-    }
+    if (!currentConversationId) return;
 
     // Find current conversation
     const currentConversation = conversations.find(c => c.id === currentConversationId);
-    if (!currentConversation) {
-      console.log('[GenerateTitle] Conversation not found, returning');
-      return;
-    }
-    console.log('[GenerateTitle] Current conversation title:', currentConversation.title);
+    if (!currentConversation) return;
 
     // Only generate if title is still default
-    if (!currentConversation.title.startsWith('新对话')) {
-      console.log('[GenerateTitle] Title not default, returning');
-      return;
-    }
+    if (!currentConversation.title.startsWith('新对话')) return;
 
     try {
       const title = await invoke<string>('generate_title', {

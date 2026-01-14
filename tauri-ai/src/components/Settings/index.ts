@@ -3,5 +3,5 @@
  */
 
 export { SettingsView } from './SettingsView';
-export { ModelConfigForm } from './ModelConfigForm';
-export { PresetManager } from './PresetManager';
+export { ProviderConfigForm } from './ProviderConfigForm';
+export { AgentConfigForm } from './AgentConfigForm';

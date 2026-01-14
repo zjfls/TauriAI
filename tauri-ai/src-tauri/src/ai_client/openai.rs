@@ -1,4 +1,8 @@
-//! OpenAI API client implementation
+//! OpenAI API client implementations
+//! 
+//! This module provides two clients:
+//! - `OpenAiClient`: For OpenAI official API (uses "developer" role for system prompts)
+//! - `OpenAiCompatibleClient`: For OpenAI-compatible APIs (uses "system" role)
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -9,24 +13,9 @@ use tokio::sync::mpsc;
 use super::traits::{AiClient, AiError, StreamEvent};
 use crate::models::{Message, MessageRole, ModelConfig};
 
-/// OpenAI API client
-pub struct OpenAiClient {
-    client: Client,
-}
-
-impl OpenAiClient {
-    pub fn new() -> Self {
-        Self {
-            client: Client::new(),
-        }
-    }
-}
-
-impl Default for OpenAiClient {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// ============================================================================
+// Shared types and utilities
+// ============================================================================
 
 /// OpenAI chat message format
 #[derive(Debug, Serialize)]
@@ -78,6 +67,7 @@ struct StreamChunk {
 #[derive(Debug, Deserialize)]
 struct StreamChoice {
     delta: StreamDelta,
+    #[allow(dead_code)]
     finish_reason: Option<String>,
 }
 
@@ -95,18 +85,32 @@ struct OpenAiErrorResponse {
 #[derive(Debug, Deserialize)]
 struct OpenAiErrorDetail {
     message: String,
+    #[allow(dead_code)]
     #[serde(rename = "type")]
     error_type: Option<String>,
 }
 
-fn convert_messages(messages: &[Message], system_prompt: Option<&str>) -> Vec<OpenAiMessage> {
+/// System prompt role type
+#[derive(Debug, Clone, Copy)]
+enum SystemRole {
+    /// Use "system" role (for OpenAI-compatible APIs)
+    System,
+    /// Use "developer" role (for OpenAI official API with newer models)
+    Developer,
+}
+
+fn convert_messages(messages: &[Message], system_prompt: Option<&str>, system_role: SystemRole) -> Vec<OpenAiMessage> {
     let mut result = Vec::new();
 
     // Add system prompt if provided and not empty
     if let Some(prompt) = system_prompt {
         if !prompt.is_empty() {
+            let role = match system_role {
+                SystemRole::System => "system",
+                SystemRole::Developer => "developer",
+            };
             result.push(OpenAiMessage {
-                role: "system".to_string(),
+                role: role.to_string(),
                 content: prompt.to_string(),
             });
         }
@@ -128,9 +132,25 @@ fn convert_messages(messages: &[Message], system_prompt: Option<&str>) -> Vec<Op
     result
 }
 
-#[async_trait]
-impl AiClient for OpenAiClient {
-    async fn chat(&self, messages: Vec<Message>, config: &ModelConfig) -> Result<String, AiError> {
+
+// ============================================================================
+// Base implementation (shared logic)
+// ============================================================================
+
+struct OpenAiBaseClient {
+    client: Client,
+    system_role: SystemRole,
+}
+
+impl OpenAiBaseClient {
+    fn new(system_role: SystemRole) -> Self {
+        Self {
+            client: Client::new(),
+            system_role,
+        }
+    }
+
+    async fn chat_impl(&self, messages: Vec<Message>, config: &ModelConfig) -> Result<String, AiError> {
         let api_base = config
             .api_base
             .as_deref()
@@ -142,7 +162,7 @@ impl AiClient for OpenAiClient {
             .ok_or_else(|| AiError::AuthenticationFailed("API key is required".to_string()))?;
 
         let openai_messages =
-            convert_messages(&messages, config.parameters.system_prompt.as_deref());
+            convert_messages(&messages, config.parameters.system_prompt.as_deref(), self.system_role);
 
         let request = ChatCompletionRequest {
             model: config.model.clone(),
@@ -185,7 +205,7 @@ impl AiClient for OpenAiClient {
             .ok_or_else(|| AiError::InvalidResponse("No content in response".to_string()))
     }
 
-    async fn chat_stream(
+    async fn chat_stream_impl(
         &self,
         messages: Vec<Message>,
         config: &ModelConfig,
@@ -201,7 +221,7 @@ impl AiClient for OpenAiClient {
             .ok_or_else(|| AiError::AuthenticationFailed("API key is required".to_string()))?;
 
         let openai_messages =
-            convert_messages(&messages, config.parameters.system_prompt.as_deref());
+            convert_messages(&messages, config.parameters.system_prompt.as_deref(), self.system_role);
 
         let request = ChatCompletionRequest {
             model: config.model.clone(),
@@ -270,5 +290,86 @@ impl AiClient for OpenAiClient {
 
         let _ = token_sender.send(StreamEvent::Done(full_content)).await;
         Ok(())
+    }
+}
+
+
+// ============================================================================
+// OpenAI Official Client (uses "developer" role)
+// ============================================================================
+
+/// OpenAI official API client
+/// Uses "developer" role for system prompts (recommended for newer models like o1, GPT-4.1)
+pub struct OpenAiClient {
+    base: OpenAiBaseClient,
+}
+
+impl OpenAiClient {
+    pub fn new() -> Self {
+        Self {
+            base: OpenAiBaseClient::new(SystemRole::Developer),
+        }
+    }
+}
+
+impl Default for OpenAiClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl AiClient for OpenAiClient {
+    async fn chat(&self, messages: Vec<Message>, config: &ModelConfig) -> Result<String, AiError> {
+        self.base.chat_impl(messages, config).await
+    }
+
+    async fn chat_stream(
+        &self,
+        messages: Vec<Message>,
+        config: &ModelConfig,
+        token_sender: mpsc::Sender<StreamEvent>,
+    ) -> Result<(), AiError> {
+        self.base.chat_stream_impl(messages, config, token_sender).await
+    }
+}
+
+// ============================================================================
+// OpenAI Compatible Client (uses "system" role)
+// ============================================================================
+
+/// OpenAI-compatible API client
+/// Uses "system" role for system prompts (for third-party services like SiliconFlow, DeepSeek, etc.)
+pub struct OpenAiCompatibleClient {
+    base: OpenAiBaseClient,
+}
+
+impl OpenAiCompatibleClient {
+    pub fn new() -> Self {
+        Self {
+            base: OpenAiBaseClient::new(SystemRole::System),
+        }
+    }
+}
+
+impl Default for OpenAiCompatibleClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl AiClient for OpenAiCompatibleClient {
+    async fn chat(&self, messages: Vec<Message>, config: &ModelConfig) -> Result<String, AiError> {
+        self.base.chat_impl(messages, config).await
+    }
+
+    async fn chat_stream(
+        &self,
+        messages: Vec<Message>,
+        config: &ModelConfig,
+        token_sender: mpsc::Sender<StreamEvent>,
+    ) -> Result<(), AiError> {
+        self.base.chat_stream_impl(messages, config, token_sender).await
     }
 }

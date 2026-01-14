@@ -1,12 +1,11 @@
 /**
  * Config Store
  * Manages application configuration state using Zustand
- * Requirements: 5.1, 5.5, 5.6
  */
 
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
-import type { AppConfig, ModelConfig } from '../types';
+import type { AppConfig, Provider, Model, Agent } from '../types';
 import { useUIStore } from './uiStore';
 
 interface ConfigState {
@@ -17,10 +16,35 @@ interface ConfigState {
   // Actions
   loadConfig: () => Promise<void>;
   saveConfig: (config: AppConfig) => Promise<void>;
-  setActiveModel: (modelId: string) => void;
-  addModel: (model: ModelConfig) => void;
-  updateModel: (model: ModelConfig) => void;
-  deleteModel: (modelId: string) => void;
+  
+  // Provider actions
+  addProvider: (provider: Provider) => void;
+  updateProvider: (provider: Provider) => void;
+  deleteProvider: (providerName: string) => void;
+  toggleProvider: (providerName: string, enabled: boolean) => void;
+  
+  // Model actions (within a provider)
+  addModel: (providerName: string, model: Model) => void;
+  updateModel: (providerName: string, model: Model) => void;
+  deleteModel: (providerName: string, modelName: string) => void;
+  
+  // Agent actions
+  addAgent: (agent: Agent) => void;
+  updateAgent: (agent: Agent) => void;
+  deleteAgent: (agentName: string) => void;
+  setDefaultAgent: (agentName: string) => void;
+  
+  // Runtime state actions
+  setCurrentAgent: (agentName: string) => void;
+  setCurrentModel: (modelRef: string) => void;
+  getCurrentAgent: () => Agent | undefined;
+  getCurrentModelRef: () => string | undefined;
+  
+  // Helper getters
+  getProvider: (name: string) => Provider | undefined;
+  getAgent: (name: string) => Agent | undefined;
+  getDefaultAgent: () => Agent | undefined;
+  getModelOptions: () => { label: string; value: string }[];
 }
 
 export const useConfigStore = create<ConfigState>((set, get) => ({
@@ -28,18 +52,12 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
   isLoading: false,
   error: null,
 
-  /**
-   * Load configuration from the backend
-   * Requirements: 5.1
-   */
   loadConfig: async () => {
     set({ isLoading: true, error: null });
     try {
       const config = await invoke<AppConfig>('get_app_config');
       set({ config, isLoading: false });
       
-      // Sync theme to UI store
-      // Requirements: 2.6 - Initialize theme from persisted config
       if (config.appearance?.theme) {
         useUIStore.getState().initializeTheme(config.appearance.theme);
       }
@@ -49,10 +67,6 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
     }
   },
 
-  /**
-   * Save configuration to the backend
-   * Requirements: 5.6
-   */
   saveConfig: async (config: AppConfig) => {
     set({ isLoading: true, error: null });
     try {
@@ -64,65 +78,210 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
     }
   },
 
-  /**
-   * Switch the active model
-   * Requirements: 5.5
-   */
-  setActiveModel: (modelId: string) => {
+  // Provider actions
+  addProvider: (provider: Provider) => {
     const { config, saveConfig } = get();
     if (!config) return;
-
-    const updatedConfig = {
-      ...config,
-      activeModelId: modelId,
-    };
+    const updatedConfig = { ...config, providers: [...config.providers, provider] };
     set({ config: updatedConfig });
-    // Persist to backend
     saveConfig(updatedConfig);
   },
 
-  /**
-   * Add a new model configuration
-   */
-  addModel: (model: ModelConfig) => {
+  updateProvider: (provider: Provider) => {
     const { config, saveConfig } = get();
     if (!config) return;
-
     const updatedConfig = {
       ...config,
-      models: [...config.models, model],
+      providers: config.providers.map((p) => (p.name === provider.name ? provider : p)),
     };
     set({ config: updatedConfig });
     saveConfig(updatedConfig);
   },
 
-  /**
-   * Update an existing model configuration
-   */
-  updateModel: (model: ModelConfig) => {
+  deleteProvider: (providerName: string) => {
     const { config, saveConfig } = get();
     if (!config) return;
-
     const updatedConfig = {
       ...config,
-      models: config.models.map((m) => (m.id === model.id ? model : m)),
+      providers: config.providers.filter((p) => p.name !== providerName),
     };
     set({ config: updatedConfig });
     saveConfig(updatedConfig);
   },
 
-  /**
-   * Delete a model configuration
-   */
-  deleteModel: (modelId: string) => {
+  toggleProvider: (providerName: string, enabled: boolean) => {
     const { config, saveConfig } = get();
     if (!config) return;
-
     const updatedConfig = {
       ...config,
-      models: config.models.filter((m) => m.id !== modelId),
+      providers: config.providers.map((p) =>
+        p.name === providerName ? { ...p, enabled } : p
+      ),
     };
     set({ config: updatedConfig });
     saveConfig(updatedConfig);
+  },
+
+  // Model actions
+  addModel: (providerName: string, model: Model) => {
+    const { config, saveConfig } = get();
+    if (!config) return;
+    const updatedConfig = {
+      ...config,
+      providers: config.providers.map((p) =>
+        p.name === providerName ? { ...p, models: [...p.models, model] } : p
+      ),
+    };
+    set({ config: updatedConfig });
+    saveConfig(updatedConfig);
+  },
+
+  updateModel: (providerName: string, model: Model) => {
+    const { config, saveConfig } = get();
+    if (!config) return;
+    const updatedConfig = {
+      ...config,
+      providers: config.providers.map((p) =>
+        p.name === providerName
+          ? { ...p, models: p.models.map((m) => (m.name === model.name ? model : m)) }
+          : p
+      ),
+    };
+    set({ config: updatedConfig });
+    saveConfig(updatedConfig);
+  },
+
+  deleteModel: (providerName: string, modelName: string) => {
+    const { config, saveConfig } = get();
+    if (!config) return;
+    const updatedConfig = {
+      ...config,
+      providers: config.providers.map((p) =>
+        p.name === providerName
+          ? { ...p, models: p.models.filter((m) => m.name !== modelName) }
+          : p
+      ),
+    };
+    set({ config: updatedConfig });
+    saveConfig(updatedConfig);
+  },
+
+  // Agent actions
+  addAgent: (agent: Agent) => {
+    const { config, saveConfig } = get();
+    if (!config) return;
+    const updatedConfig = { ...config, agents: [...config.agents, agent] };
+    set({ config: updatedConfig });
+    saveConfig(updatedConfig);
+  },
+
+  updateAgent: (agent: Agent) => {
+    const { config, saveConfig } = get();
+    if (!config) return;
+    const updatedConfig = {
+      ...config,
+      agents: config.agents.map((a) => (a.name === agent.name ? agent : a)),
+    };
+    set({ config: updatedConfig });
+    saveConfig(updatedConfig);
+  },
+
+  deleteAgent: (agentName: string) => {
+    const { config, saveConfig } = get();
+    if (!config) return;
+    const updatedConfig = {
+      ...config,
+      agents: config.agents.filter((a) => a.name !== agentName),
+      defaultAgent: config.defaultAgent === agentName ? '' : config.defaultAgent,
+    };
+    set({ config: updatedConfig });
+    saveConfig(updatedConfig);
+  },
+
+  setDefaultAgent: (agentName: string) => {
+    const { config, saveConfig } = get();
+    if (!config) return;
+    const updatedConfig = { ...config, defaultAgent: agentName };
+    set({ config: updatedConfig });
+    saveConfig(updatedConfig);
+  },
+
+  // Runtime state actions
+  setCurrentAgent: (agentName: string) => {
+    const { config, saveConfig, getAgent } = get();
+    if (!config) return;
+    const agent = getAgent(agentName);
+    // When switching agent, reset to agent's default model
+    const updatedConfig = {
+      ...config,
+      currentAgent: agentName,
+      currentModelRef: agent?.modelRef || undefined,
+    };
+    set({ config: updatedConfig });
+    saveConfig(updatedConfig);
+  },
+
+  setCurrentModel: (modelRef: string) => {
+    const { config, saveConfig } = get();
+    if (!config) return;
+    const updatedConfig = { ...config, currentModelRef: modelRef };
+    set({ config: updatedConfig });
+    saveConfig(updatedConfig);
+  },
+
+  getCurrentAgent: () => {
+    const { config, getAgent, getDefaultAgent } = get();
+    if (!config) return undefined;
+    if (config.currentAgent) {
+      return getAgent(config.currentAgent);
+    }
+    return getDefaultAgent();
+  },
+
+  getCurrentModelRef: () => {
+    const { config, getCurrentAgent } = get();
+    if (!config) return undefined;
+    // If currentModelRef is set, use it; otherwise use agent's default
+    if (config.currentModelRef) {
+      return config.currentModelRef;
+    }
+    const agent = getCurrentAgent();
+    return agent?.modelRef;
+  },
+
+  // Helper getters
+  getProvider: (name: string) => {
+    const { config } = get();
+    return config?.providers.find((p) => p.name === name);
+  },
+
+  getAgent: (name: string) => {
+    const { config } = get();
+    return config?.agents.find((a) => a.name === name);
+  },
+
+  getDefaultAgent: () => {
+    const { config } = get();
+    if (!config) return undefined;
+    if (config.defaultAgent) {
+      return config.agents.find((a) => a.name === config.defaultAgent);
+    }
+    return config.agents[0];
+  },
+
+  getModelOptions: () => {
+    const { config } = get();
+    if (!config) return [];
+    const options: { label: string; value: string }[] = [];
+    for (const provider of config.providers) {
+      if (!provider.enabled) continue;
+      for (const model of provider.models) {
+        options.push({
+          label: `${provider.displayName} / ${model.name}`,
+          value: `${provider.name}/${model.name}`,
+        });
+      }
+    }
+    return options;
   },
 }));

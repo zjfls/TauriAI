@@ -1,10 +1,10 @@
 /**
  * HistoryPanel Component
- * Displays conversation history list with selection and deletion
+ * Displays conversation history list with selection, multi-select and batch deletion
  * Requirements: 7.3, 7.4
  */
 
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import { MessageSquare, Trash2, Edit2, Check, X, Plus } from 'lucide-react';
 import { useConversationStore } from '../../stores/conversationStore';
 import { useUIStore } from '../../stores/uiStore';
@@ -33,7 +33,8 @@ const formatDate = (dateString: string): string => {
 interface ConversationItemProps {
   conversation: Conversation;
   isActive: boolean;
-  onSelect: () => void;
+  isSelected: boolean;
+  onSelect: (e: React.MouseEvent) => void;
   onDelete: () => void;
   onRename: (newTitle: string) => void;
 }
@@ -41,6 +42,7 @@ interface ConversationItemProps {
 const ConversationItem: React.FC<ConversationItemProps> = ({
   conversation,
   isActive,
+  isSelected,
   onSelect,
   onDelete,
   onRename,
@@ -91,15 +93,29 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
       className={`
         group relative flex items-center gap-3 px-3 py-3 rounded-lg cursor-pointer
         transition-colors duration-150
-        ${isActive
-          ? 'bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800'
-          : 'hover:bg-gray-100 dark:hover:bg-gray-800 border border-transparent'
+        ${isSelected
+          ? 'bg-blue-100 dark:bg-blue-900/50 border border-blue-300 dark:border-blue-700'
+          : isActive
+            ? 'bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800'
+            : 'hover:bg-gray-100 dark:hover:bg-gray-800 border border-transparent'
         }
       `}
       onClick={onSelect}
       onMouseEnter={() => setShowActions(true)}
       onMouseLeave={() => setShowActions(false)}
     >
+      {/* Checkbox for multi-select */}
+      <div className={`
+        flex-shrink-0 w-5 h-5 rounded border-2 flex items-center justify-center
+        transition-colors
+        ${isSelected
+          ? 'bg-blue-500 border-blue-500 text-white'
+          : 'border-gray-300 dark:border-gray-600'
+        }
+      `}>
+        {isSelected && <Check size={12} />}
+      </div>
+
       {/* Icon */}
       <div className={`
         flex-shrink-0 p-2 rounded-lg
@@ -183,6 +199,7 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
   );
 };
 
+
 export const HistoryPanel: React.FC = () => {
   const {
     conversations,
@@ -195,22 +212,75 @@ export const HistoryPanel: React.FC = () => {
 
   const { setActiveView } = useUIStore();
 
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [lastSelectedIndex, setLastSelectedIndex] = useState<number | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [showBatchDeleteConfirm, setShowBatchDeleteConfirm] = useState(false);
 
-  const handleSelectConversation = (conversation: Conversation) => {
-    setCurrentConversation(conversation.id);
-    setActiveView('chat');
-  };
+  // Handle item click with Ctrl/Shift multi-select
+  const handleItemClick = useCallback((e: React.MouseEvent, conversation: Conversation, index: number) => {
+    const isCtrlPressed = e.ctrlKey || e.metaKey;
+    const isShiftPressed = e.shiftKey;
+
+    if (isCtrlPressed) {
+      // Ctrl+Click: Toggle single item
+      setSelectedIds(prev => {
+        const newSet = new Set(prev);
+        if (newSet.has(conversation.id)) {
+          newSet.delete(conversation.id);
+        } else {
+          newSet.add(conversation.id);
+        }
+        return newSet;
+      });
+      setLastSelectedIndex(index);
+    } else if (isShiftPressed && lastSelectedIndex !== null) {
+      // Shift+Click: Range select
+      const start = Math.min(lastSelectedIndex, index);
+      const end = Math.max(lastSelectedIndex, index);
+      const rangeIds = conversations.slice(start, end + 1).map(c => c.id);
+      setSelectedIds(prev => {
+        const newSet = new Set(prev);
+        rangeIds.forEach(id => newSet.add(id));
+        return newSet;
+      });
+    } else {
+      // Normal click: Select single and navigate
+      setSelectedIds(new Set());
+      setLastSelectedIndex(index);
+      setCurrentConversation(conversation.id);
+      setActiveView('chat');
+    }
+  }, [conversations, lastSelectedIndex, setCurrentConversation, setActiveView]);
 
   const handleDeleteConversation = async (id: string) => {
     if (deleteConfirmId === id) {
       await deleteConversation(id);
       setDeleteConfirmId(null);
+      setSelectedIds(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(id);
+        return newSet;
+      });
     } else {
       setDeleteConfirmId(id);
-      // Auto-clear confirmation after 3 seconds
       setTimeout(() => setDeleteConfirmId(null), 3000);
     }
+  };
+
+  const handleBatchDelete = async () => {
+    if (!showBatchDeleteConfirm) {
+      setShowBatchDeleteConfirm(true);
+      setTimeout(() => setShowBatchDeleteConfirm(false), 3000);
+      return;
+    }
+
+    // Delete all selected
+    for (const id of selectedIds) {
+      await deleteConversation(id);
+    }
+    setSelectedIds(new Set());
+    setShowBatchDeleteConfirm(false);
   };
 
   const handleRenameConversation = async (id: string, newTitle: string) => {
@@ -219,9 +289,20 @@ export const HistoryPanel: React.FC = () => {
 
   const handleNewConversation = async () => {
     const conversation = await createConversation();
-    // createConversation 不再自动设置 currentConversationId，需要手动设置
     setCurrentConversation(conversation.id);
     setActiveView('chat');
+  };
+
+  const handleSelectAll = () => {
+    if (selectedIds.size === conversations.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(conversations.map(c => c.id)));
+    }
+  };
+
+  const handleClearSelection = () => {
+    setSelectedIds(new Set());
   };
 
   return (
@@ -239,6 +320,47 @@ export const HistoryPanel: React.FC = () => {
           新对话
         </button>
       </div>
+
+      {/* Multi-select toolbar */}
+      {selectedIds.size > 0 && (
+        <div className="flex items-center justify-between px-4 py-2 bg-blue-50 dark:bg-blue-900/30 border-b border-blue-200 dark:border-blue-800">
+          <div className="flex items-center gap-3">
+            <span className="text-sm text-blue-700 dark:text-blue-300">
+              已选择 {selectedIds.size} 项
+            </span>
+            <button
+              onClick={handleSelectAll}
+              className="text-sm text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-200"
+            >
+              {selectedIds.size === conversations.length ? '取消全选' : '全选'}
+            </button>
+            <button
+              onClick={handleClearSelection}
+              className="text-sm text-gray-600 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200"
+            >
+              清除选择
+            </button>
+          </div>
+          <button
+            onClick={handleBatchDelete}
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg transition-colors ${
+              showBatchDeleteConfirm
+                ? 'bg-red-600 text-white hover:bg-red-700'
+                : 'bg-red-100 text-red-600 hover:bg-red-200 dark:bg-red-900/30 dark:text-red-400'
+            }`}
+          >
+            <Trash2 size={14} />
+            {showBatchDeleteConfirm ? '确认删除' : '批量删除'}
+          </button>
+        </div>
+      )}
+
+      {/* Help text */}
+      {conversations.length > 0 && selectedIds.size === 0 && (
+        <div className="px-4 py-2 text-xs text-gray-500 dark:text-gray-400 border-b border-gray-100 dark:border-gray-800">
+          提示：Ctrl+点击多选，Shift+点击范围选择
+        </div>
+      )}
 
       {/* Conversation List */}
       <div className="flex-1 overflow-y-auto p-3 space-y-2">
@@ -262,12 +384,13 @@ export const HistoryPanel: React.FC = () => {
             </button>
           </div>
         ) : (
-          conversations.map((conversation) => (
+          conversations.map((conversation, index) => (
             <ConversationItem
               key={conversation.id}
               conversation={conversation}
               isActive={conversation.id === currentConversationId}
-              onSelect={() => handleSelectConversation(conversation)}
+              isSelected={selectedIds.has(conversation.id)}
+              onSelect={(e) => handleItemClick(e, conversation, index)}
               onDelete={() => handleDeleteConversation(conversation.id)}
               onRename={(newTitle) => handleRenameConversation(conversation.id, newTitle)}
             />

@@ -154,7 +154,7 @@ impl Database {
         Ok(Conversation {
             id,
             title: title.to_string(),
-            model_id: None,
+            agent_name: None,
             created_at: now,
             updated_at: now,
         })
@@ -178,7 +178,7 @@ impl Database {
                 Ok(Conversation {
                     id: row.get(0)?,
                     title: row.get(1)?,
-                    model_id: row.get(2)?,
+                    agent_name: row.get(2)?,
                     created_at: DateTime::parse_from_rfc3339(&created_at_str)
                         .map(|dt| dt.with_timezone(&Utc))
                         .unwrap_or_else(|_| Utc::now()),
@@ -211,7 +211,7 @@ impl Database {
             Ok(Some(Conversation {
                 id: row.get(0)?,
                 title: row.get(1)?,
-                model_id: row.get(2)?,
+                agent_name: row.get(2)?,
                 created_at: DateTime::parse_from_rfc3339(&created_at_str)
                     .map(|dt| dt.with_timezone(&Utc))
                     .unwrap_or_else(|_| Utc::now()),

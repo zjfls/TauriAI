@@ -14,7 +14,7 @@ use tokio::sync::Mutex;
 use commands::{
     abort_chat, chat_stream, create_conversation, delete_conversation, generate_title,
     get_app_config, get_conversations, get_messages, save_app_config, test_connection,
-    update_conversation_title, ChatState,
+    update_conversation_title, fetch_provider_models, ChatState,
 };
 use config::ConfigManager;
 use storage::Database;
@@ -64,6 +64,7 @@ pub fn run() {
             get_app_config,
             save_app_config,
             test_connection,
+            fetch_provider_models,
         ])
         .setup(|app| {
             // 初始化系统托盘

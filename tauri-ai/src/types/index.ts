@@ -6,14 +6,60 @@
 // Message role enum
 export type MessageRole = 'user' | 'assistant' | 'system' | 'error';
 
-// AI Provider types
-export type Provider = 'openai' | 'anthropic' | 'ollama' | 'custom';
-
 // Theme options
 export type Theme = 'light' | 'dark' | 'system';
 
 // View types for navigation
 export type ActiveView = 'chat' | 'history' | 'settings';
+
+// Format prompt types
+export type FormatPromptType = 'chat' | 'plain' | 'json' | 'none';
+
+// ============================================================================
+// New Provider-Model-Agent Architecture
+// ============================================================================
+
+// Provider type for API compatibility (matches backend client types)
+export type ProviderType = 'openai' | 'openai_compatible' | 'anthropic' | 'ollama';
+
+/**
+ * Model configuration (pure model parameters, no system prompt)
+ */
+export interface Model {
+  name: string;           // Model name, e.g., "deepseek-v3"
+  temperature: number;
+  maxTokens?: number;
+  topP?: number;
+}
+
+/**
+ * Provider configuration (contains API info and models)
+ */
+export interface Provider {
+  name: string;           // Unique identifier, e.g., "siliconflow"
+  displayName: string;    // Display name, e.g., "硅基流动"
+  type: ProviderType;
+  apiBase: string;
+  apiKey?: string;
+  enabled: boolean;
+  models: Model[];
+}
+
+/**
+ * Agent configuration (references a model, contains system prompt)
+ */
+export interface Agent {
+  name: string;           // Unique identifier
+  displayName: string;    // Display name
+  description?: string;
+  modelRef: string;       // Format: "provider_name/model_name"
+  systemPrompt: string;
+  formatType: FormatPromptType;
+}
+
+// ============================================================================
+// Message & Conversation
+// ============================================================================
 
 /**
  * Metadata associated with a message
@@ -43,7 +89,7 @@ export interface Message {
 export interface Action {
   id: string;
   label: string;
-  icon?: string; // Lucide icon name
+  icon?: string;
   action_type: 'copy' | 'retry' | 'navigate' | 'link' | 'event';
   payload?: string;
   style?: 'default' | 'primary' | 'danger';
@@ -64,47 +110,14 @@ export interface AppError {
 export interface Conversation {
   id: string;
   title: string;
-  modelId?: string;
+  agentName?: string;
   createdAt: string;
   updatedAt: string;
 }
 
-/**
- * Model parameters for AI configuration
- */
-export interface ModelParameters {
-  temperature: number;
-  maxTokens?: number;
-  topP?: number;
-  frequencyPenalty?: number;
-  presencePenalty?: number;
-  systemPrompt?: string;
-}
-
-
-/**
- * Configuration for an AI model
- */
-export interface ModelConfig {
-  id: string;
-  name: string;
-  provider: Provider;
-  apiBase?: string;
-  apiKey?: string;
-  model: string;
-  parameters: ModelParameters;
-}
-
-/**
- * Preset configuration combining model config and system prompt
- */
-export interface Preset {
-  id: string;
-  name: string;
-  modelConfigId: string;
-  systemPrompt: string;
-  parametersOverride?: Partial<ModelParameters>;
-}
+// ============================================================================
+// Application Configuration
+// ============================================================================
 
 /**
  * Appearance settings
@@ -128,9 +141,12 @@ export interface GeneralSettings {
 export interface AppConfig {
   appearance: AppearanceSettings;
   general: GeneralSettings;
-  activeModelId: string;
-  models: ModelConfig[];
-  presets: Preset[];
+  providers: Provider[];
+  agents: Agent[];
+  defaultAgent: string;
+  // Runtime state (persisted)
+  currentAgent?: string;      // Currently selected agent
+  currentModelRef?: string;   // Currently selected model (can differ from agent's default)
 }
 
 /**
@@ -148,4 +164,41 @@ export interface ApiError {
 export interface TestResult {
   success: boolean;
   message: string;
+}
+
+// ============================================================================
+// Legacy types (for migration compatibility)
+// ============================================================================
+
+/** @deprecated Use ProviderType instead */
+export type LegacyProvider = 'openai' | 'anthropic' | 'ollama' | 'custom';
+
+/** @deprecated Use Model instead */
+export interface ModelParameters {
+  temperature: number;
+  maxTokens?: number;
+  topP?: number;
+  frequencyPenalty?: number;
+  presencePenalty?: number;
+  systemPrompt?: string;
+}
+
+/** @deprecated Use Provider + Model instead */
+export interface ModelConfig {
+  id: string;
+  name: string;
+  provider: LegacyProvider;
+  apiBase?: string;
+  apiKey?: string;
+  model: string;
+  parameters: ModelParameters;
+}
+
+/** @deprecated Use Agent instead */
+export interface Preset {
+  id: string;
+  name: string;
+  modelConfigId: string;
+  systemPrompt: string;
+  parametersOverride?: Partial<ModelParameters>;
 }

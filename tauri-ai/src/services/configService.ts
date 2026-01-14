@@ -1,11 +1,10 @@
 /**
  * Config Service
  * Wraps Tauri invoke calls for configuration commands
- * Requirements: 10.6, 10.7, 10.8
  */
 
 import { invoke } from '@tauri-apps/api/core';
-import type { AppConfig, ModelConfig } from '../types';
+import type { AppConfig, ProviderType } from '../types';
 
 /**
  * Test connection result from the backend
@@ -17,10 +16,15 @@ export interface TestConnectionResult {
 }
 
 /**
+ * Model info returned from provider API
+ */
+export interface ModelInfo {
+  id: string;
+  owned_by?: string;
+}
+
+/**
  * Get the current application configuration
- * Requirements: 10.6
- * 
- * @returns Promise resolving to the application configuration
  */
 export async function getAppConfig(): Promise<AppConfig> {
   return invoke<AppConfig>('get_app_config');
@@ -28,23 +32,39 @@ export async function getAppConfig(): Promise<AppConfig> {
 
 /**
  * Save the application configuration
- * Requirements: 10.7
- * 
- * @param config - The configuration to save
  */
 export async function saveAppConfig(config: AppConfig): Promise<void> {
   return invoke('save_app_config', { config });
 }
 
 /**
- * Test a model configuration by sending a minimal request
- * Requirements: 10.8
- * 
- * @param modelConfig - The model configuration to test
- * @returns Promise resolving to the test result
+ * Test a provider connection with a specific model
  */
 export async function testConnection(
-  modelConfig: ModelConfig
+  providerType: ProviderType,
+  apiBase: string,
+  apiKey: string | undefined,
+  modelName: string
 ): Promise<TestConnectionResult> {
-  return invoke<TestConnectionResult>('test_connection', { modelConfig });
+  return invoke<TestConnectionResult>('test_connection', {
+    providerType,
+    apiBase,
+    apiKey,
+    modelName,
+  });
+}
+
+/**
+ * Fetch available models from a provider's API
+ */
+export async function fetchProviderModels(
+  providerType: ProviderType,
+  apiBase: string,
+  apiKey: string | undefined
+): Promise<ModelInfo[]> {
+  return invoke<ModelInfo[]>('fetch_provider_models', {
+    providerType,
+    apiBase,
+    apiKey,
+  });
 }
