@@ -23,7 +23,7 @@ pub const CHAT_FORMAT_PROMPT: &str = "
 
 ### 数学公式（LaTeX）
 - 行内公式用单个 $ 包裹，如 $E = mc^2$
-- 块级公式用两个 $$ 包裹
+- 块级公式用 $$ 包裹，前后需空行
 
 ### 图表（Mermaid）
 使用 mermaid 作为语言标记的代码块，支持 flowchart、sequence、gantt 等图表类型。

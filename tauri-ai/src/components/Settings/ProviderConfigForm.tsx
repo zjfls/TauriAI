@@ -4,17 +4,69 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { Plus, Trash2, ChevronDown, ChevronRight, Wifi, WifiOff, Loader2, Search, Download } from 'lucide-react';
+import { Plus, Trash2, ChevronDown, ChevronRight, Wifi, WifiOff, Loader2, Search, Download, Brain, Eye, Wrench } from 'lucide-react';
 import { useConfigStore } from '../../stores/configStore';
 import { testConnection } from '../../services/configService';
 import { ModelPickerModal } from './ModelPickerModal';
-import type { Provider, Model, ProviderType } from '../../types';
+import type { Provider, Model, ProviderType, ModelCapabilities } from '../../types';
+
+// Helper to infer capabilities from model name (mirrors backend logic)
+const inferCapabilities = (modelName: string): ModelCapabilities => {
+  const nameLower = modelName.toLowerCase();
+  return {
+    thinking: nameLower.includes('deepseek-r1') ||
+              nameLower.includes('deepseek-reasoner') ||
+              nameLower.includes('-r1-') ||
+              nameLower.includes('reasoner') ||
+              nameLower.includes('thinking'),
+    vision: nameLower.includes('vision') ||
+            nameLower.includes('-vl') ||
+            nameLower.includes('gpt-4o') ||
+            nameLower.includes('gpt-4-turbo') ||
+            nameLower.includes('claude-3'),
+    functionCalling: nameLower.includes('gpt-') ||
+                     nameLower.includes('claude-') ||
+                     nameLower.includes('deepseek-v') ||
+                     nameLower.includes('qwen'),
+  };
+};
+
+// Helper to infer context length from model name
+const inferContextLength = (modelName: string): number | undefined => {
+  const nameLower = modelName.toLowerCase();
+  // GPT-4 series
+  if (nameLower.includes('gpt-4o') || nameLower.includes('gpt-4-turbo')) return 128000;
+  if (nameLower.includes('gpt-4-32k')) return 32768;
+  if (nameLower.includes('gpt-4')) return 8192;
+  // GPT-3.5 series
+  if (nameLower.includes('gpt-3.5-turbo-16k')) return 16384;
+  if (nameLower.includes('gpt-3.5')) return 4096;
+  // Claude series
+  if (nameLower.includes('claude-3')) return 200000;
+  if (nameLower.includes('claude-2')) return 100000;
+  // DeepSeek series
+  if (nameLower.includes('deepseek-v3')) return 64000;
+  if (nameLower.includes('deepseek-r1')) return 64000;
+  if (nameLower.includes('deepseek-coder')) return 16384;
+  // Qwen series
+  if (nameLower.includes('qwen-72b') || nameLower.includes('qwen2')) return 32768;
+  if (nameLower.includes('qwen')) return 8192;
+  // Default: don't set, let user configure
+  return undefined;
+};
+
+const defaultCapabilities: ModelCapabilities = {
+  thinking: false,
+  vision: false,
+  functionCalling: false,
+};
 
 const defaultModel: Model = {
   name: '',
   temperature: 0.7,
   maxTokens: 4096,
   topP: 1,
+  capabilities: defaultCapabilities,
 };
 
 const defaultProvider: Provider = {
@@ -112,7 +164,7 @@ export const ProviderConfigForm: React.FC = () => {
 
   const handleAddModel = () => {
     if (!editingProvider) return;
-    const newModel = { ...defaultModel, name: `model_${Date.now()}` };
+    const newModel = { ...defaultModel, name: `model_${Date.now()}`, capabilities: { ...defaultCapabilities } };
     setEditingProvider({
       ...editingProvider,
       models: [...editingProvider.models, newModel],
@@ -170,6 +222,8 @@ export const ProviderConfigForm: React.FC = () => {
         temperature: 0.7,
         maxTokens: 4096,
         topP: 1,
+        contextLength: inferContextLength(name),
+        capabilities: inferCapabilities(name),
       }));
     if (newModels.length > 0) {
       setEditingProvider({
@@ -328,11 +382,12 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
   onOpenModelPicker,
   onTestModelChange,
 }) => {
-  const typeOptions: { value: ProviderType; label: string }[] = [
-    { value: 'openai', label: 'OpenAI' },
-    { value: 'openai_compatible', label: 'OpenAI Compatible' },
-    { value: 'anthropic', label: 'Anthropic' },
-    { value: 'ollama', label: 'Ollama' },
+  const typeOptions: { value: ProviderType; label: string; description?: string }[] = [
+    { value: 'openai', label: 'OpenAI', description: '官方 API (developer role)' },
+    { value: 'openai_compatible', label: 'OpenAI Compatible', description: 'DeepSeek, 硅基流动等' },
+    { value: 'openai_responses', label: 'OpenAI Responses', description: '推理模型 (o1, o3, gpt-4.1)' },
+    { value: 'anthropic', label: 'Anthropic', description: 'Claude 系列' },
+    { value: 'ollama', label: 'Ollama', description: '本地模型' },
   ];
 
   return (
@@ -444,39 +499,98 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
                   )}
                 </div>
                 {expandedModels.has(model.name) && (
-                  <div className="mt-2 pl-6 grid grid-cols-3 gap-3">
-                    <div>
-                      <label className="block text-xs text-gray-500">名称</label>
-                      <input
-                        type="text"
-                        value={model.name}
-                        onChange={(e) => onUpdateModel(index, { ...model, name: e.target.value })}
-                        disabled={!isEditing}
-                        className="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100"
-                      />
+                  <div className="mt-2 pl-6 space-y-3">
+                    <div className="grid grid-cols-4 gap-3">
+                      <div>
+                        <label className="block text-xs text-gray-500">名称</label>
+                        <input
+                          type="text"
+                          value={model.name}
+                          onChange={(e) => onUpdateModel(index, { ...model, name: e.target.value })}
+                          disabled={!isEditing}
+                          className="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-500">Temperature: {model.temperature}</label>
+                        <input
+                          type="range"
+                          min="0"
+                          max="2"
+                          step="0.1"
+                          value={model.temperature}
+                          onChange={(e) => onUpdateModel(index, { ...model, temperature: parseFloat(e.target.value) })}
+                          disabled={!isEditing}
+                          className="w-full"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-500">Max Tokens</label>
+                        <input
+                          type="number"
+                          value={model.maxTokens || ''}
+                          onChange={(e) => onUpdateModel(index, { ...model, maxTokens: parseInt(e.target.value) || undefined })}
+                          disabled={!isEditing}
+                          className="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-500">Context (K)</label>
+                        <input
+                          type="number"
+                          value={model.contextLength ? model.contextLength / 1000 : ''}
+                          onChange={(e) => onUpdateModel(index, { ...model, contextLength: e.target.value ? parseInt(e.target.value) * 1000 : undefined })}
+                          disabled={!isEditing}
+                          placeholder="64"
+                          className="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100"
+                        />
+                      </div>
                     </div>
-                    <div>
-                      <label className="block text-xs text-gray-500">Temperature: {model.temperature}</label>
-                      <input
-                        type="range"
-                        min="0"
-                        max="2"
-                        step="0.1"
-                        value={model.temperature}
-                        onChange={(e) => onUpdateModel(index, { ...model, temperature: parseFloat(e.target.value) })}
-                        disabled={!isEditing}
-                        className="w-full"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs text-gray-500">Max Tokens</label>
-                      <input
-                        type="number"
-                        value={model.maxTokens || ''}
-                        onChange={(e) => onUpdateModel(index, { ...model, maxTokens: parseInt(e.target.value) || undefined })}
-                        disabled={!isEditing}
-                        className="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100"
-                      />
+                    {/* Model Capabilities */}
+                    <div className="flex items-center gap-4">
+                      <span className="text-xs text-gray-500">能力:</span>
+                      <label className="flex items-center gap-1 text-xs">
+                        <input
+                          type="checkbox"
+                          checked={model.capabilities?.thinking ?? false}
+                          onChange={(e) => onUpdateModel(index, { 
+                            ...model, 
+                            capabilities: { ...model.capabilities, thinking: e.target.checked } 
+                          })}
+                          disabled={!isEditing}
+                          className="rounded"
+                        />
+                        <Brain size={12} className="text-purple-500" />
+                        <span>思考</span>
+                      </label>
+                      <label className="flex items-center gap-1 text-xs">
+                        <input
+                          type="checkbox"
+                          checked={model.capabilities?.vision ?? false}
+                          onChange={(e) => onUpdateModel(index, { 
+                            ...model, 
+                            capabilities: { ...model.capabilities, vision: e.target.checked } 
+                          })}
+                          disabled={!isEditing}
+                          className="rounded"
+                        />
+                        <Eye size={12} className="text-blue-500" />
+                        <span>视觉</span>
+                      </label>
+                      <label className="flex items-center gap-1 text-xs">
+                        <input
+                          type="checkbox"
+                          checked={model.capabilities?.functionCalling ?? false}
+                          onChange={(e) => onUpdateModel(index, { 
+                            ...model, 
+                            capabilities: { ...model.capabilities, functionCalling: e.target.checked } 
+                          })}
+                          disabled={!isEditing}
+                          className="rounded"
+                        />
+                        <Wrench size={12} className="text-green-500" />
+                        <span>工具调用</span>
+                      </label>
                     </div>
                   </div>
                 )}

@@ -51,6 +51,7 @@ pub async fn generate_title(conversation_id: String, messages: Vec<Message>, db:
         api_key: provider.api_key.clone(),
         model: model.name.clone(),
         parameters: ModelParameters { temperature: model.temperature, max_tokens: model.max_tokens, top_p: model.top_p, frequency_penalty: None, presence_penalty: None, system_prompt: None },
+        thinking_enabled: None, // Don't use thinking for title generation
     };
 
     let client = get_client(&model_config.provider).map_err(|e| e.to_string())?;

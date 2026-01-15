@@ -20,7 +20,21 @@ export type FormatPromptType = 'chat' | 'plain' | 'json' | 'none';
 // ============================================================================
 
 // Provider type for API compatibility (matches backend client types)
-export type ProviderType = 'openai' | 'openai_compatible' | 'anthropic' | 'ollama';
+// - openai: OpenAI official API (uses "developer" role)
+// - openai_compatible: OpenAI-compatible APIs (DeepSeek, SiliconFlow, etc.)
+// - openai_responses: OpenAI Responses API for reasoning models (o1, o3, gpt-4.1)
+// - anthropic: Anthropic Claude API
+// - ollama: Local Ollama server
+export type ProviderType = 'openai' | 'openai_compatible' | 'openai_responses' | 'anthropic' | 'ollama';
+
+/**
+ * Model capabilities (what features the model supports)
+ */
+export interface ModelCapabilities {
+  thinking: boolean;      // Supports thinking/reasoning (e.g., DeepSeek-R1)
+  vision: boolean;        // Supports vision/image input
+  functionCalling: boolean; // Supports function calling
+}
 
 /**
  * Model configuration (pure model parameters, no system prompt)
@@ -30,6 +44,22 @@ export interface Model {
   temperature: number;
   maxTokens?: number;
   topP?: number;
+  contextLength?: number; // Maximum context length in tokens (e.g., 128000 for GPT-4o)
+  capabilities: ModelCapabilities;
+}
+
+/**
+ * Context usage breakdown for detailed display
+ */
+export interface ContextUsageBreakdown {
+  systemPrompt: number;     // User's system prompt tokens
+  formatPrompt: number;     // Format prompt tokens (Markdown/LaTeX guidelines)
+  messages: number;         // Conversation messages tokens
+  tools?: number;           // Tool definitions tokens (future)
+  mcp?: number;             // MCP context tokens (future)
+  total: number;            // Total used tokens
+  limit: number;            // Model's context limit
+  percentage: number;       // Usage percentage (0-100)
 }
 
 /**
@@ -78,9 +108,44 @@ export interface Message {
   conversationId: string;
   role: MessageRole;
   content: string;
+  thinking?: string;      // Thinking/reasoning content (for models like DeepSeek-R1)
   meta?: MessageMeta;
   actions?: Action[];
   createdAt: string;
+  // Debug info (only populated when debug mode is enabled)
+  debugInfo?: DebugInfo;
+  // Token usage for this message
+  usage?: TokenUsage;
+}
+
+/**
+ * Token usage statistics
+ */
+export interface TokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  cachedTokens?: number;        // OpenAI prompt caching
+  reasoningTokens?: number;     // o1 models reasoning tokens
+  cacheCreationInputTokens?: number;  // Anthropic cache creation
+  cacheReadInputTokens?: number;      // Anthropic cache read
+}
+
+/**
+ * Debug information for a message (raw HTTP request/response)
+ */
+export interface DebugInfo {
+  request?: {
+    url: string;
+    method: string;
+    headers: Record<string, string>;
+    body: unknown;
+  };
+  response?: {
+    status: number;
+    headers: Record<string, string>;
+    body: unknown;
+  };
 }
 
 /**
@@ -133,6 +198,8 @@ export interface AppearanceSettings {
 export interface GeneralSettings {
   language: string;
   autoStart: boolean;
+  debugMode?: boolean;  // Enable debug mode to show raw HTTP messages
+  showUsage?: boolean;  // Show token usage in messages
 }
 
 /**
@@ -164,6 +231,61 @@ export interface ApiError {
 export interface TestResult {
   success: boolean;
   message: string;
+}
+
+// ============================================================================
+// Multi-Agent Workspace Types
+// ============================================================================
+
+/**
+ * Agent session instance
+ * Each session is an independent running instance of an agent
+ * 
+ * Requirements: 1.1, 1.2, 4.1, 4.2
+ */
+export interface AgentSession {
+  id: string;                         // Unique session identifier (UUID)
+  agentName: string;                  // Name of the agent being used
+  modelRef?: string;                  // Current model reference (can override agent default)
+  conversationId: string | null;      // Associated conversation ID
+  
+  // Session state
+  messages: Message[];                // Message history for this session
+  streamingMessage: string | null;    // Current streaming message content
+  streamingThinking: string | null;   // Current streaming thinking content
+  isGenerating: boolean;              // Whether the session is generating a response
+  error: string | null;               // Error message if any
+  
+  // Metadata
+  createdAt: string;                  // ISO timestamp of session creation
+  lastActiveAt: string;               // ISO timestamp of last activity
+}
+
+/**
+ * Persisted session data (subset of AgentSession for storage)
+ * Used for saving/restoring sessions across app restarts
+ * 
+ * Requirements: 5.1, 5.2
+ */
+export interface PersistedSession {
+  id: string;
+  agentName: string;
+  modelRef?: string;
+  conversationId: string | null;
+  createdAt: string;
+  lastActiveAt: string;
+}
+
+/**
+ * Persisted session state structure
+ * Contains all data needed to restore workspace sessions
+ * 
+ * Requirements: 5.1, 5.2
+ */
+export interface PersistedSessionState {
+  version: number;                    // Version number for migration support
+  sessions: PersistedSession[];       // Array of persisted sessions
+  activeSessionId: string | null;     // ID of the active session
 }
 
 // ============================================================================

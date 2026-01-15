@@ -52,7 +52,6 @@ interface CodeBlockProps {
   code: string;
 }
 
-
 const CodeBlock = React.memo(function CodeBlock({ language, code }: CodeBlockProps) {
   const [copied, setCopied] = useState(false);
 
@@ -246,32 +245,98 @@ const MermaidBlock = React.memo(function MermaidBlock({ code }: MermaidBlockProp
   );
 });
 
+// ============================================================================
+// LaTeX Protection Utilities
+// ============================================================================
+
+interface ProtectedContent {
+  text: string;
+  blocks: Map<string, string>;
+}
+
+// Protect LaTeX content before DOMPurify processing
+// This prevents DOMPurify from escaping < > & inside LaTeX expressions
+// Also normalizes \[...\] and \(...\) to $$...$$ and $...$ format
+function protectLatex(content: string): ProtectedContent {
+  const blocks = new Map<string, string>();
+  let counter = 0;
+  let result = content;
+  
+  // Generate unique placeholder that won't conflict with content
+  const generatePlaceholder = () => `%%LATEX_BLOCK_${counter++}_${Date.now()}%%`;
+  
+  // Protect and normalize block math: $$...$$ (including multiline)
+  result = result.replace(/\$\$([\s\S]*?)\$\$/g, (match) => {
+    const placeholder = generatePlaceholder();
+    blocks.set(placeholder, match);
+    return placeholder;
+  });
+  
+  // Protect and normalize \[...\] block math -> convert to $$...$$
+  result = result.replace(/\\\[([\s\S]*?)\\\]/g, (_, inner) => {
+    const placeholder = generatePlaceholder();
+    const normalized = `$$${inner}$$`;
+    blocks.set(placeholder, normalized);
+    return placeholder;
+  });
+  
+  // Protect and normalize \(...\) inline math -> convert to $...$
+  result = result.replace(/\\\(([\s\S]*?)\\\)/g, (_, inner) => {
+    const placeholder = generatePlaceholder();
+    const normalized = `$${inner}$`;
+    blocks.set(placeholder, normalized);
+    return placeholder;
+  });
+  
+  // Protect inline math: $...$ (non-greedy, single line)
+  // Be careful not to match currency like "$5 and $10"
+  result = result.replace(/\$([^\$\n]+?)\$/g, (match, inner) => {
+    // Skip if it looks like currency (just a number)
+    if (/^\d+(\.\d+)?$/.test(inner.trim())) {
+      return match;
+    }
+    const placeholder = generatePlaceholder();
+    blocks.set(placeholder, match);
+    return placeholder;
+  });
+  
+  return { text: result, blocks };
+}
+
+// Restore LaTeX content after DOMPurify processing
+function restoreLatex(content: string, blocks: Map<string, string>): string {
+  let result = content;
+  blocks.forEach((original, placeholder) => {
+    result = result.replace(placeholder, original);
+  });
+  return result;
+}
 
 // ============================================================================
 // Main MarkdownRenderer Component
 // ============================================================================
 
 export const MarkdownRenderer = React.memo(function MarkdownRenderer({ content }: MarkdownRendererProps) {
-  // Preprocess: normalize LaTeX delimiters (only convert paired delimiters)
-  const preprocessed = useMemo(() => {
-    let result = content;
+  // Process content: protect LaTeX -> sanitize -> restore LaTeX
+  const processed = useMemo(() => {
+    // Step 1: Protect LaTeX content from DOMPurify (also normalizes delimiters)
+    const { text: protected_, blocks } = protectLatex(content);
     
-    // Convert paired \[...\] to $$...$$ (block math)
-    result = result.replace(/\\\[([\s\S]*?)\\\]/g, '\n$$\n$1\n$$\n');
+    // Step 2: Sanitize with DOMPurify (LaTeX is now protected)
+    const sanitized = DOMPurify.sanitize(protected_, {
+      ADD_TAGS: ['details', 'summary', 'kbd', 'mark', 'sub', 'sup'],
+      ADD_ATTR: ['open'],
+    });
     
-    // Convert paired \(...\) to $...$ (inline math)
-    result = result.replace(/\\\(([\s\S]*?)\\\)/g, ' $$$1$$ ');
+    // Step 3: Restore LaTeX content
+    let result = restoreLatex(sanitized, blocks);
+    
+    // Step 4: Decode &amp; for any remaining LaTeX (alignment in matrices)
+    // This is safe because we've already sanitized the HTML
+    result = result.replace(/&amp;/g, '&');
     
     return result;
   }, [content]);
-
-  // Sanitize HTML content to prevent XSS
-  const sanitized = useMemo(() => {
-    return DOMPurify.sanitize(preprocessed, {
-      ADD_TAGS: ['details', 'summary', 'kbd', 'mark'],
-      ADD_ATTR: ['open'],
-    });
-  }, [preprocessed]);
 
   // Memoize components object to prevent recreation on each render
   const components = useMemo(() => ({
@@ -364,7 +429,7 @@ export const MarkdownRenderer = React.memo(function MarkdownRenderer({ content }
         rehypePlugins={[[rehypeKatex, katexOptions], rehypeRaw]}
         components={components}
       >
-        {sanitized}
+        {processed}
       </ReactMarkdown>
     </div>
   );

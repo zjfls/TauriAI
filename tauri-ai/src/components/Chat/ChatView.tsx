@@ -1,45 +1,190 @@
 /**
  * ChatView Component
  * Main chat interface composing MessageList and InputArea
- * Requirements: 2.3, 2.4
+ * Requirements: 2.3, 2.4, 4.1, 4.2, 4.3, 4.4
  */
 
-import React from 'react';
-import { useConversationStore } from '../../stores/conversationStore';
+import React, { useMemo } from 'react';
+import { useSessionStore } from '../../stores/sessionStore';
+import { useConfigStore } from '../../stores/configStore';
 import { MessageList } from './MessageList';
 import { InputArea } from './InputArea';
+import { countTokens } from '../../utils/tokenizer';
 import * as opener from '@tauri-apps/plugin-opener';
+import type { TokenUsage, ContextUsageBreakdown } from '../../types';
 
 interface ChatViewProps {
-  conversationId: string | null;
+  sessionId: string | null;
 }
 
-export const ChatView: React.FC<ChatViewProps> = ({ conversationId }) => {
-  const {
-    messages,
-    streamingMessage,
-    isGenerating,
-    sendMessage,
-    abortGeneration,
-    createConversation,
-  } = useConversationStore();
+export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
+  // Get session from SessionStore
+  const session = useSessionStore((state) => 
+    sessionId ? state.sessions.get(sessionId) : undefined
+  );
+  const sendMessage = useSessionStore((state) => state.sendMessage);
+  const abortGeneration = useSessionStore((state) => state.abortGeneration);
+  
+  // Extract session state with defaults for when no session exists
+  const messages = session?.messages ?? [];
+  const streamingMessage = session?.streamingMessage ?? null;
+  const streamingThinking = session?.streamingThinking ?? null;
+  const isGenerating = session?.isGenerating ?? false;
+
+  const { config, getProvider, getAgent } = useConfigStore();
+
+  // Get current model's context length based on session's model or agent's default
+  const currentModel = useMemo(() => {
+    // Use session's modelRef, or fall back to agent's default modelRef
+    const sessionModelRef = session?.modelRef;
+    const agent = session ? getAgent(session.agentName) : null;
+    const modelRef = sessionModelRef || agent?.modelRef;
+    
+    if (!modelRef) return null;
+    
+    const [providerName, modelName] = modelRef.split('/');
+    const provider = getProvider(providerName);
+    if (!provider) return null;
+    
+    return provider.models.find(m => m.name === modelName) || null;
+  }, [config, session, getProvider, getAgent]);
+
+  // Check if current model supports thinking
+  const supportsThinking = useMemo(() => {
+    return currentModel?.capabilities?.thinking ?? false;
+  }, [currentModel]);
+
+  // Calculate total token usage for the conversation
+  const totalUsage = useMemo((): TokenUsage | null => {
+    const usages = messages
+      .filter(m => m.usage)
+      .map(m => m.usage!);
+    
+    if (usages.length === 0) return null;
+    
+    return usages.reduce((acc, u) => ({
+      promptTokens: acc.promptTokens + u.promptTokens,
+      completionTokens: acc.completionTokens + u.completionTokens,
+      totalTokens: acc.totalTokens + u.totalTokens,
+      reasoningTokens: (acc.reasoningTokens || 0) + (u.reasoningTokens || 0) || undefined,
+      cachedTokens: (acc.cachedTokens || 0) + (u.cachedTokens || 0) || undefined,
+    }), {
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+      reasoningTokens: undefined,
+      cachedTokens: undefined,
+    } as TokenUsage);
+  }, [messages]);
+
+  const showUsage = config?.general?.showUsage ?? true;
+
+  // Format prompt content (same as CHAT_FORMAT_PROMPT in backend)
+  const FORMAT_PROMPT_CHAT = `
+
+## 输出格式规范
+
+### 基础格式（Markdown）
+- 标题：# ## ###
+- 列表：- 或 1. 2. 3.
+- 强调：**粗体** *斜体* ~~删除线~~
+- 代码：\`行内代码\` 或用三个反引号包裹代码块
+- 链接：[文本](url)
+- 引用：> 引用内容
+
+### 表格（GFM格式，前后空行，单|分隔）
+| A | B |
+|---|---|
+| 1 | 2 |
+
+### 数学公式（LaTeX）
+- 行内公式用单个 $ 包裹，如 $E = mc^2$
+- 块级公式用 $$ 包裹，前后需空行
+
+### 图表（Mermaid）
+使用 mermaid 作为语言标记的代码块，支持 flowchart、sequence、gantt 等图表类型。
+
+### 特殊元素（HTML 标签）
+- 折叠内容：<details><summary>标题</summary>内容</details>
+- 键盘按键：<kbd>Ctrl</kbd>
+- 高亮文本：<mark>重点</mark>
+- 上下标：H<sub>2</sub>O、x<sup>2</sup>
+`;
+
+  // Calculate context usage breakdown
+  const contextUsage = useMemo((): ContextUsageBreakdown | null => {
+    const contextLength = currentModel?.contextLength;
+    if (!contextLength) return null;
+
+    // Get system prompt and format type from session's agent
+    const agent = session ? getAgent(session.agentName) : null;
+    const userSystemPrompt = agent?.systemPrompt || '';
+    const formatType = agent?.formatType || 'chat';
+    
+    // Calculate system prompt tokens (user's custom prompt) using accurate tokenizer
+    const systemPromptTokens = countTokens(userSystemPrompt);
+    
+    // Calculate format prompt tokens based on format type
+    let formatPromptTokens = 0;
+    if (formatType === 'chat') {
+      formatPromptTokens = countTokens(FORMAT_PROMPT_CHAT);
+    } else if (formatType === 'plain') {
+      formatPromptTokens = countTokens('\n\n请使用纯文本格式回复，不要使用 Markdown 或其他格式。');
+    } else if (formatType === 'json') {
+      formatPromptTokens = countTokens('\n\n请以 JSON 格式返回结果。');
+    }
+    // 'none' type has no format prompt
+
+    // Base context usage (system prompt + format prompt, always present)
+    const baseTokens = systemPromptTokens + formatPromptTokens;
+
+    // Calculate message tokens
+    let messageTokens = 0;
+    let totalContextTokens = baseTokens;
+
+    // Find the last message with usage data
+    const lastMessageWithUsage = [...messages].reverse().find(m => m.usage);
+    if (lastMessageWithUsage?.usage) {
+      // promptTokens from API includes everything sent to the model
+      totalContextTokens = lastMessageWithUsage.usage.promptTokens;
+      // Message tokens = total - base prompts (approximate)
+      messageTokens = Math.max(0, totalContextTokens - baseTokens);
+    } else {
+      // No usage data yet, estimate from message content using accurate tokenizer
+      messageTokens = messages.reduce((sum, m) => sum + countTokens(m.content), 0);
+      totalContextTokens = baseTokens + messageTokens;
+    }
+
+    const percentage = (totalContextTokens / contextLength) * 100;
+
+    return {
+      systemPrompt: systemPromptTokens,
+      formatPrompt: formatPromptTokens,
+      messages: messageTokens,
+      tools: 0,  // Future: tool definitions
+      mcp: 0,    // Future: MCP context
+      total: totalContextTokens,
+      limit: contextLength,
+      percentage: Math.min(percentage, 100),
+    };
+  }, [currentModel, messages, session, getAgent]);
 
   // 消息加载由 setCurrentConversation 负责，这里不再调用 loadMessages
   // 这样创建新对话时不会触发 loadMessages，避免竞态条件
 
-  // Note: Stream listener is set up in App.tsx to avoid duplicate listeners
+  // Note: Stream listener is set up in sessionStore to route events by conversationId
 
-  const handleSend = async (content: string) => {
-    // 如果没有对话，先创建一个
-    if (!conversationId) {
-      await createConversation();
-      // createConversation 已设置 currentConversationId
+  const handleSend = async (content: string, enableThinking?: boolean) => {
+    if (!sessionId) {
+      console.error('Cannot send message: no active session');
+      return;
     }
-    await sendMessage(content);
+    await sendMessage(sessionId, content, enableThinking);
   };
 
   const handleAbort = async () => {
-    await abortGeneration();
+    if (!sessionId) return;
+    await abortGeneration(sessionId);
   };
 
   const handleAction = async (action: import('../../types').Action) => {
@@ -82,14 +227,26 @@ export const ChatView: React.FC<ChatViewProps> = ({ conversationId }) => {
       <MessageList
         messages={messages}
         streamingContent={streamingMessage}
+        streamingThinking={streamingThinking}
         isGenerating={isGenerating}
         onAction={handleAction}
       />
+      {/* Conversation total token usage */}
+      {showUsage && totalUsage && (
+        <div className="flex justify-center px-4 py-1 text-xs text-gray-500 dark:text-gray-400 border-t border-gray-100 dark:border-gray-800">
+          <span>
+            对话总计: in:{totalUsage.promptTokens} out:{totalUsage.completionTokens} total:{totalUsage.totalTokens}
+            {totalUsage.reasoningTokens ? ` (${totalUsage.reasoningTokens} reasoning)` : ''}
+          </span>
+        </div>
+      )}
       <InputArea
         onSend={handleSend}
         onAbort={handleAbort}
         disabled={false}
         isGenerating={isGenerating}
+        supportsThinking={supportsThinking}
+        contextUsage={contextUsage}
       />
     </div>
   );

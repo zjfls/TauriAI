@@ -64,6 +64,8 @@ pub struct Conversation {
 pub enum ProviderType {
     Openai,
     OpenaiCompatible,
+    /// OpenAI Responses API for reasoning models (o1, o3, gpt-4.1)
+    OpenaiResponses,
     Anthropic,
     Ollama,
 }
@@ -91,6 +93,7 @@ impl<'de> Deserialize<'de> for ProviderType {
         let s = String::deserialize(deserializer)?;
         Ok(match s.as_str() {
             "openai" => Self::Openai,
+            "openai_responses" => Self::OpenaiResponses,
             "anthropic" => Self::Anthropic,
             "ollama" => Self::Ollama,
             // "openai_compatible" and any other value defaults to OpenaiCompatible
@@ -105,10 +108,26 @@ impl ProviderType {
         match self {
             Self::Openai => "openai",
             Self::OpenaiCompatible => "openai_compatible",
+            Self::OpenaiResponses => "openai_responses",
             Self::Anthropic => "anthropic",
             Self::Ollama => "ollama",
         }
     }
+}
+
+/// Model capabilities (what features the model supports)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelCapabilities {
+    /// Whether the model supports thinking/reasoning (e.g., DeepSeek-R1, GLM-4.7)
+    #[serde(default)]
+    pub thinking: bool,
+    /// Whether the model supports vision/image input
+    #[serde(default)]
+    pub vision: bool,
+    /// Whether the model supports function calling
+    #[serde(default)]
+    pub function_calling: bool,
 }
 
 /// Model configuration (pure model parameters, no system prompt)
@@ -122,6 +141,12 @@ pub struct Model {
     pub max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f32>,
+    /// Maximum context length in tokens (e.g., 128000 for GPT-4o)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_length: Option<u32>,
+    /// Model capabilities (auto-inferred if not set)
+    #[serde(default)]
+    pub capabilities: ModelCapabilities,
 }
 
 impl Default for Model {
@@ -131,6 +156,8 @@ impl Default for Model {
             temperature: 0.7,
             max_tokens: None,
             top_p: None,
+            context_length: None,
+            capabilities: ModelCapabilities::default(),
         }
     }
 }
@@ -258,6 +285,12 @@ pub struct ModelConfig {
     pub api_key: Option<String>,
     pub model: String,
     pub parameters: ModelParameters,
+    /// Thinking mode control for models that support it
+    /// - None: Model doesn't support thinking, don't send thinking parameter
+    /// - Some(true): Enable thinking mode
+    /// - Some(false): Disable thinking mode explicitly
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_enabled: Option<bool>,
 }
 
 /// A preset combining model config and system prompt (legacy)
@@ -295,6 +328,12 @@ impl Default for AppearanceSettings {
 pub struct GeneralSettings {
     pub language: String,
     pub auto_start: bool,
+    /// Enable debug mode to show raw HTTP messages
+    #[serde(default)]
+    pub debug_mode: bool,
+    /// Show token usage in messages
+    #[serde(default)]
+    pub show_usage: bool,
 }
 
 impl Default for GeneralSettings {
@@ -302,6 +341,8 @@ impl Default for GeneralSettings {
         Self {
             language: "zh-CN".to_string(),
             auto_start: false,
+            debug_mode: false,
+            show_usage: true,
         }
     }
 }
@@ -401,6 +442,8 @@ impl AppConfig {
                 temperature: model_config.parameters.temperature,
                 max_tokens: model_config.parameters.max_tokens,
                 top_p: model_config.parameters.top_p,
+                context_length: None,
+                capabilities: ModelCapabilities::default(),
             });
 
             // Create agent from model's system prompt

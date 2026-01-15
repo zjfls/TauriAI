@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use super::traits::{AiClient, AiError};
 use super::openai::{OpenAiClient, OpenAiCompatibleClient};
+use super::openai_responses::OpenAiResponsesClient;
 use super::anthropic::AnthropicClient;
 use super::ollama::OllamaClient;
 
@@ -12,6 +13,8 @@ use super::ollama::OllamaClient;
 pub enum Provider {
     OpenAi,
     OpenAiCompatible,
+    /// OpenAI Responses API for reasoning models (o1, o3, gpt-4.1)
+    OpenAiResponses,
     Anthropic,
     Ollama,
 }
@@ -21,6 +24,7 @@ impl From<&str> for Provider {
         match s.to_lowercase().as_str() {
             "openai" => Provider::OpenAi,
             "openai_compatible" => Provider::OpenAiCompatible,
+            "openai_responses" => Provider::OpenAiResponses,
             "anthropic" => Provider::Anthropic,
             "ollama" => Provider::Ollama,
             _ => Provider::OpenAiCompatible, // Default to compatible for unknown providers
@@ -31,7 +35,7 @@ impl From<&str> for Provider {
 /// Get an AI client based on the provider type
 ///
 /// # Arguments
-/// * `provider` - The provider type string (e.g., "openai", "openai_compatible", "anthropic", "ollama")
+/// * `provider` - The provider type string (e.g., "openai", "openai_compatible", "openai_responses", "anthropic", "ollama")
 ///
 /// # Returns
 /// An Arc-wrapped AI client implementation for the specified provider
@@ -41,6 +45,7 @@ pub fn get_client(provider: &str) -> Result<Arc<dyn AiClient>, AiError> {
     match provider_type {
         Provider::OpenAi => Ok(Arc::new(OpenAiClient::new())),
         Provider::OpenAiCompatible => Ok(Arc::new(OpenAiCompatibleClient::new())),
+        Provider::OpenAiResponses => Ok(Arc::new(OpenAiResponsesClient::new())),
         Provider::Anthropic => Ok(Arc::new(AnthropicClient::new())),
         Provider::Ollama => Ok(Arc::new(OllamaClient::new())),
     }
@@ -56,6 +61,7 @@ mod tests {
         assert_eq!(Provider::from("OpenAI"), Provider::OpenAi);
         assert_eq!(Provider::from("OPENAI"), Provider::OpenAi);
         assert_eq!(Provider::from("openai_compatible"), Provider::OpenAiCompatible);
+        assert_eq!(Provider::from("openai_responses"), Provider::OpenAiResponses);
         assert_eq!(Provider::from("anthropic"), Provider::Anthropic);
         assert_eq!(Provider::from("Anthropic"), Provider::Anthropic);
         assert_eq!(Provider::from("ollama"), Provider::Ollama);
@@ -72,6 +78,12 @@ mod tests {
     #[test]
     fn test_get_client_openai_compatible() {
         let client = get_client("openai_compatible");
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn test_get_client_openai_responses() {
+        let client = get_client("openai_responses");
         assert!(client.is_ok());
     }
 

@@ -83,6 +83,24 @@ export const SettingsView: React.FC = () => {
     saveConfig(updatedConfig);
   };
 
+  const handleDebugModeChange = (debugMode: boolean) => {
+    if (!config) return;
+    const updatedConfig: AppConfig = {
+      ...config,
+      general: { ...config.general, debugMode },
+    };
+    saveConfig(updatedConfig);
+  };
+
+  const handleShowUsageChange = (showUsage: boolean) => {
+    if (!config) return;
+    const updatedConfig: AppConfig = {
+      ...config,
+      general: { ...config.general, showUsage },
+    };
+    saveConfig(updatedConfig);
+  };
+
   const renderTabContent = () => {
     if (!config) {
       return (
@@ -111,8 +129,12 @@ export const SettingsView: React.FC = () => {
           <GeneralSettings
             language={config.general.language}
             autoStart={config.general.autoStart}
+            debugMode={config.general.debugMode ?? false}
+            showUsage={config.general.showUsage ?? true}
             onLanguageChange={handleLanguageChange}
             onAutoStartChange={handleAutoStartChange}
+            onDebugModeChange={handleDebugModeChange}
+            onShowUsageChange={handleShowUsageChange}
           />
         );
       default:
@@ -197,15 +219,23 @@ const AppearanceSettings: React.FC<AppearanceSettingsProps> = ({
 interface GeneralSettingsProps {
   language: string;
   autoStart: boolean;
+  debugMode: boolean;
+  showUsage: boolean;
   onLanguageChange: (language: string) => void;
   onAutoStartChange: (value: boolean) => void;
+  onDebugModeChange: (value: boolean) => void;
+  onShowUsageChange: (value: boolean) => void;
 }
 
 const GeneralSettings: React.FC<GeneralSettingsProps> = ({
   language,
   autoStart,
+  debugMode,
+  showUsage,
   onLanguageChange,
   onAutoStartChange,
+  onDebugModeChange,
+  onShowUsageChange,
 }) => {
   const languageOptions = [
     { value: 'zh-CN', label: '简体中文' },
@@ -237,6 +267,30 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
           className={`relative w-11 h-6 rounded-full transition-colors ${autoStart ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'}`}
         >
           <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${autoStart ? 'translate-x-5' : ''}`} />
+        </button>
+      </div>
+      <div className="flex items-center justify-between">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">调试模式</label>
+          <p className="text-xs text-gray-500">显示原始 HTTP 请求/响应信息</p>
+        </div>
+        <button
+          onClick={() => onDebugModeChange(!debugMode)}
+          className={`relative w-11 h-6 rounded-full transition-colors ${debugMode ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'}`}
+        >
+          <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${debugMode ? 'translate-x-5' : ''}`} />
+        </button>
+      </div>
+      <div className="flex items-center justify-between">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">显示用量</label>
+          <p className="text-xs text-gray-500">在消息中显示 Token 用量统计</p>
+        </div>
+        <button
+          onClick={() => onShowUsageChange(!showUsage)}
+          className={`relative w-11 h-6 rounded-full transition-colors ${showUsage ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'}`}
+        >
+          <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${showUsage ? 'translate-x-5' : ''}`} />
         </button>
       </div>
     </div>

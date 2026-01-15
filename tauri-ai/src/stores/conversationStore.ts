@@ -7,13 +7,14 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import type { Conversation, Message } from '../types';
+import type { Conversation, Message, DebugInfo, TokenUsage } from '../types';
 
 interface ConversationState {
   conversations: Conversation[];
   currentConversationId: string | null;
   messages: Message[];
   streamingMessage: string | null;
+  streamingThinking: string | null;  // Thinking content being streamed
   isGenerating: boolean;
   error: string | null;
 
@@ -24,10 +25,11 @@ interface ConversationState {
   deleteConversation: (id: string) => Promise<void>;
   updateConversationTitle: (id: string, title: string) => Promise<void>;
   setCurrentConversation: (id: string | null) => void;
-  sendMessage: (content: string) => Promise<void>;
+  sendMessage: (content: string, enableThinking?: boolean) => Promise<void>;
   abortGeneration: () => Promise<void>;
   appendStreamingToken: (token: string) => void;
-  finalizeStreaming: (fullContent: string) => void;
+  appendThinkingToken: (token: string) => void;
+  finalizeStreaming: (fullContent: string, thinking?: string, debugInfo?: DebugInfo, usage?: TokenUsage, model?: string) => void;
   clearError: () => void;
   retry: (messageId: string) => Promise<void>;
   generateTitle: () => Promise<void>;
@@ -38,6 +40,7 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
   currentConversationId: null,
   messages: [],
   streamingMessage: null,
+  streamingThinking: null,
   isGenerating: false,
   error: null,
 
@@ -156,12 +159,18 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
    * Requirements: 5.3
    * 注意：调用前必须确保 currentConversationId 已设置
    */
-  sendMessage: async (content: string) => {
+  sendMessage: async (content: string, enableThinking?: boolean) => {
     const { currentConversationId } = get();
 
     if (!currentConversationId) {
       throw new Error('No conversation selected. Please create a conversation first.');
     }
+
+    // Get current model selection from config store
+    const { useConfigStore } = await import('./configStore');
+    const configState = useConfigStore.getState();
+    const currentAgent = configState.getCurrentAgent();
+    const currentModelRef = configState.getCurrentModelRef();
 
     // Create user message
     const userMessage: Message = {
@@ -177,6 +186,7 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
       messages: [...state.messages, userMessage],
       isGenerating: true,
       streamingMessage: '',
+      streamingThinking: null,
       error: null,
     }));
 
@@ -184,6 +194,9 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
       await invoke('chat_stream', {
         conversationId: currentConversationId,
         content,
+        agentName: currentAgent?.name,
+        modelRef: currentModelRef,
+        enableThinking,
       });
     } catch (err) {
       set({ isGenerating: false });
@@ -220,14 +233,14 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
       for (let i = index - 1; i >= 0; i--) {
         if (messages[i].role === 'user') {
           promptToResend = messages[i].content;
-          // Rollback state to before this user message 
-          // (effectively deleting the user message and everything after, so we can re-add it)
-          set({ messages: messages.slice(0, i) });
+          // Remove the error/assistant message and keep the user message
+          // So we can resend from that point
+          set({ messages: messages.slice(0, index) });
           break;
         }
       }
     } else if (targetMsg.role === 'user') {
-      // Retrying a user message (rare, but maybe if it failed to send?)
+      // Retrying a user message - remove it and everything after
       promptToResend = targetMsg.content;
       set({ messages: messages.slice(0, index) });
     }
@@ -246,7 +259,7 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
 
     try {
       await invoke('abort_chat', { conversationId: currentConversationId });
-      set({ isGenerating: false, streamingMessage: null });
+      set({ isGenerating: false, streamingMessage: null, streamingThinking: null });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       set({ error: message });
@@ -264,23 +277,40 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
   },
 
   /**
+   * Append a thinking token to the current thinking content
+   */
+  appendThinkingToken: (token: string) => {
+    set((state) => ({
+      streamingThinking: (state.streamingThinking || '') + token,
+    }));
+  },
+
+  /**
    * Finalize the streaming message and add it to messages
    */
-  finalizeStreaming: (fullContent: string) => {
-    const { currentConversationId, messages } = get();
+  finalizeStreaming: (fullContent: string, thinking?: string, debugInfo?: DebugInfo, usage?: TokenUsage, model?: string) => {
+    const { currentConversationId, messages, streamingThinking } = get();
     if (!currentConversationId) return;
+
+    // Use provided thinking or the accumulated streamingThinking
+    const finalThinking = thinking || streamingThinking || undefined;
 
     const assistantMessage: Message = {
       id: crypto.randomUUID(),
       conversationId: currentConversationId,
       role: 'assistant',
       content: fullContent,
+      thinking: finalThinking,
+      meta: model ? { model } : undefined,
+      debugInfo,
+      usage,
       createdAt: new Date().toISOString(),
     };
 
     set((state) => ({
       messages: [...state.messages, assistantMessage],
       streamingMessage: null,
+      streamingThinking: null,
       isGenerating: false,
     }));
 
@@ -340,22 +370,58 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
 // 只执行一次，避免 React 生命周期带来的竞态问题
 const initStreamListeners = async () => {
   // Listen for token events
-  await listen<{ conversation_id: string; token: string }>('chat:token', (event) => {
+  await listen<{ conversationId: string; token: string }>('chat:token', (event) => {
     useConversationStore.getState().appendStreamingToken(event.payload.token);
   });
 
+  // Listen for thinking events
+  await listen<{ conversationId: string; token: string }>('chat:thinking', (event) => {
+    useConversationStore.getState().appendThinkingToken(event.payload.token);
+  });
+
   // Listen for done events
-  await listen<{ conversation_id: string; full_content: string }>('chat:done', (event) => {
-    useConversationStore.getState().finalizeStreaming(event.payload.full_content);
+  await listen<{ conversationId: string; fullContent: string; thinking?: string; debugInfo?: DebugInfo; usage?: TokenUsage; model?: string }>('chat:done', (event) => {
+    useConversationStore.getState().finalizeStreaming(
+      event.payload.fullContent,
+      event.payload.thinking,
+      event.payload.debugInfo,
+      event.payload.usage,
+      event.payload.model
+    );
   });
 
   // Listen for error events
-  await listen<{ conversation_id: string; error: string }>('chat:error', (event) => {
-    useConversationStore.setState({
-      error: event.payload.error,
-      isGenerating: false,
-      streamingMessage: null
-    });
+  await listen<{ conversationId: string; error: string; debugInfo?: DebugInfo }>('chat:error', (event) => {
+    const { currentConversationId, messages } = useConversationStore.getState();
+    
+    // Create error message bubble
+    if (currentConversationId === event.payload.conversationId) {
+      const errorMessage: Message = {
+        id: crypto.randomUUID(),
+        conversationId: event.payload.conversationId,
+        role: 'error',
+        content: event.payload.error,
+        debugInfo: event.payload.debugInfo,
+        createdAt: new Date().toISOString(),
+      };
+      
+      // Keep the user message but add error message after it
+      // This way user can see what they sent and what error occurred
+      useConversationStore.setState({
+        messages: [...messages, errorMessage],
+        error: event.payload.error,
+        isGenerating: false,
+        streamingMessage: null,
+        streamingThinking: null,
+      });
+    } else {
+      useConversationStore.setState({
+        error: event.payload.error,
+        isGenerating: false,
+        streamingMessage: null,
+        streamingThinking: null,
+      });
+    }
   });
 };
 
