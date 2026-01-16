@@ -234,12 +234,15 @@ export interface TestResult {
 }
 
 // ============================================================================
-// Multi-Agent Workspace Types
+// Multi-Agent Workspace Types (Primary - Use These)
 // ============================================================================
 
 /**
  * Agent session instance
  * Each session is an independent running instance of an agent
+ * 
+ * This is the primary type for managing active chat sessions in the multi-agent workspace.
+ * Use sessionStore to manage AgentSession instances.
  * 
  * Requirements: 1.1, 1.2, 4.1, 4.2
  */
@@ -323,4 +326,24 @@ export interface Preset {
   modelConfigId: string;
   systemPrompt: string;
   parametersOverride?: Partial<ModelParameters>;
+}
+
+// ============================================================================
+// Deprecated Conversation Store Types
+// Note: For new code, use sessionStore with AgentSession instead
+// ============================================================================
+
+/**
+ * @deprecated Use sessionStore for active session management.
+ * The conversationStore is now only used for:
+ * - Loading conversation history list (loadConversations)
+ * - Managing conversation metadata (title, delete)
+ * 
+ * For active chat sessions, use:
+ * - sessionStore.createSession() to create new sessions
+ * - sessionStore.sendMessage() to send messages
+ * - sessionStore.getActiveSession() to get current session state
+ */
+export interface ConversationStoreDeprecationNotice {
+  _notice: 'See sessionStore for active session management';
 }

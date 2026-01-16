@@ -1,12 +1,14 @@
 /**
  * HistoryPanel Component
  * Displays conversation history list with selection, multi-select and batch deletion
- * Requirements: 7.3, 7.4
+ * Requirements: 7.3, 7.4, 8.1, 8.2, 8.3, 8.4
  */
 
 import React, { useState, useCallback } from 'react';
 import { MessageSquare, Trash2, Edit2, Check, X, Plus } from 'lucide-react';
 import { useConversationStore } from '../../stores/conversationStore';
+import { useSessionStore } from '../../stores/sessionStore';
+import { useConfigStore } from '../../stores/configStore';
 import { useUIStore } from '../../stores/uiStore';
 import type { Conversation } from '../../types';
 
@@ -206,10 +208,10 @@ export const HistoryPanel: React.FC = () => {
     currentConversationId,
     deleteConversation,
     updateConversationTitle,
-    setCurrentConversation,
-    createConversation,
   } = useConversationStore();
 
+  const { openHistoricalConversation, createSession } = useSessionStore();
+  const { config } = useConfigStore();
   const { setActiveView } = useUIStore();
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -218,7 +220,7 @@ export const HistoryPanel: React.FC = () => {
   const [showBatchDeleteConfirm, setShowBatchDeleteConfirm] = useState(false);
 
   // Handle item click with Ctrl/Shift multi-select
-  const handleItemClick = useCallback((e: React.MouseEvent, conversation: Conversation, index: number) => {
+  const handleItemClick = useCallback(async (e: React.MouseEvent, conversation: Conversation, index: number) => {
     const isCtrlPressed = e.ctrlKey || e.metaKey;
     const isShiftPressed = e.shiftKey;
 
@@ -245,13 +247,18 @@ export const HistoryPanel: React.FC = () => {
         return newSet;
       });
     } else {
-      // Normal click: Select single and navigate
+      // Normal click: Open historical conversation in a new session
+      // Requirements: 8.1, 8.2, 8.3, 8.4
       setSelectedIds(new Set());
       setLastSelectedIndex(index);
-      setCurrentConversation(conversation.id);
-      setActiveView('chat');
+      try {
+        await openHistoricalConversation(conversation.id);
+        setActiveView('chat');
+      } catch (error) {
+        console.error('Failed to open historical conversation:', error);
+      }
     }
-  }, [conversations, lastSelectedIndex, setCurrentConversation, setActiveView]);
+  }, [conversations, lastSelectedIndex, openHistoricalConversation, setActiveView]);
 
   const handleDeleteConversation = async (id: string) => {
     if (deleteConfirmId === id) {
@@ -288,9 +295,18 @@ export const HistoryPanel: React.FC = () => {
   };
 
   const handleNewConversation = async () => {
-    const conversation = await createConversation();
-    setCurrentConversation(conversation.id);
-    setActiveView('chat');
+    try {
+      // Use default agent to create new session
+      const defaultAgentName = config?.defaultAgent || config?.agents?.[0]?.name || '';
+      if (!defaultAgentName) {
+        console.error('No agent configured');
+        return;
+      }
+      await createSession(defaultAgentName);
+      setActiveView('chat');
+    } catch (error) {
+      console.error('Failed to create new conversation:', error);
+    }
   };
 
   const handleSelectAll = () => {

@@ -1,7 +1,18 @@
 /**
  * Conversation Store
- * Manages conversation and message state using Zustand
- * Requirements: 5.2, 5.3, 5.4
+ * Manages conversation history and message state using Zustand
+ * 
+ * NOTE: This store is now primarily used for:
+ * - Loading and displaying conversation history (loadConversations)
+ * - Managing conversation metadata (title, delete, etc.)
+ * 
+ * For active session management (multi-agent workspace), use sessionStore instead.
+ * The sessionStore handles:
+ * - Active session state and switching
+ * - Message streaming and generation
+ * - Session persistence
+ * 
+ * Requirements: 5.2, 5.3, 5.4, 8.1
  */
 
 import { create } from 'zustand';

@@ -10,7 +10,6 @@ import { Header } from './Header';
 import { SessionTabBar } from '../Session/SessionTabBar';
 import { useUIStore } from '../../stores/uiStore';
 import { useConfigStore } from '../../stores/configStore';
-import { useConversationStore } from '../../stores/conversationStore';
 import { useSessionStore } from '../../stores/sessionStore';
 
 interface MainLayoutProps {
@@ -21,26 +20,20 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
   const { sidebarExpanded, activeView, setActiveView } = useUIStore();
   const { 
     config, 
-    setCurrentAgent, 
-    setCurrentModel,
-    getCurrentAgent,
-    getCurrentModelRef,
     getModelOptions,
   } = useConfigStore();
-  const { setCurrentConversation, currentConversationId, conversations } = useConversationStore();
   
   // Session store for multi-agent workspace
-  const sessions = useSessionStore((state) => Array.from(state.sessions.values()));
+  // Use shallow comparison to prevent infinite re-renders
+  const sessionsMap = useSessionStore((state) => state.sessions);
+  const sessions = React.useMemo(() => Array.from(sessionsMap.values()), [sessionsMap]);
   const activeSessionId = useSessionStore((state) => state.activeSessionId);
+  const activeSession = useSessionStore((state) => state.getActiveSession());
   const switchSession = useSessionStore((state) => state.switchSession);
   const closeSession = useSessionStore((state) => state.closeSession);
   const createSession = useSessionStore((state) => state.createSession);
-
-  // Handle new conversation
-  const handleNewConversation = () => {
-    setCurrentConversation(null);
-    setActiveView('chat');
-  };
+  const setSessionAgent = useSessionStore((state) => state.setSessionAgent);
+  const setSessionModel = useSessionStore((state) => state.setSessionModel);
 
   // Handle session tab click - switch to session
   const handleTabClick = (sessionId: string) => {
@@ -55,11 +48,27 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
 
   // Handle new session creation
   const handleNewSession = async (agentName: string) => {
+    console.log('handleNewSession called with agent:', agentName);
     try {
       await createSession(agentName);
+      console.log('Session created successfully');
       setActiveView('chat');
     } catch (error) {
       console.error('Failed to create session:', error);
+    }
+  };
+
+  // Handle agent selection for active session
+  const handleAgentSelect = (agentName: string) => {
+    if (activeView === 'chat' && activeSessionId) {
+      setSessionAgent(activeSessionId, agentName);
+    }
+  };
+
+  // Handle model selection for active session
+  const handleModelSelect = (modelRef: string) => {
+    if (activeView === 'chat' && activeSessionId) {
+      setSessionModel(activeSessionId, modelRef);
     }
   };
 
@@ -67,11 +76,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
   const getTitle = () => {
     switch (activeView) {
       case 'chat':
-        if (currentConversationId) {
-          const conversation = conversations.find(c => c.id === currentConversationId);
-          return conversation?.title || '新对话';
-        }
-        return '新对话';
+        return undefined; // No title in chat view
       case 'history':
         return '历史记录';
       case 'settings':
@@ -83,9 +88,8 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
 
   // Get agents for header dropdown
   const agents = config?.agents || [];
-  const currentAgent = getCurrentAgent();
-  const currentAgentName = currentAgent?.name || config?.defaultAgent || '';
-  const currentModelRef = getCurrentModelRef() || '';
+  const currentAgentName = activeSession?.agentName || config?.defaultAgent || '';
+  const currentModelRef = activeSession?.modelRef || '';
   const modelOptions = getModelOptions();
 
   return (
@@ -102,13 +106,12 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
         {/* Header */}
         <Header
           title={getTitle()}
-          onAgentSelect={setCurrentAgent}
+          onAgentSelect={handleAgentSelect}
           currentAgentName={currentAgentName}
           agents={agents}
-          onNewConversation={activeView === 'chat' ? handleNewConversation : undefined}
           modelOptions={modelOptions}
           currentModelRef={currentModelRef}
-          onModelSelect={setCurrentModel}
+          onModelSelect={handleModelSelect}
         />
 
         {/* Session Tab Bar - only show in chat view */}

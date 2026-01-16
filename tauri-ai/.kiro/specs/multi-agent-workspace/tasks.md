@@ -105,23 +105,23 @@
     - 在 MainLayout 中添加 SessionTabBar
     - 连接到 SessionStore
     - _Requirements: 2.1_
-  - [ ] 8.2 更新视图渲染逻辑
+  - [x] 8.2 更新视图渲染逻辑
     - 根据 activeSessionId 渲染对应的 ChatView
     - 处理无活动会话的情况
     - _Requirements: 2.2_
-  - [ ] 8.3 实现应用启动时的会话恢复
+  - [x] 8.3 实现应用启动时的会话恢复
     - 调用 restoreSessionState
     - 如果没有会话，创建默认会话
     - _Requirements: 5.2_
 
-- [ ] 9. 更新 HistoryPanel
-  - [ ] 9.1 修改历史记录点击行为
+- [x] 9. 更新 HistoryPanel
+  - [x] 9.1 修改历史记录点击行为
     - 点击历史对话时调用 openHistoricalConversation
     - 在新会话中打开历史对话
     - _Requirements: 8.1, 8.2, 8.3, 8.4_
 
-- [ ] 10. 实现快捷键支持
-  - [ ] 10.1 添加全局快捷键监听
+- [x] 10. 实现快捷键支持
+  - [x] 10.1 添加全局快捷键监听
     - Ctrl+T: 创建新会话
     - Ctrl+W: 关闭当前会话
     - Ctrl+Tab: 切换到下一个会话
@@ -136,18 +136,18 @@
   - 测试快捷键功能
   - 如有问题请询问用户
 
-- [ ] 12. 清理和迁移
-  - [ ] 12.1 迁移 conversationStore 的剩余功能
+- [x] 12. 清理和迁移
+  - [x] 12.1 迁移 conversationStore 的剩余功能
     - loadConversations 移到 sessionStore 或保留在 conversationStore
     - 确保历史记录功能正常
     - _Requirements: 8.1_
-  - [ ] 12.2 更新类型导出
+  - [x] 12.2 更新类型导出
     - 在 types/index.ts 导出新类型
     - 标记废弃的类型
-  - [ ] 12.3 更新组件导出
+  - [x] 12.3 更新组件导出
     - 在 components/index.ts 导出 SessionTabBar
 
-- [ ] 13. Final Checkpoint - 完整功能验证
+- [x] 13. Final Checkpoint - 完整功能验证
   - 验证所有需求已实现
   - 确保所有测试通过
   - 如有问题请询问用户

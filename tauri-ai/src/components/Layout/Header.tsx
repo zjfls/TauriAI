@@ -13,7 +13,7 @@ interface ModelOption {
 }
 
 interface HeaderProps {
-  title: string;
+  title?: string;  // Make title optional
   onAgentSelect: (agentName: string) => void;
   currentAgentName: string;
   agents: Agent[];
@@ -60,13 +60,15 @@ export const Header: React.FC<HeaderProps> = ({
       data-tauri-drag-region
       className="flex items-center justify-between h-14 px-4 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700"
     >
-      <div data-tauri-drag-region className="flex-1">
-        <h1 data-tauri-drag-region className="text-lg font-medium text-gray-800 dark:text-white truncate">
-          {title}
-        </h1>
-      </div>
+      {title && (
+        <div data-tauri-drag-region className="flex-1">
+          <h1 data-tauri-drag-region className="text-lg font-medium text-gray-800 dark:text-white truncate">
+            {title}
+          </h1>
+        </div>
+      )}
 
-      <div className="flex items-center gap-2">
+      <div className={`flex items-center gap-2 ${!title ? 'ml-auto' : ''}`}>
         {onNewConversation && (
           <button
             onClick={onNewConversation}

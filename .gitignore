@@ -1,2 +1,5 @@
 .DS_Store
 TauriAI.code-workspace
+
+# Rust build artifacts
+target/
