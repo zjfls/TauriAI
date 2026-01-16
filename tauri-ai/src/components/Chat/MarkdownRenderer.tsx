@@ -9,7 +9,7 @@ import rehypeRaw from 'rehype-raw';
 import DOMPurify from 'dompurify';
 import mermaid from 'mermaid';
 import { Copy, Check } from 'lucide-react';
-import { ChartBlock } from './ChartBlock';
+import { MathBlock } from './MathBlock';
 import 'katex/dist/katex.min.css';
 
 // Initialize mermaid
@@ -274,8 +274,8 @@ function protectContent(content: string): ProtectedContent {
     return placeholder;
   });
 
-  // Protect chart code blocks (json chart, echarts, chart)
-  result = result.replace(/```(?:json\s+chart|echarts|chart)\s*([\s\S]*?)```/g, (match) => {
+  // Protect plot/mafs code blocks (avoid 'math' which conflicts with remarkMath)
+  result = result.replace(/```(?:plot|mafs|json\s+mafs)\s*([\s\S]*?)```/g, (match) => {
     const placeholder = generatePlaceholder();
     blocks.set(placeholder, match);
     return placeholder;
@@ -365,8 +365,8 @@ export const MarkdownRenderer = React.memo(function MarkdownRenderer({ content }
         return <MermaidBlock code={codeStr} />;
       }
 
-      if (language === 'chart' || language === 'echarts' || (language === 'json' && className?.includes('chart'))) {
-        return <ChartBlock code={codeStr} />;
+      if (language === 'plot' || language === 'mafs' || (language === 'json' && className?.includes('mafs'))) {
+        return <MathBlock code={codeStr} />;
       }
 
       if (match || codeStr.includes('\n')) {

@@ -113,11 +113,10 @@ export const AgentConfigForm: React.FC = () => {
             <div
               key={agent.name}
               onClick={() => handleSelectAgent(agent.name)}
-              className={`flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer transition-colors ${
-                selectedAgentName === agent.name && !isCreating
+              className={`flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer transition-colors ${selectedAgentName === agent.name && !isCreating
                   ? 'bg-blue-100 dark:bg-blue-900/50'
                   : 'hover:bg-gray-100 dark:hover:bg-gray-700'
-              }`}
+                }`}
             >
               <span className="text-sm truncate">{agent.displayName}</span>
               {agent.name === defaultAgentName && (
@@ -273,7 +272,21 @@ const AgentForm: React.FC<AgentFormProps> = ({
         </div>
 
         <div className="space-y-1">
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">系统提示词</label>
+          <div className="flex items-center justify-between">
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">系统提示词</label>
+            {agent.systemPrompt && (
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(agent.systemPrompt);
+                }}
+                className="flex items-center gap-1 px-2 py-1 text-xs text-gray-500 hover:text-blue-600 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
+                title="复制系统提示词"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2" /><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" /></svg>
+                复制
+              </button>
+            )}
+          </div>
           <textarea
             value={agent.systemPrompt}
             onChange={(e) => onFieldChange('systemPrompt', e.target.value)}

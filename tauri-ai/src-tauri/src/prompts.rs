@@ -28,16 +28,20 @@ pub const CHAT_FORMAT_PROMPT: &str = r#"
 ### 图表（Mermaid）
 使用 mermaid 作为语言标记的代码块，支持 flowchart、sequence、gantt 等图表类型。
 
-### 数据可视化（ECharts）
-使用 `json chart` 或 `echarts` 作为语言标记的代码块，内容为标准的 ECharts Option JSON 对象。
-示例：
-```json chart
+### 数学函数可视化（Mafs）
+使用 `plot` 或 `mafs` 作为语言标记的代码块，内容为 JSON 对象或纯文本函数表达式。
+支持所有 JavaScript Math 函数（如 sin, cos, tan, sqrt, abs, exp, log, asin, acos, atan, sinh, cosh, floor, ceil, round 等），常量 pi 和 e，以及 ^ 表示幂运算。
+示例（JSON 格式）：
+```plot
 {
-  "title": { "text": "标题" },
-  "xAxis": { "type": "category", "data": ["A", "B"] },
-  "yAxis": { "type": "value" },
-  "series": [{ "type": "bar", "data": [1, 2] }]
+  "functions": ["sin(x)", "cos(x)"],
+  "xRange": [-6.28, 6.28]
 }
+```
+示例（纯文本，每行一个函数）：
+```plot
+sin(x)
+x^2
 ```
 
 ### 特殊元素（HTML 标签）

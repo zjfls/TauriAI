@@ -201,7 +201,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
         {isUser && isPending && (
           <div className="mt-1 flex items-center gap-1.5 text-xs opacity-75">
             <RefreshCw size={12} className="animate-spin" />
-            <span>发送中...</span>
+            <span>处理中...</span>
           </div>
         )}
 
