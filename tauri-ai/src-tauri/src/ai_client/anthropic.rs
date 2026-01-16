@@ -6,7 +6,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-use super::traits::{AiClient, AiError, StreamEvent};
+use super::traits::{AiClient, AiError, StreamEvent, TokenUsage};
 use crate::models::{Message, MessageRole, ModelConfig};
 
 /// Anthropic API client
@@ -35,6 +35,23 @@ struct AnthropicMessage {
     content: String,
 }
 
+/// Cache control for prompt caching
+#[derive(Debug, Clone, Serialize)]
+struct CacheControl {
+    #[serde(rename = "type")]
+    control_type: String,
+}
+
+/// System content block with optional cache control
+#[derive(Debug, Serialize)]
+struct SystemContent {
+    #[serde(rename = "type")]
+    content_type: String,
+    text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<CacheControl>,
+}
+
 /// Anthropic messages API request
 #[derive(Debug, Serialize)]
 struct MessagesRequest {
@@ -42,14 +59,13 @@ struct MessagesRequest {
     messages: Vec<AnthropicMessage>,
     max_tokens: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    system: Option<String>,
+    system: Option<Vec<SystemContent>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     top_p: Option<f32>,
     stream: bool,
 }
-
 
 /// Anthropic messages API response (non-streaming)
 #[derive(Debug, Deserialize)]
@@ -67,6 +83,7 @@ struct ContentBlock {
 /// Anthropic streaming event types
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
+#[allow(dead_code)]
 enum StreamingEvent {
     #[serde(rename = "message_start")]
     MessageStart { message: MessageStartData },
@@ -90,6 +107,8 @@ enum StreamingEvent {
 struct MessageStartData {
     #[allow(dead_code)]
     id: String,
+    #[serde(default)]
+    usage: Option<AnthropicUsage>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -105,6 +124,19 @@ struct MessageDeltaData {
     stop_reason: Option<String>,
 }
 
+/// Anthropic usage data
+#[derive(Debug, Deserialize, Clone, Default)]
+struct AnthropicUsage {
+    #[serde(default)]
+    input_tokens: u32,
+    #[serde(default)]
+    output_tokens: u32,
+    #[serde(default)]
+    cache_creation_input_tokens: Option<u32>,
+    #[serde(default)]
+    cache_read_input_tokens: Option<u32>,
+}
+
 /// Anthropic error response
 #[derive(Debug, Deserialize)]
 struct AnthropicErrorResponse {
@@ -118,7 +150,6 @@ struct AnthropicErrorDetail {
     #[serde(rename = "type")]
     error_type: Option<String>,
 }
-
 
 fn convert_messages(messages: &[Message]) -> Vec<AnthropicMessage> {
     messages
@@ -140,11 +171,7 @@ fn convert_messages(messages: &[Message]) -> Vec<AnthropicMessage> {
 
 #[async_trait]
 impl AiClient for AnthropicClient {
-    async fn chat(
-        &self,
-        messages: Vec<Message>,
-        config: &ModelConfig,
-    ) -> Result<String, AiError> {
+    async fn chat(&self, messages: Vec<Message>, config: &ModelConfig) -> Result<String, AiError> {
         let api_base = config
             .api_base
             .as_deref()
@@ -156,11 +183,22 @@ impl AiClient for AnthropicClient {
 
         let anthropic_messages = convert_messages(&messages);
 
+        // Convert system prompt to array format with cache control
+        let system = config.parameters.system_prompt.as_ref().map(|prompt| {
+            vec![SystemContent {
+                content_type: "text".to_string(),
+                text: prompt.clone(),
+                cache_control: Some(CacheControl {
+                    control_type: "ephemeral".to_string(),
+                }),
+            }]
+        });
+
         let request = MessagesRequest {
             model: config.model.clone(),
             messages: anthropic_messages,
             max_tokens: config.parameters.max_tokens.unwrap_or(4096),
-            system: config.parameters.system_prompt.clone(),
+            system,
             temperature: Some(config.parameters.temperature),
             top_p: config.parameters.top_p,
             stream: false,
@@ -179,7 +217,8 @@ impl AiClient for AnthropicClient {
 
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            if let Ok(error_response) = serde_json::from_str::<AnthropicErrorResponse>(&error_text) {
+            if let Ok(error_response) = serde_json::from_str::<AnthropicErrorResponse>(&error_text)
+            {
                 return Err(AiError::RequestFailed(error_response.error.message));
             }
             return Err(AiError::RequestFailed(error_text));
@@ -199,12 +238,13 @@ impl AiClient for AnthropicClient {
             .join("");
 
         if content.is_empty() {
-            Err(AiError::InvalidResponse("No content in response".to_string()))
+            Err(AiError::InvalidResponse(
+                "No content in response".to_string(),
+            ))
         } else {
             Ok(content)
         }
     }
-
 
     async fn chat_stream(
         &self,
@@ -223,11 +263,22 @@ impl AiClient for AnthropicClient {
 
         let anthropic_messages = convert_messages(&messages);
 
+        // Convert system prompt to array format with cache control
+        let system = config.parameters.system_prompt.as_ref().map(|prompt| {
+            vec![SystemContent {
+                content_type: "text".to_string(),
+                text: prompt.clone(),
+                cache_control: Some(CacheControl {
+                    control_type: "ephemeral".to_string(),
+                }),
+            }]
+        });
+
         let request = MessagesRequest {
             model: config.model.clone(),
             messages: anthropic_messages,
             max_tokens: config.parameters.max_tokens.unwrap_or(4096),
-            system: config.parameters.system_prompt.clone(),
+            system,
             temperature: Some(config.parameters.temperature),
             top_p: config.parameters.top_p,
             stream: true,
@@ -246,18 +297,22 @@ impl AiClient for AnthropicClient {
 
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            if let Ok(error_response) = serde_json::from_str::<AnthropicErrorResponse>(&error_text) {
+            if let Ok(error_response) = serde_json::from_str::<AnthropicErrorResponse>(&error_text)
+            {
                 let _ = token_sender
                     .send(StreamEvent::Error(error_response.error.message.clone()))
                     .await;
                 return Err(AiError::RequestFailed(error_response.error.message));
             }
-            let _ = token_sender.send(StreamEvent::Error(error_text.clone())).await;
+            let _ = token_sender
+                .send(StreamEvent::Error(error_text.clone()))
+                .await;
             return Err(AiError::RequestFailed(error_text));
         }
 
         let mut full_content = String::new();
         let mut stream = response.bytes_stream();
+        let mut token_usage: Option<TokenUsage> = None;
 
         while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result.map_err(|e| AiError::StreamError(e.to_string()))?;
@@ -268,6 +323,21 @@ impl AiClient for AnthropicClient {
                 if let Some(data) = line.strip_prefix("data: ") {
                     if let Ok(event) = serde_json::from_str::<StreamingEvent>(data) {
                         match event {
+                            StreamingEvent::MessageStart { message } => {
+                                // Capture initial usage from message_start
+                                if let Some(usage) = message.usage {
+                                    token_usage = Some(TokenUsage {
+                                        prompt_tokens: usage.input_tokens,
+                                        completion_tokens: usage.output_tokens,
+                                        total_tokens: usage.input_tokens + usage.output_tokens,
+                                        cached_tokens: None,
+                                        reasoning_tokens: None,
+                                        cache_creation_input_tokens: usage
+                                            .cache_creation_input_tokens,
+                                        cache_read_input_tokens: usage.cache_read_input_tokens,
+                                    });
+                                }
+                            }
                             StreamingEvent::ContentBlockDelta { delta } => {
                                 if delta.delta_type == "text_delta" {
                                     if let Some(text) = delta.text {
@@ -276,8 +346,19 @@ impl AiClient for AnthropicClient {
                                     }
                                 }
                             }
+                            StreamingEvent::MessageDelta { delta: _ } => {
+                                // message_delta may contain updated output_tokens, but we'll use the final value
+                                // For now we just continue; the usage from message_start is usually sufficient
+                            }
                             StreamingEvent::MessageStop {} => {
-                                let _ = token_sender.send(StreamEvent::Done(full_content.clone())).await;
+                                let _ = token_sender
+                                    .send(StreamEvent::DoneWithDebug {
+                                        content: full_content.clone(),
+                                        thinking: None,
+                                        debug_info: None,
+                                        usage: token_usage.clone(),
+                                    })
+                                    .await;
                                 return Ok(());
                             }
                             StreamingEvent::Error { error } => {
@@ -293,7 +374,14 @@ impl AiClient for AnthropicClient {
             }
         }
 
-        let _ = token_sender.send(StreamEvent::Done(full_content)).await;
+        let _ = token_sender
+            .send(StreamEvent::DoneWithDebug {
+                content: full_content,
+                thinking: None,
+                debug_info: None,
+                usage: token_usage,
+            })
+            .await;
         Ok(())
     }
 }

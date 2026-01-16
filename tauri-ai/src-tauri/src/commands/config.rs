@@ -112,7 +112,7 @@ struct ModelData {
 /// Fetch available models from a provider's API
 #[tauri::command]
 pub async fn fetch_provider_models(
-    provider_type: String,
+    _provider_type: String,
     api_base: String,
     api_key: Option<String>,
 ) -> Result<Vec<ModelInfo>, String> {

@@ -15,7 +15,9 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-use super::traits::{AiClient, AiError, StreamEvent, DebugInfoData, DebugRequestData, DebugResponseData, TokenUsage};
+use super::traits::{
+    AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent,
+};
 use crate::models::{Message, MessageRole, ModelConfig};
 use std::collections::HashMap;
 
@@ -150,7 +152,10 @@ struct ErrorDetail {
 // Helper functions
 // ============================================================================
 
-fn convert_messages(messages: &[Message], system_prompt: Option<&str>) -> (Vec<ResponsesInput>, Option<String>) {
+fn convert_messages(
+    messages: &[Message],
+    system_prompt: Option<&str>,
+) -> (Vec<ResponsesInput>, Option<String>) {
     let mut inputs = Vec::new();
     let mut instructions = system_prompt.map(|s| s.to_string());
 
@@ -223,7 +228,8 @@ impl AiClient for OpenAiResponsesClient {
             .filter(|k| !k.is_empty())
             .ok_or_else(|| AiError::AuthenticationFailed("API key is required".to_string()))?;
 
-        let (inputs, instructions) = convert_messages(&messages, config.parameters.system_prompt.as_deref());
+        let (inputs, instructions) =
+            convert_messages(&messages, config.parameters.system_prompt.as_deref());
 
         let request = ResponsesRequest {
             model: config.model.clone(),
@@ -285,7 +291,9 @@ impl AiClient for OpenAiResponsesClient {
         }
 
         if result.is_empty() {
-            return Err(AiError::InvalidResponse("No content in response".to_string()));
+            return Err(AiError::InvalidResponse(
+                "No content in response".to_string(),
+            ));
         }
 
         Ok(result)
@@ -306,7 +314,8 @@ impl AiClient for OpenAiResponsesClient {
             .as_ref()
             .ok_or_else(|| AiError::AuthenticationFailed("API key is required".to_string()))?;
 
-        let (inputs, instructions) = convert_messages(&messages, config.parameters.system_prompt.as_deref());
+        let (inputs, instructions) =
+            convert_messages(&messages, config.parameters.system_prompt.as_deref());
 
         let request = ResponsesRequest {
             model: config.model.clone(),
@@ -320,7 +329,7 @@ impl AiClient for OpenAiResponsesClient {
         };
 
         let url = format!("{api_base}/responses");
-        
+
         // Capture request info for debug
         let debug_request = DebugRequestData {
             url: url.clone(),
@@ -354,17 +363,18 @@ impl AiClient for OpenAiResponsesClient {
 
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            
+
             // Build debug info for error case
             let debug_info = DebugInfoData {
                 request: Some(debug_request),
                 response: Some(DebugResponseData {
                     status: response_status,
                     headers: response_headers,
-                    body: serde_json::from_str(&error_text).unwrap_or(serde_json::Value::String(error_text.clone())),
+                    body: serde_json::from_str(&error_text)
+                        .unwrap_or(serde_json::Value::String(error_text.clone())),
                 }),
             };
-            
+
             if let Ok(error_response) = serde_json::from_str::<ErrorResponse>(&error_text) {
                 let _ = token_sender
                     .send(StreamEvent::DoneWithDebug {
@@ -416,7 +426,7 @@ impl AiClient for OpenAiResponsesClient {
                             "thinking": serde_json::Value::Null,
                             "usage": serde_json::Value::Null
                         });
-                        
+
                         let debug_info = DebugInfoData {
                             request: Some(debug_request.clone()),
                             response: Some(DebugResponseData {
@@ -425,7 +435,7 @@ impl AiClient for OpenAiResponsesClient {
                                 body: debug_response_body,
                             }),
                         };
-                        
+
                         let _ = token_sender
                             .send(StreamEvent::DoneWithDebug {
                                 content: full_content.clone(),
@@ -453,8 +463,11 @@ impl AiClient for OpenAiResponsesClient {
                                 }
                             }
                             "response.error" => {
-                                let error_msg = event.delta.unwrap_or_else(|| "Unknown error".to_string());
-                                let _ = token_sender.send(StreamEvent::Error(error_msg.clone())).await;
+                                let error_msg =
+                                    event.delta.unwrap_or_else(|| "Unknown error".to_string());
+                                let _ = token_sender
+                                    .send(StreamEvent::Error(error_msg.clone()))
+                                    .await;
                                 return Err(AiError::StreamError(error_msg));
                             }
                             "response.completed" | "response.done" => {
@@ -468,7 +481,7 @@ impl AiClient for OpenAiResponsesClient {
                                     "thinking": serde_json::Value::Null,
                                     "usage": serde_json::Value::Null
                                 });
-                                
+
                                 let debug_info = DebugInfoData {
                                     request: Some(debug_request.clone()),
                                     response: Some(DebugResponseData {
@@ -477,7 +490,7 @@ impl AiClient for OpenAiResponsesClient {
                                         body: debug_response_body,
                                     }),
                                 };
-                                
+
                                 let _ = token_sender
                                     .send(StreamEvent::DoneWithDebug {
                                         content: full_content.clone(),
@@ -507,7 +520,7 @@ impl AiClient for OpenAiResponsesClient {
             "thinking": serde_json::Value::Null,
             "usage": serde_json::Value::Null
         });
-        
+
         let debug_info = DebugInfoData {
             request: Some(debug_request),
             response: Some(DebugResponseData {
@@ -516,7 +529,7 @@ impl AiClient for OpenAiResponsesClient {
                 body: debug_response_body,
             }),
         };
-        
+
         let _ = token_sender
             .send(StreamEvent::DoneWithDebug {
                 content: full_content,
