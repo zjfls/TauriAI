@@ -12,9 +12,9 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use commands::{
-    abort_chat, chat_stream, create_conversation, delete_conversation, generate_title,
-    get_app_config, get_conversations, get_messages, save_app_config, test_connection,
-    update_conversation_title, fetch_provider_models, ChatState,
+    abort_chat, chat_stream, create_conversation, delete_conversation, fetch_provider_models,
+    generate_title, get_app_config, get_conversations, get_messages, save_app_config,
+    test_connection, update_conversation_title, ChatState,
 };
 use config::ConfigManager;
 use storage::Database;
@@ -73,6 +73,12 @@ pub fn run() {
             // 设置窗口关闭事件处理
             // 满足需求 9.4: 点击关闭按钮时隐藏窗口而非退出
             if let Some(window) = app.get_webview_window("main") {
+                // 在开发模式下自动打开 DevTools
+                #[cfg(debug_assertions)]
+                {
+                    window.open_devtools();
+                }
+
                 let window_clone = window.clone();
                 window.on_window_event(move |event| {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {

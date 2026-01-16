@@ -8,7 +8,7 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use crate::ai_client::{get_client, StreamEvent};
 use crate::config::ConfigManager;
 use crate::errors::{AppErrorCode, SerializableError};
-use crate::models::{Message, MessageRole, ModelConfig, ModelParameters};
+use crate::models::{Message, MessageRole, MessageStatus, ModelConfig, ModelParameters};
 use crate::prompts::compose_system_prompt;
 use crate::storage::Database;
 
@@ -98,12 +98,16 @@ pub struct ChatState {
 
 impl ChatState {
     pub fn new() -> Self {
-        Self { abort_senders: RwLock::new(HashMap::new()) }
+        Self {
+            abort_senders: RwLock::new(HashMap::new()),
+        }
     }
 }
 
 impl Default for ChatState {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[tauri::command]
@@ -118,7 +122,8 @@ pub async fn chat_stream(
     config_manager: tauri::State<'_, Arc<ConfigManager>>,
     chat_state: tauri::State<'_, Arc<ChatState>>,
 ) -> Result<(), SerializableError> {
-    let config = config_manager.ensure_default()
+    let config = config_manager
+        .ensure_default()
         .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
 
     // Resolve model: prefer model_ref over agent's default model
@@ -126,28 +131,38 @@ pub async fn chat_stream(
         // Parse model_ref "provider/model" and find the model directly
         let (provider_name, model_name) = crate::models::AppConfig::parse_model_ref(model_ref_str)
             .ok_or_else(|| AppErrorCode::ModelConfigMissing)?;
-        
-        let provider = config.get_provider(provider_name)
+
+        let provider = config
+            .get_provider(provider_name)
             .ok_or_else(|| AppErrorCode::ModelConfigMissing)?;
-        let model = provider.models.iter().find(|m| m.name == model_name)
+        let model = provider
+            .models
+            .iter()
+            .find(|m| m.name == model_name)
             .ok_or_else(|| AppErrorCode::ModelConfigMissing)?;
-        
+
         // Get agent for system prompt (use specified agent or default)
         let agent_name_str = agent_name.unwrap_or_else(|| config.default_agent.clone());
-        let agent = config.get_agent(&agent_name_str)
+        let agent = config
+            .get_agent(&agent_name_str)
             .or_else(|| config.get_default_agent())
             .ok_or_else(|| AppErrorCode::ModelConfigMissing)?;
-        
+
         (provider, model, agent)
     } else {
         // Fallback to agent-based resolution
         let agent_name_str = agent_name.unwrap_or_else(|| config.default_agent.clone());
-        config.resolve_agent(&agent_name_str)
+        config
+            .resolve_agent(&agent_name_str)
             .ok_or_else(|| AppErrorCode::ModelConfigMissing)?
     };
 
     if !provider.enabled {
-        return Err(AppErrorCode::AiServiceError(format!("Provider '{}' is disabled", provider.display_name)).into());
+        return Err(AppErrorCode::AiServiceError(format!(
+            "Provider '{}' is disabled",
+            provider.display_name
+        ))
+        .into());
     }
 
     let model_config = ModelConfig {
@@ -185,13 +200,30 @@ pub async fn chat_stream(
         content: content.clone(),
         meta: None,
         created_at: chrono::Utc::now(),
+        status: crate::models::MessageStatus::Pending,
+        error_message: None,
     };
 
-    { let db = db.lock().await; db.add_message(&conversation_id, &user_message).map_err(|e| AppErrorCode::UnknownError(e.to_string()))?; }
+    {
+        let db = db.lock().await;
+        db.add_message(&conversation_id, &user_message)
+            .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
+    }
 
-    let mut messages = { let db = db.lock().await; db.get_messages(&conversation_id, 100, None).map_err(|e| AppErrorCode::UnknownError(e.to_string()))? };
+    let mut messages = {
+        let db = db.lock().await;
+        db.get_messages(&conversation_id, 100, None)
+            .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?
+            .into_iter()
+            .filter(|m| m.status == MessageStatus::Success || m.id == user_message.id)
+            .collect::<Vec<_>>()
+    };
 
-    let base_prompt = if agent.system_prompt.is_empty() { None } else { Some(agent.system_prompt.as_str()) };
+    let base_prompt = if agent.system_prompt.is_empty() {
+        None
+    } else {
+        Some(agent.system_prompt.as_str())
+    };
     if let Some(system_content) = compose_system_prompt(base_prompt, agent.format_type) {
         let system_message = Message {
             id: uuid::Uuid::new_v4().to_string(),
@@ -200,12 +232,17 @@ pub async fn chat_stream(
             content: system_content,
             meta: None,
             created_at: chrono::Utc::now(),
+            status: crate::models::MessageStatus::Success,
+            error_message: None,
         };
         messages.insert(0, system_message);
     }
 
     let (abort_tx, mut abort_rx) = mpsc::channel::<()>(1);
-    { let mut senders = chat_state.abort_senders.write().await; senders.insert(conversation_id.clone(), abort_tx); }
+    {
+        let mut senders = chat_state.abort_senders.write().await;
+        senders.insert(conversation_id.clone(), abort_tx);
+    }
 
     let (token_tx, mut token_rx) = mpsc::channel::<StreamEvent>(100);
     let conv_id = conversation_id.clone();
@@ -213,7 +250,8 @@ pub async fn chat_stream(
     let db_clone = db.inner().clone();
     let model_name = model_config.model.clone();
 
-    let stream_handle = tokio::spawn(async move { client.chat_stream(messages, &model_config, token_tx).await });
+    let stream_handle =
+        tokio::spawn(async move { client.chat_stream(messages, &model_config, token_tx).await });
 
     let mut full_content = String::new();
     let mut full_thinking = String::new();
@@ -280,16 +318,38 @@ pub async fn chat_stream(
         }
     }
 
-    { let mut senders = chat_state.abort_senders.write().await; senders.remove(&conv_id); }
+    {
+        let mut senders = chat_state.abort_senders.write().await;
+        senders.remove(&conv_id);
+    }
 
     // If there was an error, emit error event with debug info
-    if let Some(error) = last_error {
-        let _ = app.emit("chat:error", StreamErrorPayload { 
-            conversation_id: conv_id.clone(), 
-            error,
-            debug_info: debug_info.clone(),
-        });
+    if let Some(ref error) = last_error {
+        println!(
+            "[DEBUG] Emitting chat:error event: conv_id={}, error={}",
+            conv_id, error
+        );
+
+        // Update user message status to Failed
+        let db = db_clone.lock().await;
+        let _ =
+            db.update_message_status(&user_message.id, MessageStatus::Failed, Some(error.clone()));
+
+        let _ = app.emit(
+            "chat:error",
+            StreamErrorPayload {
+                conversation_id: conv_id.clone(),
+                error: error.clone(),
+                debug_info: debug_info.clone(),
+            },
+        );
         return Ok(());
+    }
+
+    // Update user message status to Success
+    {
+        let db = db_clone.lock().await;
+        let _ = db.update_message_status(&user_message.id, MessageStatus::Success, None);
     }
 
     if !full_content.is_empty() {
@@ -298,21 +358,35 @@ pub async fn chat_stream(
             conversation_id: conv_id.clone(),
             role: MessageRole::Assistant,
             content: full_content.clone(),
-            meta: Some(crate::models::MessageMeta { model: Some(model_name.clone()), tokens: None, duration: None }),
+            meta: Some(crate::models::MessageMeta {
+                model: Some(model_name.clone()),
+                tokens: None,
+                duration: None,
+            }),
             created_at: chrono::Utc::now(),
+            status: crate::models::MessageStatus::Success,
+            error_message: None,
         };
         let db = db_clone.lock().await;
-        db.add_message(&conv_id, &assistant_message).map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
+        db.add_message(&conv_id, &assistant_message)
+            .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
     }
 
-    let _ = app.emit("chat:done", StreamDonePayload { 
-        conversation_id: conv_id, 
-        full_content,
-        thinking: if full_thinking.is_empty() { None } else { Some(full_thinking) },
-        debug_info,
-        usage,
-        model: Some(model_name),
-    });
+    let _ = app.emit(
+        "chat:done",
+        StreamDonePayload {
+            conversation_id: conv_id,
+            full_content,
+            thinking: if full_thinking.is_empty() {
+                None
+            } else {
+                Some(full_thinking)
+            },
+            debug_info,
+            usage,
+            model: Some(model_name),
+        },
+    );
     Ok(())
 }
 

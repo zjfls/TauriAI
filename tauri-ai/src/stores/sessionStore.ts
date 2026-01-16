@@ -242,6 +242,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       conversationId: session.conversationId,
       role: 'user',
       content,
+      status: 'pending',
       createdAt: new Date().toISOString(),
     };
 
@@ -415,9 +416,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const newSessions = new Map(state.sessions);
       const currentSession = newSessions.get(sessionId);
       if (currentSession) {
+        // Find the last pending user message and mark as success
+        const updatedMessages = [...currentSession.messages];
+        for (let i = updatedMessages.length - 1; i >= 0; i--) {
+          if (updatedMessages[i].role === 'user' && updatedMessages[i].status === 'pending') {
+            updatedMessages[i] = { ...updatedMessages[i], status: 'success' };
+            break;
+          }
+        }
+
         newSessions.set(sessionId, {
           ...currentSession,
-          messages: [...currentSession.messages, assistantMessage],
+          messages: [...updatedMessages, assistantMessage],
           streamingMessage: null,
           streamingThinking: null,
           isGenerating: false,
@@ -446,22 +456,28 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    * Requirements: 7.4
    */
   handleError: (sessionId: string, error: string, debugInfo?: DebugInfo) => {
+    console.log('[DEBUG] handleError called:', { sessionId, error, hasDebugInfo: !!debugInfo });
     set((state) => {
       const newSessions = new Map(state.sessions);
       const currentSession = newSessions.get(sessionId);
+      console.log('[DEBUG] handleError - session found:', !!currentSession);
       if (currentSession) {
-        const errorMessage: Message = {
-          id: crypto.randomUUID(),
-          conversationId: currentSession.conversationId || '',
-          role: 'error',
-          content: error,
-          debugInfo,
-          createdAt: new Date().toISOString(),
-        };
+        // Find the last user message and mark as failed
+        const updatedMessages = [...currentSession.messages];
+        for (let i = updatedMessages.length - 1; i >= 0; i--) {
+          if (updatedMessages[i].role === 'user') {
+            updatedMessages[i] = {
+              ...updatedMessages[i],
+              status: 'failed',
+              error: error,
+            };
+            break;
+          }
+        }
 
         newSessions.set(sessionId, {
           ...currentSession,
-          messages: [...currentSession.messages, errorMessage],
+          messages: updatedMessages,
           error,
           isGenerating: false,
           streamingMessage: null,
@@ -805,9 +821,16 @@ export const initStreamListeners = async () => {
 
     // Listen for error events - route by conversationId
     await listen<{ conversationId: string; error: string; debugInfo?: DebugInfo }>('chat:error', (event) => {
+      console.log('[DEBUG] chat:error event received:', event.payload);
       const session = useSessionStore.getState().getSessionByConversationId(event.payload.conversationId);
+      console.log('[DEBUG] chat:error - session lookup result:', session ? { id: session.id, convId: session.conversationId } : null);
       if (session) {
         useSessionStore.getState().handleError(session.id, event.payload.error, event.payload.debugInfo);
+      } else {
+        console.warn('[DEBUG] chat:error - No session found for conversationId:', event.payload.conversationId);
+        // Log all current sessions for comparison
+        const allSessions = Array.from(useSessionStore.getState().sessions.values());
+        console.log('[DEBUG] chat:error - All current sessions:', allSessions.map(s => ({ id: s.id, convId: s.conversationId })));
       }
     });
 

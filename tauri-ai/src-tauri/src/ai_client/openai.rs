@@ -1,5 +1,5 @@
 //! OpenAI API client implementations
-//! 
+//!
 //! This module provides two clients:
 //! - `OpenAiClient`: For OpenAI official API (uses "developer" role for system prompts)
 //! - `OpenAiCompatibleClient`: For OpenAI-compatible APIs (uses "system" role)
@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 
-use super::traits::{AiClient, AiError, StreamEvent, DebugInfoData, DebugRequestData, DebugResponseData, TokenUsage};
+use super::traits::{
+    AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent, TokenUsage,
+};
 use crate::models::{Message, MessageRole, ModelConfig};
 
 // ============================================================================
@@ -145,7 +147,11 @@ enum SystemRole {
     Developer,
 }
 
-fn convert_messages(messages: &[Message], system_prompt: Option<&str>, system_role: SystemRole) -> Vec<OpenAiMessage> {
+fn convert_messages(
+    messages: &[Message],
+    system_prompt: Option<&str>,
+    system_role: SystemRole,
+) -> Vec<OpenAiMessage> {
     let mut result = Vec::new();
 
     // Add system prompt if provided and not empty
@@ -178,7 +184,6 @@ fn convert_messages(messages: &[Message], system_prompt: Option<&str>, system_ro
     result
 }
 
-
 // ============================================================================
 // Base implementation (shared logic)
 // ============================================================================
@@ -196,7 +201,11 @@ impl OpenAiBaseClient {
         }
     }
 
-    async fn chat_impl(&self, messages: Vec<Message>, config: &ModelConfig) -> Result<String, AiError> {
+    async fn chat_impl(
+        &self,
+        messages: Vec<Message>,
+        config: &ModelConfig,
+    ) -> Result<String, AiError> {
         let api_base = config
             .api_base
             .as_deref()
@@ -207,17 +216,18 @@ impl OpenAiBaseClient {
             .filter(|k| !k.is_empty())
             .ok_or_else(|| AiError::AuthenticationFailed("API key is required".to_string()))?;
 
-        let openai_messages =
-            convert_messages(&messages, config.parameters.system_prompt.as_deref(), self.system_role);
+        let openai_messages = convert_messages(
+            &messages,
+            config.parameters.system_prompt.as_deref(),
+            self.system_role,
+        );
 
         // Build thinking config based on thinking_enabled:
         // - None: Model doesn't support thinking, don't send parameter
         // - Some(true): Enable thinking
         // - Some(false): Disable thinking explicitly
-        let thinking = config.thinking_enabled.map(|enabled| {
-            ThinkingConfig {
-                thinking_type: if enabled { "enabled" } else { "disabled" }.to_string(),
-            }
+        let thinking = config.thinking_enabled.map(|enabled| ThinkingConfig {
+            thinking_type: if enabled { "enabled" } else { "disabled" }.to_string(),
         });
 
         let request = ChatCompletionRequest {
@@ -278,17 +288,18 @@ impl OpenAiBaseClient {
             .as_ref()
             .ok_or_else(|| AiError::AuthenticationFailed("API key is required".to_string()))?;
 
-        let openai_messages =
-            convert_messages(&messages, config.parameters.system_prompt.as_deref(), self.system_role);
+        let openai_messages = convert_messages(
+            &messages,
+            config.parameters.system_prompt.as_deref(),
+            self.system_role,
+        );
 
         // Build thinking config based on thinking_enabled:
         // - None: Model doesn't support thinking, don't send parameter
         // - Some(true): Enable thinking
         // - Some(false): Disable thinking explicitly
-        let thinking = config.thinking_enabled.map(|enabled| {
-            ThinkingConfig {
-                thinking_type: if enabled { "enabled" } else { "disabled" }.to_string(),
-            }
+        let thinking = config.thinking_enabled.map(|enabled| ThinkingConfig {
+            thinking_type: if enabled { "enabled" } else { "disabled" }.to_string(),
         });
 
         let request = ChatCompletionRequest {
@@ -300,12 +311,14 @@ impl OpenAiBaseClient {
             frequency_penalty: config.parameters.frequency_penalty,
             presence_penalty: config.parameters.presence_penalty,
             stream: true,
-            stream_options: Some(StreamOptions { include_usage: true }),
+            stream_options: Some(StreamOptions {
+                include_usage: true,
+            }),
             thinking,
         };
 
         let url = format!("{api_base}/chat/completions");
-        
+
         // Capture request info for debug
         let debug_request = DebugRequestData {
             url: url.clone(),
@@ -339,18 +352,24 @@ impl OpenAiBaseClient {
 
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            
+
             // Build debug info for error case
             let debug_info = DebugInfoData {
                 request: Some(debug_request),
                 response: Some(DebugResponseData {
                     status: response_status,
                     headers: response_headers,
-                    body: serde_json::from_str(&error_text).unwrap_or(serde_json::Value::String(error_text.clone())),
+                    body: serde_json::from_str(&error_text)
+                        .unwrap_or(serde_json::Value::String(error_text.clone())),
                 }),
             };
-            
+
+            // Send Error event FIRST (chat.rs expects this)
+            // Then send DoneWithDebug with debug info
             if let Ok(error_response) = serde_json::from_str::<OpenAiErrorResponse>(&error_text) {
+                let _ = token_sender
+                    .send(StreamEvent::Error(error_response.error.message.clone()))
+                    .await;
                 let _ = token_sender
                     .send(StreamEvent::DoneWithDebug {
                         content: String::new(),
@@ -359,21 +378,18 @@ impl OpenAiBaseClient {
                         usage: None,
                     })
                     .await;
-                let _ = token_sender
-                    .send(StreamEvent::Error(error_response.error.message.clone()))
-                    .await;
                 return Err(AiError::RequestFailed(error_response.error.message));
             }
+            let _ = token_sender
+                .send(StreamEvent::Error(error_text.clone()))
+                .await;
             let _ = token_sender
                 .send(StreamEvent::DoneWithDebug {
                     content: String::new(),
                     thinking: None,
-                    debug_info: Some(debug_info.clone()),
+                    debug_info: Some(debug_info),
                     usage: None,
                 })
-                .await;
-            let _ = token_sender
-                .send(StreamEvent::Error(error_text.clone()))
                 .await;
             return Err(AiError::RequestFailed(error_text));
         }
@@ -409,7 +425,7 @@ impl OpenAiBaseClient {
                                 "reasoning_tokens": u.reasoning_tokens
                             }))
                         });
-                        
+
                         let debug_info = DebugInfoData {
                             request: Some(debug_request.clone()),
                             response: Some(DebugResponseData {
@@ -418,12 +434,16 @@ impl OpenAiBaseClient {
                                 body: debug_response_body,
                             }),
                         };
-                        
+
                         // Always send DoneWithDebug for debug info and usage
                         let _ = token_sender
                             .send(StreamEvent::DoneWithDebug {
                                 content: full_content.clone(),
-                                thinking: if full_thinking.is_empty() { None } else { Some(full_thinking.clone()) },
+                                thinking: if full_thinking.is_empty() {
+                                    None
+                                } else {
+                                    Some(full_thinking.clone())
+                                },
                                 debug_info: Some(debug_info),
                                 usage: final_usage.clone(),
                             })
@@ -438,13 +458,19 @@ impl OpenAiBaseClient {
                                 prompt_tokens: usage.prompt_tokens,
                                 completion_tokens: usage.completion_tokens,
                                 total_tokens: usage.total_tokens,
-                                cached_tokens: usage.prompt_tokens_details.as_ref().and_then(|d| d.cached_tokens),
-                                reasoning_tokens: usage.completion_tokens_details.as_ref().and_then(|d| d.reasoning_tokens),
+                                cached_tokens: usage
+                                    .prompt_tokens_details
+                                    .as_ref()
+                                    .and_then(|d| d.cached_tokens),
+                                reasoning_tokens: usage
+                                    .completion_tokens_details
+                                    .as_ref()
+                                    .and_then(|d| d.reasoning_tokens),
                                 cache_creation_input_tokens: None,
                                 cache_read_input_tokens: None,
                             });
                         }
-                        
+
                         if let Some(choice) = stream_chunk.choices.first() {
                             // Handle reasoning_content (thinking tokens)
                             if let Some(reasoning) = &choice.delta.reasoning_content {
@@ -482,7 +508,7 @@ impl OpenAiBaseClient {
                 "reasoning_tokens": u.reasoning_tokens
             }))
         });
-        
+
         let debug_info = DebugInfoData {
             request: Some(debug_request),
             response: Some(DebugResponseData {
@@ -496,7 +522,11 @@ impl OpenAiBaseClient {
         let _ = token_sender
             .send(StreamEvent::DoneWithDebug {
                 content: full_content,
-                thinking: if full_thinking.is_empty() { None } else { Some(full_thinking) },
+                thinking: if full_thinking.is_empty() {
+                    None
+                } else {
+                    Some(full_thinking)
+                },
                 debug_info: Some(debug_info),
                 usage: final_usage,
             })
@@ -504,7 +534,6 @@ impl OpenAiBaseClient {
         Ok(())
     }
 }
-
 
 // ============================================================================
 // OpenAI Official Client (uses "developer" role)
@@ -542,7 +571,9 @@ impl AiClient for OpenAiClient {
         config: &ModelConfig,
         token_sender: mpsc::Sender<StreamEvent>,
     ) -> Result<(), AiError> {
-        self.base.chat_stream_impl(messages, config, token_sender).await
+        self.base
+            .chat_stream_impl(messages, config, token_sender)
+            .await
     }
 }
 
@@ -582,6 +613,8 @@ impl AiClient for OpenAiCompatibleClient {
         config: &ModelConfig,
         token_sender: mpsc::Sender<StreamEvent>,
     ) -> Result<(), AiError> {
-        self.base.chat_stream_impl(messages, config, token_sender).await
+        self.base
+            .chat_stream_impl(messages, config, token_sender)
+            .await
     }
 }

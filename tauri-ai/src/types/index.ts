@@ -6,6 +6,9 @@
 // Message role enum
 export type MessageRole = 'user' | 'assistant' | 'system' | 'error';
 
+// Message status enum
+export type MessageStatus = 'pending' | 'success' | 'failed';
+
 // Theme options
 export type Theme = 'light' | 'dark' | 'system';
 
@@ -112,6 +115,10 @@ export interface Message {
   meta?: MessageMeta;
   actions?: Action[];
   createdAt: string;
+  // Message status
+  status?: MessageStatus;
+  // Error message if status is failed
+  error?: string;
   // Debug info (only populated when debug mode is enabled)
   debugInfo?: DebugInfo;
   // Token usage for this message

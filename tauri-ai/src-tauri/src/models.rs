@@ -2,9 +2,9 @@
 //!
 //! This module contains all the core data structures used throughout the application.
 
+use crate::prompts::FormatPromptType;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use crate::prompts::FormatPromptType;
 
 /// Role of a message in a conversation
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -29,6 +29,21 @@ pub struct MessageMeta {
     pub duration: Option<u64>,
 }
 
+/// Status of a message
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum MessageStatus {
+    Pending,
+    Success,
+    Failed,
+}
+
+impl Default for MessageStatus {
+    fn default() -> Self {
+        Self::Success
+    }
+}
+
 /// A single message in a conversation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -40,6 +55,12 @@ pub struct Message {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub meta: Option<MessageMeta>,
     pub created_at: DateTime<Utc>,
+    /// Status of the message (pending, success, failed)
+    #[serde(default)]
+    pub status: MessageStatus,
+    /// Optional error message if the status is Failed
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
 }
 
 /// A conversation containing multiple messages
@@ -454,7 +475,11 @@ impl AppConfig {
                 display_name: model_config.name.clone(),
                 description: None,
                 model_ref,
-                system_prompt: model_config.parameters.system_prompt.clone().unwrap_or_default(),
+                system_prompt: model_config
+                    .parameters
+                    .system_prompt
+                    .clone()
+                    .unwrap_or_default(),
                 format_type: FormatPromptType::Chat,
             });
 

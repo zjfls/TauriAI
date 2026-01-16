@@ -5,7 +5,7 @@
  */
 
 import React, { useState } from 'react';
-import { User, Bot, ChevronDown, ChevronRight, Brain, Bug, AlertCircle } from 'lucide-react';
+import { User, Bot, ChevronDown, ChevronRight, Brain, Bug, AlertCircle, RefreshCw } from 'lucide-react';
 import type { Message, Action } from '../../types';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { MessageToolbar } from './MessageToolbar';
@@ -71,6 +71,8 @@ export const MessageItem: React.FC<MessageItemProps> = ({
   const isUser = message.role === 'user';
   const isAssistant = message.role === 'assistant';
   const isError = message.role === 'error';
+  const isFailed = message.status === 'failed';
+  const isPending = message.status === 'pending';
 
   // Build actions
   const actions = buildMessageActions(message);
@@ -95,13 +97,12 @@ export const MessageItem: React.FC<MessageItemProps> = ({
         <div className="relative max-w-[80%] rounded-2xl px-4 py-2 bg-red-50 text-red-800 border border-red-200 dark:bg-red-900/20 dark:text-red-300 dark:border-red-800">
           <div className="text-sm font-medium mb-1">请求失败</div>
           <p className="text-sm whitespace-pre-wrap">{message.content}</p>
-          
+
           {/* Action buttons for error messages */}
           {(actions.length > 0 || debugMode) && (
             <div
-              className={`mt-2 flex flex-wrap gap-2 transition-opacity ${
-                isHovered ? 'opacity-100' : 'opacity-0'
-              }`}
+              className={`mt-2 flex flex-wrap gap-2 transition-opacity ${isHovered ? 'opacity-100' : 'opacity-0'
+                }`}
             >
               <MessageToolbar actions={actions} onAction={onAction} />
               {/* Debug button for error messages */}
@@ -150,7 +151,11 @@ export const MessageItem: React.FC<MessageItemProps> = ({
       {/* Message Content */}
       <div
         className={`relative max-w-[80%] rounded-2xl px-4 py-2 ${isUser
-          ? 'bg-blue-500 text-white'
+          ? isFailed
+            ? 'bg-red-500 text-white border-2 border-red-600'
+            : isPending
+              ? 'bg-blue-400 text-white'
+              : 'bg-blue-500 text-white'
           : 'bg-white text-gray-900 shadow-sm dark:bg-gray-800 dark:text-gray-100'
           }`}
       >
@@ -184,6 +189,22 @@ export const MessageItem: React.FC<MessageItemProps> = ({
           )}
         </div>
 
+        {/* Failed message error display */}
+        {isUser && isFailed && message.error && (
+          <div className="mt-2 text-xs bg-red-600/20 rounded px-2 py-1 flex items-center gap-1.5">
+            <AlertCircle size={12} />
+            <span className="opacity-90">{message.error}</span>
+          </div>
+        )}
+
+        {/* Pending indicator */}
+        {isUser && isPending && (
+          <div className="mt-1 flex items-center gap-1.5 text-xs opacity-75">
+            <RefreshCw size={12} className="animate-spin" />
+            <span>发送中...</span>
+          </div>
+        )}
+
         {/* Streaming cursor */}
         {isStreaming && (
           <span className="ml-1 inline-block h-4 w-2 animate-pulse bg-gray-400 dark:bg-gray-500" />
@@ -192,9 +213,8 @@ export const MessageItem: React.FC<MessageItemProps> = ({
         {/* Action buttons - always rendered for layout stability, visible on hover */}
         {!isStreaming && (actions.length > 0 || (debugMode && isAssistant)) && (
           <div
-            className={`mt-2 flex flex-wrap gap-2 transition-opacity ${
-              isHovered ? 'opacity-100' : 'opacity-0'
-            }`}
+            className={`mt-2 flex flex-wrap gap-2 transition-opacity ${isHovered ? 'opacity-100' : 'opacity-0'
+              }`}
           >
             <MessageToolbar actions={actions} onAction={onAction} />
             {/* Debug button - only for assistant messages */}

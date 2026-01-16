@@ -156,7 +156,7 @@ mod tests {
 
     #[test]
     fn test_save_and_load_roundtrip() {
-        use crate::models::{Provider, ProviderType, Model, Agent};
+        use crate::models::{Agent, Model, Provider, ProviderType};
         use crate::prompts::FormatPromptType;
 
         let (manager, _temp_dir) = create_test_config_manager();
@@ -174,6 +174,8 @@ mod tests {
                     temperature: 0.5,
                     max_tokens: Some(1000),
                     top_p: Some(0.9),
+                    context_length: Some(8192),
+                    capabilities: crate::models::ModelCapabilities::default(),
                 }],
             }],
             agents: vec![Agent {

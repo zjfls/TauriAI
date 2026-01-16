@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use crate::ai_client::get_client;
 use crate::config::ConfigManager;
-use crate::models::{AppConfig, Message, MessageRole, ModelConfig, ModelParameters};
+use crate::models::{AppConfig, Message, MessageRole, MessageStatus, ModelConfig, ModelParameters};
 
 /// Get the current application configuration
 #[tauri::command]
@@ -42,7 +42,10 @@ pub async fn test_connection(
     api_key: Option<String>,
     model_name: String,
 ) -> Result<TestConnectionResult, String> {
-    println!("[TestConnection] Testing provider: {}, model: {}", provider_type, model_name);
+    println!(
+        "[TestConnection] Testing provider: {}, model: {}",
+        provider_type, model_name
+    );
 
     let model_config = ModelConfig {
         id: "test".to_string(),
@@ -64,6 +67,8 @@ pub async fn test_connection(
         content: "Hi".to_string(),
         meta: None,
         created_at: chrono::Utc::now(),
+        status: MessageStatus::Success,
+        error_message: None,
     };
 
     let start = std::time::Instant::now();
@@ -114,9 +119,9 @@ pub async fn fetch_provider_models(
     println!("[FetchModels] Fetching models from: {}", api_base);
 
     let client = reqwest::Client::new();
-    
+
     let mut request = client.get(format!("{}/models", api_base));
-    
+
     if let Some(key) = &api_key {
         if !key.is_empty() {
             request = request.header("Authorization", format!("Bearer {}", key));
@@ -132,10 +137,14 @@ pub async fn fetch_provider_models(
 
     let models_response: ModelsResponse = response.json().await.map_err(|e| e.to_string())?;
 
-    let models: Vec<ModelInfo> = models_response.data.into_iter().map(|m| ModelInfo {
-        id: m.id,
-        owned_by: m.owned_by,
-    }).collect();
+    let models: Vec<ModelInfo> = models_response
+        .data
+        .into_iter()
+        .map(|m| ModelInfo {
+            id: m.id,
+            owned_by: m.owned_by,
+        })
+        .collect();
 
     println!("[FetchModels] Found {} models", models.len());
     Ok(models)
