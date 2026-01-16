@@ -93,28 +93,28 @@ const MermaidBlock = React.memo(function MermaidBlock({ code }: MermaidBlockProp
   const [error, setError] = useState<string>('');
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [scale, setScale] = useState(1.5);
-  
+
   const cacheKey = useMemo(() => hashCode(code.trim()), [code]);
 
   // ESC key to close fullscreen
   useEffect(() => {
     if (!isFullscreen) return;
-    
+
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setIsFullscreen(false);
       }
     };
-    
+
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isFullscreen]);
 
   useEffect(() => {
     let cancelled = false;
-    
+
     const cleanCode = code.trim().replace(/\r\n/g, '\n');
-    
+
     if (!cleanCode) {
       setError('Empty diagram code');
       return;
@@ -131,19 +131,19 @@ const MermaidBlock = React.memo(function MermaidBlock({ code }: MermaidBlockProp
       try {
         const renderId = generateMermaidId();
         await mermaid.parse(cleanCode);
-        
+
         if (cancelled) return;
 
         const { svg: renderedSvg } = await mermaid.render(renderId, cleanCode);
-        
+
         if (cancelled) return;
-        
+
         mermaidCache.set(cacheKey, renderedSvg);
         setSvg(renderedSvg);
         setError('');
       } catch (err) {
         if (cancelled) return;
-        
+
         const errorMsg = err instanceof Error ? err.message : 'Failed to render diagram';
         console.warn('[Mermaid] Parse/render error:', errorMsg);
         setError(errorMsg);
@@ -183,7 +183,7 @@ const MermaidBlock = React.memo(function MermaidBlock({ code }: MermaidBlockProp
         title="点击放大查看"
         dangerouslySetInnerHTML={{ __html: svg }}
       />
-      
+
       {/* Fullscreen Modal */}
       {isFullscreen && (
         <div
@@ -222,7 +222,7 @@ const MermaidBlock = React.memo(function MermaidBlock({ code }: MermaidBlockProp
             </button>
             <span className="ml-2 text-xs text-gray-500">Ctrl+滚轮缩放</span>
           </div>
-          
+
           <div
             className="w-[90vw] h-[85vh] mt-12 overflow-auto bg-white dark:bg-gray-800 rounded-lg p-6"
             onClick={(e) => e.stopPropagation()}
@@ -232,7 +232,7 @@ const MermaidBlock = React.memo(function MermaidBlock({ code }: MermaidBlockProp
               dangerouslySetInnerHTML={{ __html: svg }}
             />
           </div>
-          
+
           <button
             className="absolute top-4 right-4 px-4 py-2 bg-white dark:bg-gray-700 rounded shadow hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors"
             onClick={() => setIsFullscreen(false)}
@@ -246,7 +246,7 @@ const MermaidBlock = React.memo(function MermaidBlock({ code }: MermaidBlockProp
 });
 
 // ============================================================================
-// LaTeX Protection Utilities
+// Content Protection Utilities
 // ============================================================================
 
 interface ProtectedContent {
@@ -254,24 +254,32 @@ interface ProtectedContent {
   blocks: Map<string, string>;
 }
 
-// Protect LaTeX content before DOMPurify processing
-// This prevents DOMPurify from escaping < > & inside LaTeX expressions
+// Protect LaTeX and Mermaid content before DOMPurify processing
+// This prevents DOMPurify from escaping < > & inside these expressions
 // Also normalizes \[...\] and \(...\) to $$...$$ and $...$ format
-function protectLatex(content: string): ProtectedContent {
+function protectContent(content: string): ProtectedContent {
   const blocks = new Map<string, string>();
   let counter = 0;
   let result = content;
-  
+
   // Generate unique placeholder that won't conflict with content
-  const generatePlaceholder = () => `%%LATEX_BLOCK_${counter++}_${Date.now()}%%`;
-  
+  const generatePlaceholder = () => `%%PROTECTED_BLOCK_${counter++}_${Date.now()}%%`;
+
+  // Protect mermaid code blocks first (before LaTeX, as they may contain arrows)
+  // Match ```mermaid ... ``` code blocks
+  result = result.replace(/```mermaid\s*([\s\S]*?)```/g, (match) => {
+    const placeholder = generatePlaceholder();
+    blocks.set(placeholder, match);
+    return placeholder;
+  });
+
   // Protect and normalize block math: $$...$$ (including multiline)
   result = result.replace(/\$\$([\s\S]*?)\$\$/g, (match) => {
     const placeholder = generatePlaceholder();
     blocks.set(placeholder, match);
     return placeholder;
   });
-  
+
   // Protect and normalize \[...\] block math -> convert to $$...$$
   result = result.replace(/\\\[([\s\S]*?)\\\]/g, (_, inner) => {
     const placeholder = generatePlaceholder();
@@ -279,7 +287,7 @@ function protectLatex(content: string): ProtectedContent {
     blocks.set(placeholder, normalized);
     return placeholder;
   });
-  
+
   // Protect and normalize \(...\) inline math -> convert to $...$
   result = result.replace(/\\\(([\s\S]*?)\\\)/g, (_, inner) => {
     const placeholder = generatePlaceholder();
@@ -287,7 +295,7 @@ function protectLatex(content: string): ProtectedContent {
     blocks.set(placeholder, normalized);
     return placeholder;
   });
-  
+
   // Protect inline math: $...$ (non-greedy, single line)
   // Be careful not to match currency like "$5 and $10"
   result = result.replace(/\$([^\$\n]+?)\$/g, (match, inner) => {
@@ -299,12 +307,12 @@ function protectLatex(content: string): ProtectedContent {
     blocks.set(placeholder, match);
     return placeholder;
   });
-  
+
   return { text: result, blocks };
 }
 
-// Restore LaTeX content after DOMPurify processing
-function restoreLatex(content: string, blocks: Map<string, string>): string {
+// Restore protected content after DOMPurify processing
+function restoreContent(content: string, blocks: Map<string, string>): string {
   let result = content;
   blocks.forEach((original, placeholder) => {
     result = result.replace(placeholder, original);
@@ -317,24 +325,24 @@ function restoreLatex(content: string, blocks: Map<string, string>): string {
 // ============================================================================
 
 export const MarkdownRenderer = React.memo(function MarkdownRenderer({ content }: MarkdownRendererProps) {
-  // Process content: protect LaTeX -> sanitize -> restore LaTeX
+  // Process content: protect LaTeX & Mermaid -> sanitize -> restore
   const processed = useMemo(() => {
-    // Step 1: Protect LaTeX content from DOMPurify (also normalizes delimiters)
-    const { text: protected_, blocks } = protectLatex(content);
-    
-    // Step 2: Sanitize with DOMPurify (LaTeX is now protected)
+    // Step 1: Protect LaTeX and Mermaid content from DOMPurify (also normalizes delimiters)
+    const { text: protected_, blocks } = protectContent(content);
+
+    // Step 2: Sanitize with DOMPurify (LaTeX and Mermaid are now protected)
     const sanitized = DOMPurify.sanitize(protected_, {
       ADD_TAGS: ['details', 'summary', 'kbd', 'mark', 'sub', 'sup'],
       ADD_ATTR: ['open'],
     });
-    
-    // Step 3: Restore LaTeX content
-    let result = restoreLatex(sanitized, blocks);
-    
+
+    // Step 3: Restore protected content
+    let result = restoreContent(sanitized, blocks);
+
     // Step 4: Decode &amp; for any remaining LaTeX (alignment in matrices)
     // This is safe because we've already sanitized the HTML
     result = result.replace(/&amp;/g, '&');
-    
+
     return result;
   }, [content]);
 

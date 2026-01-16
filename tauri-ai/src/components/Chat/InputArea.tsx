@@ -5,13 +5,18 @@
  */
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Send, Square, Brain } from 'lucide-react';
+import { Send, Square, Brain, Bot, Cpu, ChevronDown, Check } from 'lucide-react';
 import { ContextUsageIndicator } from './ContextUsageIndicator';
-import type { ContextUsageBreakdown } from '../../types';
+import type { ContextUsageBreakdown, Agent } from '../../types';
 
 // Constants for textarea sizing
 const MIN_TEXTAREA_HEIGHT = 40; // Minimum height in pixels
 const MAX_TEXTAREA_HEIGHT = 200; // Maximum height in pixels (Requirement 4.1)
+
+interface ModelOption {
+  label: string;
+  value: string;
+}
 
 interface InputAreaProps {
   onSend: (content: string, enableThinking?: boolean) => void;
@@ -20,6 +25,13 @@ interface InputAreaProps {
   isGenerating: boolean;
   supportsThinking?: boolean;  // Whether current model supports thinking
   contextUsage?: ContextUsageBreakdown | null;  // Context usage for indicator
+  // Agent/Model selection
+  agents?: Agent[];
+  currentAgentName?: string;
+  onAgentSelect?: (agentName: string) => void;
+  modelOptions?: ModelOption[];
+  currentModelRef?: string;
+  onModelSelect?: (modelRef: string) => void;
 }
 
 /**
@@ -79,9 +91,8 @@ const FeatureToggle: React.FC<FeatureToggleProps> = ({
       type="button"
       onClick={onToggle}
       disabled={disabled}
-      className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors ${
-        colorClasses[activeColor as keyof typeof colorClasses] || colorClasses.purple
-      } disabled:cursor-not-allowed disabled:opacity-50`}
+      className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors ${colorClasses[activeColor as keyof typeof colorClasses] || colorClasses.purple
+        } disabled:cursor-not-allowed disabled:opacity-50`}
       title={enabled ? `${label}已开启，点击关闭` : `${label}已关闭，点击开启`}
       aria-pressed={enabled}
     >
@@ -91,6 +102,85 @@ const FeatureToggle: React.FC<FeatureToggleProps> = ({
   );
 };
 
+/**
+ * Compact dropdown selector for agent/model selection
+ */
+interface CompactSelectorProps<T extends { label: string; value: string }> {
+  icon: React.ReactNode;
+  options: T[];
+  currentValue: string;
+  onSelect: (value: string) => void;
+  disabled?: boolean;
+  placeholder?: string;
+}
+
+function CompactSelector<T extends { label: string; value: string }>({
+  icon,
+  options,
+  currentValue,
+  onSelect,
+  disabled = false,
+  placeholder = '选择',
+}: CompactSelectorProps<T>) {
+  const [isOpen, setIsOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const currentLabel = options.find(o => o.value === currentValue)?.label || placeholder;
+
+  return (
+    <div className="relative" ref={dropdownRef}>
+      <button
+        type="button"
+        onClick={() => setIsOpen(!isOpen)}
+        disabled={disabled}
+        className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {icon}
+        <span className="max-w-20 truncate">{currentLabel}</span>
+        <ChevronDown size={10} className={`transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+      </button>
+
+      {isOpen && (
+        <div className="absolute bottom-full left-0 mb-1 w-56 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-1 z-50 max-h-60 overflow-auto">
+          {options.length === 0 ? (
+            <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">
+              暂无可用选项
+            </div>
+          ) : (
+            options.map((option) => (
+              <button
+                key={option.value}
+                onClick={() => {
+                  onSelect(option.value);
+                  setIsOpen(false);
+                }}
+                className="flex items-center justify-between w-full px-3 py-1.5 text-left hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+              >
+                <span className="text-xs text-gray-800 dark:text-white truncate">
+                  {option.label}
+                </span>
+                {option.value === currentValue && (
+                  <Check size={12} className="text-blue-500 flex-shrink-0" />
+                )}
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export const InputArea: React.FC<InputAreaProps> = ({
   onSend,
   onAbort,
@@ -98,6 +188,12 @@ export const InputArea: React.FC<InputAreaProps> = ({
   isGenerating,
   supportsThinking = false,
   contextUsage = null,
+  agents = [],
+  currentAgentName = '',
+  onAgentSelect,
+  modelOptions = [],
+  currentModelRef = '',
+  onModelSelect,
 }) => {
   const [content, setContent] = useState('');
   const [enableThinking, setEnableThinking] = useState(true); // Default enabled when supported
@@ -188,15 +284,46 @@ export const InputArea: React.FC<InputAreaProps> = ({
   // Requirement 4.6: Disable send button for empty/whitespace input
   const isSendDisabled = disabled || isWhitespaceOnly(content);
 
-  // Check if we have any feature toggles to show
-  const hasFeatureToggles = supportsThinking || contextUsage;
+  // Convert agents to selector options
+  const agentOptions = agents.map(a => ({ label: a.displayName, value: a.name }));
+
+  // Check if we have selectors to show
+  const hasSelectors = agents.length > 0 || modelOptions.length > 0;
+  const hasFeatureToggles = supportsThinking || contextUsage || hasSelectors;
 
   return (
     <div className="border-t border-gray-200 bg-white px-4 py-3 dark:border-gray-700 dark:bg-gray-800">
-      {/* Feature toggles toolbar */}
+      {/* Toolbar: Agent/Model selectors and feature toggles */}
       {hasFeatureToggles && (
         <div className="mb-2 flex items-center justify-between">
           <div className="flex items-center gap-2">
+            {/* Agent selector */}
+            {agents.length > 0 && onAgentSelect && (
+              <CompactSelector
+                icon={<Bot size={12} />}
+                options={agentOptions}
+                currentValue={currentAgentName}
+                onSelect={onAgentSelect}
+                disabled={isGenerating}
+                placeholder="智能体"
+              />
+            )}
+            {/* Model selector */}
+            {modelOptions.length > 0 && onModelSelect && (
+              <CompactSelector
+                icon={<Cpu size={12} />}
+                options={modelOptions}
+                currentValue={currentModelRef}
+                onSelect={onModelSelect}
+                disabled={isGenerating}
+                placeholder="模型"
+              />
+            )}
+            {/* Divider if both selectors and toggles exist */}
+            {(agents.length > 0 || modelOptions.length > 0) && supportsThinking && (
+              <div className="h-4 w-px bg-gray-300 dark:bg-gray-600 mx-1" />
+            )}
+            {/* Thinking toggle */}
             {supportsThinking && (
               <FeatureToggle
                 icon={<Brain size={12} />}
@@ -207,10 +334,6 @@ export const InputArea: React.FC<InputAreaProps> = ({
                 activeColor="purple"
               />
             )}
-            {/* Future toggles can be added here:
-            <FeatureToggle icon={<Globe size={12} />} label="联网搜索" ... />
-            <FeatureToggle icon={<Wrench size={12} />} label="工具调用" ... />
-            */}
           </div>
           {/* Context usage indicator on the right */}
           {contextUsage && (

@@ -152,9 +152,16 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
             `}>
               {conversation.title}
             </h3>
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-              {formatDate(conversation.updatedAt)}
-            </p>
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className="text-xs text-gray-500 dark:text-gray-400">
+                {formatDate(conversation.updatedAt)}
+              </span>
+              {conversation.agentName && (
+                <span className="inline-flex items-center px-1.5 py-0.5 text-xs rounded bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400">
+                  {conversation.agentName}
+                </span>
+              )}
+            </div>
           </>
         )}
       </div>
@@ -359,11 +366,10 @@ export const HistoryPanel: React.FC = () => {
           </div>
           <button
             onClick={handleBatchDelete}
-            className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg transition-colors ${
-              showBatchDeleteConfirm
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg transition-colors ${showBatchDeleteConfirm
                 ? 'bg-red-600 text-white hover:bg-red-700'
                 : 'bg-red-100 text-red-600 hover:bg-red-200 dark:bg-red-900/30 dark:text-red-400'
-            }`}
+              }`}
           >
             <Trash2 size={14} />
             {showBatchDeleteConfirm ? '确认删除' : '批量删除'}

@@ -44,7 +44,7 @@ const SessionTab: React.FC<SessionTabProps> = ({
         }
       `}
       onClick={onSelect}
-      title={session.agentName}
+      title={session.title}
     >
       {/* Loading indicator or bot icon */}
       <div className="flex-shrink-0">
@@ -55,9 +55,9 @@ const SessionTab: React.FC<SessionTabProps> = ({
         )}
       </div>
 
-      {/* Agent name */}
+      {/* Session title */}
       <span className="flex-1 text-sm font-medium truncate">
-        {session.agentName}
+        {session.title}
       </span>
 
       {/* Close button */}

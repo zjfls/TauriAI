@@ -18,11 +18,11 @@ interface MainLayoutProps {
 
 export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
   const { sidebarExpanded, activeView, setActiveView } = useUIStore();
-  const { 
-    config, 
+  const {
+    config,
     getModelOptions,
   } = useConfigStore();
-  
+
   // Session store for multi-agent workspace
   // Use shallow comparison to prevent infinite re-renders
   const sessionsMap = useSessionStore((state) => state.sessions);
@@ -112,6 +112,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
           modelOptions={modelOptions}
           currentModelRef={currentModelRef}
           onModelSelect={handleModelSelect}
+          showSelectors={activeView !== 'chat'}
         />
 
         {/* Session Tab Bar - only show in chat view */}

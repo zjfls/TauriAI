@@ -249,16 +249,17 @@ export interface TestResult {
 export interface AgentSession {
   id: string;                         // Unique session identifier (UUID)
   agentName: string;                  // Name of the agent being used
+  title: string;                      // Conversation title for display in tab
   modelRef?: string;                  // Current model reference (can override agent default)
   conversationId: string | null;      // Associated conversation ID
-  
+
   // Session state
   messages: Message[];                // Message history for this session
   streamingMessage: string | null;    // Current streaming message content
   streamingThinking: string | null;   // Current streaming thinking content
   isGenerating: boolean;              // Whether the session is generating a response
   error: string | null;               // Error message if any
-  
+
   // Metadata
   createdAt: string;                  // ISO timestamp of session creation
   lastActiveAt: string;               // ISO timestamp of last activity

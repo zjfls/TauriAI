@@ -19,19 +19,21 @@ interface ChatViewProps {
 
 export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
   // Get session from SessionStore
-  const session = useSessionStore((state) => 
+  const session = useSessionStore((state) =>
     sessionId ? state.sessions.get(sessionId) : undefined
   );
   const sendMessage = useSessionStore((state) => state.sendMessage);
   const abortGeneration = useSessionStore((state) => state.abortGeneration);
-  
+  const setSessionAgent = useSessionStore((state) => state.setSessionAgent);
+  const setSessionModel = useSessionStore((state) => state.setSessionModel);
+
   // Extract session state with defaults for when no session exists
   const messages = session?.messages ?? [];
   const streamingMessage = session?.streamingMessage ?? null;
   const streamingThinking = session?.streamingThinking ?? null;
   const isGenerating = session?.isGenerating ?? false;
 
-  const { config, getProvider, getAgent } = useConfigStore();
+  const { config, getProvider, getAgent, getModelOptions } = useConfigStore();
 
   // Get current model's context length based on session's model or agent's default
   const currentModel = useMemo(() => {
@@ -39,13 +41,13 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
     const sessionModelRef = session?.modelRef;
     const agent = session ? getAgent(session.agentName) : null;
     const modelRef = sessionModelRef || agent?.modelRef;
-    
+
     if (!modelRef) return null;
-    
+
     const [providerName, modelName] = modelRef.split('/');
     const provider = getProvider(providerName);
     if (!provider) return null;
-    
+
     return provider.models.find(m => m.name === modelName) || null;
   }, [config, session, getProvider, getAgent]);
 
@@ -59,9 +61,9 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
     const usages = messages
       .filter(m => m.usage)
       .map(m => m.usage!);
-    
+
     if (usages.length === 0) return null;
-    
+
     return usages.reduce((acc, u) => ({
       promptTokens: acc.promptTokens + u.promptTokens,
       completionTokens: acc.completionTokens + u.completionTokens,
@@ -120,10 +122,10 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
     const agent = session ? getAgent(session.agentName) : null;
     const userSystemPrompt = agent?.systemPrompt || '';
     const formatType = agent?.formatType || 'chat';
-    
+
     // Calculate system prompt tokens (user's custom prompt) using accurate tokenizer
     const systemPromptTokens = countTokens(userSystemPrompt);
-    
+
     // Calculate format prompt tokens based on format type
     let formatPromptTokens = 0;
     if (formatType === 'chat') {
@@ -247,6 +249,12 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
         isGenerating={isGenerating}
         supportsThinking={supportsThinking}
         contextUsage={contextUsage}
+        agents={config?.agents || []}
+        currentAgentName={session?.agentName || ''}
+        onAgentSelect={(agentName) => sessionId && setSessionAgent(sessionId, agentName)}
+        modelOptions={getModelOptions()}
+        currentModelRef={session?.modelRef || ''}
+        onModelSelect={(modelRef) => sessionId && setSessionModel(sessionId, modelRef)}
       />
     </div>
   );

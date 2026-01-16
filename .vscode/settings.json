@@ -1,5 +1,6 @@
 {
     "rust-analyzer.linkedProjects": [
         "tauri-ai/src-tauri/Cargo.toml"
-    ]
+    ],
+    "kiroAgent.configureMCP": "Disabled"
 }

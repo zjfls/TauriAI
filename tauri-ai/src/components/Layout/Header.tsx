@@ -22,6 +22,8 @@ interface HeaderProps {
   modelOptions: ModelOption[];
   currentModelRef: string;
   onModelSelect: (modelRef: string) => void;
+  // Control whether to show agent/model selectors (hide in chat view)
+  showSelectors?: boolean;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -33,6 +35,7 @@ export const Header: React.FC<HeaderProps> = ({
   modelOptions,
   currentModelRef,
   onModelSelect,
+  showSelectors = true,
 }) => {
   const [isAgentDropdownOpen, setIsAgentDropdownOpen] = useState(false);
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
@@ -80,102 +83,106 @@ export const Header: React.FC<HeaderProps> = ({
           </button>
         )}
 
-        {/* Model Selector */}
-        <div className="relative" ref={modelDropdownRef}>
-          <button
-            onClick={() => setIsModelDropdownOpen(!isModelDropdownOpen)}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
-          >
-            <Cpu size={16} className="text-gray-500 dark:text-gray-400" />
-            <span className="text-sm text-gray-700 dark:text-gray-300 max-w-40 truncate">
-              {currentModelLabel}
-            </span>
-            <ChevronDown
-              size={16}
-              className={`text-gray-500 transition-transform ${isModelDropdownOpen ? 'rotate-180' : ''}`}
-            />
-          </button>
+        {/* Model Selector - only show when showSelectors is true */}
+        {showSelectors && (
+          <div className="relative" ref={modelDropdownRef}>
+            <button
+              onClick={() => setIsModelDropdownOpen(!isModelDropdownOpen)}
+              className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
+            >
+              <Cpu size={16} className="text-gray-500 dark:text-gray-400" />
+              <span className="text-sm text-gray-700 dark:text-gray-300 max-w-40 truncate">
+                {currentModelLabel}
+              </span>
+              <ChevronDown
+                size={16}
+                className={`text-gray-500 transition-transform ${isModelDropdownOpen ? 'rotate-180' : ''}`}
+              />
+            </button>
 
-          {isModelDropdownOpen && (
-            <div className="absolute right-0 mt-2 w-72 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-1 z-50 max-h-80 overflow-auto">
-              {modelOptions.length === 0 ? (
-                <div className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
-                  暂无可用模型
-                </div>
-              ) : (
-                modelOptions.map((option) => (
-                  <button
-                    key={option.value}
-                    onClick={() => {
-                      onModelSelect(option.value);
-                      setIsModelDropdownOpen(false);
-                    }}
-                    className="flex items-center justify-between w-full px-4 py-2 text-left hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-                  >
-                    <span className="text-sm text-gray-800 dark:text-white truncate">
-                      {option.label}
-                    </span>
-                    {option.value === currentModelRef && (
-                      <Check size={16} className="text-blue-500 flex-shrink-0" />
-                    )}
-                  </button>
-                ))
-              )}
-            </div>
-          )}
-        </div>
-        
-        {/* Agent Selector */}
-        <div className="relative" ref={agentDropdownRef}>
-          <button
-            onClick={() => setIsAgentDropdownOpen(!isAgentDropdownOpen)}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
-          >
-            <Bot size={16} className="text-gray-500 dark:text-gray-400" />
-            <span className="text-sm text-gray-700 dark:text-gray-300 max-w-32 truncate">
-              {currentAgent?.displayName || '选择智能体'}
-            </span>
-            <ChevronDown
-              size={16}
-              className={`text-gray-500 transition-transform ${isAgentDropdownOpen ? 'rotate-180' : ''}`}
-            />
-          </button>
-
-          {isAgentDropdownOpen && (
-            <div className="absolute right-0 mt-2 w-64 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-1 z-50">
-              {agents.length === 0 ? (
-                <div className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
-                  暂无配置的智能体
-                </div>
-              ) : (
-                agents.map((agent) => (
-                  <button
-                    key={agent.name}
-                    onClick={() => {
-                      onAgentSelect(agent.name);
-                      setIsAgentDropdownOpen(false);
-                    }}
-                    className="flex items-center justify-between w-full px-4 py-2 text-left hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-                  >
-                    <div className="flex flex-col">
-                      <span className="text-sm font-medium text-gray-800 dark:text-white">
-                        {agent.displayName}
+            {isModelDropdownOpen && (
+              <div className="absolute right-0 mt-2 w-72 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-1 z-50 max-h-80 overflow-auto">
+                {modelOptions.length === 0 ? (
+                  <div className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
+                    暂无可用模型
+                  </div>
+                ) : (
+                  modelOptions.map((option) => (
+                    <button
+                      key={option.value}
+                      onClick={() => {
+                        onModelSelect(option.value);
+                        setIsModelDropdownOpen(false);
+                      }}
+                      className="flex items-center justify-between w-full px-4 py-2 text-left hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                    >
+                      <span className="text-sm text-gray-800 dark:text-white truncate">
+                        {option.label}
                       </span>
-                      {agent.description && (
-                        <span className="text-xs text-gray-500 dark:text-gray-400 truncate max-w-48">
-                          {agent.description}
-                        </span>
+                      {option.value === currentModelRef && (
+                        <Check size={16} className="text-blue-500 flex-shrink-0" />
                       )}
-                    </div>
-                    {agent.name === currentAgentName && (
-                      <Check size={16} className="text-blue-500 flex-shrink-0" />
-                    )}
-                  </button>
-                ))
-              )}
-            </div>
-          )}
-        </div>
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Agent Selector - only show when showSelectors is true */}
+        {showSelectors && (
+          <div className="relative" ref={agentDropdownRef}>
+            <button
+              onClick={() => setIsAgentDropdownOpen(!isAgentDropdownOpen)}
+              className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
+            >
+              <Bot size={16} className="text-gray-500 dark:text-gray-400" />
+              <span className="text-sm text-gray-700 dark:text-gray-300 max-w-32 truncate">
+                {currentAgent?.displayName || '选择智能体'}
+              </span>
+              <ChevronDown
+                size={16}
+                className={`text-gray-500 transition-transform ${isAgentDropdownOpen ? 'rotate-180' : ''}`}
+              />
+            </button>
+
+            {isAgentDropdownOpen && (
+              <div className="absolute right-0 mt-2 w-64 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-1 z-50">
+                {agents.length === 0 ? (
+                  <div className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
+                    暂无配置的智能体
+                  </div>
+                ) : (
+                  agents.map((agent) => (
+                    <button
+                      key={agent.name}
+                      onClick={() => {
+                        onAgentSelect(agent.name);
+                        setIsAgentDropdownOpen(false);
+                      }}
+                      className="flex items-center justify-between w-full px-4 py-2 text-left hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                    >
+                      <div className="flex flex-col">
+                        <span className="text-sm font-medium text-gray-800 dark:text-white">
+                          {agent.displayName}
+                        </span>
+                        {agent.description && (
+                          <span className="text-xs text-gray-500 dark:text-gray-400 truncate max-w-48">
+                            {agent.description}
+                          </span>
+                        )}
+                      </div>
+                      {agent.name === currentAgentName && (
+                        <Check size={16} className="text-blue-500 flex-shrink-0" />
+                      )}
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </header>
   );

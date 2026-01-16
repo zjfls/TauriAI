@@ -18,39 +18,39 @@ export interface SessionState {
   // Session management
   sessions: Map<string, AgentSession>;
   activeSessionId: string | null;
-  
+
   // Session operations
   createSession: (agentName: string) => Promise<string>;
   closeSession: (sessionId: string) => Promise<void>;
   switchSession: (sessionId: string) => void;
-  
+
   // Message operations (act on specified session)
   sendMessage: (sessionId: string, content: string, enableThinking?: boolean) => Promise<void>;
   abortGeneration: (sessionId: string) => Promise<void>;
   retry: (sessionId: string, messageId: string) => Promise<void>;
-  
+
   // Streaming updates (internal use)
   appendStreamingToken: (sessionId: string, token: string) => void;
   appendThinkingToken: (sessionId: string, token: string) => void;
   finalizeStreaming: (sessionId: string, fullContent: string, thinking?: string, debugInfo?: DebugInfo, usage?: TokenUsage, model?: string) => void;
   handleError: (sessionId: string, error: string, debugInfo?: DebugInfo) => void;
-  
+
   // Model switching
   setSessionModel: (sessionId: string, modelRef: string) => void;
-  
+
   // Agent switching
   setSessionAgent: (sessionId: string, agentName: string) => void;
-  
+
   // Title generation
   generateTitle: (sessionId: string) => Promise<void>;
-  
+
   // Persistence
   saveSessionState: () => Promise<void>;
   restoreSessionState: () => Promise<void>;
-  
+
   // History
   openHistoricalConversation: (conversationId: string) => Promise<string>;
-  
+
   // Getters
   getActiveSession: () => AgentSession | undefined;
   getSession: (sessionId: string) => AgentSession | undefined;
@@ -99,19 +99,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    */
   createSession: async (agentName: string) => {
     const { sessions } = get();
-    
+
     // Check max sessions limit
     if (sessions.size >= MAX_SESSIONS) {
       throw new Error(`已达到最大会话数限制 (${MAX_SESSIONS})`);
     }
-    
+
     const now = new Date().toISOString();
     const sessionId = crypto.randomUUID();
-    
+
     // Create conversation in backend
     const { useConfigStore } = await import('./configStore');
     const agent = useConfigStore.getState().getAgent(agentName);
-    
+
     // Generate default title with timestamp: 新对话_MM-DD HH:mm
     const nowDate = new Date();
     const month = (nowDate.getMonth() + 1).toString().padStart(2, '0');
@@ -119,15 +119,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const hour = nowDate.getHours().toString().padStart(2, '0');
     const minute = nowDate.getMinutes().toString().padStart(2, '0');
     const defaultTitle = `新对话_${month}-${day} ${hour}:${minute}`;
-    
+
     const conversation = await invoke<{ id: string }>('create_conversation', {
       title: defaultTitle,
       agentName,
     });
-    
+
     const session: AgentSession = {
       id: sessionId,
       agentName,
+      title: defaultTitle,
       modelRef: agent?.modelRef,
       conversationId: conversation.id,
       messages: [],
@@ -138,7 +139,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       createdAt: now,
       lastActiveAt: now,
     };
-    
+
     set((state) => {
       const newSessions = new Map(state.sessions);
       newSessions.set(sessionId, session);
@@ -147,10 +148,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         activeSessionId: sessionId,
       };
     });
-    
+
     // Save state after creating session
     get().saveSessionState();
-    
+
+    // Refresh conversation list so new conversation appears in history immediately
+    // This also ensures generateTitle can find the conversation
+    const { useConversationStore } = await import('./conversationStore');
+    await useConversationStore.getState().loadConversations();
+
     return sessionId;
   },
 
@@ -161,27 +167,27 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   closeSession: async (sessionId: string) => {
     const { sessions } = get();
     const session = sessions.get(sessionId);
-    
+
     if (!session) return;
-    
+
     // Remove session from state
     set((state) => {
       const newSessions = new Map(state.sessions);
       newSessions.delete(sessionId);
-      
+
       // If closing active session, switch to another
       let newActiveId = state.activeSessionId;
       if (state.activeSessionId === sessionId) {
         const remainingSessions = Array.from(newSessions.keys());
         newActiveId = remainingSessions.length > 0 ? remainingSessions[0] : null;
       }
-      
+
       return {
         sessions: newSessions,
         activeSessionId: newActiveId,
       };
     });
-    
+
     // Save state after closing session
     get().saveSessionState();
   },
@@ -193,11 +199,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   switchSession: (sessionId: string) => {
     const { sessions } = get();
     if (!sessions.has(sessionId)) return;
-    
+
     set({
       activeSessionId: sessionId,
     });
-    
+
     // Update lastActiveAt
     set((state) => {
       const newSessions = new Map(state.sessions);
@@ -210,7 +216,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
       return { sessions: newSessions };
     });
-    
+
     // Save state after switching
     get().saveSessionState();
   },
@@ -225,11 +231,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (!session) {
       throw new Error('Session not found');
     }
-    
+
     if (!session.conversationId) {
       throw new Error('Session has no conversation');
     }
-    
+
     // Create user message
     const userMessage: Message = {
       id: crypto.randomUUID(),
@@ -238,7 +244,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       content,
       createdAt: new Date().toISOString(),
     };
-    
+
     // Update session state
     set((state) => {
       const newSessions = new Map(state.sessions);
@@ -256,7 +262,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
       return { sessions: newSessions };
     });
-    
+
     try {
       await invoke('chat_stream', {
         conversationId: session.conversationId,
@@ -277,10 +283,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   abortGeneration: async (sessionId: string) => {
     const session = get().sessions.get(sessionId);
     if (!session?.conversationId) return;
-    
+
     try {
       await invoke('abort_chat', { conversationId: session.conversationId });
-      
+
       set((state) => {
         const newSessions = new Map(state.sessions);
         const currentSession = newSessions.get(sessionId);
@@ -305,15 +311,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   retry: async (sessionId: string, messageId: string) => {
     const session = get().sessions.get(sessionId);
     if (!session) return;
-    
+
     const { messages } = session;
     const index = messages.findIndex(m => m.id === messageId);
     if (index === -1) return;
-    
+
     const targetMsg = messages[index];
     let promptToResend = '';
     let newMessages = messages;
-    
+
     if (targetMsg.role === 'assistant' || targetMsg.role === 'error') {
       // Search backwards for the user message
       for (let i = index - 1; i >= 0; i--) {
@@ -327,7 +333,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       promptToResend = targetMsg.content;
       newMessages = messages.slice(0, index);
     }
-    
+
     if (promptToResend) {
       // Update messages first
       set((state) => {
@@ -341,7 +347,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         }
         return { sessions: newSessions };
       });
-      
+
       // Then resend
       await get().sendMessage(sessionId, promptToResend);
     }
@@ -390,9 +396,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   finalizeStreaming: (sessionId: string, fullContent: string, thinking?: string, debugInfo?: DebugInfo, usage?: TokenUsage, model?: string) => {
     const session = get().sessions.get(sessionId);
     if (!session?.conversationId) return;
-    
+
     const finalThinking = thinking || session.streamingThinking || undefined;
-    
+
     const assistantMessage: Message = {
       id: crypto.randomUUID(),
       conversationId: session.conversationId,
@@ -404,7 +410,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       usage,
       createdAt: new Date().toISOString(),
     };
-    
+
     set((state) => {
       const newSessions = new Map(state.sessions);
       const currentSession = newSessions.get(sessionId);
@@ -420,14 +426,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
       return { sessions: newSessions };
     });
-    
+
     // Trigger auto-title generation
     // Condition: messages >= 3 OR response content >= 100 chars
     const updatedSession = get().sessions.get(sessionId);
     if (updatedSession) {
       const newMessagesCount = updatedSession.messages.length;
       const shouldGenerateTitle = newMessagesCount >= 3 || fullContent.length >= 100;
-      
+
       if (shouldGenerateTitle) {
         // Async - don't await, let it run in background
         get().generateTitle(sessionId);
@@ -452,7 +458,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           debugInfo,
           createdAt: new Date().toISOString(),
         };
-        
+
         newSessions.set(sessionId, {
           ...currentSession,
           messages: [...currentSession.messages, errorMessage],
@@ -482,7 +488,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
       return { sessions: newSessions };
     });
-    
+
     // Save state after model change
     get().saveSessionState();
   },
@@ -495,7 +501,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // Get the new agent's default model
     const { useConfigStore } = await import('./configStore');
     const agent = useConfigStore.getState().getAgent(agentName);
-    
+
     set((state) => {
       const newSessions = new Map(state.sessions);
       const session = newSessions.get(sessionId);
@@ -508,7 +514,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
       return { sessions: newSessions };
     });
-    
+
     // Save state after agent change
     get().saveSessionState();
   },
@@ -520,25 +526,38 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   generateTitle: async (sessionId: string) => {
     const session = get().sessions.get(sessionId);
     if (!session?.conversationId) return;
-    
+
     // Load conversation to check current title
     const { useConversationStore } = await import('./conversationStore');
     const conversations = useConversationStore.getState().conversations;
     const conversation = conversations.find(c => c.id === session.conversationId);
-    
+
     if (!conversation) return;
-    
+
     // Only generate if title is still default (starts with "新对话")
     if (!conversation.title.startsWith('新对话')) return;
-    
+
     try {
       const title = await invoke<string>('generate_title', {
         conversationId: session.conversationId,
         messages: session.messages.slice(0, 6), // Only send first 6 messages
       });
-      
+
       // Update conversation store
       useConversationStore.getState().updateConversationTitle(session.conversationId, title);
+
+      // Update session title as well
+      set((state) => {
+        const newSessions = new Map(state.sessions);
+        const currentSession = newSessions.get(sessionId);
+        if (currentSession) {
+          newSessions.set(sessionId, {
+            ...currentSession,
+            title,
+          });
+        }
+        return { sessions: newSessions };
+      });
     } catch (error) {
       console.error('Failed to generate title:', error);
       // Don't throw - title generation is not critical
@@ -552,7 +571,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    */
   saveSessionState: async () => {
     const { sessions, activeSessionId } = get();
-    
+
     const persistedSessions: PersistedSession[] = Array.from(sessions.values()).map(session => ({
       id: session.id,
       agentName: session.agentName,
@@ -561,13 +580,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       createdAt: session.createdAt,
       lastActiveAt: session.lastActiveAt,
     }));
-    
+
     const state: PersistedSessionState = {
       version: PERSISTENCE_VERSION,
       sessions: persistedSessions,
       activeSessionId,
     };
-    
+
     try {
       localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(state));
     } catch (error) {
@@ -582,31 +601,31 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   restoreSessionState: async () => {
     const stored = localStorage.getItem(SESSION_STORAGE_KEY);
     if (!stored) return;
-    
+
     try {
       const state: PersistedSessionState = JSON.parse(stored);
-      
+
       // Version check
       if (state.version !== PERSISTENCE_VERSION) {
         console.warn('Session state version mismatch, skipping restore');
         return;
       }
-      
+
       // Get available agents from config
       const { useConfigStore } = await import('./configStore');
       const config = useConfigStore.getState().config;
       const availableAgents = config?.agents?.map(a => a.name) || [];
       const defaultAgent = config?.defaultAgent || availableAgents[0] || '';
-      
+
       const newSessions = new Map<string, AgentSession>();
-      
+
       for (const persisted of state.sessions) {
         // Validate agent exists, use default if not
         let agentName = persisted.agentName;
         if (!availableAgents.includes(agentName)) {
           agentName = defaultAgent;
         }
-        
+
         // Load messages from backend
         let messages: Message[] = [];
         if (persisted.conversationId) {
@@ -619,10 +638,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             console.error('Failed to load messages for session:', error);
           }
         }
-        
+
+        // Get title from conversation store
+        const { useConversationStore } = await import('./conversationStore');
+        const conversations = useConversationStore.getState().conversations;
+        const conv = conversations.find(c => c.id === persisted.conversationId);
+        const title = conv?.title || '新对话';
+
         const session: AgentSession = {
           id: persisted.id,
           agentName,
+          title,
           modelRef: persisted.modelRef,
           conversationId: persisted.conversationId,
           messages,
@@ -633,16 +659,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           createdAt: persisted.createdAt,
           lastActiveAt: persisted.lastActiveAt,
         };
-        
+
         newSessions.set(session.id, session);
       }
-      
+
       // Validate active session ID
       let activeSessionId = state.activeSessionId;
       if (activeSessionId && !newSessions.has(activeSessionId)) {
         activeSessionId = newSessions.size > 0 ? Array.from(newSessions.keys())[0] : null;
       }
-      
+
       set({
         sessions: newSessions,
         activeSessionId,
@@ -658,7 +684,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    */
   openHistoricalConversation: async (conversationId: string) => {
     const { sessions } = get();
-    
+
     // Check if already open
     for (const session of sessions.values()) {
       if (session.conversationId === conversationId) {
@@ -666,30 +692,30 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         return session.id;
       }
     }
-    
+
     // Check max sessions limit
     if (sessions.size >= MAX_SESSIONS) {
       throw new Error(`已达到最大会话数限制 (${MAX_SESSIONS})`);
     }
-    
+
     // Load conversation details
     const { useConversationStore } = await import('./conversationStore');
     const conversations = useConversationStore.getState().conversations;
     const conversation = conversations.find(c => c.id === conversationId);
-    
+
     // Get agent name from conversation or use default
     const { useConfigStore } = await import('./configStore');
     const config = useConfigStore.getState().config;
     let agentName = conversation?.agentName || config?.defaultAgent || '';
-    
+
     // Validate agent exists
     const availableAgents = config?.agents?.map(a => a.name) || [];
     if (!availableAgents.includes(agentName)) {
       agentName = config?.defaultAgent || availableAgents[0] || '';
     }
-    
+
     const agent = useConfigStore.getState().getAgent(agentName);
-    
+
     // Load messages
     let messages: Message[] = [];
     try {
@@ -700,13 +726,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     } catch (error) {
       console.error('Failed to load messages:', error);
     }
-    
+
     const now = new Date().toISOString();
     const sessionId = crypto.randomUUID();
-    
+
     const session: AgentSession = {
       id: sessionId,
       agentName,
+      title: conversation?.title || '新对话',
       modelRef: agent?.modelRef,
       conversationId,
       messages,
@@ -717,7 +744,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       createdAt: now,
       lastActiveAt: now,
     };
-    
+
     set((state) => {
       const newSessions = new Map(state.sessions);
       newSessions.set(sessionId, session);
@@ -726,10 +753,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         activeSessionId: sessionId,
       };
     });
-    
+
     // Save state
     get().saveSessionState();
-    
+
     return sessionId;
   },
 }));
@@ -743,7 +770,7 @@ export const initStreamListeners = async () => {
   // Prevent duplicate initialization
   if (listenersInitialized) return;
   listenersInitialized = true;
-  
+
   try {
     // Listen for token events - route by conversationId
     await listen<{ conversationId: string; token: string }>('chat:token', (event) => {
@@ -783,7 +810,7 @@ export const initStreamListeners = async () => {
         useSessionStore.getState().handleError(session.id, event.payload.error, event.payload.debugInfo);
       }
     });
-    
+
     console.log('Session stream listeners initialized');
   } catch (error) {
     console.error('Failed to initialize stream listeners:', error);
