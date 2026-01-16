@@ -103,19 +103,21 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
 
       {/* Main Content Area */}
       <div className="flex flex-1 flex-col overflow-hidden">
-        {/* Header */}
-        <Header
-          title={getTitle()}
-          onAgentSelect={handleAgentSelect}
-          currentAgentName={currentAgentName}
-          agents={agents}
-          modelOptions={modelOptions}
-          currentModelRef={currentModelRef}
-          onModelSelect={handleModelSelect}
-          showSelectors={activeView !== 'chat'}
-        />
+        {/* Header - only show when not in chat view */}
+        {activeView !== 'chat' && (
+          <Header
+            title={getTitle()}
+            onAgentSelect={handleAgentSelect}
+            currentAgentName={currentAgentName}
+            agents={agents}
+            modelOptions={modelOptions}
+            currentModelRef={currentModelRef}
+            onModelSelect={handleModelSelect}
+            showSelectors={true}
+          />
+        )}
 
-        {/* Session Tab Bar - only show in chat view */}
+        {/* Session Tab Bar - only show in chat view, with drag region */}
         {activeView === 'chat' && (
           <SessionTabBar
             sessions={sessions}

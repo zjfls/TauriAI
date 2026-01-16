@@ -190,7 +190,10 @@ export const SessionTabBar: React.FC<SessionTabBarProps> = ({
   };
 
   return (
-    <div className="flex items-center bg-gray-100 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700">
+    <div
+      data-tauri-drag-region
+      className="flex items-center bg-gray-100 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700"
+    >
       {/* Tab container with horizontal scroll */}
       <div
         ref={tabContainerRef}
