@@ -9,6 +9,7 @@ import rehypeRaw from 'rehype-raw';
 import DOMPurify from 'dompurify';
 import mermaid from 'mermaid';
 import { Copy, Check } from 'lucide-react';
+import { ChartBlock } from './ChartBlock';
 import 'katex/dist/katex.min.css';
 
 // Initialize mermaid
@@ -273,6 +274,13 @@ function protectContent(content: string): ProtectedContent {
     return placeholder;
   });
 
+  // Protect chart code blocks (json chart, echarts, chart)
+  result = result.replace(/```(?:json\s+chart|echarts|chart)\s*([\s\S]*?)```/g, (match) => {
+    const placeholder = generatePlaceholder();
+    blocks.set(placeholder, match);
+    return placeholder;
+  });
+
   // Protect and normalize block math: $$...$$ (including multiline)
   result = result.replace(/\$\$([\s\S]*?)\$\$/g, (match) => {
     const placeholder = generatePlaceholder();
@@ -355,6 +363,10 @@ export const MarkdownRenderer = React.memo(function MarkdownRenderer({ content }
 
       if (language === 'mermaid') {
         return <MermaidBlock code={codeStr} />;
+      }
+
+      if (language === 'chart' || language === 'echarts' || (language === 'json' && className?.includes('chart'))) {
+        return <ChartBlock code={codeStr} />;
       }
 
       if (match || codeStr.includes('\n')) {

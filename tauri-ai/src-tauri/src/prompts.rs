@@ -4,7 +4,7 @@
 
 /// Format prompt for rich text rendering in chat view
 /// Includes Markdown, LaTeX, Mermaid, and HTML tag guidelines
-pub const CHAT_FORMAT_PROMPT: &str = "
+pub const CHAT_FORMAT_PROMPT: &str = r#"
 
 ## 输出格式规范
 
@@ -28,12 +28,24 @@ pub const CHAT_FORMAT_PROMPT: &str = "
 ### 图表（Mermaid）
 使用 mermaid 作为语言标记的代码块，支持 flowchart、sequence、gantt 等图表类型。
 
+### 数据可视化（ECharts）
+使用 `json chart` 或 `echarts` 作为语言标记的代码块，内容为标准的 ECharts Option JSON 对象。
+示例：
+```json chart
+{
+  "title": { "text": "标题" },
+  "xAxis": { "type": "category", "data": ["A", "B"] },
+  "yAxis": { "type": "value" },
+  "series": [{ "type": "bar", "data": [1, 2] }]
+}
+```
+
 ### 特殊元素（HTML 标签）
 - 折叠内容：<details><summary>标题</summary>内容</details>
 - 键盘按键：<kbd>Ctrl</kbd>
 - 高亮文本：<mark>重点</mark>
 - 上下标：H<sub>2</sub>O、x<sup>2</sup>
-";
+"#;
 
 /// Format prompt types for different scenarios
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -68,7 +80,10 @@ impl FormatPromptType {
 }
 
 /// Compose final system prompt from base prompt and format type
-pub fn compose_system_prompt(base_prompt: Option<&str>, format_type: FormatPromptType) -> Option<String> {
+pub fn compose_system_prompt(
+    base_prompt: Option<&str>,
+    format_type: FormatPromptType,
+) -> Option<String> {
     let base = base_prompt.unwrap_or("").trim();
     let format = format_type.get_prompt().unwrap_or("");
 

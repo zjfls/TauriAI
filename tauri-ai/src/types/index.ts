@@ -207,6 +207,7 @@ export interface GeneralSettings {
   autoStart: boolean;
   debugMode?: boolean;  // Enable debug mode to show raw HTTP messages
   showUsage?: boolean;  // Show token usage in messages
+  theme?: Theme;        // UI theme preference (light/dark/system)
 }
 
 /**
