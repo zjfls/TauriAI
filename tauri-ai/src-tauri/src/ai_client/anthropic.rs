@@ -186,16 +186,21 @@ impl AiClient for AnthropicClient {
 
         let anthropic_messages = convert_messages(&messages);
 
-        // Extract system prompt from messages (System role messages) and config
+        // Extract system prompt from config and messages (System role messages)
+        // System prompt from config should come first
         let mut system_parts: Vec<String> = Vec::new();
+        
+        // First add system_prompt from config
+        if let Some(config_prompt) = &config.parameters.system_prompt {
+            if !config_prompt.is_empty() {
+                system_parts.push(config_prompt.clone());
+            }
+        }
+        
+        // Then add any System role messages from the conversation
         for msg in &messages {
             if msg.role == MessageRole::System && !msg.content.is_empty() {
                 system_parts.push(msg.content.clone());
-            }
-        }
-        if let Some(config_prompt) = &config.parameters.system_prompt {
-            if !config_prompt.is_empty() && !system_parts.iter().any(|p| p == config_prompt) {
-                system_parts.push(config_prompt.clone());
             }
         }
         let system = if system_parts.is_empty() {
@@ -279,21 +284,22 @@ impl AiClient for AnthropicClient {
 
         let anthropic_messages = convert_messages(&messages);
 
-        // Extract system prompt from messages (System role messages) and config
+        // Extract system prompt from config and messages (System role messages)
         // Anthropic API expects system prompt as a separate parameter, not in messages
+        // System prompt from config should come first
         let mut system_parts: Vec<String> = Vec::new();
 
-        // First add any System role messages from the conversation
-        for msg in &messages {
-            if msg.role == MessageRole::System && !msg.content.is_empty() {
-                system_parts.push(msg.content.clone());
+        // First add system_prompt from config
+        if let Some(config_prompt) = &config.parameters.system_prompt {
+            if !config_prompt.is_empty() {
+                system_parts.push(config_prompt.clone());
             }
         }
 
-        // Then add system_prompt from config (if different from messages)
-        if let Some(config_prompt) = &config.parameters.system_prompt {
-            if !config_prompt.is_empty() && !system_parts.iter().any(|p| p == config_prompt) {
-                system_parts.push(config_prompt.clone());
+        // Then add any System role messages from the conversation
+        for msg in &messages {
+            if msg.role == MessageRole::System && !msg.content.is_empty() {
+                system_parts.push(msg.content.clone());
             }
         }
 
