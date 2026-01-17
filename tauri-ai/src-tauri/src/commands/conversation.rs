@@ -48,6 +48,17 @@ pub async fn delete_conversation(
 }
 
 #[tauri::command]
+pub async fn delete_messages_from(
+    conversation_id: String,
+    message_id: String,
+    db: tauri::State<'_, Arc<Mutex<Database>>>,
+) -> Result<(), String> {
+    let db = db.lock().await;
+    db.delete_messages_after(&conversation_id, &message_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn update_conversation_title(
     conversation_id: String,
     title: String,
@@ -56,6 +67,22 @@ pub async fn update_conversation_title(
     let db = db.lock().await;
     db.update_conversation_title(&conversation_id, &title)
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn update_conversation_metadata(
+    conversation_id: String,
+    agent_name: Option<String>,
+    model_ref: Option<String>,
+    db: tauri::State<'_, Arc<Mutex<Database>>>,
+) -> Result<(), String> {
+    let db = db.lock().await;
+    db.update_conversation_metadata(
+        &conversation_id,
+        agent_name.as_deref(),
+        model_ref.as_deref(),
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

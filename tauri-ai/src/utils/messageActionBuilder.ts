@@ -33,10 +33,22 @@ export function buildMessageActions(message: Message): Action[] {
         if (!actions.find(a => a.action_type === 'copy')) {
             actions.push({
                 id: 'copy_default',
-                label: '复制', // Minimal label for user messages
+                label: '复制',
                 icon: 'Copy',
                 action_type: 'copy',
                 payload: message.content
+            });
+        }
+
+        // Add undo action for user messages - allows undoing to this point
+        if (!actions.find(a => a.action_type === 'undo')) {
+            actions.push({
+                id: 'undo_default',
+                label: '撤回',
+                icon: 'Undo2',
+                action_type: 'undo',
+                // Payload contains messageId and content for undo operation
+                payload: JSON.stringify({ messageId: message.id, content: message.content })
             });
         }
     }

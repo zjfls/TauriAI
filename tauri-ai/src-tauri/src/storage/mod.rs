@@ -98,6 +98,11 @@ impl Database {
             [],
         )?;
 
+        // Migration: Add agent_name and model_ref columns if they don't exist
+        // We ignore errors as they will fail if columns already exist
+        let _ = conn.execute("ALTER TABLE conversations ADD COLUMN agent_name TEXT", []);
+        let _ = conn.execute("ALTER TABLE conversations ADD COLUMN model_ref TEXT", []);
+
         // Create messages table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS messages (
@@ -160,8 +165,8 @@ impl Database {
         let now_str = now.to_rfc3339();
 
         conn.execute(
-            "INSERT INTO conversations (id, title, model_id, created_at, updated_at)
-             VALUES (?1, ?2, NULL, ?3, ?4)",
+            "INSERT INTO conversations (id, title, model_id, agent_name, model_ref, created_at, updated_at)
+             VALUES (?1, ?2, NULL, NULL, NULL, ?3, ?4)",
             params![id, title, now_str, now_str],
         )?;
 
@@ -169,6 +174,7 @@ impl Database {
             id,
             title: title.to_string(),
             agent_name: None,
+            model_ref: None,
             created_at: now,
             updated_at: now,
         })
@@ -182,20 +188,21 @@ impl Database {
             .map_err(|e| StorageError::Lock(e.to_string()))?;
 
         let mut stmt = conn.prepare(
-            "SELECT id, title, model_id, created_at, updated_at 
+            "SELECT id, title, agent_name, model_ref, created_at, updated_at 
              FROM conversations 
              ORDER BY updated_at DESC",
         )?;
 
         let conversations = stmt
             .query_map([], |row| {
-                let created_at_str: String = row.get(3)?;
-                let updated_at_str: String = row.get(4)?;
+                let created_at_str: String = row.get(4)?;
+                let updated_at_str: String = row.get(5)?;
 
                 Ok(Conversation {
                     id: row.get(0)?,
                     title: row.get(1)?,
                     agent_name: row.get(2)?,
+                    model_ref: row.get(3)?,
                     created_at: DateTime::parse_from_rfc3339(&created_at_str)
                         .map(|dt| dt.with_timezone(&Utc))
                         .unwrap_or_else(|_| Utc::now()),
@@ -217,7 +224,7 @@ impl Database {
             .map_err(|e| StorageError::Lock(e.to_string()))?;
 
         let mut stmt = conn.prepare(
-            "SELECT id, title, model_id, created_at, updated_at 
+            "SELECT id, title, agent_name, model_ref, created_at, updated_at 
              FROM conversations 
              WHERE id = ?1",
         )?;
@@ -225,13 +232,14 @@ impl Database {
         let mut rows = stmt.query(params![id])?;
 
         if let Some(row) = rows.next()? {
-            let created_at_str: String = row.get(3)?;
-            let updated_at_str: String = row.get(4)?;
+            let created_at_str: String = row.get(4)?;
+            let updated_at_str: String = row.get(5)?;
 
             Ok(Some(Conversation {
                 id: row.get(0)?,
                 title: row.get(1)?,
                 agent_name: row.get(2)?,
+                model_ref: row.get(3)?,
                 created_at: DateTime::parse_from_rfc3339(&created_at_str)
                     .map(|dt| dt.with_timezone(&Utc))
                     .unwrap_or_else(|_| Utc::now()),
@@ -242,6 +250,31 @@ impl Database {
         } else {
             Ok(None)
         }
+    }
+
+    /// Update conversation metadata (agent and model)
+    pub fn update_conversation_metadata(
+        &self,
+        id: &str,
+        agent_name: Option<&str>,
+        model_ref: Option<&str>,
+    ) -> Result<(), StorageError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Lock(e.to_string()))?;
+
+        // Update updated_at as well
+        let now = Utc::now().to_rfc3339();
+
+        conn.execute(
+            "UPDATE conversations 
+             SET agent_name = ?1, model_ref = ?2, updated_at = ?3 
+             WHERE id = ?4",
+            params![agent_name, model_ref, now, id],
+        )?;
+
+        Ok(())
     }
 
     /// Delete a conversation and all its messages
@@ -416,6 +449,42 @@ impl Database {
         conn.execute(
             "UPDATE messages SET content = ?1 WHERE id = ?2",
             params![content, id],
+        )?;
+
+        Ok(())
+    }
+
+    /// Delete a message and all subsequent messages in a conversation
+    /// Used for "undo" functionality
+    pub fn delete_messages_after(
+        &self,
+        conversation_id: &str,
+        message_id: &str,
+    ) -> Result<(), StorageError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Lock(e.to_string()))?;
+
+        // First find the created_at of the target message
+        let created_at: String = conn
+            .query_row(
+                "SELECT created_at FROM messages WHERE id = ?1 AND conversation_id = ?2",
+                params![message_id, conversation_id],
+                |row| row.get(0),
+            )
+            .map_err(|_| {
+                StorageError::NotFound(format!(
+                    "Message {} not found in conversation {}",
+                    message_id, conversation_id
+                ))
+            })?;
+
+        // Delete the target message and all messages created after it in this conversation
+        // Using created_at comparison is safer than assuming order
+        conn.execute(
+            "DELETE FROM messages WHERE conversation_id = ?1 AND created_at >= ?2",
+            params![conversation_id, created_at],
         )?;
 
         Ok(())

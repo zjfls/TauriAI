@@ -72,6 +72,9 @@ pub struct Conversation {
     /// Agent name used for this conversation
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_name: Option<String>,
+    /// Model reference (format: "provider_name/model_name")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_ref: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

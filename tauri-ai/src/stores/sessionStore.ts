@@ -28,6 +28,7 @@ export interface SessionState {
   sendMessage: (sessionId: string, content: string, enableThinking?: boolean) => Promise<void>;
   abortGeneration: (sessionId: string) => Promise<void>;
   retry: (sessionId: string, messageId: string) => Promise<void>;
+  undoToMessage: (sessionId: string, messageId: string) => void;
 
   // Streaming updates (internal use)
   appendStreamingToken: (sessionId: string, token: string) => void;
@@ -35,8 +36,8 @@ export interface SessionState {
   finalizeStreaming: (sessionId: string, fullContent: string, thinking?: string, debugInfo?: DebugInfo, usage?: TokenUsage, model?: string) => void;
   handleError: (sessionId: string, error: string, debugInfo?: DebugInfo) => void;
 
-  // Model switching
-  setSessionModel: (sessionId: string, modelRef: string) => void;
+  // Model switching (async due to API type check)
+  setSessionModel: (sessionId: string, modelRef: string) => Promise<void>;
 
   // Agent switching
   setSessionAgent: (sessionId: string, agentName: string) => void;
@@ -56,6 +57,9 @@ export interface SessionState {
   getSession: (sessionId: string) => AgentSession | undefined;
   getSessionByConversationId: (conversationId: string) => AgentSession | undefined;
 }
+
+// Queue to ensure undo operations complete before sending new messages
+let pendingUndoOperation: Promise<any> = Promise.resolve();
 
 export const useSessionStore = create<SessionState>((set, get) => ({
   sessions: new Map<string, AgentSession>(),
@@ -122,8 +126,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     const conversation = await invoke<{ id: string }>('create_conversation', {
       title: defaultTitle,
-      agentName,
+      // agentName is ignored by create_conversation command, so we need to update it separately
     });
+
+    // Sync metadata to DB immediately
+    await invoke('update_conversation_metadata', {
+      conversationId: conversation.id,
+      agentName: agentName,
+      modelRef: agent?.modelRef,
+    }).catch(console.error);
 
     const session: AgentSession = {
       id: sessionId,
@@ -131,6 +142,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       title: defaultTitle,
       modelRef: agent?.modelRef,
       conversationId: conversation.id,
+      apiType: null,  // Not locked until first message
       messages: [],
       streamingMessage: null,
       streamingThinking: null,
@@ -227,6 +239,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    * Requirements: 4.3, 4.4
    */
   sendMessage: async (sessionId: string, content: string, enableThinking?: boolean) => {
+    // Wait for any pending undo operations to complete first
+    // This prevents race conditions where new messages are sent before backend deletion finishes
+    await pendingUndoOperation;
+
     const session = get().sessions.get(sessionId);
     if (!session) {
       throw new Error('Session not found');
@@ -246,7 +262,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       createdAt: new Date().toISOString(),
     };
 
-    // Update session state
+    // Get API type if not locked yet
+    let apiTypeToLock = session.apiType;
+    if (!session.apiType && session.modelRef) {
+      const { useConfigStore } = await import('./configStore');
+      const config = useConfigStore.getState().config;
+      if (config) {
+        const { getApiTypeFromModelRef } = await import('../utils/apiType');
+        apiTypeToLock = getApiTypeFromModelRef(session.modelRef, config);
+      }
+    }
+
+    // Update session state with API type lock
     set((state) => {
       const newSessions = new Map(state.sessions);
       const currentSession = newSessions.get(sessionId);
@@ -259,6 +286,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           streamingThinking: null,
           error: null,
           lastActiveAt: new Date().toISOString(),
+          // Lock API type on first message
+          apiType: currentSession.apiType || apiTypeToLock,
         });
       }
       return { sessions: newSessions };
@@ -354,6 +383,41 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
   },
 
+
+  /**
+   * Undo to a specific message (remove it and all subsequent messages)
+   * Used for "Withdraw" functionality
+   */
+  undoToMessage: (sessionId: string, messageId: string) => {
+    // Optimistically update UI
+    set((state) => {
+      const newSessions = new Map(state.sessions);
+      const session = newSessions.get(sessionId);
+      if (session) {
+        const messageIndex = session.messages.findIndex((m) => m.id === messageId);
+        if (messageIndex !== -1) {
+          // Keep messages only up to the one before the target message
+          const newMessages = session.messages.slice(0, messageIndex);
+          newSessions.set(sessionId, {
+            ...session,
+            messages: newMessages,
+          });
+
+          // Sync with backend
+          // Chain operation to ensure it completes before next message send
+          const deleteOp = invoke('delete_messages_from', {
+            conversationId: session.conversationId,
+            messageId: messageId
+          }).catch(console.error);
+
+          pendingUndoOperation = pendingUndoOperation.then(() => deleteOp);
+        }
+      }
+      return { sessions: newSessions };
+    });
+    // Persist state
+    get().saveSessionState();
+  },
 
   /**
    * Append a streaming token to a session
@@ -492,18 +556,44 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    * Set the model for a specific session
    * Requirements: 6.1, 6.2, 6.3
    */
-  setSessionModel: (sessionId: string, modelRef: string) => {
+  setSessionModel: async (sessionId: string, modelRef: string) => {
+    const session = get().sessions.get(sessionId);
+    if (!session) return;
+
+    // Check API type compatibility if session is locked
+    if (session.apiType) {
+      const { useConfigStore } = await import('./configStore');
+      const config = useConfigStore.getState().config;
+      if (config) {
+        const { canSwitchModel } = await import('../utils/apiType');
+        const result = canSwitchModel(session.apiType, modelRef, config);
+        if (!result.allowed) {
+          // Cannot switch - UI should handle this error
+          console.warn(`Model switch blocked: ${result.reason}`);
+          throw new Error(result.reason);
+        }
+      }
+    }
+
     set((state) => {
       const newSessions = new Map(state.sessions);
-      const session = newSessions.get(sessionId);
-      if (session) {
+      const s = newSessions.get(sessionId);
+      if (s) {
         newSessions.set(sessionId, {
-          ...session,
+          ...s,
           modelRef,
         });
       }
       return { sessions: newSessions };
     });
+
+    // Sync to DB
+    // We need to pass both agent and model because the backend overwrites
+    invoke('update_conversation_metadata', {
+      conversationId: session.conversationId,
+      agentName: session.agentName,
+      modelRef: modelRef,
+    }).catch(console.error);
 
     // Save state after model change
     get().saveSessionState();
@@ -514,6 +604,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    * Requirements: 6.1, 6.2
    */
   setSessionAgent: async (sessionId: string, agentName: string) => {
+    const currentSession = get().sessions.get(sessionId);
+    if (!currentSession) return;
+
     // Get the new agent's default model
     const { useConfigStore } = await import('./configStore');
     const agent = useConfigStore.getState().getAgent(agentName);
@@ -530,6 +623,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
       return { sessions: newSessions };
     });
+
+    // Sync to DB
+    invoke('update_conversation_metadata', {
+      conversationId: currentSession.conversationId,
+      agentName: agentName,
+      modelRef: agent?.modelRef,
+    }).catch(console.error);
 
     // Save state after agent change
     get().saveSessionState();
@@ -593,6 +693,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       agentName: session.agentName,
       modelRef: session.modelRef,
       conversationId: session.conversationId,
+      apiType: session.apiType,
       createdAt: session.createdAt,
       lastActiveAt: session.lastActiveAt,
     }));
@@ -667,6 +768,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           title,
           modelRef: persisted.modelRef,
           conversationId: persisted.conversationId,
+          apiType: persisted.apiType,
           messages,
           streamingMessage: null,
           streamingThinking: null,
@@ -746,12 +848,22 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const now = new Date().toISOString();
     const sessionId = crypto.randomUUID();
 
+    // Sync metadata to DB if missing in conversation (Lazy migration)
+    if (!conversation?.agentName || !conversation?.modelRef) {
+      invoke('update_conversation_metadata', {
+        conversationId,
+        agentName: agentName,
+        modelRef: agent?.modelRef,
+      }).catch(console.error);
+    }
+
     const session: AgentSession = {
       id: sessionId,
       agentName,
       title: conversation?.title || '新对话',
       modelRef: agent?.modelRef,
       conversationId,
+      apiType: messages.length > 0 ? 'chat_completions' : null,  // Lock if has messages
       messages,
       streamingMessage: null,
       streamingThinking: null,

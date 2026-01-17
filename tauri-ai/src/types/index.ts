@@ -30,6 +30,11 @@ export type FormatPromptType = 'chat' | 'plain' | 'json' | 'none';
 // - ollama: Local Ollama server
 export type ProviderType = 'openai' | 'openai_compatible' | 'openai_responses' | 'anthropic' | 'ollama';
 
+// API Protocol type for strong isolation
+// - chat_completions: Traditional Chat Completions API (OpenAI, Anthropic, Ollama, etc.)
+// - responses: OpenAI Responses API for reasoning models (o1, o3, gpt-4.1)
+export type ApiProtocolType = 'chat_completions' | 'responses';
+
 /**
  * Model capabilities (what features the model supports)
  */
@@ -162,7 +167,7 @@ export interface Action {
   id: string;
   label: string;
   icon?: string;
-  action_type: 'copy' | 'retry' | 'navigate' | 'link' | 'event';
+  action_type: 'copy' | 'retry' | 'navigate' | 'link' | 'event' | 'undo';
   payload?: string;
   style?: 'default' | 'primary' | 'danger';
 }
@@ -183,6 +188,7 @@ export interface Conversation {
   id: string;
   title: string;
   agentName?: string;
+  modelRef?: string;      // Model reference used in this conversation
   createdAt: string;
   updatedAt: string;
 }
@@ -261,6 +267,9 @@ export interface AgentSession {
   modelRef?: string;                  // Current model reference (can override agent default)
   conversationId: string | null;      // Associated conversation ID
 
+  // API type isolation (locked after first message)
+  apiType: ApiProtocolType | null;    // null = not locked yet
+
   // Session state
   messages: Message[];                // Message history for this session
   streamingMessage: string | null;    // Current streaming message content
@@ -284,6 +293,7 @@ export interface PersistedSession {
   agentName: string;
   modelRef?: string;
   conversationId: string | null;
+  apiType: ApiProtocolType | null;  // Persisted API type lock
   createdAt: string;
   lastActiveAt: string;
 }

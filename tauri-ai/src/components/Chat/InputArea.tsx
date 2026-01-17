@@ -181,7 +181,12 @@ function CompactSelector<T extends { label: string; value: string }>({
   );
 }
 
-export const InputArea: React.FC<InputAreaProps> = ({
+export interface InputAreaHandle {
+  setValue: (value: string) => void;
+  focus: () => void;
+}
+
+export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   onSend,
   onAbort,
   disabled,
@@ -194,25 +199,43 @@ export const InputArea: React.FC<InputAreaProps> = ({
   modelOptions = [],
   currentModelRef = '',
   onModelSelect,
-}) => {
+}, ref) => {
   const [content, setContent] = useState('');
   const [enableThinking, setEnableThinking] = useState(true); // Default enabled when supported
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Helper to adjust textarea height
+  const adjustTextareaHeight = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (textarea) {
+      textarea.style.height = 'auto';
+      const newHeight = calculateTextareaHeight(textarea.scrollHeight);
+      textarea.style.height = `${newHeight}px`;
+    }
+  }, []);
+
+  // Expose methods to parent
+  React.useImperativeHandle(ref, () => ({
+    setValue: (value: string) => {
+      setContent(value);
+      // Auto-resize after setting content
+      requestAnimationFrame(() => {
+        adjustTextareaHeight();
+        textareaRef.current?.focus();
+      });
+    },
+    focus: () => {
+      textareaRef.current?.focus();
+    }
+  }));
 
   /**
    * Auto-resize textarea based on content
    * Requirement 4.1: Auto-expand textarea height up to maximum limit
    */
   useEffect(() => {
-    const textarea = textareaRef.current;
-    if (textarea) {
-      // Reset height to auto to get accurate scrollHeight
-      textarea.style.height = 'auto';
-      // Calculate and apply new height
-      const newHeight = calculateTextareaHeight(textarea.scrollHeight);
-      textarea.style.height = `${newHeight}px`;
-    }
-  }, [content]);
+    adjustTextareaHeight();
+  }, [content, adjustTextareaHeight]);
 
   /**
    * Focus textarea on mount
@@ -390,6 +413,6 @@ export const InputArea: React.FC<InputAreaProps> = ({
       </div>
     </div>
   );
-};
+});
 
 export default InputArea;

@@ -55,9 +55,17 @@ const SessionTab: React.FC<SessionTabProps> = ({
         )}
       </div>
 
-      {/* Session title */}
-      <span className="flex-1 text-sm font-medium truncate">
+      {/* Session title with API type indicator */}
+      <span className="flex-1 text-sm font-medium truncate flex items-center gap-1">
         {session.title}
+        {session.apiType === 'responses' && (
+          <span
+            className="text-xs px-1 rounded bg-purple-100 dark:bg-purple-900 text-purple-600 dark:text-purple-300"
+            title="Responses API"
+          >
+            R
+          </span>
+        )}
       </span>
 
       {/* Close button */}

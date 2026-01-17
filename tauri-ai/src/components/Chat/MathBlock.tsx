@@ -68,7 +68,12 @@ export const MathBlock: React.FC<MathBlockProps> = ({ code }) => {
         try {
             const parsed = JSON.parse(cleanCode);
             return {
-                functions: Array.isArray(parsed.functions) ? parsed.functions : [parsed.functions],
+                // Handle cases: array, single value, or undefined
+                functions: Array.isArray(parsed.functions)
+                    ? parsed.functions.filter(Boolean)  // Remove any undefined entries
+                    : parsed.functions
+                        ? [parsed.functions]
+                        : ['x'],  // Default fallback
                 xRange: parsed.xRange || parsed.domain || [-10, 10],
                 yRange: parsed.yRange || parsed.range || [-5, 5],
             };
@@ -94,9 +99,10 @@ export const MathBlock: React.FC<MathBlockProps> = ({ code }) => {
     }
 
     const parsedFunctions = useMemo((): ParsedFunction[] => {
-        return config.functions.map((fn: string | { fn: string; color?: string }, index: number): ParsedFunction => {
-            const expr = typeof fn === 'string' ? fn : fn.fn;
-            const color = typeof fn === 'object' && fn.color ? fn.color : COLORS[index % COLORS.length];
+        return config.functions.map((fn: string | { fn?: string; color?: string }, index: number): ParsedFunction => {
+            // Handle both string and object formats, with fallback for missing fn
+            const expr = typeof fn === 'string' ? fn : (fn?.fn || 'x');
+            const color = typeof fn === 'object' && fn?.color ? fn.color : COLORS[index % COLORS.length];
             return {
                 fn: parseExpression(expr),
                 color,

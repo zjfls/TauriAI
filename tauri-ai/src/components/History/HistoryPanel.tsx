@@ -14,21 +14,57 @@ import type { Conversation } from '../../types';
 
 /**
  * Format date for display
+ * - Today: HH:mm
+ * - Yesterday: 昨天 HH:mm
+ * - Day before yesterday: 前天 HH:mm
+ * - Within this year: MM-DD HH:mm
+ * - Over a year: YYYY-MM-DD HH:mm
  */
 const formatDate = (dateString: string): string => {
   const date = new Date(dateString);
   const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+  const diff = now.getTime() - date.getTime();
 
-  if (diffDays === 0) {
-    return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-  } else if (diffDays === 1) {
-    return '昨天';
-  } else if (diffDays < 7) {
-    return `${diffDays}天前`;
+  // Within 12 hours
+  if (diff >= 0 && diff < 12 * 60 * 60 * 1000) {
+    const minutes = Math.floor(diff / 60000);
+    if (minutes < 1) return '刚刚';
+    if (minutes < 60) return `${minutes}分钟前`;
+
+    const hours = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    if (mins === 0) return `${hours}小时前`;
+    return `${hours}小时${mins}分钟前`;
+  }
+
+  // Get time string in HH:mm format
+  const timeStr = date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+
+  // Get start of today, yesterday, day before yesterday
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterdayStart = new Date(todayStart.getTime() - 24 * 60 * 60 * 1000);
+  const dayBeforeYesterdayStart = new Date(todayStart.getTime() - 2 * 24 * 60 * 60 * 1000);
+
+  if (date >= todayStart) {
+    // Today but > 12 hours ago (unlikely given 12h check, but distinct logic)
+    return timeStr;
+  } else if (date >= yesterdayStart) {
+    // Yesterday
+    return `昨天 ${timeStr}`;
+  } else if (date >= dayBeforeYesterdayStart) {
+    // Day before yesterday
+    return `前天 ${timeStr}`;
+  } else if (date.getFullYear() === now.getFullYear()) {
+    // Same year: MM-DD HH:mm
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${month}-${day} ${timeStr}`;
   } else {
-    return date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
+    // Different year: YYYY-MM-DD HH:mm
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day} ${timeStr}`;
   }
 };
 
@@ -49,6 +85,7 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
   onDelete,
   onRename,
 }) => {
+  const { config } = useConfigStore();
   const [isEditing, setIsEditing] = useState(false);
   const [editTitle, setEditTitle] = useState(conversation.title);
   const [showActions, setShowActions] = useState(false);
@@ -152,13 +189,18 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
             `}>
               {conversation.title}
             </h3>
-            <div className="flex items-center gap-2 mt-0.5">
+            <div className="flex items-center gap-2 mt-0.5 flex-wrap">
               <span className="text-xs text-gray-500 dark:text-gray-400">
                 {formatDate(conversation.updatedAt)}
               </span>
               {conversation.agentName && (
                 <span className="inline-flex items-center px-1.5 py-0.5 text-xs rounded bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400">
-                  {conversation.agentName}
+                  {config?.agents?.find(a => a.name === conversation.agentName)?.displayName || conversation.agentName}
+                </span>
+              )}
+              {conversation.modelRef && (
+                <span className="inline-flex items-center px-1.5 py-0.5 text-xs rounded bg-green-100 text-green-600 dark:bg-green-900/40 dark:text-green-400 truncate max-w-[120px]" title={conversation.modelRef}>
+                  {conversation.modelRef.split('/').pop()}
                 </span>
               )}
             </div>
@@ -367,8 +409,8 @@ export const HistoryPanel: React.FC = () => {
           <button
             onClick={handleBatchDelete}
             className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg transition-colors ${showBatchDeleteConfirm
-                ? 'bg-red-600 text-white hover:bg-red-700'
-                : 'bg-red-100 text-red-600 hover:bg-red-200 dark:bg-red-900/30 dark:text-red-400'
+              ? 'bg-red-600 text-white hover:bg-red-700'
+              : 'bg-red-100 text-red-600 hover:bg-red-200 dark:bg-red-900/30 dark:text-red-400'
               }`}
           >
             <Trash2 size={14} />

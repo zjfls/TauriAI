@@ -323,7 +323,16 @@ function protectContent(content: string): ProtectedContent {
 function restoreContent(content: string, blocks: Map<string, string>): string {
   let result = content;
   blocks.forEach((original, placeholder) => {
-    result = result.replace(placeholder, original);
+    // Replace all occurrences (use global regex)
+    const escaped = placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    result = result.replace(new RegExp(escaped, 'g'), original);
+
+    // Also handle HTML-escaped version (e.g., &amp; instead of &)
+    const htmlEscaped = placeholder.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    if (htmlEscaped !== placeholder) {
+      const escapedHtml = htmlEscaped.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      result = result.replace(new RegExp(escapedHtml, 'g'), original);
+    }
   });
   return result;
 }
@@ -348,7 +357,6 @@ export const MarkdownRenderer = React.memo(function MarkdownRenderer({ content }
     let result = restoreContent(sanitized, blocks);
 
     // Step 4: Decode &amp; for any remaining LaTeX (alignment in matrices)
-    // This is safe because we've already sanitized the HTML
     result = result.replace(/&amp;/g, '&');
 
     return result;

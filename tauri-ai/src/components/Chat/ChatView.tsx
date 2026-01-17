@@ -4,11 +4,11 @@
  * Requirements: 2.3, 2.4, 4.1, 4.2, 4.3, 4.4
  */
 
-import React, { useMemo } from 'react';
+import React, { useMemo, useRef } from 'react';
 import { useSessionStore } from '../../stores/sessionStore';
 import { useConfigStore } from '../../stores/configStore';
 import { MessageList } from './MessageList';
-import { InputArea } from './InputArea';
+import { InputArea, type InputAreaHandle } from './InputArea';
 import { countTokens } from '../../utils/tokenizer';
 import * as opener from '@tauri-apps/plugin-opener';
 import type { TokenUsage, ContextUsageBreakdown } from '../../types';
@@ -26,6 +26,9 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
   const abortGeneration = useSessionStore((state) => state.abortGeneration);
   const setSessionAgent = useSessionStore((state) => state.setSessionAgent);
   const setSessionModel = useSessionStore((state) => state.setSessionModel);
+  const undoToMessage = useSessionStore((state) => state.undoToMessage);
+
+  const inputRef = useRef<InputAreaHandle>(null);
 
   // Extract session state with defaults for when no session exists
   const messages = session?.messages ?? [];
@@ -209,6 +212,20 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
         // It should probably augment the action or we pass `(action, message)`?
         // Let's update `onAction` signature in MessageList/MessageItem to `(action, message)`.
         break;
+      case 'undo':
+        if (sessionId && action.payload) {
+          try {
+            const { messageId, content } = JSON.parse(action.payload);
+            undoToMessage(sessionId, messageId);
+            if (content && inputRef.current) {
+              inputRef.current.setValue(content);
+              inputRef.current.focus();
+            }
+          } catch (e) {
+            console.error("Failed to process undo action", e);
+          }
+        }
+        break;
       case 'navigate':
         // For now, no router integrated in UI Store widely, just console or window.location?
         // App.tsx handles views via UI Store.
@@ -243,6 +260,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
         </div>
       )}
       <InputArea
+        ref={inputRef}
         onSend={handleSend}
         onAbort={handleAbort}
         disabled={false}
@@ -254,7 +272,15 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
         onAgentSelect={(agentName) => sessionId && setSessionAgent(sessionId, agentName)}
         modelOptions={getModelOptions()}
         currentModelRef={session?.modelRef || ''}
-        onModelSelect={(modelRef) => sessionId && setSessionModel(sessionId, modelRef)}
+        onModelSelect={async (modelRef) => {
+          if (!sessionId) return;
+          try {
+            await setSessionModel(sessionId, modelRef);
+          } catch (error) {
+            // Show error for API type incompatibility
+            alert((error as Error).message || '无法切换模型');
+          }
+        }}
       />
     </div>
   );

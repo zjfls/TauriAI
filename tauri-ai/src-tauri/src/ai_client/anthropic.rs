@@ -4,9 +4,12 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use tokio::sync::mpsc;
 
-use super::traits::{AiClient, AiError, StreamEvent, TokenUsage};
+use super::traits::{
+    AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent, TokenUsage,
+};
 use crate::models::{Message, MessageRole, ModelConfig};
 
 /// Anthropic API client
@@ -183,16 +186,29 @@ impl AiClient for AnthropicClient {
 
         let anthropic_messages = convert_messages(&messages);
 
-        // Convert system prompt to array format with cache control
-        let system = config.parameters.system_prompt.as_ref().map(|prompt| {
-            vec![SystemContent {
+        // Extract system prompt from messages (System role messages) and config
+        let mut system_parts: Vec<String> = Vec::new();
+        for msg in &messages {
+            if msg.role == MessageRole::System && !msg.content.is_empty() {
+                system_parts.push(msg.content.clone());
+            }
+        }
+        if let Some(config_prompt) = &config.parameters.system_prompt {
+            if !config_prompt.is_empty() && !system_parts.iter().any(|p| p == config_prompt) {
+                system_parts.push(config_prompt.clone());
+            }
+        }
+        let system = if system_parts.is_empty() {
+            None
+        } else {
+            Some(vec![SystemContent {
                 content_type: "text".to_string(),
-                text: prompt.clone(),
+                text: system_parts.join("\n\n"),
                 cache_control: Some(CacheControl {
                     control_type: "ephemeral".to_string(),
                 }),
-            }]
-        });
+            }])
+        };
 
         let request = MessagesRequest {
             model: config.model.clone(),
@@ -263,16 +279,36 @@ impl AiClient for AnthropicClient {
 
         let anthropic_messages = convert_messages(&messages);
 
-        // Convert system prompt to array format with cache control
-        let system = config.parameters.system_prompt.as_ref().map(|prompt| {
-            vec![SystemContent {
+        // Extract system prompt from messages (System role messages) and config
+        // Anthropic API expects system prompt as a separate parameter, not in messages
+        let mut system_parts: Vec<String> = Vec::new();
+
+        // First add any System role messages from the conversation
+        for msg in &messages {
+            if msg.role == MessageRole::System && !msg.content.is_empty() {
+                system_parts.push(msg.content.clone());
+            }
+        }
+
+        // Then add system_prompt from config (if different from messages)
+        if let Some(config_prompt) = &config.parameters.system_prompt {
+            if !config_prompt.is_empty() && !system_parts.iter().any(|p| p == config_prompt) {
+                system_parts.push(config_prompt.clone());
+            }
+        }
+
+        // Combine all system content into Anthropic format
+        let system = if system_parts.is_empty() {
+            None
+        } else {
+            Some(vec![SystemContent {
                 content_type: "text".to_string(),
-                text: prompt.clone(),
+                text: system_parts.join("\n\n"),
                 cache_control: Some(CacheControl {
                     control_type: "ephemeral".to_string(),
                 }),
-            }]
-        });
+            }])
+        };
 
         let request = MessagesRequest {
             model: config.model.clone(),
@@ -284,9 +320,28 @@ impl AiClient for AnthropicClient {
             stream: true,
         };
 
+        let url = format!("{api_base}/messages");
+
+        // Capture request info for debug
+        let debug_request = DebugRequestData {
+            url: url.clone(),
+            method: "POST".to_string(),
+            headers: {
+                let mut h = HashMap::new();
+                h.insert(
+                    "x-api-key".to_string(),
+                    format!("{}...", &api_key[..8.min(api_key.len())]),
+                );
+                h.insert("anthropic-version".to_string(), "2023-06-01".to_string());
+                h.insert("Content-Type".to_string(), "application/json".to_string());
+                h
+            },
+            body: serde_json::to_value(&request).unwrap_or(serde_json::Value::Null),
+        };
+
         let response = self
             .client
-            .post(format!("{api_base}/messages"))
+            .post(&url)
             .header("x-api-key", api_key)
             .header("anthropic-version", "2023-06-01")
             .header("Content-Type", "application/json")
@@ -294,6 +349,14 @@ impl AiClient for AnthropicClient {
             .send()
             .await
             .map_err(|e| AiError::ConnectionError(e.to_string()))?;
+
+        // Capture response info for debug
+        let status_code = response.status().as_u16();
+        let response_headers: HashMap<String, String> = response
+            .headers()
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+            .collect();
 
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();
@@ -313,6 +376,9 @@ impl AiClient for AnthropicClient {
         let mut full_content = String::new();
         let mut stream = response.bytes_stream();
         let mut token_usage: Option<TokenUsage> = None;
+
+        // Store debug parts for later assembly
+        // We'll build the final debug_info with full_content at the end
 
         while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result.map_err(|e| AiError::StreamError(e.to_string()))?;
@@ -351,11 +417,23 @@ impl AiClient for AnthropicClient {
                                 // For now we just continue; the usage from message_start is usually sufficient
                             }
                             StreamingEvent::MessageStop {} => {
+                                // Build debug info with response content
+                                let debug_info = DebugInfoData {
+                                    request: Some(debug_request.clone()),
+                                    response: Some(DebugResponseData {
+                                        status: status_code,
+                                        headers: response_headers.clone(),
+                                        body: serde_json::json!({
+                                            "content": full_content.clone(),
+                                            "usage": token_usage.clone(),
+                                        }),
+                                    }),
+                                };
                                 let _ = token_sender
                                     .send(StreamEvent::DoneWithDebug {
                                         content: full_content.clone(),
                                         thinking: None,
-                                        debug_info: None,
+                                        debug_info: Some(debug_info),
                                         usage: token_usage.clone(),
                                     })
                                     .await;
@@ -374,11 +452,23 @@ impl AiClient for AnthropicClient {
             }
         }
 
+        // Fallback: stream ended without MessageStop event
+        let debug_info = DebugInfoData {
+            request: Some(debug_request),
+            response: Some(DebugResponseData {
+                status: status_code,
+                headers: response_headers,
+                body: serde_json::json!({
+                    "content": full_content.clone(),
+                    "usage": token_usage.clone(),
+                }),
+            }),
+        };
         let _ = token_sender
             .send(StreamEvent::DoneWithDebug {
                 content: full_content,
                 thinking: None,
-                debug_info: None,
+                debug_info: Some(debug_info),
                 usage: token_usage,
             })
             .await;
