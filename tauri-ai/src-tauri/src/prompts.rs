@@ -29,8 +29,8 @@ pub const CHAT_FORMAT_PROMPT: &str = r#"
 使用 mermaid 作为语言标记的代码块，支持 flowchart、sequence、gantt、classDiagram 等图表类型。
 注意事项：
 - **禁止使用中文引号**：节点文本必须用英文双引号 `"` 包裹
-- **数学公式必须用双美元符号**：`$$公式$$`（单 `$` 无效），且整个节点文本需用引号包裹
-- 正确示例：`A["核心概念：$$\\frac{dy}{dx}$$"]`
+- **不支持数学公式**：Mermaid 内部不支持 LaTeX 公式渲染，如需数学符号请使用 Unicode（如 ∫、∑、√、∞、≤、≥、α、β、π）
+- **禁止使用 `*` 作乘号**：类图中 `*` 是保留符号，请用 `×` 或 `·` 代替
 - **Class Diagram**：必须先定义类名再使用 `<<interface>>` 注解
 错误示范：
 ```mermaid
