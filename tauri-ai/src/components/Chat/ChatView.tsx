@@ -272,7 +272,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
   };
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full flex-col overflow-hidden">
       <MessageList
         messages={messages}
         streamingContent={streamingMessage}
@@ -282,7 +282,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
       />
       {/* Conversation total token usage */}
       {showUsage && totalUsage && (
-        <div className="flex justify-center px-4 py-1 text-xs text-gray-500 dark:text-gray-400 border-t border-gray-100 dark:border-gray-800">
+        <div className="flex justify-center px-4 py-1 text-xs text-gray-500 dark:text-gray-400 border-t border-gray-100 dark:border-gray-800 flex-shrink-0">
           <span>
             对话总计: in:{totalUsage.promptTokens} out:{totalUsage.completionTokens} total:{totalUsage.totalTokens}
             {totalUsage.reasoningTokens ? ` (${totalUsage.reasoningTokens} reasoning)` : ''}

@@ -236,7 +236,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
 
       {/* Message Content */}
       <div
-        className={`relative max-w-[80%] rounded-2xl px-4 py-2 ${isUser
+        className={`relative max-w-[80%] rounded-2xl px-4 py-2 overflow-hidden ${isUser
           ? isFailed
             ? 'bg-red-500 text-white border-2 border-red-600'
             : isPending

@@ -63,24 +63,38 @@ const CodeBlock = React.memo(function CodeBlock({ language, code }: CodeBlockPro
   };
 
   return (
-    <div className="group relative my-2 overflow-hidden rounded-lg">
+    <div className="group relative my-2 overflow-hidden rounded-lg max-w-full">
       <div className="flex items-center justify-between bg-gray-800 px-4 py-2 text-xs text-gray-400">
-        <span>{language || 'code'}</span>
+        <span className="font-mono">{language || 'text'}</span>
         <button
           onClick={handleCopy}
-          className="flex items-center gap-1 rounded px-2 py-1 hover:bg-gray-700 hover:text-gray-200"
-          title="Copy code"
+          className="flex items-center gap-1.5 rounded px-2.5 py-1 hover:bg-gray-700 hover:text-gray-200 transition-colors"
+          title={copied ? "已复制!" : "复制代码"}
         >
-          {copied ? <Check size={14} /> : <Copy size={14} />}
+          {copied ? (
+            <>
+              <Check size={14} />
+              <span className="text-xs">已复制</span>
+            </>
+          ) : (
+            <>
+              <Copy size={14} />
+              <span className="text-xs">复制</span>
+            </>
+          )}
         </button>
       </div>
-      <SyntaxHighlighter
-        language={language || 'text'}
-        style={oneDark}
-        customStyle={{ margin: 0, borderRadius: '0 0 0.5rem 0.5rem', fontSize: '0.875rem' }}
-      >
-        {code}
-      </SyntaxHighlighter>
+      <div className="overflow-x-auto">
+        <SyntaxHighlighter
+          language={language || 'text'}
+          style={oneDark}
+          customStyle={{ margin: 0, borderRadius: '0 0 0.5rem 0.5rem', fontSize: '0.875rem' }}
+          wrapLines={false}
+          wrapLongLines={false}
+        >
+          {code}
+        </SyntaxHighlighter>
+      </div>
     </div>
   );
 });
