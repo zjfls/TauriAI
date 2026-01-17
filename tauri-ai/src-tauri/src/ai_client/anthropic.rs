@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 use super::traits::{
     AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent, TokenUsage,
 };
-use crate::models::{Message, MessageRole, ModelConfig};
+use crate::models::{ContentPart, Message, MessageRole, ModelConfig};
 
 /// Anthropic API client
 pub struct AnthropicClient {
@@ -35,7 +35,44 @@ impl Default for AnthropicClient {
 #[derive(Debug, Serialize)]
 struct AnthropicMessage {
     role: String,
-    content: String,
+    /// Content can be a string or an array of content blocks for multimodal
+    content: AnthropicContent,
+}
+
+/// Anthropic content format - either simple string or array of blocks
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum AnthropicContent {
+    /// Simple text content
+    Text(String),
+    /// Multimodal content (text + images)
+    Blocks(Vec<AnthropicContentBlock>),
+}
+
+/// A single content block for multimodal messages
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum AnthropicContentBlock {
+    /// Text content block
+    Text { text: String },
+    /// Image content block
+    Image { source: ImageSource },
+}
+
+/// Image source data structure
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ImageSource {
+    /// Base64 encoded image
+    Base64 {
+        media_type: String,
+        data: String,
+    },
+    /// URL image (not supported by Anthropic, but kept for future)
+    #[allow(dead_code)]
+    Url {
+        url: String,
+    },
 }
 
 /// Cache control for prompt caching
@@ -164,12 +201,104 @@ fn convert_messages(messages: &[Message]) -> Vec<AnthropicMessage> {
                 MessageRole::Assistant => "assistant",
                 MessageRole::System => "user", // Should not reach here due to filter
             };
+
+            // Check if message has multimodal content
+            let content = if msg.has_multimodal_content() {
+                // Convert to multimodal format
+                let blocks: Vec<AnthropicContentBlock> = msg
+                    .get_content_parts()
+                    .into_iter()
+                    .flat_map(|part| match part {
+                        ContentPart::Text { text } => vec![AnthropicContentBlock::Text { text }],
+                        ContentPart::Image { url, detail: _ } => {
+                            // Parse data URL to extract media type and base64 data
+                            if let Some((media_type, data)) = parse_data_url(&url) {
+                                vec![AnthropicContentBlock::Image {
+                                    source: ImageSource::Base64 { media_type, data },
+                                }]
+                            } else {
+                                // If not a data URL, skip (Anthropic doesn't support URL images)
+                                vec![]
+                            }
+                        }
+                        ContentPart::TextFile { filename, content } => {
+                            // Format text file as markdown code block
+                            vec![AnthropicContentBlock::Text {
+                                text: format!("📄 {}\n```\n{}\n```", filename, content),
+                            }]
+                        }
+                        ContentPart::PdfDocument {
+                            filename,
+                            pages,
+                            ..
+                        } => {
+                            // Convert PDF to alternating text and image blocks
+                            pages
+                                .into_iter()
+                                .flat_map(|page| {
+                                    let mut blocks = vec![AnthropicContentBlock::Text {
+                                        text: format!(
+                                            "📄 {} - 第{}页\n```\n{}\n```",
+                                            filename, page.page_number, page.text
+                                        ),
+                                    }];
+                                    
+                                    // Add image block if we can parse the data URL
+                                    if let Some((media_type, data)) = parse_data_url(&page.image) {
+                                        blocks.push(AnthropicContentBlock::Image {
+                                            source: ImageSource::Base64 { media_type, data },
+                                        });
+                                    }
+                                    
+                                    blocks
+                                })
+                                .collect()
+                        }
+                    })
+                    .collect();
+                AnthropicContent::Blocks(blocks)
+            } else {
+                // Simple text content
+                AnthropicContent::Text(msg.content.clone())
+            };
+
             AnthropicMessage {
                 role: role.to_string(),
-                content: msg.content.clone(),
+                content,
             }
         })
         .collect()
+}
+
+/// Parse data URL to extract media type and base64 data
+/// Format: data:image/png;base64,iVBORw0KGgo...
+fn parse_data_url(url: &str) -> Option<(String, String)> {
+    if !url.starts_with("data:") {
+        return None;
+    }
+    
+    let url = url.strip_prefix("data:")?;
+    let parts: Vec<&str> = url.splitn(2, ',').collect();
+    if parts.len() != 2 {
+        return None;
+    }
+    
+    let header = parts[0];
+    let data = parts[1];
+    
+    // Extract media type (before ;base64)
+    let media_type = if let Some(semicolon_pos) = header.find(';') {
+        &header[..semicolon_pos]
+    } else {
+        header
+    };
+    
+    // Verify it's base64 encoded
+    if !header.contains("base64") {
+        return None;
+    }
+    
+    Some((media_type.to_string(), data.to_string()))
 }
 
 #[async_trait]
@@ -479,5 +608,290 @@ impl AiClient for AnthropicClient {
             })
             .await;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{MessageStatus, PdfPage};
+    use chrono::Utc;
+
+    #[test]
+    fn test_parse_data_url() {
+        // Valid PNG data URL
+        let url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUA";
+        let result = parse_data_url(url);
+        assert!(result.is_some());
+        let (media_type, data) = result.unwrap();
+        assert_eq!(media_type, "image/png");
+        assert_eq!(data, "iVBORw0KGgoAAAANSUhEUgAAAAUA");
+
+        // Valid JPEG data URL
+        let url = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD";
+        let result = parse_data_url(url);
+        assert!(result.is_some());
+        let (media_type, data) = result.unwrap();
+        assert_eq!(media_type, "image/jpeg");
+        assert_eq!(data, "/9j/4AAQSkZJRgABAQAAAQABAAD");
+
+        // Invalid: not a data URL
+        let url = "https://example.com/image.png";
+        assert!(parse_data_url(url).is_none());
+
+        // Invalid: missing base64
+        let url = "data:image/png,notbase64";
+        assert!(parse_data_url(url).is_none());
+
+        // Invalid: malformed
+        let url = "data:image/png";
+        assert!(parse_data_url(url).is_none());
+    }
+
+    #[test]
+    fn test_convert_messages_text_only() {
+        let messages = vec![Message {
+            id: "1".to_string(),
+            conversation_id: "conv1".to_string(),
+            role: MessageRole::User,
+            content: "Hello, world!".to_string(),
+            content_parts: vec![],
+            meta: None,
+            created_at: Utc::now(),
+            status: MessageStatus::Success,
+            error_message: None,
+        }];
+
+        let anthropic_messages = convert_messages(&messages);
+        assert_eq!(anthropic_messages.len(), 1);
+        assert_eq!(anthropic_messages[0].role, "user");
+        
+        // Check content is text
+        match &anthropic_messages[0].content {
+            AnthropicContent::Text(text) => {
+                assert_eq!(text, "Hello, world!");
+            }
+            _ => panic!("Expected Text content"),
+        }
+    }
+
+    #[test]
+    fn test_convert_messages_with_image() {
+        let messages = vec![Message {
+            id: "1".to_string(),
+            conversation_id: "conv1".to_string(),
+            role: MessageRole::User,
+            content: "Look at this".to_string(),
+            content_parts: vec![
+                ContentPart::text("Look at this"),
+                ContentPart::image("data:image/png;base64,iVBORw0KGgo="),
+            ],
+            meta: None,
+            created_at: Utc::now(),
+            status: MessageStatus::Success,
+            error_message: None,
+        }];
+
+        let anthropic_messages = convert_messages(&messages);
+        assert_eq!(anthropic_messages.len(), 1);
+        
+        // Check content is blocks
+        match &anthropic_messages[0].content {
+            AnthropicContent::Blocks(blocks) => {
+                assert_eq!(blocks.len(), 2);
+                
+                // First block should be text
+                match &blocks[0] {
+                    AnthropicContentBlock::Text { text } => {
+                        assert_eq!(text, "Look at this");
+                    }
+                    _ => panic!("Expected Text block"),
+                }
+                
+                // Second block should be image
+                match &blocks[1] {
+                    AnthropicContentBlock::Image { source } => {
+                        match source {
+                            ImageSource::Base64 { media_type, data } => {
+                                assert_eq!(media_type, "image/png");
+                                assert_eq!(data, "iVBORw0KGgo=");
+                            }
+                            _ => panic!("Expected Base64 image source"),
+                        }
+                    }
+                    _ => panic!("Expected Image block"),
+                }
+            }
+            _ => panic!("Expected Blocks content"),
+        }
+    }
+
+    #[test]
+    fn test_convert_messages_with_text_file() {
+        let messages = vec![Message {
+            id: "1".to_string(),
+            conversation_id: "conv1".to_string(),
+            role: MessageRole::User,
+            content: "Analyze this file".to_string(),
+            content_parts: vec![
+                ContentPart::text("Analyze this file"),
+                ContentPart::text_file("config.json", r#"{"key": "value"}"#),
+            ],
+            meta: None,
+            created_at: Utc::now(),
+            status: MessageStatus::Success,
+            error_message: None,
+        }];
+
+        let anthropic_messages = convert_messages(&messages);
+        assert_eq!(anthropic_messages.len(), 1);
+        
+        match &anthropic_messages[0].content {
+            AnthropicContent::Blocks(blocks) => {
+                assert_eq!(blocks.len(), 2);
+                
+                // Second block should be formatted text file
+                match &blocks[1] {
+                    AnthropicContentBlock::Text { text } => {
+                        assert!(text.contains("📄 config.json"));
+                        assert!(text.contains(r#"{"key": "value"}"#));
+                        assert!(text.contains("```"));
+                    }
+                    _ => panic!("Expected Text block"),
+                }
+            }
+            _ => panic!("Expected Blocks content"),
+        }
+    }
+
+    #[test]
+    fn test_convert_messages_with_pdf() {
+        let messages = vec![Message {
+            id: "1".to_string(),
+            conversation_id: "conv1".to_string(),
+            role: MessageRole::User,
+            content: "Analyze this PDF".to_string(),
+            content_parts: vec![
+                ContentPart::text("Analyze this PDF"),
+                ContentPart::pdf_document(
+                    "report.pdf",
+                    vec![
+                        PdfPage {
+                            page_number: 1,
+                            text: "Page 1 content".to_string(),
+                            image: "data:image/png;base64,page1data".to_string(),
+                        },
+                        PdfPage {
+                            page_number: 2,
+                            text: "Page 2 content".to_string(),
+                            image: "data:image/png;base64,page2data".to_string(),
+                        },
+                    ],
+                    None,
+                ),
+            ],
+            meta: None,
+            created_at: Utc::now(),
+            status: MessageStatus::Success,
+            error_message: None,
+        }];
+
+        let anthropic_messages = convert_messages(&messages);
+        assert_eq!(anthropic_messages.len(), 1);
+        
+        match &anthropic_messages[0].content {
+            AnthropicContent::Blocks(blocks) => {
+                // Should have: 1 initial text + (2 pages * 2 blocks each) = 5 blocks
+                assert_eq!(blocks.len(), 5);
+                
+                // First block: initial text
+                match &blocks[0] {
+                    AnthropicContentBlock::Text { text } => {
+                        assert_eq!(text, "Analyze this PDF");
+                    }
+                    _ => panic!("Expected Text block"),
+                }
+                
+                // Second block: page 1 text
+                match &blocks[1] {
+                    AnthropicContentBlock::Text { text } => {
+                        assert!(text.contains("📄 report.pdf - 第1页"));
+                        assert!(text.contains("Page 1 content"));
+                    }
+                    _ => panic!("Expected Text block"),
+                }
+                
+                // Third block: page 1 image
+                match &blocks[2] {
+                    AnthropicContentBlock::Image { source } => {
+                        match source {
+                            ImageSource::Base64 { media_type, data } => {
+                                assert_eq!(media_type, "image/png");
+                                assert_eq!(data, "page1data");
+                            }
+                            _ => panic!("Expected Base64 image source"),
+                        }
+                    }
+                    _ => panic!("Expected Image block"),
+                }
+                
+                // Fourth block: page 2 text
+                match &blocks[3] {
+                    AnthropicContentBlock::Text { text } => {
+                        assert!(text.contains("📄 report.pdf - 第2页"));
+                        assert!(text.contains("Page 2 content"));
+                    }
+                    _ => panic!("Expected Text block"),
+                }
+                
+                // Fifth block: page 2 image
+                match &blocks[4] {
+                    AnthropicContentBlock::Image { source } => {
+                        match source {
+                            ImageSource::Base64 { media_type, data } => {
+                                assert_eq!(media_type, "image/png");
+                                assert_eq!(data, "page2data");
+                            }
+                            _ => panic!("Expected Base64 image source"),
+                        }
+                    }
+                    _ => panic!("Expected Image block"),
+                }
+            }
+            _ => panic!("Expected Blocks content"),
+        }
+    }
+
+    #[test]
+    fn test_convert_messages_filters_system_role() {
+        let messages = vec![
+            Message {
+                id: "1".to_string(),
+                conversation_id: "conv1".to_string(),
+                role: MessageRole::System,
+                content: "You are a helpful assistant".to_string(),
+                content_parts: vec![],
+                meta: None,
+                created_at: Utc::now(),
+                status: MessageStatus::Success,
+                error_message: None,
+            },
+            Message {
+                id: "2".to_string(),
+                conversation_id: "conv1".to_string(),
+                role: MessageRole::User,
+                content: "Hello".to_string(),
+                content_parts: vec![],
+                meta: None,
+                created_at: Utc::now(),
+                status: MessageStatus::Success,
+                error_message: None,
+            },
+        ];
+
+        let anthropic_messages = convert_messages(&messages);
+        // System message should be filtered out
+        assert_eq!(anthropic_messages.len(), 1);
+        assert_eq!(anthropic_messages[0].role, "user");
     }
 }
