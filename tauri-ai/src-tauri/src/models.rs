@@ -460,6 +460,9 @@ pub struct ModelConfig {
     /// - Some("low" | "medium" | "high" | "very_high"): Enable with specific effort level
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_level: Option<String>,
+    /// Whether the model supports vision/image input
+    #[serde(default)]
+    pub vision_enabled: bool,
 }
 
 /// A preset combining model config and system prompt (legacy)
