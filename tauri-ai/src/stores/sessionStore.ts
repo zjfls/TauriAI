@@ -7,7 +7,7 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import type { AgentSession, Message, DebugInfo, TokenUsage, PersistedSession, PersistedSessionState } from '../types';
+import type { AgentSession, Message, DebugInfo, TokenUsage, PersistedSession, PersistedSessionState, ContentPart } from '../types';
 
 // Constants for persistence
 const SESSION_STORAGE_KEY = 'tauri-ai:sessions';
@@ -25,7 +25,7 @@ export interface SessionState {
   switchSession: (sessionId: string) => void;
 
   // Message operations (act on specified session)
-  sendMessage: (sessionId: string, content: string, enableThinking?: boolean) => Promise<void>;
+  sendMessage: (sessionId: string, content: string, enableThinking?: boolean, images?: ContentPart[]) => Promise<void>;
   abortGeneration: (sessionId: string) => Promise<void>;
   retry: (sessionId: string, messageId: string) => Promise<void>;
   undoToMessage: (sessionId: string, messageId: string) => void;
@@ -238,7 +238,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    * Send a message in a specific session
    * Requirements: 4.3, 4.4
    */
-  sendMessage: async (sessionId: string, content: string, enableThinking?: boolean) => {
+  sendMessage: async (sessionId: string, content: string, enableThinking?: boolean, images?: ContentPart[]) => {
     // Wait for any pending undo operations to complete first
     // This prevents race conditions where new messages are sent before backend deletion finishes
     await pendingUndoOperation;
@@ -252,12 +252,22 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       throw new Error('Session has no conversation');
     }
 
+    // Build content parts if images are provided
+    const contentParts: ContentPart[] = [];
+    if (content) {
+      contentParts.push({ type: 'text', text: content });
+    }
+    if (images && images.length > 0) {
+      contentParts.push(...images);
+    }
+
     // Create user message
     const userMessage: Message = {
       id: crypto.randomUUID(),
       conversationId: session.conversationId,
       role: 'user',
       content,
+      contentParts: contentParts.length > 0 ? contentParts : undefined,
       status: 'pending',
       createdAt: new Date().toISOString(),
     };
@@ -297,6 +307,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       await invoke('chat_stream', {
         conversationId: session.conversationId,
         content,
+        contentParts: contentParts.length > 0 ? contentParts : undefined,
         agentName: session.agentName,
         modelRef: session.modelRef,
         enableThinking,

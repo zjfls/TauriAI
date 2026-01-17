@@ -5,8 +5,8 @@
  */
 
 import React, { useState } from 'react';
-import { User, Bot, ChevronDown, ChevronRight, Brain, Bug, AlertCircle, RefreshCw } from 'lucide-react';
-import type { Message, Action } from '../../types';
+import { User, Bot, ChevronDown, ChevronRight, Brain, Bug, AlertCircle, RefreshCw, ZoomIn } from 'lucide-react';
+import type { Message, Action, ContentPart } from '../../types';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { MessageToolbar } from './MessageToolbar';
 import { buildMessageActions } from '../../utils/messageActionBuilder';
@@ -46,6 +46,92 @@ const ThinkingBlock: React.FC<ThinkingBlockProps> = ({ thinking, isStreaming }) 
         </div>
       )}
     </div>
+  );
+};
+
+/**
+ * Image preview modal component
+ */
+interface ImagePreviewModalProps {
+  imageUrl: string;
+  isOpen: boolean;
+  onClose: () => void;
+}
+
+const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({ imageUrl, isOpen, onClose }) => {
+  if (!isOpen) return null;
+
+  return (
+    <div 
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80"
+      onClick={onClose}
+    >
+      <img
+        src={imageUrl}
+        alt="图片预览"
+        className="max-h-[90vh] max-w-[90vw] object-contain"
+        onClick={(e) => e.stopPropagation()}
+      />
+    </div>
+  );
+};
+
+/**
+ * Render content parts (text and images)
+ */
+interface ContentPartsRendererProps {
+  contentParts: ContentPart[];
+  textContent: string;
+  isUser: boolean;
+}
+
+const ContentPartsRenderer: React.FC<ContentPartsRendererProps> = ({ contentParts, textContent, isUser }) => {
+  const [previewImage, setPreviewImage] = useState<string | null>(null);
+
+  // If no content parts, just render text
+  if (!contentParts || contentParts.length === 0) {
+    if (isUser) {
+      return <p className="whitespace-pre-wrap">{textContent}</p>;
+    }
+    return <MarkdownRenderer content={textContent} />;
+  }
+
+  return (
+    <>
+      {contentParts.map((part, index) => {
+        if (part.type === 'text') {
+          if (isUser) {
+            return <p key={index} className="whitespace-pre-wrap">{part.text}</p>;
+          }
+          return <MarkdownRenderer key={index} content={part.text} />;
+        }
+        if (part.type === 'image') {
+          return (
+            <div key={index} className="my-2 relative group inline-block">
+              <img
+                src={part.url}
+                alt="消息图片"
+                className="max-h-64 max-w-full rounded-lg cursor-pointer hover:opacity-90 transition-opacity"
+                onClick={() => setPreviewImage(part.url)}
+              />
+              <button
+                onClick={() => setPreviewImage(part.url)}
+                className="absolute top-2 right-2 p-1.5 rounded-full bg-black/50 text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-black/70"
+                title="放大查看"
+              >
+                <ZoomIn size={16} />
+              </button>
+            </div>
+          );
+        }
+        return null;
+      })}
+      <ImagePreviewModal
+        imageUrl={previewImage || ''}
+        isOpen={!!previewImage}
+        onClose={() => setPreviewImage(null)}
+      />
+    </>
   );
 };
 
@@ -182,11 +268,11 @@ export const MessageItem: React.FC<MessageItemProps> = ({
 
         {/* Message content */}
         <div className={isUser ? 'text-white' : ''}>
-          {isUser ? (
-            <p className="whitespace-pre-wrap">{message.content}</p>
-          ) : (
-            <MarkdownRenderer content={message.content} />
-          )}
+          <ContentPartsRenderer 
+            contentParts={message.contentParts || []} 
+            textContent={message.content}
+            isUser={isUser}
+          />
         </div>
 
         {/* Failed message error display */}

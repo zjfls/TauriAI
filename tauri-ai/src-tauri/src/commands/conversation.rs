@@ -140,6 +140,7 @@ pub async fn generate_title(
         conversation_id: conversation_id.clone(),
         role: MessageRole::User,
         content: format!("根据对话生成简洁标题（不超20字）：\n{}", content),
+        content_parts: Vec::new(),
         meta: None,
         created_at: chrono::Utc::now(),
         status: MessageStatus::Success,

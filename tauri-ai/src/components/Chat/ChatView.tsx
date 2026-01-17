@@ -11,7 +11,7 @@ import { MessageList } from './MessageList';
 import { InputArea, type InputAreaHandle } from './InputArea';
 import { countTokens } from '../../utils/tokenizer';
 import * as opener from '@tauri-apps/plugin-opener';
-import type { TokenUsage, ContextUsageBreakdown } from '../../types';
+import type { TokenUsage, ContextUsageBreakdown, ContentPart } from '../../types';
 
 interface ChatViewProps {
   sessionId: string | null;
@@ -57,6 +57,11 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
   // Check if current model supports thinking
   const supportsThinking = useMemo(() => {
     return currentModel?.capabilities?.thinking ?? false;
+  }, [currentModel]);
+
+  // Check if current model supports vision/images
+  const supportsVision = useMemo(() => {
+    return currentModel?.capabilities?.vision ?? false;
   }, [currentModel]);
 
   // Calculate total token usage for the conversation
@@ -179,12 +184,12 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
 
   // Note: Stream listener is set up in sessionStore to route events by conversationId
 
-  const handleSend = async (content: string, enableThinking?: boolean) => {
+  const handleSend = async (content: string, enableThinking?: boolean, images?: ContentPart[]) => {
     if (!sessionId) {
       console.error('Cannot send message: no active session');
       return;
     }
-    await sendMessage(sessionId, content, enableThinking);
+    await sendMessage(sessionId, content, enableThinking, images);
   };
 
   const handleAbort = async () => {
@@ -266,6 +271,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
         disabled={false}
         isGenerating={isGenerating}
         supportsThinking={supportsThinking}
+        supportsVision={supportsVision}
         contextUsage={contextUsage}
         agents={config?.agents || []}
         currentAgentName={session?.agentName || ''}

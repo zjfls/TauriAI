@@ -12,7 +12,7 @@ use crate::config::ConfigManager;
 use crate::storage::Database;
 
 /// 切换主窗口的可见性
-/// 
+///
 /// 如果窗口当前可见，则隐藏它；如果隐藏，则显示并聚焦。
 /// 满足需求 9.2: 点击托盘图标切换窗口可见性
 fn toggle_window_visibility<R: Runtime>(app: &AppHandle<R>) {
@@ -35,7 +35,7 @@ fn show_window<R: Runtime>(app: &AppHandle<R>) {
 }
 
 /// 保存应用状态并退出
-/// 
+///
 /// 在退出前确保所有状态都已保存到磁盘。
 /// 满足需求 9.5: 退出时保存状态
 fn save_state_and_exit<R: Runtime>(app: &AppHandle<R>) {
@@ -62,7 +62,7 @@ fn save_state_and_exit<R: Runtime>(app: &AppHandle<R>) {
 }
 
 /// 创建并配置系统托盘
-/// 
+///
 /// 设置托盘图标、菜单和事件处理器。
 /// 满足需求:
 /// - 9.1: 应用启动时显示托盘图标
@@ -78,8 +78,8 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
 
     // 加载托盘图标 - 使用内嵌的 PNG 图标
-    let icon = Image::from_bytes(include_bytes!("../icons/32x32.png"))
-        .expect("Failed to load tray icon");
+    let icon =
+        Image::from_bytes(include_bytes!("../icons/32x32.png")).expect("Failed to load tray icon");
 
     // 构建托盘图标
     let _tray = TrayIconBuilder::new()

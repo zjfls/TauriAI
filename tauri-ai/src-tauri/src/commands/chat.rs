@@ -1,4 +1,4 @@
-﻿//! Chat commands for TauriAI
+//! Chat commands for TauriAI
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -8,7 +8,9 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use crate::ai_client::{get_client, StreamEvent};
 use crate::config::ConfigManager;
 use crate::errors::{AppErrorCode, SerializableError};
-use crate::models::{Message, MessageRole, MessageStatus, ModelConfig, ModelParameters};
+use crate::models::{
+    ContentPart, Message, MessageRole, MessageStatus, ModelConfig, ModelParameters,
+};
 use crate::prompts::compose_system_prompt;
 use crate::storage::Database;
 
@@ -115,6 +117,7 @@ pub async fn chat_stream(
     app: AppHandle,
     conversation_id: String,
     content: String,
+    content_parts: Option<Vec<ContentPart>>,
     agent_name: Option<String>,
     model_ref: Option<String>,
     enable_thinking: Option<bool>,
@@ -198,6 +201,7 @@ pub async fn chat_stream(
         conversation_id: conversation_id.clone(),
         role: MessageRole::User,
         content: content.clone(),
+        content_parts: content_parts.unwrap_or_default(),
         meta: None,
         created_at: chrono::Utc::now(),
         status: crate::models::MessageStatus::Pending,
@@ -230,6 +234,7 @@ pub async fn chat_stream(
             conversation_id: conversation_id.clone(),
             role: MessageRole::System,
             content: system_content,
+            content_parts: Vec::new(),
             meta: None,
             created_at: chrono::Utc::now(),
             status: crate::models::MessageStatus::Success,
@@ -358,6 +363,7 @@ pub async fn chat_stream(
             conversation_id: conv_id.clone(),
             role: MessageRole::Assistant,
             content: full_content.clone(),
+            content_parts: Vec::new(),
             meta: Some(crate::models::MessageMeta {
                 model: Some(model_name.clone()),
                 tokens: None,
