@@ -128,6 +128,9 @@ struct UsageStats {
     prompt_tokens_details: Option<PromptTokensDetails>,
     #[serde(default)]
     completion_tokens_details: Option<CompletionTokensDetails>,
+    /// DeepSeek style cache hits
+    #[serde(default)]
+    prompt_cache_hit_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -548,7 +551,8 @@ impl OpenAiBaseClient {
                                 cached_tokens: usage
                                     .prompt_tokens_details
                                     .as_ref()
-                                    .and_then(|d| d.cached_tokens),
+                                    .and_then(|d| d.cached_tokens)
+                                    .or(usage.prompt_cache_hit_tokens),
                                 reasoning_tokens: usage
                                     .completion_tokens_details
                                     .as_ref()
@@ -737,14 +741,16 @@ mod tests {
             prop::option::of("[a-zA-Z0-9, ]{1,50}"),
         ))
         .prop_map(|opt| {
-            opt.map(|(title, author, created_at, producer, subject, keywords)| PdfMetadata {
-                title,
-                author,
-                created_at,
-                producer,
-                subject,
-                keywords,
-            })
+            opt.map(
+                |(title, author, created_at, producer, subject, keywords)| PdfMetadata {
+                    title,
+                    author,
+                    created_at,
+                    producer,
+                    subject,
+                    keywords,
+                },
+            )
         })
     }
 

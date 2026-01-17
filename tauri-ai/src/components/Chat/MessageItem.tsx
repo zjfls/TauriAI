@@ -62,7 +62,7 @@ const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({ imageUrl, isOpen,
   if (!isOpen) return null;
 
   return (
-    <div 
+    <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/80"
       onClick={onClose}
     >
@@ -256,6 +256,8 @@ export const MessageItem: React.FC<MessageItemProps> = ({
                 in:{message.usage.promptTokens} out:{message.usage.completionTokens} total:{message.usage.totalTokens}
                 {message.usage.reasoningTokens ? ` (${message.usage.reasoningTokens} reasoning)` : ''}
                 {message.usage.cachedTokens ? ` (${message.usage.cachedTokens} cached)` : ''}
+                {message.usage.cacheCreationInputTokens ? ` (${message.usage.cacheCreationInputTokens} cache write)` : ''}
+                {message.usage.cacheReadInputTokens ? ` (${message.usage.cacheReadInputTokens} cache read)` : ''}
               </span>
             )}
           </div>
@@ -268,8 +270,8 @@ export const MessageItem: React.FC<MessageItemProps> = ({
 
         {/* Message content */}
         <div className={isUser ? 'text-white' : ''}>
-          <ContentPartsRenderer 
-            contentParts={message.contentParts || []} 
+          <ContentPartsRenderer
+            contentParts={message.contentParts || []}
             textContent={message.content}
             isUser={isUser}
           />
@@ -303,15 +305,15 @@ export const MessageItem: React.FC<MessageItemProps> = ({
               }`}
           >
             <MessageToolbar actions={actions} onAction={onAction} />
-            {/* Debug button - only for assistant messages */}
-            {debugMode && isAssistant && (
+            {/* Debug button - only for assistant messages and if debugMode is on */}
+            {debugMode && isAssistant && message.debugInfo && (
               <button
                 onClick={() => setShowDebugModal(true)}
                 className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700 transition-colors"
-                title="查看原始消息"
+                title="查看HTTP调试信息"
               >
                 <Bug size={14} />
-                <span>Raw</span>
+                <span>Debug</span>
               </button>
             )}
           </div>
