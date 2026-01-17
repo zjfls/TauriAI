@@ -116,6 +116,7 @@ pub async fn generate_title(
             system_prompt: None,
         },
         thinking_enabled: None, // Don't use thinking for title generation
+        vision_enabled: model.capabilities.vision, // Use vision capability from model
     };
 
     let client = get_client(&model_config.provider).map_err(|e| e.to_string())?;

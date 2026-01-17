@@ -86,6 +86,7 @@ export const ProviderConfigForm: React.FC = () => {
   const [isCreating, setIsCreating] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedModels, setExpandedModels] = useState<Set<string>>(new Set());
+  const [expandedAdvanced, setExpandedAdvanced] = useState<Set<string>>(new Set());
   const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
   const [testMessage, setTestMessage] = useState('');
   const [testModelName, setTestModelName] = useState('');
@@ -160,6 +161,16 @@ export const ProviderConfigForm: React.FC = () => {
       newExpanded.add(modelName);
     }
     setExpandedModels(newExpanded);
+  };
+
+  const toggleAdvancedExpand = (modelName: string) => {
+    const newExpanded = new Set(expandedAdvanced);
+    if (newExpanded.has(modelName)) {
+      newExpanded.delete(modelName);
+    } else {
+      newExpanded.add(modelName);
+    }
+    setExpandedAdvanced(newExpanded);
   };
 
   const handleAddModel = () => {
@@ -306,6 +317,7 @@ export const ProviderConfigForm: React.FC = () => {
             provider={currentProvider}
             isEditing={!!editingProvider}
             expandedModels={expandedModels}
+            expandedAdvanced={expandedAdvanced}
             testStatus={testStatus}
             testMessage={testMessage}
             testModelName={testModelName}
@@ -315,6 +327,7 @@ export const ProviderConfigForm: React.FC = () => {
             onDelete={handleDelete}
             onFieldChange={(field, value) => editingProvider && setEditingProvider({ ...editingProvider, [field]: value })}
             onToggleModelExpand={toggleModelExpand}
+            onToggleAdvancedExpand={toggleAdvancedExpand}
             onAddModel={handleAddModel}
             onUpdateModel={handleUpdateModel}
             onDeleteModel={handleDeleteModel}
@@ -345,6 +358,7 @@ interface ProviderFormProps {
   provider: Provider;
   isEditing: boolean;
   expandedModels: Set<string>;
+  expandedAdvanced: Set<string>;
   testStatus: 'idle' | 'testing' | 'success' | 'error';
   testMessage: string;
   testModelName: string;
@@ -354,6 +368,7 @@ interface ProviderFormProps {
   onDelete: () => void;
   onFieldChange: (field: keyof Provider, value: any) => void;
   onToggleModelExpand: (modelName: string) => void;
+  onToggleAdvancedExpand: (modelName: string) => void;
   onAddModel: () => void;
   onUpdateModel: (index: number, model: Model) => void;
   onDeleteModel: (index: number) => void;
@@ -366,6 +381,7 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
   provider,
   isEditing,
   expandedModels,
+  expandedAdvanced,
   testStatus,
   testMessage,
   testModelName,
@@ -375,6 +391,7 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
   onDelete,
   onFieldChange,
   onToggleModelExpand,
+  onToggleAdvancedExpand,
   onAddModel,
   onUpdateModel,
   onDeleteModel,
@@ -592,6 +609,36 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
                         <span>工具调用</span>
                       </label>
                     </div>
+                    {/* Advanced Settings - Only show for vision models */}
+                    {model.capabilities?.vision && (
+                      <div className="pt-2 border-t border-gray-200 dark:border-gray-700">
+                        <button
+                          onClick={() => onToggleAdvancedExpand(model.name)}
+                          className="flex items-center gap-1 text-xs text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
+                        >
+                          {expandedAdvanced.has(model.name) ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                          <span>高级设置</span>
+                        </button>
+                        {expandedAdvanced.has(model.name) && (
+                          <div className="mt-2 grid grid-cols-4 gap-3">
+                            <div>
+                              <label className="block text-xs text-gray-500">最大图片数</label>
+                              <input
+                                type="number"
+                                min="1"
+                                max="100"
+                                value={model.maxImages ?? 10}
+                                onChange={(e) => onUpdateModel(index, { ...model, maxImages: parseInt(e.target.value) || 10 })}
+                                disabled={!isEditing}
+                                placeholder="10"
+                                className="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100"
+                              />
+                              <span className="text-xs text-gray-400">默认: 10</span>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

@@ -7,13 +7,13 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Send, Square, Brain, Bot, Cpu, ChevronDown, Check, ImagePlus, X, Paperclip, FileText } from 'lucide-react';
 import { ContextUsageIndicator } from './ContextUsageIndicator';
-import { TextFilePreview } from './TextFilePreview';
-import { PdfPreview } from './PdfPreview';
+import { AttachmentPreview } from './AttachmentPreview';
 import { isSupportedTextFile, readTextFile, validateFileCount } from '../../utils/textFileUtils';
-import { isValidPdfFile, validatePdfSize, processPdfFile, MAX_PDF_SIZE } from '../../utils/pdfUtils';
+import { isValidPdfFile, processPdfFile, isPdfRequestSizeSafe, estimatePdfRequestSize } from '../../utils/pdfUtils';
 import type { ContextUsageBreakdown, Agent, ContentPart, PendingTextFile, PendingPdf } from '../../types';
 import { SUPPORTED_TEXT_EXTENSIONS, MAX_PDF_COUNT } from '../../types';
 import { FILE_ERROR_MESSAGES } from '../../utils/textFileUtils';
+import { useConfigStore } from '../../stores/configStore';
 
 // Constants for textarea sizing
 const MIN_TEXTAREA_HEIGHT = 40; // Minimum height in pixels
@@ -27,7 +27,7 @@ interface ModelOption {
 /**
  * Pending image for upload preview
  */
-interface PendingImage {
+export interface PendingImage {
   id: string;
   url: string;  // Base64 data URL
   file?: File;
@@ -332,6 +332,9 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textFileInputRef = useRef<HTMLInputElement>(null);
   const pdfFileInputRef = useRef<HTMLInputElement>(null);
+  
+  // Get PDF debug mode from config store
+  const pdfDebugMode = useConfigStore((state) => state.config?.general.pdfDebugMode ?? false);
 
   /**
    * Convert file to base64 data URL
@@ -498,12 +501,6 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
         continue;
       }
 
-      // Validate file size (Requirements: 1.3, 1.5)
-      if (!validatePdfSize(file)) {
-        setPdfError(`PDF 文件过大，请选择小于 ${MAX_PDF_SIZE / 1024 / 1024}MB 的文件`);
-        continue;
-      }
-
       try {
         // Process PDF file (Requirements: 1.4, 1.6)
         const pendingPdf = await processPdfFile(file, (progress) => {
@@ -516,6 +513,14 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
             )
           );
         });
+
+        // Check request size after processing - this is the critical limit
+        if (!isPdfRequestSizeSafe(pendingPdf)) {
+          const sizeMB = (estimatePdfRequestSize(pendingPdf) / 1024 / 1024).toFixed(1);
+          setPdfError(`PDF 处理后的数据过大 (${sizeMB}MB),超过 12MB 限制,无法发送。请尝试减少页数或使用更小的 PDF。`);
+          // Don't add the PDF if it's too large
+          continue;
+        }
 
         setPendingPdfs(prev => [...prev, pendingPdf]);
       } catch (err) {
@@ -536,6 +541,45 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   }, []);
 
   /**
+   * Update PDF page range (debug mode only)
+   */
+  const handlePdfPageRangeChange = useCallback((id: string, startPage?: number, endPage?: number) => {
+    setPendingPdfs(prev => 
+      prev.map(p => 
+        p.id === id 
+          ? { ...p, pageRangeStart: startPage, pageRangeEnd: endPage }
+          : p
+      )
+    );
+  }, []);
+
+  /**
+   * Update PDF include images option (debug mode only)
+   */
+  const handlePdfIncludeImagesChange = useCallback((id: string, includeImages: boolean) => {
+    setPendingPdfs(prev => 
+      prev.map(p => 
+        p.id === id 
+          ? { ...p, includeImages }
+          : p
+      )
+    );
+  }, []);
+
+  /**
+   * Update PDF include text option (debug mode only)
+   */
+  const handlePdfIncludeTextChange = useCallback((id: string, includeText: boolean) => {
+    setPendingPdfs(prev => 
+      prev.map(p => 
+        p.id === id 
+          ? { ...p, includeText }
+          : p
+      )
+    );
+  }, []);
+
+  /**
    * Handle paste event for images and text files
    */
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
@@ -544,6 +588,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
 
     const imageFiles: File[] = [];
     const textFiles: File[] = [];
+    const pdfFiles: File[] = [];
     
     for (const item of Array.from(items)) {
       const file = item.getAsFile();
@@ -552,6 +597,10 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
       // Check for images
       if (item.type.startsWith('image/') && supportsVision) {
         imageFiles.push(file);
+      }
+      // Check for PDF files
+      else if (item.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+        pdfFiles.push(file);
       }
       // Check for text files
       else if (isSupportedTextFile(file.name)) {
@@ -567,12 +616,18 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
       handleImageSelect(dataTransfer.files);
     }
     
+    // Handle PDF files
+    if (pdfFiles.length > 0) {
+      e.preventDefault();
+      handlePdfSelect(createFileList(pdfFiles));
+    }
+    
     // Handle text files
     if (textFiles.length > 0) {
       e.preventDefault();
       handleTextFileSelect(createFileList(textFiles));
     }
-  }, [supportsVision, handleImageSelect, handleTextFileSelect, createFileList]);
+  }, [supportsVision, handleImageSelect, handlePdfSelect, handleTextFileSelect, createFileList]);
 
   /**
    * Handle drag and drop
@@ -707,11 +762,59 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
       
       // Add PDF content parts (Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7)
       for (const pdf of pendingPdfs) {
+        // Filter pages based on page range (debug mode)
+        let filteredPages = pdf.pages;
+        if (pdfDebugMode && (pdf.pageRangeStart || pdf.pageRangeEnd)) {
+          const start = pdf.pageRangeStart || 1;
+          const end = pdf.pageRangeEnd || pdf.totalPages;
+          filteredPages = pdf.pages.filter(
+            page => page.pageNumber >= start && page.pageNumber <= end
+          );
+        }
+        
+        // Check image count limit for vision models
+        let shouldIncludeImages = pdf.includeImages !== false;
+        if (shouldIncludeImages && !pdfDebugMode) {
+          // Get current model's maxImages setting
+          const configStore = useConfigStore.getState();
+          const config = configStore.config;
+          if (config) {
+            const currentAgent = configStore.getCurrentAgent();
+            const modelRef = config.currentModelRef || currentAgent?.modelRef;
+            if (modelRef) {
+              const [providerName, modelName] = modelRef.split('/');
+              const provider = config.providers.find(p => p.name === providerName);
+              const model = provider?.models.find(m => m.name === modelName);
+              const maxImages = model?.maxImages ?? 10; // Default 10
+              
+              // Count total images (existing images + PDF images)
+              const existingImageCount = pendingImages.length;
+              const pdfImageCount = filteredPages.length;
+              const totalImageCount = existingImageCount + pdfImageCount;
+              
+              // If total exceeds limit, don't include any PDF images
+              if (totalImageCount > maxImages) {
+                shouldIncludeImages = false;
+              }
+            }
+          }
+        }
+        
+        // Remove images if includeImages is false (debug mode) or exceeds limit
+        // Remove text if includeText is false (debug mode)
+        if (pdfDebugMode || !shouldIncludeImages) {
+          filteredPages = filteredPages.map(page => ({
+            ...page,
+            image: (pdfDebugMode && pdf.includeImages === false) || !shouldIncludeImages ? '' : page.image,
+            text: pdfDebugMode && pdf.includeText === false ? '' : page.text,
+          }));
+        }
+        
         contentParts.push({
           type: 'pdf_document' as const,
           filename: pdf.filename,
-          pages: pdf.pages,
-          totalPages: pdf.totalPages,
+          pages: filteredPages,
+          totalPages: filteredPages.length, // Use filtered page count
           metadata: pdf.metadata,
         });
       }
@@ -839,50 +942,40 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
         </div>
       )}
 
-      {/* Image preview area */}
-      {pendingImages.length > 0 && (
+      {/* Unified attachments preview area */}
+      {(pendingImages.length > 0 || pendingTextFiles.length > 0 || pendingPdfs.length > 0) && (
         <div className="mb-2 flex flex-wrap gap-2">
+          {/* Images */}
           {pendingImages.map(img => (
-            <div key={img.id} className="relative group">
-              <img
-                src={img.url}
-                alt="待发送图片"
-                className="h-16 w-16 object-cover rounded-lg border border-gray-200 dark:border-gray-700"
-              />
-              <button
-                type="button"
-                onClick={() => removeImage(img.id)}
-                className="absolute -top-1.5 -right-1.5 h-5 w-5 flex items-center justify-center rounded-full bg-red-500 text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600"
-                title="移除图片"
-              >
-                <X size={12} />
-              </button>
-            </div>
+            <AttachmentPreview
+              key={img.id}
+              attachment={img}
+              type="image"
+              onRemove={removeImage}
+            />
           ))}
-        </div>
-      )}
-
-      {/* Text file preview area */}
-      {pendingTextFiles.length > 0 && (
-        <div className="mb-2 flex flex-wrap gap-2 max-h-48 overflow-auto">
+          
+          {/* Text files */}
           {pendingTextFiles.map(file => (
-            <TextFilePreview
+            <AttachmentPreview
               key={file.id}
-              file={file}
+              attachment={file}
+              type="text"
               onRemove={removeTextFile}
             />
           ))}
-        </div>
-      )}
-
-      {/* PDF preview area */}
-      {pendingPdfs.length > 0 && (
-        <div className="mb-2 flex flex-col gap-2 max-h-96 overflow-auto">
+          
+          {/* PDFs */}
           {pendingPdfs.map(pdf => (
-            <PdfPreview
+            <AttachmentPreview
               key={pdf.id}
-              pdf={pdf}
+              attachment={pdf}
+              type="pdf"
               onRemove={removePdf}
+              pdfDebugMode={pdfDebugMode}
+              onPdfPageRangeChange={handlePdfPageRangeChange}
+              onPdfIncludeImagesChange={handlePdfIncludeImagesChange}
+              onPdfIncludeTextChange={handlePdfIncludeTextChange}
             />
           ))}
         </div>
@@ -942,6 +1035,18 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
 
       {/* Input row */}
       <div className="flex items-end gap-2">
+        {/* PDF attachment button */}
+        <button
+          type="button"
+          onClick={() => pdfFileInputRef.current?.click()}
+          disabled={disabled || isGenerating}
+          className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg border border-gray-300 bg-white text-gray-600 transition-colors hover:bg-gray-50 hover:text-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-400 dark:hover:bg-gray-600 dark:hover:text-blue-400"
+          title="添加 PDF"
+          aria-label="添加 PDF"
+        >
+          <FileText size={18} />
+        </button>
+        
         <textarea
           ref={textareaRef}
           value={content}

@@ -191,6 +191,8 @@ pub async fn chat_stream(
         } else {
             None
         },
+        // Vision support from model capabilities
+        vision_enabled: model.capabilities.vision,
     };
 
     let client = get_client(&model_config.provider)

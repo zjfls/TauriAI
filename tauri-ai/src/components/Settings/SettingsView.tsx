@@ -101,6 +101,15 @@ export const SettingsView: React.FC = () => {
     saveConfig(updatedConfig);
   };
 
+  const handlePdfDebugModeChange = (pdfDebugMode: boolean) => {
+    if (!config) return;
+    const updatedConfig: AppConfig = {
+      ...config,
+      general: { ...config.general, pdfDebugMode },
+    };
+    saveConfig(updatedConfig);
+  };
+
   const renderTabContent = () => {
     if (!config) {
       return (
@@ -131,10 +140,12 @@ export const SettingsView: React.FC = () => {
             autoStart={config.general.autoStart}
             debugMode={config.general.debugMode ?? false}
             showUsage={config.general.showUsage ?? true}
+            pdfDebugMode={config.general.pdfDebugMode ?? false}
             onLanguageChange={handleLanguageChange}
             onAutoStartChange={handleAutoStartChange}
             onDebugModeChange={handleDebugModeChange}
             onShowUsageChange={handleShowUsageChange}
+            onPdfDebugModeChange={handlePdfDebugModeChange}
           />
         );
       default:
@@ -221,10 +232,12 @@ interface GeneralSettingsProps {
   autoStart: boolean;
   debugMode: boolean;
   showUsage: boolean;
+  pdfDebugMode: boolean;
   onLanguageChange: (language: string) => void;
   onAutoStartChange: (value: boolean) => void;
   onDebugModeChange: (value: boolean) => void;
   onShowUsageChange: (value: boolean) => void;
+  onPdfDebugModeChange: (value: boolean) => void;
 }
 
 const GeneralSettings: React.FC<GeneralSettingsProps> = ({
@@ -232,10 +245,12 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
   autoStart,
   debugMode,
   showUsage,
+  pdfDebugMode,
   onLanguageChange,
   onAutoStartChange,
   onDebugModeChange,
   onShowUsageChange,
+  onPdfDebugModeChange,
 }) => {
   const languageOptions = [
     { value: 'zh-CN', label: '简体中文' },
@@ -291,6 +306,18 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
           className={`relative w-11 h-6 rounded-full transition-colors ${showUsage ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'}`}
         >
           <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${showUsage ? 'translate-x-5' : ''}`} />
+        </button>
+      </div>
+      <div className="flex items-center justify-between">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">PDF 调试模式</label>
+          <p className="text-xs text-gray-500">允许选择 PDF 的特定页面范围进行发送</p>
+        </div>
+        <button
+          onClick={() => onPdfDebugModeChange(!pdfDebugMode)}
+          className={`relative w-11 h-6 rounded-full transition-colors ${pdfDebugMode ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'}`}
+        >
+          <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${pdfDebugMode ? 'translate-x-5' : ''}`} />
         </button>
       </div>
     </div>

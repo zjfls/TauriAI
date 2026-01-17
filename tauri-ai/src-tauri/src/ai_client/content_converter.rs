@@ -23,17 +23,26 @@ pub enum ContentBlock {
 
 /// Convert a ContentPart to a list of ContentBlocks
 /// This is the core conversion logic shared by all providers
-pub fn content_part_to_blocks(part: &ContentPart) -> Vec<ContentBlock> {
+/// 
+/// # Arguments
+/// * `part` - The content part to convert
+/// * `include_images` - Whether to include image blocks (for vision-capable models)
+pub fn content_part_to_blocks(part: &ContentPart, include_images: bool) -> Vec<ContentBlock> {
     match part {
         ContentPart::Text { text } => vec![ContentBlock::Text {
             text: text.clone(),
         }],
 
         ContentPart::Image { url, detail } => {
-            vec![ContentBlock::ImageUrl {
-                url: url.clone(),
-                detail: detail.clone(),
-            }]
+            if include_images {
+                vec![ContentBlock::ImageUrl {
+                    url: url.clone(),
+                    detail: detail.clone(),
+                }]
+            } else {
+                // Skip images if model doesn't support vision
+                vec![]
+            }
         }
 
         ContentPart::TextFile { filename, content } => {
@@ -44,7 +53,7 @@ pub fn content_part_to_blocks(part: &ContentPart) -> Vec<ContentBlock> {
 
         ContentPart::PdfDocument {
             filename, pages, ..
-        } => pdf_to_blocks(filename, pages),
+        } => pdf_to_blocks(filename, pages, include_images),
     }
 }
 
@@ -59,19 +68,28 @@ fn format_pdf_page_text(filename: &str, page_number: u32, text: &str) -> String 
 }
 
 /// Convert PDF document to alternating text and image blocks
-fn pdf_to_blocks(filename: &str, pages: &[PdfPage]) -> Vec<ContentBlock> {
+/// 
+/// # Arguments
+/// * `filename` - The PDF filename
+/// * `pages` - The PDF pages with text and image data
+/// * `include_images` - Whether to include image blocks (for vision-capable models)
+fn pdf_to_blocks(filename: &str, pages: &[PdfPage], include_images: bool) -> Vec<ContentBlock> {
     pages
         .iter()
         .flat_map(|page| {
-            vec![
-                ContentBlock::Text {
-                    text: format_pdf_page_text(filename, page.page_number, &page.text),
-                },
-                ContentBlock::ImageUrl {
+            let mut blocks = vec![ContentBlock::Text {
+                text: format_pdf_page_text(filename, page.page_number, &page.text),
+            }];
+            
+            // Only add image block if model supports vision
+            if include_images {
+                blocks.push(ContentBlock::ImageUrl {
                     url: page.image.clone(),
                     detail: ImageDetail::High,
-                },
-            ]
+                });
+            }
+            
+            blocks
         })
         .collect()
 }
@@ -172,7 +190,7 @@ mod tests {
     #[test]
     fn test_content_part_to_blocks_text() {
         let part = ContentPart::text("Hello, world!");
-        let blocks = content_part_to_blocks(&part);
+        let blocks = content_part_to_blocks(&part, true);
         assert_eq!(blocks.len(), 1);
         match &blocks[0] {
             ContentBlock::Text { text } => assert_eq!(text, "Hello, world!"),
@@ -183,7 +201,7 @@ mod tests {
     #[test]
     fn test_content_part_to_blocks_image() {
         let part = ContentPart::image("data:image/png;base64,abc123");
-        let blocks = content_part_to_blocks(&part);
+        let blocks = content_part_to_blocks(&part, true);
         assert_eq!(blocks.len(), 1);
         match &blocks[0] {
             ContentBlock::ImageUrl { url, detail } => {
@@ -197,7 +215,7 @@ mod tests {
     #[test]
     fn test_content_part_to_blocks_text_file() {
         let part = ContentPart::text_file("config.json", r#"{"key": "value"}"#);
-        let blocks = content_part_to_blocks(&part);
+        let blocks = content_part_to_blocks(&part, true);
         assert_eq!(blocks.len(), 1);
         match &blocks[0] {
             ContentBlock::Text { text } => {
@@ -224,7 +242,7 @@ mod tests {
             },
         ];
         let part = ContentPart::pdf_document("report.pdf", pages, None);
-        let blocks = content_part_to_blocks(&part);
+        let blocks = content_part_to_blocks(&part, true);
 
         // Should have 4 blocks: 2 pages * (text + image)
         assert_eq!(blocks.len(), 4);

@@ -185,6 +185,7 @@ fn convert_messages(
     messages: &[Message],
     system_prompt: Option<&str>,
     system_role: SystemRole,
+    supports_vision: bool,
 ) -> Vec<OpenAiMessage> {
     let mut result = Vec::new();
 
@@ -217,7 +218,7 @@ fn convert_messages(
                 .get_content_parts()
                 .iter()
                 .flat_map(|part| {
-                    content_part_to_blocks(part)
+                    content_part_to_blocks(part, supports_vision)
                         .into_iter()
                         .map(|block| match block {
                             ContentBlock::Text { text } => OpenAiContentPart::Text { text },
@@ -296,6 +297,7 @@ impl OpenAiBaseClient {
             &messages,
             config.parameters.system_prompt.as_deref(),
             self.system_role,
+            config.vision_enabled,
         );
 
         // Build thinking config based on thinking_enabled:
@@ -368,6 +370,7 @@ impl OpenAiBaseClient {
             &messages,
             config.parameters.system_prompt.as_deref(),
             self.system_role,
+            config.vision_enabled,
         );
 
         // Build thinking config based on thinking_enabled:
@@ -783,7 +786,7 @@ mod tests {
             };
 
             // Convert to OpenAI format
-            let openai_messages = convert_messages(&[message], None, SystemRole::System);
+            let openai_messages = convert_messages(&[message], None, SystemRole::System, true);
 
             // Should have exactly one message (user message)
             prop_assert_eq!(openai_messages.len(), 1, "Should have exactly one OpenAI message");
@@ -885,7 +888,7 @@ mod tests {
             error_message: None,
         };
 
-        let openai_messages = convert_messages(&[message], None, SystemRole::System);
+        let openai_messages = convert_messages(&[message], None, SystemRole::System, true);
 
         assert_eq!(openai_messages.len(), 1);
         let content_parts = match &openai_messages[0].content {
@@ -951,7 +954,7 @@ mod tests {
             error_message: None,
         };
 
-        let openai_messages = convert_messages(&[message], None, SystemRole::System);
+        let openai_messages = convert_messages(&[message], None, SystemRole::System, true);
 
         let content_parts = match &openai_messages[0].content {
             OpenAiContent::Parts(parts) => parts,
@@ -1012,6 +1015,7 @@ mod tests {
             &[message],
             Some("You are a helpful assistant."),
             SystemRole::System,
+            true,
         );
 
         // Should have 2 messages: system + user
@@ -1053,7 +1057,7 @@ mod tests {
             error_message: None,
         };
 
-        let openai_messages = convert_messages(&[message], None, SystemRole::System);
+        let openai_messages = convert_messages(&[message], None, SystemRole::System, true);
 
         let content_parts = match &openai_messages[0].content {
             OpenAiContent::Parts(parts) => parts,

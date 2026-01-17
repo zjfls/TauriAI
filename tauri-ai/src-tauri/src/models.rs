@@ -319,6 +319,9 @@ pub struct Model {
     /// Model capabilities (auto-inferred if not set)
     #[serde(default)]
     pub capabilities: ModelCapabilities,
+    /// Maximum number of images allowed (default: 10, only for vision models)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_images: Option<u32>,
 }
 
 impl Default for Model {
@@ -330,6 +333,7 @@ impl Default for Model {
             top_p: None,
             context_length: None,
             capabilities: ModelCapabilities::default(),
+            max_images: None,
         }
     }
 }
@@ -463,6 +467,10 @@ pub struct ModelConfig {
     /// - Some(false): Disable thinking mode explicitly
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_enabled: Option<bool>,
+    /// Vision support - whether the model can process images
+    /// Defaults to false if not specified
+    #[serde(default)]
+    pub vision_enabled: bool,
 }
 
 /// A preset combining model config and system prompt (legacy)
@@ -506,6 +514,9 @@ pub struct GeneralSettings {
     /// Show token usage in messages
     #[serde(default)]
     pub show_usage: bool,
+    /// Enable PDF debug mode to allow page range selection
+    #[serde(default)]
+    pub pdf_debug_mode: bool,
 }
 
 impl Default for GeneralSettings {
@@ -515,6 +526,7 @@ impl Default for GeneralSettings {
             auto_start: false,
             debug_mode: false,
             show_usage: true,
+            pdf_debug_mode: false,
         }
     }
 }
@@ -616,6 +628,7 @@ impl AppConfig {
                 top_p: model_config.parameters.top_p,
                 context_length: None,
                 capabilities: ModelCapabilities::default(),
+                max_images: None,
             });
 
             // Create agent from model's system prompt

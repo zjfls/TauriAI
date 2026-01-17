@@ -31,6 +31,10 @@ export function formatFileSize(bytes: number): string {
 interface PdfPreviewProps {
   pdf: PendingPdf;
   onRemove: (id: string) => void;
+  pdfDebugMode?: boolean;
+  onPageRangeChange?: (id: string, startPage?: number, endPage?: number) => void;
+  onIncludeImagesChange?: (id: string, includeImages: boolean) => void;
+  onIncludeTextChange?: (id: string, includeText: boolean) => void;
 }
 
 /**
@@ -40,14 +44,62 @@ interface PdfPreviewProps {
  * - Shows page thumbnail grid (up to 6 pages) (Requirement 5.3)
  * - Shows total page count information (Requirement 5.5)
  * - Provides remove button (Requirement 5.6)
+ * - Provides page range selection in debug mode
  */
-export const PdfPreview: React.FC<PdfPreviewProps> = ({ pdf, onRemove }) => {
+export const PdfPreview: React.FC<PdfPreviewProps> = ({ 
+  pdf, 
+  onRemove, 
+  pdfDebugMode = false,
+  onPageRangeChange,
+  onIncludeImagesChange,
+  onIncludeTextChange 
+}) => {
   const formattedSize = formatFileSize(pdf.size);
   const isProcessing = pdf.processingProgress < 100;
   
   // Get pages to display (max 6)
   const displayPages = pdf.pages.slice(0, MAX_THUMBNAIL_DISPLAY);
   const hasMorePages = pdf.totalPages > MAX_THUMBNAIL_DISPLAY;
+  
+  // Local state for page range inputs
+  const [startPage, setStartPage] = React.useState<string>(pdf.pageRangeStart?.toString() || '');
+  const [endPage, setEndPage] = React.useState<string>(pdf.pageRangeEnd?.toString() || '');
+  const [includeImages, setIncludeImages] = React.useState<boolean>(pdf.includeImages ?? true);
+  const [includeText, setIncludeText] = React.useState<boolean>(pdf.includeText ?? true);
+  
+  // Handle page range change
+  const handlePageRangeChange = React.useCallback((start: string, end: string) => {
+    setStartPage(start);
+    setEndPage(end);
+    
+    if (!onPageRangeChange) return;
+    
+    const startNum = start ? parseInt(start, 10) : undefined;
+    const endNum = end ? parseInt(end, 10) : undefined;
+    
+    // Validate range
+    if (startNum !== undefined && (startNum < 1 || startNum > pdf.totalPages)) return;
+    if (endNum !== undefined && (endNum < 1 || endNum > pdf.totalPages)) return;
+    if (startNum !== undefined && endNum !== undefined && startNum > endNum) return;
+    
+    onPageRangeChange(pdf.id, startNum, endNum);
+  }, [pdf.id, pdf.totalPages, onPageRangeChange]);
+  
+  // Handle include images change
+  const handleIncludeImagesChange = React.useCallback((checked: boolean) => {
+    setIncludeImages(checked);
+    if (onIncludeImagesChange) {
+      onIncludeImagesChange(pdf.id, checked);
+    }
+  }, [pdf.id, onIncludeImagesChange]);
+
+  // Handle include text change
+  const handleIncludeTextChange = React.useCallback((checked: boolean) => {
+    setIncludeText(checked);
+    if (onIncludeTextChange) {
+      onIncludeTextChange(pdf.id, checked);
+    }
+  }, [pdf.id, onIncludeTextChange]);
   
   // Tooltip text with full filename, size, and metadata
   const tooltipParts = [
@@ -100,6 +152,74 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({ pdf, onRemove }) => {
               <span className="font-medium">作者:</span> {pdf.metadata.author}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Debug mode: Page range selection */}
+      {pdfDebugMode && (
+        <div className="mb-2 p-2 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-700 rounded">
+          <div className="text-xs font-medium text-yellow-800 dark:text-yellow-300 mb-2">
+            调试模式: 页面范围选择
+          </div>
+          <div className="flex items-center gap-2 mb-2">
+            <div className="flex items-center gap-1">
+              <label className="text-xs text-gray-600 dark:text-gray-400">从</label>
+              <input
+                type="number"
+                min="1"
+                max={pdf.totalPages}
+                value={startPage}
+                onChange={(e) => handlePageRangeChange(e.target.value, endPage)}
+                placeholder="1"
+                className="w-16 px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+              />
+            </div>
+            <div className="flex items-center gap-1">
+              <label className="text-xs text-gray-600 dark:text-gray-400">到</label>
+              <input
+                type="number"
+                min="1"
+                max={pdf.totalPages}
+                value={endPage}
+                onChange={(e) => handlePageRangeChange(startPage, e.target.value)}
+                placeholder={pdf.totalPages.toString()}
+                className="w-16 px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+              />
+            </div>
+            <span className="text-xs text-gray-500 dark:text-gray-400">
+              (共 {pdf.totalPages} 页)
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              id={`include-images-${pdf.id}`}
+              checked={includeImages}
+              onChange={(e) => handleIncludeImagesChange(e.target.checked)}
+              className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 dark:focus:ring-blue-600 dark:ring-offset-gray-800 focus:ring-2 dark:bg-gray-700 dark:border-gray-600"
+            />
+            <label 
+              htmlFor={`include-images-${pdf.id}`}
+              className="text-xs text-gray-700 dark:text-gray-300 cursor-pointer"
+            >
+              包含图片
+            </label>
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              id={`include-text-${pdf.id}`}
+              checked={includeText}
+              onChange={(e) => handleIncludeTextChange(e.target.checked)}
+              className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 dark:focus:ring-blue-600 dark:ring-offset-gray-800 focus:ring-2 dark:bg-gray-700 dark:border-gray-600"
+            />
+            <label 
+              htmlFor={`include-text-${pdf.id}`}
+              className="text-xs text-gray-700 dark:text-gray-300 cursor-pointer"
+            >
+              包含文本
+            </label>
+          </div>
         </div>
       )}
 

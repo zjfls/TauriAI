@@ -54,6 +54,8 @@ export interface Model {
   topP?: number;
   contextLength?: number; // Maximum context length in tokens (e.g., 128000 for GPT-4o)
   capabilities: ModelCapabilities;
+  // Advanced settings
+  maxImages?: number;     // Maximum number of images allowed (default: 10, only for vision models)
 }
 
 /**
@@ -206,6 +208,13 @@ export interface PendingPdf {
   totalPages: number;      // Total page count
   metadata?: PdfMetadata;  // Metadata
   processingProgress: number;  // Processing progress (0-100)
+  // Debug mode: page range selection
+  pageRangeStart?: number;  // Start page (1-indexed, inclusive)
+  pageRangeEnd?: number;    // End page (1-indexed, inclusive)
+  // Debug mode: include images
+  includeImages?: boolean;  // Whether to include images (default: true)
+  // Debug mode: include text
+  includeText?: boolean;    // Whether to include text (default: true)
 }
 
 /**
@@ -358,6 +367,7 @@ export interface GeneralSettings {
   debugMode?: boolean;  // Enable debug mode to show raw HTTP messages
   showUsage?: boolean;  // Show token usage in messages
   theme?: Theme;        // UI theme preference (light/dark/system)
+  pdfDebugMode?: boolean;  // Enable PDF debug mode to select page ranges
 }
 
 /**
