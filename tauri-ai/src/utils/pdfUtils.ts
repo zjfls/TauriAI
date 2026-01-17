@@ -69,8 +69,9 @@ export const PDF_ERROR_MESSAGES = {
 /**
  * JPEG quality for page image compression (0.0 - 1.0)
  * Requirement: 9.2
+ * Reduced to 0.6 to minimize request size
  */
-export const PDF_IMAGE_QUALITY = 0.85;
+export const PDF_IMAGE_QUALITY = 0.6;
 
 /**
  * Clean up canvas resources to free memory
@@ -116,14 +117,15 @@ export function compressPageImage(
  * 
  * @param page - PDF.js page proxy object
  * @param pageNumber - Page number (1-indexed)
- * @param scale - Rendering scale factor (default: 2.0 for high quality)
+ * @param scale - Rendering scale factor (default: 1.0, reduced to minimize size)
  * @returns Promise resolving to PdfPage with text and image data
  * @throws Error if text extraction or image rendering fails
  */
 export async function extractPageContent(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   page: any, // PDFPageProxy from pdfjs-dist
   pageNumber: number,
-  scale: number = 2.0
+  scale: number = 1.0 // Reduced from 2.0
 ): Promise<{ pageNumber: number; text: string; image: string }> {
   // Extract text content (Requirement 3.1)
   let text = '';
@@ -308,12 +310,7 @@ async function processPdfFileInternal(
     const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
     pdf = await loadingTask.promise;
 
-    // Validate page count (Requirement 3.5, 9.1)
-    const MAX_PDF_PAGES = 50;
-    if (pdf.numPages > MAX_PDF_PAGES) {
-      throw new Error(PDF_ERROR_MESSAGES.TOO_MANY_PAGES(MAX_PDF_PAGES));
-    }
-
+    // Get total pages
     const totalPages = pdf.numPages;
 
     // Extract document metadata (Requirement 3.6, 3.7)
@@ -355,7 +352,7 @@ async function processPdfFileInternal(
 
     // Process pages in batches (Requirement 9.1, 9.3)
     const BATCH_SIZE = 5;
-    const PDF_IMAGE_SCALE = 2.0;
+    const PDF_IMAGE_SCALE = 1.0; // Reduced from 2.0 to minimize image size
     const pages: Array<{ pageNumber: number; text: string; image: string }> = [];
 
     for (let i = 0; i < totalPages; i += BATCH_SIZE) {
@@ -366,7 +363,8 @@ async function processPdfFileInternal(
       for (let j = i; j < batchEnd; j++) {
         const pageNumber = j + 1;
         batch.push(
-          pdf.getPage(pageNumber).then(page => 
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          pdf.getPage(pageNumber).then((page: any) => 
             extractPageContent(page, pageNumber, PDF_IMAGE_SCALE)
           )
         );
@@ -385,7 +383,7 @@ async function processPdfFileInternal(
     }
 
     // Generate unique ID
-    const id = `pdf-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const id = `pdf-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 
     const result = {
       id,
@@ -424,6 +422,43 @@ async function processPdfFileInternal(
     // Re-throw errors to be handled by the main processPdfFile function
     throw error;
   }
+}
+
+/**
+ * Estimate the size of the request in bytes
+ * 
+ * @param pdf - The PendingPdf object
+ * @returns Estimated request size in bytes
+ */
+export function estimatePdfRequestSize(pdf: {
+  pages: Array<{ pageNumber: number; text: string; image: string }>;
+}): number {
+  let size = 0;
+  
+  for (const page of pdf.pages) {
+    // Text size
+    size += page.text.length;
+    
+    // Image size (Base64 data URL)
+    size += page.image.length;
+  }
+  
+  return size;
+}
+
+/**
+ * Check if PDF request size is within safe limits
+ * Anthropic API typically has a ~5MB limit for requests
+ * 
+ * @param pdf - The PendingPdf object
+ * @returns true if size is safe, false otherwise
+ */
+export function isPdfRequestSizeSafe(pdf: {
+  pages: Array<{ pageNumber: number; text: string; image: string }>;
+}): boolean {
+  const MAX_SAFE_SIZE = 12 * 1024 * 1024; // 12MB limit
+  const estimatedSize = estimatePdfRequestSize(pdf);
+  return estimatedSize <= MAX_SAFE_SIZE;
 }
 
 /**

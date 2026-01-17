@@ -11,10 +11,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 
+use super::content_converter::{content_part_to_blocks, ContentBlock};
 use super::traits::{
     AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent, TokenUsage,
 };
-use crate::models::{ContentPart, ImageDetail, Message, MessageRole, ModelConfig};
+use crate::models::{ImageDetail, Message, MessageRole, ModelConfig};
 
 // ============================================================================
 // Shared types and utilities
@@ -184,6 +185,7 @@ fn convert_messages(
     messages: &[Message],
     system_prompt: Option<&str>,
     system_role: SystemRole,
+    supports_vision: bool,
 ) -> Vec<OpenAiMessage> {
     let mut result = Vec::new();
 
@@ -201,7 +203,7 @@ fn convert_messages(
         }
     }
 
-    // Convert messages
+    // Convert messages using unified content converter
     for msg in messages {
         let role = match msg.role {
             MessageRole::User => "user",
@@ -211,55 +213,40 @@ fn convert_messages(
 
         // Check if message has multimodal content
         let content = if msg.has_multimodal_content() {
-            // Convert to multimodal format
-            let parts: Vec<OpenAiContentPart> = msg
+            // Use unified converter to get content blocks
+            let blocks: Vec<OpenAiContentPart> = msg
                 .get_content_parts()
-                .into_iter()
-                .flat_map(|part| match part {
-                    ContentPart::Text { text } => vec![OpenAiContentPart::Text { text }],
-                    ContentPart::Image { url, detail } => vec![OpenAiContentPart::ImageUrl {
-                        image_url: ImageUrlData {
-                            url,
-                            detail: match detail {
-                                ImageDetail::Auto => None,
-                                ImageDetail::Low => Some("low".to_string()),
-                                ImageDetail::High => Some("high".to_string()),
-                            },
-                        },
-                    }],
-                    ContentPart::TextFile { filename, content } => {
-                        // Format text file as markdown code block
-                        vec![OpenAiContentPart::Text {
-                            text: format!("📄 {}\n```\n{}\n```", filename, content),
-                        }]
-                    }
-                    ContentPart::PdfDocument {
-                        filename, pages, ..
-                    } => {
-                        // Convert PDF to alternating text and image parts
-                        pages
-                            .into_iter()
-                            .flat_map(|page| {
-                                vec![
-                                    OpenAiContentPart::Text {
-                                        text: format!(
-                                            "📄 {} - 第{}页\n```\n{}\n```",
-                                            filename, page.page_number, page.text
-                                        ),
-                                    },
-                                    OpenAiContentPart::ImageUrl {
-                                        image_url: ImageUrlData {
-                                            url: page.image,
-                                            detail: Some("high".to_string()),
+                .iter()
+                .flat_map(|part| {
+                    content_part_to_blocks(part, supports_vision)
+                        .into_iter()
+                        .map(|block| match block {
+                            ContentBlock::Text { text } => OpenAiContentPart::Text { text },
+                            ContentBlock::ImageUrl { url, detail } => {
+                                OpenAiContentPart::ImageUrl {
+                                    image_url: ImageUrlData {
+                                        url,
+                                        detail: match detail {
+                                            ImageDetail::Auto => None,
+                                            ImageDetail::Low => Some("low".to_string()),
+                                            ImageDetail::High => Some("high".to_string()),
                                         },
                                     },
-                                ]
-                            })
-                            .collect()
-                    }
+                                }
+                            }
+                            ContentBlock::ImageBase64 { data, .. } => {
+                                // OpenAI supports data URLs, reconstruct from base64
+                                OpenAiContentPart::ImageUrl {
+                                    image_url: ImageUrlData {
+                                        url: format!("data:image/png;base64,{}", data),
+                                        detail: Some("high".to_string()),
+                                    },
+                                }
+                            }
+                        })
                 })
                 .collect();
-            OpenAiContent::Parts(parts)
+            OpenAiContent::Parts(blocks)
         } else {
             // Simple text content
             OpenAiContent::Text(msg.content.clone())
@@ -310,6 +297,7 @@ impl OpenAiBaseClient {
             &messages,
             config.parameters.system_prompt.as_deref(),
             self.system_role,
+            config.vision_enabled,
         );
 
         // Build thinking config based on thinking_enabled:
@@ -382,6 +370,7 @@ impl OpenAiBaseClient {
             &messages,
             config.parameters.system_prompt.as_deref(),
             self.system_role,
+            config.vision_enabled,
         );
 
         // Build thinking config based on thinking_enabled:
@@ -713,7 +702,7 @@ impl AiClient for OpenAiCompatibleClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{MessageRole, PdfMetadata, PdfPage};
+    use crate::models::{ContentPart, MessageRole, PdfMetadata, PdfPage};
     use proptest::prelude::*;
 
     /// Strategy for generating arbitrary PdfPage
@@ -797,7 +786,7 @@ mod tests {
             };
 
             // Convert to OpenAI format
-            let openai_messages = convert_messages(&[message], None, SystemRole::System);
+            let openai_messages = convert_messages(&[message], None, SystemRole::System, true);
 
             // Should have exactly one message (user message)
             prop_assert_eq!(openai_messages.len(), 1, "Should have exactly one OpenAI message");
@@ -899,7 +888,7 @@ mod tests {
             error_message: None,
         };
 
-        let openai_messages = convert_messages(&[message], None, SystemRole::System);
+        let openai_messages = convert_messages(&[message], None, SystemRole::System, true);
 
         assert_eq!(openai_messages.len(), 1);
         let content_parts = match &openai_messages[0].content {
@@ -965,7 +954,7 @@ mod tests {
             error_message: None,
         };
 
-        let openai_messages = convert_messages(&[message], None, SystemRole::System);
+        let openai_messages = convert_messages(&[message], None, SystemRole::System, true);
 
         let content_parts = match &openai_messages[0].content {
             OpenAiContent::Parts(parts) => parts,
@@ -1026,6 +1015,7 @@ mod tests {
             &[message],
             Some("You are a helpful assistant."),
             SystemRole::System,
+            true,
         );
 
         // Should have 2 messages: system + user
@@ -1067,7 +1057,7 @@ mod tests {
             error_message: None,
         };
 
-        let openai_messages = convert_messages(&[message], None, SystemRole::System);
+        let openai_messages = convert_messages(&[message], None, SystemRole::System, true);
 
         let content_parts = match &openai_messages[0].content {
             OpenAiContent::Parts(parts) => parts,

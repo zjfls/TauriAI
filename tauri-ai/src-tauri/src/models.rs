@@ -31,6 +31,7 @@ pub enum ImageDetail {
 
 /// PDF single page data
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct PdfPage {
     pub page_number: u32,
     pub text: String,
@@ -39,6 +40,7 @@ pub struct PdfPage {
 
 /// PDF metadata
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct PdfMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -72,6 +74,7 @@ pub enum ContentPart {
     PdfDocument {
         filename: String,
         pages: Vec<PdfPage>,
+        #[serde(rename = "totalPages")]
         total_pages: u32,
         #[serde(skip_serializing_if = "Option::is_none")]
         metadata: Option<PdfMetadata>,
@@ -316,6 +319,9 @@ pub struct Model {
     /// Model capabilities (auto-inferred if not set)
     #[serde(default)]
     pub capabilities: ModelCapabilities,
+    /// Maximum number of images allowed (default: 10, only for vision models)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_images: Option<u32>,
 }
 
 impl Default for Model {
@@ -327,6 +333,7 @@ impl Default for Model {
             top_p: None,
             context_length: None,
             capabilities: ModelCapabilities::default(),
+            max_images: None,
         }
     }
 }
@@ -460,6 +467,10 @@ pub struct ModelConfig {
     /// - Some(false): Disable thinking mode explicitly
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_enabled: Option<bool>,
+    /// Vision support - whether the model can process images
+    /// Defaults to false if not specified
+    #[serde(default)]
+    pub vision_enabled: bool,
 }
 
 /// A preset combining model config and system prompt (legacy)
@@ -503,6 +514,9 @@ pub struct GeneralSettings {
     /// Show token usage in messages
     #[serde(default)]
     pub show_usage: bool,
+    /// Enable PDF debug mode to allow page range selection
+    #[serde(default)]
+    pub pdf_debug_mode: bool,
 }
 
 impl Default for GeneralSettings {
@@ -512,6 +526,7 @@ impl Default for GeneralSettings {
             auto_start: false,
             debug_mode: false,
             show_usage: true,
+            pdf_debug_mode: false,
         }
     }
 }
@@ -613,6 +628,7 @@ impl AppConfig {
                 top_p: model_config.parameters.top_p,
                 context_length: None,
                 capabilities: ModelCapabilities::default(),
+                max_images: None,
             });
 
             // Create agent from model's system prompt
@@ -989,11 +1005,11 @@ mod tests {
         let part = ContentPart::pdf_document("document.pdf", pages, None);
         let json = serde_json::to_string(&part).unwrap();
 
-        // Verify JSON structure
+        // Verify JSON structure (now using camelCase)
         assert!(json.contains(r#""type":"pdf_document""#));
         assert!(json.contains(r#""filename":"document.pdf""#));
-        assert!(json.contains(r#""total_pages":1"#));
-        assert!(json.contains(r#""page_number":1"#));
+        assert!(json.contains(r#""totalPages":1"#));
+        assert!(json.contains(r#""pageNumber":1"#));
         assert!(json.contains(r#""text":"Test content""#));
     }
 
@@ -1004,12 +1020,12 @@ mod tests {
             "filename": "test.pdf",
             "pages": [
                 {
-                    "page_number": 1,
+                    "pageNumber": 1,
                     "text": "Page 1",
                     "image": "data:image/png;base64,abc"
                 }
             ],
-            "total_pages": 1
+            "totalPages": 1
         }"#;
 
         let part: ContentPart = serde_json::from_str(json).unwrap();
@@ -1053,10 +1069,10 @@ mod tests {
         let part = ContentPart::pdf_document("doc.pdf", pages, metadata);
         let json = serde_json::to_string(&part).unwrap();
 
-        // Verify metadata is included
+        // Verify metadata is included (now using camelCase)
         assert!(json.contains(r#""title":"My Document""#));
         assert!(json.contains(r#""author":"John Doe""#));
-        assert!(json.contains(r#""created_at":"2024-01-15""#));
+        assert!(json.contains(r#""createdAt":"2024-01-15""#));
 
         // Deserialize and verify
         let deserialized: ContentPart = serde_json::from_str(&json).unwrap();
