@@ -7,10 +7,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 
+use super::content_converter::{content_part_to_blocks, image_url_to_base64, ContentBlock};
 use super::traits::{
     AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent, TokenUsage,
 };
-use crate::models::{ContentPart, Message, MessageRole, ModelConfig};
+use crate::models::{Message, MessageRole, ModelConfig};
 
 /// Anthropic API client
 pub struct AnthropicClient {
@@ -110,11 +111,11 @@ struct MessagesRequest {
 /// Anthropic messages API response (non-streaming)
 #[derive(Debug, Deserialize)]
 struct MessagesResponse {
-    content: Vec<ContentBlock>,
+    content: Vec<AnthropicResponseBlock>,
 }
 
 #[derive(Debug, Deserialize)]
-struct ContentBlock {
+struct AnthropicResponseBlock {
     #[serde(rename = "type")]
     content_type: String,
     text: Option<String>,
@@ -128,7 +129,9 @@ enum StreamingEvent {
     #[serde(rename = "message_start")]
     MessageStart { message: MessageStartData },
     #[serde(rename = "content_block_start")]
-    ContentBlockStart { content_block: ContentBlock },
+    ContentBlockStart {
+        content_block: AnthropicResponseBlock,
+    },
     #[serde(rename = "content_block_delta")]
     ContentBlockDelta { delta: ContentDelta },
     #[serde(rename = "content_block_stop")]
@@ -204,56 +207,34 @@ fn convert_messages(messages: &[Message]) -> Vec<AnthropicMessage> {
 
             // Check if message has multimodal content
             let content = if msg.has_multimodal_content() {
-                // Convert to multimodal format
+                // Use unified converter to get content blocks
                 let blocks: Vec<AnthropicContentBlock> = msg
                     .get_content_parts()
-                    .into_iter()
-                    .flat_map(|part| match part {
-                        ContentPart::Text { text } => vec![AnthropicContentBlock::Text { text }],
-                        ContentPart::Image { url, detail: _ } => {
-                            // Parse data URL to extract media type and base64 data
-                            if let Some((media_type, data)) = parse_data_url(&url) {
-                                vec![AnthropicContentBlock::Image {
-                                    source: ImageSource::Base64 { media_type, data },
-                                }]
-                            } else {
-                                // If not a data URL, skip (Anthropic doesn't support URL images)
-                                vec![]
-                            }
-                        }
-                        ContentPart::TextFile { filename, content } => {
-                            // Format text file as markdown code block
-                            vec![AnthropicContentBlock::Text {
-                                text: format!("📄 {}\n```\n{}\n```", filename, content),
-                            }]
-                        }
-                        ContentPart::PdfDocument {
-                            filename,
-                            pages,
-                            ..
-                        } => {
-                            // Convert PDF to alternating text and image blocks
-                            pages
-                                .into_iter()
-                                .flat_map(|page| {
-                                    let mut blocks = vec![AnthropicContentBlock::Text {
-                                        text: format!(
-                                            "📄 {} - 第{}页\n```\n{}\n```",
-                                            filename, page.page_number, page.text
-                                        ),
-                                    }];
-                                    
-                                    // Add image block if we can parse the data URL
-                                    if let Some((media_type, data)) = parse_data_url(&page.image) {
-                                        blocks.push(AnthropicContentBlock::Image {
-                                            source: ImageSource::Base64 { media_type, data },
-                                        });
-                                    }
-                                    
-                                    blocks
-                                })
-                                .collect()
-                        }
+                    .iter()
+                    .flat_map(|part| {
+                        content_part_to_blocks(part)
+                            .into_iter()
+                            .filter_map(|block| match block {
+                                ContentBlock::Text { text } => {
+                                    Some(AnthropicContentBlock::Text { text })
+                                }
+                                ContentBlock::ImageUrl { .. } => {
+                                    // Try to convert URL to Base64 (Anthropic requirement)
+                                    image_url_to_base64(block).and_then(|b| match b {
+                                        ContentBlock::ImageBase64 { media_type, data, .. } => {
+                                            Some(AnthropicContentBlock::Image {
+                                                source: ImageSource::Base64 { media_type, data },
+                                            })
+                                        }
+                                        _ => None,
+                                    })
+                                }
+                                ContentBlock::ImageBase64 { media_type, data, .. } => {
+                                    Some(AnthropicContentBlock::Image {
+                                        source: ImageSource::Base64 { media_type, data },
+                                    })
+                                }
+                            })
                     })
                     .collect();
                 AnthropicContent::Blocks(blocks)
@@ -268,37 +249,6 @@ fn convert_messages(messages: &[Message]) -> Vec<AnthropicMessage> {
             }
         })
         .collect()
-}
-
-/// Parse data URL to extract media type and base64 data
-/// Format: data:image/png;base64,iVBORw0KGgo...
-fn parse_data_url(url: &str) -> Option<(String, String)> {
-    if !url.starts_with("data:") {
-        return None;
-    }
-    
-    let url = url.strip_prefix("data:")?;
-    let parts: Vec<&str> = url.splitn(2, ',').collect();
-    if parts.len() != 2 {
-        return None;
-    }
-    
-    let header = parts[0];
-    let data = parts[1];
-    
-    // Extract media type (before ;base64)
-    let media_type = if let Some(semicolon_pos) = header.find(';') {
-        &header[..semicolon_pos]
-    } else {
-        header
-    };
-    
-    // Verify it's base64 encoded
-    if !header.contains("base64") {
-        return None;
-    }
-    
-    Some((media_type.to_string(), data.to_string()))
 }
 
 #[async_trait]
@@ -614,7 +564,8 @@ impl AiClient for AnthropicClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{MessageStatus, PdfPage};
+    use crate::ai_client::content_converter::parse_data_url;
+    use crate::models::{ContentPart, MessageStatus, PdfPage};
     use chrono::Utc;
 
     #[test]
