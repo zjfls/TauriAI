@@ -61,7 +61,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     <aside
       className={`
         flex flex-col h-full bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700
-        transition-all duration-200 ease-in-out
+        transition-all duration-200 ease-in-out flex-shrink-0
         ${expanded ? 'w-48' : 'w-16'}
       `}
     >

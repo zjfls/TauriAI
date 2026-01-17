@@ -102,7 +102,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
       />
 
       {/* Main Content Area */}
-      <div className="flex flex-1 flex-col">
+      <div className="flex flex-1 flex-col min-w-0 overflow-hidden">
         {/* Header - only show when not in chat view */}
         {activeView !== 'chat' && (
           <Header

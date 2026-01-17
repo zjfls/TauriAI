@@ -84,7 +84,7 @@ const CodeBlock = React.memo(function CodeBlock({ language, code }: CodeBlockPro
           )}
         </button>
       </div>
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto scrollbar-visible">
         <SyntaxHighlighter
           language={language || 'text'}
           style={oneDark}
