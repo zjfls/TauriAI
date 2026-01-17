@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 use super::traits::{
     AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent, TokenUsage,
 };
-use crate::models::{Message, MessageRole, ModelConfig};
+use crate::models::{ContentPart, ImageDetail, Message, MessageRole, ModelConfig};
 
 // ============================================================================
 // Shared types and utilities
@@ -24,7 +24,37 @@ use crate::models::{Message, MessageRole, ModelConfig};
 #[derive(Debug, Serialize)]
 struct OpenAiMessage {
     role: String,
-    content: String,
+    /// Content can be a string or an array of content parts for multimodal
+    content: OpenAiContent,
+}
+
+/// OpenAI content format - either simple string or array of parts
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum OpenAiContent {
+    /// Simple text content
+    Text(String),
+    /// Multimodal content (text + images)
+    Parts(Vec<OpenAiContentPart>),
+}
+
+/// A single content part for multimodal messages
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum OpenAiContentPart {
+    /// Text content part
+    Text { text: String },
+    /// Image URL content part
+    #[serde(rename = "image_url")]
+    ImageUrl { image_url: ImageUrlData },
+}
+
+/// Image URL data structure
+#[derive(Debug, Serialize)]
+struct ImageUrlData {
+    url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
 }
 
 /// Thinking mode configuration for DeepSeek models
@@ -163,7 +193,7 @@ fn convert_messages(
             };
             result.push(OpenAiMessage {
                 role: role.to_string(),
-                content: prompt.to_string(),
+                content: OpenAiContent::Text(prompt.to_string()),
             });
         }
     }
@@ -175,9 +205,66 @@ fn convert_messages(
             MessageRole::Assistant => "assistant",
             MessageRole::System => "system",
         };
+
+        // Check if message has multimodal content
+        let content = if msg.has_multimodal_content() {
+            // Convert to multimodal format
+            let parts: Vec<OpenAiContentPart> = msg
+                .get_content_parts()
+                .into_iter()
+                .flat_map(|part| match part {
+                    ContentPart::Text { text } => vec![OpenAiContentPart::Text { text }],
+                    ContentPart::Image { url, detail } => vec![OpenAiContentPart::ImageUrl {
+                        image_url: ImageUrlData {
+                            url,
+                            detail: match detail {
+                                ImageDetail::Auto => None,
+                                ImageDetail::Low => Some("low".to_string()),
+                                ImageDetail::High => Some("high".to_string()),
+                            },
+                        },
+                    }],
+                    ContentPart::TextFile { filename, content } => {
+                        // Format text file as markdown code block
+                        vec![OpenAiContentPart::Text {
+                            text: format!("📄 {}\n```\n{}\n```", filename, content),
+                        }]
+                    }
+                    ContentPart::PdfDocument {
+                        filename, pages, ..
+                    } => {
+                        // Convert PDF to alternating text and image parts
+                        pages
+                            .into_iter()
+                            .flat_map(|page| {
+                                vec![
+                                    OpenAiContentPart::Text {
+                                        text: format!(
+                                            "📄 {} - 第{}页\n```\n{}\n```",
+                                            filename, page.page_number, page.text
+                                        ),
+                                    },
+                                    OpenAiContentPart::ImageUrl {
+                                        image_url: ImageUrlData {
+                                            url: page.image,
+                                            detail: Some("high".to_string()),
+                                        },
+                                    },
+                                ]
+                            })
+                            .collect()
+                    }
+                })
+                .collect();
+            OpenAiContent::Parts(parts)
+        } else {
+            // Simple text content
+            OpenAiContent::Text(msg.content.clone())
+        };
+
         result.push(OpenAiMessage {
             role: role.to_string(),
-            content: msg.content.clone(),
+            content,
         });
     }
 
@@ -616,5 +703,401 @@ impl AiClient for OpenAiCompatibleClient {
         self.base
             .chat_stream_impl(messages, config, token_sender)
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{MessageRole, PdfMetadata, PdfPage};
+    use proptest::prelude::*;
+
+    /// Strategy for generating arbitrary PdfPage
+    fn arb_pdf_page() -> impl Strategy<Value = PdfPage> {
+        (
+            1u32..100u32,
+            ".*",
+            "data:image/png;base64,[a-zA-Z0-9+/=]{10,100}",
+        )
+            .prop_map(|(page_number, text, image)| PdfPage {
+                page_number,
+                text,
+                image,
+            })
+    }
+
+    /// Strategy for generating arbitrary PdfMetadata
+    fn arb_pdf_metadata() -> impl Strategy<Value = Option<PdfMetadata>> {
+        prop::option::of((
+            prop::option::of("[a-zA-Z0-9 ]{1,50}"),
+            prop::option::of("[a-zA-Z0-9 ]{1,50}"),
+            prop::option::of("[0-9]{4}-[0-9]{2}-[0-9]{2}"),
+            prop::option::of("[a-zA-Z0-9 ]{1,50}"),
+            prop::option::of("[a-zA-Z0-9 ]{1,50}"),
+            prop::option::of("[a-zA-Z0-9, ]{1,50}"),
+        ))
+        .prop_map(|opt| {
+            opt.map(|(title, author, created_at, producer, subject, keywords)| PdfMetadata {
+                title,
+                author,
+                created_at,
+                producer,
+                subject,
+                keywords,
+            })
+        })
+    }
+
+    /// Strategy for generating arbitrary ContentPart::PdfDocument
+    fn arb_pdf_document() -> impl Strategy<Value = ContentPart> {
+        (
+            "[a-zA-Z0-9_.-]{1,50}\\.pdf",
+            prop::collection::vec(arb_pdf_page(), 1..10),
+            arb_pdf_metadata(),
+        )
+            .prop_map(|(filename, pages, metadata)| {
+                ContentPart::pdf_document(filename, pages, metadata)
+            })
+    }
+
+    proptest! {
+        /// **Property 6: OpenAI API Conversion**
+        /// *For any* valid PdfDocument ContentPart with arbitrary filename, pages, and metadata,
+        /// converting to OpenAI API format SHALL produce alternating text and image_url parts
+        /// where each page generates exactly one text part followed by one image_url part.
+        /// **Validates: Requirements 4.1, 4.2, 4.3, 4.4**
+        #[test]
+        fn prop_pdf_document_openai_conversion(pdf_part in arb_pdf_document()) {
+            // Extract PDF data
+            let (filename, pages) = match &pdf_part {
+                ContentPart::PdfDocument { filename, pages, .. } => (filename.clone(), pages.clone()),
+                _ => panic!("Expected PdfDocument variant"),
+            };
+
+            // Create a message with the PDF document
+            let message = Message {
+                id: "test".to_string(),
+                conversation_id: "conv".to_string(),
+                role: MessageRole::User,
+                content: "Analyze this PDF".to_string(),
+                content_parts: vec![
+                    ContentPart::text("Analyze this PDF"),
+                    pdf_part.clone(),
+                ],
+                meta: None,
+                created_at: chrono::Utc::now(),
+                status: crate::models::MessageStatus::Success,
+                error_message: None,
+            };
+
+            // Convert to OpenAI format
+            let openai_messages = convert_messages(&[message], None, SystemRole::System);
+
+            // Should have exactly one message (user message)
+            prop_assert_eq!(openai_messages.len(), 1, "Should have exactly one OpenAI message");
+
+            let openai_msg = &openai_messages[0];
+            prop_assert_eq!(&openai_msg.role, "user", "Role should be 'user'");
+
+            // Extract content parts
+            let content_parts = match &openai_msg.content {
+                OpenAiContent::Parts(parts) => parts,
+                _ => panic!("Expected Parts variant"),
+            };
+
+            // Calculate expected number of parts:
+            // 1 text part ("Analyze this PDF") + (pages.len() * 2) parts (text + image per page)
+            let expected_parts = 1 + (pages.len() * 2);
+            prop_assert_eq!(
+                content_parts.len(),
+                expected_parts,
+                "Should have {} parts (1 initial text + {} pages * 2)", expected_parts, pages.len()
+            );
+
+            // First part should be the initial text
+            match &content_parts[0] {
+                OpenAiContentPart::Text { text } => {
+                    prop_assert_eq!(text, "Analyze this PDF", "First part should be initial text");
+                }
+                _ => panic!("First part should be Text"),
+            }
+
+            // Verify each page generates text + image in sequence
+            for (i, page) in pages.iter().enumerate() {
+                let text_idx = 1 + (i * 2);
+                let image_idx = text_idx + 1;
+
+                // Verify text part
+                match &content_parts[text_idx] {
+                    OpenAiContentPart::Text { text } => {
+                        // Should contain filename, page number, and page text
+                        prop_assert!(
+                            text.contains(&filename),
+                            "Text part {} should contain filename '{}'", text_idx, filename
+                        );
+                        prop_assert!(
+                            text.contains(&format!("第{}页", page.page_number)),
+                            "Text part {} should contain page number {}", text_idx, page.page_number
+                        );
+                        prop_assert!(
+                            text.contains(&page.text),
+                            "Text part {} should contain page text", text_idx
+                        );
+                        // Should be formatted as markdown code block
+                        prop_assert!(
+                            text.contains("```"),
+                            "Text part {} should be formatted as code block", text_idx
+                        );
+                    }
+                    _ => panic!("Part {} should be Text", text_idx),
+                }
+
+                // Verify image part
+                match &content_parts[image_idx] {
+                    OpenAiContentPart::ImageUrl { image_url } => {
+                        prop_assert_eq!(
+                            &image_url.url, &page.image,
+                            "Image part {} should have correct URL", image_idx
+                        );
+                        prop_assert_eq!(
+                            &image_url.detail, &Some("high".to_string()),
+                            "Image part {} should have 'high' detail", image_idx
+                        );
+                    }
+                    _ => panic!("Part {} should be ImageUrl", image_idx),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_pdf_document_conversion_single_page() {
+        // Test with a single-page PDF
+        let page = PdfPage {
+            page_number: 1,
+            text: "This is page 1 content".to_string(),
+            image: "data:image/png;base64,abc123".to_string(),
+        };
+
+        let pdf_part = ContentPart::pdf_document("test.pdf", vec![page.clone()], None);
+
+        let message = Message {
+            id: "test".to_string(),
+            conversation_id: "conv".to_string(),
+            role: MessageRole::User,
+            content: "Analyze".to_string(),
+            content_parts: vec![ContentPart::text("Analyze"), pdf_part],
+            meta: None,
+            created_at: chrono::Utc::now(),
+            status: crate::models::MessageStatus::Success,
+            error_message: None,
+        };
+
+        let openai_messages = convert_messages(&[message], None, SystemRole::System);
+
+        assert_eq!(openai_messages.len(), 1);
+        let content_parts = match &openai_messages[0].content {
+            OpenAiContent::Parts(parts) => parts,
+            _ => panic!("Expected Parts"),
+        };
+
+        // Should have 3 parts: initial text + (1 page * 2)
+        assert_eq!(content_parts.len(), 3);
+
+        // Verify text part
+        match &content_parts[1] {
+            OpenAiContentPart::Text { text } => {
+                assert!(text.contains("test.pdf"));
+                assert!(text.contains("第1页"));
+                assert!(text.contains("This is page 1 content"));
+            }
+            _ => panic!("Expected Text"),
+        }
+
+        // Verify image part
+        match &content_parts[2] {
+            OpenAiContentPart::ImageUrl { image_url } => {
+                assert_eq!(image_url.url, "data:image/png;base64,abc123");
+                assert_eq!(image_url.detail, Some("high".to_string()));
+            }
+            _ => panic!("Expected ImageUrl"),
+        }
+    }
+
+    #[test]
+    fn test_pdf_document_conversion_multiple_pages() {
+        // Test with a multi-page PDF
+        let pages = vec![
+            PdfPage {
+                page_number: 1,
+                text: "Page 1".to_string(),
+                image: "data:image/png;base64,page1".to_string(),
+            },
+            PdfPage {
+                page_number: 2,
+                text: "Page 2".to_string(),
+                image: "data:image/png;base64,page2".to_string(),
+            },
+            PdfPage {
+                page_number: 3,
+                text: "Page 3".to_string(),
+                image: "data:image/png;base64,page3".to_string(),
+            },
+        ];
+
+        let pdf_part = ContentPart::pdf_document("report.pdf", pages.clone(), None);
+
+        let message = Message {
+            id: "test".to_string(),
+            conversation_id: "conv".to_string(),
+            role: MessageRole::User,
+            content: "Review".to_string(),
+            content_parts: vec![ContentPart::text("Review"), pdf_part],
+            meta: None,
+            created_at: chrono::Utc::now(),
+            status: crate::models::MessageStatus::Success,
+            error_message: None,
+        };
+
+        let openai_messages = convert_messages(&[message], None, SystemRole::System);
+
+        let content_parts = match &openai_messages[0].content {
+            OpenAiContent::Parts(parts) => parts,
+            _ => panic!("Expected Parts"),
+        };
+
+        // Should have 7 parts: 1 initial text + (3 pages * 2)
+        assert_eq!(content_parts.len(), 7);
+
+        // Verify each page
+        for (i, page) in pages.iter().enumerate() {
+            let text_idx = 1 + (i * 2);
+            let image_idx = text_idx + 1;
+
+            match &content_parts[text_idx] {
+                OpenAiContentPart::Text { text } => {
+                    assert!(text.contains("report.pdf"));
+                    assert!(text.contains(&format!("第{}页", page.page_number)));
+                    assert!(text.contains(&page.text));
+                }
+                _ => panic!("Expected Text at index {}", text_idx),
+            }
+
+            match &content_parts[image_idx] {
+                OpenAiContentPart::ImageUrl { image_url } => {
+                    assert_eq!(image_url.url, page.image);
+                    assert_eq!(image_url.detail, Some("high".to_string()));
+                }
+                _ => panic!("Expected ImageUrl at index {}", image_idx),
+            }
+        }
+    }
+
+    #[test]
+    fn test_pdf_document_with_system_prompt() {
+        // Test that system prompt is correctly added
+        let page = PdfPage {
+            page_number: 1,
+            text: "Content".to_string(),
+            image: "data:image/png;base64,img".to_string(),
+        };
+
+        let pdf_part = ContentPart::pdf_document("doc.pdf", vec![page], None);
+
+        let message = Message {
+            id: "test".to_string(),
+            conversation_id: "conv".to_string(),
+            role: MessageRole::User,
+            content: "Analyze".to_string(),
+            content_parts: vec![pdf_part],
+            meta: None,
+            created_at: chrono::Utc::now(),
+            status: crate::models::MessageStatus::Success,
+            error_message: None,
+        };
+
+        let openai_messages = convert_messages(
+            &[message],
+            Some("You are a helpful assistant."),
+            SystemRole::System,
+        );
+
+        // Should have 2 messages: system + user
+        assert_eq!(openai_messages.len(), 2);
+        assert_eq!(openai_messages[0].role, "system");
+        assert_eq!(openai_messages[1].role, "user");
+
+        // Verify system message
+        match &openai_messages[0].content {
+            OpenAiContent::Text(text) => {
+                assert_eq!(text, "You are a helpful assistant.");
+            }
+            _ => panic!("Expected Text for system message"),
+        }
+    }
+
+    #[test]
+    fn test_mixed_content_with_pdf() {
+        // Test message with text, image, and PDF
+        let page = PdfPage {
+            page_number: 1,
+            text: "PDF content".to_string(),
+            image: "data:image/png;base64,pdf".to_string(),
+        };
+
+        let message = Message {
+            id: "test".to_string(),
+            conversation_id: "conv".to_string(),
+            role: MessageRole::User,
+            content: "Mixed content".to_string(),
+            content_parts: vec![
+                ContentPart::text("Look at this"),
+                ContentPart::image("data:image/png;base64,img1"),
+                ContentPart::pdf_document("doc.pdf", vec![page], None),
+            ],
+            meta: None,
+            created_at: chrono::Utc::now(),
+            status: crate::models::MessageStatus::Success,
+            error_message: None,
+        };
+
+        let openai_messages = convert_messages(&[message], None, SystemRole::System);
+
+        let content_parts = match &openai_messages[0].content {
+            OpenAiContent::Parts(parts) => parts,
+            _ => panic!("Expected Parts"),
+        };
+
+        // Should have 4 parts: text + image + (1 page * 2)
+        // Note: content field is not included when content_parts is present
+        assert_eq!(content_parts.len(), 4);
+
+        // Verify order: text, image, pdf_text, pdf_image
+        match &content_parts[0] {
+            OpenAiContentPart::Text { text } => assert_eq!(text, "Look at this"),
+            _ => panic!("Expected Text"),
+        }
+
+        match &content_parts[1] {
+            OpenAiContentPart::ImageUrl { image_url } => {
+                assert_eq!(image_url.url, "data:image/png;base64,img1")
+            }
+            _ => panic!("Expected ImageUrl"),
+        }
+
+        match &content_parts[2] {
+            OpenAiContentPart::Text { text } => {
+                assert!(text.contains("doc.pdf"));
+                assert!(text.contains("PDF content"));
+            }
+            _ => panic!("Expected Text"),
+        }
+
+        match &content_parts[3] {
+            OpenAiContentPart::ImageUrl { image_url } => {
+                assert_eq!(image_url.url, "data:image/png;base64,pdf")
+            }
+            _ => panic!("Expected ImageUrl"),
+        }
     }
 }

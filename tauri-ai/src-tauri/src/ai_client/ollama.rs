@@ -56,7 +56,6 @@ struct OllamaOptions {
     top_p: Option<f32>,
 }
 
-
 /// Ollama chat API response (non-streaming)
 #[derive(Debug, Deserialize)]
 struct ChatResponse {
@@ -108,20 +107,16 @@ fn convert_messages(messages: &[Message], system_prompt: Option<&str>) -> Vec<Ol
     result
 }
 
-
 #[async_trait]
 impl AiClient for OllamaClient {
-    async fn chat(
-        &self,
-        messages: Vec<Message>,
-        config: &ModelConfig,
-    ) -> Result<String, AiError> {
+    async fn chat(&self, messages: Vec<Message>, config: &ModelConfig) -> Result<String, AiError> {
         let api_base = config
             .api_base
             .as_deref()
             .unwrap_or("http://localhost:11434");
 
-        let ollama_messages = convert_messages(&messages, config.parameters.system_prompt.as_deref());
+        let ollama_messages =
+            convert_messages(&messages, config.parameters.system_prompt.as_deref());
 
         let options = OllamaOptions {
             temperature: Some(config.parameters.temperature),
@@ -161,7 +156,6 @@ impl AiClient for OllamaClient {
         Ok(completion.message.content)
     }
 
-
     async fn chat_stream(
         &self,
         messages: Vec<Message>,
@@ -173,7 +167,8 @@ impl AiClient for OllamaClient {
             .as_deref()
             .unwrap_or("http://localhost:11434");
 
-        let ollama_messages = convert_messages(&messages, config.parameters.system_prompt.as_deref());
+        let ollama_messages =
+            convert_messages(&messages, config.parameters.system_prompt.as_deref());
 
         let options = OllamaOptions {
             temperature: Some(config.parameters.temperature),
@@ -205,13 +200,14 @@ impl AiClient for OllamaClient {
                     .await;
                 return Err(AiError::RequestFailed(error_response.error));
             }
-            let _ = token_sender.send(StreamEvent::Error(error_text.clone())).await;
+            let _ = token_sender
+                .send(StreamEvent::Error(error_text.clone()))
+                .await;
             return Err(AiError::RequestFailed(error_text));
         }
 
         let mut full_content = String::new();
         let mut stream = response.bytes_stream();
-
 
         while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result.map_err(|e| AiError::StreamError(e.to_string()))?;
@@ -232,7 +228,9 @@ impl AiClient for OllamaClient {
                     }
 
                     if stream_response.done {
-                        let _ = token_sender.send(StreamEvent::Done(full_content.clone())).await;
+                        let _ = token_sender
+                            .send(StreamEvent::Done(full_content.clone()))
+                            .await;
                         return Ok(());
                     }
                 }

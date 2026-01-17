@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
 use thiserror::Error;
 
-use crate::models::{Conversation, Message, MessageRole};
+use crate::models::{ContentPart, Conversation, Message, MessageRole};
 
 /// Errors that can occur during storage operations
 #[derive(Debug, Error)]
@@ -105,6 +105,7 @@ impl Database {
                 conversation_id TEXT NOT NULL,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
+                content_parts TEXT,
                 meta TEXT,
                 status TEXT NOT NULL DEFAULT 'success',
                 error_message TEXT,
@@ -120,6 +121,8 @@ impl Database {
             [],
         );
         let _ = conn.execute("ALTER TABLE messages ADD COLUMN error_message TEXT", []);
+        // Migration: Add content_parts column if it doesn't exist
+        let _ = conn.execute("ALTER TABLE messages ADD COLUMN content_parts TEXT", []);
 
         // Create indexes for performance
         conn.execute(
@@ -317,6 +320,13 @@ impl Database {
             .map(|m| serde_json::to_string(m))
             .transpose()?;
 
+        // Serialize content_parts if not empty
+        let content_parts_json = if message.content_parts.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(&message.content_parts)?)
+        };
+
         let created_at_str = message.created_at.to_rfc3339();
 
         let status_str = match message.status {
@@ -326,13 +336,14 @@ impl Database {
         };
 
         conn.execute(
-            "INSERT INTO messages (id, conversation_id, role, content, meta, status, error_message, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO messages (id, conversation_id, role, content, content_parts, meta, status, error_message, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 message.id,
                 conversation_id,
                 role_str,
                 message.content,
+                content_parts_json,
                 meta_json,
                 status_str,
                 message.error_message,
@@ -447,7 +458,7 @@ impl Database {
 
             if let Some(before_time) = before_created_at {
                 let mut stmt = conn.prepare(
-                    "SELECT id, conversation_id, role, content, meta, created_at, status, error_message 
+                    "SELECT id, conversation_id, role, content, content_parts, meta, created_at, status, error_message 
                      FROM messages 
                      WHERE conversation_id = ?1 AND created_at < ?2
                      ORDER BY created_at DESC
@@ -468,7 +479,7 @@ impl Database {
         } else {
             // Get the most recent messages
             let mut stmt = conn.prepare(
-                "SELECT id, conversation_id, role, content, meta, created_at, status, error_message 
+                "SELECT id, conversation_id, role, content, content_parts, meta, created_at, status, error_message 
                  FROM messages 
                  WHERE conversation_id = ?1
                  ORDER BY created_at DESC
@@ -491,10 +502,11 @@ impl Database {
     /// Helper function to convert a database row to a Message
     fn row_to_message(&self, row: &rusqlite::Row) -> Result<Message, rusqlite::Error> {
         let role_str: String = row.get(2)?;
-        let meta_json: Option<String> = row.get(4)?;
-        let created_at_str: String = row.get(5)?;
-        let status_str: String = row.get(6).unwrap_or_else(|_| "success".to_string());
-        let error_message: Option<String> = row.get(7).ok();
+        let content_parts_json: Option<String> = row.get(4)?;
+        let meta_json: Option<String> = row.get(5)?;
+        let created_at_str: String = row.get(6)?;
+        let status_str: String = row.get(7).unwrap_or_else(|_| "success".to_string());
+        let error_message: Option<String> = row.get(8).ok();
 
         let role = match role_str.as_str() {
             "user" => MessageRole::User,
@@ -511,6 +523,11 @@ impl Database {
 
         let meta = meta_json.and_then(|json| serde_json::from_str(&json).ok());
 
+        // Parse content_parts if present
+        let content_parts: Vec<ContentPart> = content_parts_json
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default();
+
         let created_at = DateTime::parse_from_rfc3339(&created_at_str)
             .map(|dt| dt.with_timezone(&Utc))
             .unwrap_or_else(|_| Utc::now());
@@ -520,6 +537,7 @@ impl Database {
             conversation_id: row.get(1)?,
             role,
             content: row.get(3)?,
+            content_parts,
             meta,
             created_at,
             status,
@@ -626,6 +644,7 @@ mod tests {
             conversation_id: conv.id.clone(),
             role: MessageRole::User,
             content: "Hello, world!".to_string(),
+            content_parts: Vec::new(),
             meta: None,
             created_at: Utc::now(),
             status: crate::models::MessageStatus::Success,
@@ -659,6 +678,7 @@ mod tests {
                 conversation_id: conv.id.clone(),
                 role: MessageRole::User,
                 content: format!("Message {i}"),
+                content_parts: Vec::new(),
                 meta: None,
                 created_at: Utc::now(),
                 status: crate::models::MessageStatus::Success,
@@ -696,6 +716,7 @@ mod tests {
             conversation_id: conv.id.clone(),
             role: MessageRole::Assistant,
             content: "Response".to_string(),
+            content_parts: Vec::new(),
             meta: Some(MessageMeta {
                 model: Some("gpt-4".to_string()),
                 tokens: Some(100),
@@ -733,6 +754,7 @@ mod tests {
             conversation_id: conv.id.clone(),
             role: MessageRole::User,
             content: "Hello".to_string(),
+            content_parts: Vec::new(),
             meta: None,
             created_at: Utc::now(),
             status: crate::models::MessageStatus::Success,

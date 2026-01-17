@@ -2,11 +2,11 @@
 
 use std::sync::Arc;
 
-use super::traits::{AiClient, AiError};
-use super::openai::{OpenAiClient, OpenAiCompatibleClient};
-use super::openai_responses::OpenAiResponsesClient;
 use super::anthropic::AnthropicClient;
 use super::ollama::OllamaClient;
+use super::openai::{OpenAiClient, OpenAiCompatibleClient};
+use super::openai_responses::OpenAiResponsesClient;
+use super::traits::{AiClient, AiError};
 
 /// Provider types supported by the application
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,8 +60,14 @@ mod tests {
         assert_eq!(Provider::from("openai"), Provider::OpenAi);
         assert_eq!(Provider::from("OpenAI"), Provider::OpenAi);
         assert_eq!(Provider::from("OPENAI"), Provider::OpenAi);
-        assert_eq!(Provider::from("openai_compatible"), Provider::OpenAiCompatible);
-        assert_eq!(Provider::from("openai_responses"), Provider::OpenAiResponses);
+        assert_eq!(
+            Provider::from("openai_compatible"),
+            Provider::OpenAiCompatible
+        );
+        assert_eq!(
+            Provider::from("openai_responses"),
+            Provider::OpenAiResponses
+        );
         assert_eq!(Provider::from("anthropic"), Provider::Anthropic);
         assert_eq!(Provider::from("Anthropic"), Provider::Anthropic);
         assert_eq!(Provider::from("ollama"), Provider::Ollama);

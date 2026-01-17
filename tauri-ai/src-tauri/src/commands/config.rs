@@ -65,6 +65,7 @@ pub async fn test_connection(
         conversation_id: "test".to_string(),
         role: MessageRole::User,
         content: "Hi".to_string(),
+        content_parts: Vec::new(),
         meta: None,
         created_at: chrono::Utc::now(),
         status: MessageStatus::Success,

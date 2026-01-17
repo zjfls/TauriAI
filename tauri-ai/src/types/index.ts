@@ -91,6 +91,149 @@ export interface Agent {
 }
 
 // ============================================================================
+// Multimodal Content Types
+// ============================================================================
+
+/**
+ * Image detail level for vision models
+ */
+export type ImageDetail = 'auto' | 'low' | 'high';
+
+/**
+ * Text content part
+ */
+export interface TextContentPart {
+  type: 'text';
+  text: string;
+}
+
+/**
+ * Image content part
+ */
+export interface ImageContentPart {
+  type: 'image';
+  url: string;  // Base64 data URL or HTTP URL
+  detail?: ImageDetail;
+}
+
+/**
+ * Text file content part
+ */
+export interface TextFileContentPart {
+  type: 'text_file';
+  filename: string;
+  content: string;
+}
+
+/**
+ * Pending text file for attachment (before sending)
+ */
+export interface PendingTextFile {
+  id: string;           // Unique identifier
+  filename: string;     // File name
+  content: string;      // File content
+  size: number;         // File size in bytes
+}
+
+/**
+ * Supported text file extensions
+ */
+export const SUPPORTED_TEXT_EXTENSIONS = [
+  '.txt', '.md', '.json', '.yaml', '.yml', '.xml', '.csv', '.log',
+  '.ini', '.toml', '.html', '.css', '.js', '.ts', '.py', '.rs',
+  '.go', '.java', '.c', '.cpp', '.h', '.sh', '.bat', '.sql'
+] as const;
+
+/**
+ * Maximum text file size (1MB)
+ */
+export const MAX_TEXT_FILE_SIZE = 1 * 1024 * 1024;
+
+/**
+ * Maximum number of text file attachments
+ */
+export const MAX_TEXT_FILES = 5;
+
+// ============================================================================
+// PDF Content Types
+// ============================================================================
+
+/**
+ * PDF single page data
+ */
+export interface PdfPage {
+  pageNumber: number;      // Page number (starting from 1)
+  text: string;            // Extracted text content
+  image: string;           // Base64 data URL (PNG format)
+}
+
+/**
+ * PDF metadata
+ */
+export interface PdfMetadata {
+  title?: string;          // Document title
+  author?: string;         // Author
+  createdAt?: string;      // Creation time
+  producer?: string;       // PDF generator
+  subject?: string;        // Subject
+  keywords?: string;       // Keywords
+}
+
+/**
+ * PDF document content part
+ */
+export interface PdfDocumentContentPart {
+  type: 'pdf_document';
+  filename: string;        // File name
+  pages: PdfPage[];        // Page array
+  totalPages: number;      // Total page count
+  metadata?: PdfMetadata;  // Document metadata
+}
+
+/**
+ * Pending PDF file for attachment (before sending)
+ */
+export interface PendingPdf {
+  id: string;              // Unique identifier
+  filename: string;        // File name
+  size: number;            // File size in bytes
+  pages: PdfPage[];        // Processed pages
+  totalPages: number;      // Total page count
+  metadata?: PdfMetadata;  // Metadata
+  processingProgress: number;  // Processing progress (0-100)
+}
+
+/**
+ * Maximum PDF file size (20MB)
+ */
+export const MAX_PDF_SIZE = 20 * 1024 * 1024;
+
+/**
+ * Maximum number of PDF pages to process
+ */
+export const MAX_PDF_PAGES = 50;
+
+/**
+ * PDF image rendering scale (for clarity)
+ */
+export const PDF_IMAGE_SCALE = 2.0;
+
+/**
+ * PDF image format
+ */
+export const PDF_IMAGE_FORMAT = 'image/png';
+
+/**
+ * Maximum number of simultaneous PDF documents
+ */
+export const MAX_PDF_COUNT = 3;
+
+/**
+ * A single part of message content (text, image, text file, or PDF document)
+ */
+export type ContentPart = TextContentPart | ImageContentPart | TextFileContentPart | PdfDocumentContentPart;
+
+// ============================================================================
 // Message & Conversation
 // ============================================================================
 
@@ -111,6 +254,7 @@ export interface Message {
   conversationId: string;
   role: MessageRole;
   content: string;
+  contentParts?: ContentPart[];  // Multimodal content (images, etc.)
   thinking?: string;      // Thinking/reasoning content (for models like DeepSeek-R1)
   meta?: MessageMeta;
   actions?: Action[];
