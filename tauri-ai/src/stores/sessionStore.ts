@@ -23,9 +23,12 @@ export interface SessionState {
   createSession: (agentName: string) => Promise<string>;
   closeSession: (sessionId: string) => Promise<void>;
   switchSession: (sessionId: string) => void;
+  closeOtherSessions: (keepSessionId: string) => void;
+  closeSessionsToLeft: (sessionId: string) => void;
+  closeSessionsToRight: (sessionId: string) => void;
 
   // Message operations (act on specified session)
-  sendMessage: (sessionId: string, content: string, enableThinking?: boolean, images?: ContentPart[]) => Promise<void>;
+  sendMessage: (sessionId: string, content: string, thinking?: boolean | string, images?: ContentPart[]) => Promise<void>;
   abortGeneration: (sessionId: string) => Promise<void>;
   retry: (sessionId: string, messageId: string) => Promise<void>;
   undoToMessage: (sessionId: string, messageId: string) => void;
@@ -233,12 +236,131 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     get().saveSessionState();
   },
 
+  /**
+   * Close all sessions except the specified one
+   * Requirements: 2.1, 2.2
+   */
+  closeOtherSessions: (keepSessionId: string) => {
+    const { sessions } = get();
+    
+    // Check if the session to keep exists
+    if (!sessions.has(keepSessionId)) return;
+
+    // Create new sessions map with only the session to keep
+    const newSessions = new Map<string, AgentSession>();
+    const sessionToKeep = sessions.get(keepSessionId);
+    if (sessionToKeep) {
+      newSessions.set(keepSessionId, sessionToKeep);
+    }
+
+    // Update state: keep only the specified session and set it as active
+    set({
+      sessions: newSessions,
+      activeSessionId: keepSessionId,
+    });
+
+    // Save state after closing sessions
+    get().saveSessionState();
+  },
+
+  /**
+   * Close all sessions to the left of the specified session
+   * Requirements: 3.1, 3.3
+   */
+  closeSessionsToLeft: (sessionId: string) => {
+    const { sessions, activeSessionId } = get();
+    
+    // Check if the target session exists
+    if (!sessions.has(sessionId)) return;
+
+    // Convert sessions map to array to get indices
+    const sessionArray = Array.from(sessions.entries());
+    
+    // Find the index of the target session
+    const targetIndex = sessionArray.findIndex(([id]) => id === sessionId);
+    if (targetIndex === -1) return;
+
+    // If target is at index 0, there are no sessions to the left
+    if (targetIndex === 0) return;
+
+    // Create new sessions map excluding sessions to the left
+    const newSessions = new Map<string, AgentSession>();
+    for (let i = targetIndex; i < sessionArray.length; i++) {
+      const [id, session] = sessionArray[i];
+      newSessions.set(id, session);
+    }
+
+    // Determine new active session
+    let newActiveId = activeSessionId;
+    
+    // If the active session was closed (it was to the left), update active session
+    if (activeSessionId && !newSessions.has(activeSessionId)) {
+      // Set the target session or the first remaining session as active
+      newActiveId = sessionId;
+    }
+
+    // Update state
+    set({
+      sessions: newSessions,
+      activeSessionId: newActiveId,
+    });
+
+    // Save state after closing sessions
+    get().saveSessionState();
+  },
+
+  /**
+   * Close all sessions to the right of the specified session
+   * Requirements: 4.1, 4.3
+   */
+  closeSessionsToRight: (sessionId: string) => {
+    const { sessions, activeSessionId } = get();
+    
+    // Check if the target session exists
+    if (!sessions.has(sessionId)) return;
+
+    // Convert sessions map to array to get indices
+    const sessionArray = Array.from(sessions.entries());
+    
+    // Find the index of the target session
+    const targetIndex = sessionArray.findIndex(([id]) => id === sessionId);
+    if (targetIndex === -1) return;
+
+    // If target is at the last index, there are no sessions to the right
+    if (targetIndex === sessionArray.length - 1) return;
+
+    // Create new sessions map excluding sessions to the right
+    const newSessions = new Map<string, AgentSession>();
+    for (let i = 0; i <= targetIndex; i++) {
+      const [id, session] = sessionArray[i];
+      newSessions.set(id, session);
+    }
+
+    // Determine new active session
+    let newActiveId = activeSessionId;
+    
+    // If the active session was closed (it was to the right), update active session
+    if (activeSessionId && !newSessions.has(activeSessionId)) {
+      // Set the target session or the first remaining session as active
+      newActiveId = sessionId;
+    }
+
+    // Update state
+    set({
+      sessions: newSessions,
+      activeSessionId: newActiveId,
+    });
+
+    // Save state after closing sessions
+    get().saveSessionState();
+  },
+
 
   /**
    * Send a message in a specific session
    * Requirements: 4.3, 4.4
    */
-  sendMessage: async (sessionId: string, content: string, enableThinking?: boolean, images?: ContentPart[]) => {
+  sendMessage: async (sessionId: string, content: string, thinking?: boolean | string, images?: ContentPart[]) => {
     // Wait for any pending undo operations to complete first
     // This prevents race conditions where new messages are sent before backend deletion finishes
     await pendingUndoOperation;
@@ -310,7 +432,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         contentParts: contentParts.length > 0 ? contentParts : undefined,
         agentName: session.agentName,
         modelRef: session.modelRef,
-        enableThinking,
+        thinking,  // 直接传递 thinking，可以是 boolean 或 string
       });
     } catch (err) {
       get().handleError(sessionId, (err as any).message || String(err));

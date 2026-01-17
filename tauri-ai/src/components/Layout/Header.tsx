@@ -101,7 +101,7 @@ export const Header: React.FC<HeaderProps> = ({
             </button>
 
             {isModelDropdownOpen && (
-              <div className="absolute right-0 mt-2 w-72 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-1 z-50 max-h-80 overflow-auto">
+              <div className="absolute right-0 mt-2 w-72 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-1 z-[100] max-h-80 overflow-auto">
                 {modelOptions.length === 0 ? (
                   <div className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
                     暂无可用模型
@@ -148,7 +148,7 @@ export const Header: React.FC<HeaderProps> = ({
             </button>
 
             {isAgentDropdownOpen && (
-              <div className="absolute right-0 mt-2 w-64 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-1 z-50">
+              <div className="absolute right-0 mt-2 w-64 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-1 z-[100] max-h-80 overflow-auto">
                 {agents.length === 0 ? (
                   <div className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
                     暂无配置的智能体

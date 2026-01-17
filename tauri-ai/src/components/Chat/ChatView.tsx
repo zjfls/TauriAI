@@ -10,8 +10,9 @@ import { useConfigStore } from '../../stores/configStore';
 import { MessageList } from './MessageList';
 import { InputArea, type InputAreaHandle } from './InputArea';
 import { countTokens } from '../../utils/tokenizer';
+import { getApiProtocol } from '../../utils/apiUtils';
 import * as opener from '@tauri-apps/plugin-opener';
-import type { TokenUsage, ContextUsageBreakdown, ContentPart } from '../../types';
+import type { TokenUsage, ContextUsageBreakdown, ContentPart, ThinkingMode } from '../../types';
 
 interface ChatViewProps {
   sessionId: string | null;
@@ -63,6 +64,17 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
   const supportsVision = useMemo(() => {
     return currentModel?.capabilities?.vision ?? false;
   }, [currentModel]);
+
+  // Get API protocol type for thinking mode
+  const apiProtocol = useMemo(() => {
+    const sessionModelRef = session?.modelRef;
+    const agent = session ? getAgent(session.agentName) : null;
+    const modelRef = sessionModelRef || agent?.modelRef;
+    
+    if (!modelRef) return 'chat_completions';
+    
+    return getApiProtocol(modelRef, config?.providers || []);
+  }, [session, getAgent, config]);
 
   // Calculate total token usage for the conversation
   const totalUsage = useMemo((): TokenUsage | null => {
@@ -184,12 +196,25 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
 
   // Note: Stream listener is set up in sessionStore to route events by conversationId
 
-  const handleSend = async (content: string, enableThinking?: boolean, images?: ContentPart[]) => {
+  const handleSend = async (content: string, thinking?: ThinkingMode, images?: ContentPart[]) => {
     if (!sessionId) {
       console.error('Cannot send message: no active session');
       return;
     }
-    await sendMessage(sessionId, content, enableThinking, images);
+    // Convert ThinkingMode to appropriate format for backend
+    // - boolean: pass as-is (for chat_completions API)
+    // - ThinkingLevel: pass as string (for responses API)
+    let thinkingParam: boolean | string | undefined;
+    if (thinking !== undefined) {
+      if (typeof thinking === 'boolean') {
+        thinkingParam = thinking;
+      } else {
+        // ThinkingLevel: convert to string or boolean
+        // null -> false, others -> pass the level string
+        thinkingParam = thinking === null ? false : thinking;
+      }
+    }
+    await sendMessage(sessionId, content, thinkingParam, images);
   };
 
   const handleAbort = async () => {
@@ -273,6 +298,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
         supportsThinking={supportsThinking}
         supportsVision={supportsVision}
         contextUsage={contextUsage}
+        apiProtocol={apiProtocol}
         agents={config?.agents || []}
         currentAgentName={session?.agentName || ''}
         onAgentSelect={(agentName) => sessionId && setSessionAgent(sessionId, agentName)}
