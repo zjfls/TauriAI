@@ -26,7 +26,17 @@ pub const CHAT_FORMAT_PROMPT: &str = r#"
 - 块级公式用 $$ 包裹，前后需空行
 
 ### 图表（Mermaid）
-使用 mermaid 作为语言标记的代码块，支持 flowchart、sequence、gantt 等图表类型。
+使用 mermaid 作为语言标记的代码块，支持 flowchart、sequence、gantt、classDiagram 等图表类型。
+注意事项：
+- **禁止使用中文引号**：节点文本必须用英文双引号 `"` 包裹
+- **数学公式必须用双美元符号**：`$$公式$$`（单 `$` 无效），且整个节点文本需用引号包裹
+- 正确示例：`A["核心概念：$$\\frac{dy}{dx}$$"]`
+- **Class Diagram**：必须先定义类名再使用 `<<interface>>` 注解
+错误示范：
+```mermaid
+classDiagram
+  <<interface>> A %% Error: A undefined
+```
 
 ### 数学函数可视化（Mafs）
 使用 `plot` 或 `mafs` 作为语言标记的代码块，内容为 JSON 对象或纯文本函数表达式。

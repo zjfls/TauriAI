@@ -12,11 +12,14 @@ import { Copy, Check } from 'lucide-react';
 import { MathBlock } from './MathBlock';
 import 'katex/dist/katex.min.css';
 
-// Initialize mermaid
+// Initialize mermaid with math support
 mermaid.initialize({
   startOnLoad: false,
   theme: 'neutral',
   securityLevel: 'loose',
+  // Force KaTeX CSS rendering for consistent cross-browser math display
+  forceLegacyMathML: true,
+  suppressErrorRendering: false,
 });
 
 // ============================================================================
