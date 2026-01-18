@@ -110,6 +110,7 @@ impl Database {
                 conversation_id TEXT NOT NULL,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
+                thinking TEXT,
                 content_parts TEXT,
                 meta TEXT,
                 status TEXT NOT NULL DEFAULT 'success',
@@ -128,6 +129,8 @@ impl Database {
         let _ = conn.execute("ALTER TABLE messages ADD COLUMN error_message TEXT", []);
         // Migration: Add content_parts column if it doesn't exist
         let _ = conn.execute("ALTER TABLE messages ADD COLUMN content_parts TEXT", []);
+        // Migration: Add thinking column if it doesn't exist
+        let _ = conn.execute("ALTER TABLE messages ADD COLUMN thinking TEXT", []);
 
         // Create indexes for performance
         conn.execute(
@@ -369,13 +372,14 @@ impl Database {
         };
 
         conn.execute(
-            "INSERT INTO messages (id, conversation_id, role, content, content_parts, meta, status, error_message, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO messages (id, conversation_id, role, content, thinking, content_parts, meta, status, error_message, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 message.id,
                 conversation_id,
                 role_str,
                 message.content,
+                message.thinking,
                 content_parts_json,
                 meta_json,
                 status_str,
@@ -413,9 +417,10 @@ impl Database {
             .transpose()?;
 
         conn.execute(
-            "UPDATE messages SET content = ?1, meta = ?2, status = ?3, error_message = ?4 WHERE id = ?5",
+            "UPDATE messages SET content = ?1, thinking = ?2, meta = ?3, status = ?4, error_message = ?5 WHERE id = ?6",
             params![
                 message.content,
+                message.thinking,
                 meta_json,
                 status_str,
                 message.error_message,
@@ -527,7 +532,7 @@ impl Database {
 
             if let Some(before_time) = before_created_at {
                 let mut stmt = conn.prepare(
-                    "SELECT id, conversation_id, role, content, content_parts, meta, created_at, status, error_message 
+                    "SELECT id, conversation_id, role, content, thinking, content_parts, meta, created_at, status, error_message 
                      FROM messages 
                      WHERE conversation_id = ?1 AND created_at < ?2
                      ORDER BY created_at DESC
@@ -548,7 +553,7 @@ impl Database {
         } else {
             // Get the most recent messages
             let mut stmt = conn.prepare(
-                "SELECT id, conversation_id, role, content, content_parts, meta, created_at, status, error_message 
+                "SELECT id, conversation_id, role, content, thinking, content_parts, meta, created_at, status, error_message 
                  FROM messages 
                  WHERE conversation_id = ?1
                  ORDER BY created_at DESC
@@ -571,11 +576,12 @@ impl Database {
     /// Helper function to convert a database row to a Message
     fn row_to_message(&self, row: &rusqlite::Row) -> Result<Message, rusqlite::Error> {
         let role_str: String = row.get(2)?;
-        let content_parts_json: Option<String> = row.get(4)?;
-        let meta_json: Option<String> = row.get(5)?;
-        let created_at_str: String = row.get(6)?;
-        let status_str: String = row.get(7).unwrap_or_else(|_| "success".to_string());
-        let error_message: Option<String> = row.get(8).ok();
+        let thinking: Option<String> = row.get(4)?;
+        let content_parts_json: Option<String> = row.get(5)?;
+        let meta_json: Option<String> = row.get(6)?;
+        let created_at_str: String = row.get(7)?;
+        let status_str: String = row.get(8).unwrap_or_else(|_| "success".to_string());
+        let error_message: Option<String> = row.get(9).ok();
 
         let role = match role_str.as_str() {
             "user" => MessageRole::User,
@@ -607,6 +613,7 @@ impl Database {
             role,
             content: row.get(3)?,
             content_parts,
+            thinking,
             meta,
             created_at,
             status,
@@ -714,6 +721,7 @@ mod tests {
             role: MessageRole::User,
             content: "Hello, world!".to_string(),
             content_parts: Vec::new(),
+            thinking: Some("test thinking".to_string()),
             meta: None,
             created_at: Utc::now(),
             status: crate::models::MessageStatus::Success,
@@ -729,6 +737,7 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].content, "Hello, world!");
         assert_eq!(messages[0].role, MessageRole::User);
+        assert_eq!(messages[0].thinking, Some("test thinking".to_string()));
     }
 
     #[test]
@@ -748,6 +757,7 @@ mod tests {
                 role: MessageRole::User,
                 content: format!("Message {i}"),
                 content_parts: Vec::new(),
+                thinking: None,
                 meta: None,
                 created_at: Utc::now(),
                 status: crate::models::MessageStatus::Success,
@@ -786,6 +796,7 @@ mod tests {
             role: MessageRole::Assistant,
             content: "Response".to_string(),
             content_parts: Vec::new(),
+            thinking: None,
             meta: Some(MessageMeta {
                 model: Some("gpt-4".to_string()),
                 tokens: Some(100),
@@ -824,6 +835,7 @@ mod tests {
             role: MessageRole::User,
             content: "Hello".to_string(),
             content_parts: Vec::new(),
+            thinking: None,
             meta: None,
             created_at: Utc::now(),
             status: crate::models::MessageStatus::Success,

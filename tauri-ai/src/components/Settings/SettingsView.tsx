@@ -101,6 +101,15 @@ export const SettingsView: React.FC = () => {
     saveConfig(updatedConfig);
   };
 
+  const handleOpenDevtoolsOnStartChange = (openDevtoolsOnStart: boolean) => {
+    if (!config) return;
+    const updatedConfig: AppConfig = {
+      ...config,
+      general: { ...config.general, openDevtoolsOnStart },
+    };
+    saveConfig(updatedConfig);
+  };
+
   const handlePdfDebugModeChange = (pdfDebugMode: boolean) => {
     if (!config) return;
     const updatedConfig: AppConfig = {
@@ -139,11 +148,13 @@ export const SettingsView: React.FC = () => {
             language={config.general.language}
             autoStart={config.general.autoStart}
             debugMode={config.general.debugMode ?? false}
+            openDevtoolsOnStart={config.general.openDevtoolsOnStart ?? false}
             showUsage={config.general.showUsage ?? true}
             pdfDebugMode={config.general.pdfDebugMode ?? false}
             onLanguageChange={handleLanguageChange}
             onAutoStartChange={handleAutoStartChange}
             onDebugModeChange={handleDebugModeChange}
+            onOpenDevtoolsOnStartChange={handleOpenDevtoolsOnStartChange}
             onShowUsageChange={handleShowUsageChange}
             onPdfDebugModeChange={handlePdfDebugModeChange}
           />
@@ -231,11 +242,13 @@ interface GeneralSettingsProps {
   language: string;
   autoStart: boolean;
   debugMode: boolean;
+  openDevtoolsOnStart: boolean;
   showUsage: boolean;
   pdfDebugMode: boolean;
   onLanguageChange: (language: string) => void;
   onAutoStartChange: (value: boolean) => void;
   onDebugModeChange: (value: boolean) => void;
+  onOpenDevtoolsOnStartChange: (value: boolean) => void;
   onShowUsageChange: (value: boolean) => void;
   onPdfDebugModeChange: (value: boolean) => void;
 }
@@ -244,11 +257,13 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
   language,
   autoStart,
   debugMode,
+  openDevtoolsOnStart,
   showUsage,
   pdfDebugMode,
   onLanguageChange,
   onAutoStartChange,
   onDebugModeChange,
+  onOpenDevtoolsOnStartChange,
   onShowUsageChange,
   onPdfDebugModeChange,
 }) => {
@@ -294,6 +309,18 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
           className={`relative w-11 h-6 rounded-full transition-colors ${debugMode ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'}`}
         >
           <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${debugMode ? 'translate-x-5' : ''}`} />
+        </button>
+      </div>
+      <div className="flex items-center justify-between">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">启动时打开 DevTools</label>
+          <p className="text-xs text-gray-500">仅开发模式生效，需要重启应用</p>
+        </div>
+        <button
+          onClick={() => onOpenDevtoolsOnStartChange(!openDevtoolsOnStart)}
+          className={`relative w-11 h-6 rounded-full transition-colors ${openDevtoolsOnStart ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'}`}
+        >
+          <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${openDevtoolsOnStart ? 'translate-x-5' : ''}`} />
         </button>
       </div>
       <div className="flex items-center justify-between">

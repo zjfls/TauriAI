@@ -387,6 +387,7 @@ export interface GeneralSettings {
   showUsage?: boolean;  // Show token usage in messages
   theme?: Theme;        // UI theme preference (light/dark/system)
   pdfDebugMode?: boolean;  // Enable PDF debug mode to select page ranges
+  openDevtoolsOnStart?: boolean; // Open DevTools on startup (dev builds only)
 }
 
 /**

@@ -69,6 +69,7 @@ pub async fn test_connection(
         role: MessageRole::User,
         content: "Hi".to_string(),
         content_parts: Vec::new(),
+        thinking: None,
         meta: None,
         created_at: chrono::Utc::now(),
         status: MessageStatus::Success,

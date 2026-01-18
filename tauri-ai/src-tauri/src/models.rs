@@ -169,6 +169,9 @@ pub struct Message {
     /// Multimodal content parts (images, etc.) - stored separately for DB compatibility
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub content_parts: Vec<ContentPart>,
+    /// Thinking/reasoning content (optional, stored for history display)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub meta: Option<MessageMeta>,
     pub created_at: DateTime<Utc>,
@@ -524,6 +527,9 @@ pub struct GeneralSettings {
     /// Show token usage in messages
     #[serde(default)]
     pub show_usage: bool,
+    /// Whether to open DevTools on startup (dev builds only)
+    #[serde(default)]
+    pub open_devtools_on_start: bool,
 }
 
 impl Default for GeneralSettings {
@@ -533,6 +539,7 @@ impl Default for GeneralSettings {
             auto_start: false,
             debug_mode: false,
             show_usage: true,
+            open_devtools_on_start: false,
         }
     }
 }
@@ -862,6 +869,7 @@ mod tests {
             role: MessageRole::User,
             content: "Hello".to_string(),
             content_parts: vec![],
+            thinking: None,
             meta: None,
             created_at: Utc::now(),
             status: MessageStatus::Success,
@@ -880,6 +888,7 @@ mod tests {
                 ContentPart::text("Analyze this file"),
                 ContentPart::text_file("main.rs", "fn main() {}"),
             ],
+            thinking: None,
             meta: None,
             created_at: Utc::now(),
             status: MessageStatus::Success,
@@ -898,6 +907,7 @@ mod tests {
                 ContentPart::text("Look at this"),
                 ContentPart::image("data:image/png;base64,..."),
             ],
+            thinking: None,
             meta: None,
             created_at: Utc::now(),
             status: MessageStatus::Success,
@@ -917,6 +927,7 @@ mod tests {
                 ContentPart::image("data:image/png;base64,..."),
                 ContentPart::text_file("config.json", r#"{"key": "value"}"#),
             ],
+            thinking: None,
             meta: None,
             created_at: Utc::now(),
             status: MessageStatus::Success,
@@ -943,6 +954,7 @@ mod tests {
                     None,
                 ),
             ],
+            thinking: None,
             meta: None,
             created_at: Utc::now(),
             status: MessageStatus::Success,

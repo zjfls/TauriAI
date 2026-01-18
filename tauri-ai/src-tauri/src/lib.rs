@@ -76,12 +76,24 @@ pub fn run() {
             // 设置窗口关闭事件处理
             // 满足需求 9.4: 点击关闭按钮时隐藏窗口而非退出
             if let Some(window) = app.get_webview_window("main") {
-                // 在开发模式下可通过环境变量打开 DevTools（默认关闭）
+                // 在开发模式下可通过通用设置 / 环境变量打开 DevTools（默认关闭）
                 #[cfg(debug_assertions)]
                 {
-                    let open_devtools = std::env::var("TAURIAI_OPEN_DEVTOOLS")
-                        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                    let env_override = std::env::var("TAURIAI_OPEN_DEVTOOLS")
+                        .ok()
+                        .and_then(|v| match v.trim().to_ascii_lowercase().as_str() {
+                            "1" | "true" | "yes" | "on" => Some(true),
+                            "0" | "false" | "no" | "off" => Some(false),
+                            _ => None,
+                        });
+
+                    let config_value = app
+                        .try_state::<Arc<ConfigManager>>()
+                        .and_then(|m| m.ensure_default().ok())
+                        .map(|c| c.general.open_devtools_on_start)
                         .unwrap_or(false);
+
+                    let open_devtools = env_override.unwrap_or(config_value);
                     if open_devtools {
                         window.open_devtools();
                     }

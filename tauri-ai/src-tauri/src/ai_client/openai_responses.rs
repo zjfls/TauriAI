@@ -818,6 +818,7 @@ mod tests {
             role,
             content,
             content_parts,
+            thinking: None,
             meta: None,
             created_at: Utc::now(),
             status: MessageStatus::Success,

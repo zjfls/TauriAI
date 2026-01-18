@@ -214,6 +214,7 @@ pub async fn chat_stream(
         role: MessageRole::User,
         content: content.clone(),
         content_parts: content_parts.unwrap_or_default(),
+        thinking: None,
         meta: None,
         created_at: chrono::Utc::now(),
         status: crate::models::MessageStatus::Pending,
@@ -247,6 +248,7 @@ pub async fn chat_stream(
             role: MessageRole::System,
             content: system_content,
             content_parts: Vec::new(),
+            thinking: None,
             meta: None,
             created_at: chrono::Utc::now(),
             status: crate::models::MessageStatus::Success,
@@ -376,6 +378,11 @@ pub async fn chat_stream(
             role: MessageRole::Assistant,
             content: full_content.clone(),
             content_parts: Vec::new(),
+            thinking: if full_thinking.is_empty() {
+                None
+            } else {
+                Some(full_thinking.clone())
+            },
             meta: Some(crate::models::MessageMeta {
                 model: Some(model_name.clone()),
                 tokens: None,
