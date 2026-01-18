@@ -191,7 +191,7 @@ export const MessageList: React.FC<MessageListProps> = ({
       {userScrolledAway && streamingContent !== null && (
         <button
           onClick={() => scrollToBottom()}
-          className="fixed bottom-24 right-8 flex h-10 w-10 items-center justify-center rounded-full bg-blue-500 text-white shadow-lg transition-all hover:bg-blue-600"
+          className="fixed bottom-38 right-2 flex h-10 w-10 items-center justify-center rounded-full bg-blue-500 text-white shadow-lg transition-all hover:bg-blue-600"
           title="滚动到底部"
         >
           <ArrowDown size={20} />

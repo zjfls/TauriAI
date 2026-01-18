@@ -18,7 +18,7 @@ import './App.css';
 
 function App() {
   const { loadConfig, config, isLoading: configLoading, error: configError } = useConfigStore();
-  const { loadConversations } = useConversationStore();
+  const loadConversations = useConversationStore((state) => state.loadConversations);
   const { activeView } = useUIStore();
   
   // Session store for multi-agent workspace

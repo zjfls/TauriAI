@@ -1027,6 +1027,108 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 // Execute once to avoid race conditions from React lifecycle
 let listenersInitialized = false;
 
+// ============================================================================
+// Streaming UI update throttling
+// - Token events can be very frequent; updating React/Zustand on every token will
+//   cause excessive re-renders. We buffer tokens and flush at a fixed rate.
+// - 调整刷新频率：把 STREAM_UI_UPDATE_FPS 改成 2 或 3 即可（2=每秒2次，3=每秒3次）
+// ============================================================================
+const STREAM_UI_UPDATE_FPS = 20;
+const STREAM_UI_UPDATE_INTERVAL_MS = Math.round(1000 / STREAM_UI_UPDATE_FPS);
+
+type PendingStreamChunks = {
+  message: string[];
+  thinking: string[];
+};
+
+const pendingStreamChunksBySessionId = new Map<string, PendingStreamChunks>();
+let streamFlushTimeout: ReturnType<typeof setTimeout> | null = null;
+
+const getOrCreatePendingChunks = (sessionId: string): PendingStreamChunks => {
+  let chunks = pendingStreamChunksBySessionId.get(sessionId);
+  if (!chunks) {
+    chunks = { message: [], thinking: [] };
+    pendingStreamChunksBySessionId.set(sessionId, chunks);
+  }
+  return chunks;
+};
+
+const clearPendingChunks = (sessionId: string) => {
+  pendingStreamChunksBySessionId.delete(sessionId);
+};
+
+const flushPendingStreamChunks = () => {
+  if (pendingStreamChunksBySessionId.size === 0) return;
+
+  const snapshot = Array.from(pendingStreamChunksBySessionId.entries());
+  pendingStreamChunksBySessionId.clear();
+
+  useSessionStore.setState((state) => {
+    let updated = false;
+    const newSessions = new Map(state.sessions);
+
+    for (const [sessionId, chunks] of snapshot) {
+      const messageChunk = chunks.message.length > 0 ? chunks.message.join('') : '';
+      const thinkingChunk = chunks.thinking.length > 0 ? chunks.thinking.join('') : '';
+
+      if (!messageChunk && !thinkingChunk) continue;
+
+      const session = newSessions.get(sessionId);
+      if (!session) continue;
+
+      // Streaming already ended/aborted: drop buffered tokens to avoid resurrecting UI
+      if (session.streamingMessage === null) continue;
+
+      let nextStreamingMessage = session.streamingMessage;
+      let nextStreamingThinking = session.streamingThinking;
+
+      if (messageChunk) {
+        nextStreamingMessage = (session.streamingMessage || '') + messageChunk;
+      }
+      if (thinkingChunk) {
+        nextStreamingThinking = (session.streamingThinking || '') + thinkingChunk;
+      }
+
+      if (
+        nextStreamingMessage !== session.streamingMessage ||
+        nextStreamingThinking !== session.streamingThinking
+      ) {
+        newSessions.set(sessionId, {
+          ...session,
+          streamingMessage: nextStreamingMessage,
+          streamingThinking: nextStreamingThinking,
+        });
+        updated = true;
+      }
+    }
+
+    return updated ? { sessions: newSessions } : {};
+  });
+};
+
+const scheduleStreamFlush = () => {
+  if (streamFlushTimeout) return;
+  streamFlushTimeout = setTimeout(() => {
+    streamFlushTimeout = null;
+    flushPendingStreamChunks();
+
+    // If tokens arrive again during the next tick, they'll schedule another flush.
+    if (pendingStreamChunksBySessionId.size > 0) {
+      scheduleStreamFlush();
+    }
+  }, STREAM_UI_UPDATE_INTERVAL_MS);
+};
+
+const queueStreamingToken = (sessionId: string, token: string) => {
+  getOrCreatePendingChunks(sessionId).message.push(token);
+  scheduleStreamFlush();
+};
+
+const queueThinkingToken = (sessionId: string, token: string) => {
+  getOrCreatePendingChunks(sessionId).thinking.push(token);
+  scheduleStreamFlush();
+};
+
 export const initStreamListeners = async () => {
   // Prevent duplicate initialization
   if (listenersInitialized) return;
@@ -1037,7 +1139,7 @@ export const initStreamListeners = async () => {
     await listen<{ conversationId: string; token: string }>('chat:token', (event) => {
       const session = useSessionStore.getState().getSessionByConversationId(event.payload.conversationId);
       if (session) {
-        useSessionStore.getState().appendStreamingToken(session.id, event.payload.token);
+        queueStreamingToken(session.id, event.payload.token);
       }
     });
 
@@ -1045,7 +1147,7 @@ export const initStreamListeners = async () => {
     await listen<{ conversationId: string; token: string }>('chat:thinking', (event) => {
       const session = useSessionStore.getState().getSessionByConversationId(event.payload.conversationId);
       if (session) {
-        useSessionStore.getState().appendThinkingToken(session.id, event.payload.token);
+        queueThinkingToken(session.id, event.payload.token);
       }
     });
 
@@ -1053,6 +1155,7 @@ export const initStreamListeners = async () => {
     await listen<{ conversationId: string; fullContent: string; thinking?: string; debugInfo?: DebugInfo; usage?: TokenUsage; model?: string }>('chat:done', (event) => {
       const session = useSessionStore.getState().getSessionByConversationId(event.payload.conversationId);
       if (session) {
+        clearPendingChunks(session.id);
         useSessionStore.getState().finalizeStreaming(
           session.id,
           event.payload.fullContent,
@@ -1070,6 +1173,7 @@ export const initStreamListeners = async () => {
       const session = useSessionStore.getState().getSessionByConversationId(event.payload.conversationId);
       console.log('[DEBUG] chat:error - session lookup result:', session ? { id: session.id, convId: session.conversationId } : null);
       if (session) {
+        clearPendingChunks(session.id);
         useSessionStore.getState().handleError(session.id, event.payload.error, event.payload.debugInfo);
       } else {
         console.warn('[DEBUG] chat:error - No session found for conversationId:', event.payload.conversationId);
