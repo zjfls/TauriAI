@@ -5,21 +5,52 @@
  */
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Send, Square, Brain, Bot, Cpu, ChevronDown, Check, ImagePlus, X, Paperclip, FileText } from 'lucide-react';
+import { Send, Square, Bot, Cpu, ChevronDown, Check, ImagePlus, Paperclip, FileText } from 'lucide-react';
 import { ContextUsageIndicator } from './ContextUsageIndicator';
-import { TextFilePreview } from './TextFilePreview';
-import { PdfPreview } from './PdfPreview';
+import { AttachmentPreview } from './AttachmentPreview';
 import { ThinkingSelector } from './ThinkingSelector';
 import { isSupportedTextFile, readTextFile, validateFileCount } from '../../utils/textFileUtils';
 import { isValidPdfFile, validatePdfSize, processPdfFile, MAX_PDF_SIZE } from '../../utils/pdfUtils';
 import type { ContextUsageBreakdown, Agent, ContentPart, PendingTextFile, PendingPdf, ApiProtocolType, ThinkingMode } from '../../types';
-import { SUPPORTED_TEXT_EXTENSIONS, MAX_PDF_COUNT } from '../../types';
+import { SUPPORTED_TEXT_EXTENSIONS, MAX_PDF_COUNT, MAX_TEXT_FILES } from '../../types';
 import { FILE_ERROR_MESSAGES } from '../../utils/textFileUtils';
 
 // Constants for textarea sizing
 const MIN_TEXTAREA_HEIGHT = 40; // Minimum height in pixels
 const MAX_TEXTAREA_HEIGHT = 200; // Maximum height in pixels (Requirement 4.1)
 
+/**
+ * Error messages for paste operations
+ * 
+ * Centralized error message constants for consistent user feedback across paste operations.
+ * These messages are displayed when file validation fails or limits are exceeded.
+ * 
+ * Requirements: 4.1, 4.2
+ * 
+ * @constant
+ * @property {string} IMAGE_NOT_SUPPORTED - Shown when user pastes images but model doesn't support vision
+ * @property {string} IMAGE_LIMIT_EXCEEDED - Shown when image count limit is reached
+ * @property {string} TEXT_FILE_LIMIT_EXCEEDED - Shown when text file count limit is reached
+ * @property {string} PDF_LIMIT_EXCEEDED - Shown when PDF count limit is reached
+ * @property {string} PDF_INVALID_TYPE - Shown when non-PDF file is selected in PDF picker
+ * @property {Function} PDF_TOO_LARGE - Function that returns size limit error message
+ * @property {string} MIXED_LIMIT_EXCEEDED - Shown when some files are skipped due to limits
+ * @property {string} NO_SUPPORTED_FILES - Shown when no supported file types are detected
+ */
+const PASTE_ERROR_MESSAGES = {
+  IMAGE_NOT_SUPPORTED: '当前模型不支持图片',
+  IMAGE_LIMIT_EXCEEDED: '图片数量已达上限',
+  TEXT_FILE_LIMIT_EXCEEDED: '文本文件数量已达上限',
+  PDF_LIMIT_EXCEEDED: 'PDF 文件数量已达上限',
+  PDF_INVALID_TYPE: '只支持 PDF 文件',
+  PDF_TOO_LARGE: (maxSize: number) => `PDF 文件过大，请选择小于 ${maxSize}MB 的文件`,
+  MIXED_LIMIT_EXCEEDED: '部分文件因数量限制未能添加',
+  NO_SUPPORTED_FILES: '未检测到支持的文件类型',
+} as const;
+
+/**
+ * Model option for dropdown selector
+ */
 interface ModelOption {
   label: string;
   value: string;
@@ -27,6 +58,9 @@ interface ModelOption {
 
 /**
  * Pending image for upload preview
+ * 
+ * Represents an image file that has been selected but not yet sent.
+ * Contains both the base64 data URL for preview and the original file.
  */
 interface PendingImage {
   id: string;
@@ -34,6 +68,26 @@ interface PendingImage {
   file?: File;
 }
 
+/**
+ * Props for InputArea component
+ * 
+ * @interface InputAreaProps
+ * @property {Function} onSend - Callback when user sends a message
+ * @property {Function} [onAbort] - Optional callback to abort message generation
+ * @property {boolean} disabled - Whether the input area is disabled
+ * @property {boolean} isGenerating - Whether AI is currently generating a response
+ * @property {boolean} [supportsThinking] - Whether current model supports thinking mode
+ * @property {boolean} [supportsVision] - Whether current model supports vision/images
+ * @property {ContextUsageBreakdown | null} [contextUsage] - Context usage data for indicator
+ * @property {ApiProtocolType} [apiProtocol] - API protocol type for thinking mode
+ * @property {Agent[]} [agents] - Available agents for selection
+ * @property {string} [currentAgentName] - Currently selected agent name
+ * @property {Function} [onAgentSelect] - Callback when agent is selected
+ * @property {ModelOption[]} [modelOptions] - Available models for selection
+ * @property {string} [currentModelRef] - Currently selected model reference
+ * @property {Function} [onModelSelect] - Callback when model is selected
+ * @property {boolean} [pdfDebugMode] - Whether to enable PDF debug mode controls
+ */
 interface InputAreaProps {
   onSend: (content: string, thinking?: ThinkingMode, images?: ContentPart[]) => void;
   onAbort?: () => void;
@@ -50,19 +104,198 @@ interface InputAreaProps {
   modelOptions?: ModelOption[];
   currentModelRef?: string;
   onModelSelect?: (modelRef: string) => void;
+  // PDF debug mode
+  pdfDebugMode?: boolean;  // Whether to enable PDF debug mode controls
 }
 
 /**
  * Check if input is empty or whitespace-only
+ * 
+ * Used to validate user input before sending messages. Empty or whitespace-only
+ * input should not be sent unless there are attachments.
+ * 
  * Requirement 4.6: Disable send for empty/whitespace input
+ * 
+ * @param {string} text - The text to check
+ * @returns {boolean} True if text is empty or contains only whitespace
+ * 
+ * @example
+ * isWhitespaceOnly("   ") // true
+ * isWhitespaceOnly("hello") // false
+ * isWhitespaceOnly("\n\t  ") // true
  */
 export const isWhitespaceOnly = (text: string): boolean => {
   return text.trim().length === 0;
 };
 
 /**
+ * Validation result for paste files
+ * 
+ * Contains the results of validating pasted files against count limits and model capabilities.
+ * Used to determine which files can be added and what error messages to show.
+ * 
+ * Requirements: 2.2, 6.1, 6.2, 6.3, 6.4
+ * 
+ * @interface PasteValidationResult
+ * @property {boolean} canProceed - Whether at least one valid file exists to proceed with paste
+ * @property {File[]} imageFiles - Array of valid image files that can be added
+ * @property {File[]} textFiles - Array of valid text files that can be added
+ * @property {File[]} pdfFiles - Array of valid PDF files that can be added
+ * @property {string[]} errors - Array of error/warning messages to display to user
+ */
+interface PasteValidationResult {
+  canProceed: boolean;
+  imageFiles: File[];
+  textFiles: File[];
+  pdfFiles: File[];
+  errors: string[];
+}
+
+/**
+ * Validate pasted files against count limits
+ * 
+ * This function validates files from a paste operation against the current attachment counts
+ * and model capabilities. It enforces file count limits for each type (images, text files, PDFs)
+ * and returns only the files that can be added within the limits.
+ * 
+ * The validation process:
+ * 1. Checks if model supports vision for image files
+ * 2. Calculates remaining slots for each file type
+ * 3. Truncates file arrays to fit within limits
+ * 4. Collects error messages for files that exceed limits
+ * 5. Returns validation result with valid files and errors
+ * 
+ * Requirements: 2.2, 6.1, 6.2, 6.3, 6.4
+ * 
+ * @param {File[]} imageFiles - Array of image files to validate
+ * @param {File[]} textFiles - Array of text files to validate
+ * @param {File[]} pdfFiles - Array of PDF files to validate
+ * @param {number} currentImageCount - Current number of pending images
+ * @param {number} currentTextFileCount - Current number of pending text files
+ * @param {number} currentPdfCount - Current number of pending PDFs
+ * @param {boolean} supportsVision - Whether the current model supports vision/images
+ * @returns {PasteValidationResult} Validation result with valid files and error messages
+ * 
+ * @example
+ * const result = validatePasteFiles(
+ *   [imageFile1, imageFile2],
+ *   [textFile1],
+ *   [pdfFile1],
+ *   5,  // current image count
+ *   2,  // current text file count
+ *   0,  // current PDF count
+ *   true // supports vision
+ * );
+ * if (result.canProceed) {
+ *   // Process result.imageFiles, result.textFiles, result.pdfFiles
+ * }
+ * if (result.errors.length > 0) {
+ *   // Show result.errors to user
+ * }
+ */
+export const validatePasteFiles = (
+  imageFiles: File[],
+  textFiles: File[],
+  pdfFiles: File[],
+  currentImageCount: number,
+  currentTextFileCount: number,
+  currentPdfCount: number,
+  supportsVision: boolean
+): PasteValidationResult => {
+  const errors: string[] = [];
+  let validImageFiles: File[] = [];
+  let validTextFiles: File[] = [];
+  let validPdfFiles: File[] = [];
+
+  // Default maximum counts
+  const MAX_IMAGE_COUNT = 10;  // Default from Model.maxImages
+
+  // Validate image files
+  // Check if model supports vision and if there are remaining slots
+  if (imageFiles.length > 0) {
+    if (!supportsVision) {
+      // Model doesn't support images - reject all
+      errors.push(PASTE_ERROR_MESSAGES.IMAGE_NOT_SUPPORTED);
+    } else {
+      const remainingImageSlots = MAX_IMAGE_COUNT - currentImageCount;
+      if (remainingImageSlots <= 0) {
+        // No slots available - reject all
+        errors.push(PASTE_ERROR_MESSAGES.IMAGE_LIMIT_EXCEEDED);
+      } else if (imageFiles.length > remainingImageSlots) {
+        // Some files exceed limit - truncate and warn
+        errors.push(`图片数量超过限制，最多还能添加 ${remainingImageSlots} 张`);
+        validImageFiles = imageFiles.slice(0, remainingImageSlots);
+      } else {
+        // All files fit within limit
+        validImageFiles = imageFiles;
+      }
+    }
+  }
+
+  // Validate text files
+  // Check remaining slots and truncate if necessary
+  if (textFiles.length > 0) {
+    const remainingTextSlots = MAX_TEXT_FILES - currentTextFileCount;
+    if (remainingTextSlots <= 0) {
+      // No slots available - reject all
+      errors.push(PASTE_ERROR_MESSAGES.TEXT_FILE_LIMIT_EXCEEDED);
+    } else if (textFiles.length > remainingTextSlots) {
+      // Some files exceed limit - truncate and warn
+      errors.push(`文本文件数量超过限制，最多还能添加 ${remainingTextSlots} 个`);
+      validTextFiles = textFiles.slice(0, remainingTextSlots);
+    } else {
+      // All files fit within limit
+      validTextFiles = textFiles;
+    }
+  }
+
+  // Validate PDF files
+  // Check remaining slots and truncate if necessary
+  if (pdfFiles.length > 0) {
+    const remainingPdfSlots = MAX_PDF_COUNT - currentPdfCount;
+    if (remainingPdfSlots <= 0) {
+      // No slots available - reject all
+      errors.push(PASTE_ERROR_MESSAGES.PDF_LIMIT_EXCEEDED);
+    } else if (pdfFiles.length > remainingPdfSlots) {
+      // Some files exceed limit - truncate and warn
+      errors.push(`PDF 文件数量超过限制，最多还能添加 ${remainingPdfSlots} 个`);
+      validPdfFiles = pdfFiles.slice(0, remainingPdfSlots);
+    } else {
+      // All files fit within limit
+      validPdfFiles = pdfFiles;
+    }
+  }
+
+  // Can proceed if at least one valid file exists
+  const canProceed = validImageFiles.length > 0 || validTextFiles.length > 0 || validPdfFiles.length > 0;
+
+  return {
+    canProceed,
+    imageFiles: validImageFiles,
+    textFiles: validTextFiles,
+    pdfFiles: validPdfFiles,
+    errors,
+  };
+};
+
+/**
  * Calculate textarea height based on content
+ * 
+ * Dynamically calculates the appropriate height for the textarea based on its
+ * scroll height, constrained between minimum and maximum limits. This enables
+ * auto-expanding textarea behavior as user types.
+ * 
  * Requirement 4.1: Auto-expand textarea height up to maximum limit
+ * 
+ * @param {number} scrollHeight - The scroll height of the textarea element
+ * @param {number} minHeight - Minimum allowed height in pixels (default: 40px)
+ * @param {number} maxHeight - Maximum allowed height in pixels (default: 200px)
+ * @returns {number} Calculated height in pixels, clamped between min and max
+ * 
+ * @example
+ * const height = calculateTextareaHeight(150, 40, 200); // returns 150
+ * const height = calculateTextareaHeight(250, 40, 200); // returns 200 (clamped to max)
+ * const height = calculateTextareaHeight(20, 40, 200);  // returns 40 (clamped to min)
  */
 export const calculateTextareaHeight = (
   scrollHeight: number,
@@ -73,55 +306,17 @@ export const calculateTextareaHeight = (
 };
 
 /**
- * Feature toggle button component
- */
-interface FeatureToggleProps {
-  icon: React.ReactNode;
-  label: string;
-  enabled: boolean;
-  onToggle: () => void;
-  disabled?: boolean;
-  activeColor?: string;
-}
-
-const FeatureToggle: React.FC<FeatureToggleProps> = ({
-  icon,
-  label,
-  enabled,
-  onToggle,
-  disabled = false,
-  activeColor = 'purple',
-}) => {
-  const colorClasses = {
-    purple: enabled
-      ? 'bg-purple-100 text-purple-600 border-purple-300 dark:bg-purple-900/40 dark:text-purple-400 dark:border-purple-700'
-      : 'bg-gray-50 text-gray-400 border-gray-200 hover:bg-gray-100 dark:bg-gray-800 dark:text-gray-500 dark:border-gray-700 dark:hover:bg-gray-700',
-    blue: enabled
-      ? 'bg-blue-100 text-blue-600 border-blue-300 dark:bg-blue-900/40 dark:text-blue-400 dark:border-blue-700'
-      : 'bg-gray-50 text-gray-400 border-gray-200 hover:bg-gray-100 dark:bg-gray-800 dark:text-gray-500 dark:border-gray-700 dark:hover:bg-gray-700',
-    green: enabled
-      ? 'bg-green-100 text-green-600 border-green-300 dark:bg-green-900/40 dark:text-green-400 dark:border-green-700'
-      : 'bg-gray-50 text-gray-400 border-gray-200 hover:bg-gray-100 dark:bg-gray-800 dark:text-gray-500 dark:border-gray-700 dark:hover:bg-gray-700',
-  };
-
-  return (
-    <button
-      type="button"
-      onClick={onToggle}
-      disabled={disabled}
-      className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors ${colorClasses[activeColor as keyof typeof colorClasses] || colorClasses.purple
-        } disabled:cursor-not-allowed disabled:opacity-50`}
-      title={enabled ? `${label}已开启，点击关闭` : `${label}已关闭，点击开启`}
-      aria-pressed={enabled}
-    >
-      {icon}
-      <span>{label}</span>
-    </button>
-  );
-};
-
-/**
  * Attachment menu for adding various content types
+ * 
+ * Dropdown menu that allows users to select different types of attachments
+ * to add to their message (images, text files, PDFs).
+ * 
+ * @component
+ * @property {Function} onImageClick - Callback when image option is clicked
+ * @property {Function} onTextFileClick - Callback when text file option is clicked
+ * @property {Function} onPdfClick - Callback when PDF option is clicked
+ * @property {boolean} supportsVision - Whether current model supports vision (enables/disables image option)
+ * @property {boolean} [disabled] - Whether the menu is disabled
  */
 interface AttachmentMenuProps {
   onImageClick: () => void;
@@ -141,6 +336,7 @@ const AttachmentMenu: React.FC<AttachmentMenuProps> = ({
   const [isOpen, setIsOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
+  // Close menu when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
@@ -151,6 +347,7 @@ const AttachmentMenu: React.FC<AttachmentMenuProps> = ({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  // Menu items configuration
   const menuItems = [
     {
       icon: <ImagePlus size={14} />,
@@ -226,6 +423,18 @@ const AttachmentMenu: React.FC<AttachmentMenuProps> = ({
 
 /**
  * Compact dropdown selector for agent/model selection
+ * 
+ * Generic dropdown component for selecting from a list of options.
+ * Used for both agent and model selection in the input area toolbar.
+ * 
+ * @component
+ * @template T - Type of option objects (must have label and value properties)
+ * @property {React.ReactNode} icon - Icon to display in the selector button
+ * @property {T[]} options - Array of selectable options
+ * @property {string} currentValue - Currently selected value
+ * @property {Function} onSelect - Callback when an option is selected
+ * @property {boolean} [disabled] - Whether the selector is disabled
+ * @property {string} [placeholder] - Placeholder text when no option is selected
  */
 interface CompactSelectorProps<T extends { label: string; value: string }> {
   icon: React.ReactNode;
@@ -247,6 +456,7 @@ function CompactSelector<T extends { label: string; value: string }>({
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
+  // Close dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
@@ -257,6 +467,7 @@ function CompactSelector<T extends { label: string; value: string }>({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  // Find current option label or use placeholder
   const currentLabel = options.find(o => o.value === currentValue)?.label || placeholder;
 
   return (
@@ -303,11 +514,65 @@ function CompactSelector<T extends { label: string; value: string }>({
   );
 }
 
+/**
+ * Handle interface for InputArea component
+ * 
+ * Exposes methods that parent components can call via ref to control the InputArea.
+ * Used with React.forwardRef to provide imperative access to component functionality.
+ * 
+ * @interface InputAreaHandle
+ * @property {Function} setValue - Set the textarea content programmatically
+ * @property {Function} focus - Focus the textarea element
+ * 
+ * @example
+ * const inputRef = useRef<InputAreaHandle>(null);
+ * // Later...
+ * inputRef.current?.setValue("Hello");
+ * inputRef.current?.focus();
+ */
 export interface InputAreaHandle {
   setValue: (value: string) => void;
   focus: () => void;
 }
 
+/**
+ * InputArea Component
+ * 
+ * Responsive input area with auto-expanding textarea and comprehensive attachment support.
+ * This is the main input component for the chat interface, handling user text input,
+ * file attachments (images, text files, PDFs), and message sending.
+ * 
+ * Key Features:
+ * - Auto-expanding textarea (40px - 200px height range)
+ * - Multi-file attachment support (images, text files, PDFs)
+ * - Drag-and-drop file upload
+ * - Paste file support from clipboard
+ * - File count validation and error handling
+ * - Model capability awareness (vision, thinking)
+ * - Agent and model selection
+ * - Context usage indicator
+ * - Keyboard shortcuts (Enter to send, Shift+Enter for newline)
+ * 
+ * File Handling:
+ * - Images: Converted to base64 for preview and sending
+ * - Text files: Read and formatted with filename headers
+ * - PDFs: Processed with page extraction and metadata
+ * 
+ * Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.6
+ * 
+ * @component
+ * @param {InputAreaProps} props - Component props
+ * @param {React.Ref<InputAreaHandle>} ref - Forwarded ref for imperative access
+ * 
+ * @example
+ * <InputArea
+ *   onSend={(content, thinking, images) => handleSend(content, thinking, images)}
+ *   disabled={false}
+ *   isGenerating={false}
+ *   supportsVision={true}
+ *   supportsThinking={true}
+ * />
+ */
 export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   onSend,
   onAbort,
@@ -323,6 +588,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   modelOptions = [],
   currentModelRef = '',
   onModelSelect,
+  pdfDebugMode = false,
 }, ref) => {
   const [content, setContent] = useState('');
   // Initialize thinking mode based on API protocol
@@ -341,6 +607,13 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
 
   /**
    * Convert file to base64 data URL
+   * 
+   * Reads a file and converts it to a base64-encoded data URL that can be used
+   * in image src attributes or sent to APIs.
+   * 
+   * @param {File} file - The file to convert
+   * @returns {Promise<string>} Promise that resolves to base64 data URL
+   * @throws {Error} If file reading fails
    */
   const fileToBase64 = useCallback((file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
@@ -353,7 +626,24 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
 
   /**
    * Create a FileList-like object from an array of Files
-   * This is needed because FileList constructor is not available
+   * 
+   * This helper function creates a FileList-compatible object from a File array.
+   * This is necessary because the FileList constructor is not directly available
+   * in JavaScript, but many APIs (like file input handlers) expect FileList objects.
+   * 
+   * The created object implements:
+   * - length property
+   * - item(index) method
+   * - Indexed access (fileList[0], fileList[1], etc.)
+   * - Iterator protocol (for...of support)
+   * 
+   * @param {File[]} files - Array of File objects to convert
+   * @returns {FileList} FileList-like object containing the files
+   * 
+   * @example
+   * const files = [file1, file2, file3];
+   * const fileList = createFileList(files);
+   * handleTextFileSelect(fileList);
    */
   const createFileList = useCallback((files: File[]): FileList => {
     // Create a FileList-like object
@@ -380,6 +670,16 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
 
   /**
    * Handle image file selection
+   * 
+   * Processes selected image files, validates them, converts to base64 data URLs,
+   * and adds them to the pending images list for preview and sending.
+   * 
+   * Validation:
+   * - Only accepts files with MIME type starting with "image/"
+   * - Rejects files larger than 20MB
+   * - Only processes files if model supports vision
+   * 
+   * @param {FileList | null} files - FileList from file input or drag-drop
    */
   const handleImageSelect = useCallback(async (files: FileList | null) => {
     if (!files || !supportsVision) return;
@@ -462,8 +762,13 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   }, [pendingTextFiles.length]);
 
   /**
-   * Remove a pending text file
+   * Remove a pending text file from the list
+   * 
+   * Also clears any file error messages when a file is removed.
+   * 
    * Requirement 2.4
+   * 
+   * @param {string} id - Unique identifier of the text file to remove
    */
   const removeTextFile = useCallback((id: string) => {
     setPendingTextFiles(prev => prev.filter(f => f.id !== id));
@@ -500,13 +805,13 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
     for (const file of filesToProcess) {
       // Validate file type (Requirements: 1.1, 1.2, 1.3)
       if (!isValidPdfFile(file)) {
-        setPdfError('只支持 PDF 文件');
+        setPdfError(PASTE_ERROR_MESSAGES.PDF_INVALID_TYPE);
         continue;
       }
 
       // Validate file size (Requirements: 1.3, 1.5)
       if (!validatePdfSize(file)) {
-        setPdfError(`PDF 文件过大，请选择小于 ${MAX_PDF_SIZE / 1024 / 1024}MB 的文件`);
+        setPdfError(PASTE_ERROR_MESSAGES.PDF_TOO_LARGE(MAX_PDF_SIZE / 1024 / 1024));
         continue;
       }
 
@@ -533,8 +838,13 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   }, [pendingPdfs.length]);
 
   /**
-   * Remove a pending PDF
+   * Remove a pending PDF from the list
+   * 
+   * Also clears any PDF error messages when a PDF is removed.
+   * 
    * Requirement 5.1
+   * 
+   * @param {string} id - Unique identifier of the PDF to remove
    */
   const removePdf = useCallback((id: string) => {
     setPendingPdfs(prev => prev.filter(p => p.id !== id));
@@ -542,47 +852,320 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   }, []);
 
   /**
-   * Handle paste event for images and text files
+   * Handle PDF page range change
+   * 
+   * Updates the page range selection for a specific PDF. This allows users to
+   * select which pages of the PDF to include in the message.
+   * 
+   * Requirement 5.3
+   * 
+   * @param {string} id - Unique identifier of the PDF
+   * @param {number} [startPage] - Starting page number (1-indexed), undefined for all pages
+   * @param {number} [endPage] - Ending page number (1-indexed), undefined for all pages
+   */
+  const handlePdfPageRangeChange = useCallback((id: string, startPage?: number, endPage?: number) => {
+    setPendingPdfs(prev => 
+      prev.map(pdf => 
+        pdf.id === id 
+          ? { ...pdf, pageRangeStart: startPage, pageRangeEnd: endPage }
+          : pdf
+      )
+    );
+  }, []);
+
+  /**
+   * Handle PDF include images option change
+   * 
+   * Toggles whether images should be extracted from the PDF pages.
+   * When enabled, images embedded in PDF pages are included in the content.
+   * 
+   * Requirement 5.4
+   * 
+   * @param {string} id - Unique identifier of the PDF
+   * @param {boolean} includeImages - Whether to include images from PDF
+   */
+  const handlePdfIncludeImagesChange = useCallback((id: string, includeImages: boolean) => {
+    setPendingPdfs(prev => 
+      prev.map(pdf => 
+        pdf.id === id 
+          ? { ...pdf, includeImages }
+          : pdf
+      )
+    );
+  }, []);
+
+  /**
+   * Handle PDF include text option change
+   * 
+   * Toggles whether text should be extracted from the PDF pages.
+   * When enabled, text content from PDF pages is included in the message.
+   * 
+   * Requirement 5.5
+   * 
+   * @param {string} id - Unique identifier of the PDF
+   * @param {boolean} includeText - Whether to include text from PDF
+   */
+  const handlePdfIncludeTextChange = useCallback((id: string, includeText: boolean) => {
+    setPendingPdfs(prev => 
+      prev.map(pdf => 
+        pdf.id === id 
+          ? { ...pdf, includeText }
+          : pdf
+      )
+    );
+  }, []);
+
+  /**
+   * Handle paste event for images, text files, and PDF files
+   * 
+   * This function processes clipboard paste events to extract and add files (images, text files, PDFs)
+   * to the input area. It implements comprehensive file handling with validation, error recovery,
+   * and user feedback.
+   * 
+   * The paste handling workflow:
+   * 1. Clear previous errors to start fresh
+   * 2. Extract and classify files from clipboard data
+   * 3. Detect file types (images, text files, PDFs) using MIME types and extensions
+   * 4. Track unsupported files and null file items for debugging
+   * 5. Validate files against count limits using validatePasteFiles
+   * 6. Process valid files through appropriate handlers (handleImageSelect, handleTextFileSelect, handlePdfSelect)
+   * 7. Display warnings for skipped files or exceeded limits
+   * 8. Implement error recovery - partial failures don't prevent successful files from being added
+   * 
+   * File type detection:
+   * - Images: MIME type starts with "image/" AND supportsVision is true
+   * - PDFs: MIME type is "application/pdf" OR filename ends with ".pdf"
+   * - Text files: Validated using isSupportedTextFile() function
+   * - Unsupported: All other file types are silently skipped
+   * 
+   * Default behavior handling:
+   * - Pure text paste: Default behavior is preserved (no preventDefault)
+   * - File paste: Default behavior is prevented (preventDefault called)
+   * - Mixed paste: Files take priority over text
+   * 
+   * Error handling:
+   * - Individual item processing errors are caught and logged
+   * - File reading errors are caught and displayed to user
+   * - Partial failures allow successful files to be added
+   * - Null file items (getAsFile() returns null) are tracked and skipped
+   * 
+   * Requirements: 1.1, 1.2, 2.1, 2.2, 2.3, 2.4, 3.1, 3.2, 3.3, 3.4, 3.5, 4.3, 4.4, 5.1, 5.2, 5.3, 6.1, 6.2, 6.3, 6.4, 7.4
+   * 
+   * @param {React.ClipboardEvent} e - The clipboard paste event
+   * 
+   * @example
+   * // User pastes 2 images and 1 PDF
+   * // Result: Both images and PDF are added if within limits
+   * 
+   * @example
+   * // User pastes 15 images when limit is 10 and 5 already exist
+   * // Result: First 5 images are added, warning shown about limit
+   * 
+   * @example
+   * // User pastes plain text
+   * // Result: Default paste behavior (text inserted into textarea)
    */
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
-    const items = e.clipboardData?.items;
-    if (!items) return;
+    // Clear previous errors at the start of new operation (Requirement 4.4)
+    setFileError(null);
+    setPdfError(null);
 
-    const imageFiles: File[] = [];
-    const textFiles: File[] = [];
-    
-    for (const item of Array.from(items)) {
-      const file = item.getAsFile();
-      if (!file) continue;
+    try {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+
+      const imageFiles: File[] = [];
+      const textFiles: File[] = [];
+      const pdfFiles: File[] = [];
+      let skippedUnsupportedCount = 0;
+      let skippedNullFileCount = 0;  // Track items where getAsFile() returns null
       
-      // Check for images
-      if (item.type.startsWith('image/') && supportsVision) {
-        imageFiles.push(file);
+      // Collect and classify files from clipboard in order (Requirements: 2.1, 2.3, 7.4)
+      // Process each clipboard item sequentially to maintain paste order
+      for (const item of Array.from(items)) {
+        try {
+          const file = item.getAsFile();
+          if (!file) {
+            // Skip if getAsFile() returns null (Requirement 7.4)
+            // This can happen for non-file clipboard items or browser limitations
+            skippedNullFileCount++;
+            console.debug('Skipped clipboard item with null file:', item.type);
+            continue;
+          }
+          
+          // Check for images (Requirements: 3.1, 3.2 - consider supportsVision flag)
+          // Only accept images if model supports vision capability
+          if (item.type.startsWith('image/') && supportsVision) {
+            imageFiles.push(file);
+          }
+          // Check for PDF files (Requirements: 1.1, 1.2, 3.4 - check MIME type and extension)
+          // Use both MIME type and file extension for robust PDF detection
+          else if (item.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+            pdfFiles.push(file);
+          }
+          // Check for text files (Requirements: 3.3, 3.5 - use isSupportedTextFile)
+          // Delegate to utility function for consistent text file validation
+          else if (isSupportedTextFile(file.name)) {
+            textFiles.push(file);
+          }
+          // Track unsupported files (Requirement 2.3, 3.5)
+          // These will be silently skipped but counted for user feedback
+          else {
+            skippedUnsupportedCount++;
+          }
+        } catch (itemError) {
+          // Handle individual item processing errors (Requirement 4.3)
+          // Don't let one bad item break the entire paste operation
+          console.error('Error processing clipboard item:', itemError);
+          // Continue processing other items
+          continue;
+        }
       }
-      // Check for text files
-      else if (isSupportedTextFile(file.name)) {
-        textFiles.push(file);
-      }
-    }
 
-    // Handle image files
-    if (imageFiles.length > 0) {
+      // If no files detected, allow default paste behavior (Requirement 5.1)
+      // This preserves normal text paste functionality
+      if (imageFiles.length === 0 && textFiles.length === 0 && pdfFiles.length === 0) {
+        return;
+      }
+
+      // Prevent default behavior when files are detected (Requirement 5.2)
+      // This stops the browser from inserting file paths or other default behavior
       e.preventDefault();
-      const dataTransfer = new DataTransfer();
-      imageFiles.forEach(f => dataTransfer.items.add(f));
-      handleImageSelect(dataTransfer.files);
+
+      // Validate files against count limits before processing (Requirements: 2.2, 6.1, 6.2, 6.3, 6.4)
+      // This ensures we respect attachment limits and provide clear feedback
+      const validation = validatePasteFiles(
+        imageFiles,
+        textFiles,
+        pdfFiles,
+        pendingImages.length,
+        pendingTextFiles.length,
+        pendingPdfs.length,
+        supportsVision
+      );
+
+      // If no valid files, show errors and return
+      if (!validation.canProceed) {
+        if (validation.errors.length > 0) {
+          // Show the first error (most relevant)
+          // Categorize error by file type for appropriate error state
+          if (imageFiles.length > 0 && !supportsVision) {
+            setFileError(validation.errors[0]);
+          } else if (validation.errors[0].includes('图片')) {
+            setFileError(validation.errors[0]);
+          } else if (validation.errors[0].includes('文本')) {
+            setFileError(validation.errors[0]);
+          } else if (validation.errors[0].includes('PDF')) {
+            setPdfError(validation.errors[0]);
+          } else {
+            setFileError(validation.errors[0]);
+          }
+        }
+        return;
+      }
+
+      // Process valid files in order to maintain paste sequence (Requirement 2.1, 2.4)
+      // Ensure partial failures don't prevent successful files from being added (Requirement 4.3)
+      
+      // Handle valid image files
+      if (validation.imageFiles.length > 0) {
+        try {
+          // Create FileList from array for handleImageSelect
+          const dataTransfer = new DataTransfer();
+          validation.imageFiles.forEach(f => dataTransfer.items.add(f));
+          handleImageSelect(dataTransfer.files);
+        } catch (imageError) {
+          // Log error but continue processing other file types
+          console.error('Error processing image files:', imageError);
+          setFileError('部分图片文件处理失败，请重试');
+        }
+      }
+      
+      // Handle valid text files
+      if (validation.textFiles.length > 0) {
+        try {
+          // Use createFileList helper to convert array to FileList
+          handleTextFileSelect(createFileList(validation.textFiles));
+        } catch (textError) {
+          // Log error but continue processing other file types
+          console.error('Error processing text files:', textError);
+          setFileError('部分文本文件处理失败，请重试');
+        }
+      }
+      
+      // Handle valid PDF files (Requirements: 1.1, 1.2)
+      if (validation.pdfFiles.length > 0) {
+        try {
+          // Use createFileList helper to convert array to FileList
+          handlePdfSelect(createFileList(validation.pdfFiles));
+        } catch (pdfError) {
+          // Log error but continue processing other file types
+          console.error('Error processing PDF files:', pdfError);
+          setPdfError('部分 PDF 文件处理失败，请重试');
+        }
+      }
+
+      // Show warning if some files were skipped (Requirements: 2.2, 2.3, 7.4)
+      // Collect all warnings to provide comprehensive feedback
+      const warnings: string[] = [];
+      
+      // Add validation errors (files exceeding limits)
+      if (validation.errors.length > 0) {
+        warnings.push(...validation.errors);
+      }
+      
+      // Add unsupported file type warning (Requirement 2.3)
+      if (skippedUnsupportedCount > 0) {
+        warnings.push(`已跳过 ${skippedUnsupportedCount} 个不支持的文件类型`);
+      }
+      
+      // Add null file warning for debugging (Requirement 7.4)
+      if (skippedNullFileCount > 0) {
+        console.debug(`Skipped ${skippedNullFileCount} clipboard items with null files`);
+        // Only show warning if no other files were processed successfully
+        if (validation.imageFiles.length === 0 && validation.textFiles.length === 0 && validation.pdfFiles.length === 0) {
+          warnings.push(`无法读取 ${skippedNullFileCount} 个剪贴板项目`);
+        }
+      }
+      
+      // Display warnings if any
+      if (warnings.length > 0) {
+        const warningMessage = warnings.join('；');
+        // Categorize warning by file type for appropriate error state
+        if (warningMessage.includes('图片')) {
+          setFileError(warningMessage);
+        } else if (warningMessage.includes('文本')) {
+          setFileError(warningMessage);
+        } else if (warningMessage.includes('PDF')) {
+          setPdfError(warningMessage);
+        } else {
+          // Generic warning
+          setFileError(warningMessage);
+        }
+      }
+    } catch (error) {
+      // Catch any unexpected errors during paste handling (Requirement 4.3)
+      // This is the last line of defense to prevent crashes
+      console.error('Unexpected error during paste handling:', error);
+      setFileError('粘贴文件时发生错误，请重试');
     }
-    
-    // Handle text files
-    if (textFiles.length > 0) {
-      e.preventDefault();
-      handleTextFileSelect(createFileList(textFiles));
-    }
-  }, [supportsVision, handleImageSelect, handleTextFileSelect, createFileList]);
+  }, [supportsVision, handleImageSelect, handleTextFileSelect, handlePdfSelect, createFileList, pendingImages.length, pendingTextFiles.length, pendingPdfs.length]);
 
   /**
    * Handle drag and drop
+   * 
+   * Processes files dropped onto the input area, separating them by type
+   * (images, text files, PDFs) and passing them to appropriate handlers.
+   * 
+   * File classification:
+   * - Images: MIME type starts with "image/" AND supportsVision is true
+   * - PDFs: MIME type is "application/pdf" OR filename ends with ".pdf"
+   * - Text files: Validated using isSupportedTextFile() function
+   * - Unsupported files are silently ignored
+   * 
    * Requirements: 4.1, 4.2, 4.3, 4.4, 7.1, 7.2, 7.3, 7.4, 7.6
+   * 
+   * @param {React.DragEvent} e - The drag event
    */
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -593,6 +1176,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
     const textFiles: File[] = [];
     const pdfFiles: File[] = [];
     
+    // Classify each dropped file by type
     for (const file of Array.from(files)) {
       if (file.type.startsWith('image/') && supportsVision) {
         imageFiles.push(file);
@@ -621,17 +1205,26 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   }, [supportsVision, handleImageSelect, handleTextFileSelect, handlePdfSelect, createFileList]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
+    // Prevent default to allow drop
     e.preventDefault();
   }, []);
 
   /**
-   * Remove a pending image
+   * Remove a pending image from the list
+   * 
+   * @param {string} id - Unique identifier of the image to remove
    */
   const removeImage = useCallback((id: string) => {
     setPendingImages(prev => prev.filter(img => img.id !== id));
   }, []);
 
-  // Helper to adjust textarea height
+  /**
+   * Helper to adjust textarea height based on content
+   * 
+   * Resets the textarea height to auto, then calculates and applies the appropriate
+   * height based on scroll height, constrained between min and max limits.
+   * This enables the auto-expanding textarea behavior.
+   */
   const adjustTextareaHeight = useCallback(() => {
     const textarea = textareaRef.current;
     if (textarea) {
@@ -641,7 +1234,13 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
     }
   }, []);
 
-  // Expose methods to parent
+  /**
+   * Expose methods to parent component via ref
+   * 
+   * Allows parent components to programmatically control the InputArea:
+   * - setValue: Set textarea content and auto-resize
+   * - focus: Focus the textarea element
+   */
   React.useImperativeHandle(ref, () => ({
     setValue: (value: string) => {
       setContent(value);
@@ -673,7 +1272,29 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
 
   /**
    * Handle sending message
+   * 
+   * Validates input, builds content parts from attachments, and sends the message.
+   * After sending, clears the input and all pending attachments.
+   * 
+   * Validation:
+   * - Prevents sending if input is empty/whitespace-only AND no attachments
+   * - Prevents sending if disabled or currently generating
+   * 
+   * Content building:
+   * - Trims whitespace from text content
+   * - Adds image content parts with base64 URLs
+   * - Adds text file content parts with raw content (backend formats)
+   * - Adds PDF content parts with pages and metadata
+   * 
+   * Cleanup:
+   * - Clears text content
+   * - Clears all pending attachments (images, text files, PDFs)
+   * - Clears error messages
+   * - Resets textarea height
+   * - Refocuses textarea for next input
+   * 
    * Requirement 4.4: Click send button to send message
+   * Requirement 4.6: Don't send empty/whitespace-only input (unless there are attachments)
    * Requirements 3.1, 3.2, 3.3, 3.4: Text file content formatting and sending
    * Requirements 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7: PDF content formatting and sending
    */
@@ -743,9 +1364,16 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   }, [content, pendingImages, pendingTextFiles, pendingPdfs, disabled, isGenerating, onSend, supportsThinking, thinkingMode]);
 
   /**
-   * Handle keyboard events
+   * Handle keyboard events in textarea
+   * 
+   * Implements keyboard shortcuts:
+   * - Enter (without Shift): Send message
+   * - Shift+Enter: Insert newline (default behavior)
+   * 
    * Requirement 4.2: Enter (without Shift) sends message
    * Requirement 4.3: Shift+Enter inserts newline
+   * 
+   * @param {React.KeyboardEvent<HTMLTextAreaElement>} e - Keyboard event
    */
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -763,7 +1391,12 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   );
 
   /**
-   * Handle input change
+   * Handle input change in textarea
+   * 
+   * Updates the content state as user types. The textarea will auto-resize
+   * via the useEffect that watches the content state.
+   * 
+   * @param {React.ChangeEvent<HTMLTextAreaElement>} e - Change event
    */
   const handleChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -774,6 +1407,8 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
 
   /**
    * Handle abort button click
+   * 
+   * Calls the onAbort callback to stop the current message generation.
    */
   const handleAbort = useCallback(() => {
     onAbort?.();
@@ -843,50 +1478,38 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
         </div>
       )}
 
-      {/* Image preview area */}
-      {pendingImages.length > 0 && (
-        <div className="mb-2 flex flex-wrap gap-2">
+      {/* Unified attachment preview area */}
+      {(pendingImages.length > 0 || pendingTextFiles.length > 0 || pendingPdfs.length > 0) && (
+        <div className="mb-2 flex flex-wrap gap-2 max-h-96 overflow-auto">
+          {/* Render images */}
           {pendingImages.map(img => (
-            <div key={img.id} className="relative group">
-              <img
-                src={img.url}
-                alt="待发送图片"
-                className="h-16 w-16 object-cover rounded-lg border border-gray-200 dark:border-gray-700"
-              />
-              <button
-                type="button"
-                onClick={() => removeImage(img.id)}
-                className="absolute -top-1.5 -right-1.5 h-5 w-5 flex items-center justify-center rounded-full bg-red-500 text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600"
-                title="移除图片"
-              >
-                <X size={12} />
-              </button>
-            </div>
+            <AttachmentPreview
+              key={img.id}
+              attachment={img}
+              type="image"
+              onRemove={removeImage}
+            />
           ))}
-        </div>
-      )}
-
-      {/* Text file preview area */}
-      {pendingTextFiles.length > 0 && (
-        <div className="mb-2 flex flex-wrap gap-2 max-h-48 overflow-auto">
+          {/* Render text files */}
           {pendingTextFiles.map(file => (
-            <TextFilePreview
+            <AttachmentPreview
               key={file.id}
-              file={file}
+              attachment={file}
+              type="text"
               onRemove={removeTextFile}
             />
           ))}
-        </div>
-      )}
-
-      {/* PDF preview area */}
-      {pendingPdfs.length > 0 && (
-        <div className="mb-2 flex flex-col gap-2 max-h-96 overflow-auto">
+          {/* Render PDFs */}
           {pendingPdfs.map(pdf => (
-            <PdfPreview
+            <AttachmentPreview
               key={pdf.id}
-              pdf={pdf}
+              attachment={pdf}
+              type="pdf"
               onRemove={removePdf}
+              pdfDebugMode={pdfDebugMode}
+              onPdfPageRangeChange={handlePdfPageRangeChange}
+              onPdfIncludeImagesChange={handlePdfIncludeImagesChange}
+              onPdfIncludeTextChange={handlePdfIncludeTextChange}
             />
           ))}
         </div>
@@ -952,7 +1575,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
           onChange={handleChange}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
-          placeholder={supportsVision ? "输入消息，或粘贴/拖拽图片和文本文件..." : "输入消息，或粘贴/拖拽文本文件..."}
+          placeholder={supportsVision ? "输入消息，或粘贴/拖拽图片、文本文件和 PDF..." : "输入消息，或粘贴/拖拽文本文件和 PDF..."}
           disabled={disabled || isGenerating}
           rows={1}
           aria-label="消息输入框"

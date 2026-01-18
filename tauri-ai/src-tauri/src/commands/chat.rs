@@ -201,6 +201,8 @@ pub async fn chat_stream(
         thinking_budget_tokens: model.thinking_budget_tokens,
         // Vision support from model capabilities
         vision_enabled: model.capabilities.vision,
+        // Maximum images from model configuration
+        max_images: model.max_images,
     };
 
     let client = get_client(&model_config.provider)

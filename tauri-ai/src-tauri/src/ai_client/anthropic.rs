@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 
-use super::content_converter::{content_part_to_blocks, image_url_to_base64, ContentBlock};
+use super::content_converter::{image_url_to_base64, ContentBlock};
 use super::traits::{
     AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent, TokenUsage,
 };
@@ -257,7 +257,7 @@ struct AnthropicErrorDetail {
     error_type: Option<String>,
 }
 
-fn convert_messages(messages: &[Message], vision_enabled: bool) -> Vec<AnthropicMessage> {
+fn convert_messages(messages: &[Message], vision_enabled: bool, max_images: Option<u32>) -> Vec<AnthropicMessage> {
     messages
         .iter()
         .filter(|msg| msg.role != MessageRole::System)
@@ -270,51 +270,57 @@ fn convert_messages(messages: &[Message], vision_enabled: bool) -> Vec<Anthropic
 
             // Check if message has multimodal content
             let content = if msg.has_multimodal_content() {
-                // Use unified converter to get content blocks
+                // Use unified converter with image limit to get content blocks
                 let content_parts = msg.get_content_parts();
                 eprintln!("[Anthropic] Converting {} content parts", content_parts.len());
                 
-                let blocks: Vec<AnthropicContentBlock> = content_parts
-                    .iter()
-                    .flat_map(|part| {
-                        // Use vision_enabled from config
-                        let converted_blocks = content_part_to_blocks(part, vision_enabled);
-                        eprintln!("[Anthropic] ContentPart converted to {} blocks", converted_blocks.len());
-                        
-                        converted_blocks
-                            .into_iter()
-                            .filter_map(|block| {
-                                match block {
-                                    ContentBlock::Text { text } => {
-                                        eprintln!("[Anthropic] Text block: {} chars", text.len());
-                                        Some(AnthropicContentBlock::Text { text })
-                                    }
-                                    ContentBlock::ImageUrl { url, detail } => {
-                                        eprintln!("[Anthropic] ImageUrl block, converting to Base64");
-                                        // Try to convert URL to Base64 (Anthropic requirement)
-                                        // Reconstruct the block for conversion
-                                        let img_block = ContentBlock::ImageUrl { url, detail };
-                                        match image_url_to_base64(img_block) {
-                                            Some(ContentBlock::ImageBase64 { media_type, data, .. }) => {
-                                                eprintln!("[Anthropic] Converted to Base64: {} bytes", data.len());
-                                                Some(AnthropicContentBlock::Image {
-                                                    source: ImageSource::Base64 { media_type, data },
-                                                })
-                                            }
-                                            _ => {
-                                                eprintln!("[Anthropic] Failed to convert ImageUrl to Base64");
-                                                None
-                                            }
-                                        }
-                                    }
-                                    ContentBlock::ImageBase64 { media_type, data, .. } => {
-                                        eprintln!("[Anthropic] ImageBase64 block: {} bytes", data.len());
+                // Use the new function with image limit
+                use super::content_converter::content_parts_to_blocks_with_limit;
+                let (converted_blocks, pdf_images_skipped) = content_parts_to_blocks_with_limit(
+                    &content_parts,
+                    vision_enabled,
+                    max_images,
+                );
+                
+                if pdf_images_skipped {
+                    eprintln!("[Anthropic] PDF images skipped due to max_images limit");
+                }
+                
+                eprintln!("[Anthropic] Total blocks after conversion: {}", converted_blocks.len());
+                
+                let blocks: Vec<AnthropicContentBlock> = converted_blocks
+                    .into_iter()
+                    .filter_map(|block| {
+                        match block {
+                            ContentBlock::Text { text } => {
+                                eprintln!("[Anthropic] Text block: {} chars", text.len());
+                                Some(AnthropicContentBlock::Text { text })
+                            }
+                            ContentBlock::ImageUrl { url, detail } => {
+                                eprintln!("[Anthropic] ImageUrl block, converting to Base64");
+                                // Try to convert URL to Base64 (Anthropic requirement)
+                                // Reconstruct the block for conversion
+                                let img_block = ContentBlock::ImageUrl { url, detail };
+                                match image_url_to_base64(img_block) {
+                                    Some(ContentBlock::ImageBase64 { media_type, data, .. }) => {
+                                        eprintln!("[Anthropic] Converted to Base64: {} bytes", data.len());
                                         Some(AnthropicContentBlock::Image {
                                             source: ImageSource::Base64 { media_type, data },
                                         })
                                     }
+                                    _ => {
+                                        eprintln!("[Anthropic] Failed to convert ImageUrl to Base64");
+                                        None
+                                    }
                                 }
-                            })
+                            }
+                            ContentBlock::ImageBase64 { media_type, data, .. } => {
+                                eprintln!("[Anthropic] ImageBase64 block: {} bytes", data.len());
+                                Some(AnthropicContentBlock::Image {
+                                    source: ImageSource::Base64 { media_type, data },
+                                })
+                            }
+                        }
                     })
                     .collect();
                 
@@ -346,7 +352,7 @@ impl AiClient for AnthropicClient {
             .as_ref()
             .ok_or_else(|| AiError::AuthenticationFailed("API key is required".to_string()))?;
 
-        let anthropic_messages = convert_messages(&messages, true);
+        let anthropic_messages = convert_messages(&messages, config.vision_enabled, config.max_images);
 
         // Extract system prompt from config and messages (System role messages)
         // System prompt from config should come first
@@ -481,7 +487,7 @@ impl AiClient for AnthropicClient {
             .as_ref()
             .ok_or_else(|| AiError::AuthenticationFailed("API key is required".to_string()))?;
 
-        let anthropic_messages = convert_messages(&messages, true);
+        let anthropic_messages = convert_messages(&messages, config.vision_enabled, config.max_images);
 
         // Extract system prompt from config and messages (System role messages)
         // Anthropic API expects system prompt as a separate parameter, not in messages
@@ -780,7 +786,7 @@ mod tests {
             error_message: None,
         }];
 
-        let anthropic_messages = convert_messages(&messages, true);
+        let anthropic_messages = convert_messages(&messages, true, None);
         assert_eq!(anthropic_messages.len(), 1);
         assert_eq!(anthropic_messages[0].role, "user");
         
@@ -810,7 +816,7 @@ mod tests {
             error_message: None,
         }];
 
-        let anthropic_messages = convert_messages(&messages, true);
+        let anthropic_messages = convert_messages(&messages, true, None);
         assert_eq!(anthropic_messages.len(), 1);
         
         // Check content is blocks
@@ -861,7 +867,7 @@ mod tests {
             error_message: None,
         }];
 
-        let anthropic_messages = convert_messages(&messages, true);
+        let anthropic_messages = convert_messages(&messages, true, None);
         assert_eq!(anthropic_messages.len(), 1);
         
         match &anthropic_messages[0].content {
@@ -914,7 +920,7 @@ mod tests {
             error_message: None,
         }];
 
-        let anthropic_messages = convert_messages(&messages, true);
+        let anthropic_messages = convert_messages(&messages, true, None);
         assert_eq!(anthropic_messages.len(), 1);
         
         match &anthropic_messages[0].content {
@@ -1007,7 +1013,7 @@ mod tests {
             },
         ];
 
-        let anthropic_messages = convert_messages(&messages, true);
+        let anthropic_messages = convert_messages(&messages, true, None);
         // System message should be filtered out
         assert_eq!(anthropic_messages.len(), 1);
         assert_eq!(anthropic_messages[0].role, "user");

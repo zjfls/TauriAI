@@ -58,6 +58,7 @@ pub async fn test_connection(
         thinking_level: None, // Don't send thinking parameter for connection test
         thinking_budget_tokens: None,
         vision_enabled: false, // Don't need vision for connection test
+        max_images: None, // Not needed for connection test
     };
 
     let client = get_client(&provider_type).map_err(|e| e.to_string())?;

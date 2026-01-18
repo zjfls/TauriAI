@@ -31,6 +31,7 @@ pub enum ImageDetail {
 
 /// PDF single page data
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct PdfPage {
     pub page_number: u32,
     pub text: String,
@@ -39,6 +40,7 @@ pub struct PdfPage {
 
 /// PDF metadata
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct PdfMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -72,6 +74,7 @@ pub enum ContentPart {
     PdfDocument {
         filename: String,
         pages: Vec<PdfPage>,
+        #[serde(rename = "totalPages")]
         total_pages: u32,
         #[serde(skip_serializing_if = "Option::is_none")]
         metadata: Option<PdfMetadata>,
@@ -316,6 +319,9 @@ pub struct Model {
     /// Model capabilities (auto-inferred if not set)
     #[serde(default)]
     pub capabilities: ModelCapabilities,
+    /// Maximum number of images allowed (default: 10, only for vision models)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_images: Option<u32>,
     /// Anthropic extended thinking budget (Claude)
     /// - Must be >= 1024 and < max_tokens when enabled
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -331,6 +337,7 @@ impl Default for Model {
             top_p: None,
             context_length: None,
             capabilities: ModelCapabilities::default(),
+            max_images: None,
             thinking_budget_tokens: None,
         }
     }
@@ -471,6 +478,9 @@ pub struct ModelConfig {
     /// Whether the model supports vision/image input
     #[serde(default)]
     pub vision_enabled: bool,
+    /// Maximum number of images allowed (default: 10, only for vision models)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_images: Option<u32>,
 }
 
 /// A preset combining model config and system prompt (legacy)
@@ -624,6 +634,7 @@ impl AppConfig {
                 top_p: model_config.parameters.top_p,
                 context_length: None,
                 capabilities: ModelCapabilities::default(),
+                max_images: None,
                 thinking_budget_tokens: None,
             });
 
@@ -1001,27 +1012,28 @@ mod tests {
         let part = ContentPart::pdf_document("document.pdf", pages, None);
         let json = serde_json::to_string(&part).unwrap();
 
-        // Verify JSON structure
+        // Verify JSON structure (now using camelCase)
         assert!(json.contains(r#""type":"pdf_document""#));
         assert!(json.contains(r#""filename":"document.pdf""#));
-        assert!(json.contains(r#""total_pages":1"#));
-        assert!(json.contains(r#""page_number":1"#));
+        assert!(json.contains(r#""totalPages":1"#));
+        assert!(json.contains(r#""pageNumber":1"#));
         assert!(json.contains(r#""text":"Test content""#));
     }
 
     #[test]
     fn test_pdf_document_deserialization() {
+        // Test with camelCase (from frontend)
         let json = r#"{
             "type": "pdf_document",
             "filename": "test.pdf",
             "pages": [
                 {
-                    "page_number": 1,
+                    "pageNumber": 1,
                     "text": "Page 1",
                     "image": "data:image/png;base64,abc"
                 }
             ],
-            "total_pages": 1
+            "totalPages": 1
         }"#;
 
         let part: ContentPart = serde_json::from_str(json).unwrap();
@@ -1065,10 +1077,10 @@ mod tests {
         let part = ContentPart::pdf_document("doc.pdf", pages, metadata);
         let json = serde_json::to_string(&part).unwrap();
 
-        // Verify metadata is included
+        // Verify metadata is included (now using camelCase)
         assert!(json.contains(r#""title":"My Document""#));
         assert!(json.contains(r#""author":"John Doe""#));
-        assert!(json.contains(r#""created_at":"2024-01-15""#));
+        assert!(json.contains(r#""createdAt":"2024-01-15""#));
 
         // Deserialize and verify
         let deserialized: ContentPart = serde_json::from_str(&json).unwrap();

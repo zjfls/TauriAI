@@ -8,6 +8,19 @@
 //! - Input format uses `input` array instead of `messages`
 //! - Response format uses `output` array with typed items
 //! - Supports reasoning configuration for thinking models
+//!
+//! ## Multimodal Support
+//!
+//! This client supports multimodal content (images, text files, PDF documents) through
+//! the unified `content_converter` module. The Responses API supports images via data URLs
+//! in the `content` field:
+//!
+//! - **Images**: Included as full data URLs (e.g., "data:image/png;base64,...")
+//! - **Text files**: Formatted as markdown code blocks with filename
+//! - **PDF documents**: Each page becomes text + image data URL
+//!
+//! The `vision_enabled` configuration controls whether image content is included.
+//! When disabled, only text content is sent to the API.
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -18,6 +31,7 @@ use tokio::sync::mpsc;
 use super::traits::{
     AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent, TokenUsage,
 };
+use super::content_converter::ContentBlock;
 use crate::models::{Message, MessageRole, ModelConfig};
 use std::collections::HashMap;
 
@@ -152,9 +166,74 @@ struct ErrorDetail {
 // Helper functions
 // ============================================================================
 
+/// Convert ContentBlocks to text format for Responses API
+/// 
+/// The Responses API supports multimodal content including images via data URLs.
+/// This function converts ContentBlocks to a format suitable for the API.
+/// 
+/// # Arguments
+/// * `blocks` - The content blocks to convert
+/// 
+/// # Returns
+/// A single string with all blocks joined by double newlines
+/// 
+/// # Conversion Rules
+/// - **Text blocks**: Included as-is
+/// - **ImageUrl blocks**: 
+///   - Data URLs: Included as-is (full data URL preserved for API)
+///   - HTTP URLs: Included as-is
+/// - **ImageBase64 blocks**: Reconstructed as data URL format
+fn content_blocks_to_text(blocks: Vec<ContentBlock>) -> String {
+    blocks
+        .into_iter()
+        .map(|block| match block {
+            ContentBlock::Text { text } => text,
+            ContentBlock::ImageUrl { url, .. } => {
+                // Responses API supports data URLs directly
+                // Keep the full URL (both data URLs and HTTP URLs)
+                url
+            }
+            ContentBlock::ImageBase64 { media_type, data, .. } => {
+                // Reconstruct as data URL for Responses API
+                format!("data:{};base64,{}", media_type, data)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// Convert messages to Responses API input format
+/// 
+/// This function converts our internal Message format to the Responses API's
+/// input format, handling multimodal content through the unified content_converter.
+/// 
+/// # Arguments
+/// * `messages` - The messages to convert
+/// * `system_prompt` - Optional system prompt from configuration
+/// * `vision_enabled` - Whether to include image content (for vision-capable models)
+/// 
+/// # Returns
+/// A tuple of (inputs, instructions) where:
+/// - `inputs`: Vec of ResponsesInput for the API request
+/// - `instructions`: Optional combined system instructions
+/// 
+/// # Conversion Logic
+/// - **System messages**: Converted to `instructions` field (not in input array)
+/// - **User messages**: 
+///   - Multimodal content: Converted via content_converter, then to text
+///   - Plain text: Used directly
+/// - **Assistant messages**: 
+///   - Multimodal content: Only text parts extracted (API limitation)
+///   - Plain text: Used directly
+/// 
+/// # Multimodal Handling
+/// Uses `content_converter::content_part_to_blocks()` to convert ContentParts
+/// to ContentBlocks, then `content_blocks_to_text()` to convert to plain text
+/// suitable for the Responses API.
 fn convert_messages(
     messages: &[Message],
     system_prompt: Option<&str>,
+    vision_enabled: bool,
 ) -> (Vec<ResponsesInput>, Option<String>) {
     let mut inputs = Vec::new();
     let mut instructions = system_prompt.map(|s| s.to_string());
@@ -162,11 +241,11 @@ fn convert_messages(
     for msg in messages {
         match msg.role {
             MessageRole::System => {
-                // System messages become instructions
+                // 系统消息转换为 instructions
                 if instructions.is_none() {
                     instructions = Some(msg.content.clone());
                 } else {
-                    // Append to existing instructions
+                    // 追加到现有的 instructions
                     if let Some(ref mut inst) = instructions {
                         inst.push_str("\n\n");
                         inst.push_str(&msg.content);
@@ -174,15 +253,54 @@ fn convert_messages(
                 }
             }
             MessageRole::User => {
+                // 检查消息是否包含多模态内容
+                let content = if msg.has_multimodal_content() {
+                    // 获取所有内容部分
+                    let parts = msg.get_content_parts();
+                    
+                    // 使用统一的 content_converter 将每个部分转换为 ContentBlocks
+                    // vision_enabled 控制是否包含图片内容
+                    let blocks: Vec<ContentBlock> = parts
+                        .iter()
+                        .flat_map(|part| {
+                            super::content_converter::content_part_to_blocks(part, vision_enabled)
+                        })
+                        .collect();
+                    
+                    // 将 ContentBlocks 转换为 Responses API 所需的纯文本格式
+                    content_blocks_to_text(blocks)
+                } else {
+                    // 纯文本消息 - 直接使用 content 字段
+                    msg.content.clone()
+                };
+
                 inputs.push(ResponsesInput {
                     role: "user".to_string(),
-                    content: msg.content.clone(),
+                    content,
                 });
             }
             MessageRole::Assistant => {
+                // 对于助手消息，仅提取文本内容
+                // （Responses API 不支持助手消息中的多模态内容）
+                let content = if msg.has_multimodal_content() {
+                    let parts = msg.get_content_parts();
+                    
+                    // 仅提取文本部分，跳过图片（vision_enabled=false）
+                    let text_blocks: Vec<ContentBlock> = parts
+                        .iter()
+                        .flat_map(|part| {
+                            super::content_converter::content_part_to_blocks(part, false)
+                        })
+                        .collect();
+                    
+                    content_blocks_to_text(text_blocks)
+                } else {
+                    msg.content.clone()
+                };
+
                 inputs.push(ResponsesInput {
                     role: "assistant".to_string(),
-                    content: msg.content.clone(),
+                    content,
                 });
             }
         }
@@ -229,7 +347,7 @@ impl AiClient for OpenAiResponsesClient {
             .ok_or_else(|| AiError::AuthenticationFailed("API key is required".to_string()))?;
 
         let (inputs, instructions) =
-            convert_messages(&messages, config.parameters.system_prompt.as_deref());
+            convert_messages(&messages, config.parameters.system_prompt.as_deref(), config.vision_enabled);
 
         // Build reasoning config if thinking is enabled
         let reasoning = config.thinking_level.as_ref().and_then(|level| {
@@ -327,7 +445,7 @@ impl AiClient for OpenAiResponsesClient {
             .ok_or_else(|| AiError::AuthenticationFailed("API key is required".to_string()))?;
 
         let (inputs, instructions) =
-            convert_messages(&messages, config.parameters.system_prompt.as_deref());
+            convert_messages(&messages, config.parameters.system_prompt.as_deref(), config.vision_enabled);
 
         // Build reasoning config if thinking is enabled
         let reasoning = config.thinking_level.as_ref().and_then(|level| {
@@ -666,5 +784,385 @@ impl AiClient for OpenAiResponsesClient {
             })
             .await;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{ImageDetail, ContentPart, PdfPage, MessageStatus};
+    use chrono::Utc;
+
+    // Helper function to create a test message
+    fn create_test_message(role: MessageRole, content: String, content_parts: Vec<ContentPart>) -> Message {
+        Message {
+            id: "test-id".to_string(),
+            conversation_id: "test-conv".to_string(),
+            role,
+            content,
+            content_parts,
+            meta: None,
+            created_at: Utc::now(),
+            status: MessageStatus::Success,
+            error_message: None,
+        }
+    }
+
+    // ============================================================================
+    // content_blocks_to_text 函数的测试
+    // ============================================================================
+
+    #[test]
+    /// 测试单个文本块的转换
+    fn test_content_blocks_to_text_single_text() {
+        let blocks = vec![ContentBlock::Text {
+            text: "Hello, world!".to_string(),
+        }];
+        let result = content_blocks_to_text(blocks);
+        assert_eq!(result, "Hello, world!");
+    }
+
+    #[test]
+    /// 测试多个文本块的转换（应该用双换行符连接）
+    fn test_content_blocks_to_text_multiple_text() {
+        let blocks = vec![
+            ContentBlock::Text {
+                text: "First paragraph".to_string(),
+            },
+            ContentBlock::Text {
+                text: "Second paragraph".to_string(),
+            },
+        ];
+        let result = content_blocks_to_text(blocks);
+        assert_eq!(result, "First paragraph\n\nSecond paragraph");
+    }
+
+    #[test]
+    /// 测试 HTTP URL 图片的转换（保留完整 URL）
+    fn test_content_blocks_to_text_image_url_http() {
+        let blocks = vec![ContentBlock::ImageUrl {
+            url: "https://example.com/image.png".to_string(),
+            detail: ImageDetail::Auto,
+        }];
+        let result = content_blocks_to_text(blocks);
+        assert_eq!(result, "https://example.com/image.png");
+    }
+
+    #[test]
+    /// 测试 data URL 图片的转换（保留完整 data URL）
+    fn test_content_blocks_to_text_image_url_data() {
+        let blocks = vec![ContentBlock::ImageUrl {
+            url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUA".to_string(),
+            detail: ImageDetail::High,
+        }];
+        let result = content_blocks_to_text(blocks);
+        assert_eq!(result, "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUA");
+    }
+
+    #[test]
+    /// 测试 JPEG data URL 图片的转换（保留完整 data URL）
+    fn test_content_blocks_to_text_image_url_data_jpeg() {
+        let blocks = vec![ContentBlock::ImageUrl {
+            url: "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD".to_string(),
+            detail: ImageDetail::Low,
+        }];
+        let result = content_blocks_to_text(blocks);
+        assert_eq!(result, "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD");
+    }
+
+    #[test]
+    /// 测试 Base64 图片块的转换（重构为 data URL）
+    fn test_content_blocks_to_text_image_base64() {
+        let blocks = vec![ContentBlock::ImageBase64 {
+            media_type: "image/png".to_string(),
+            data: "iVBORw0KGgoAAAANSUhEUgAAAAUA".to_string(),
+            detail: ImageDetail::Auto,
+        }];
+        let result = content_blocks_to_text(blocks);
+        assert_eq!(result, "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUA");
+    }
+
+    #[test]
+    /// 测试混合内容的转换（文本 + 图片 + 文本文件）
+    fn test_content_blocks_to_text_mixed_content() {
+        let blocks = vec![
+            ContentBlock::Text {
+                text: "请分析这张图片：".to_string(),
+            },
+            ContentBlock::ImageUrl {
+                url: "data:image/png;base64,abc123".to_string(),
+                detail: ImageDetail::High,
+            },
+            ContentBlock::Text {
+                text: "这是一个测试文件：".to_string(),
+            },
+            ContentBlock::Text {
+                text: "📄 test.txt\n```\nHello World\n```".to_string(),
+            },
+        ];
+        let result = content_blocks_to_text(blocks);
+        assert_eq!(
+            result,
+            "请分析这张图片：\n\ndata:image/png;base64,abc123\n\n这是一个测试文件：\n\n📄 test.txt\n```\nHello World\n```"
+        );
+    }
+
+    #[test]
+    /// 测试空内容块列表的转换
+    fn test_content_blocks_to_text_empty() {
+        let blocks = vec![];
+        let result = content_blocks_to_text(blocks);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    /// 测试文本和 Base64 图片的混合转换
+    fn test_content_blocks_to_text_text_and_base64_image() {
+        let blocks = vec![
+            ContentBlock::Text {
+                text: "这是文本内容".to_string(),
+            },
+            ContentBlock::ImageBase64 {
+                media_type: "image/jpeg".to_string(),
+                data: "base64data".to_string(),
+                detail: ImageDetail::High,
+            },
+        ];
+        let result = content_blocks_to_text(blocks);
+        assert_eq!(result, "这是文本内容\n\ndata:image/jpeg;base64,base64data");
+    }
+
+    // ============================================================================
+    // convert_messages 函数的多模态内容测试
+    // ============================================================================
+
+    #[test]
+    /// 测试纯文本消息的转换
+    fn test_convert_messages_plain_text() {
+        let messages = vec![
+            create_test_message(
+                MessageRole::User,
+                "Hello, how are you?".to_string(),
+                vec![],
+            ),
+        ];
+
+        let (inputs, instructions) = convert_messages(&messages, None, true);
+
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].role, "user");
+        assert_eq!(inputs[0].content, "Hello, how are you?");
+        assert!(instructions.is_none());
+    }
+
+    #[test]
+    /// 测试启用视觉功能时单张图片的转换
+    fn test_convert_messages_single_image_vision_enabled() {
+        let messages = vec![
+            create_test_message(
+                MessageRole::User,
+                "分析这张图片".to_string(),
+                vec![
+                    ContentPart::text("分析这张图片"),
+                    ContentPart::image("data:image/png;base64,abc123"),
+                ],
+            ),
+        ];
+
+        let (inputs, _) = convert_messages(&messages, None, true);
+
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].role, "user");
+        // Should contain both text and full image data URL
+        assert!(inputs[0].content.contains("分析这张图片"));
+        assert!(inputs[0].content.contains("data:image/png;base64,abc123"));
+    }
+
+    #[test]
+    /// 测试禁用视觉功能时单张图片的转换（应跳过图片）
+    fn test_convert_messages_single_image_vision_disabled() {
+        let messages = vec![
+            create_test_message(
+                MessageRole::User,
+                "分析这张图片".to_string(),
+                vec![
+                    ContentPart::text("分析这张图片"),
+                    ContentPart::image("data:image/png;base64,abc123"),
+                ],
+            ),
+        ];
+
+        let (inputs, _) = convert_messages(&messages, None, false);
+
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].role, "user");
+        // Should only contain text, no image
+        assert_eq!(inputs[0].content, "分析这张图片");
+        assert!(!inputs[0].content.contains("[图片"));
+    }
+
+    #[test]
+    /// 测试文本文件的转换（应格式化为 markdown 代码块）
+    fn test_convert_messages_text_file() {
+        let messages = vec![
+            create_test_message(
+                MessageRole::User,
+                "请查看这个文件".to_string(),
+                vec![
+                    ContentPart::text("请查看这个文件"),
+                    ContentPart::text_file("config.json", r#"{"key": "value"}"#),
+                ],
+            ),
+        ];
+
+        let (inputs, _) = convert_messages(&messages, None, true);
+
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].role, "user");
+        // Should contain text and formatted file content
+        assert!(inputs[0].content.contains("请查看这个文件"));
+        assert!(inputs[0].content.contains("📄 config.json"));
+        assert!(inputs[0].content.contains(r#"{"key": "value"}"#));
+        assert!(inputs[0].content.contains("```"));
+    }
+
+    #[test]
+    /// 测试启用视觉功能时 PDF 文档的转换（包含文本和图片）
+    fn test_convert_messages_pdf_document_vision_enabled() {
+        let pages = vec![
+            PdfPage {
+                page_number: 1,
+                text: "Page 1 content".to_string(),
+                image: "data:image/png;base64,page1".to_string(),
+            },
+        ];
+        let messages = vec![
+            create_test_message(
+                MessageRole::User,
+                "分析这个PDF".to_string(),
+                vec![
+                    ContentPart::text("分析这个PDF"),
+                    ContentPart::pdf_document("report.pdf", pages, None),
+                ],
+            ),
+        ];
+
+        let (inputs, _) = convert_messages(&messages, None, true);
+
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].role, "user");
+        // Should contain text, PDF page text, and full PDF page image data URL
+        assert!(inputs[0].content.contains("分析这个PDF"));
+        assert!(inputs[0].content.contains("📄 report.pdf - 第1页"));
+        assert!(inputs[0].content.contains("Page 1 content"));
+        // Image should be included as full data URL
+        assert!(inputs[0].content.contains("data:image/png;base64,page1"));
+    }
+
+    #[test]
+    /// 测试禁用视觉功能时 PDF 文档的转换（仅包含文本，不包含图片）
+    fn test_convert_messages_pdf_document_vision_disabled() {
+        let pages = vec![
+            PdfPage {
+                page_number: 1,
+                text: "Page 1 content".to_string(),
+                image: "data:image/png;base64,page1".to_string(),
+            },
+        ];
+        let messages = vec![
+            create_test_message(
+                MessageRole::User,
+                "分析这个PDF".to_string(),
+                vec![
+                    ContentPart::text("分析这个PDF"),
+                    ContentPart::pdf_document("report.pdf", pages, None),
+                ],
+            ),
+        ];
+
+        let (inputs, _) = convert_messages(&messages, None, false);
+
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].role, "user");
+        // Should contain text and PDF page text, but NOT PDF page image
+        assert!(inputs[0].content.contains("分析这个PDF"));
+        assert!(inputs[0].content.contains("📄 report.pdf - 第1页"));
+        assert!(inputs[0].content.contains("Page 1 content"));
+        assert!(!inputs[0].content.contains("data:image/png;base64,page1"));
+    }
+
+    #[test]
+    /// 测试助手消息的多模态内容转换（应仅提取文本）
+    fn test_convert_messages_assistant_multimodal_extracts_text_only() {
+        let messages = vec![
+            create_test_message(
+                MessageRole::Assistant,
+                "这是回复".to_string(),
+                vec![
+                    ContentPart::text("这是回复"),
+                    ContentPart::image("data:image/png;base64,abc123"),
+                ],
+            ),
+        ];
+
+        let (inputs, _) = convert_messages(&messages, None, true);
+
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].role, "assistant");
+        // Assistant messages should only contain text, even with vision_enabled=true
+        assert_eq!(inputs[0].content, "这是回复");
+        assert!(!inputs[0].content.contains("data:image"));
+    }
+
+    #[test]
+    /// 测试系统提示词的处理（应转换为 instructions）
+    fn test_convert_messages_system_prompt() {
+        let messages = vec![
+            create_test_message(
+                MessageRole::System,
+                "You are a helpful assistant.".to_string(),
+                vec![],
+            ),
+            create_test_message(
+                MessageRole::User,
+                "Hello".to_string(),
+                vec![],
+            ),
+        ];
+
+        let (inputs, instructions) = convert_messages(&messages, None, true);
+
+        // System message should not be in inputs
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].role, "user");
+        
+        // System message should be in instructions
+        assert!(instructions.is_some());
+        assert_eq!(instructions.unwrap(), "You are a helpful assistant.");
+    }
+
+    #[test]
+    /// 测试混合内容的转换（文本 + 图片 + 文本文件）
+    fn test_convert_messages_mixed_content() {
+        let messages = vec![
+            create_test_message(
+                MessageRole::User,
+                "请分析".to_string(),
+                vec![
+                    ContentPart::text("请分析"),
+                    ContentPart::image("data:image/png;base64,img1"),
+                    ContentPart::text_file("data.txt", "file content"),
+                ],
+            ),
+        ];
+
+        let (inputs, _) = convert_messages(&messages, None, true);
+
+        assert_eq!(inputs.len(), 1);
+        // Should contain all parts with full data URL
+        assert!(inputs[0].content.contains("请分析"));
+        assert!(inputs[0].content.contains("data:image/png;base64,img1"));
+        assert!(inputs[0].content.contains("📄 data.txt"));
+        assert!(inputs[0].content.contains("file content"));
     }
 }

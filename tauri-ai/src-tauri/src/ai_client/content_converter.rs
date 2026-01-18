@@ -57,6 +57,77 @@ pub fn content_part_to_blocks(part: &ContentPart, include_images: bool) -> Vec<C
     }
 }
 
+/// Count the number of images in a ContentPart
+pub fn count_images_in_part(part: &ContentPart) -> usize {
+    match part {
+        ContentPart::Image { .. } => 1,
+        ContentPart::PdfDocument { pages, .. } => pages.len(),
+        _ => 0,
+    }
+}
+
+/// Convert a list of ContentParts to ContentBlocks with image limit enforcement
+/// 
+/// # Arguments
+/// * `parts` - The content parts to convert
+/// * `include_images` - Whether to include image blocks (for vision-capable models)
+/// * `max_images` - Maximum number of images allowed (None = unlimited)
+/// 
+/// # Returns
+/// A tuple of (blocks, pdf_images_skipped) where pdf_images_skipped indicates if PDF images were excluded
+pub fn content_parts_to_blocks_with_limit(
+    parts: &[ContentPart],
+    include_images: bool,
+    max_images: Option<u32>,
+) -> (Vec<ContentBlock>, bool) {
+    if !include_images {
+        // If images are not supported, convert all parts without images
+        let blocks = parts
+            .iter()
+            .flat_map(|part| content_part_to_blocks(part, false))
+            .collect();
+        return (blocks, false);
+    }
+
+    // Count total images (standalone images + PDF pages)
+    let standalone_image_count = parts
+        .iter()
+        .filter(|p| matches!(p, ContentPart::Image { .. }))
+        .count();
+    
+    let pdf_image_count: usize = parts
+        .iter()
+        .filter_map(|p| match p {
+            ContentPart::PdfDocument { pages, .. } => Some(pages.len()),
+            _ => None,
+        })
+        .sum();
+
+    let total_images = standalone_image_count + pdf_image_count;
+
+    // Check if we need to skip PDF images
+    let max_images_limit = max_images.unwrap_or(10) as usize; // Default to 10 if not specified
+    let skip_pdf_images = total_images > max_images_limit && standalone_image_count <= max_images_limit;
+
+    // Convert parts
+    let mut blocks = Vec::new();
+    for part in parts {
+        match part {
+            ContentPart::PdfDocument { filename, pages, .. } => {
+                // If we need to skip PDF images, only include text
+                let include_pdf_images = include_images && !skip_pdf_images;
+                blocks.extend(pdf_to_blocks(filename, pages, include_pdf_images));
+            }
+            _ => {
+                // For non-PDF parts, always include images if supported
+                blocks.extend(content_part_to_blocks(part, include_images));
+            }
+        }
+    }
+
+    (blocks, skip_pdf_images)
+}
+
 /// Format a text file as markdown code block
 fn format_text_file(filename: &str, content: &str) -> String {
     format!("📄 {}\n```\n{}\n```", filename, content)

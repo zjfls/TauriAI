@@ -176,6 +176,7 @@ mod tests {
                     top_p: Some(0.9),
                     context_length: Some(8192),
                     capabilities: crate::models::ModelCapabilities::default(),
+                    max_images: None,
                     thinking_budget_tokens: None,
                 }],
             }],
