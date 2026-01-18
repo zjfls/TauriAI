@@ -94,7 +94,6 @@ export const ThinkingSelector: React.FC<ThinkingSelectorProps> = ({
   // Multi-level mode for responses API
   const levels: { value: ThinkingLevel; label: string }[] = [
     { value: null, label: '无' },
-    { value: 'minimal', label: '最少' },
     { value: 'low', label: '低' },
     { value: 'medium', label: '中' },
     { value: 'high', label: '高' },
