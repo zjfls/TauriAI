@@ -222,10 +222,10 @@ fn content_blocks_to_parts(blocks: Vec<ContentBlock>) -> Vec<ResponsesContentPar
 /// # Returns
 /// A tuple of (inputs, instructions) where:
 /// - `inputs`: Vec of ResponsesInput for the API request
-/// - `instructions`: Optional combined system instructions
+/// - `instructions`: Always None (we use `developer` role instead)
 /// 
 /// # Conversion Logic
-/// - **System messages**: Converted to `instructions` field (not in input array)
+/// - **System messages**: Collected and emitted as a single `developer` role message
 /// - **User messages**: 
 ///   - Multimodal content: Converted via content_converter, then to typed `input_*` parts
 ///   - Plain text: Used directly
@@ -243,20 +243,17 @@ fn convert_messages(
     max_images: Option<u32>,
 ) -> (Vec<ResponsesInput>, Option<String>) {
     let mut inputs = Vec::new();
-    let mut instructions = system_prompt.map(|s| s.to_string());
+    let mut developer_prompt = system_prompt.map(|s| s.to_string());
 
     for msg in messages {
         match msg.role {
             MessageRole::System => {
-                // 系统消息转换为 instructions
-                if instructions.is_none() {
-                    instructions = Some(msg.content.clone());
-                } else {
-                    // 追加到现有的 instructions
-                    if let Some(ref mut inst) = instructions {
-                        inst.push_str("\n\n");
-                        inst.push_str(&msg.content);
-                    }
+                // 系统消息收集为 developer prompt（Responses API 支持 developer role）
+                if developer_prompt.is_none() {
+                    developer_prompt = Some(msg.content.clone());
+                } else if let Some(ref mut inst) = developer_prompt {
+                    inst.push_str("\n\n");
+                    inst.push_str(&msg.content);
                 }
             }
             MessageRole::User => {
@@ -306,7 +303,19 @@ fn convert_messages(
         }
     }
 
-    (inputs, instructions)
+    // 将 developer prompt 作为最高优先级消息放在输入数组最前面
+    if let Some(prompt) = developer_prompt.filter(|s| !s.is_empty()) {
+        inputs.insert(
+            0,
+            ResponsesInput {
+                role: "developer".to_string(),
+                content: ResponsesContent::Text(prompt),
+            },
+        );
+    }
+
+    // 保持向后兼容：不再使用 instructions 字段
+    (inputs, None)
 }
 
 // ============================================================================
@@ -1243,17 +1252,21 @@ mod tests {
 
         let (inputs, instructions) = convert_messages(&messages, None, true, None);
 
-        // System message should not be in inputs
-        assert_eq!(inputs.len(), 1);
-        assert_eq!(inputs[0].role, "user");
+        assert!(instructions.is_none());
+
+        // System message should be converted to a developer role message
+        assert_eq!(inputs.len(), 2);
+        assert_eq!(inputs[0].role, "developer");
         assert_eq!(
             inputs[0].content,
+            ResponsesContent::Text("You are a helpful assistant.".to_string())
+        );
+
+        assert_eq!(inputs[1].role, "user");
+        assert_eq!(
+            inputs[1].content,
             ResponsesContent::Text("Hello".to_string())
         );
-        
-        // System message should be in instructions
-        assert!(instructions.is_some());
-        assert_eq!(instructions.unwrap(), "You are a helpful assistant.");
     }
 
     #[test]
