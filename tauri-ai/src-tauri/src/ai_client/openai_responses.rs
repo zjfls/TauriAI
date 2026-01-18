@@ -13,11 +13,11 @@
 //!
 //! This client supports multimodal content (images, text files, PDF documents) through
 //! the unified `content_converter` module. The Responses API supports images via data URLs
-//! in the `content` field:
+//! in the `content` field as typed `input_*` items:
 //!
-//! - **Images**: Included as full data URLs (e.g., "data:image/png;base64,...")
-//! - **Text files**: Formatted as markdown code blocks with filename
-//! - **PDF documents**: Each page becomes text + image data URL
+//! - **Images**: `{ type: "input_image", image_url: "data:image/png;base64,...", detail: "auto" }`
+//! - **Text files**: Formatted as markdown code blocks with filename, sent as `input_text`
+//! - **PDF documents**: Each page becomes `input_text` (+ `input_image` when vision enabled)
 //!
 //! The `vision_enabled` configuration controls whether image content is included.
 //! When disabled, only text content is sent to the API.
@@ -32,7 +32,7 @@ use super::traits::{
     AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent, TokenUsage,
 };
 use super::content_converter::ContentBlock;
-use crate::models::{Message, MessageRole, ModelConfig};
+use crate::models::{ImageDetail, Message, MessageRole, ModelConfig};
 use std::collections::HashMap;
 
 // ============================================================================
@@ -40,10 +40,26 @@ use std::collections::HashMap;
 // ============================================================================
 
 /// Input message for Responses API
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, PartialEq, Eq)]
 struct ResponsesInput {
     role: String,
-    content: String,
+    content: ResponsesContent,
+}
+
+/// Responses API message content - either plain text or a list of typed inputs
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(untagged)]
+enum ResponsesContent {
+    Text(String),
+    Parts(Vec<ResponsesContentPart>),
+}
+
+/// A single typed content item for Responses API
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ResponsesContentPart {
+    InputText { text: String },
+    InputImage { detail: ImageDetail, image_url: String },
 }
 
 /// Reasoning configuration for thinking models
@@ -166,40 +182,31 @@ struct ErrorDetail {
 // Helper functions
 // ============================================================================
 
-/// Convert ContentBlocks to text format for Responses API
-/// 
-/// The Responses API supports multimodal content including images via data URLs.
-/// This function converts ContentBlocks to a format suitable for the API.
-/// 
-/// # Arguments
-/// * `blocks` - The content blocks to convert
-/// 
-/// # Returns
-/// A single string with all blocks joined by double newlines
-/// 
+/// Convert ContentBlocks to typed Responses API content parts.
+///
 /// # Conversion Rules
-/// - **Text blocks**: Included as-is
-/// - **ImageUrl blocks**: 
-///   - Data URLs: Included as-is (full data URL preserved for API)
-///   - HTTP URLs: Included as-is
-/// - **ImageBase64 blocks**: Reconstructed as data URL format
-fn content_blocks_to_text(blocks: Vec<ContentBlock>) -> String {
+/// - **Text blocks** -> `input_text`
+/// - **ImageUrl blocks** -> `input_image` (`image_url` preserved, including data URLs)
+/// - **ImageBase64 blocks** -> `input_image` (reconstructed as data URL)
+fn content_blocks_to_parts(blocks: Vec<ContentBlock>) -> Vec<ResponsesContentPart> {
     blocks
         .into_iter()
         .map(|block| match block {
-            ContentBlock::Text { text } => text,
-            ContentBlock::ImageUrl { url, .. } => {
-                // Responses API supports data URLs directly
-                // Keep the full URL (both data URLs and HTTP URLs)
-                url
-            }
-            ContentBlock::ImageBase64 { media_type, data, .. } => {
-                // Reconstruct as data URL for Responses API
-                format!("data:{};base64,{}", media_type, data)
-            }
+            ContentBlock::Text { text } => ResponsesContentPart::InputText { text },
+            ContentBlock::ImageUrl { url, detail } => ResponsesContentPart::InputImage {
+                detail,
+                image_url: url,
+            },
+            ContentBlock::ImageBase64 {
+                media_type,
+                data,
+                detail,
+            } => ResponsesContentPart::InputImage {
+                detail,
+                image_url: format!("data:{};base64,{}", media_type, data),
+            },
         })
-        .collect::<Vec<_>>()
-        .join("\n\n")
+        .collect()
 }
 
 /// Convert messages to Responses API input format
@@ -220,7 +227,7 @@ fn content_blocks_to_text(blocks: Vec<ContentBlock>) -> String {
 /// # Conversion Logic
 /// - **System messages**: Converted to `instructions` field (not in input array)
 /// - **User messages**: 
-///   - Multimodal content: Converted via content_converter, then to text
+///   - Multimodal content: Converted via content_converter, then to typed `input_*` parts
 ///   - Plain text: Used directly
 /// - **Assistant messages**: 
 ///   - Multimodal content: Only text parts extracted (API limitation)
@@ -228,12 +235,12 @@ fn content_blocks_to_text(blocks: Vec<ContentBlock>) -> String {
 /// 
 /// # Multimodal Handling
 /// Uses `content_converter::content_part_to_blocks()` to convert ContentParts
-/// to ContentBlocks, then `content_blocks_to_text()` to convert to plain text
-/// suitable for the Responses API.
+/// to ContentBlocks, then converts to Responses API `input_text` / `input_image` items.
 fn convert_messages(
     messages: &[Message],
     system_prompt: Option<&str>,
     vision_enabled: bool,
+    max_images: Option<u32>,
 ) -> (Vec<ResponsesInput>, Option<String>) {
     let mut inputs = Vec::new();
     let mut instructions = system_prompt.map(|s| s.to_string());
@@ -255,23 +262,16 @@ fn convert_messages(
             MessageRole::User => {
                 // 检查消息是否包含多模态内容
                 let content = if msg.has_multimodal_content() {
-                    // 获取所有内容部分
+                    // 使用统一转换器（包含图片上限策略）将内容部分转换为 ContentBlocks
                     let parts = msg.get_content_parts();
-                    
-                    // 使用统一的 content_converter 将每个部分转换为 ContentBlocks
-                    // vision_enabled 控制是否包含图片内容
-                    let blocks: Vec<ContentBlock> = parts
-                        .iter()
-                        .flat_map(|part| {
-                            super::content_converter::content_part_to_blocks(part, vision_enabled)
-                        })
-                        .collect();
-                    
-                    // 将 ContentBlocks 转换为 Responses API 所需的纯文本格式
-                    content_blocks_to_text(blocks)
+                    use super::content_converter::content_parts_to_blocks_with_limit;
+                    let (blocks, _pdf_images_skipped) =
+                        content_parts_to_blocks_with_limit(&parts, vision_enabled, max_images);
+
+                    ResponsesContent::Parts(content_blocks_to_parts(blocks))
                 } else {
                     // 纯文本消息 - 直接使用 content 字段
-                    msg.content.clone()
+                    ResponsesContent::Text(msg.content.clone())
                 };
 
                 inputs.push(ResponsesInput {
@@ -293,9 +293,9 @@ fn convert_messages(
                         })
                         .collect();
                     
-                    content_blocks_to_text(text_blocks)
+                    ResponsesContent::Parts(content_blocks_to_parts(text_blocks))
                 } else {
-                    msg.content.clone()
+                    ResponsesContent::Text(msg.content.clone())
                 };
 
                 inputs.push(ResponsesInput {
@@ -346,8 +346,12 @@ impl AiClient for OpenAiResponsesClient {
             .filter(|k| !k.is_empty())
             .ok_or_else(|| AiError::AuthenticationFailed("API key is required".to_string()))?;
 
-        let (inputs, instructions) =
-            convert_messages(&messages, config.parameters.system_prompt.as_deref(), config.vision_enabled);
+        let (inputs, instructions) = convert_messages(
+            &messages,
+            config.parameters.system_prompt.as_deref(),
+            config.vision_enabled,
+            config.max_images,
+        );
 
         // Build reasoning config if thinking is enabled
         let reasoning = config.thinking_level.as_ref().and_then(|level| {
@@ -444,8 +448,12 @@ impl AiClient for OpenAiResponsesClient {
             .as_ref()
             .ok_or_else(|| AiError::AuthenticationFailed("API key is required".to_string()))?;
 
-        let (inputs, instructions) =
-            convert_messages(&messages, config.parameters.system_prompt.as_deref(), config.vision_enabled);
+        let (inputs, instructions) = convert_messages(
+            &messages,
+            config.parameters.system_prompt.as_deref(),
+            config.vision_enabled,
+            config.max_images,
+        );
 
         // Build reasoning config if thinking is enabled
         let reasoning = config.thinking_level.as_ref().and_then(|level| {
@@ -809,22 +817,27 @@ mod tests {
     }
 
     // ============================================================================
-    // content_blocks_to_text 函数的测试
+    // content_blocks_to_parts 函数的测试
     // ============================================================================
 
     #[test]
     /// 测试单个文本块的转换
-    fn test_content_blocks_to_text_single_text() {
+    fn test_content_blocks_to_parts_single_text() {
         let blocks = vec![ContentBlock::Text {
             text: "Hello, world!".to_string(),
         }];
-        let result = content_blocks_to_text(blocks);
-        assert_eq!(result, "Hello, world!");
+        let result = content_blocks_to_parts(blocks);
+        assert_eq!(
+            result,
+            vec![ResponsesContentPart::InputText {
+                text: "Hello, world!".to_string(),
+            }]
+        );
     }
 
     #[test]
-    /// 测试多个文本块的转换（应该用双换行符连接）
-    fn test_content_blocks_to_text_multiple_text() {
+    /// 测试多个文本块的转换（应该按顺序保留）
+    fn test_content_blocks_to_parts_multiple_text() {
         let blocks = vec![
             ContentBlock::Text {
                 text: "First paragraph".to_string(),
@@ -833,58 +846,92 @@ mod tests {
                 text: "Second paragraph".to_string(),
             },
         ];
-        let result = content_blocks_to_text(blocks);
-        assert_eq!(result, "First paragraph\n\nSecond paragraph");
+        let result = content_blocks_to_parts(blocks);
+        assert_eq!(
+            result,
+            vec![
+                ResponsesContentPart::InputText {
+                    text: "First paragraph".to_string(),
+                },
+                ResponsesContentPart::InputText {
+                    text: "Second paragraph".to_string(),
+                },
+            ]
+        );
     }
 
     #[test]
     /// 测试 HTTP URL 图片的转换（保留完整 URL）
-    fn test_content_blocks_to_text_image_url_http() {
+    fn test_content_blocks_to_parts_image_url_http() {
         let blocks = vec![ContentBlock::ImageUrl {
             url: "https://example.com/image.png".to_string(),
             detail: ImageDetail::Auto,
         }];
-        let result = content_blocks_to_text(blocks);
-        assert_eq!(result, "https://example.com/image.png");
+        let result = content_blocks_to_parts(blocks);
+        assert_eq!(
+            result,
+            vec![ResponsesContentPart::InputImage {
+                detail: ImageDetail::Auto,
+                image_url: "https://example.com/image.png".to_string(),
+            }]
+        );
     }
 
     #[test]
     /// 测试 data URL 图片的转换（保留完整 data URL）
-    fn test_content_blocks_to_text_image_url_data() {
+    fn test_content_blocks_to_parts_image_url_data() {
         let blocks = vec![ContentBlock::ImageUrl {
             url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUA".to_string(),
             detail: ImageDetail::High,
         }];
-        let result = content_blocks_to_text(blocks);
-        assert_eq!(result, "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUA");
+        let result = content_blocks_to_parts(blocks);
+        assert_eq!(
+            result,
+            vec![ResponsesContentPart::InputImage {
+                detail: ImageDetail::High,
+                image_url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUA".to_string(),
+            }]
+        );
     }
 
     #[test]
     /// 测试 JPEG data URL 图片的转换（保留完整 data URL）
-    fn test_content_blocks_to_text_image_url_data_jpeg() {
+    fn test_content_blocks_to_parts_image_url_data_jpeg() {
         let blocks = vec![ContentBlock::ImageUrl {
             url: "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD".to_string(),
             detail: ImageDetail::Low,
         }];
-        let result = content_blocks_to_text(blocks);
-        assert_eq!(result, "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD");
+        let result = content_blocks_to_parts(blocks);
+        assert_eq!(
+            result,
+            vec![ResponsesContentPart::InputImage {
+                detail: ImageDetail::Low,
+                image_url: "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD".to_string(),
+            }]
+        );
     }
 
     #[test]
     /// 测试 Base64 图片块的转换（重构为 data URL）
-    fn test_content_blocks_to_text_image_base64() {
+    fn test_content_blocks_to_parts_image_base64() {
         let blocks = vec![ContentBlock::ImageBase64 {
             media_type: "image/png".to_string(),
             data: "iVBORw0KGgoAAAANSUhEUgAAAAUA".to_string(),
             detail: ImageDetail::Auto,
         }];
-        let result = content_blocks_to_text(blocks);
-        assert_eq!(result, "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUA");
+        let result = content_blocks_to_parts(blocks);
+        assert_eq!(
+            result,
+            vec![ResponsesContentPart::InputImage {
+                detail: ImageDetail::Auto,
+                image_url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUA".to_string(),
+            }]
+        );
     }
 
     #[test]
     /// 测试混合内容的转换（文本 + 图片 + 文本文件）
-    fn test_content_blocks_to_text_mixed_content() {
+    fn test_content_blocks_to_parts_mixed_content() {
         let blocks = vec![
             ContentBlock::Text {
                 text: "请分析这张图片：".to_string(),
@@ -900,24 +947,38 @@ mod tests {
                 text: "📄 test.txt\n```\nHello World\n```".to_string(),
             },
         ];
-        let result = content_blocks_to_text(blocks);
+        let result = content_blocks_to_parts(blocks);
         assert_eq!(
             result,
-            "请分析这张图片：\n\ndata:image/png;base64,abc123\n\n这是一个测试文件：\n\n📄 test.txt\n```\nHello World\n```"
+            vec![
+                ResponsesContentPart::InputText {
+                    text: "请分析这张图片：".to_string(),
+                },
+                ResponsesContentPart::InputImage {
+                    detail: ImageDetail::High,
+                    image_url: "data:image/png;base64,abc123".to_string(),
+                },
+                ResponsesContentPart::InputText {
+                    text: "这是一个测试文件：".to_string(),
+                },
+                ResponsesContentPart::InputText {
+                    text: "📄 test.txt\n```\nHello World\n```".to_string(),
+                },
+            ]
         );
     }
 
     #[test]
     /// 测试空内容块列表的转换
-    fn test_content_blocks_to_text_empty() {
+    fn test_content_blocks_to_parts_empty() {
         let blocks = vec![];
-        let result = content_blocks_to_text(blocks);
-        assert_eq!(result, "");
+        let result = content_blocks_to_parts(blocks);
+        assert_eq!(result, vec![]);
     }
 
     #[test]
     /// 测试文本和 Base64 图片的混合转换
-    fn test_content_blocks_to_text_text_and_base64_image() {
+    fn test_content_blocks_to_parts_text_and_base64_image() {
         let blocks = vec![
             ContentBlock::Text {
                 text: "这是文本内容".to_string(),
@@ -928,8 +989,19 @@ mod tests {
                 detail: ImageDetail::High,
             },
         ];
-        let result = content_blocks_to_text(blocks);
-        assert_eq!(result, "这是文本内容\n\ndata:image/jpeg;base64,base64data");
+        let result = content_blocks_to_parts(blocks);
+        assert_eq!(
+            result,
+            vec![
+                ResponsesContentPart::InputText {
+                    text: "这是文本内容".to_string(),
+                },
+                ResponsesContentPart::InputImage {
+                    detail: ImageDetail::High,
+                    image_url: "data:image/jpeg;base64,base64data".to_string(),
+                },
+            ]
+        );
     }
 
     // ============================================================================
@@ -947,11 +1019,14 @@ mod tests {
             ),
         ];
 
-        let (inputs, instructions) = convert_messages(&messages, None, true);
+        let (inputs, instructions) = convert_messages(&messages, None, true, None);
 
         assert_eq!(inputs.len(), 1);
         assert_eq!(inputs[0].role, "user");
-        assert_eq!(inputs[0].content, "Hello, how are you?");
+        assert_eq!(
+            inputs[0].content,
+            ResponsesContent::Text("Hello, how are you?".to_string())
+        );
         assert!(instructions.is_none());
     }
 
@@ -969,13 +1044,22 @@ mod tests {
             ),
         ];
 
-        let (inputs, _) = convert_messages(&messages, None, true);
+        let (inputs, _) = convert_messages(&messages, None, true, None);
 
         assert_eq!(inputs.len(), 1);
         assert_eq!(inputs[0].role, "user");
-        // Should contain both text and full image data URL
-        assert!(inputs[0].content.contains("分析这张图片"));
-        assert!(inputs[0].content.contains("data:image/png;base64,abc123"));
+        assert_eq!(
+            inputs[0].content,
+            ResponsesContent::Parts(vec![
+                ResponsesContentPart::InputText {
+                    text: "分析这张图片".to_string(),
+                },
+                ResponsesContentPart::InputImage {
+                    detail: ImageDetail::Auto,
+                    image_url: "data:image/png;base64,abc123".to_string(),
+                },
+            ])
+        );
     }
 
     #[test]
@@ -992,13 +1076,16 @@ mod tests {
             ),
         ];
 
-        let (inputs, _) = convert_messages(&messages, None, false);
+        let (inputs, _) = convert_messages(&messages, None, false, None);
 
         assert_eq!(inputs.len(), 1);
         assert_eq!(inputs[0].role, "user");
-        // Should only contain text, no image
-        assert_eq!(inputs[0].content, "分析这张图片");
-        assert!(!inputs[0].content.contains("[图片"));
+        assert_eq!(
+            inputs[0].content,
+            ResponsesContent::Parts(vec![ResponsesContentPart::InputText {
+                text: "分析这张图片".to_string(),
+            }])
+        );
     }
 
     #[test]
@@ -1015,15 +1102,21 @@ mod tests {
             ),
         ];
 
-        let (inputs, _) = convert_messages(&messages, None, true);
+        let (inputs, _) = convert_messages(&messages, None, true, None);
 
         assert_eq!(inputs.len(), 1);
         assert_eq!(inputs[0].role, "user");
-        // Should contain text and formatted file content
-        assert!(inputs[0].content.contains("请查看这个文件"));
-        assert!(inputs[0].content.contains("📄 config.json"));
-        assert!(inputs[0].content.contains(r#"{"key": "value"}"#));
-        assert!(inputs[0].content.contains("```"));
+        assert_eq!(
+            inputs[0].content,
+            ResponsesContent::Parts(vec![
+                ResponsesContentPart::InputText {
+                    text: "请查看这个文件".to_string(),
+                },
+                ResponsesContentPart::InputText {
+                    text: "📄 config.json\n```\n{\"key\": \"value\"}\n```".to_string(),
+                },
+            ])
+        );
     }
 
     #[test]
@@ -1047,16 +1140,25 @@ mod tests {
             ),
         ];
 
-        let (inputs, _) = convert_messages(&messages, None, true);
+        let (inputs, _) = convert_messages(&messages, None, true, None);
 
         assert_eq!(inputs.len(), 1);
         assert_eq!(inputs[0].role, "user");
-        // Should contain text, PDF page text, and full PDF page image data URL
-        assert!(inputs[0].content.contains("分析这个PDF"));
-        assert!(inputs[0].content.contains("📄 report.pdf - 第1页"));
-        assert!(inputs[0].content.contains("Page 1 content"));
-        // Image should be included as full data URL
-        assert!(inputs[0].content.contains("data:image/png;base64,page1"));
+        assert_eq!(
+            inputs[0].content,
+            ResponsesContent::Parts(vec![
+                ResponsesContentPart::InputText {
+                    text: "分析这个PDF".to_string(),
+                },
+                ResponsesContentPart::InputText {
+                    text: "📄 report.pdf - 第1页\n```\nPage 1 content\n```".to_string(),
+                },
+                ResponsesContentPart::InputImage {
+                    detail: ImageDetail::High,
+                    image_url: "data:image/png;base64,page1".to_string(),
+                },
+            ])
+        );
     }
 
     #[test]
@@ -1080,15 +1182,21 @@ mod tests {
             ),
         ];
 
-        let (inputs, _) = convert_messages(&messages, None, false);
+        let (inputs, _) = convert_messages(&messages, None, false, None);
 
         assert_eq!(inputs.len(), 1);
         assert_eq!(inputs[0].role, "user");
-        // Should contain text and PDF page text, but NOT PDF page image
-        assert!(inputs[0].content.contains("分析这个PDF"));
-        assert!(inputs[0].content.contains("📄 report.pdf - 第1页"));
-        assert!(inputs[0].content.contains("Page 1 content"));
-        assert!(!inputs[0].content.contains("data:image/png;base64,page1"));
+        assert_eq!(
+            inputs[0].content,
+            ResponsesContent::Parts(vec![
+                ResponsesContentPart::InputText {
+                    text: "分析这个PDF".to_string(),
+                },
+                ResponsesContentPart::InputText {
+                    text: "📄 report.pdf - 第1页\n```\nPage 1 content\n```".to_string(),
+                },
+            ])
+        );
     }
 
     #[test]
@@ -1105,13 +1213,16 @@ mod tests {
             ),
         ];
 
-        let (inputs, _) = convert_messages(&messages, None, true);
+        let (inputs, _) = convert_messages(&messages, None, true, None);
 
         assert_eq!(inputs.len(), 1);
         assert_eq!(inputs[0].role, "assistant");
-        // Assistant messages should only contain text, even with vision_enabled=true
-        assert_eq!(inputs[0].content, "这是回复");
-        assert!(!inputs[0].content.contains("data:image"));
+        assert_eq!(
+            inputs[0].content,
+            ResponsesContent::Parts(vec![ResponsesContentPart::InputText {
+                text: "这是回复".to_string(),
+            }])
+        );
     }
 
     #[test]
@@ -1130,11 +1241,15 @@ mod tests {
             ),
         ];
 
-        let (inputs, instructions) = convert_messages(&messages, None, true);
+        let (inputs, instructions) = convert_messages(&messages, None, true, None);
 
         // System message should not be in inputs
         assert_eq!(inputs.len(), 1);
         assert_eq!(inputs[0].role, "user");
+        assert_eq!(
+            inputs[0].content,
+            ResponsesContent::Text("Hello".to_string())
+        );
         
         // System message should be in instructions
         assert!(instructions.is_some());
@@ -1156,13 +1271,23 @@ mod tests {
             ),
         ];
 
-        let (inputs, _) = convert_messages(&messages, None, true);
+        let (inputs, _) = convert_messages(&messages, None, true, None);
 
         assert_eq!(inputs.len(), 1);
-        // Should contain all parts with full data URL
-        assert!(inputs[0].content.contains("请分析"));
-        assert!(inputs[0].content.contains("data:image/png;base64,img1"));
-        assert!(inputs[0].content.contains("📄 data.txt"));
-        assert!(inputs[0].content.contains("file content"));
+        assert_eq!(
+            inputs[0].content,
+            ResponsesContent::Parts(vec![
+                ResponsesContentPart::InputText {
+                    text: "请分析".to_string(),
+                },
+                ResponsesContentPart::InputImage {
+                    detail: ImageDetail::Auto,
+                    image_url: "data:image/png;base64,img1".to_string(),
+                },
+                ResponsesContentPart::InputText {
+                    text: "📄 data.txt\n```\nfile content\n```".to_string(),
+                },
+            ])
+        );
     }
 }

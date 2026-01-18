@@ -985,13 +985,13 @@ describe('Performance Optimization', () => {
         return 'data:image/jpeg;base64,test';
       };
       
-      const { compressPageImage } = await import('./pdfUtils');
+      const { compressPageImage, PDF_IMAGE_QUALITY } = await import('./pdfUtils');
       const result = compressPageImage(canvas);
       
       // Should call toDataURL with JPEG format
       expect(calledWith[0]).toBe('image/jpeg');
-      // Should use default quality (0.85)
-      expect(calledWith[1]).toBe(0.85);
+      // Should use default quality
+      expect(calledWith[1]).toBe(PDF_IMAGE_QUALITY);
       // Should return the result from toDataURL
       expect(result).toBe('data:image/jpeg;base64,test');
     });
@@ -1025,7 +1025,7 @@ describe('Performance Optimization', () => {
       // Should be a reasonable quality value
       expect(PDF_IMAGE_QUALITY).toBeGreaterThan(0);
       expect(PDF_IMAGE_QUALITY).toBeLessThanOrEqual(1);
-      expect(PDF_IMAGE_QUALITY).toBe(0.85);
+      expect(PDF_IMAGE_QUALITY).toBe(0.6);
     });
   });
 
