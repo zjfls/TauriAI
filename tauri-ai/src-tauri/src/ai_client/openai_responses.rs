@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use super::traits::{
-    AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent,
+    AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent, TokenUsage,
 };
 use crate::models::{Message, MessageRole, ModelConfig};
 use std::collections::HashMap;
@@ -401,6 +401,9 @@ impl AiClient for OpenAiResponsesClient {
 
             if let Ok(error_response) = serde_json::from_str::<ErrorResponse>(&error_text) {
                 let _ = token_sender
+                    .send(StreamEvent::Error(error_response.error.message.clone()))
+                    .await;
+                let _ = token_sender
                     .send(StreamEvent::DoneWithDebug {
                         content: String::new(),
                         thinking: None,
@@ -408,27 +411,25 @@ impl AiClient for OpenAiResponsesClient {
                         usage: None,
                     })
                     .await;
-                let _ = token_sender
-                    .send(StreamEvent::Error(error_response.error.message.clone()))
-                    .await;
                 return Err(AiError::RequestFailed(error_response.error.message));
             }
+            let _ = token_sender
+                .send(StreamEvent::Error(error_text.clone()))
+                .await;
             let _ = token_sender
                 .send(StreamEvent::DoneWithDebug {
                     content: String::new(),
                     thinking: None,
-                    debug_info: Some(debug_info.clone()),
+                    debug_info: Some(debug_info),
                     usage: None,
                 })
-                .await;
-            let _ = token_sender
-                .send(StreamEvent::Error(error_text.clone()))
                 .await;
             return Err(AiError::RequestFailed(error_text));
         }
 
         let mut full_content = String::new();
         let mut full_thinking = String::new();
+        let mut final_usage: Option<TokenUsage> = None;
         let mut stream = response.bytes_stream();
         let mut chunk_count = 0;
 
@@ -441,6 +442,16 @@ impl AiClient for OpenAiResponsesClient {
             for line in chunk_str.lines() {
                 if let Some(data) = line.strip_prefix("data: ") {
                     if data.trim() == "[DONE]" {
+                        let debug_usage = final_usage.as_ref().map(|u| {
+                            serde_json::json!({
+                                "prompt_tokens": u.prompt_tokens,
+                                "completion_tokens": u.completion_tokens,
+                                "total_tokens": u.total_tokens,
+                                "cached_tokens": u.cached_tokens,
+                                "reasoning_tokens": u.reasoning_tokens
+                            })
+                        });
+
                         // Build debug info with full content
                         let debug_response_body = serde_json::json!({
                             "_sseInfo": {
@@ -449,7 +460,7 @@ impl AiClient for OpenAiResponsesClient {
                             },
                             "content": full_content,
                             "thinking": if full_thinking.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(full_thinking.clone()) },
-                            "usage": serde_json::Value::Null
+                            "usage": debug_usage
                         });
 
                         let debug_info = DebugInfoData {
@@ -466,7 +477,7 @@ impl AiClient for OpenAiResponsesClient {
                                 content: full_content.clone(),
                                 thinking: if full_thinking.is_empty() { None } else { Some(full_thinking.clone()) },
                                 debug_info: Some(debug_info),
-                                usage: None,
+                                usage: final_usage.clone(),
                             })
                             .await;
                         return Ok(());
@@ -482,30 +493,101 @@ impl AiClient for OpenAiResponsesClient {
                                 }
                             }
                             "response.text.delta" => {
-                                if let Some(text) = event.text {
-                                    full_content.push_str(&text);
-                                    let _ = token_sender.send(StreamEvent::Token(text)).await;
+                                if let Some(delta) = event.delta.or(event.text) {
+                                    full_content.push_str(&delta);
+                                    let _ = token_sender.send(StreamEvent::Token(delta)).await;
                                 }
                             }
-                            "response.reasoning.delta" | "response.reasoning_summary.delta" => {
+                            "response.reasoning_text.delta"
+                            | "response.reasoning_summary_text.delta"
+                            | "response.reasoning.delta"
+                            | "response.reasoning_summary.delta" => {
                                 // Handle reasoning/thinking content
-                                if let Some(delta) = event.delta {
+                                if let Some(delta) = event.delta.or(event.text) {
                                     full_thinking.push_str(&delta);
                                     let _ = token_sender.send(StreamEvent::Thinking(delta)).await;
-                                } else if let Some(text) = event.text {
-                                    full_thinking.push_str(&text);
-                                    let _ = token_sender.send(StreamEvent::Thinking(text)).await;
                                 }
                             }
-                            "response.error" => {
-                                let error_msg =
-                                    event.delta.unwrap_or_else(|| "Unknown error".to_string());
-                                let _ = token_sender
-                                    .send(StreamEvent::Error(error_msg.clone()))
-                                    .await;
+                            "error" => {
+                                let error_msg = serde_json::from_str::<serde_json::Value>(data)
+                                    .ok()
+                                    .and_then(|v| v.get("message").and_then(|m| m.as_str()).map(|s| s.to_string()))
+                                    .or(event.delta)
+                                    .unwrap_or_else(|| "Unknown error".to_string());
+                                let _ = token_sender.send(StreamEvent::Error(error_msg.clone())).await;
+                                return Err(AiError::StreamError(error_msg));
+                            }
+                            "response.failed" | "response.incomplete" => {
+                                let error_msg = serde_json::from_str::<serde_json::Value>(data)
+                                    .ok()
+                                    .and_then(|v| {
+                                        v.get("response")
+                                            .and_then(|r| r.get("error"))
+                                            .and_then(|e| e.get("message"))
+                                            .and_then(|m| m.as_str())
+                                            .map(|s| s.to_string())
+                                    })
+                                    .unwrap_or_else(|| "Response failed".to_string());
+                                let _ = token_sender.send(StreamEvent::Error(error_msg.clone())).await;
                                 return Err(AiError::StreamError(error_msg));
                             }
                             "response.completed" | "response.done" => {
+                                // Capture usage from response.completed event (Responses API)
+                                if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
+                                    if let Some(u) = v
+                                        .get("response")
+                                        .and_then(|r| r.get("usage"))
+                                        .and_then(|u| u.as_object())
+                                    {
+                                        let input_tokens = u
+                                            .get("input_tokens")
+                                            .and_then(|v| v.as_u64())
+                                            .map(|v| v as u32);
+                                        let output_tokens = u
+                                            .get("output_tokens")
+                                            .and_then(|v| v.as_u64())
+                                            .map(|v| v as u32);
+                                        let total_tokens = u
+                                            .get("total_tokens")
+                                            .and_then(|v| v.as_u64())
+                                            .map(|v| v as u32);
+                                        if let (Some(prompt_tokens), Some(completion_tokens), Some(total_tokens)) =
+                                            (input_tokens, output_tokens, total_tokens)
+                                        {
+                                            let cached_tokens = u
+                                                .get("input_tokens_details")
+                                                .and_then(|d| d.get("cached_tokens"))
+                                                .and_then(|v| v.as_u64())
+                                                .map(|v| v as u32);
+                                            let reasoning_tokens = u
+                                                .get("output_tokens_details")
+                                                .and_then(|d| d.get("reasoning_tokens"))
+                                                .and_then(|v| v.as_u64())
+                                                .map(|v| v as u32);
+
+                                            final_usage = Some(TokenUsage {
+                                                prompt_tokens,
+                                                completion_tokens,
+                                                total_tokens,
+                                                cached_tokens,
+                                                reasoning_tokens,
+                                                cache_creation_input_tokens: None,
+                                                cache_read_input_tokens: None,
+                                            });
+                                        }
+                                    }
+                                }
+
+                                let debug_usage = final_usage.as_ref().map(|u| {
+                                    serde_json::json!({
+                                        "prompt_tokens": u.prompt_tokens,
+                                        "completion_tokens": u.completion_tokens,
+                                        "total_tokens": u.total_tokens,
+                                        "cached_tokens": u.cached_tokens,
+                                        "reasoning_tokens": u.reasoning_tokens
+                                    })
+                                });
+
                                 // Build debug info
                                 let debug_response_body = serde_json::json!({
                                     "_sseInfo": {
@@ -514,7 +596,7 @@ impl AiClient for OpenAiResponsesClient {
                                     },
                                     "content": full_content,
                                     "thinking": if full_thinking.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(full_thinking.clone()) },
-                                    "usage": serde_json::Value::Null
+                                    "usage": debug_usage
                                 });
 
                                 let debug_info = DebugInfoData {
@@ -531,7 +613,7 @@ impl AiClient for OpenAiResponsesClient {
                                         content: full_content.clone(),
                                         thinking: if full_thinking.is_empty() { None } else { Some(full_thinking.clone()) },
                                         debug_info: Some(debug_info),
-                                        usage: None,
+                                        usage: final_usage.clone(),
                                     })
                                     .await;
                                 return Ok(());
@@ -545,6 +627,16 @@ impl AiClient for OpenAiResponsesClient {
             }
         }
 
+        let debug_usage = final_usage.as_ref().map(|u| {
+            serde_json::json!({
+                "prompt_tokens": u.prompt_tokens,
+                "completion_tokens": u.completion_tokens,
+                "total_tokens": u.total_tokens,
+                "cached_tokens": u.cached_tokens,
+                "reasoning_tokens": u.reasoning_tokens
+            })
+        });
+
         // Build debug info for stream end
         let debug_response_body = serde_json::json!({
             "_sseInfo": {
@@ -553,7 +645,7 @@ impl AiClient for OpenAiResponsesClient {
             },
             "content": full_content,
             "thinking": if full_thinking.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(full_thinking.clone()) },
-            "usage": serde_json::Value::Null
+            "usage": debug_usage
         });
 
         let debug_info = DebugInfoData {
@@ -570,7 +662,7 @@ impl AiClient for OpenAiResponsesClient {
                 content: full_content,
                 thinking: if full_thinking.is_empty() { None } else { Some(full_thinking) },
                 debug_info: Some(debug_info),
-                usage: None,
+                usage: final_usage,
             })
             .await;
         Ok(())
