@@ -300,12 +300,12 @@ impl OpenAiBaseClient {
             config.vision_enabled,
         );
 
-        // Build thinking config based on thinking_enabled:
+        // Build thinking config based on thinking_level:
         // - None: Model doesn't support thinking, don't send parameter
-        // - Some(true): Enable thinking
-        // - Some(false): Disable thinking explicitly
-        let thinking = config.thinking_enabled.map(|enabled| ThinkingConfig {
-            thinking_type: if enabled { "enabled" } else { "disabled" }.to_string(),
+        // - Some("disabled"): Disable thinking explicitly
+        // - Some(level): Enable thinking (level is ignored for chat_completions API)
+        let thinking = config.thinking_level.as_ref().map(|level| ThinkingConfig {
+            thinking_type: if level == "disabled" { "disabled" } else { "enabled" }.to_string(),
         });
 
         let request = ChatCompletionRequest {
@@ -373,12 +373,12 @@ impl OpenAiBaseClient {
             config.vision_enabled,
         );
 
-        // Build thinking config based on thinking_enabled:
+        // Build thinking config based on thinking_level:
         // - None: Model doesn't support thinking, don't send parameter
-        // - Some(true): Enable thinking
-        // - Some(false): Disable thinking explicitly
-        let thinking = config.thinking_enabled.map(|enabled| ThinkingConfig {
-            thinking_type: if enabled { "enabled" } else { "disabled" }.to_string(),
+        // - Some("disabled"): Disable thinking explicitly
+        // - Some(level): Enable thinking (level is ignored for chat_completions API)
+        let thinking = config.thinking_level.as_ref().map(|level| ThinkingConfig {
+            thinking_type: if level == "disabled" { "disabled" } else { "enabled" }.to_string(),
         });
 
         let request = ChatCompletionRequest {

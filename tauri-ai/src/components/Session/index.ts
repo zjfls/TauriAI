@@ -3,3 +3,4 @@
  */
 
 export * from './SessionTabBar';
+export * from './ContextMenu';

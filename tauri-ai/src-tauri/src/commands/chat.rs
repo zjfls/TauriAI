@@ -120,7 +120,7 @@ pub async fn chat_stream(
     content_parts: Option<Vec<ContentPart>>,
     agent_name: Option<String>,
     model_ref: Option<String>,
-    enable_thinking: Option<bool>,
+    thinking: Option<serde_json::Value>,
     db: tauri::State<'_, Arc<Mutex<Database>>>,
     config_manager: tauri::State<'_, Arc<ConfigManager>>,
     chat_state: tauri::State<'_, Arc<ChatState>>,
@@ -183,11 +183,18 @@ pub async fn chat_stream(
             presence_penalty: None,
             system_prompt: None,
         },
-        // Thinking mode control:
-        // - If model supports thinking: Some(user_choice) to enable/disable
+        // Thinking level control:
+        // - If model supports thinking: convert thinking parameter to level string
         // - If model doesn't support thinking: None (don't send parameter)
-        thinking_enabled: if model.capabilities.thinking {
-            Some(enable_thinking.unwrap_or(true))
+        thinking_level: if model.capabilities.thinking {
+            match thinking {
+                Some(serde_json::Value::Bool(true)) => Some("medium".to_string()),
+                Some(serde_json::Value::Bool(false)) => Some("disabled".to_string()),
+                Some(serde_json::Value::String(level)) => Some(level),
+                Some(serde_json::Value::Null) => Some("disabled".to_string()),
+                None => Some("medium".to_string()), // Default to medium if not specified
+                _ => Some("medium".to_string()),
+            }
         } else {
             None
         },

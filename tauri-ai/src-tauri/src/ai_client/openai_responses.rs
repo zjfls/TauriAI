@@ -231,6 +231,18 @@ impl AiClient for OpenAiResponsesClient {
         let (inputs, instructions) =
             convert_messages(&messages, config.parameters.system_prompt.as_deref());
 
+        // Build reasoning config if thinking is enabled
+        let reasoning = config.thinking_level.as_ref().and_then(|level| {
+            if level == "disabled" {
+                None
+            } else {
+                Some(ReasoningConfig {
+                    effort: Some(level.clone()),
+                    summary: Some("auto".to_string()),
+                })
+            }
+        });
+
         let request = ResponsesRequest {
             model: config.model.clone(),
             input: inputs,
@@ -238,7 +250,7 @@ impl AiClient for OpenAiResponsesClient {
             temperature: Some(config.parameters.temperature),
             max_output_tokens: config.parameters.max_tokens,
             top_p: config.parameters.top_p,
-            reasoning: None, // Can be configured later
+            reasoning,
             stream: false,
         };
 
@@ -317,6 +329,18 @@ impl AiClient for OpenAiResponsesClient {
         let (inputs, instructions) =
             convert_messages(&messages, config.parameters.system_prompt.as_deref());
 
+        // Build reasoning config if thinking is enabled
+        let reasoning = config.thinking_level.as_ref().and_then(|level| {
+            if level == "disabled" {
+                None
+            } else {
+                Some(ReasoningConfig {
+                    effort: Some(level.clone()),
+                    summary: Some("auto".to_string()),
+                })
+            }
+        });
+
         let request = ResponsesRequest {
             model: config.model.clone(),
             input: inputs,
@@ -324,7 +348,7 @@ impl AiClient for OpenAiResponsesClient {
             temperature: Some(config.parameters.temperature),
             max_output_tokens: config.parameters.max_tokens,
             top_p: config.parameters.top_p,
-            reasoning: None,
+            reasoning,
             stream: true,
         };
 
@@ -404,6 +428,7 @@ impl AiClient for OpenAiResponsesClient {
         }
 
         let mut full_content = String::new();
+        let mut full_thinking = String::new();
         let mut stream = response.bytes_stream();
         let mut chunk_count = 0;
 
@@ -423,7 +448,7 @@ impl AiClient for OpenAiResponsesClient {
                                 "note": "SSE stream response (Responses API)"
                             },
                             "content": full_content,
-                            "thinking": serde_json::Value::Null,
+                            "thinking": if full_thinking.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(full_thinking.clone()) },
                             "usage": serde_json::Value::Null
                         });
 
@@ -439,7 +464,7 @@ impl AiClient for OpenAiResponsesClient {
                         let _ = token_sender
                             .send(StreamEvent::DoneWithDebug {
                                 content: full_content.clone(),
-                                thinking: None,
+                                thinking: if full_thinking.is_empty() { None } else { Some(full_thinking.clone()) },
                                 debug_info: Some(debug_info),
                                 usage: None,
                             })
@@ -462,6 +487,16 @@ impl AiClient for OpenAiResponsesClient {
                                     let _ = token_sender.send(StreamEvent::Token(text)).await;
                                 }
                             }
+                            "response.reasoning.delta" | "response.reasoning_summary.delta" => {
+                                // Handle reasoning/thinking content
+                                if let Some(delta) = event.delta {
+                                    full_thinking.push_str(&delta);
+                                    let _ = token_sender.send(StreamEvent::Thinking(delta)).await;
+                                } else if let Some(text) = event.text {
+                                    full_thinking.push_str(&text);
+                                    let _ = token_sender.send(StreamEvent::Thinking(text)).await;
+                                }
+                            }
                             "response.error" => {
                                 let error_msg =
                                     event.delta.unwrap_or_else(|| "Unknown error".to_string());
@@ -478,7 +513,7 @@ impl AiClient for OpenAiResponsesClient {
                                         "note": "SSE stream response (Responses API)"
                                     },
                                     "content": full_content,
-                                    "thinking": serde_json::Value::Null,
+                                    "thinking": if full_thinking.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(full_thinking.clone()) },
                                     "usage": serde_json::Value::Null
                                 });
 
@@ -494,7 +529,7 @@ impl AiClient for OpenAiResponsesClient {
                                 let _ = token_sender
                                     .send(StreamEvent::DoneWithDebug {
                                         content: full_content.clone(),
-                                        thinking: None,
+                                        thinking: if full_thinking.is_empty() { None } else { Some(full_thinking.clone()) },
                                         debug_info: Some(debug_info),
                                         usage: None,
                                     })
@@ -517,7 +552,7 @@ impl AiClient for OpenAiResponsesClient {
                 "note": "SSE stream response (Responses API)"
             },
             "content": full_content,
-            "thinking": serde_json::Value::Null,
+            "thinking": if full_thinking.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(full_thinking.clone()) },
             "usage": serde_json::Value::Null
         });
 
@@ -533,7 +568,7 @@ impl AiClient for OpenAiResponsesClient {
         let _ = token_sender
             .send(StreamEvent::DoneWithDebug {
                 content: full_content,
-                thinking: None,
+                thinking: if full_thinking.is_empty() { None } else { Some(full_thinking) },
                 debug_info: Some(debug_info),
                 usage: None,
             })
