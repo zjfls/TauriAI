@@ -101,10 +101,10 @@ describe('ThinkingSelector', () => {
       // Check if menu is open
       expect(button).toHaveAttribute('aria-expanded', 'true');
       
-      // Check if all level options are present (6 levels: null, minimal, low, medium, high, xhigh)
+      // Check if all level options are present (5 levels: null, low, medium, high, xhigh)
       expect(screen.getByRole('menu')).toBeInTheDocument();
       const menuItems = screen.getAllByRole('menuitem');
-      expect(menuItems).toHaveLength(6);
+      expect(menuItems).toHaveLength(5);
     });
 
     it('displays all thinking levels', () => {
@@ -121,7 +121,6 @@ describe('ThinkingSelector', () => {
       fireEvent.click(button);
 
       expect(screen.getByText('无')).toBeInTheDocument();
-      expect(screen.getByText('最少')).toBeInTheDocument();
       expect(screen.getByText('低')).toBeInTheDocument();
       expect(screen.getByText('中')).toBeInTheDocument();
       expect(screen.getByText('高')).toBeInTheDocument();

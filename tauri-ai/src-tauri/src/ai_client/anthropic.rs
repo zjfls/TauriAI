@@ -134,7 +134,6 @@ fn build_thinking_config(config: &ModelConfig, max_tokens: u32) -> Option<Thinki
     }
 
     let default_budget_tokens = match thinking_level {
-        "minimal" => 1024,
         "low" => max_budget_tokens / 4,
         "medium" => max_budget_tokens / 2,
         "high" => max_budget_tokens * 3 / 4,

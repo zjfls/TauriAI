@@ -37,15 +37,14 @@ export type ApiProtocolType = 'chat_completions' | 'responses';
 
 /**
  * Thinking level for OpenAI Response API and compatible services
- * Based on OpenAI official documentation + OpenRouter extensions
+ * Based on OpenAI official documentation
  * - null: No thinking (disabled)
- * - 'minimal': Minimal reasoning effort (fastest, fewest tokens)
  * - 'low': Low reasoning effort
  * - 'medium': Medium reasoning effort (default)
  * - 'high': High reasoning effort
- * - 'xhigh': Extra high reasoning effort (OpenRouter extension, ~95% of max_tokens)
+ * - 'xhigh': Extra high reasoning effort (~95% of max_tokens)
  */
-export type ThinkingLevel = null | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+export type ThinkingLevel = null | 'low' | 'medium' | 'high' | 'xhigh';
 
 /**
  * Thinking mode for different API protocols
