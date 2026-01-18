@@ -75,6 +75,7 @@ export interface Model {
   capabilities: ModelCapabilities;
   // Advanced settings
   maxImages?: number;     // Maximum number of images allowed (default: 10, only for vision models)
+  thinkingBudgetTokens?: number; // Anthropic extended thinking budget (>=1024 and < maxTokens)
 }
 
 /**

@@ -116,6 +116,7 @@ pub async fn generate_title(
             system_prompt: None,
         },
         thinking_level: None, // Don't use thinking for title generation
+        thinking_budget_tokens: None,
         vision_enabled: false, // Don't need vision for title generation
     };
 

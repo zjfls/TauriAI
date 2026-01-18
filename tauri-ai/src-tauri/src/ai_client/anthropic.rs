@@ -105,7 +105,49 @@ struct MessagesRequest {
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     top_p: Option<f32>,
+    /// Claude extended thinking (requires model support)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<ThinkingConfig>,
     stream: bool,
+}
+
+/// Claude extended thinking configuration
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ThinkingConfig {
+    Enabled {
+        /// Budget for internal reasoning tokens (>=1024 and < max_tokens)
+        budget_tokens: u32,
+    },
+}
+
+fn build_thinking_config(config: &ModelConfig, max_tokens: u32) -> Option<ThinkingConfig> {
+    let thinking_level = config.thinking_level.as_deref()?;
+    if thinking_level == "disabled" {
+        return None;
+    }
+
+    // Anthropic: requires budget_tokens >= 1024 and < max_tokens
+    let max_budget_tokens = max_tokens.saturating_sub(1);
+    if max_budget_tokens < 1024 {
+        return None;
+    }
+
+    let default_budget_tokens = match thinking_level {
+        "minimal" => 1024,
+        "low" => max_budget_tokens / 4,
+        "medium" => max_budget_tokens / 2,
+        "high" => max_budget_tokens * 3 / 4,
+        "xhigh" => max_budget_tokens,
+        _ => max_budget_tokens / 2,
+    };
+
+    let requested_budget_tokens = config
+        .thinking_budget_tokens
+        .unwrap_or(default_budget_tokens);
+    let budget_tokens = requested_budget_tokens.clamp(1024, max_budget_tokens);
+
+    Some(ThinkingConfig::Enabled { budget_tokens })
 }
 
 /// Anthropic messages API response (non-streaming)
@@ -137,7 +179,11 @@ enum StreamingEvent {
     #[serde(rename = "content_block_stop")]
     ContentBlockStop {},
     #[serde(rename = "message_delta")]
-    MessageDelta { delta: MessageDeltaData },
+    MessageDelta {
+        delta: MessageDeltaData,
+        #[serde(default)]
+        usage: MessageDeltaUsage,
+    },
     #[serde(rename = "message_stop")]
     MessageStop {},
     #[serde(rename = "ping")]
@@ -159,12 +205,29 @@ struct ContentDelta {
     #[serde(rename = "type")]
     delta_type: String,
     text: Option<String>,
+    #[serde(default)]
+    thinking: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct MessageDeltaData {
     #[allow(dead_code)]
     stop_reason: Option<String>,
+}
+
+/// Usage update in Anthropic streaming `message_delta` events
+#[derive(Debug, Deserialize, Clone, Default)]
+struct MessageDeltaUsage {
+    /// Cumulative number of output tokens used
+    #[serde(default)]
+    output_tokens: u32,
+    /// Cumulative number of input tokens used (may be omitted)
+    #[serde(default)]
+    input_tokens: Option<u32>,
+    #[serde(default)]
+    cache_creation_input_tokens: Option<u32>,
+    #[serde(default)]
+    cache_read_input_tokens: Option<u32>,
 }
 
 /// Anthropic usage data
@@ -321,6 +384,7 @@ impl AiClient for AnthropicClient {
             system,
             temperature: Some(config.parameters.temperature),
             top_p: config.parameters.top_p,
+            thinking: None,
             stream: false,
         };
 
@@ -451,13 +515,17 @@ impl AiClient for AnthropicClient {
             }])
         };
 
+        let max_tokens = config.parameters.max_tokens.unwrap_or(4096);
+        let thinking = build_thinking_config(config, max_tokens);
+
         let request = MessagesRequest {
             model: config.model.clone(),
             messages: anthropic_messages,
-            max_tokens: config.parameters.max_tokens.unwrap_or(4096),
+            max_tokens,
             system,
             temperature: Some(config.parameters.temperature),
             top_p: config.parameters.top_p,
+            thinking,
             stream: true,
         };
 
@@ -515,6 +583,7 @@ impl AiClient for AnthropicClient {
         }
 
         let mut full_content = String::new();
+        let mut full_thinking = String::new();
         let mut stream = response.bytes_stream();
         let mut token_usage: Option<TokenUsage> = None;
 
@@ -546,16 +615,48 @@ impl AiClient for AnthropicClient {
                                 }
                             }
                             StreamingEvent::ContentBlockDelta { delta } => {
-                                if delta.delta_type == "text_delta" {
-                                    if let Some(text) = delta.text {
-                                        full_content.push_str(&text);
-                                        let _ = token_sender.send(StreamEvent::Token(text)).await;
+                                match delta.delta_type.as_str() {
+                                    "text_delta" => {
+                                        if let Some(text) = delta.text {
+                                            full_content.push_str(&text);
+                                            let _ = token_sender.send(StreamEvent::Token(text)).await;
+                                        }
                                     }
+                                    "thinking_delta" => {
+                                        if let Some(thinking) = delta.thinking {
+                                            full_thinking.push_str(&thinking);
+                                            let _ = token_sender
+                                                .send(StreamEvent::Thinking(thinking))
+                                                .await;
+                                        }
+                                    }
+                                    _ => {}
                                 }
                             }
-                            StreamingEvent::MessageDelta { delta: _ } => {
-                                // message_delta may contain updated output_tokens, but we'll use the final value
-                                // For now we just continue; the usage from message_start is usually sufficient
+                            StreamingEvent::MessageDelta { delta: _, usage } => {
+                                let usage_entry = token_usage.get_or_insert_with(|| TokenUsage {
+                                    prompt_tokens: usage.input_tokens.unwrap_or(0),
+                                    completion_tokens: usage.output_tokens,
+                                    total_tokens: usage.input_tokens.unwrap_or(0) + usage.output_tokens,
+                                    cached_tokens: None,
+                                    reasoning_tokens: None,
+                                    cache_creation_input_tokens: usage.cache_creation_input_tokens,
+                                    cache_read_input_tokens: usage.cache_read_input_tokens,
+                                });
+
+                                if let Some(input_tokens) = usage.input_tokens {
+                                    usage_entry.prompt_tokens = input_tokens;
+                                }
+                                usage_entry.completion_tokens = usage.output_tokens;
+                                if usage.cache_creation_input_tokens.is_some() {
+                                    usage_entry.cache_creation_input_tokens =
+                                        usage.cache_creation_input_tokens;
+                                }
+                                if usage.cache_read_input_tokens.is_some() {
+                                    usage_entry.cache_read_input_tokens = usage.cache_read_input_tokens;
+                                }
+                                usage_entry.total_tokens =
+                                    usage_entry.prompt_tokens + usage_entry.completion_tokens;
                             }
                             StreamingEvent::MessageStop {} => {
                                 // Build debug info with response content
@@ -566,6 +667,7 @@ impl AiClient for AnthropicClient {
                                         headers: response_headers.clone(),
                                         body: serde_json::json!({
                                             "content": full_content.clone(),
+                                            "thinking": if full_thinking.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(full_thinking.clone()) },
                                             "usage": token_usage.clone(),
                                         }),
                                     }),
@@ -573,7 +675,11 @@ impl AiClient for AnthropicClient {
                                 let _ = token_sender
                                     .send(StreamEvent::DoneWithDebug {
                                         content: full_content.clone(),
-                                        thinking: None,
+                                        thinking: if full_thinking.is_empty() {
+                                            None
+                                        } else {
+                                            Some(full_thinking.clone())
+                                        },
                                         debug_info: Some(debug_info),
                                         usage: token_usage.clone(),
                                     })
@@ -601,6 +707,7 @@ impl AiClient for AnthropicClient {
                 headers: response_headers,
                 body: serde_json::json!({
                     "content": full_content.clone(),
+                    "thinking": if full_thinking.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(full_thinking.clone()) },
                     "usage": token_usage.clone(),
                 }),
             }),
@@ -608,7 +715,11 @@ impl AiClient for AnthropicClient {
         let _ = token_sender
             .send(StreamEvent::DoneWithDebug {
                 content: full_content,
-                thinking: None,
+                thinking: if full_thinking.is_empty() {
+                    None
+                } else {
+                    Some(full_thinking)
+                },
                 debug_info: Some(debug_info),
                 usage: token_usage,
             })

@@ -562,23 +562,27 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
                           className="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100"
                         />
                       </div>
-                    </div>
-                    {/* Model Capabilities */}
-                    <div className="flex items-center gap-4">
-                      <span className="text-xs text-gray-500">能力:</span>
-                      <label className="flex items-center gap-1 text-xs">
+	                    </div>
+	                    {/* Model Capabilities */}
+	                    <div className="flex items-center gap-4">
+	                      <span className="text-xs text-gray-500">能力:</span>
+	                      <label className="flex items-center gap-1 text-xs">
                         <input
                           type="checkbox"
                           checked={model.capabilities?.thinking ?? false}
-                          onChange={(e) => onUpdateModel(index, { 
-                            ...model, 
-                            capabilities: { ...model.capabilities, thinking: e.target.checked } 
-                          })}
-                          disabled={!isEditing}
-                          className="rounded"
-                        />
-                        <Brain size={12} className="text-purple-500" />
-                        <span>思考</span>
+	                          onChange={(e) => onUpdateModel(index, { 
+	                            ...model, 
+	                            capabilities: { ...model.capabilities, thinking: e.target.checked },
+	                            // Anthropic extended thinking budget default (optional)
+	                            ...(provider.type === 'anthropic' && e.target.checked && !model.thinkingBudgetTokens
+	                              ? { thinkingBudgetTokens: 1024 }
+	                              : {})
+	                          })}
+	                          disabled={!isEditing}
+	                          className="rounded"
+	                        />
+	                        <Brain size={12} className="text-purple-500" />
+	                        <span>思考</span>
                       </label>
                       <label className="flex items-center gap-1 text-xs">
                         <input
@@ -609,36 +613,54 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
                         <span>工具调用</span>
                       </label>
                     </div>
-                    {/* Advanced Settings - Only show for vision models */}
-                    {model.capabilities?.vision && (
-                      <div className="pt-2 border-t border-gray-200 dark:border-gray-700">
-                        <button
-                          onClick={() => onToggleAdvancedExpand(model.name)}
-                          className="flex items-center gap-1 text-xs text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
+	                    {/* Advanced Settings */}
+	                    {(model.capabilities?.vision || (provider.type === 'anthropic' && (model.capabilities?.thinking ?? false))) && (
+	                      <div className="pt-2 border-t border-gray-200 dark:border-gray-700">
+	                        <button
+	                          onClick={() => onToggleAdvancedExpand(model.name)}
+	                          className="flex items-center gap-1 text-xs text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
                         >
                           {expandedAdvanced.has(model.name) ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                           <span>高级设置</span>
                         </button>
-                        {expandedAdvanced.has(model.name) && (
-                          <div className="mt-2 grid grid-cols-4 gap-3">
-                            <div>
-                              <label className="block text-xs text-gray-500">最大图片数</label>
-                              <input
-                                type="number"
-                                min="1"
+	                        {expandedAdvanced.has(model.name) && (
+	                          <div className="mt-2 grid grid-cols-4 gap-3">
+	                            {model.capabilities?.vision && (
+	                              <div>
+	                              <label className="block text-xs text-gray-500">最大图片数</label>
+	                              <input
+	                                type="number"
+	                                min="1"
                                 max="100"
                                 value={model.maxImages ?? 10}
                                 onChange={(e) => onUpdateModel(index, { ...model, maxImages: parseInt(e.target.value) || 10 })}
                                 disabled={!isEditing}
                                 placeholder="10"
                                 className="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100"
-                              />
-                              <span className="text-xs text-gray-400">默认: 10</span>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
+	                              />
+	                              <span className="text-xs text-gray-400">默认: 10</span>
+	                            </div>
+	                            )}
+
+	                            {provider.type === 'anthropic' && (model.capabilities?.thinking ?? false) && (
+	                              <div>
+	                                <label className="block text-xs text-gray-500">思考预算 Tokens</label>
+	                                <input
+	                                  type="number"
+	                                  min="1024"
+	                                  value={model.thinkingBudgetTokens || ''}
+	                                  onChange={(e) => onUpdateModel(index, { ...model, thinkingBudgetTokens: parseInt(e.target.value) || undefined })}
+	                                  disabled={!isEditing}
+	                                  placeholder="1024"
+	                                  className="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100"
+	                                />
+	                                <span className="text-xs text-gray-400">留空自动计算（需 ≥1024 且 &lt; Max Tokens）</span>
+	                              </div>
+	                            )}
+	                          </div>
+	                        )}
+	                      </div>
+	                    )}
                   </div>
                 )}
               </div>

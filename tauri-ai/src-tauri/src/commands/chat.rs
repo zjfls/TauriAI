@@ -198,6 +198,7 @@ pub async fn chat_stream(
         } else {
             None
         },
+        thinking_budget_tokens: model.thinking_budget_tokens,
         // Vision support from model capabilities
         vision_enabled: model.capabilities.vision,
     };

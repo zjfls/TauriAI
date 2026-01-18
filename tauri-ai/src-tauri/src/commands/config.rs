@@ -56,6 +56,7 @@ pub async fn test_connection(
         model: model_name,
         parameters: ModelParameters::default(),
         thinking_level: None, // Don't send thinking parameter for connection test
+        thinking_budget_tokens: None,
         vision_enabled: false, // Don't need vision for connection test
     };
 

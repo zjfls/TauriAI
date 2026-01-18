@@ -316,6 +316,10 @@ pub struct Model {
     /// Model capabilities (auto-inferred if not set)
     #[serde(default)]
     pub capabilities: ModelCapabilities,
+    /// Anthropic extended thinking budget (Claude)
+    /// - Must be >= 1024 and < max_tokens when enabled
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_budget_tokens: Option<u32>,
 }
 
 impl Default for Model {
@@ -327,6 +331,7 @@ impl Default for Model {
             top_p: None,
             context_length: None,
             capabilities: ModelCapabilities::default(),
+            thinking_budget_tokens: None,
         }
     }
 }
@@ -460,6 +465,9 @@ pub struct ModelConfig {
     /// - Some("low" | "medium" | "high" | "very_high"): Enable with specific effort level
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_level: Option<String>,
+    /// Provider-specific thinking budget tokens (e.g., Anthropic extended thinking)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_budget_tokens: Option<u32>,
     /// Whether the model supports vision/image input
     #[serde(default)]
     pub vision_enabled: bool,
@@ -616,6 +624,7 @@ impl AppConfig {
                 top_p: model_config.parameters.top_p,
                 context_length: None,
                 capabilities: ModelCapabilities::default(),
+                thinking_budget_tokens: None,
             });
 
             // Create agent from model's system prompt
