@@ -117,6 +117,7 @@ pub async fn generate_title(
         },
         thinking_level: None, // Don't use thinking for title generation
         vision_enabled: false, // Don't need vision for title generation
+        max_images: None, // Not needed for title generation
     };
 
     let client = get_client(&model_config.provider).map_err(|e| e.to_string())?;

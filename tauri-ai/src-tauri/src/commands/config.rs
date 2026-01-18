@@ -57,6 +57,7 @@ pub async fn test_connection(
         parameters: ModelParameters::default(),
         thinking_level: None, // Don't send thinking parameter for connection test
         vision_enabled: false, // Don't need vision for connection test
+        max_images: None, // Not needed for connection test
     };
 
     let client = get_client(&provider_type).map_err(|e| e.to_string())?;
