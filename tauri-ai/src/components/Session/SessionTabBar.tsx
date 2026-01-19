@@ -98,7 +98,7 @@ interface AgentSelectorProps {
   agents: Agent[];
   onSelect: (agentName: string) => void;
   onClose: () => void;
-  buttonRef: React.RefObject<HTMLButtonElement>;
+  buttonRef: React.RefObject<HTMLButtonElement | null>;
 }
 
 const AgentSelector: React.FC<AgentSelectorProps> = ({ agents, onSelect, onClose, buttonRef }) => {

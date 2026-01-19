@@ -11,7 +11,7 @@ import { AttachmentPreview } from './AttachmentPreview';
 import { ThinkingSelector } from './ThinkingSelector';
 import { isSupportedTextFile, readTextFile, validateFileCount } from '../../utils/textFileUtils';
 import { isValidPdfFile, validatePdfSize, processPdfFile, MAX_PDF_SIZE } from '../../utils/pdfUtils';
-import type { ContextUsageBreakdown, Agent, ContentPart, PendingTextFile, PendingPdf, ApiProtocolType, ThinkingMode } from '../../types';
+import type { ContextUsageBreakdown, Agent, ContentPart, PendingImage, PendingTextFile, PendingPdf, ApiProtocolType, ThinkingMode } from '../../types';
 import { SUPPORTED_TEXT_EXTENSIONS, MAX_PDF_COUNT, MAX_TEXT_FILES } from '../../types';
 import { FILE_ERROR_MESSAGES } from '../../utils/textFileUtils';
 
@@ -54,18 +54,6 @@ const PASTE_ERROR_MESSAGES = {
 interface ModelOption {
   label: string;
   value: string;
-}
-
-/**
- * Pending image for upload preview
- * 
- * Represents an image file that has been selected but not yet sent.
- * Contains both the base64 data URL for preview and the original file.
- */
-interface PendingImage {
-  id: string;
-  url: string;  // Base64 data URL
-  file?: File;
 }
 
 /**

@@ -39,7 +39,6 @@ export interface ContextMenuProps {
 export const ContextMenu: React.FC<ContextMenuProps> = ({
   visible,
   position,
-  targetSessionId,
   targetSessionIndex,
   totalSessions,
   onClose,

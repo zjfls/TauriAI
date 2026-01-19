@@ -143,6 +143,15 @@ export interface ImageContentPart {
 }
 
 /**
+ * Pending image for attachment (before sending)
+ */
+export interface PendingImage {
+  id: string;
+  url: string;  // Base64 data URL
+  file?: File;
+}
+
+/**
  * Text file content part
  */
 export interface TextFileContentPart {

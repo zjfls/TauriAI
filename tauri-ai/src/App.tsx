@@ -50,16 +50,16 @@ function App() {
       window.dispatchEvent(new Event('resize-complete'));
     };
 
-    let resizeTimer: NodeJS.Timeout;
+    let resizeTimer: ReturnType<typeof setTimeout> | null = null;
     const debouncedResize = () => {
-      clearTimeout(resizeTimer);
+      if (resizeTimer) clearTimeout(resizeTimer);
       resizeTimer = setTimeout(handleResize, 100);
     };
 
     window.addEventListener('resize', debouncedResize);
     return () => {
       window.removeEventListener('resize', debouncedResize);
-      clearTimeout(resizeTimer);
+      if (resizeTimer) clearTimeout(resizeTimer);
     };
   }, []);
 

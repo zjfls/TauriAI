@@ -18,14 +18,16 @@ const inferCapabilities = (modelName: string): ModelCapabilities => {
       nameLower.includes('deepseek-reasoner') ||
       nameLower.includes('-r1-') ||
       nameLower.includes('reasoner') ||
-      nameLower.includes('thinking'),
+      nameLower.includes('thinking') ||
+      nameLower.includes('gemini-3'),
     vision: nameLower.includes('vision') ||
       nameLower.includes('-vl') ||
       nameLower.includes('gpt-4o') ||
       nameLower.includes('gpt-4-turbo') ||
       nameLower.includes('claude-3') ||
       nameLower.includes('gemini-1.5') ||
-      nameLower.includes('gemini-2'),
+      nameLower.includes('gemini-2') ||
+      nameLower.includes('gemini-3'),
     functionCalling: nameLower.includes('gpt-') ||
       nameLower.includes('claude-') ||
       nameLower.includes('deepseek-v') ||

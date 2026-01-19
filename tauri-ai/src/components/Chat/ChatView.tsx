@@ -11,7 +11,7 @@ import { MessageList } from './MessageList';
 import { InputArea, type InputAreaHandle } from './InputArea';
 import { countTokens } from '../../utils/tokenizer';
 import { getApiProtocol } from '../../utils/apiUtils';
-import * as opener from '@tauri-apps/plugin-opener';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import type { TokenUsage, ContextUsageBreakdown, ContentPart, ThinkingMode } from '../../types';
 
 interface ChatViewProps {
@@ -273,8 +273,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
         break;
       case 'link':
         if (action.payload) {
-          // Use Tauri opener
-          await (opener as any).open(action.payload);
+          await openUrl(action.payload);
         }
         break;
     }

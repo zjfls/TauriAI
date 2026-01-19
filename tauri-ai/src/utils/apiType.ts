@@ -7,14 +7,14 @@ import type { ProviderType, ApiProtocolType, AppConfig } from '../types';
 
 /**
  * Map ProviderType to ApiProtocolType
- * Only 'openai_responses' uses the Responses API, all others use Chat Completions
+ * Providers that use multi-level thinking (Responses-like) should be mapped to 'responses'
  */
 const PROVIDER_API_TYPE: Record<ProviderType, ApiProtocolType> = {
     'openai': 'chat_completions',
     'openai_compatible': 'chat_completions',
     'openai_responses': 'responses',
     'anthropic': 'chat_completions',
-    'google': 'chat_completions',
+    'google': 'responses',
     'ollama': 'chat_completions',
 };
 

@@ -70,7 +70,7 @@ struct SystemInstruction {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ThinkingConfig {
-    /// Thinking level: "minimal", "low", "medium", "high"
+    /// Thinking level: "MINIMAL", "LOW", "MEDIUM", "HIGH"
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking_level: Option<String>,
     /// Include thought summaries in response
@@ -154,6 +154,8 @@ struct UsageMetadata {
     total_token_count: u32,
     #[serde(default)]
     cached_content_token_count: Option<u32>,
+    #[serde(default)]
+    thoughts_token_count: Option<u32>,
 }
 
 /// Streaming response chunk
@@ -298,16 +300,16 @@ impl AiClient for GoogleClient {
             if level == "disabled" {
                 // For disabled, use minimal level (closest to off)
                 Some(ThinkingConfig {
-                    thinking_level: Some("minimal".to_string()),
+                    thinking_level: Some("MINIMAL".to_string()),
                     include_thoughts: Some(false),
                 })
             } else {
                 // Map thinking level to Gemini 3 levels
                 let gemini_level = match level.as_str() {
-                    "low" => "low",
-                    "medium" => "medium",
-                    "high" | "very_high" | "xhigh" => "high",
-                    _ => "high", // Default to high
+                    "low" => "LOW",
+                    "medium" => "MEDIUM",
+                    "high" | "very_high" | "xhigh" => "HIGH",
+                    _ => "HIGH", // Default to high
                 };
                 Some(ThinkingConfig {
                     thinking_level: Some(gemini_level.to_string()),
@@ -401,15 +403,15 @@ impl AiClient for GoogleClient {
         let thinking_config = config.thinking_level.as_ref().and_then(|level| {
             if level == "disabled" {
                 Some(ThinkingConfig {
-                    thinking_level: Some("minimal".to_string()),
+                    thinking_level: Some("MINIMAL".to_string()),
                     include_thoughts: Some(false),
                 })
             } else {
                 let gemini_level = match level.as_str() {
-                    "low" => "low",
-                    "medium" => "medium",
-                    "high" | "very_high" | "xhigh" => "high",
-                    _ => "high",
+                    "low" => "LOW",
+                    "medium" => "MEDIUM",
+                    "high" | "very_high" | "xhigh" => "HIGH",
+                    _ => "HIGH",
                 };
                 Some(ThinkingConfig {
                     thinking_level: Some(gemini_level.to_string()),
@@ -529,7 +531,7 @@ impl AiClient for GoogleClient {
                                 completion_tokens: usage.candidates_token_count,
                                 total_tokens: usage.total_token_count,
                                 cached_tokens: usage.cached_content_token_count,
-                                reasoning_tokens: None,
+                                reasoning_tokens: usage.thoughts_token_count.filter(|&n| n > 0),
                                 cache_creation_input_tokens: None,
                                 cache_read_input_tokens: None,
                             });
