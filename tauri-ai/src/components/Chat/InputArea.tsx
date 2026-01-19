@@ -97,6 +97,10 @@ interface InputAreaProps {
   supportsVision?: boolean;    // Whether current model supports vision/images
   contextUsage?: ContextUsageBreakdown | null;  // Context usage for indicator
   apiProtocol?: ApiProtocolType;  // API protocol type for thinking mode
+  value?: string; // Controlled input text (per-session draft)
+  onValueChange?: (value: string) => void;
+  thinkingMode?: ThinkingMode; // Controlled thinking mode/level (per-session)
+  onThinkingModeChange?: (value: ThinkingMode) => void;
   // Agent/Model selection
   agents?: Agent[];
   currentAgentName?: string;
@@ -582,6 +586,10 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   supportsVision = false,
   contextUsage = null,
   apiProtocol = 'chat_completions',
+  value: controlledValue,
+  onValueChange,
+  thinkingMode: controlledThinkingMode,
+  onThinkingModeChange,
   agents = [],
   currentAgentName = '',
   onAgentSelect,
@@ -590,10 +598,40 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   onModelSelect,
   pdfDebugMode = false,
 }, ref) => {
-  const [content, setContent] = useState('');
+  const [contentDraft, setContentDraft] = useState('');
+
+  const content = controlledValue ?? contentDraft;
+
+  const handleContentChange = useCallback(
+    (value: string) => {
+      onValueChange?.(value);
+      if (controlledValue === undefined) {
+        setContentDraft(value);
+      }
+    },
+    [onValueChange, controlledValue]
+  );
   // Initialize thinking mode based on API protocol
-  const [thinkingMode, setThinkingMode] = useState<ThinkingMode>(
+  const [thinkingModeDraft, setThinkingModeDraft] = useState<ThinkingMode>(
     apiProtocol === 'responses' ? 'medium' : true
+  );
+
+  // When uncontrolled, keep draft mode aligned to protocol changes
+  useEffect(() => {
+    if (controlledThinkingMode !== undefined) return;
+    setThinkingModeDraft(apiProtocol === 'responses' ? 'medium' : true);
+  }, [apiProtocol, controlledThinkingMode]);
+
+  const thinkingMode = controlledThinkingMode ?? thinkingModeDraft;
+
+  const handleThinkingModeChange = useCallback(
+    (value: ThinkingMode) => {
+      onThinkingModeChange?.(value);
+      if (controlledThinkingMode === undefined) {
+        setThinkingModeDraft(value);
+      }
+    },
+    [onThinkingModeChange, controlledThinkingMode]
   );
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [pendingTextFiles, setPendingTextFiles] = useState<PendingTextFile[]>([]);
@@ -1243,7 +1281,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
    */
   React.useImperativeHandle(ref, () => ({
     setValue: (value: string) => {
-      setContent(value);
+      handleContentChange(value);
       // Auto-resize after setting content
       requestAnimationFrame(() => {
         adjustTextareaHeight();
@@ -1345,7 +1383,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
     }
 
     onSend(trimmedContent, supportsThinking ? thinkingMode : undefined, contentParts);
-    setContent('');
+    handleContentChange('');
     setPendingImages([]);
     // Requirement 3.3: Clear pending text files after sending
     setPendingTextFiles([]);
@@ -1361,7 +1399,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
 
     // Refocus textarea after sending
     textareaRef.current?.focus();
-  }, [content, pendingImages, pendingTextFiles, pendingPdfs, disabled, isGenerating, onSend, supportsThinking, thinkingMode]);
+  }, [content, pendingImages, pendingTextFiles, pendingPdfs, disabled, isGenerating, onSend, supportsThinking, thinkingMode, handleContentChange]);
 
   /**
    * Handle keyboard events in textarea
@@ -1400,9 +1438,9 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
    */
   const handleChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-      setContent(e.target.value);
+      handleContentChange(e.target.value);
     },
-    []
+    [handleContentChange]
   );
 
   /**
@@ -1466,7 +1504,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
               <ThinkingSelector
                 apiProtocol={apiProtocol}
                 value={thinkingMode}
-                onChange={setThinkingMode}
+                onChange={handleThinkingModeChange}
                 disabled={isGenerating}
               />
             )}

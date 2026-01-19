@@ -28,6 +28,8 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
   const setSessionAgent = useSessionStore((state) => state.setSessionAgent);
   const setSessionModel = useSessionStore((state) => state.setSessionModel);
   const undoToMessage = useSessionStore((state) => state.undoToMessage);
+  const setSessionThinkingMode = useSessionStore((state) => state.setSessionThinkingMode);
+  const setSessionDraftContent = useSessionStore((state) => state.setSessionDraftContent);
 
   const inputRef = useRef<InputAreaHandle>(null);
 
@@ -75,6 +77,13 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
     
     return getApiProtocol(modelRef, config?.providers || []);
   }, [session, getAgent, config]);
+
+  const thinkingMode = useMemo((): ThinkingMode => {
+    if (session?.thinkingMode !== undefined) return session.thinkingMode;
+    return apiProtocol === 'responses' ? 'medium' : true;
+  }, [session?.thinkingMode, apiProtocol]);
+
+  const draftContent = session?.draftContent ?? '';
 
   // Calculate total token usage for the conversation
   const totalUsage = useMemo((): TokenUsage | null => {
@@ -299,6 +308,16 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
         supportsVision={supportsVision}
         contextUsage={contextUsage}
         apiProtocol={apiProtocol}
+        value={draftContent}
+        onValueChange={(value) => {
+          if (!sessionId) return;
+          setSessionDraftContent(sessionId, value);
+        }}
+        thinkingMode={thinkingMode}
+        onThinkingModeChange={(value) => {
+          if (!sessionId) return;
+          setSessionThinkingMode(sessionId, value);
+        }}
         agents={config?.agents || []}
         currentAgentName={session?.agentName || ''}
         onAgentSelect={(agentName) => sessionId && setSessionAgent(sessionId, agentName)}

@@ -444,6 +444,10 @@ export interface AgentSession {
   // API type isolation (locked after first message)
   apiType: ApiProtocolType | null;    // null = not locked yet
 
+  // Per-session settings
+  thinkingMode?: ThinkingMode;        // Current thinking mode/level for this session
+  draftContent?: string;              // Unsent input text for this session
+
   // Session state
   messages: Message[];                // Message history for this session
   streamingMessage: string | null;    // Current streaming message content
@@ -468,6 +472,8 @@ export interface PersistedSession {
   modelRef?: string;
   conversationId: string | null;
   apiType: ApiProtocolType | null;  // Persisted API type lock
+  thinkingMode?: ThinkingMode;      // Persisted thinking mode/level
+  draftContent?: string;            // Persisted unsent input text
   createdAt: string;
   lastActiveAt: string;
 }

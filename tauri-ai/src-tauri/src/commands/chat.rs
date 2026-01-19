@@ -116,6 +116,7 @@ impl Default for ChatState {
 pub async fn chat_stream(
     app: AppHandle,
     conversation_id: String,
+    message_id: Option<String>,
     content: String,
     content_parts: Option<Vec<ContentPart>>,
     agent_name: Option<String>,
@@ -209,7 +210,7 @@ pub async fn chat_stream(
         .map_err(|e| AppErrorCode::AiServiceError(e.to_string()))?;
 
     let user_message = Message {
-        id: uuid::Uuid::new_v4().to_string(),
+        id: message_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
         conversation_id: conversation_id.clone(),
         role: MessageRole::User,
         content: content.clone(),

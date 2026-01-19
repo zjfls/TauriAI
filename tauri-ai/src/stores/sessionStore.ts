@@ -7,12 +7,38 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import type { AgentSession, Message, DebugInfo, TokenUsage, PersistedSession, PersistedSessionState, ContentPart } from '../types';
+import type { AgentSession, Message, DebugInfo, TokenUsage, PersistedSession, PersistedSessionState, ContentPart, ThinkingMode, ApiProtocolType } from '../types';
+import { getApiProtocol, getDefaultThinkingMode } from '../utils/apiUtils';
 
 // Constants for persistence
 const SESSION_STORAGE_KEY = 'tauri-ai:sessions';
 const PERSISTENCE_VERSION = 1;
 const MAX_SESSIONS = 10;
+const DRAFT_PERSIST_DEBOUNCE_MS = 500;
+let draftPersistTimeout: ReturnType<typeof setTimeout> | null = null;
+
+const coerceThinkingModeForProtocol = (
+  thinkingMode: ThinkingMode | undefined,
+  apiProtocol: ApiProtocolType
+): ThinkingMode => {
+  if (thinkingMode === undefined) {
+    return getDefaultThinkingMode(apiProtocol) as ThinkingMode;
+  }
+
+  if (apiProtocol === 'responses') {
+    // Convert binary -> multi-level
+    if (typeof thinkingMode === 'boolean') {
+      return thinkingMode ? 'medium' : null;
+    }
+    return thinkingMode;
+  }
+
+  // chat_completions: Convert multi-level -> binary
+  if (typeof thinkingMode === 'boolean') {
+    return thinkingMode;
+  }
+  return thinkingMode === null ? false : true;
+};
 
 export interface SessionState {
   // Session management
@@ -44,6 +70,10 @@ export interface SessionState {
 
   // Agent switching
   setSessionAgent: (sessionId: string, agentName: string) => void;
+
+  // Per-session settings
+  setSessionThinkingMode: (sessionId: string, thinkingMode: ThinkingMode) => void;
+  setSessionDraftContent: (sessionId: string, draftContent: string) => void;
 
   // Title generation
   generateTitle: (sessionId: string) => Promise<void>;
@@ -118,6 +148,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // Create conversation in backend
     const { useConfigStore } = await import('./configStore');
     const agent = useConfigStore.getState().getAgent(agentName);
+    const config = useConfigStore.getState().config;
+
+    const modelRef = agent?.modelRef;
+    const apiProtocol = modelRef && config ? getApiProtocol(modelRef, config.providers) : 'chat_completions';
+    const thinkingMode = coerceThinkingModeForProtocol(undefined, apiProtocol);
 
     // Generate default title with timestamp: 新对话_MM-DD HH:mm
     const nowDate = new Date();
@@ -143,9 +178,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       id: sessionId,
       agentName,
       title: defaultTitle,
-      modelRef: agent?.modelRef,
+      modelRef,
       conversationId: conversation.id,
       apiType: null,  // Not locked until first message
+      thinkingMode,
+      draftContent: '',
       messages: [],
       streamingMessage: null,
       streamingThinking: null,
@@ -428,6 +465,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     try {
       await invoke('chat_stream', {
         conversationId: session.conversationId,
+        messageId: userMessage.id,
         content,
         contentParts: contentParts.length > 0 ? contentParts : undefined,
         agentName: session.agentName,
@@ -693,10 +731,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const session = get().sessions.get(sessionId);
     if (!session) return;
 
+    const { useConfigStore } = await import('./configStore');
+    const config = useConfigStore.getState().config;
+    const apiProtocol =
+      session.apiType ||
+      (config ? getApiProtocol(modelRef, config.providers) : 'chat_completions');
+
     // Check API type compatibility if session is locked
     if (session.apiType) {
-      const { useConfigStore } = await import('./configStore');
-      const config = useConfigStore.getState().config;
       if (config) {
         const { canSwitchModel } = await import('../utils/apiType');
         const result = canSwitchModel(session.apiType, modelRef, config);
@@ -715,6 +757,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         newSessions.set(sessionId, {
           ...s,
           modelRef,
+          thinkingMode: coerceThinkingModeForProtocol(s.thinkingMode, apiProtocol),
         });
       }
       return { sessions: newSessions };
@@ -743,6 +786,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // Get the new agent's default model
     const { useConfigStore } = await import('./configStore');
     const agent = useConfigStore.getState().getAgent(agentName);
+    const config = useConfigStore.getState().config;
+
+    const modelRef = agent?.modelRef;
+    const apiProtocol =
+      currentSession.apiType ||
+      (modelRef && config ? getApiProtocol(modelRef, config.providers) : 'chat_completions');
 
     set((state) => {
       const newSessions = new Map(state.sessions);
@@ -751,7 +800,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         newSessions.set(sessionId, {
           ...session,
           agentName,
-          modelRef: agent?.modelRef, // Update to agent's default model
+          modelRef, // Update to agent's default model
+          thinkingMode: coerceThinkingModeForProtocol(session.thinkingMode, apiProtocol),
         });
       }
       return { sessions: newSessions };
@@ -766,6 +816,55 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     // Save state after agent change
     get().saveSessionState();
+  },
+
+  /**
+   * Update per-session thinking mode/level
+   */
+  setSessionThinkingMode: (sessionId: string, thinkingMode: ThinkingMode) => {
+    set((state) => {
+      const newSessions = new Map(state.sessions);
+      const session = newSessions.get(sessionId);
+      if (!session) return {};
+
+      newSessions.set(sessionId, {
+        ...session,
+        thinkingMode,
+        lastActiveAt: new Date().toISOString(),
+      });
+
+      return { sessions: newSessions };
+    });
+
+    get().saveSessionState();
+  },
+
+  /**
+   * Update per-session draft input content (unsent text)
+   */
+  setSessionDraftContent: (sessionId: string, draftContent: string) => {
+    set((state) => {
+      const newSessions = new Map(state.sessions);
+      const session = newSessions.get(sessionId);
+      if (!session) return {};
+
+      if (session.draftContent === draftContent) return {};
+
+      newSessions.set(sessionId, {
+        ...session,
+        draftContent,
+      });
+
+      return { sessions: newSessions };
+    });
+
+    if (draftPersistTimeout) {
+      clearTimeout(draftPersistTimeout);
+    }
+    draftPersistTimeout = setTimeout(() => {
+      draftPersistTimeout = null;
+      void get().saveSessionState();
+    }, DRAFT_PERSIST_DEBOUNCE_MS);
   },
 
   /**
@@ -827,6 +926,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       modelRef: session.modelRef,
       conversationId: session.conversationId,
       apiType: session.apiType,
+      thinkingMode: session.thinkingMode,
+      draftContent: session.draftContent,
       createdAt: session.createdAt,
       lastActiveAt: session.lastActiveAt,
     }));
@@ -895,6 +996,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         const conv = conversations.find(c => c.id === persisted.conversationId);
         const title = conv?.title || '新对话';
 
+        const apiProtocol =
+          persisted.apiType ||
+          (persisted.modelRef && config ? getApiProtocol(persisted.modelRef, config.providers) : 'chat_completions');
+
         const session: AgentSession = {
           id: persisted.id,
           agentName,
@@ -902,6 +1007,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           modelRef: persisted.modelRef,
           conversationId: persisted.conversationId,
           apiType: persisted.apiType,
+          thinkingMode: coerceThinkingModeForProtocol(persisted.thinkingMode, apiProtocol),
+          draftContent: persisted.draftContent ?? '',
           messages,
           streamingMessage: null,
           streamingThinking: null,
@@ -967,6 +1074,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     const agent = useConfigStore.getState().getAgent(agentName);
 
+    const modelRef = conversation?.modelRef || agent?.modelRef;
+    const apiProtocol = modelRef && config ? getApiProtocol(modelRef, config.providers) : 'chat_completions';
+
     // Load messages
     let messages: Message[] = [];
     try {
@@ -986,7 +1096,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       invoke('update_conversation_metadata', {
         conversationId,
         agentName: agentName,
-        modelRef: agent?.modelRef,
+        modelRef,
       }).catch(console.error);
     }
 
@@ -994,9 +1104,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       id: sessionId,
       agentName,
       title: conversation?.title || '新对话',
-      modelRef: agent?.modelRef,
+      modelRef,
       conversationId,
-      apiType: messages.length > 0 ? 'chat_completions' : null,  // Lock if has messages
+      apiType: messages.length > 0 ? apiProtocol : null,  // Lock if has messages
+      thinkingMode: coerceThinkingModeForProtocol(undefined, apiProtocol),
+      draftContent: '',
       messages,
       streamingMessage: null,
       streamingThinking: null,

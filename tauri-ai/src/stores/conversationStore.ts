@@ -204,10 +204,11 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
     try {
       await invoke('chat_stream', {
         conversationId: currentConversationId,
+        messageId: userMessage.id,
         content,
         agentName: currentAgent?.name,
         modelRef: currentModelRef,
-        enableThinking,
+        thinking: enableThinking,
       });
     } catch (err) {
       set({ isGenerating: false });
