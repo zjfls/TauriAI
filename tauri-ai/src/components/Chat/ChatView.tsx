@@ -83,6 +83,12 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
     return apiProtocol === 'responses' ? 'medium' : true;
   }, [session?.thinkingMode, apiProtocol]);
 
+  const streamingThinkingEnabled = useMemo(() => {
+    if (!supportsThinking) return false;
+    if (typeof thinkingMode === 'boolean') return thinkingMode;
+    return thinkingMode !== null;
+  }, [supportsThinking, thinkingMode]);
+
   const draftContent = session?.draftContent ?? '';
 
   // Calculate total token usage for the conversation
@@ -285,6 +291,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
         messages={messages}
         streamingContent={streamingMessage}
         streamingThinking={streamingThinking}
+        streamingThinkingEnabled={streamingThinkingEnabled}
         isGenerating={isGenerating}
         onAction={handleAction}
       />
