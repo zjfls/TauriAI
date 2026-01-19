@@ -16,7 +16,6 @@ interface MessageListProps {
   messages: Message[];
   streamingContent: string | null;
   streamingThinking: string | null;
-  streamingThinkingEnabled: boolean;
   isGenerating: boolean;
   onAction: (action: Action) => void;
 }
@@ -27,7 +26,6 @@ const SCROLL_THRESHOLD = 50;
 // Streaming thinking block component
 const StreamingThinkingBlock: React.FC<{ thinking: string }> = ({ thinking }) => {
   const [isExpanded, setIsExpanded] = useState(true); // Default expanded during streaming
-  const hasThinkingContent = thinking.trim().length > 0;
 
   return (
     <div className="mb-2 rounded-lg border border-purple-200 bg-purple-50 dark:border-purple-800 dark:bg-purple-900/30">
@@ -45,7 +43,7 @@ const StreamingThinkingBlock: React.FC<{ thinking: string }> = ({ thinking }) =>
       {isExpanded && (
         <div className="border-t border-purple-200 px-3 py-2 text-sm text-purple-800 dark:border-purple-800 dark:text-purple-200">
           <div className="max-h-64 overflow-y-auto whitespace-pre-wrap">
-            {hasThinkingContent ? thinking : '（暂未收到可展示的思考内容）'}
+            {thinking}
           </div>
         </div>
       )}
@@ -57,7 +55,6 @@ export const MessageList: React.FC<MessageListProps> = ({
   messages,
   streamingContent,
   streamingThinking,
-  streamingThinkingEnabled,
   isGenerating: _isGenerating,
   onAction,
 }) => {
@@ -175,8 +172,8 @@ export const MessageList: React.FC<MessageListProps> = ({
           {/* Streaming content */}
           <div className="relative max-w-[80%] rounded-2xl bg-white px-4 py-2 text-gray-900 shadow-sm dark:bg-gray-800 dark:text-gray-100">
             {/* Streaming thinking block */}
-            {streamingThinkingEnabled && (
-              <StreamingThinkingBlock thinking={streamingThinking ?? ''} />
+            {streamingThinking && (
+              <StreamingThinkingBlock thinking={streamingThinking} />
             )}
             {streamingContent ? (
               <MarkdownRenderer content={streamingContent} />
