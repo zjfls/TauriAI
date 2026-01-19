@@ -22,15 +22,15 @@ export function getApiProtocol(
 ): ApiProtocolType {
   // Extract provider name from model reference
   const [providerName] = modelRef.split('/');
-  
+
   // Find the provider configuration
   const provider = providers.find(p => p.name === providerName);
-  
-  // Check if provider uses responses API
-  if (provider?.type === 'openai_responses') {
+
+  // Check if provider uses responses API (OpenAI Responses or Google Gemini)
+  if (provider?.type === 'openai_responses' || provider?.type === 'google') {
     return 'responses';
   }
-  
+
   // Default to chat_completions for all other cases
   return 'chat_completions';
 }

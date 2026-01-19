@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use super::anthropic::AnthropicClient;
+use super::google::GoogleClient;
 use super::ollama::OllamaClient;
 use super::openai::{OpenAiClient, OpenAiCompatibleClient};
 use super::openai_responses::OpenAiResponsesClient;
@@ -16,6 +17,7 @@ pub enum Provider {
     /// OpenAI Responses API for reasoning models (o1, o3, gpt-4.1)
     OpenAiResponses,
     Anthropic,
+    Google,
     Ollama,
 }
 
@@ -26,6 +28,7 @@ impl From<&str> for Provider {
             "openai_compatible" => Provider::OpenAiCompatible,
             "openai_responses" => Provider::OpenAiResponses,
             "anthropic" => Provider::Anthropic,
+            "google" | "gemini" => Provider::Google,
             "ollama" => Provider::Ollama,
             _ => Provider::OpenAiCompatible, // Default to compatible for unknown providers
         }
@@ -47,6 +50,7 @@ pub fn get_client(provider: &str) -> Result<Arc<dyn AiClient>, AiError> {
         Provider::OpenAiCompatible => Ok(Arc::new(OpenAiCompatibleClient::new())),
         Provider::OpenAiResponses => Ok(Arc::new(OpenAiResponsesClient::new())),
         Provider::Anthropic => Ok(Arc::new(AnthropicClient::new())),
+        Provider::Google => Ok(Arc::new(GoogleClient::new())),
         Provider::Ollama => Ok(Arc::new(OllamaClient::new())),
     }
 }
@@ -72,6 +76,8 @@ mod tests {
         assert_eq!(Provider::from("Anthropic"), Provider::Anthropic);
         assert_eq!(Provider::from("ollama"), Provider::Ollama);
         assert_eq!(Provider::from("Ollama"), Provider::Ollama);
+        assert_eq!(Provider::from("google"), Provider::Google);
+        assert_eq!(Provider::from("gemini"), Provider::Google);
         assert_eq!(Provider::from("unknown"), Provider::OpenAiCompatible);
     }
 
@@ -90,6 +96,12 @@ mod tests {
     #[test]
     fn test_get_client_openai_responses() {
         let client = get_client("openai_responses");
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn test_get_client_google() {
+        let client = get_client("google");
         assert!(client.is_ok());
     }
 

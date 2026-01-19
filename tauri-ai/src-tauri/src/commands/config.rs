@@ -58,7 +58,7 @@ pub async fn test_connection(
         thinking_level: None, // Don't send thinking parameter for connection test
         thinking_budget_tokens: None,
         vision_enabled: false, // Don't need vision for connection test
-        max_images: None, // Not needed for connection test
+        max_images: None,      // Not needed for connection test
     };
 
     let client = get_client(&provider_type).map_err(|e| e.to_string())?;
@@ -114,17 +114,78 @@ struct ModelData {
     owned_by: Option<String>,
 }
 
+/// Response from Google Gemini /models endpoint
+#[derive(serde::Deserialize)]
+struct GoogleModelsResponse {
+    models: Vec<GoogleModelData>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GoogleModelData {
+    name: String, // Format: "models/gemini-1.5-pro"
+    display_name: Option<String>,
+}
+
 /// Fetch available models from a provider's API
 #[tauri::command]
 pub async fn fetch_provider_models(
-    _provider_type: String,
+    provider_type: String,
     api_base: String,
     api_key: Option<String>,
 ) -> Result<Vec<ModelInfo>, String> {
-    println!("[FetchModels] Fetching models from: {}", api_base);
+    println!(
+        "[FetchModels] Fetching models from: {} (type: {})",
+        api_base, provider_type
+    );
 
     let client = reqwest::Client::new();
 
+    // Google Gemini uses a different API format
+    if provider_type == "google" {
+        let url = if let Some(key) = &api_key {
+            format!("{}/models?key={}", api_base, key)
+        } else {
+            return Err("Google API requires an API key".to_string());
+        };
+
+        let response = client.get(&url).send().await.map_err(|e| e.to_string())?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(format!("获取模型列表失败: {}", error_text));
+        }
+
+        let models_response: GoogleModelsResponse =
+            response.json().await.map_err(|e| e.to_string())?;
+
+        let models: Vec<ModelInfo> = models_response
+            .models
+            .into_iter()
+            .filter_map(|m| {
+                // Extract model name from "models/gemini-1.5-pro" format
+                let id = m
+                    .name
+                    .strip_prefix("models/")
+                    .unwrap_or(&m.name)
+                    .to_string();
+                // Filter out embedding models and other non-generative models
+                if id.contains("embedding") || id.contains("aqa") {
+                    None
+                } else {
+                    Some(ModelInfo {
+                        id,
+                        owned_by: Some("google".to_string()),
+                    })
+                }
+            })
+            .collect();
+
+        println!("[FetchModels] Found {} Google models", models.len());
+        return Ok(models);
+    }
+
+    // OpenAI-compatible API format (default)
     let mut request = client.get(format!("{}/models", api_base));
 
     if let Some(key) = &api_key {
