@@ -28,7 +28,7 @@ export type FormatPromptType = 'chat' | 'plain' | 'json' | 'none';
 // - openai_responses: OpenAI Responses API for reasoning models (o1, o3, gpt-4.1)
 // - anthropic: Anthropic Claude API
 // - ollama: Local Ollama server
-export type ProviderType = 'openai' | 'openai_compatible' | 'openai_responses' | 'anthropic' | 'ollama';
+export type ProviderType = 'openai' | 'openai_compatible' | 'openai_responses' | 'anthropic' | 'google' | 'ollama';
 
 // API Protocol type for strong isolation
 // - chat_completions: Traditional Chat Completions API (OpenAI, Anthropic, Ollama, etc.)

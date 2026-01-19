@@ -14,6 +14,7 @@ const PROVIDER_API_TYPE: Record<ProviderType, ApiProtocolType> = {
     'openai_compatible': 'chat_completions',
     'openai_responses': 'responses',
     'anthropic': 'chat_completions',
+    'google': 'chat_completions',
     'ollama': 'chat_completions',
 };
 

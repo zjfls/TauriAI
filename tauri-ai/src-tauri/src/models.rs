@@ -242,6 +242,8 @@ pub enum ProviderType {
     /// OpenAI Responses API for reasoning models (o1, o3, gpt-4.1)
     OpenaiResponses,
     Anthropic,
+    /// Google Gemini API
+    Google,
     Ollama,
 }
 
@@ -270,6 +272,7 @@ impl<'de> Deserialize<'de> for ProviderType {
             "openai" => Self::Openai,
             "openai_responses" => Self::OpenaiResponses,
             "anthropic" => Self::Anthropic,
+            "google" | "gemini" => Self::Google,
             "ollama" => Self::Ollama,
             // "openai_compatible" and any other value defaults to OpenaiCompatible
             _ => Self::OpenaiCompatible,
@@ -285,6 +288,7 @@ impl ProviderType {
             Self::OpenaiCompatible => "openai_compatible",
             Self::OpenaiResponses => "openai_responses",
             Self::Anthropic => "anthropic",
+            Self::Google => "google",
             Self::Ollama => "ollama",
         }
     }
@@ -725,7 +729,11 @@ mod tests {
 
     /// Strategy for generating arbitrary PdfPage
     fn arb_pdf_page() -> impl Strategy<Value = PdfPage> {
-        (1u32..100u32, ".*", "data:image/png;base64,[a-zA-Z0-9+/=]{10,100}")
+        (
+            1u32..100u32,
+            ".*",
+            "data:image/png;base64,[a-zA-Z0-9+/=]{10,100}",
+        )
             .prop_map(|(page_number, text, image)| PdfPage {
                 page_number,
                 text,
@@ -744,14 +752,16 @@ mod tests {
             prop::option::of("[a-zA-Z0-9, ]{1,50}"),
         ))
         .prop_map(|opt| {
-            opt.map(|(title, author, created_at, producer, subject, keywords)| PdfMetadata {
-                title,
-                author,
-                created_at,
-                producer,
-                subject,
-                keywords,
-            })
+            opt.map(
+                |(title, author, created_at, producer, subject, keywords)| PdfMetadata {
+                    title,
+                    author,
+                    created_at,
+                    producer,
+                    subject,
+                    keywords,
+                },
+            )
         })
     }
 
@@ -809,18 +819,18 @@ mod tests {
 
             // Additional verification for PdfDocument-specific fields
             if let ContentPart::PdfDocument { filename, pages, total_pages, metadata } = &part {
-                if let ContentPart::PdfDocument { 
-                    filename: d_filename, 
-                    pages: d_pages, 
-                    total_pages: d_total_pages, 
-                    metadata: d_metadata 
+                if let ContentPart::PdfDocument {
+                    filename: d_filename,
+                    pages: d_pages,
+                    total_pages: d_total_pages,
+                    metadata: d_metadata
                 } = &deserialized {
                     prop_assert_eq!(filename, d_filename, "Filename should be preserved");
                     prop_assert_eq!(pages.len(), d_pages.len(), "Number of pages should be preserved");
                     prop_assert_eq!(total_pages, d_total_pages, "Total pages should be preserved");
                     prop_assert_eq!(*total_pages, pages.len() as u32, "Total pages should match pages vector length");
                     prop_assert_eq!(metadata, d_metadata, "Metadata should be preserved");
-                    
+
                     // Verify each page
                     for (i, (page, d_page)) in pages.iter().zip(d_pages.iter()).enumerate() {
                         prop_assert_eq!(page.page_number, d_page.page_number, "Page {} number should be preserved", i);
