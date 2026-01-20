@@ -2,7 +2,7 @@ use serde::Serialize;
 
 use crate::ai_client::{DebugInfoData, TokenUsage};
 
-use super::types::{PlannedTask, TaskKind, TurnStatus};
+use super::types::{PlannedTask, TaskKind, TurnPhase, TurnStatus};
 
 /// 前后端统一的运行时事件通道名（替代旧的多 event name 方案）
 pub const RUN_EVENT_NAME: &str = "run:event";
@@ -47,6 +47,18 @@ pub enum RunEvent {
         task_id: String,
         turn_id: String,
         turn_index: u32,
+    },
+    #[serde(rename_all = "camelCase")]
+    TurnPhaseStarted {
+        task_id: String,
+        turn_id: String,
+        phase: TurnPhase,
+    },
+    #[serde(rename_all = "camelCase")]
+    TurnPhaseFinished {
+        task_id: String,
+        turn_id: String,
+        phase: TurnPhase,
     },
     #[serde(rename_all = "camelCase")]
     TurnFinished {
@@ -102,4 +114,3 @@ pub enum RunEvent {
         debug_info: Option<DebugInfoData>,
     },
 }
-

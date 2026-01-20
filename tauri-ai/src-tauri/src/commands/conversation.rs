@@ -3,7 +3,7 @@
 use crate::models::{
     Conversation, Message, MessageRole, MessageStatus, ModelConfig, ModelParameters,
 };
-use super::RunState;
+use crate::runtime::RunState;
 use crate::storage::Database;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -125,6 +125,7 @@ pub async fn generate_title(
         thinking_level: None, // Don't use thinking for title generation
         thinking_budget_tokens: None,
         vision_enabled: false, // Don't need vision for title generation
+        web_search_enabled: false, // Don't enable web search for title generation
         max_images: None, // Not needed for title generation
     };
 
@@ -158,7 +159,7 @@ pub async fn generate_title(
         error_message: None,
     };
     let title = client
-        .chat(vec![prompt_message], &model_config)
+        .chat(vec![prompt_message], &model_config, None)
         .await
         .map_err(|e| e.to_string())?
         .trim()

@@ -1,10 +1,10 @@
 //! Run runtime shared state
 //!
 //! 说明：
-//! - `run_task` 属于长耗时命令（会一直跑到 stream 结束）
+//! - `run_task` 属于长耗时命令（可能包含多次模型请求/多 Turn 循环）
 //! - 前端可能会在中途触发：
 //!   - Stop：仅停止生成（可能保留部分输出）
-//!   - 撤回/删除：需要先终止正在进行的 stream，再做 DB 删除，避免“删完又被写回”导致重启后消息错乱
+//!   - 撤回/删除：需要先终止正在进行的 run，再做 DB 删除，避免“删完又被写回”导致重启后消息错乱
 //! - 因此这里提供：
 //!   - abort sender：用于通知 `run_task` 终止
 //!   - completion notify：用于等待 `run_task` 完整退出（包含收尾 DB 写入）
@@ -26,7 +26,7 @@ impl RunState {
         }
     }
 
-    /// Register a streaming run for a conversation.
+    /// Register a running run for a conversation.
     /// Returns a notify handle that will be triggered when the run finishes.
     pub async fn register_run(&self, conversation_id: &str) -> Arc<Notify> {
         let notify = Arc::new(Notify::new());
@@ -46,13 +46,13 @@ impl RunState {
         }
     }
 
-    /// Abort a running stream and (best-effort) wait for it to fully exit.
+    /// Abort a running run and (best-effort) wait for it to fully exit.
     ///
     /// Notes:
-    /// - If the conversation has no active stream, this is a no-op.
+    /// - If the conversation has no active run, this is a no-op.
     /// - Waiting is bounded by `timeout_ms` to avoid hanging the command.
     pub async fn abort_and_wait(&self, conversation_id: &str, timeout_ms: u64) {
-        // 1) Send abort signal (if stream exists)
+        // 1) Send abort signal (if run exists)
         if let Some(sender) = self.abort_senders.read().await.get(conversation_id) {
             let _ = sender.send(()).await;
         }

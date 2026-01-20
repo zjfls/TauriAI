@@ -33,6 +33,9 @@ const inferCapabilities = (modelName: string): ModelCapabilities => {
       nameLower.includes('deepseek-v') ||
       nameLower.includes('qwen') ||
       nameLower.includes('gemini'),
+    webSearch: nameLower.includes('search') ||
+      nameLower.includes('websearch') ||
+      nameLower.includes('browse'),
   };
 };
 
@@ -69,6 +72,7 @@ const defaultCapabilities: ModelCapabilities = {
   thinking: false,
   vision: false,
   functionCalling: false,
+  webSearch: false,
 };
 
 const defaultModel: Model = {
@@ -620,6 +624,20 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
                         />
                         <Wrench size={12} className="text-green-500" />
                         <span>工具调用</span>
+                      </label>
+                      <label className="flex items-center gap-1 text-xs">
+                        <input
+                          type="checkbox"
+                          checked={model.capabilities?.webSearch ?? false}
+                          onChange={(e) => onUpdateModel(index, {
+                            ...model,
+                            capabilities: { ...model.capabilities, webSearch: e.target.checked }
+                          })}
+                          disabled={!isEditing}
+                          className="rounded"
+                        />
+                        <Search size={12} className="text-green-600" />
+                        <span>联网</span>
                       </label>
                     </div>
                     {/* Advanced Settings */}

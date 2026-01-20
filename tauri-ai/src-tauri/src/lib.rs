@@ -17,8 +17,9 @@ use commands::{
     abort_run, create_conversation, delete_conversation, delete_messages_from,
     fetch_provider_models, generate_title, get_app_config, get_conversations, get_messages,
     run_task, save_app_config, test_connection, update_conversation_metadata,
-    update_conversation_title, RunState,
+    update_conversation_title,
 };
+use runtime::RunState;
 use config::ConfigManager;
 use storage::Database;
 use tauri::Manager;

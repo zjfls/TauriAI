@@ -13,7 +13,8 @@ use tokio::sync::mpsc;
 
 use super::content_converter::{content_part_to_blocks, ContentBlock};
 use super::traits::{
-    AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent, TokenUsage,
+    AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent,
+    TokenUsage, ToolCall, ToolDefinition,
 };
 use crate::models::{ImageDetail, Message, MessageRole, ModelConfig};
 
@@ -25,8 +26,46 @@ use crate::models::{ImageDetail, Message, MessageRole, ModelConfig};
 #[derive(Debug, Serialize)]
 struct OpenAiMessage {
     role: String,
+    /// Required for role=tool messages (OpenAI: `tool_call_id`)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<String>,
+    /// Tool calls for role=assistant messages (OpenAI: `tool_calls`)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<OpenAiToolCall>>,
     /// Content can be a string or an array of content parts for multimodal
-    content: OpenAiContent,
+    /// When tool calls are present, OpenAI allows content to be `null`.
+    content: Option<OpenAiContent>,
+}
+
+/// OpenAI tool call (assistant -> tools)
+#[derive(Debug, Serialize)]
+struct OpenAiToolCall {
+    id: String,
+    #[serde(rename = "type")]
+    tool_type: String,
+    function: OpenAiToolCallFunction,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAiToolCallFunction {
+    name: String,
+    arguments: String,
+}
+
+/// OpenAI tool definition (sent in request)
+#[derive(Debug, Serialize)]
+struct OpenAiTool {
+    #[serde(rename = "type")]
+    tool_type: String,
+    function: OpenAiToolFunction,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAiToolFunction {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    parameters: serde_json::Value,
 }
 
 /// OpenAI content format - either simple string or array of parts
@@ -71,11 +110,29 @@ struct StreamOptions {
     include_usage: bool,
 }
 
+/// OpenAI Chat Completions web search options (`web_search_options`)
+#[derive(Debug, Serialize)]
+struct WebSearchOptions {
+    /// High level guidance for the amount of context window space to use for the search.
+    /// One of: `low` | `medium` | `high`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    search_context_size: Option<String>,
+}
+
 /// OpenAI chat completion request
 #[derive(Debug, Serialize)]
 struct ChatCompletionRequest {
     model: String,
     messages: Vec<OpenAiMessage>,
+    /// Tools (OpenAI function calling)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<OpenAiTool>>,
+    /// Tool choice ("auto" | "none" | { ... })
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<String>,
+    /// Provider-native web search (OpenAI official API)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    web_search_options: Option<WebSearchOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -156,6 +213,40 @@ struct StreamDelta {
     content: Option<String>,
     /// Reasoning content for thinking models (DeepSeek-R1, etc.)
     reasoning_content: Option<String>,
+    /// OpenAI tool calls (streaming delta)
+    #[serde(default)]
+    tool_calls: Option<Vec<StreamToolCallDelta>>,
+    /// Legacy function_call (older OpenAI-compatible endpoints)
+    #[serde(default)]
+    function_call: Option<StreamFunctionCallDelta>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StreamToolCallDelta {
+    #[serde(default)]
+    index: Option<u32>,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default, rename = "type")]
+    tool_type: Option<String>,
+    #[serde(default)]
+    function: Option<StreamToolCallFunctionDelta>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StreamToolCallFunctionDelta {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    arguments: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StreamFunctionCallDelta {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    arguments: Option<String>,
 }
 
 /// OpenAI error response
@@ -198,7 +289,9 @@ fn convert_messages(
             };
             result.push(OpenAiMessage {
                 role: role.to_string(),
-                content: OpenAiContent::Text(prompt.to_string()),
+                tool_call_id: None,
+                tool_calls: None,
+                content: Some(OpenAiContent::Text(prompt.to_string())),
             });
         }
     }
@@ -209,6 +302,33 @@ fn convert_messages(
             MessageRole::User => "user",
             MessageRole::Assistant => "assistant",
             MessageRole::System => "system",
+            MessageRole::Tool => "tool",
+        };
+
+        let tool_call_id = match msg.role {
+            MessageRole::Tool => msg
+                .meta
+                .as_ref()
+                .and_then(|m| m.tool_call_id.as_ref())
+                .cloned(),
+            _ => None,
+        };
+
+        let tool_calls = match msg.role {
+            MessageRole::Assistant => msg.meta.as_ref().and_then(|m| m.tool_calls.as_ref()).map(|calls| {
+                calls
+                    .iter()
+                    .map(|c| OpenAiToolCall {
+                        id: c.id.clone(),
+                        tool_type: "function".to_string(),
+                        function: OpenAiToolCallFunction {
+                            name: c.name.clone(),
+                            arguments: c.arguments.clone(),
+                        },
+                    })
+                    .collect::<Vec<_>>()
+            }),
+            _ => None,
         };
 
         // Check if message has multimodal content
@@ -246,14 +366,19 @@ fn convert_messages(
                         })
                 })
                 .collect();
-            OpenAiContent::Parts(blocks)
+            Some(OpenAiContent::Parts(blocks))
+        } else if tool_calls.is_some() && msg.content.trim().is_empty() {
+            // Tool call turn: content is allowed to be null when tool_calls exist.
+            None
         } else {
             // Simple text content
-            OpenAiContent::Text(msg.content.clone())
+            Some(OpenAiContent::Text(msg.content.clone()))
         };
 
         result.push(OpenAiMessage {
             role: role.to_string(),
+            tool_call_id,
+            tool_calls,
             content,
         });
     }
@@ -282,6 +407,7 @@ impl OpenAiBaseClient {
         &self,
         messages: Vec<Message>,
         config: &ModelConfig,
+        tools: Option<Vec<ToolDefinition>>,
     ) -> Result<String, AiError> {
         let api_base = config
             .api_base
@@ -300,6 +426,25 @@ impl OpenAiBaseClient {
             config.vision_enabled,
         );
 
+        let tools = tools.and_then(|defs| {
+            if defs.is_empty() {
+                None
+            } else {
+                Some(
+                    defs.into_iter()
+                        .map(|t| OpenAiTool {
+                            tool_type: "function".to_string(),
+                            function: OpenAiToolFunction {
+                                name: t.name,
+                                description: t.description,
+                                parameters: t.parameters,
+                            },
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            }
+        });
+
         // Build thinking config based on thinking_level:
         // - None: Model doesn't support thinking, don't send parameter
         // - Some("disabled"): Disable thinking explicitly
@@ -308,9 +453,21 @@ impl OpenAiBaseClient {
             thinking_type: if level == "disabled" { "disabled" } else { "enabled" }.to_string(),
         });
 
+        // Only send OpenAI-native `web_search_options` to the official OpenAI API client.
+        // (Avoid passing unknown fields to OpenAI-compatible services that may 400.)
+        let web_search_options = match self.system_role {
+            SystemRole::Developer if config.web_search_enabled => Some(WebSearchOptions {
+                search_context_size: Some("medium".to_string()),
+            }),
+            _ => None,
+        };
+
         let request = ChatCompletionRequest {
             model: config.model.clone(),
             messages: openai_messages,
+            tool_choice: tools.as_ref().map(|_| "auto".to_string()),
+            tools,
+            web_search_options,
             temperature: Some(config.parameters.temperature),
             max_tokens: config.parameters.max_tokens,
             top_p: config.parameters.top_p,
@@ -355,6 +512,7 @@ impl OpenAiBaseClient {
         &self,
         messages: Vec<Message>,
         config: &ModelConfig,
+        tools: Option<Vec<ToolDefinition>>,
         token_sender: mpsc::Sender<StreamEvent>,
     ) -> Result<(), AiError> {
         let api_base = config
@@ -373,6 +531,25 @@ impl OpenAiBaseClient {
             config.vision_enabled,
         );
 
+        let tools = tools.and_then(|defs| {
+            if defs.is_empty() {
+                None
+            } else {
+                Some(
+                    defs.into_iter()
+                        .map(|t| OpenAiTool {
+                            tool_type: "function".to_string(),
+                            function: OpenAiToolFunction {
+                                name: t.name,
+                                description: t.description,
+                                parameters: t.parameters,
+                            },
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            }
+        });
+
         // Build thinking config based on thinking_level:
         // - None: Model doesn't support thinking, don't send parameter
         // - Some("disabled"): Disable thinking explicitly
@@ -381,9 +558,20 @@ impl OpenAiBaseClient {
             thinking_type: if level == "disabled" { "disabled" } else { "enabled" }.to_string(),
         });
 
+        // Only send OpenAI-native `web_search_options` to the official OpenAI API client.
+        let web_search_options = match self.system_role {
+            SystemRole::Developer if config.web_search_enabled => Some(WebSearchOptions {
+                search_context_size: Some("medium".to_string()),
+            }),
+            _ => None,
+        };
+
         let request = ChatCompletionRequest {
             model: config.model.clone(),
             messages: openai_messages,
+            tool_choice: tools.as_ref().map(|_| "auto".to_string()),
+            tools,
+            web_search_options,
             temperature: Some(config.parameters.temperature),
             max_tokens: config.parameters.max_tokens,
             top_p: config.parameters.top_p,
@@ -443,8 +631,8 @@ impl OpenAiBaseClient {
                 }),
             };
 
-            // Send Error event FIRST (chat.rs expects this)
-            // Then send DoneWithDebug with debug info
+            // Send Error event FIRST, then DoneWithDebug for debug/usage
+            // (runtime/task_runner will pick up the error but still keep debug info if available).
             if let Ok(error_response) = serde_json::from_str::<OpenAiErrorResponse>(&error_text) {
                 let _ = token_sender
                     .send(StreamEvent::Error(error_response.error.message.clone()))
@@ -473,9 +661,19 @@ impl OpenAiBaseClient {
             return Err(AiError::RequestFailed(error_text));
         }
 
+        struct ToolCallAccum {
+            id: Option<String>,
+            name: Option<String>,
+            arguments: String,
+        }
+
         let mut full_content = String::new();
         let mut full_thinking = String::new();
         let mut final_usage: Option<TokenUsage> = None;
+        let mut tool_calls_accum: HashMap<usize, ToolCallAccum> = HashMap::new();
+        let mut legacy_function_name: Option<String> = None;
+        let mut legacy_function_args = String::new();
+        let mut tool_calls_sent = false;
         let mut stream = response.bytes_stream();
         let mut all_chunks: Vec<String> = Vec::new();
 
@@ -488,6 +686,35 @@ impl OpenAiBaseClient {
             for line in chunk_str.lines() {
                 if let Some(data) = line.strip_prefix("data: ") {
                     if data.trim() == "[DONE]" {
+                        if !tool_calls_sent {
+                            let mut calls: Vec<ToolCall> = Vec::new();
+
+                            if !tool_calls_accum.is_empty() {
+                                let mut items: Vec<(usize, ToolCallAccum)> =
+                                    tool_calls_accum.drain().collect();
+                                items.sort_by_key(|(i, _)| *i);
+                                for (i, acc) in items {
+                                    let id = acc.id.unwrap_or_else(|| format!("call_{i}"));
+                                    let name = acc.name.unwrap_or_else(|| "unknown".to_string());
+                                    calls.push(ToolCall {
+                                        id,
+                                        name,
+                                        arguments: acc.arguments,
+                                    });
+                                }
+                            } else if let Some(name) = legacy_function_name.clone() {
+                                calls.push(ToolCall {
+                                    id: "call_0".to_string(),
+                                    name,
+                                    arguments: legacy_function_args.clone(),
+                                });
+                            }
+
+                            if !calls.is_empty() {
+                                let _ = token_sender.send(StreamEvent::ToolCalls(calls)).await;
+                            }
+                        }
+
                         // Build debug info with full content and chunk count
                         let debug_response_body = serde_json::json!({
                             "_sseInfo": {
@@ -552,6 +779,43 @@ impl OpenAiBaseClient {
                         }
 
                         if let Some(choice) = stream_chunk.choices.first() {
+                            // Handle tool_calls deltas
+                            if let Some(deltas) = &choice.delta.tool_calls {
+                                for tc in deltas {
+                                    let Some(index) = tc.index else { continue };
+                                    let idx = index as usize;
+
+                                    let entry = tool_calls_accum.entry(idx).or_insert_with(|| ToolCallAccum {
+                                        id: None,
+                                        name: None,
+                                        arguments: String::new(),
+                                    });
+
+                                    if let Some(id) = &tc.id {
+                                        entry.id = Some(id.clone());
+                                    }
+
+                                    if let Some(func) = &tc.function {
+                                        if let Some(name) = &func.name {
+                                            entry.name = Some(name.clone());
+                                        }
+                                        if let Some(args) = &func.arguments {
+                                            entry.arguments.push_str(args);
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Handle legacy function_call deltas
+                            if let Some(fc) = &choice.delta.function_call {
+                                if let Some(name) = &fc.name {
+                                    legacy_function_name = Some(name.clone());
+                                }
+                                if let Some(args) = &fc.arguments {
+                                    legacy_function_args.push_str(args);
+                                }
+                            }
+
                             // Handle reasoning_content (thinking tokens)
                             if let Some(reasoning) = &choice.delta.reasoning_content {
                                 full_thinking.push_str(reasoning);
@@ -564,6 +828,50 @@ impl OpenAiBaseClient {
                                 full_content.push_str(content);
                                 let _ =
                                     token_sender.send(StreamEvent::Token(content.clone())).await;
+                            }
+
+                            // If finish_reason indicates tool calls, emit ToolCalls once.
+                            if !tool_calls_sent {
+                                if let Some(reason) = choice.finish_reason.as_deref() {
+                                    if reason == "tool_calls" || reason == "function_call" {
+                                        let mut calls: Vec<ToolCall> = Vec::new();
+
+                                        if !tool_calls_accum.is_empty() {
+                                            let mut items: Vec<(usize, ToolCallAccum)> =
+                                                tool_calls_accum.iter().map(|(k, v)| {
+                                                    (
+                                                        *k,
+                                                        ToolCallAccum {
+                                                            id: v.id.clone(),
+                                                            name: v.name.clone(),
+                                                            arguments: v.arguments.clone(),
+                                                        },
+                                                    )
+                                                }).collect();
+                                            items.sort_by_key(|(i, _)| *i);
+                                            for (i, acc) in items {
+                                                let id = acc.id.unwrap_or_else(|| format!("call_{i}"));
+                                                let name = acc.name.unwrap_or_else(|| "unknown".to_string());
+                                                calls.push(ToolCall {
+                                                    id,
+                                                    name,
+                                                    arguments: acc.arguments,
+                                                });
+                                            }
+                                        } else if let Some(name) = legacy_function_name.clone() {
+                                            calls.push(ToolCall {
+                                                id: "call_0".to_string(),
+                                                name,
+                                                arguments: legacy_function_args.clone(),
+                                            });
+                                        }
+
+                                        if !calls.is_empty() {
+                                            tool_calls_sent = true;
+                                            let _ = token_sender.send(StreamEvent::ToolCalls(calls)).await;
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -641,18 +949,24 @@ impl Default for OpenAiClient {
 
 #[async_trait]
 impl AiClient for OpenAiClient {
-    async fn chat(&self, messages: Vec<Message>, config: &ModelConfig) -> Result<String, AiError> {
-        self.base.chat_impl(messages, config).await
+    async fn chat(
+        &self,
+        messages: Vec<Message>,
+        config: &ModelConfig,
+        tools: Option<Vec<ToolDefinition>>,
+    ) -> Result<String, AiError> {
+        self.base.chat_impl(messages, config, tools).await
     }
 
     async fn chat_stream(
         &self,
         messages: Vec<Message>,
         config: &ModelConfig,
+        tools: Option<Vec<ToolDefinition>>,
         token_sender: mpsc::Sender<StreamEvent>,
     ) -> Result<(), AiError> {
         self.base
-            .chat_stream_impl(messages, config, token_sender)
+            .chat_stream_impl(messages, config, tools, token_sender)
             .await
     }
 }
@@ -683,18 +997,24 @@ impl Default for OpenAiCompatibleClient {
 
 #[async_trait]
 impl AiClient for OpenAiCompatibleClient {
-    async fn chat(&self, messages: Vec<Message>, config: &ModelConfig) -> Result<String, AiError> {
-        self.base.chat_impl(messages, config).await
+    async fn chat(
+        &self,
+        messages: Vec<Message>,
+        config: &ModelConfig,
+        tools: Option<Vec<ToolDefinition>>,
+    ) -> Result<String, AiError> {
+        self.base.chat_impl(messages, config, tools).await
     }
 
     async fn chat_stream(
         &self,
         messages: Vec<Message>,
         config: &ModelConfig,
+        tools: Option<Vec<ToolDefinition>>,
         token_sender: mpsc::Sender<StreamEvent>,
     ) -> Result<(), AiError> {
         self.base
-            .chat_stream_impl(messages, config, token_sender)
+            .chat_stream_impl(messages, config, tools, token_sender)
             .await
     }
 }
@@ -797,7 +1117,7 @@ mod tests {
 
             // Extract content parts
             let content_parts = match &openai_msg.content {
-                OpenAiContent::Parts(parts) => parts,
+                Some(OpenAiContent::Parts(parts)) => parts,
                 _ => panic!("Expected Parts variant"),
             };
 
@@ -894,7 +1214,7 @@ mod tests {
 
         assert_eq!(openai_messages.len(), 1);
         let content_parts = match &openai_messages[0].content {
-            OpenAiContent::Parts(parts) => parts,
+            Some(OpenAiContent::Parts(parts)) => parts,
             _ => panic!("Expected Parts"),
         };
 
@@ -960,7 +1280,7 @@ mod tests {
         let openai_messages = convert_messages(&[message], None, SystemRole::System, true);
 
         let content_parts = match &openai_messages[0].content {
-            OpenAiContent::Parts(parts) => parts,
+            Some(OpenAiContent::Parts(parts)) => parts,
             _ => panic!("Expected Parts"),
         };
 
@@ -1029,7 +1349,7 @@ mod tests {
 
         // Verify system message
         match &openai_messages[0].content {
-            OpenAiContent::Text(text) => {
+            Some(OpenAiContent::Text(text)) => {
                 assert_eq!(text, "You are a helpful assistant.");
             }
             _ => panic!("Expected Text for system message"),
@@ -1065,7 +1385,7 @@ mod tests {
         let openai_messages = convert_messages(&[message], None, SystemRole::System, true);
 
         let content_parts = match &openai_messages[0].content {
-            OpenAiContent::Parts(parts) => parts,
+            Some(OpenAiContent::Parts(parts)) => parts,
             _ => panic!("Expected Parts"),
         };
 

@@ -1333,6 +1333,23 @@ const flushPendingStreamChunks = () => {
 
       let nextBlocks = session.streamingBlocks ?? [];
 
+      const parseJson = (text: string): any | null => {
+        try {
+          return JSON.parse(text);
+        } catch {
+          return null;
+        }
+      };
+
+      const extractSuffixId = (prefix: string, id: string): string => {
+        return id.startsWith(prefix) ? id.slice(prefix.length) : id;
+      };
+
+      // Some block types are emitted as full JSON snapshots; for these we should not concat deltas.
+      const isSnapshotBlockType = (blockType: string) => {
+        return blockType === 'web_search' || blockType === 'tool_call';
+      };
+
       const upsertBlock = (
         blocks: MessageBlock[],
         blockId: string,
@@ -1341,20 +1358,45 @@ const flushPendingStreamChunks = () => {
         delta: string
       ): MessageBlock[] => {
         const idx = blocks.findIndex((b) => b.id === blockId);
-        if (idx === -1) {
+
+        const createBlock = (): MessageBlock => {
           if (blockType === 'thinking') {
-            return [...blocks, { id: blockId, type: 'thinking', text: delta }];
+            return { id: blockId, type: 'thinking', text: delta };
           }
           if (blockType === 'text') {
-            return [
-              ...blocks,
-              { id: blockId, type: 'text', format: format || 'markdown', text: delta },
-            ];
+            return { id: blockId, type: 'text', format: format || 'markdown', text: delta };
           }
-          return [
-            ...blocks,
-            { id: blockId, type: 'unknown', data: { blockType, format, text: delta } },
-          ];
+          if (blockType === 'tool_result') {
+            return {
+              id: blockId,
+              type: 'tool_result',
+              callId: extractSuffixId('tool_result:', blockId),
+              text: delta,
+            };
+          }
+          if (blockType === 'tool_call') {
+            const v = parseJson(delta);
+            if (v && typeof v === 'object') {
+              const callId = typeof v.id === 'string' ? v.id : extractSuffixId('tool_call:', blockId);
+              const name = typeof v.name === 'string' ? v.name : '';
+              const args = typeof v.arguments === 'string' ? v.arguments : '';
+              return { id: blockId, type: 'tool_call', callId, name, arguments: args };
+            }
+          }
+          if (blockType === 'web_search') {
+            const v = parseJson(delta);
+            if (v && typeof v === 'object') {
+              const callId = typeof v.id === 'string' ? v.id : extractSuffixId('web_search:', blockId);
+              const status = typeof v.status === 'string' ? v.status : 'unknown';
+              const action = v.action;
+              return { id: blockId, type: 'web_search', callId, status, action };
+            }
+          }
+          return { id: blockId, type: 'unknown', data: { blockType, format, text: delta } };
+        };
+
+        if (idx === -1) {
+          return [...blocks, createBlock()];
         }
 
         const current = blocks[idx];
@@ -1365,7 +1407,23 @@ const flushPendingStreamChunks = () => {
           if (current.type === 'text' && blockType === 'text') {
             return { ...current, text: current.text + delta, format: current.format || format || 'markdown' };
           }
+          if (current.type === 'tool_result' && blockType === 'tool_result') {
+            return { ...current, text: current.text + delta };
+          }
+          if (current.type === 'tool_call' && blockType === 'tool_call') {
+            // Snapshot update: overwrite (arguments may arrive in multiple updates in future)
+            return createBlock();
+          }
+          if (current.type === 'web_search' && blockType === 'web_search') {
+            // Snapshot update: overwrite
+            return createBlock();
+          }
           if (current.type === 'unknown') {
+            // If we now recognize the blockType, upgrade it to a typed block; otherwise append text.
+            if (blockType === 'text' || blockType === 'thinking' || blockType === 'tool_call' || blockType === 'tool_result' || blockType === 'web_search') {
+              return createBlock();
+            }
+
             const data = current.data as any;
             const prevText = typeof data?.text === 'string' ? data.text : '';
             return {
@@ -1380,13 +1438,7 @@ const flushPendingStreamChunks = () => {
           }
 
           // Type changed: replace block with the new type
-          if (blockType === 'thinking') {
-            return { id: blockId, type: 'thinking', text: delta };
-          }
-          if (blockType === 'text') {
-            return { id: blockId, type: 'text', format: format || 'markdown', text: delta };
-          }
-          return { id: blockId, type: 'unknown', data: { blockType, format, text: delta } };
+          return createBlock();
         })();
 
         if (next === current) return blocks;
@@ -1396,7 +1448,9 @@ const flushPendingStreamChunks = () => {
       };
 
       for (const [blockId, b] of chunks.blocks.entries()) {
-        const delta = b.chunks.length > 0 ? b.chunks.join('') : '';
+        const delta = b.chunks.length > 0
+          ? (isSnapshotBlockType(b.blockType) ? b.chunks[b.chunks.length - 1] : b.chunks.join(''))
+          : '';
         if (!delta) continue;
         nextBlocks = upsertBlock(nextBlocks, blockId, b.blockType, b.format, delta);
       }
@@ -1463,12 +1517,8 @@ export const initStreamListeners = async () => {
       if (!session) return;
 
       if (payload.type === 'block_delta') {
-        // 当前阶段仅处理 text/thinking；未来可在这里按 blockType 分发到不同 reducer/middleware。
-        if (payload.blockType === 'thinking') {
-          queueBlockDelta(session.id, payload.blockId, payload.blockType, payload.format, payload.delta);
-        } else if (payload.blockType === 'text') {
-          queueBlockDelta(session.id, payload.blockId, payload.blockType, payload.format, payload.delta);
-        }
+        // 统一缓存所有 block_delta：具体渲染/业务处理由上层按 blockType 决定（thinking/text/tool/websearch/...）。
+        queueBlockDelta(session.id, payload.blockId, payload.blockType, payload.format, payload.delta);
         return;
       }
 

@@ -1,7 +1,7 @@
 //! Chat Agent 的“核心组装层”
 //!
 //! 这个模块专注于：配置解析、ModelConfig 构建、system prompt/format prompt 组装。
-//! Tauri command 层（`commands/chat.rs`）则专注于：参数接入、DB 读写、事件 emit、取消/错误处理。
+//! Tauri command 层（`commands/run.rs`）则专注于：参数接入、DB 读写、事件 emit、取消/错误处理（并把执行下沉到 `runtime/task_runner.rs`）。
 //! 这样后续扩展 ToolAgent / CodeAgent / SolutionRunner 时，可以复用同样的分层方式，保持结构干净。
 
 use crate::errors::AppErrorCode;
@@ -105,6 +105,7 @@ pub fn build_model_config(
         },
         thinking_budget_tokens: model.thinking_budget_tokens,
         vision_enabled: model.capabilities.vision,
+        web_search_enabled: model.capabilities.web_search,
         max_images: model.max_images,
     }
 }

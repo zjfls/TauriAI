@@ -4,12 +4,10 @@
 //! the frontend and backend functionality.
 
 mod run;
-mod run_state;
 mod config;
 mod conversation;
 
 pub use run::{abort_run, run_task};
-pub use run_state::RunState;
 pub use config::{fetch_provider_models, get_app_config, save_app_config, test_connection};
 pub use conversation::{
     create_conversation, delete_conversation, delete_messages_from, generate_title,

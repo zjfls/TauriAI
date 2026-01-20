@@ -374,6 +374,7 @@ impl Database {
             MessageRole::User => "user",
             MessageRole::Assistant => "assistant",
             MessageRole::System => "system",
+            MessageRole::Tool => "tool",
         };
 
         let meta_json = message
@@ -613,6 +614,7 @@ impl Database {
             "user" => MessageRole::User,
             "assistant" => MessageRole::Assistant,
             "system" => MessageRole::System,
+            "tool" => MessageRole::Tool,
             _ => MessageRole::User,
         };
 
@@ -827,6 +829,7 @@ mod tests {
                 model: Some("gpt-4".to_string()),
                 tokens: Some(100),
                 duration: Some(500),
+                ..Default::default()
             }),
             created_at: Utc::now(),
             status: crate::models::MessageStatus::Success,

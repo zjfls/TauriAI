@@ -58,6 +58,7 @@ pub async fn test_connection(
         thinking_level: None, // Don't send thinking parameter for connection test
         thinking_budget_tokens: None,
         vision_enabled: false, // Don't need vision for connection test
+        web_search_enabled: false, // Don't enable web search for connection test
         max_images: None,      // Not needed for connection test
     };
 
@@ -78,7 +79,7 @@ pub async fn test_connection(
 
     let start = std::time::Instant::now();
 
-    match client.chat(vec![test_message], &model_config).await {
+    match client.chat(vec![test_message], &model_config, None).await {
         Ok(_) => {
             let elapsed = start.elapsed().as_millis() as u64;
             Ok(TestConnectionResult {

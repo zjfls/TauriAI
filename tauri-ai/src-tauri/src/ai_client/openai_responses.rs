@@ -29,7 +29,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use super::traits::{
-    AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent, TokenUsage,
+    AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent,
+    TokenUsage, ToolDefinition,
 };
 use super::content_converter::ContentBlock;
 use crate::models::{ImageDetail, Message, MessageRole, ModelConfig};
@@ -73,6 +74,20 @@ struct ReasoningConfig {
     summary: Option<String>,
 }
 
+/// Responses API tool definitions
+#[derive(Debug, Serialize)]
+#[serde(tag = "type")]
+enum ResponsesTool {
+    /// OpenAI built-in web search tool (preview)
+    #[serde(rename = "web_search_preview")]
+    WebSearchPreview {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        user_location: Option<serde_json::Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        search_context_size: Option<String>,
+    },
+}
+
 /// OpenAI Responses API request
 #[derive(Debug, Serialize)]
 struct ResponsesRequest {
@@ -88,6 +103,15 @@ struct ResponsesRequest {
     top_p: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning: Option<ReasoningConfig>,
+    /// Tools (web search, etc.)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<ResponsesTool>>,
+    /// Tool choice ("auto" | "none" | { ... })
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<String>,
+    /// Include extra fields in response payload (e.g. web search sources)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    include: Option<Vec<String>>,
     stream: bool,
 }
 
@@ -300,6 +324,13 @@ fn convert_messages(
                     content,
                 });
             }
+            // Responses API tool calling is not wired yet in this layer; keep history compatible.
+            MessageRole::Tool => {
+                inputs.push(ResponsesInput {
+                    role: "user".to_string(),
+                    content: ResponsesContent::Text(msg.content.clone()),
+                });
+            }
         }
     }
 
@@ -344,7 +375,12 @@ impl Default for OpenAiResponsesClient {
 
 #[async_trait]
 impl AiClient for OpenAiResponsesClient {
-    async fn chat(&self, messages: Vec<Message>, config: &ModelConfig) -> Result<String, AiError> {
+    async fn chat(
+        &self,
+        messages: Vec<Message>,
+        config: &ModelConfig,
+        _tools: Option<Vec<ToolDefinition>>,
+    ) -> Result<String, AiError> {
         let api_base = config
             .api_base
             .as_deref()
@@ -374,6 +410,19 @@ impl AiClient for OpenAiResponsesClient {
             }
         });
 
+        let (tools, tool_choice, include) = if config.web_search_enabled {
+            (
+                Some(vec![ResponsesTool::WebSearchPreview {
+                    user_location: None,
+                    search_context_size: Some("medium".to_string()),
+                }]),
+                Some("auto".to_string()),
+                Some(vec!["web_search_call.action.sources".to_string()]),
+            )
+        } else {
+            (None, None, None)
+        };
+
         let request = ResponsesRequest {
             model: config.model.clone(),
             input: inputs,
@@ -382,6 +431,9 @@ impl AiClient for OpenAiResponsesClient {
             max_output_tokens: config.parameters.max_tokens,
             top_p: config.parameters.top_p,
             reasoning,
+            tools,
+            tool_choice,
+            include,
             stream: false,
         };
 
@@ -446,6 +498,7 @@ impl AiClient for OpenAiResponsesClient {
         &self,
         messages: Vec<Message>,
         config: &ModelConfig,
+        _tools: Option<Vec<ToolDefinition>>,
         token_sender: mpsc::Sender<StreamEvent>,
     ) -> Result<(), AiError> {
         let api_base = config
@@ -476,6 +529,19 @@ impl AiClient for OpenAiResponsesClient {
             }
         });
 
+        let (tools, tool_choice, include) = if config.web_search_enabled {
+            (
+                Some(vec![ResponsesTool::WebSearchPreview {
+                    user_location: None,
+                    search_context_size: Some("medium".to_string()),
+                }]),
+                Some("auto".to_string()),
+                Some(vec!["web_search_call.action.sources".to_string()]),
+            )
+        } else {
+            (None, None, None)
+        };
+
         let request = ResponsesRequest {
             model: config.model.clone(),
             input: inputs,
@@ -484,6 +550,9 @@ impl AiClient for OpenAiResponsesClient {
             max_output_tokens: config.parameters.max_tokens,
             top_p: config.parameters.top_p,
             reasoning,
+            tools,
+            tool_choice,
+            include,
             stream: true,
         };
 
@@ -618,98 +687,142 @@ impl AiClient for OpenAiResponsesClient {
                         return Ok(());
                     }
 
-                    if let Ok(event) = serde_json::from_str::<StreamingEvent>(data) {
-                        // Handle different event types
-                        match event.event_type.as_str() {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
+                        let event_type = v
+                            .get("type")
+                            .and_then(|t| t.as_str())
+                            .unwrap_or_default();
+
+                        match event_type {
                             "response.output_text.delta" => {
-                                if let Some(delta) = event.delta {
-                                    full_content.push_str(&delta);
-                                    let _ = token_sender.send(StreamEvent::Token(delta)).await;
+                                if let Some(delta) = v.get("delta").and_then(|d| d.as_str()) {
+                                    full_content.push_str(delta);
+                                    let _ = token_sender.send(StreamEvent::Token(delta.to_string())).await;
                                 }
                             }
                             "response.text.delta" => {
-                                if let Some(delta) = event.delta.or(event.text) {
-                                    full_content.push_str(&delta);
-                                    let _ = token_sender.send(StreamEvent::Token(delta)).await;
+                                let delta = v
+                                    .get("delta")
+                                    .and_then(|d| d.as_str())
+                                    .or_else(|| v.get("text").and_then(|t| t.as_str()));
+                                if let Some(delta) = delta {
+                                    full_content.push_str(delta);
+                                    let _ = token_sender.send(StreamEvent::Token(delta.to_string())).await;
                                 }
                             }
                             "response.reasoning_text.delta"
                             | "response.reasoning_summary_text.delta"
                             | "response.reasoning.delta"
                             | "response.reasoning_summary.delta" => {
-                                // Handle reasoning/thinking content
-                                if let Some(delta) = event.delta.or(event.text) {
-                                    full_thinking.push_str(&delta);
-                                    let _ = token_sender.send(StreamEvent::Thinking(delta)).await;
+                                let delta = v
+                                    .get("delta")
+                                    .and_then(|d| d.as_str())
+                                    .or_else(|| v.get("text").and_then(|t| t.as_str()));
+                                if let Some(delta) = delta {
+                                    full_thinking.push_str(delta);
+                                    let _ = token_sender.send(StreamEvent::Thinking(delta.to_string())).await;
+                                }
+                            }
+                            // Web search: status events
+                            "response.web_search_call.in_progress"
+                            | "response.web_search_call.searching"
+                            | "response.web_search_call.completed" => {
+                                if let Some(item_id) = v.get("item_id").and_then(|id| id.as_str()) {
+                                    if let Some(status) = event_type.strip_prefix("response.web_search_call.") {
+                                        let _ = token_sender
+                                            .send(StreamEvent::WebSearch {
+                                                id: item_id.to_string(),
+                                                status: status.to_string(),
+                                                action: None,
+                                            })
+                                            .await;
+                                    }
+                                }
+                            }
+                            // Web search: full output item snapshots (may include action/sources when `include` is set)
+                            "response.output_item.added" | "response.output_item.done" => {
+                                if let Some(item) = v.get("item") {
+                                    let item_type = item.get("type").and_then(|t| t.as_str());
+                                    if item_type == Some("web_search_call") {
+                                        let id = item.get("id").and_then(|x| x.as_str());
+                                        let status = item.get("status").and_then(|x| x.as_str());
+                                        if let (Some(id), Some(status)) = (id, status) {
+                                            let action = item.get("action").cloned().and_then(|a| {
+                                                if a.is_null() { None } else { Some(a) }
+                                            });
+                                            let _ = token_sender
+                                                .send(StreamEvent::WebSearch {
+                                                    id: id.to_string(),
+                                                    status: status.to_string(),
+                                                    action,
+                                                })
+                                                .await;
+                                        }
+                                    }
                                 }
                             }
                             "error" => {
-                                let error_msg = serde_json::from_str::<serde_json::Value>(data)
-                                    .ok()
-                                    .and_then(|v| v.get("message").and_then(|m| m.as_str()).map(|s| s.to_string()))
-                                    .or(event.delta)
+                                let error_msg = v
+                                    .get("message")
+                                    .and_then(|m| m.as_str())
+                                    .map(|s| s.to_string())
                                     .unwrap_or_else(|| "Unknown error".to_string());
                                 let _ = token_sender.send(StreamEvent::Error(error_msg.clone())).await;
                                 return Err(AiError::StreamError(error_msg));
                             }
                             "response.failed" | "response.incomplete" => {
-                                let error_msg = serde_json::from_str::<serde_json::Value>(data)
-                                    .ok()
-                                    .and_then(|v| {
-                                        v.get("response")
-                                            .and_then(|r| r.get("error"))
-                                            .and_then(|e| e.get("message"))
-                                            .and_then(|m| m.as_str())
-                                            .map(|s| s.to_string())
-                                    })
+                                let error_msg = v
+                                    .get("response")
+                                    .and_then(|r| r.get("error"))
+                                    .and_then(|e| e.get("message"))
+                                    .and_then(|m| m.as_str())
+                                    .map(|s| s.to_string())
                                     .unwrap_or_else(|| "Response failed".to_string());
                                 let _ = token_sender.send(StreamEvent::Error(error_msg.clone())).await;
                                 return Err(AiError::StreamError(error_msg));
                             }
                             "response.completed" | "response.done" => {
                                 // Capture usage from response.completed event (Responses API)
-                                if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
-                                    if let Some(u) = v
-                                        .get("response")
-                                        .and_then(|r| r.get("usage"))
-                                        .and_then(|u| u.as_object())
+                                if let Some(u) = v
+                                    .get("response")
+                                    .and_then(|r| r.get("usage"))
+                                    .and_then(|u| u.as_object())
+                                {
+                                    let input_tokens = u
+                                        .get("input_tokens")
+                                        .and_then(|v| v.as_u64())
+                                        .map(|v| v as u32);
+                                    let output_tokens = u
+                                        .get("output_tokens")
+                                        .and_then(|v| v.as_u64())
+                                        .map(|v| v as u32);
+                                    let total_tokens = u
+                                        .get("total_tokens")
+                                        .and_then(|v| v.as_u64())
+                                        .map(|v| v as u32);
+                                    if let (Some(prompt_tokens), Some(completion_tokens), Some(total_tokens)) =
+                                        (input_tokens, output_tokens, total_tokens)
                                     {
-                                        let input_tokens = u
-                                            .get("input_tokens")
+                                        let cached_tokens = u
+                                            .get("input_tokens_details")
+                                            .and_then(|d| d.get("cached_tokens"))
                                             .and_then(|v| v.as_u64())
                                             .map(|v| v as u32);
-                                        let output_tokens = u
-                                            .get("output_tokens")
+                                        let reasoning_tokens = u
+                                            .get("output_tokens_details")
+                                            .and_then(|d| d.get("reasoning_tokens"))
                                             .and_then(|v| v.as_u64())
                                             .map(|v| v as u32);
-                                        let total_tokens = u
-                                            .get("total_tokens")
-                                            .and_then(|v| v.as_u64())
-                                            .map(|v| v as u32);
-                                        if let (Some(prompt_tokens), Some(completion_tokens), Some(total_tokens)) =
-                                            (input_tokens, output_tokens, total_tokens)
-                                        {
-                                            let cached_tokens = u
-                                                .get("input_tokens_details")
-                                                .and_then(|d| d.get("cached_tokens"))
-                                                .and_then(|v| v.as_u64())
-                                                .map(|v| v as u32);
-                                            let reasoning_tokens = u
-                                                .get("output_tokens_details")
-                                                .and_then(|d| d.get("reasoning_tokens"))
-                                                .and_then(|v| v.as_u64())
-                                                .map(|v| v as u32);
 
-                                            final_usage = Some(TokenUsage {
-                                                prompt_tokens,
-                                                completion_tokens,
-                                                total_tokens,
-                                                cached_tokens,
-                                                reasoning_tokens,
-                                                cache_creation_input_tokens: None,
-                                                cache_read_input_tokens: None,
-                                            });
-                                        }
+                                        final_usage = Some(TokenUsage {
+                                            prompt_tokens,
+                                            completion_tokens,
+                                            total_tokens,
+                                            cached_tokens,
+                                            reasoning_tokens,
+                                            cache_creation_input_tokens: None,
+                                            cache_read_input_tokens: None,
+                                        });
                                     }
                                 }
 
@@ -746,7 +859,11 @@ impl AiClient for OpenAiResponsesClient {
                                 let _ = token_sender
                                     .send(StreamEvent::DoneWithDebug {
                                         content: full_content.clone(),
-                                        thinking: if full_thinking.is_empty() { None } else { Some(full_thinking.clone()) },
+                                        thinking: if full_thinking.is_empty() {
+                                            None
+                                        } else {
+                                            Some(full_thinking.clone())
+                                        },
                                         debug_info: Some(debug_info),
                                         usage: final_usage.clone(),
                                     })

@@ -5,6 +5,28 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::mpsc;
 
+/// Tool definition (function-calling compatible)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolDefinition {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// JSON schema for arguments (OpenAI style)
+    pub parameters: serde_json::Value,
+}
+
+/// A tool call requested by the model
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolCall {
+    /// Tool call id (OpenAI: `tool_call_id`)
+    pub id: String,
+    pub name: String,
+    /// JSON string arguments (OpenAI: `function.arguments`)
+    pub arguments: String,
+}
+
 /// Errors that can occur during AI client operations
 #[derive(Debug, Error)]
 pub enum AiError {
@@ -44,6 +66,18 @@ pub enum StreamEvent {
         thinking: Option<String>,
         debug_info: Option<DebugInfoData>,
         usage: Option<TokenUsage>,
+    },
+    /// The model requested tool calls (turn should continue after executing tools)
+    ToolCalls(Vec<ToolCall>),
+    /// Provider-native web search tool call update (e.g., OpenAI `web_search_preview`)
+    WebSearch {
+        /// Tool call / output item id
+        id: String,
+        /// Status: `in_progress` | `searching` | `completed` | `failed`
+        status: String,
+        /// Optional action payload (query/sources/open_page/find, etc.)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        action: Option<serde_json::Value>,
     },
     /// An error occurred during streaming
     Error(String),
@@ -100,6 +134,7 @@ pub trait AiClient: Send + Sync {
         &self,
         messages: Vec<crate::models::Message>,
         config: &crate::models::ModelConfig,
+        tools: Option<Vec<ToolDefinition>>,
     ) -> Result<String, AiError>;
 
     /// Send a chat request with streaming response
@@ -107,6 +142,7 @@ pub trait AiClient: Send + Sync {
         &self,
         messages: Vec<crate::models::Message>,
         config: &crate::models::ModelConfig,
+        tools: Option<Vec<ToolDefinition>>,
         token_sender: mpsc::Sender<StreamEvent>,
     ) -> Result<(), AiError>;
 }

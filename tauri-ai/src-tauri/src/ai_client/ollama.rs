@@ -6,7 +6,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-use super::traits::{AiClient, AiError, StreamEvent};
+use super::traits::{AiClient, AiError, StreamEvent, ToolDefinition};
 use crate::models::{Message, MessageRole, ModelConfig};
 
 /// Ollama API client
@@ -97,6 +97,8 @@ fn convert_messages(messages: &[Message], system_prompt: Option<&str>) -> Vec<Ol
             MessageRole::User => "user",
             MessageRole::Assistant => "assistant",
             MessageRole::System => "system",
+            // Ollama chat format doesn't define a tool role; treat it as user text.
+            MessageRole::Tool => "user",
         };
         result.push(OllamaMessage {
             role: role.to_string(),
@@ -109,7 +111,12 @@ fn convert_messages(messages: &[Message], system_prompt: Option<&str>) -> Vec<Ol
 
 #[async_trait]
 impl AiClient for OllamaClient {
-    async fn chat(&self, messages: Vec<Message>, config: &ModelConfig) -> Result<String, AiError> {
+    async fn chat(
+        &self,
+        messages: Vec<Message>,
+        config: &ModelConfig,
+        _tools: Option<Vec<ToolDefinition>>,
+    ) -> Result<String, AiError> {
         let api_base = config
             .api_base
             .as_deref()
@@ -160,6 +167,7 @@ impl AiClient for OllamaClient {
         &self,
         messages: Vec<Message>,
         config: &ModelConfig,
+        _tools: Option<Vec<ToolDefinition>>,
         token_sender: mpsc::Sender<StreamEvent>,
     ) -> Result<(), AiError> {
         let api_base = config

@@ -63,6 +63,7 @@ export interface ModelCapabilities {
   thinking: boolean;      // Supports thinking/reasoning (e.g., DeepSeek-R1)
   vision: boolean;        // Supports vision/image input
   functionCalling: boolean; // Supports function calling
+  webSearch: boolean;     // Supports provider-native server-side web search
 }
 
 /**
@@ -301,13 +302,39 @@ export interface ThinkingMessageBlock extends BaseMessageBlock {
   text: string;
 }
 
+export interface ToolCallMessageBlock extends BaseMessageBlock {
+  type: 'tool_call';
+  callId: string;
+  name: string;
+  arguments: string;
+}
+
+export interface ToolResultMessageBlock extends BaseMessageBlock {
+  type: 'tool_result';
+  callId: string;
+  text: string;
+}
+
+export interface WebSearchMessageBlock extends BaseMessageBlock {
+  type: 'web_search';
+  callId: string;
+  status: string;
+  action?: unknown;
+}
+
 // Reserved for future expansion (tools/websearch/multimodal, etc.)
 export interface UnknownMessageBlock extends BaseMessageBlock {
   type: 'unknown';
   data: unknown;
 }
 
-export type MessageBlock = TextMessageBlock | ThinkingMessageBlock | UnknownMessageBlock;
+export type MessageBlock =
+  | TextMessageBlock
+  | ThinkingMessageBlock
+  | ToolCallMessageBlock
+  | ToolResultMessageBlock
+  | WebSearchMessageBlock
+  | UnknownMessageBlock;
 
 /**
  * Metadata associated with a message
@@ -369,6 +396,8 @@ export type RunEventType =
   | 'plan_created'
   | 'task_started'
   | 'turn_started'
+  | 'turn_phase_started'
+  | 'turn_phase_finished'
   | 'turn_finished'
   | 'block_delta'
   | 'done'
@@ -376,6 +405,7 @@ export type RunEventType =
 
 export type TaskKind = 'chat' | 'tool' | 'code' | 'planner' | 'solution';
 export type TurnStatus = 'success' | 'failed' | 'aborted';
+export type TurnPhase = 'think' | 'act' | 'observe';
 
 export type RunBlockType =
   | 'text'
@@ -425,6 +455,26 @@ export type RunEventPayload =
     taskId: string;
     turnId: string;
     turnIndex: number;
+  }
+  | {
+    conversationId: string;
+    runId: string;
+    seq: number;
+    timestampMs: number;
+    type: 'turn_phase_started';
+    taskId: string;
+    turnId: string;
+    phase: TurnPhase;
+  }
+  | {
+    conversationId: string;
+    runId: string;
+    seq: number;
+    timestampMs: number;
+    type: 'turn_phase_finished';
+    taskId: string;
+    turnId: string;
+    phase: TurnPhase;
   }
   | {
     conversationId: string;

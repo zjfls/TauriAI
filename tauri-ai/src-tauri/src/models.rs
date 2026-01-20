@@ -13,6 +13,8 @@ pub enum MessageRole {
     User,
     Assistant,
     System,
+    /// Tool message (OpenAI-compatible function calling)
+    Tool,
 }
 
 // ============================================================================
@@ -139,6 +141,12 @@ pub struct MessageMeta {
     /// Duration in milliseconds to generate the response
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration: Option<u64>,
+    /// Tool call id for role=tool (OpenAI: tool_call_id)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    /// Tool calls for role=assistant (OpenAI: tool_calls)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<crate::ai_client::ToolCall>>,
 }
 
 /// Status of a message
@@ -315,6 +323,9 @@ pub struct ModelCapabilities {
     /// Whether the model supports function calling
     #[serde(default)]
     pub function_calling: bool,
+    /// Whether the model supports server-side web search (provider-native)
+    #[serde(default)]
+    pub web_search: bool,
 }
 
 /// Model configuration (pure model parameters, no system prompt)
@@ -517,6 +528,9 @@ pub struct ModelConfig {
     /// Whether the model supports vision/image input
     #[serde(default)]
     pub vision_enabled: bool,
+    /// Whether to enable provider-native server-side web search (if supported by the selected model/provider)
+    #[serde(default)]
+    pub web_search_enabled: bool,
     /// Maximum number of images allowed (default: 10, only for vision models)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_images: Option<u32>,

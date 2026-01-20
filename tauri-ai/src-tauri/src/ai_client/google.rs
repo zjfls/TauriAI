@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 use super::content_converter::{content_parts_to_blocks_with_limit, parse_data_url, ContentBlock};
 use super::traits::{
     AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent, TokenUsage,
+    ToolDefinition,
 };
 use crate::models::{Message, MessageRole, ModelConfig};
 
@@ -198,6 +199,9 @@ fn convert_messages(
                 MessageRole::User => "user",
                 MessageRole::Assistant => "model",
                 MessageRole::System => "user", // Should not reach here due to filter
+                // Gemini API history doesn't use OpenAI-style `tool` role.
+                // Keep compatibility by treating tool outputs as user messages.
+                MessageRole::Tool => "user",
             };
 
             let parts = if msg.has_multimodal_content() {
@@ -282,7 +286,12 @@ fn extract_system_prompt(messages: &[Message], config: &ModelConfig) -> Option<S
 
 #[async_trait]
 impl AiClient for GoogleClient {
-    async fn chat(&self, messages: Vec<Message>, config: &ModelConfig) -> Result<String, AiError> {
+    async fn chat(
+        &self,
+        messages: Vec<Message>,
+        config: &ModelConfig,
+        _tools: Option<Vec<ToolDefinition>>,
+    ) -> Result<String, AiError> {
         let api_base = config
             .api_base
             .as_deref()
@@ -385,6 +394,7 @@ impl AiClient for GoogleClient {
         &self,
         messages: Vec<Message>,
         config: &ModelConfig,
+        _tools: Option<Vec<ToolDefinition>>,
         token_sender: mpsc::Sender<StreamEvent>,
     ) -> Result<(), AiError> {
         let api_base = config

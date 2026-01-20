@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 use super::content_converter::{image_url_to_base64, ContentBlock};
 use super::traits::{
     AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent, TokenUsage,
+    ToolDefinition,
 };
 use crate::models::{Message, MessageRole, ModelConfig};
 
@@ -265,6 +266,9 @@ fn convert_messages(messages: &[Message], vision_enabled: bool, max_images: Opti
                 MessageRole::User => "user",
                 MessageRole::Assistant => "assistant",
                 MessageRole::System => "user", // Should not reach here due to filter
+                // Anthropic Messages API doesn't expose an OpenAI-style `tool` role in the same way.
+                // Keep compatibility by treating tool outputs as user messages.
+                MessageRole::Tool => "user",
             };
 
             // Check if message has multimodal content
@@ -341,7 +345,12 @@ fn convert_messages(messages: &[Message], vision_enabled: bool, max_images: Opti
 
 #[async_trait]
 impl AiClient for AnthropicClient {
-    async fn chat(&self, messages: Vec<Message>, config: &ModelConfig) -> Result<String, AiError> {
+    async fn chat(
+        &self,
+        messages: Vec<Message>,
+        config: &ModelConfig,
+        _tools: Option<Vec<ToolDefinition>>,
+    ) -> Result<String, AiError> {
         let api_base = config
             .api_base
             .as_deref()
@@ -475,6 +484,7 @@ impl AiClient for AnthropicClient {
         &self,
         messages: Vec<Message>,
         config: &ModelConfig,
+        _tools: Option<Vec<ToolDefinition>>,
         token_sender: mpsc::Sender<StreamEvent>,
     ) -> Result<(), AiError> {
         let api_base = config
