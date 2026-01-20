@@ -3,6 +3,7 @@
 use crate::models::{
     Conversation, Message, MessageRole, MessageStatus, ModelConfig, ModelParameters,
 };
+use super::RunState;
 use crate::storage::Database;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -52,7 +53,11 @@ pub async fn delete_messages_from(
     conversation_id: String,
     message_id: String,
     db: tauri::State<'_, Arc<Mutex<Database>>>,
+    run_state: tauri::State<'_, Arc<RunState>>,
 ) -> Result<(), String> {
+    // 撤回/删除可能发生在流式生成中：先终止并等待退出，避免“删完又被写回”导致重启后消息错乱。
+    run_state.abort_and_wait(&conversation_id, 5_000).await;
+
     let db = db.lock().await;
     db.delete_messages_after(&conversation_id, &message_id)
         .map_err(|e| e.to_string())
@@ -74,6 +79,7 @@ pub async fn update_conversation_metadata(
     conversation_id: String,
     agent_name: Option<String>,
     model_ref: Option<String>,
+    thinking_mode: Option<serde_json::Value>,
     db: tauri::State<'_, Arc<Mutex<Database>>>,
 ) -> Result<(), String> {
     let db = db.lock().await;
@@ -81,6 +87,7 @@ pub async fn update_conversation_metadata(
         &conversation_id,
         agent_name.as_deref(),
         model_ref.as_deref(),
+        thinking_mode.as_ref(),
     )
     .map_err(|e| e.to_string())
 }

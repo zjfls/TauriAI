@@ -6,6 +6,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import type { RunEventPayload } from '../types';
 
 /**
  * Format prompt types for different scenarios
@@ -13,36 +14,13 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 export type FormatPromptType = 'chat' | 'plain' | 'json' | 'none';
 
 /**
- * Payload for streaming token events
- */
-export interface StreamTokenPayload {
-  conversation_id: string;
-  token: string;
-}
-
-/**
- * Payload for stream completion events
- */
-export interface StreamDonePayload {
-  conversation_id: string;
-  full_content: string;
-}
-
-/**
- * Payload for stream error events
- */
-export interface StreamErrorPayload {
-  conversation_id: string;
-  error: string;
-}
-
-/**
  * Stream event handlers
  */
 export interface StreamEventHandlers {
-  onToken?: (payload: StreamTokenPayload) => void;
-  onDone?: (payload: StreamDonePayload) => void;
-  onError?: (payload: StreamErrorPayload) => void;
+  onEvent?: (payload: RunEventPayload) => void;
+  onBlockDelta?: (payload: Extract<RunEventPayload, { type: 'block_delta' }>) => void;
+  onDone?: (payload: Extract<RunEventPayload, { type: 'done' }>) => void;
+  onError?: (payload: Extract<RunEventPayload, { type: 'error' }>) => void;
 }
 
 /**
@@ -65,7 +43,7 @@ export async function chatStream(
   content: string,
   options?: ChatStreamOptions
 ): Promise<void> {
-  return invoke('chat_stream', { 
+  return invoke('run_task', {
     conversationId, 
     content,
     agentName: options?.agentName
@@ -79,7 +57,7 @@ export async function chatStream(
  * @param conversationId - The conversation ID to abort
  */
 export async function abortChat(conversationId: string): Promise<void> {
-  return invoke('abort_chat', { conversationId });
+  return invoke('abort_run', { conversationId });
 }
 
 /**
@@ -92,34 +70,23 @@ export async function abortChat(conversationId: string): Promise<void> {
 export async function setupStreamListeners(
   handlers: StreamEventHandlers
 ): Promise<UnlistenFn> {
-  const unlisteners: UnlistenFn[] = [];
+  const unlisten = await listen<RunEventPayload>('run:event', (event) => {
+    handlers.onEvent?.(event.payload);
 
-  // Listen for token events
-  if (handlers.onToken) {
-    const unlisten = await listen<StreamTokenPayload>('chat:token', (event) => {
-      handlers.onToken?.(event.payload);
-    });
-    unlisteners.push(unlisten);
-  }
+    if (event.payload.type === 'block_delta') {
+      handlers.onBlockDelta?.(event.payload);
+      return;
+    }
 
-  // Listen for done events
-  if (handlers.onDone) {
-    const unlisten = await listen<StreamDonePayload>('chat:done', (event) => {
+    if (event.payload.type === 'done') {
       handlers.onDone?.(event.payload);
-    });
-    unlisteners.push(unlisten);
-  }
+      return;
+    }
 
-  // Listen for error events
-  if (handlers.onError) {
-    const unlisten = await listen<StreamErrorPayload>('chat:error', (event) => {
+    if (event.payload.type === 'error') {
       handlers.onError?.(event.payload);
-    });
-    unlisteners.push(unlisten);
-  }
+    }
+  });
 
-  // Return a combined unlisten function
-  return () => {
-    unlisteners.forEach((unlisten) => unlisten());
-  };
+  return unlisten;
 }

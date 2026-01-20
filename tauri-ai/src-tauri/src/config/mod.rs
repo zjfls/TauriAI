@@ -182,6 +182,7 @@ mod tests {
             }],
             agents: vec![Agent {
                 name: "test-agent".to_string(),
+                agent_type: crate::models::AgentType::Chat,
                 display_name: "Test Agent".to_string(),
                 description: Some("A test agent".to_string()),
                 model_ref: "test-provider/gpt-4".to_string(),

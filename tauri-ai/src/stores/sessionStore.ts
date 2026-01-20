@@ -7,7 +7,7 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import type { AgentSession, Message, DebugInfo, TokenUsage, PersistedSession, PersistedSessionState, ContentPart, ThinkingMode, ApiProtocolType } from '../types';
+import type { AgentSession, Message, DebugInfo, TokenUsage, PersistedSession, PersistedSessionState, ContentPart, ThinkingMode, ApiProtocolType, RunEventPayload, MessageBlock } from '../types';
 import { getApiProtocol, getDefaultThinkingMode } from '../utils/apiUtils';
 
 // Constants for persistence
@@ -62,7 +62,7 @@ export interface SessionState {
   // Streaming updates (internal use)
   appendStreamingToken: (sessionId: string, token: string) => void;
   appendThinkingToken: (sessionId: string, token: string) => void;
-  finalizeStreaming: (sessionId: string, fullContent: string, thinking?: string, debugInfo?: DebugInfo, usage?: TokenUsage, model?: string) => void;
+  finalizeStreaming: (sessionId: string, fullContent: string, thinking?: string, debugInfo?: DebugInfo, usage?: TokenUsage, model?: string, assistantMessageId?: string, format?: string) => void;
   handleError: (sessionId: string, error: string, debugInfo?: DebugInfo) => void;
 
   // Model switching (async due to API type check)
@@ -93,6 +93,9 @@ export interface SessionState {
 
 // Queue to ensure undo operations complete before sending new messages
 let pendingUndoOperation: Promise<any> = Promise.resolve();
+
+// 撤回/删除属于“强一致性操作”：需要忽略当前正在进行的流式 run 的 done/error，避免 UI/状态被回写。
+const discardNextFinalizeByConversationId = new Set<string>();
 
 export const useSessionStore = create<SessionState>((set, get) => ({
   sessions: new Map<string, AgentSession>(),
@@ -172,6 +175,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       conversationId: conversation.id,
       agentName: agentName,
       modelRef: agent?.modelRef,
+      thinkingMode,
     }).catch(console.error);
 
     const session: AgentSession = {
@@ -184,8 +188,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       thinkingMode,
       draftContent: '',
       messages: [],
-      streamingMessage: null,
-      streamingThinking: null,
+      streamingBlocks: null,
       isGenerating: false,
       error: null,
       createdAt: now,
@@ -411,6 +414,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       throw new Error('Session has no conversation');
     }
 
+    // 新一轮发送开始：确保不会被“上一次撤回”的 discard 标记误伤
+    discardNextFinalizeByConversationId.delete(session.conversationId);
+
     // Build content parts if images are provided
     const contentParts: ContentPart[] = [];
     if (content) {
@@ -451,8 +457,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           ...currentSession,
           messages: [...currentSession.messages, userMessage],
           isGenerating: true,
-          streamingMessage: '',
-          streamingThinking: null,
+          streamingBlocks: [],
           error: null,
           lastActiveAt: new Date().toISOString(),
           // Lock API type on first message
@@ -463,7 +468,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
 
     try {
-      await invoke('chat_stream', {
+      await invoke('run_task', {
         conversationId: session.conversationId,
         messageId: userMessage.id,
         content,
@@ -486,7 +491,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (!session?.conversationId) return;
 
     try {
-      await invoke('abort_chat', { conversationId: session.conversationId });
+      await invoke('abort_run', { conversationId: session.conversationId });
 
       set((state) => {
         const newSessions = new Map(state.sessions);
@@ -495,8 +500,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           newSessions.set(sessionId, {
             ...currentSession,
             isGenerating: false,
-            streamingMessage: null,
-            streamingThinking: null,
+            streamingBlocks: null,
           });
         }
         return { sessions: newSessions };
@@ -572,10 +576,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           newSessions.set(sessionId, {
             ...session,
             messages: newMessages,
+            // 撤回时如果正在生成，需要清空 streaming UI，避免后续 token 把 UI/状态“复活”
+            isGenerating: false,
+            streamingBlocks: null,
+            error: null,
           });
 
           // Sync with backend
           // Chain operation to ensure it completes before next message send
+          if (session.conversationId) {
+            discardNextFinalizeByConversationId.add(session.conversationId);
+            // Fallback: avoid长期占用（正常情况下会在 done/error 时清理）
+            setTimeout(() => discardNextFinalizeByConversationId.delete(session.conversationId!), 10_000);
+          }
           const deleteOp = invoke('delete_messages_from', {
             conversationId: session.conversationId,
             messageId: messageId
@@ -599,9 +612,25 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const newSessions = new Map(state.sessions);
       const session = newSessions.get(sessionId);
       if (session) {
+        const blocks = session.streamingBlocks ?? [];
+        const idx = blocks.findIndex((b) => b.id === 'assistant_text');
+        const nextBlocks = [...blocks];
+
+        if (idx >= 0 && nextBlocks[idx].type === 'text') {
+          const current = nextBlocks[idx] as any;
+          nextBlocks[idx] = { ...current, text: (current.text || '') + token };
+        } else {
+          nextBlocks.push({
+            id: 'assistant_text',
+            type: 'text',
+            format: 'markdown',
+            text: token,
+          });
+        }
+
         newSessions.set(sessionId, {
           ...session,
-          streamingMessage: (session.streamingMessage || '') + token,
+          streamingBlocks: nextBlocks,
         });
       }
       return { sessions: newSessions };
@@ -616,9 +645,24 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const newSessions = new Map(state.sessions);
       const session = newSessions.get(sessionId);
       if (session) {
+        const blocks = session.streamingBlocks ?? [];
+        const idx = blocks.findIndex((b) => b.id === 'assistant_thinking');
+        const nextBlocks = [...blocks];
+
+        if (idx >= 0 && nextBlocks[idx].type === 'thinking') {
+          const current = nextBlocks[idx] as any;
+          nextBlocks[idx] = { ...current, text: (current.text || '') + token };
+        } else {
+          nextBlocks.push({
+            id: 'assistant_thinking',
+            type: 'thinking',
+            text: token,
+          });
+        }
+
         newSessions.set(sessionId, {
           ...session,
-          streamingThinking: (session.streamingThinking || '') + token,
+          streamingBlocks: nextBlocks,
         });
       }
       return { sessions: newSessions };
@@ -629,18 +673,76 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    * Finalize streaming and add assistant message
    * Requirements: 7.5
    */
-  finalizeStreaming: (sessionId: string, fullContent: string, thinking?: string, debugInfo?: DebugInfo, usage?: TokenUsage, model?: string) => {
+  finalizeStreaming: (sessionId: string, fullContent: string, thinking?: string, debugInfo?: DebugInfo, usage?: TokenUsage, model?: string, assistantMessageId?: string, format?: string) => {
     const session = get().sessions.get(sessionId);
     if (!session?.conversationId) return;
 
-    const finalThinking = thinking || session.streamingThinking || undefined;
+    const baseBlocks = session.streamingBlocks ?? [];
+    const blocksById = new Map<string, MessageBlock>(baseBlocks.map((b) => [b.id, b]));
+
+    const baseThinking =
+      thinking ??
+      (blocksById.get('assistant_thinking')?.type === 'thinking'
+        ? (blocksById.get('assistant_thinking') as any).text
+        : undefined);
+    const finalThinking = baseThinking && baseThinking.trim().length > 0 ? baseThinking : undefined;
+
+    const baseContent =
+      fullContent ||
+      (blocksById.get('assistant_text')?.type === 'text'
+        ? (blocksById.get('assistant_text') as any).text
+        : '');
+    const finalContent = baseContent && baseContent.trim().length > 0 ? baseContent : '';
+
+    if (finalThinking) {
+      blocksById.set('assistant_thinking', {
+        id: 'assistant_thinking',
+        type: 'thinking',
+        text: finalThinking,
+      });
+    } else {
+      blocksById.delete('assistant_thinking');
+    }
+
+    if (finalContent) {
+      blocksById.set('assistant_text', {
+        id: 'assistant_text',
+        type: 'text',
+        format: (format || (blocksById.get('assistant_text') as any)?.format || 'markdown'),
+        text: finalContent,
+      });
+    } else {
+      blocksById.delete('assistant_text');
+    }
+
+    const blocks: MessageBlock[] = [];
+    const baseOrder = baseBlocks.map((b) => b.id);
+    for (const id of baseOrder) {
+      const block = blocksById.get(id);
+      if (block) {
+        blocks.push(block);
+        blocksById.delete(id);
+      }
+    }
+    // Ensure core blocks are appended if they were not present in streaming order
+    for (const id of ['assistant_thinking', 'assistant_text']) {
+      const block = blocksById.get(id);
+      if (block) {
+        blocks.push(block);
+        blocksById.delete(id);
+      }
+    }
+    for (const block of blocksById.values()) {
+      blocks.push(block);
+    }
 
     const assistantMessage: Message = {
-      id: crypto.randomUUID(),
+      id: assistantMessageId || crypto.randomUUID(),
       conversationId: session.conversationId,
       role: 'assistant',
-      content: fullContent,
+      content: finalContent,
       thinking: finalThinking,
+      blocks: blocks.length > 0 ? blocks : undefined,
       meta: model ? { model } : undefined,
       debugInfo,
       usage,
@@ -663,8 +765,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         newSessions.set(sessionId, {
           ...currentSession,
           messages: [...updatedMessages, assistantMessage],
-          streamingMessage: null,
-          streamingThinking: null,
+          streamingBlocks: null,
           isGenerating: false,
           lastActiveAt: new Date().toISOString(),
         });
@@ -715,8 +816,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           messages: updatedMessages,
           error,
           isGenerating: false,
-          streamingMessage: null,
-          streamingThinking: null,
+          streamingBlocks: null,
         });
       }
       return { sessions: newSessions };
@@ -765,11 +865,23 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     // Sync to DB
     // We need to pass both agent and model because the backend overwrites
+    const nextThinkingMode = coerceThinkingModeForProtocol(session.thinkingMode, apiProtocol);
     invoke('update_conversation_metadata', {
       conversationId: session.conversationId,
       agentName: session.agentName,
       modelRef: modelRef,
+      thinkingMode: nextThinkingMode,
     }).catch(console.error);
+
+    if (session.conversationId) {
+      void import('./conversationStore').then(({ useConversationStore }) => {
+        useConversationStore.getState().patchConversation(session.conversationId!, {
+          agentName: session.agentName,
+          modelRef,
+          thinkingMode: nextThinkingMode,
+        });
+      }).catch(console.error);
+    }
 
     // Save state after model change
     get().saveSessionState();
@@ -808,11 +920,23 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
 
     // Sync to DB
+    const nextThinkingMode = coerceThinkingModeForProtocol(currentSession.thinkingMode, apiProtocol);
     invoke('update_conversation_metadata', {
       conversationId: currentSession.conversationId,
       agentName: agentName,
       modelRef: agent?.modelRef,
+      thinkingMode: nextThinkingMode,
     }).catch(console.error);
+
+    if (currentSession.conversationId) {
+      void import('./conversationStore').then(({ useConversationStore }) => {
+        useConversationStore.getState().patchConversation(currentSession.conversationId!, {
+          agentName,
+          modelRef: agent?.modelRef,
+          thinkingMode: nextThinkingMode,
+        });
+      }).catch(console.error);
+    }
 
     // Save state after agent change
     get().saveSessionState();
@@ -837,6 +961,20 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
 
     get().saveSessionState();
+
+    const session = get().sessions.get(sessionId);
+    if (session?.conversationId) {
+      invoke('update_conversation_metadata', {
+        conversationId: session.conversationId,
+        thinkingMode,
+      }).catch(console.error);
+
+      void import('./conversationStore').then(({ useConversationStore }) => {
+        useConversationStore.getState().patchConversation(session.conversationId!, {
+          thinkingMode,
+        });
+      }).catch(console.error);
+    }
   },
 
   /**
@@ -1010,8 +1148,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           thinkingMode: coerceThinkingModeForProtocol(persisted.thinkingMode, apiProtocol),
           draftContent: persisted.draftContent ?? '',
           messages,
-          streamingMessage: null,
-          streamingThinking: null,
+          streamingBlocks: null,
           isGenerating: false,
           error: null,
           createdAt: persisted.createdAt,
@@ -1107,11 +1244,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       modelRef,
       conversationId,
       apiType: messages.length > 0 ? apiProtocol : null,  // Lock if has messages
-      thinkingMode: coerceThinkingModeForProtocol(undefined, apiProtocol),
+      thinkingMode: coerceThinkingModeForProtocol(conversation?.thinkingMode, apiProtocol),
       draftContent: '',
       messages,
-      streamingMessage: null,
-      streamingThinking: null,
+      streamingBlocks: null,
       isGenerating: false,
       error: null,
       createdAt: now,
@@ -1149,8 +1285,15 @@ const STREAM_UI_UPDATE_FPS = 20;
 const STREAM_UI_UPDATE_INTERVAL_MS = Math.round(1000 / STREAM_UI_UPDATE_FPS);
 
 type PendingStreamChunks = {
-  message: string[];
-  thinking: string[];
+  // key: blockId
+  blocks: Map<
+    string,
+    {
+      blockType: string;
+      format?: string;
+      chunks: string[];
+    }
+  >;
 };
 
 const pendingStreamChunksBySessionId = new Map<string, PendingStreamChunks>();
@@ -1159,7 +1302,7 @@ let streamFlushTimeout: ReturnType<typeof setTimeout> | null = null;
 const getOrCreatePendingChunks = (sessionId: string): PendingStreamChunks => {
   let chunks = pendingStreamChunksBySessionId.get(sessionId);
   if (!chunks) {
-    chunks = { message: [], thinking: [] };
+    chunks = { blocks: new Map() };
     pendingStreamChunksBySessionId.set(sessionId, chunks);
   }
   return chunks;
@@ -1180,35 +1323,88 @@ const flushPendingStreamChunks = () => {
     const newSessions = new Map(state.sessions);
 
     for (const [sessionId, chunks] of snapshot) {
-      const messageChunk = chunks.message.length > 0 ? chunks.message.join('') : '';
-      const thinkingChunk = chunks.thinking.length > 0 ? chunks.thinking.join('') : '';
-
-      if (!messageChunk && !thinkingChunk) continue;
+      if (chunks.blocks.size === 0) continue;
 
       const session = newSessions.get(sessionId);
       if (!session) continue;
 
       // Streaming already ended/aborted: drop buffered tokens to avoid resurrecting UI
-      if (session.streamingMessage === null) continue;
+      if (session.streamingBlocks === null) continue;
 
-      let nextStreamingMessage = session.streamingMessage;
-      let nextStreamingThinking = session.streamingThinking;
+      let nextBlocks = session.streamingBlocks ?? [];
 
-      if (messageChunk) {
-        nextStreamingMessage = (session.streamingMessage || '') + messageChunk;
+      const upsertBlock = (
+        blocks: MessageBlock[],
+        blockId: string,
+        blockType: string,
+        format: string | undefined,
+        delta: string
+      ): MessageBlock[] => {
+        const idx = blocks.findIndex((b) => b.id === blockId);
+        if (idx === -1) {
+          if (blockType === 'thinking') {
+            return [...blocks, { id: blockId, type: 'thinking', text: delta }];
+          }
+          if (blockType === 'text') {
+            return [
+              ...blocks,
+              { id: blockId, type: 'text', format: format || 'markdown', text: delta },
+            ];
+          }
+          return [
+            ...blocks,
+            { id: blockId, type: 'unknown', data: { blockType, format, text: delta } },
+          ];
+        }
+
+        const current = blocks[idx];
+        const next: MessageBlock = (() => {
+          if (current.type === 'thinking' && blockType === 'thinking') {
+            return { ...current, text: current.text + delta };
+          }
+          if (current.type === 'text' && blockType === 'text') {
+            return { ...current, text: current.text + delta, format: current.format || format || 'markdown' };
+          }
+          if (current.type === 'unknown') {
+            const data = current.data as any;
+            const prevText = typeof data?.text === 'string' ? data.text : '';
+            return {
+              ...current,
+              data: {
+                ...(typeof data === 'object' && data ? data : {}),
+                blockType,
+                format,
+                text: prevText + delta,
+              },
+            };
+          }
+
+          // Type changed: replace block with the new type
+          if (blockType === 'thinking') {
+            return { id: blockId, type: 'thinking', text: delta };
+          }
+          if (blockType === 'text') {
+            return { id: blockId, type: 'text', format: format || 'markdown', text: delta };
+          }
+          return { id: blockId, type: 'unknown', data: { blockType, format, text: delta } };
+        })();
+
+        if (next === current) return blocks;
+        const copy = blocks.slice();
+        copy[idx] = next;
+        return copy;
+      };
+
+      for (const [blockId, b] of chunks.blocks.entries()) {
+        const delta = b.chunks.length > 0 ? b.chunks.join('') : '';
+        if (!delta) continue;
+        nextBlocks = upsertBlock(nextBlocks, blockId, b.blockType, b.format, delta);
       }
-      if (thinkingChunk) {
-        nextStreamingThinking = (session.streamingThinking || '') + thinkingChunk;
-      }
 
-      if (
-        nextStreamingMessage !== session.streamingMessage ||
-        nextStreamingThinking !== session.streamingThinking
-      ) {
+      if (nextBlocks !== session.streamingBlocks) {
         newSessions.set(sessionId, {
           ...session,
-          streamingMessage: nextStreamingMessage,
-          streamingThinking: nextStreamingThinking,
+          streamingBlocks: nextBlocks,
         });
         updated = true;
       }
@@ -1231,13 +1427,25 @@ const scheduleStreamFlush = () => {
   }, STREAM_UI_UPDATE_INTERVAL_MS);
 };
 
-const queueStreamingToken = (sessionId: string, token: string) => {
-  getOrCreatePendingChunks(sessionId).message.push(token);
-  scheduleStreamFlush();
-};
+const queueBlockDelta = (
+  sessionId: string,
+  blockId: string,
+  blockType: string,
+  format: string | undefined,
+  delta: string
+) => {
+  const chunks = getOrCreatePendingChunks(sessionId);
+  const entry = chunks.blocks.get(blockId);
+  if (entry) {
+    entry.chunks.push(delta);
+    return scheduleStreamFlush();
+  }
 
-const queueThinkingToken = (sessionId: string, token: string) => {
-  getOrCreatePendingChunks(sessionId).thinking.push(token);
+  chunks.blocks.set(blockId, {
+    blockType,
+    format,
+    chunks: [delta],
+  });
   scheduleStreamFlush();
 };
 
@@ -1247,51 +1455,49 @@ export const initStreamListeners = async () => {
   listenersInitialized = true;
 
   try {
-    // Listen for token events - route by conversationId
-    await listen<{ conversationId: string; token: string }>('chat:token', (event) => {
-      const session = useSessionStore.getState().getSessionByConversationId(event.payload.conversationId);
-      if (session) {
-        queueStreamingToken(session.id, event.payload.token);
-      }
-    });
+    // Unified stream channel - route by conversationId
+    // 说明：所有运行时事件只走 run:event（可扩展到 tool/websearch/非文本输出等）。
+    await listen<RunEventPayload>('run:event', (event) => {
+      const payload = event.payload;
+      const session = useSessionStore.getState().getSessionByConversationId(payload.conversationId);
+      if (!session) return;
 
-    // Listen for thinking events - route by conversationId
-    await listen<{ conversationId: string; token: string }>('chat:thinking', (event) => {
-      const session = useSessionStore.getState().getSessionByConversationId(event.payload.conversationId);
-      if (session) {
-        queueThinkingToken(session.id, event.payload.token);
+      if (payload.type === 'block_delta') {
+        // 当前阶段仅处理 text/thinking；未来可在这里按 blockType 分发到不同 reducer/middleware。
+        if (payload.blockType === 'thinking') {
+          queueBlockDelta(session.id, payload.blockId, payload.blockType, payload.format, payload.delta);
+        } else if (payload.blockType === 'text') {
+          queueBlockDelta(session.id, payload.blockId, payload.blockType, payload.format, payload.delta);
+        }
+        return;
       }
-    });
 
-    // Listen for done events - route by conversationId
-    await listen<{ conversationId: string; fullContent: string; thinking?: string; debugInfo?: DebugInfo; usage?: TokenUsage; model?: string }>('chat:done', (event) => {
-      const session = useSessionStore.getState().getSessionByConversationId(event.payload.conversationId);
-      if (session) {
+      if (payload.type === 'done') {
         clearPendingChunks(session.id);
+        if (discardNextFinalizeByConversationId.has(payload.conversationId)) {
+          discardNextFinalizeByConversationId.delete(payload.conversationId);
+          return;
+        }
         useSessionStore.getState().finalizeStreaming(
           session.id,
-          event.payload.fullContent,
-          event.payload.thinking,
-          event.payload.debugInfo,
-          event.payload.usage,
-          event.payload.model
+          payload.fullContent,
+          payload.thinking,
+          payload.debugInfo,
+          payload.usage,
+          payload.model,
+          payload.assistantMessageId,
+          payload.format
         );
+        return;
       }
-    });
 
-    // Listen for error events - route by conversationId
-    await listen<{ conversationId: string; error: string; debugInfo?: DebugInfo }>('chat:error', (event) => {
-      console.log('[DEBUG] chat:error event received:', event.payload);
-      const session = useSessionStore.getState().getSessionByConversationId(event.payload.conversationId);
-      console.log('[DEBUG] chat:error - session lookup result:', session ? { id: session.id, convId: session.conversationId } : null);
-      if (session) {
+      if (payload.type === 'error') {
         clearPendingChunks(session.id);
-        useSessionStore.getState().handleError(session.id, event.payload.error, event.payload.debugInfo);
-      } else {
-        console.warn('[DEBUG] chat:error - No session found for conversationId:', event.payload.conversationId);
-        // Log all current sessions for comparison
-        const allSessions = Array.from(useSessionStore.getState().sessions.values());
-        console.log('[DEBUG] chat:error - All current sessions:', allSessions.map(s => ({ id: s.id, convId: s.conversationId })));
+        if (discardNextFinalizeByConversationId.has(payload.conversationId)) {
+          discardNextFinalizeByConversationId.delete(payload.conversationId);
+          return;
+        }
+        useSessionStore.getState().handleError(session.id, payload.error, payload.debugInfo);
       }
     });
 

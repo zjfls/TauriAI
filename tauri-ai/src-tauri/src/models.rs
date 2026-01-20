@@ -226,6 +226,14 @@ pub struct Conversation {
     /// Model reference (format: "provider_name/model_name")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_ref: Option<String>,
+    /// Conversation-scoped runtime settings (persisted).
+    ///
+    /// 说明：
+    /// - 这是“对话级别”的状态，不属于全局配置，也不属于临时 session。
+    /// - 目前仅用于保存 thinkingMode，避免切换/重开对话后重置为默认值。
+    /// - 使用 JSON value 存储以便后续扩展更多设置（draft、rag、memory 开关等）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_mode: Option<serde_json::Value>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -392,12 +400,35 @@ impl Default for Provider {
     }
 }
 
+/// Agent runtime type (controls behavior and capabilities)
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentType {
+    /// 最简单的 Chat Agent（LLM 单轮/多轮对话）
+    Chat,
+    /// 工具型 Agent（function/tool calling loop）
+    Tool,
+    /// 编码型 Agent（ToolAgent + 编码相关工具/策略）
+    Code,
+    /// 方案/工作流 Agent（编排多个 agent 完成任务）
+    Solution,
+}
+
+impl Default for AgentType {
+    fn default() -> Self {
+        Self::Chat
+    }
+}
+
 /// Agent configuration (references a model, contains system prompt)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Agent {
     /// Unique identifier
     pub name: String,
+    /// Agent type (default: chat)
+    #[serde(default, rename = "type")]
+    pub agent_type: AgentType,
     /// Display name
     pub display_name: String,
     /// Description of the agent
@@ -417,6 +448,7 @@ impl Default for Agent {
     fn default() -> Self {
         Self {
             name: String::new(),
+            agent_type: AgentType::default(),
             display_name: String::new(),
             description: None,
             model_ref: String::new(),
@@ -654,6 +686,7 @@ impl AppConfig {
             let model_ref = format!("{}/{}", model_config.provider, model_config.model);
             self.agents.push(Agent {
                 name: agent_name.clone(),
+                agent_type: AgentType::Chat,
                 display_name: model_config.name.clone(),
                 description: None,
                 model_ref,

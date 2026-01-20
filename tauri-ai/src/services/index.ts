@@ -8,9 +8,6 @@ export {
   chatStream,
   abortChat,
   setupStreamListeners,
-  type StreamTokenPayload,
-  type StreamDonePayload,
-  type StreamErrorPayload,
   type StreamEventHandlers,
 } from './chatService';
 

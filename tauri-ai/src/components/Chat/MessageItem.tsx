@@ -5,49 +5,15 @@
  */
 
 import React, { useState } from 'react';
-import { User, Bot, ChevronDown, ChevronRight, Brain, Bug, AlertCircle, RefreshCw, ZoomIn } from 'lucide-react';
+import { User, Bot, Bug, AlertCircle, RefreshCw, ZoomIn } from 'lucide-react';
 import type { Message, Action, ContentPart } from '../../types';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { MessageToolbar } from './MessageToolbar';
 import { buildMessageActions } from '../../utils/messageActionBuilder';
 import { DebugModal } from './DebugModal';
 import { useConfigStore } from '../../stores/configStore';
-
-interface ThinkingBlockProps {
-  thinking: string;
-  isStreaming?: boolean;
-}
-
-const ThinkingBlock: React.FC<ThinkingBlockProps> = ({ thinking, isStreaming }) => {
-  const [isExpanded, setIsExpanded] = useState(false);
-
-  if (!thinking) return null;
-
-  return (
-    <div className="mb-2 rounded-lg border border-purple-200 bg-purple-50 dark:border-purple-800 dark:bg-purple-900/30">
-      <button
-        onClick={() => setIsExpanded(!isExpanded)}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-purple-700 hover:bg-purple-100 dark:text-purple-300 dark:hover:bg-purple-900/50"
-      >
-        <Brain size={16} className="shrink-0" />
-        <span className="font-medium">思考过程</span>
-        {isStreaming && (
-          <span className="ml-1 inline-block h-2 w-2 animate-pulse rounded-full bg-purple-500" />
-        )}
-        <span className="ml-auto">
-          {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-        </span>
-      </button>
-      {isExpanded && (
-        <div className="border-t border-purple-200 px-3 py-2 text-sm text-purple-800 dark:border-purple-800 dark:text-purple-200">
-          <div className="max-h-64 overflow-y-auto whitespace-pre-wrap">
-            {thinking}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
+import { getAssistantMessageBlocks } from '../../utils/messageBlocks';
+import { MessageBlocks } from './MessageBlocks';
 
 /**
  * Image preview modal component
@@ -85,7 +51,11 @@ interface ContentPartsRendererProps {
   isUser: boolean;
 }
 
-const ContentPartsRenderer: React.FC<ContentPartsRendererProps> = ({ contentParts, textContent, isUser }) => {
+const ContentPartsRenderer: React.FC<ContentPartsRendererProps> = ({
+  contentParts,
+  textContent,
+  isUser,
+}) => {
   const [previewImage, setPreviewImage] = useState<string | null>(null);
 
   // If no content parts, just render text
@@ -101,7 +71,11 @@ const ContentPartsRenderer: React.FC<ContentPartsRendererProps> = ({ contentPart
       {contentParts.map((part, index) => {
         if (part.type === 'text') {
           if (isUser) {
-            return <p key={index} className="whitespace-pre-wrap">{part.text}</p>;
+            return (
+              <p key={index} className="whitespace-pre-wrap">
+                {part.text}
+              </p>
+            );
           }
           return <MarkdownRenderer key={index} content={part.text} />;
         }
@@ -138,14 +112,12 @@ const ContentPartsRenderer: React.FC<ContentPartsRendererProps> = ({ contentPart
 interface MessageItemProps {
   message: Message;
   isStreaming?: boolean;
-  streamingThinking?: string | null;
   onAction: (action: Action) => void;
 }
 
 export const MessageItem: React.FC<MessageItemProps> = ({
   message,
   isStreaming = false,
-  streamingThinking,
   onAction,
 }) => {
   const [isHovered, setIsHovered] = useState(false);
@@ -163,8 +135,8 @@ export const MessageItem: React.FC<MessageItemProps> = ({
   // Build actions
   const actions = buildMessageActions(message);
 
-  // Determine thinking content to show
-  const thinkingContent = isStreaming ? streamingThinking : message.thinking;
+  // 统一以 blocks 作为 assistant 输出渲染入口（未来可扩展 tool/websearch/多模态输出）
+  const assistantBlocks = isAssistant ? getAssistantMessageBlocks(message) : [];
 
   // Error message styling
   if (isError) {
@@ -251,7 +223,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
             {message.meta?.model}
             {/* Token usage display: input/output/total */}
             {showUsage && message.usage && (
-              <span className={message.meta?.model ? "ml-2" : ""}>
+              <span className={message.meta?.model ? 'ml-2' : ''}>
                 {message.meta?.model ? '· ' : ''}
                 in:{message.usage.promptTokens} out:{message.usage.completionTokens} total:{message.usage.totalTokens}
                 {message.usage.reasoningTokens ? ` (${message.usage.reasoningTokens} reasoning)` : ''}
@@ -263,19 +235,32 @@ export const MessageItem: React.FC<MessageItemProps> = ({
           </div>
         )}
 
-        {/* Thinking block for assistant messages */}
-        {isAssistant && thinkingContent && (
-          <ThinkingBlock thinking={thinkingContent} isStreaming={isStreaming} />
-        )}
+        {/* Assistant blocks (extensible output) */}
+        {isAssistant && assistantBlocks.length > 0 ? (
+          <div>
+            <MessageBlocks blocks={assistantBlocks} />
 
-        {/* Message content */}
-        <div className={isUser ? 'text-white' : ''}>
-          <ContentPartsRenderer
-            contentParts={message.contentParts || []}
-            textContent={message.content}
-            isUser={isUser}
-          />
-        </div>
+            {/* Fallback for multimodal output (future) */}
+            {message.contentParts && message.contentParts.length > 0 && (
+              <div>
+                <ContentPartsRenderer
+                  contentParts={message.contentParts || []}
+                  textContent={message.content}
+                  isUser={false}
+                />
+              </div>
+            )}
+          </div>
+        ) : (
+          // Legacy rendering path (user messages & older assistant messages)
+          <div className={isUser ? 'text-white' : ''}>
+            <ContentPartsRenderer
+              contentParts={message.contentParts || []}
+              textContent={message.content}
+              isUser={isUser}
+            />
+          </div>
+        )}
 
         {/* Failed message error display */}
         {isUser && isFailed && message.error && (
@@ -310,7 +295,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
               <button
                 onClick={() => setShowDebugModal(true)}
                 className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700 transition-colors"
-                title="查看HTTP调试信息"
+                title="查看 HTTP 调试信息"
               >
                 <Bug size={14} />
                 <span>Debug</span>
@@ -332,3 +317,4 @@ export const MessageItem: React.FC<MessageItemProps> = ({
 };
 
 export default MessageItem;
+

@@ -1,10 +1,12 @@
 // Module declarations
 pub mod ai_client;
+pub mod agents;
 pub mod commands;
 pub mod config;
 pub mod errors;
 pub mod models;
 pub mod prompts;
+pub mod runtime;
 pub mod storage;
 pub mod tray;
 
@@ -12,10 +14,10 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use commands::{
-    abort_chat, chat_stream, create_conversation, delete_conversation, delete_messages_from,
+    abort_run, create_conversation, delete_conversation, delete_messages_from,
     fetch_provider_models, generate_title, get_app_config, get_conversations, get_messages,
-    save_app_config, test_connection, update_conversation_metadata, update_conversation_title,
-    ChatState,
+    run_task, save_app_config, test_connection, update_conversation_metadata,
+    update_conversation_title, RunState,
 };
 use config::ConfigManager;
 use storage::Database;
@@ -42,18 +44,18 @@ pub fn run() {
     let config_manager = ConfigManager::new().expect("Failed to initialize config manager");
     let config_manager = Arc::new(config_manager);
 
-    // Initialize chat state
-    let chat_state = Arc::new(ChatState::new());
+    // Initialize run state (shared runtime controls: abort/wait)
+    let run_state = Arc::new(RunState::new());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(database)
         .manage(config_manager)
-        .manage(chat_state)
+        .manage(run_state)
         .invoke_handler(tauri::generate_handler![
-            // Chat commands
-            chat_stream,
-            abort_chat,
+            // Runtime commands
+            run_task,
+            abort_run,
             // Conversation commands
             get_conversations,
             get_messages,

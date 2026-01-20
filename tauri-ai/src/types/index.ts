@@ -18,6 +18,9 @@ export type ActiveView = 'chat' | 'history' | 'settings';
 // Format prompt types
 export type FormatPromptType = 'chat' | 'plain' | 'json' | 'none';
 
+// Agent type for extensible runtime behaviors
+export type AgentType = 'chat' | 'tool' | 'code' | 'solution';
+
 // ============================================================================
 // New Provider-Model-Agent Architecture
 // ============================================================================
@@ -109,6 +112,7 @@ export interface Provider {
  */
 export interface Agent {
   name: string;           // Unique identifier
+  type?: AgentType;       // Agent runtime type (default: 'chat')
   displayName: string;    // Display name
   description?: string;
   modelRef: string;       // Format: "provider_name/model_name"
@@ -279,6 +283,32 @@ export type ContentPart = TextContentPart | ImageContentPart | TextFileContentPa
 // Message & Conversation
 // ============================================================================
 
+export type TextBlockFormat = 'markdown' | 'plain' | 'json';
+
+export interface BaseMessageBlock {
+  id: string;
+  type: string;
+}
+
+export interface TextMessageBlock extends BaseMessageBlock {
+  type: 'text';
+  format: TextBlockFormat | string;
+  text: string;
+}
+
+export interface ThinkingMessageBlock extends BaseMessageBlock {
+  type: 'thinking';
+  text: string;
+}
+
+// Reserved for future expansion (tools/websearch/multimodal, etc.)
+export interface UnknownMessageBlock extends BaseMessageBlock {
+  type: 'unknown';
+  data: unknown;
+}
+
+export type MessageBlock = TextMessageBlock | ThinkingMessageBlock | UnknownMessageBlock;
+
 /**
  * Metadata associated with a message
  */
@@ -298,6 +328,10 @@ export interface Message {
   content: string;
   contentParts?: ContentPart[];  // Multimodal content (images, etc.)
   thinking?: string;      // Thinking/reasoning content (for models like DeepSeek-R1)
+  // 结构化输出块（架构演进入口）：
+  // - 未来 tool/websearch/非文本输出都将通过 blocks 表达
+  // - 现阶段仍保留 content/thinking 作为兼容字段
+  blocks?: MessageBlock[];
   meta?: MessageMeta;
   actions?: Action[];
   createdAt: string;
@@ -323,6 +357,127 @@ export interface TokenUsage {
   cacheCreationInputTokens?: number;  // Anthropic cache creation
   cacheReadInputTokens?: number;      // Anthropic cache read
 }
+
+// ============================================================================
+// Unified Streaming Event Types (run:event)
+// ============================================================================
+
+// 后端 `run:event` 的统一流式输出：
+// - 前端/业务层只需要消费这一条事件流
+// - 未来新增输出类型只扩展 payload，不再增加新的 event name
+export type RunEventType =
+  | 'plan_created'
+  | 'task_started'
+  | 'turn_started'
+  | 'turn_finished'
+  | 'block_delta'
+  | 'done'
+  | 'error';
+
+export type TaskKind = 'chat' | 'tool' | 'code' | 'planner' | 'solution';
+export type TurnStatus = 'success' | 'failed' | 'aborted';
+
+export type RunBlockType =
+  | 'text'
+  | 'thinking'
+  // Future block types (reserved)
+  | 'tool_call'
+  | 'tool_result'
+  | 'web_search'
+  | 'image'
+  | 'file'
+  | 'json'
+  | 'code'
+  | 'unknown';
+
+export type RunTextFormat = 'markdown' | 'plain' | 'json';
+
+export type RunEventPayload =
+  | {
+    conversationId: string;
+    runId: string;
+    seq: number;
+    timestampMs: number;
+    type: 'plan_created';
+    planId: string;
+    tasks: Array<{
+      taskId: string;
+      taskKind: TaskKind;
+      title?: string;
+    }>;
+  }
+  | {
+    conversationId: string;
+    runId: string;
+    seq: number;
+    timestampMs: number;
+    type: 'task_started';
+    taskId: string;
+    taskKind: TaskKind;
+    title?: string;
+  }
+  | {
+    conversationId: string;
+    runId: string;
+    seq: number;
+    timestampMs: number;
+    type: 'turn_started';
+    taskId: string;
+    turnId: string;
+    turnIndex: number;
+  }
+  | {
+    conversationId: string;
+    runId: string;
+    seq: number;
+    timestampMs: number;
+    type: 'turn_finished';
+    taskId: string;
+    turnId: string;
+    status: TurnStatus;
+  }
+  | {
+    conversationId: string;
+    runId: string;
+    seq: number;
+    timestampMs: number;
+    type: 'block_delta';
+    taskId: string;
+    turnId: string;
+    assistantMessageId?: string;
+    blockId: string;
+    blockType: RunBlockType;
+    format?: RunTextFormat | string;
+    delta: string;
+  }
+  | {
+    conversationId: string;
+    runId: string;
+    seq: number;
+    timestampMs: number;
+    type: 'done';
+    taskId: string;
+    turnId: string;
+    assistantMessageId?: string;
+    fullContent: string;
+    format?: RunTextFormat | string;
+    thinking?: string;
+    debugInfo?: DebugInfo;
+    usage?: TokenUsage;
+    model?: string;
+  }
+  | {
+    conversationId: string;
+    runId: string;
+    seq: number;
+    timestampMs: number;
+    type: 'error';
+    taskId?: string;
+    turnId?: string;
+    assistantMessageId?: string;
+    error: string;
+    debugInfo?: DebugInfo;
+  };
 
 /**
  * Debug information for a message (raw HTTP request/response)
@@ -370,6 +525,7 @@ export interface Conversation {
   title: string;
   agentName?: string;
   modelRef?: string;      // Model reference used in this conversation
+  thinkingMode?: ThinkingMode; // Conversation-scoped thinking mode/level
   createdAt: string;
   updatedAt: string;
 }
@@ -459,8 +615,10 @@ export interface AgentSession {
 
   // Session state
   messages: Message[];                // Message history for this session
-  streamingMessage: string | null;    // Current streaming message content
-  streamingThinking: string | null;   // Current streaming thinking content
+  // Unified streaming output blocks (chat/event -> blocks)
+  // - null: not streaming
+  // - []: stream started but no blocks yet (e.g., first-token latency)
+  streamingBlocks: MessageBlock[] | null;
   isGenerating: boolean;              // Whether the session is generating a response
   error: string | null;               // Error message if any
 

@@ -35,8 +35,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
 
   // Extract session state with defaults for when no session exists
   const messages = session?.messages ?? [];
-  const streamingMessage = session?.streamingMessage ?? null;
-  const streamingThinking = session?.streamingThinking ?? null;
+  const streamingBlocks = session?.streamingBlocks ?? null;
   const isGenerating = session?.isGenerating ?? false;
 
   const { config, getProvider, getAgent, getModelOptions } = useConfigStore();
@@ -283,8 +282,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
     <div className="flex h-full flex-col overflow-hidden">
       <MessageList
         messages={messages}
-        streamingContent={streamingMessage}
-        streamingThinking={streamingThinking}
+        streamingBlocks={streamingBlocks}
         isGenerating={isGenerating}
         onAction={handleAction}
       />

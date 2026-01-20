@@ -92,6 +92,9 @@ impl Database {
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
                 model_id TEXT,
+                agent_name TEXT,
+                model_ref TEXT,
+                thinking_mode TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )",
@@ -102,6 +105,7 @@ impl Database {
         // We ignore errors as they will fail if columns already exist
         let _ = conn.execute("ALTER TABLE conversations ADD COLUMN agent_name TEXT", []);
         let _ = conn.execute("ALTER TABLE conversations ADD COLUMN model_ref TEXT", []);
+        let _ = conn.execute("ALTER TABLE conversations ADD COLUMN thinking_mode TEXT", []);
 
         // Create messages table
         conn.execute(
@@ -171,8 +175,8 @@ impl Database {
         let now_str = now.to_rfc3339();
 
         conn.execute(
-            "INSERT INTO conversations (id, title, model_id, agent_name, model_ref, created_at, updated_at)
-             VALUES (?1, ?2, NULL, NULL, NULL, ?3, ?4)",
+            "INSERT INTO conversations (id, title, model_id, agent_name, model_ref, thinking_mode, created_at, updated_at)
+             VALUES (?1, ?2, NULL, NULL, NULL, NULL, ?3, ?4)",
             params![id, title, now_str, now_str],
         )?;
 
@@ -181,6 +185,7 @@ impl Database {
             title: title.to_string(),
             agent_name: None,
             model_ref: None,
+            thinking_mode: None,
             created_at: now,
             updated_at: now,
         })
@@ -194,21 +199,27 @@ impl Database {
             .map_err(|e| StorageError::Lock(e.to_string()))?;
 
         let mut stmt = conn.prepare(
-            "SELECT id, title, agent_name, model_ref, created_at, updated_at 
+            "SELECT id, title, agent_name, model_ref, thinking_mode, created_at, updated_at 
              FROM conversations 
              ORDER BY updated_at DESC",
         )?;
 
         let conversations = stmt
             .query_map([], |row| {
-                let created_at_str: String = row.get(4)?;
-                let updated_at_str: String = row.get(5)?;
+                let thinking_mode_str: Option<String> = row.get(4)?;
+                let created_at_str: String = row.get(5)?;
+                let updated_at_str: String = row.get(6)?;
+
+                let thinking_mode: Option<serde_json::Value> = thinking_mode_str
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str(s).ok());
 
                 Ok(Conversation {
                     id: row.get(0)?,
                     title: row.get(1)?,
                     agent_name: row.get(2)?,
                     model_ref: row.get(3)?,
+                    thinking_mode,
                     created_at: DateTime::parse_from_rfc3339(&created_at_str)
                         .map(|dt| dt.with_timezone(&Utc))
                         .unwrap_or_else(|_| Utc::now()),
@@ -230,7 +241,7 @@ impl Database {
             .map_err(|e| StorageError::Lock(e.to_string()))?;
 
         let mut stmt = conn.prepare(
-            "SELECT id, title, agent_name, model_ref, created_at, updated_at 
+            "SELECT id, title, agent_name, model_ref, thinking_mode, created_at, updated_at 
              FROM conversations 
              WHERE id = ?1",
         )?;
@@ -238,14 +249,20 @@ impl Database {
         let mut rows = stmt.query(params![id])?;
 
         if let Some(row) = rows.next()? {
-            let created_at_str: String = row.get(4)?;
-            let updated_at_str: String = row.get(5)?;
+            let thinking_mode_str: Option<String> = row.get(4)?;
+            let created_at_str: String = row.get(5)?;
+            let updated_at_str: String = row.get(6)?;
+
+            let thinking_mode: Option<serde_json::Value> = thinking_mode_str
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok());
 
             Ok(Some(Conversation {
                 id: row.get(0)?,
                 title: row.get(1)?,
                 agent_name: row.get(2)?,
                 model_ref: row.get(3)?,
+                thinking_mode,
                 created_at: DateTime::parse_from_rfc3339(&created_at_str)
                     .map(|dt| dt.with_timezone(&Utc))
                     .unwrap_or_else(|_| Utc::now()),
@@ -264,6 +281,7 @@ impl Database {
         id: &str,
         agent_name: Option<&str>,
         model_ref: Option<&str>,
+        thinking_mode: Option<&serde_json::Value>,
     ) -> Result<(), StorageError> {
         let conn = self
             .conn
@@ -273,11 +291,19 @@ impl Database {
         // Update updated_at as well
         let now = Utc::now().to_rfc3339();
 
+        let thinking_mode_json = thinking_mode
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+
         conn.execute(
             "UPDATE conversations 
-             SET agent_name = ?1, model_ref = ?2, updated_at = ?3 
-             WHERE id = ?4",
-            params![agent_name, model_ref, now, id],
+             SET agent_name = COALESCE(?1, agent_name),
+                 model_ref = COALESCE(?2, model_ref),
+                 thinking_mode = COALESCE(?3, thinking_mode),
+                 updated_at = ?4 
+             WHERE id = ?5",
+            params![agent_name, model_ref, thinking_mode_json, now, id],
         )?;
 
         Ok(())
