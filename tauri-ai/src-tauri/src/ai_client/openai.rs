@@ -13,8 +13,8 @@ use tokio::sync::mpsc;
 
 use super::content_converter::{content_part_to_blocks, ContentBlock};
 use super::traits::{
-    AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent,
-    TokenUsage, ToolCall, ToolDefinition,
+    AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent, TokenUsage,
+    ToolCall, ToolDefinition,
 };
 use crate::models::{ImageDetail, Message, MessageRole, ModelConfig};
 
@@ -315,19 +315,24 @@ fn convert_messages(
         };
 
         let tool_calls = match msg.role {
-            MessageRole::Assistant => msg.meta.as_ref().and_then(|m| m.tool_calls.as_ref()).map(|calls| {
-                calls
-                    .iter()
-                    .map(|c| OpenAiToolCall {
-                        id: c.id.clone(),
-                        tool_type: "function".to_string(),
-                        function: OpenAiToolCallFunction {
-                            name: c.name.clone(),
-                            arguments: c.arguments.clone(),
-                        },
+            MessageRole::Assistant => {
+                msg.meta
+                    .as_ref()
+                    .and_then(|m| m.tool_calls.as_ref())
+                    .map(|calls| {
+                        calls
+                            .iter()
+                            .map(|c| OpenAiToolCall {
+                                id: c.id.clone(),
+                                tool_type: "function".to_string(),
+                                function: OpenAiToolCallFunction {
+                                    name: c.name.clone(),
+                                    arguments: c.arguments.clone(),
+                                },
+                            })
+                            .collect::<Vec<_>>()
                     })
-                    .collect::<Vec<_>>()
-            }),
+            }
             _ => None,
         };
 
@@ -342,18 +347,16 @@ fn convert_messages(
                         .into_iter()
                         .map(|block| match block {
                             ContentBlock::Text { text } => OpenAiContentPart::Text { text },
-                            ContentBlock::ImageUrl { url, detail } => {
-                                OpenAiContentPart::ImageUrl {
-                                    image_url: ImageUrlData {
-                                        url,
-                                        detail: match detail {
-                                            ImageDetail::Auto => None,
-                                            ImageDetail::Low => Some("low".to_string()),
-                                            ImageDetail::High => Some("high".to_string()),
-                                        },
+                            ContentBlock::ImageUrl { url, detail } => OpenAiContentPart::ImageUrl {
+                                image_url: ImageUrlData {
+                                    url,
+                                    detail: match detail {
+                                        ImageDetail::Auto => None,
+                                        ImageDetail::Low => Some("low".to_string()),
+                                        ImageDetail::High => Some("high".to_string()),
                                     },
-                                }
-                            }
+                                },
+                            },
                             ContentBlock::ImageBase64 { data, .. } => {
                                 // OpenAI supports data URLs, reconstruct from base64
                                 OpenAiContentPart::ImageUrl {
@@ -450,7 +453,12 @@ impl OpenAiBaseClient {
         // - Some("disabled"): Disable thinking explicitly
         // - Some(level): Enable thinking (level is ignored for chat_completions API)
         let thinking = config.thinking_level.as_ref().map(|level| ThinkingConfig {
-            thinking_type: if level == "disabled" { "disabled" } else { "enabled" }.to_string(),
+            thinking_type: if level == "disabled" {
+                "disabled"
+            } else {
+                "enabled"
+            }
+            .to_string(),
         });
 
         // Only send OpenAI-native `web_search_options` to the official OpenAI API client.
@@ -555,7 +563,12 @@ impl OpenAiBaseClient {
         // - Some("disabled"): Disable thinking explicitly
         // - Some(level): Enable thinking (level is ignored for chat_completions API)
         let thinking = config.thinking_level.as_ref().map(|level| ThinkingConfig {
-            thinking_type: if level == "disabled" { "disabled" } else { "enabled" }.to_string(),
+            thinking_type: if level == "disabled" {
+                "disabled"
+            } else {
+                "enabled"
+            }
+            .to_string(),
         });
 
         // Only send OpenAI-native `web_search_options` to the official OpenAI API client.
@@ -672,32 +685,32 @@ impl OpenAiBaseClient {
         let mut final_usage: Option<TokenUsage> = None;
         let mut tool_calls_accum: HashMap<usize, ToolCallAccum> = HashMap::new();
         let mut legacy_function_name: Option<String> = None;
-	        let mut legacy_function_args = String::new();
-	        let mut tool_calls_sent = false;
-	        let mut stream = response.bytes_stream();
-	        let mut all_chunks: Vec<String> = Vec::new();
-	        // SSE 可能在任意字节边界切片；用行缓冲拼接，避免 JSON 被拆分后解析失败导致丢 token。
-	        let mut sse_buffer = String::new();
+        let mut legacy_function_args = String::new();
+        let mut tool_calls_sent = false;
+        let mut stream = response.bytes_stream();
+        let mut all_chunks: Vec<String> = Vec::new();
+        // SSE 可能在任意字节边界切片；用行缓冲拼接，避免 JSON 被拆分后解析失败导致丢 token。
+        let mut sse_buffer = String::new();
 
-	        while let Some(chunk_result) = stream.next().await {
-	            let chunk = chunk_result.map_err(|e| AiError::StreamError(e.to_string()))?;
-	            let chunk_str = String::from_utf8_lossy(&chunk).to_string();
-	            all_chunks.push(chunk_str.clone());
+        while let Some(chunk_result) = stream.next().await {
+            let chunk = chunk_result.map_err(|e| AiError::StreamError(e.to_string()))?;
+            let chunk_str = String::from_utf8_lossy(&chunk).to_string();
+            all_chunks.push(chunk_str.clone());
 
-	            sse_buffer.push_str(&chunk_str);
+            sse_buffer.push_str(&chunk_str);
 
-	            // Parse SSE events (line-buffered, handles chunk boundary splits)
-	            while let Some(pos) = sse_buffer.find('\n') {
-	                let mut line = sse_buffer[..pos].to_string();
-	                sse_buffer.drain(..pos + 1);
-	                if line.ends_with('\r') {
-	                    line.pop();
-	                }
+            // Parse SSE events (line-buffered, handles chunk boundary splits)
+            while let Some(pos) = sse_buffer.find('\n') {
+                let mut line = sse_buffer[..pos].to_string();
+                sse_buffer.drain(..pos + 1);
+                if line.ends_with('\r') {
+                    line.pop();
+                }
 
-	                if let Some(data) = line.strip_prefix("data: ") {
-	                    if data.trim() == "[DONE]" {
-	                        if !tool_calls_sent {
-	                            let mut calls: Vec<ToolCall> = Vec::new();
+                if let Some(data) = line.strip_prefix("data: ") {
+                    if data.trim() == "[DONE]" {
+                        if !tool_calls_sent {
+                            let mut calls: Vec<ToolCall> = Vec::new();
 
                             if !tool_calls_accum.is_empty() {
                                 let mut items: Vec<(usize, ToolCallAccum)> =
@@ -725,20 +738,27 @@ impl OpenAiBaseClient {
                             }
                         }
 
-                        // Build debug info with full content and chunk count
+                        // Build debug info with full content - using OpenAI Chat Completions API format
                         let debug_response_body = serde_json::json!({
-                            "_sseInfo": {
-                                "chunkCount": all_chunks.len(),
-                                "note": "SSE stream response"
-                            },
-                            "content": full_content,
-                            "thinking": if full_thinking.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(full_thinking.clone()) },
+                            "choices": [{
+                                "index": 0,
+                                "message": {
+                                    "role": "assistant",
+                                    "content": full_content,
+                                    "reasoning_content": if full_thinking.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(full_thinking.clone()) }
+                                },
+                                "finish_reason": "stop"
+                            }],
                             "usage": final_usage.as_ref().map(|u| serde_json::json!({
                                 "prompt_tokens": u.prompt_tokens,
                                 "completion_tokens": u.completion_tokens,
                                 "total_tokens": u.total_tokens,
-                                "cached_tokens": u.cached_tokens,
-                                "reasoning_tokens": u.reasoning_tokens
+                                "prompt_tokens_details": {
+                                    "cached_tokens": u.cached_tokens
+                                },
+                                "completion_tokens_details": {
+                                    "reasoning_tokens": u.reasoning_tokens
+                                }
                             }))
                         });
 
@@ -767,9 +787,9 @@ impl OpenAiBaseClient {
                         return Ok(());
                     }
 
-	                    if let Ok(stream_chunk) = serde_json::from_str::<StreamChunk>(data) {
-	                        // Capture usage from final chunk
-	                        if let Some(usage) = stream_chunk.usage {
+                    if let Ok(stream_chunk) = serde_json::from_str::<StreamChunk>(data) {
+                        // Capture usage from final chunk
+                        if let Some(usage) = stream_chunk.usage {
                             final_usage = Some(TokenUsage {
                                 prompt_tokens: usage.prompt_tokens,
                                 completion_tokens: usage.completion_tokens,
@@ -795,10 +815,12 @@ impl OpenAiBaseClient {
                                     let Some(index) = tc.index else { continue };
                                     let idx = index as usize;
 
-                                    let entry = tool_calls_accum.entry(idx).or_insert_with(|| ToolCallAccum {
-                                        id: None,
-                                        name: None,
-                                        arguments: String::new(),
+                                    let entry = tool_calls_accum.entry(idx).or_insert_with(|| {
+                                        ToolCallAccum {
+                                            id: None,
+                                            name: None,
+                                            arguments: String::new(),
+                                        }
                                     });
 
                                     if let Some(id) = &tc.id {
@@ -811,10 +833,10 @@ impl OpenAiBaseClient {
                                         }
                                         if let Some(args) = &func.arguments {
                                             entry.arguments.push_str(args);
-	                    }
-	                }
-	            }
-	        }
+                                        }
+                                    }
+                                }
+                            }
 
                             // Handle legacy function_call deltas
                             if let Some(fc) = &choice.delta.function_call {
@@ -848,20 +870,26 @@ impl OpenAiBaseClient {
 
                                         if !tool_calls_accum.is_empty() {
                                             let mut items: Vec<(usize, ToolCallAccum)> =
-                                                tool_calls_accum.iter().map(|(k, v)| {
-                                                    (
-                                                        *k,
-                                                        ToolCallAccum {
-                                                            id: v.id.clone(),
-                                                            name: v.name.clone(),
-                                                            arguments: v.arguments.clone(),
-                                                        },
-                                                    )
-                                                }).collect();
+                                                tool_calls_accum
+                                                    .iter()
+                                                    .map(|(k, v)| {
+                                                        (
+                                                            *k,
+                                                            ToolCallAccum {
+                                                                id: v.id.clone(),
+                                                                name: v.name.clone(),
+                                                                arguments: v.arguments.clone(),
+                                                            },
+                                                        )
+                                                    })
+                                                    .collect();
                                             items.sort_by_key(|(i, _)| *i);
                                             for (i, acc) in items {
-                                                let id = acc.id.unwrap_or_else(|| format!("call_{i}"));
-                                                let name = acc.name.unwrap_or_else(|| "unknown".to_string());
+                                                let id =
+                                                    acc.id.unwrap_or_else(|| format!("call_{i}"));
+                                                let name = acc
+                                                    .name
+                                                    .unwrap_or_else(|| "unknown".to_string());
                                                 calls.push(ToolCall {
                                                     id,
                                                     name,
@@ -878,7 +906,9 @@ impl OpenAiBaseClient {
 
                                         if !calls.is_empty() {
                                             tool_calls_sent = true;
-                                            let _ = token_sender.send(StreamEvent::ToolCalls(calls)).await;
+                                            let _ = token_sender
+                                                .send(StreamEvent::ToolCalls(calls))
+                                                .await;
                                         }
                                     }
                                 }
@@ -889,21 +919,27 @@ impl OpenAiBaseClient {
             }
         }
 
-        // Build debug info for stream end without [DONE]
-        // Include full content and chunk count in response body
+        // Build debug info for stream end without [DONE] - using OpenAI Chat Completions API format
         let debug_response_body = serde_json::json!({
-            "_sseInfo": {
-                "chunkCount": all_chunks.len(),
-                "note": "SSE stream response"
-            },
-            "content": full_content,
-            "thinking": if full_thinking.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(full_thinking.clone()) },
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": full_content,
+                    "reasoning_content": if full_thinking.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(full_thinking.clone()) }
+                },
+                "finish_reason": "stop"
+            }],
             "usage": final_usage.as_ref().map(|u| serde_json::json!({
                 "prompt_tokens": u.prompt_tokens,
                 "completion_tokens": u.completion_tokens,
                 "total_tokens": u.total_tokens,
-                "cached_tokens": u.cached_tokens,
-                "reasoning_tokens": u.reasoning_tokens
+                "prompt_tokens_details": {
+                    "cached_tokens": u.cached_tokens
+                },
+                "completion_tokens_details": {
+                    "reasoning_tokens": u.reasoning_tokens
+                }
             }))
         });
 

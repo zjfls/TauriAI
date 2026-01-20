@@ -94,6 +94,19 @@ struct GenerationConfig {
     thinking_config: Option<ThinkingConfig>,
 }
 
+/// Gemini tool for grounding (Google Search)
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GeminiTool {
+    /// Google Search tool for grounding
+    #[serde(skip_serializing_if = "Option::is_none")]
+    google_search: Option<GoogleSearch>,
+}
+
+/// Google Search configuration (empty object enables search)
+#[derive(Debug, Clone, Serialize)]
+struct GoogleSearch {}
+
 /// Generate content request
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -103,6 +116,9 @@ struct GenerateContentRequest {
     system_instruction: Option<SystemInstruction>,
     #[serde(skip_serializing_if = "Option::is_none")]
     generation_config: Option<GenerationConfig>,
+    /// Tools for grounding (e.g., Google Search)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<GeminiTool>>,
 }
 
 // ============================================================================
@@ -124,6 +140,57 @@ struct Candidate {
     content: Option<CandidateContent>,
     #[allow(dead_code)]
     finish_reason: Option<String>,
+    #[serde(default)]
+    grounding_metadata: Option<GroundingMetadata>,
+}
+
+/// Grounding metadata
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct GroundingMetadata {
+    web_search_queries: Option<Vec<String>>,
+    grounding_chunks: Option<Vec<GroundingChunk>>,
+    #[allow(dead_code)]
+    grounding_supports: Option<Vec<GroundingSupport>>,
+}
+
+/// Grounding chunk (source)
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct GroundingChunk {
+    web: Option<WebChunk>,
+}
+
+/// Web chunk details
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct WebChunk {
+    uri: Option<String>,
+    title: Option<String>,
+}
+
+/// Grounding support (citation)
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct GroundingSupport {
+    #[allow(dead_code)]
+    segment: Option<Segment>,
+    #[allow(dead_code)]
+    grounding_chunk_indices: Option<Vec<usize>>,
+    #[allow(dead_code)]
+    confidence_scores: Option<Vec<f32>>,
+}
+
+/// Text segment
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct Segment {
+    #[allow(dead_code)]
+    start_index: Option<usize>,
+    #[allow(dead_code)]
+    end_index: Option<usize>,
+    #[allow(dead_code)]
+    text: Option<String>,
 }
 
 /// Candidate content
@@ -334,10 +401,20 @@ impl AiClient for GoogleClient {
             thinking_config,
         });
 
+        // Build Google Search grounding tool if web search is enabled
+        let tools = if config.web_search_enabled {
+            Some(vec![GeminiTool {
+                google_search: Some(GoogleSearch {}),
+            }])
+        } else {
+            None
+        };
+
         let request = GenerateContentRequest {
             contents,
             system_instruction,
             generation_config,
+            tools,
         };
 
         let url = format!(
@@ -437,10 +514,20 @@ impl AiClient for GoogleClient {
             thinking_config,
         });
 
+        // Build Google Search grounding tool if web search is enabled
+        let tools = if config.web_search_enabled {
+            Some(vec![GeminiTool {
+                google_search: Some(GoogleSearch {}),
+            }])
+        } else {
+            None
+        };
+
         let request = GenerateContentRequest {
             contents,
             system_instruction,
             generation_config,
+            tools,
         };
 
         let url = format!(
@@ -492,6 +579,7 @@ impl AiClient for GoogleClient {
 
         let mut full_content = String::new();
         let mut full_thinking = String::new();
+        let mut full_grounding: Option<GroundingMetadata> = None;
         let mut stream = response.bytes_stream();
         let mut token_usage: Option<TokenUsage> = None;
         // SSE 可能跨 chunk 切分；用行缓冲拼接，避免 JSON 被拆开后无法解析、导致 thinking/text 丢失。
@@ -520,6 +608,49 @@ impl AiClient for GoogleClient {
                         // Extract text from candidates
                         if let Some(candidates) = stream_chunk.candidates {
                             for candidate in candidates {
+                                // Handle Grounding Metadata
+                                if let Some(metadata) = candidate.grounding_metadata {
+                                    full_grounding = Some(metadata.clone());
+
+                                    // Send WebSearch event to frontend
+                                    // Constructing an action object that resembles OpenAI's structure or a custom one the frontend can render
+                                    let queries =
+                                        metadata.web_search_queries.clone().unwrap_or_default();
+
+                                    let sources: Vec<serde_json::Value> =
+                                        if let Some(chunks) = &metadata.grounding_chunks {
+                                            chunks
+                                                .iter()
+                                                .filter_map(|chunk| {
+                                                    if let Some(web) = &chunk.web {
+                                                        Some(serde_json::json!({
+                                                            "title": web.title,
+                                                            "url": web.uri
+                                                        }))
+                                                    } else {
+                                                        None
+                                                    }
+                                                })
+                                                .collect()
+                                        } else {
+                                            Vec::new()
+                                        };
+
+                                    let action = serde_json::json!({
+                                        "type": "search",
+                                        "queries": queries,
+                                        "sources": sources
+                                    });
+
+                                    let _ = token_sender
+                                        .send(StreamEvent::WebSearch {
+                                            id: "grounding".to_string(), // Dummy ID
+                                            status: "completed".to_string(),
+                                            action: Some(action),
+                                        })
+                                        .await;
+                                }
+
                                 if let Some(content) = candidate.content {
                                     if let Some(parts) = content.parts {
                                         for part in parts {
@@ -561,16 +692,30 @@ impl AiClient for GoogleClient {
             }
         }
 
-        // Build debug info
+        // Build debug info - using Google Gemini API format
         let debug_info = DebugInfoData {
             request: Some(debug_request),
             response: Some(DebugResponseData {
                 status: status_code,
                 headers: response_headers,
                 body: serde_json::json!({
-                    "content": full_content.clone(),
-                    "thinking": if full_thinking.is_empty() { None } else { Some(full_thinking.clone()) },
-                    "usage": token_usage.clone(),
+                    "candidates": [{
+                        "content": {
+                            "parts": [{
+                                "text": full_content.clone()
+                            }],
+                            "role": "model"
+                        },
+                        "finishReason": "STOP",
+                        "groundingMetadata": full_grounding
+                    }],
+                    "usageMetadata": token_usage.as_ref().map(|u| serde_json::json!({
+                        "promptTokenCount": u.prompt_tokens,
+                        "candidatesTokenCount": u.completion_tokens,
+                        "totalTokenCount": u.total_tokens,
+                        "cachedContentTokenCount": u.cached_tokens,
+                        "thoughtsTokenCount": u.reasoning_tokens
+                    }))
                 }),
             }),
         };

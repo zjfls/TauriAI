@@ -5,7 +5,10 @@
 //! 这样后续扩展 ToolAgent / CodeAgent / SolutionRunner 时，可以复用同样的分层方式，保持结构干净。
 
 use crate::errors::AppErrorCode;
-use crate::models::{Agent, AppConfig, Message, MessageRole, MessageStatus, Model, ModelConfig, ModelParameters, Provider};
+use crate::models::{
+    Agent, AppConfig, Message, MessageRole, MessageStatus, Model, ModelConfig, ModelParameters,
+    Provider,
+};
 use crate::prompts::{compose_system_prompt, FormatPromptType};
 
 pub struct ResolvedChatModel<'a> {
@@ -21,8 +24,8 @@ pub fn resolve_chat_model<'a>(
 ) -> Result<ResolvedChatModel<'a>, AppErrorCode> {
     // 解析优先级：显式 model_ref > agent 默认 model_ref（便于多会话/多 agent 场景按会话覆盖模型）
     if let Some(model_ref_str) = model_ref {
-        let (provider_name, model_name) = AppConfig::parse_model_ref(model_ref_str)
-            .ok_or(AppErrorCode::ModelConfigMissing)?;
+        let (provider_name, model_name) =
+            AppConfig::parse_model_ref(model_ref_str).ok_or(AppErrorCode::ModelConfigMissing)?;
 
         let provider = config
             .get_provider(provider_name)
@@ -72,6 +75,7 @@ pub fn build_model_config(
     provider: &Provider,
     model: &Model,
     thinking: Option<serde_json::Value>,
+    web_search_enabled: Option<bool>,
 ) -> ModelConfig {
     // 这里把“前端 thinking 模式”的表达统一折算成后端 ModelConfig：
     // - model.capabilities.thinking=false => 不下发 thinking 参数
@@ -105,7 +109,10 @@ pub fn build_model_config(
         },
         thinking_budget_tokens: model.thinking_budget_tokens,
         vision_enabled: model.capabilities.vision,
-        web_search_enabled: model.capabilities.web_search,
+        // web_search_enabled: 前端传入的 toggle 覆盖模型能力
+        // - 如果 model 不支持 web_search，则始终为 false
+        // - 如果 model 支持且用户未明确关闭，则默认启用
+        web_search_enabled: model.capabilities.web_search && web_search_enabled.unwrap_or(true),
         max_images: model.max_images,
     }
 }

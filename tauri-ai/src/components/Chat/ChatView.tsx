@@ -66,14 +66,19 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
     return currentModel?.capabilities?.vision ?? false;
   }, [currentModel]);
 
+  // Check if current model supports web search
+  const supportsWebSearch = useMemo(() => {
+    return currentModel?.capabilities?.webSearch ?? false;
+  }, [currentModel]);
+
   // Get API protocol type for thinking mode
   const apiProtocol = useMemo(() => {
     const sessionModelRef = session?.modelRef;
     const agent = session ? getAgent(session.agentName) : null;
     const modelRef = sessionModelRef || agent?.modelRef;
-    
+
     if (!modelRef) return 'chat_completions';
-    
+
     return getApiProtocol(modelRef, config?.providers || []);
   }, [session, getAgent, config]);
 
@@ -317,17 +322,23 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
         }}
         agents={config?.agents || []}
         currentAgentName={session?.agentName || ''}
-	        onAgentSelect={(agentName) => sessionId && setSessionAgent(sessionId, agentName)}
-	        modelOptions={getModelOptions()}
-	        currentModelRef={session?.modelRef || ''}
-	        onModelSelect={(modelRef) => {
-	          if (!sessionId) return;
-	          // 模型切换已支持跨协议适配：不再弹窗阻断，失败时仅在控制台记录。
-	          setSessionModel(sessionId, modelRef).catch(console.error);
-	        }}
-	      />
-	    </div>
-	  );
+        onAgentSelect={(agentName) => sessionId && setSessionAgent(sessionId, agentName)}
+        modelOptions={getModelOptions()}
+        currentModelRef={session?.modelRef || ''}
+        onModelSelect={(modelRef) => {
+          if (!sessionId) return;
+          // 模型切换已支持跨协议适配：不再弹窗阻断，失败时仅在控制台记录。
+          setSessionModel(sessionId, modelRef).catch(console.error);
+        }}
+        supportsWebSearch={supportsWebSearch}
+        webSearchEnabled={session?.webSearchEnabled ?? supportsWebSearch}
+        onWebSearchToggle={(enabled) => {
+          if (!sessionId) return;
+          useSessionStore.getState().setSessionWebSearchEnabled(sessionId, enabled);
+        }}
+      />
+    </div>
+  );
 };
 
 export default ChatView;

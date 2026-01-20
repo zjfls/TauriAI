@@ -661,6 +661,7 @@ export interface AgentSession {
 
   // Per-session settings
   thinkingMode?: ThinkingMode;        // Current thinking mode/level for this session
+  webSearchEnabled?: boolean;         // Whether web search is enabled for this session
   draftContent?: string;              // Unsent input text for this session
 
   // Session state
@@ -690,6 +691,7 @@ export interface PersistedSession {
   conversationId: string | null;
   apiType: ApiProtocolType | null;  // Persisted API type lock
   thinkingMode?: ThinkingMode;      // Persisted thinking mode/level
+  webSearchEnabled?: boolean;       // Persisted web search state
   draftContent?: string;            // Persisted unsent input text
   createdAt: string;
   lastActiveAt: string;

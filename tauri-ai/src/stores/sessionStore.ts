@@ -73,6 +73,7 @@ export interface SessionState {
 
   // Per-session settings
   setSessionThinkingMode: (sessionId: string, thinkingMode: ThinkingMode) => void;
+  setSessionWebSearchEnabled: (sessionId: string, enabled: boolean) => void;
   setSessionDraftContent: (sessionId: string, draftContent: string) => void;
 
   // Title generation
@@ -178,7 +179,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       thinkingMode,
     }).catch(console.error);
 
-  const session: AgentSession = {
+    const session: AgentSession = {
       id: sessionId,
       agentName,
       title: defaultTitle,
@@ -282,7 +283,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    */
   closeOtherSessions: (keepSessionId: string) => {
     const { sessions } = get();
-    
+
     // Check if the session to keep exists
     if (!sessions.has(keepSessionId)) return;
 
@@ -309,13 +310,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    */
   closeSessionsToLeft: (sessionId: string) => {
     const { sessions, activeSessionId } = get();
-    
+
     // Check if the target session exists
     if (!sessions.has(sessionId)) return;
 
     // Convert sessions map to array to get indices
     const sessionArray = Array.from(sessions.entries());
-    
+
     // Find the index of the target session
     const targetIndex = sessionArray.findIndex(([id]) => id === sessionId);
     if (targetIndex === -1) return;
@@ -332,7 +333,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     // Determine new active session
     let newActiveId = activeSessionId;
-    
+
     // If the active session was closed (it was to the left), update active session
     if (activeSessionId && !newSessions.has(activeSessionId)) {
       // Set the target session or the first remaining session as active
@@ -355,13 +356,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    */
   closeSessionsToRight: (sessionId: string) => {
     const { sessions, activeSessionId } = get();
-    
+
     // Check if the target session exists
     if (!sessions.has(sessionId)) return;
 
     // Convert sessions map to array to get indices
     const sessionArray = Array.from(sessions.entries());
-    
+
     // Find the index of the target session
     const targetIndex = sessionArray.findIndex(([id]) => id === sessionId);
     if (targetIndex === -1) return;
@@ -378,7 +379,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     // Determine new active session
     let newActiveId = activeSessionId;
-    
+
     // If the active session was closed (it was to the right), update active session
     if (activeSessionId && !newSessions.has(activeSessionId)) {
       // Set the target session or the first remaining session as active
@@ -400,7 +401,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    * Send a message in a specific session
    * Requirements: 4.3, 4.4
    */
-	  sendMessage: async (sessionId: string, content: string, thinking?: boolean | string, images?: ContentPart[]) => {
+  sendMessage: async (sessionId: string, content: string, thinking?: boolean | string, images?: ContentPart[]) => {
     // Wait for any pending undo operations to complete first
     // This prevents race conditions where new messages are sent before backend deletion finishes
     await pendingUndoOperation;
@@ -437,22 +438,22 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       createdAt: new Date().toISOString(),
     };
 
-	    // Update session state (stream start)
-	    set((state) => {
-	      const newSessions = new Map(state.sessions);
-	      const currentSession = newSessions.get(sessionId);
-	      if (currentSession) {
-	        newSessions.set(sessionId, {
-	          ...currentSession,
-	          messages: [...currentSession.messages, userMessage],
-	          isGenerating: true,
-	          streamingBlocks: [],
-	          error: null,
-	          lastActiveAt: new Date().toISOString(),
-	        });
-	      }
-	      return { sessions: newSessions };
-	    });
+    // Update session state (stream start)
+    set((state) => {
+      const newSessions = new Map(state.sessions);
+      const currentSession = newSessions.get(sessionId);
+      if (currentSession) {
+        newSessions.set(sessionId, {
+          ...currentSession,
+          messages: [...currentSession.messages, userMessage],
+          isGenerating: true,
+          streamingBlocks: [],
+          error: null,
+          lastActiveAt: new Date().toISOString(),
+        });
+      }
+      return { sessions: newSessions };
+    });
 
     try {
       await invoke('run_task', {
@@ -463,6 +464,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         agentName: session.agentName,
         modelRef: session.modelRef,
         thinking,  // 直接传递 thinking，可以是 boolean 或 string
+        webSearchEnabled: session.webSearchEnabled,  // 传递 web search 状态
       });
     } catch (err) {
       get().handleError(sessionId, (err as any).message || String(err));
@@ -778,48 +780,48 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    * Handle error in a session
    * Requirements: 7.4
    */
-	  handleError: (sessionId: string, error: string, debugInfo?: DebugInfo) => {
-	    set((state) => {
-	      const newSessions = new Map(state.sessions);
-	      const currentSession = newSessions.get(sessionId);
-	      if (currentSession) {
-	        const updatedMessages = [...currentSession.messages];
+  handleError: (sessionId: string, error: string, debugInfo?: DebugInfo) => {
+    set((state) => {
+      const newSessions = new Map(state.sessions);
+      const currentSession = newSessions.get(sessionId);
+      if (currentSession) {
+        const updatedMessages = [...currentSession.messages];
 
-	        // 用户消息本身视为已成功发送；错误以 assistant/error 气泡展示，便于查看调试信息。
-	        for (let i = updatedMessages.length - 1; i >= 0; i--) {
-	          if (updatedMessages[i].role === 'user' && updatedMessages[i].status === 'pending') {
-	            updatedMessages[i] = { ...updatedMessages[i], status: 'success', error: undefined };
-	            break;
-	          }
-	        }
+        // 用户消息本身视为已成功发送；错误以 assistant/error 气泡展示，便于查看调试信息。
+        for (let i = updatedMessages.length - 1; i >= 0; i--) {
+          if (updatedMessages[i].role === 'user' && updatedMessages[i].status === 'pending') {
+            updatedMessages[i] = { ...updatedMessages[i], status: 'success', error: undefined };
+            break;
+          }
+        }
 
-	        const errorMessage: Message = {
-	          id: crypto.randomUUID(),
-	          conversationId: currentSession.conversationId || '',
-	          role: 'error',
-	          content: error,
-	          status: 'failed',
-	          debugInfo,
-	          actions: [
-	            {
-	              id: 'copy_error',
-	              label: '复制',
-	              icon: 'Copy',
-	              action_type: 'copy',
-	              payload: error,
-	            },
-	          ],
-	          createdAt: new Date().toISOString(),
-	        };
+        const errorMessage: Message = {
+          id: crypto.randomUUID(),
+          conversationId: currentSession.conversationId || '',
+          role: 'error',
+          content: error,
+          status: 'failed',
+          debugInfo,
+          actions: [
+            {
+              id: 'copy_error',
+              label: '复制',
+              icon: 'Copy',
+              action_type: 'copy',
+              payload: error,
+            },
+          ],
+          createdAt: new Date().toISOString(),
+        };
 
-	        newSessions.set(sessionId, {
-	          ...currentSession,
-	          messages: [...updatedMessages, errorMessage],
-	          error,
-	          isGenerating: false,
-	          streamingBlocks: null,
-	        });
-	      }
+        newSessions.set(sessionId, {
+          ...currentSession,
+          messages: [...updatedMessages, errorMessage],
+          error,
+          isGenerating: false,
+          streamingBlocks: null,
+        });
+      }
       return { sessions: newSessions };
     });
   },
@@ -828,27 +830,27 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    * Set the model for a specific session
    * Requirements: 6.1, 6.2, 6.3
    */
-	  setSessionModel: async (sessionId: string, modelRef: string) => {
-	    const session = get().sessions.get(sessionId);
-	    if (!session) return;
+  setSessionModel: async (sessionId: string, modelRef: string) => {
+    const session = get().sessions.get(sessionId);
+    if (!session) return;
 
-	    const { useConfigStore } = await import('./configStore');
-	    const config = useConfigStore.getState().config;
-	    const apiProtocol = config ? getApiProtocol(modelRef, config.providers) : 'chat_completions';
+    const { useConfigStore } = await import('./configStore');
+    const config = useConfigStore.getState().config;
+    const apiProtocol = config ? getApiProtocol(modelRef, config.providers) : 'chat_completions';
 
-	    set((state) => {
-	      const newSessions = new Map(state.sessions);
-	      const s = newSessions.get(sessionId);
-	      if (s) {
-	        newSessions.set(sessionId, {
-	          ...s,
-	          modelRef,
-	          apiType: apiProtocol,
-	          thinkingMode: coerceThinkingModeForProtocol(s.thinkingMode, apiProtocol),
-	        });
-	      }
-	      return { sessions: newSessions };
-	    });
+    set((state) => {
+      const newSessions = new Map(state.sessions);
+      const s = newSessions.get(sessionId);
+      if (s) {
+        newSessions.set(sessionId, {
+          ...s,
+          modelRef,
+          apiType: apiProtocol,
+          thinkingMode: coerceThinkingModeForProtocol(s.thinkingMode, apiProtocol),
+        });
+      }
+      return { sessions: newSessions };
+    });
 
     // Sync to DB
     // We need to pass both agent and model because the backend overwrites
@@ -878,32 +880,32 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    * Set the agent for a specific session
    * Requirements: 6.1, 6.2
    */
-	  setSessionAgent: async (sessionId: string, agentName: string) => {
-	    const currentSession = get().sessions.get(sessionId);
-	    if (!currentSession) return;
+  setSessionAgent: async (sessionId: string, agentName: string) => {
+    const currentSession = get().sessions.get(sessionId);
+    if (!currentSession) return;
 
     // Get the new agent's default model
     const { useConfigStore } = await import('./configStore');
     const agent = useConfigStore.getState().getAgent(agentName);
     const config = useConfigStore.getState().config;
 
-	    const modelRef = agent?.modelRef;
-	    const apiProtocol = modelRef && config ? getApiProtocol(modelRef, config.providers) : 'chat_completions';
+    const modelRef = agent?.modelRef;
+    const apiProtocol = modelRef && config ? getApiProtocol(modelRef, config.providers) : 'chat_completions';
 
-	    set((state) => {
-	      const newSessions = new Map(state.sessions);
-	      const session = newSessions.get(sessionId);
-	      if (session) {
-	        newSessions.set(sessionId, {
-	          ...session,
-	          agentName,
-	          modelRef, // Update to agent's default model
-	          apiType: apiProtocol,
-	          thinkingMode: coerceThinkingModeForProtocol(session.thinkingMode, apiProtocol),
-	        });
-	      }
-	      return { sessions: newSessions };
-	    });
+    set((state) => {
+      const newSessions = new Map(state.sessions);
+      const session = newSessions.get(sessionId);
+      if (session) {
+        newSessions.set(sessionId, {
+          ...session,
+          agentName,
+          modelRef, // Update to agent's default model
+          apiType: apiProtocol,
+          thinkingMode: coerceThinkingModeForProtocol(session.thinkingMode, apiProtocol),
+        });
+      }
+      return { sessions: newSessions };
+    });
 
     // Sync to DB
     const nextThinkingMode = coerceThinkingModeForProtocol(currentSession.thinkingMode, apiProtocol);
@@ -961,6 +963,27 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         });
       }).catch(console.error);
     }
+  },
+
+  /**
+   * Update per-session web search enabled state
+   */
+  setSessionWebSearchEnabled: (sessionId: string, enabled: boolean) => {
+    set((state) => {
+      const newSessions = new Map(state.sessions);
+      const session = newSessions.get(sessionId);
+      if (!session) return {};
+
+      newSessions.set(sessionId, {
+        ...session,
+        webSearchEnabled: enabled,
+        lastActiveAt: new Date().toISOString(),
+      });
+
+      return { sessions: newSessions };
+    });
+
+    get().saveSessionState();
   },
 
   /**
@@ -1120,21 +1143,21 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         const conv = conversations.find(c => c.id === persisted.conversationId);
         const title = conv?.title || '新对话';
 
-	        const agent = useConfigStore.getState().getAgent(agentName);
-	        const modelRef = persisted.modelRef || agent?.modelRef;
-	        const apiProtocol = modelRef && config ? getApiProtocol(modelRef, config.providers) : 'chat_completions';
+        const agent = useConfigStore.getState().getAgent(agentName);
+        const modelRef = persisted.modelRef || agent?.modelRef;
+        const apiProtocol = modelRef && config ? getApiProtocol(modelRef, config.providers) : 'chat_completions';
 
-	        const session: AgentSession = {
-	          id: persisted.id,
-	          agentName,
-	          title,
-	          modelRef,
-	          conversationId: persisted.conversationId,
-	          apiType: apiProtocol,
-	          thinkingMode: coerceThinkingModeForProtocol(persisted.thinkingMode, apiProtocol),
-	          draftContent: persisted.draftContent ?? '',
-	          messages,
-	          streamingBlocks: null,
+        const session: AgentSession = {
+          id: persisted.id,
+          agentName,
+          title,
+          modelRef,
+          conversationId: persisted.conversationId,
+          apiType: apiProtocol,
+          thinkingMode: coerceThinkingModeForProtocol(persisted.thinkingMode, apiProtocol),
+          draftContent: persisted.draftContent ?? '',
+          messages,
+          streamingBlocks: null,
           isGenerating: false,
           error: null,
           createdAt: persisted.createdAt,
@@ -1223,17 +1246,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }).catch(console.error);
     }
 
-	    const session: AgentSession = {
-	      id: sessionId,
-	      agentName,
-	      title: conversation?.title || '新对话',
-	      modelRef,
-	      conversationId,
-	      apiType: apiProtocol,
-	      thinkingMode: coerceThinkingModeForProtocol(conversation?.thinkingMode, apiProtocol),
-	      draftContent: '',
-	      messages,
-	      streamingBlocks: null,
+    const session: AgentSession = {
+      id: sessionId,
+      agentName,
+      title: conversation?.title || '新对话',
+      modelRef,
+      conversationId,
+      apiType: apiProtocol,
+      thinkingMode: coerceThinkingModeForProtocol(conversation?.thinkingMode, apiProtocol),
+      draftContent: '',
+      messages,
+      streamingBlocks: null,
       isGenerating: false,
       error: null,
       createdAt: now,

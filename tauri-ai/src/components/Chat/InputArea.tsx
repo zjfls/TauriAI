@@ -9,6 +9,7 @@ import { Send, Square, Bot, Cpu, ChevronDown, Check, ImagePlus, Paperclip, FileT
 import { ContextUsageIndicator } from './ContextUsageIndicator';
 import { AttachmentPreview } from './AttachmentPreview';
 import { ThinkingSelector } from './ThinkingSelector';
+import { WebSearchToggle } from './WebSearchToggle';
 import { isSupportedTextFile, readTextFile, validateFileCount } from '../../utils/textFileUtils';
 import { isValidPdfFile, validatePdfSize, processPdfFile, MAX_PDF_SIZE } from '../../utils/pdfUtils';
 import type { ContextUsageBreakdown, Agent, ContentPart, PendingImage, PendingTextFile, PendingPdf, ApiProtocolType, ThinkingMode } from '../../types';
@@ -96,6 +97,10 @@ interface InputAreaProps {
   modelOptions?: ModelOption[];
   currentModelRef?: string;
   onModelSelect?: (modelRef: string) => void;
+  // Web search
+  supportsWebSearch?: boolean;  // Whether current model supports web search
+  webSearchEnabled?: boolean;   // Whether web search is enabled
+  onWebSearchToggle?: (enabled: boolean) => void;  // Callback when web search is toggled
   // PDF debug mode
   pdfDebugMode?: boolean;  // Whether to enable PDF debug mode controls
 }
@@ -391,11 +396,10 @@ const AttachmentMenu: React.FC<AttachmentMenuProps> = ({
                 }
               }}
               disabled={!item.enabled}
-              className={`flex items-center gap-2 w-full px-3 py-1.5 text-left transition-colors ${
-                item.enabled
-                  ? 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
-                  : 'text-gray-400 dark:text-gray-600 cursor-not-allowed'
-              }`}
+              className={`flex items-center gap-2 w-full px-3 py-1.5 text-left transition-colors ${item.enabled
+                ? 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
+                : 'text-gray-400 dark:text-gray-600 cursor-not-allowed'
+                }`}
               title={!item.enabled ? item.disabledTip : undefined}
             >
               {item.icon}
@@ -584,6 +588,9 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   modelOptions = [],
   currentModelRef = '',
   onModelSelect,
+  supportsWebSearch = false,
+  webSearchEnabled = false,
+  onWebSearchToggle,
   pdfDebugMode = false,
 }, ref) => {
   const [contentDraft, setContentDraft] = useState('');
@@ -682,7 +689,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
         }
       },
     } as FileList;
-    
+
     // Add indexed access
     files.forEach((file, index) => {
       Object.defineProperty(fileList, index, {
@@ -690,7 +697,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
         enumerable: true,
       });
     });
-    
+
     return fileList;
   }, []);
 
@@ -714,7 +721,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
     for (const file of Array.from(files)) {
       // Only accept image files
       if (!file.type.startsWith('image/')) continue;
-      
+
       // Limit file size to 20MB
       if (file.size > 20 * 1024 * 1024) {
         console.warn('Image too large:', file.name);
@@ -747,10 +754,10 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
     setFileError(null);
 
     const filesToProcess = Array.from(files);
-    
+
     // Validate file count (Requirements: 5.3, 5.4)
     const validation = validateFileCount(pendingTextFiles.length, filesToProcess.length);
-    
+
     if (!validation.canAdd) {
       setFileError(validation.error);
       return;
@@ -763,7 +770,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
     }
 
     const newFiles: PendingTextFile[] = [];
-    
+
     for (const file of filesToProcess) {
       // Check if file extension is supported (Requirements: 1.4, 4.3)
       if (!isSupportedTextFile(file.name)) {
@@ -822,7 +829,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
       setPdfError(`最多只能同时处理 ${MAX_PDF_COUNT} 个 PDF 文档`);
       // Only process files that fit within the limit
       filesToProcess.splice(MAX_PDF_COUNT - currentCount);
-      
+
       if (filesToProcess.length === 0) {
         return;
       }
@@ -845,9 +852,9 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
         // Process PDF file (Requirements: 1.4, 1.6)
         const pendingPdf = await processPdfFile(file, (progress) => {
           // Update processing progress
-          setPendingPdfs(prev => 
-            prev.map(p => 
-              p.filename === file.name 
+          setPendingPdfs(prev =>
+            prev.map(p =>
+              p.filename === file.name
                 ? { ...p, processingProgress: progress }
                 : p
             )
@@ -890,9 +897,9 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
    * @param {number} [endPage] - Ending page number (1-indexed), undefined for all pages
    */
   const handlePdfPageRangeChange = useCallback((id: string, startPage?: number, endPage?: number) => {
-    setPendingPdfs(prev => 
-      prev.map(pdf => 
-        pdf.id === id 
+    setPendingPdfs(prev =>
+      prev.map(pdf =>
+        pdf.id === id
           ? { ...pdf, pageRangeStart: startPage, pageRangeEnd: endPage }
           : pdf
       )
@@ -911,9 +918,9 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
    * @param {boolean} includeImages - Whether to include images from PDF
    */
   const handlePdfIncludeImagesChange = useCallback((id: string, includeImages: boolean) => {
-    setPendingPdfs(prev => 
-      prev.map(pdf => 
-        pdf.id === id 
+    setPendingPdfs(prev =>
+      prev.map(pdf =>
+        pdf.id === id
           ? { ...pdf, includeImages }
           : pdf
       )
@@ -932,9 +939,9 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
    * @param {boolean} includeText - Whether to include text from PDF
    */
   const handlePdfIncludeTextChange = useCallback((id: string, includeText: boolean) => {
-    setPendingPdfs(prev => 
-      prev.map(pdf => 
-        pdf.id === id 
+    setPendingPdfs(prev =>
+      prev.map(pdf =>
+        pdf.id === id
           ? { ...pdf, includeText }
           : pdf
       )
@@ -1005,7 +1012,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
       const pdfFiles: File[] = [];
       let skippedUnsupportedCount = 0;
       let skippedNullFileCount = 0;  // Track items where getAsFile() returns null
-      
+
       // Collect and classify files from clipboard in order (Requirements: 2.1, 2.3, 7.4)
       // Process each clipboard item sequentially to maintain paste order
       for (const item of Array.from(items)) {
@@ -1018,7 +1025,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
             console.debug('Skipped clipboard item with null file:', item.type);
             continue;
           }
-          
+
           // Check for images (Requirements: 3.1, 3.2 - consider supportsVision flag)
           // Only accept images if model supports vision capability
           if (item.type.startsWith('image/') && supportsVision) {
@@ -1092,7 +1099,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
 
       // Process valid files in order to maintain paste sequence (Requirement 2.1, 2.4)
       // Ensure partial failures don't prevent successful files from being added (Requirement 4.3)
-      
+
       // Handle valid image files
       if (validation.imageFiles.length > 0) {
         try {
@@ -1106,7 +1113,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
           setFileError('部分图片文件处理失败，请重试');
         }
       }
-      
+
       // Handle valid text files
       if (validation.textFiles.length > 0) {
         try {
@@ -1118,7 +1125,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
           setFileError('部分文本文件处理失败，请重试');
         }
       }
-      
+
       // Handle valid PDF files (Requirements: 1.1, 1.2)
       if (validation.pdfFiles.length > 0) {
         try {
@@ -1134,17 +1141,17 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
       // Show warning if some files were skipped (Requirements: 2.2, 2.3, 7.4)
       // Collect all warnings to provide comprehensive feedback
       const warnings: string[] = [];
-      
+
       // Add validation errors (files exceeding limits)
       if (validation.errors.length > 0) {
         warnings.push(...validation.errors);
       }
-      
+
       // Add unsupported file type warning (Requirement 2.3)
       if (skippedUnsupportedCount > 0) {
         warnings.push(`已跳过 ${skippedUnsupportedCount} 个不支持的文件类型`);
       }
-      
+
       // Add null file warning for debugging (Requirement 7.4)
       if (skippedNullFileCount > 0) {
         console.debug(`Skipped ${skippedNullFileCount} clipboard items with null files`);
@@ -1153,7 +1160,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
           warnings.push(`无法读取 ${skippedNullFileCount} 个剪贴板项目`);
         }
       }
-      
+
       // Display warnings if any
       if (warnings.length > 0) {
         const warningMessage = warnings.join('；');
@@ -1196,12 +1203,12 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     const files = e.dataTransfer.files;
-    
+
     // Separate image files, text files, and PDF files
     const imageFiles: File[] = [];
     const textFiles: File[] = [];
     const pdfFiles: File[] = [];
-    
+
     // Classify each dropped file by type
     for (const file of Array.from(files)) {
       if (file.type.startsWith('image/') && supportsVision) {
@@ -1213,17 +1220,17 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
       }
       // Silently ignore unsupported files (Requirement 4.3, 7.3)
     }
-    
+
     // Handle image files
     if (imageFiles.length > 0) {
       handleImageSelect(createFileList(imageFiles));
     }
-    
+
     // Handle text files
     if (textFiles.length > 0) {
       handleTextFileSelect(createFileList(textFiles));
     }
-    
+
     // Handle PDF files (Requirements: 7.1, 7.2, 7.4)
     if (pdfFiles.length > 0) {
       handlePdfSelect(createFileList(pdfFiles));
@@ -1332,13 +1339,13 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
     }
 
     const trimmedContent = content.trim();
-    
+
     // Build content parts for images, text files, and PDFs
     let contentParts: ContentPart[] | undefined;
-    
+
     if (pendingImages.length > 0 || pendingTextFiles.length > 0 || pendingPdfs.length > 0) {
       contentParts = [];
-      
+
       // Add image content parts
       for (const img of pendingImages) {
         contentParts.push({
@@ -1347,7 +1354,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
           detail: 'auto' as const,
         });
       }
-      
+
       // Add text file content parts (Requirements: 3.1, 3.2, 3.4)
       // Send raw content, backend will format it
       for (const file of pendingTextFiles) {
@@ -1357,7 +1364,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
           content: file.content,  // Send raw content, not formatted
         });
       }
-      
+
       // Add PDF content parts (Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7)
       for (const pdf of pendingPdfs) {
         contentParts.push({
@@ -1449,10 +1456,10 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
 
   // Check if we have selectors to show
   const hasSelectors = agents.length > 0 || modelOptions.length > 0;
-  const hasFeatureToggles = supportsThinking || supportsVision || contextUsage || hasSelectors;
+  const hasFeatureToggles = supportsThinking || supportsWebSearch || supportsVision || contextUsage || hasSelectors;
 
   return (
-    <div 
+    <div
       className="border-t border-gray-200 bg-white px-4 py-3 dark:border-gray-700 dark:bg-gray-800"
       onDrop={handleDrop}
       onDragOver={handleDragOver}
@@ -1493,6 +1500,14 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
                 apiProtocol={apiProtocol}
                 value={thinkingMode}
                 onChange={handleThinkingModeChange}
+                disabled={isGenerating}
+              />
+            )}
+            {/* Web search toggle */}
+            {supportsWebSearch && onWebSearchToggle && (
+              <WebSearchToggle
+                enabled={webSearchEnabled}
+                onToggle={() => onWebSearchToggle(!webSearchEnabled)}
                 disabled={isGenerating}
               />
             )}
