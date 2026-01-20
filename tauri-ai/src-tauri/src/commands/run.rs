@@ -25,6 +25,7 @@ pub async fn run_task(
     agent_name: Option<String>,
     model_ref: Option<String>,
     thinking: Option<serde_json::Value>,
+    web_search_enabled: Option<bool>,
     db: tauri::State<'_, Arc<Mutex<Database>>>,
     config_manager: tauri::State<'_, Arc<ConfigManager>>,
     run_state: tauri::State<'_, Arc<RunState>>,
@@ -39,6 +40,7 @@ pub async fn run_task(
             agent_name,
             model_ref,
             thinking,
+            web_search_enabled,
         },
         db.inner().clone(),
         config_manager.inner().clone(),
@@ -56,4 +58,3 @@ pub async fn abort_run(
     run_state.abort_and_wait(&conversation_id, 5_000).await;
     Ok(())
 }
-

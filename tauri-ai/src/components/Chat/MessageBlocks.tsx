@@ -135,8 +135,8 @@ const WebSearchBlock: React.FC<{ status: string; action?: unknown; isStreaming?:
     const pattern = typeof a.pattern === 'string' ? a.pattern : undefined;
     const sources = Array.isArray(a.sources)
       ? a.sources
-          .map((s: any) => (typeof s?.url === 'string' ? s.url : null))
-          .filter((u: any) => typeof u === 'string')
+        .map((s: any) => (typeof s?.url === 'string' ? s.url : null))
+        .filter((u: any) => typeof u === 'string')
       : undefined;
 
     return { type, query, queries, url, pattern, sources };
@@ -175,11 +175,21 @@ const WebSearchBlock: React.FC<{ status: string; action?: unknown; isStreaming?:
 
       {isExpanded && (
         <div className="border-t border-blue-200 px-3 py-2 text-sm text-blue-900 dark:border-blue-800 dark:text-blue-100">
-          {!info && <pre className="whitespace-pre-wrap break-words">{JSON.stringify(action, null, 2)}</pre>}
+          {!info ? (
+            isStreaming ? (
+              <div className="flex space-x-1 py-1">
+                <div className="h-2 w-2 animate-bounce rounded-full bg-blue-500 [animation-delay:-0.3s]" />
+                <div className="h-2 w-2 animate-bounce rounded-full bg-blue-500 [animation-delay:-0.15s]" />
+                <div className="h-2 w-2 animate-bounce rounded-full bg-blue-500" />
+              </div>
+            ) : (
+              <pre className="whitespace-pre-wrap break-words">{JSON.stringify(action, null, 2)}</pre>
+            )
+          ) : null}
 
           {info && (
             <div className="space-y-2">
-              {info.type && (
+              {info.type && info.type !== 'search' && (
                 <div className="text-xs text-blue-700 dark:text-blue-300">action: {info.type}</div>
               )}
 

@@ -14,7 +14,9 @@ use tokio::sync::{mpsc, Mutex};
 use crate::agents::chat::{
     build_model_config, build_request_messages, get_output_format, resolve_chat_model,
 };
-use crate::ai_client::{get_client, DebugInfoData, StreamEvent, TokenUsage, ToolCall, ToolDefinition};
+use crate::ai_client::{
+    get_client, DebugInfoData, StreamEvent, TokenUsage, ToolCall, ToolDefinition,
+};
 use crate::config::ConfigManager;
 use crate::errors::{AppErrorCode, SerializableError};
 use crate::models::{AgentType, ContentPart, Message, MessageMeta, MessageRole, MessageStatus};
@@ -35,6 +37,7 @@ pub struct RunTaskInput {
     pub agent_name: Option<String>,
     pub model_ref: Option<String>,
     pub thinking: Option<serde_json::Value>,
+    pub web_search_enabled: Option<bool>,
 }
 
 #[derive(Debug)]
@@ -151,7 +154,10 @@ impl<'a> TurnLoop<'a> {
                         usage,
                     };
                 }
-                TurnStreamResult::ToolCalls { thinking, tool_calls } => {
+                TurnStreamResult::ToolCalls {
+                    thinking,
+                    tool_calls,
+                } => {
                     self.emitter.emit(RunEvent::TurnPhaseFinished {
                         task_id: self.task_id.clone(),
                         turn_id: turn_id.clone(),
@@ -378,7 +384,11 @@ async fn run_task_inner(
 
     let mut emitter = RunEmitter::new(app, input.conversation_id.clone(), run_id.clone());
 
-    let resolved = resolve_chat_model(&config, input.agent_name.as_deref(), input.model_ref.as_deref())?;
+    let resolved = resolve_chat_model(
+        &config,
+        input.agent_name.as_deref(),
+        input.model_ref.as_deref(),
+    )?;
     let (provider, model, agent) = (resolved.provider, resolved.model, resolved.agent);
     let output_format = get_output_format(agent);
 
@@ -390,13 +400,16 @@ async fn run_task_inner(
         .into());
     }
 
-    let model_config = build_model_config(provider, model, input.thinking);
+    let model_config =
+        build_model_config(provider, model, input.thinking, input.web_search_enabled);
     let client = get_client(&model_config.provider)
         .map_err(|e| AppErrorCode::AiServiceError(e.to_string()))?;
 
     // 1) 落库用户消息（Pending）
     let user_message = Message {
-        id: input.message_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+        id: input
+            .message_id
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
         conversation_id: input.conversation_id.clone(),
         role: MessageRole::User,
         content: input.content.clone(),
@@ -488,7 +501,11 @@ async fn run_task_inner(
         } => {
             {
                 let db = db.lock().await;
-                let _ = db.update_message_status(&user_message.id, MessageStatus::Failed, Some(error.clone()));
+                let _ = db.update_message_status(
+                    &user_message.id,
+                    MessageStatus::Failed,
+                    Some(error.clone()),
+                );
             }
 
             emitter.emit(RunEvent::Error {
@@ -519,7 +536,11 @@ async fn run_task_inner(
                     role: MessageRole::Assistant,
                     content: content.clone(),
                     content_parts: Vec::new(),
-                    thinking: if thinking.trim().is_empty() { None } else { Some(thinking.clone()) },
+                    thinking: if thinking.trim().is_empty() {
+                        None
+                    } else {
+                        Some(thinking.clone())
+                    },
                     meta: Some(MessageMeta {
                         model: Some(model_config.model.clone()),
                         ..Default::default()
@@ -540,7 +561,11 @@ async fn run_task_inner(
                 assistant_message_id: Some(assistant_message_id),
                 full_content: content,
                 format: output_format,
-                thinking: if thinking.trim().is_empty() { None } else { Some(thinking) },
+                thinking: if thinking.trim().is_empty() {
+                    None
+                } else {
+                    Some(thinking)
+                },
                 debug_info,
                 usage,
                 model: Some(model_config.model),
@@ -564,7 +589,11 @@ async fn run_task_inner(
                     role: MessageRole::Assistant,
                     content: content.clone(),
                     content_parts: Vec::new(),
-                    thinking: if thinking.trim().is_empty() { None } else { Some(thinking.clone()) },
+                    thinking: if thinking.trim().is_empty() {
+                        None
+                    } else {
+                        Some(thinking.clone())
+                    },
                     meta: Some(MessageMeta {
                         model: Some(model_config.model.clone()),
                         ..Default::default()
@@ -585,7 +614,11 @@ async fn run_task_inner(
                 assistant_message_id: Some(assistant_message_id),
                 full_content: content,
                 format: output_format,
-                thinking: if thinking.trim().is_empty() { None } else { Some(thinking) },
+                thinking: if thinking.trim().is_empty() {
+                    None
+                } else {
+                    Some(thinking)
+                },
                 debug_info: None,
                 usage: None,
                 model: Some(model_config.model),
@@ -622,8 +655,11 @@ async fn stream_one_turn(
     let mut last_error: Option<String> = None;
     let mut tool_calls: Option<Vec<ToolCall>> = None;
 
-    let stream_handle =
-        tokio::spawn(async move { client.chat_stream(messages, &model_config, tools, token_tx).await });
+    let stream_handle = tokio::spawn(async move {
+        client
+            .chat_stream(messages, &model_config, tools, token_tx)
+            .await
+    });
 
     loop {
         tokio::select! {
