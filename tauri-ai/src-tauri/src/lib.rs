@@ -16,7 +16,7 @@ use tokio::sync::Mutex;
 use commands::{
     abort_run, create_conversation, delete_conversation, delete_messages_from,
     fetch_provider_models, generate_title, get_app_config, get_conversations, get_messages,
-    run_task, save_app_config, test_connection, update_conversation_metadata,
+    read_local_file_base64, run_task, save_app_config, test_connection, update_conversation_metadata,
     update_conversation_title,
 };
 use runtime::RunState;
@@ -71,6 +71,8 @@ pub fn run() {
             save_app_config,
             test_connection,
             fetch_provider_models,
+            // File commands (drag & drop paths -> data)
+            read_local_file_base64,
         ])
         .setup(|app| {
             // 初始化系统托盘

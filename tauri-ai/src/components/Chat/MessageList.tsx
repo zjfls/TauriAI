@@ -9,12 +9,17 @@ import type { Message, MessageBlock, Action } from '../../types';
 import { MessageItem } from './MessageItem';
 import { MessageBlocks } from './MessageBlocks';
 import { Bot, ArrowDown } from 'lucide-react';
+import { isTauri } from '@tauri-apps/api/core';
 
 interface MessageListProps {
   messages: Message[];
   streamingBlocks: MessageBlock[] | null;
   isGenerating: boolean;
   onAction: (action: Action) => void;
+  /** 拖拽文件到聊天窗口时转发给输入框 */
+  onDropFiles?: (files: FileList | File[]) => void;
+  /** 拖拽纯文本/链接到聊天窗口时转发给输入框 */
+  onDropText?: (text: string) => void;
 }
 
 // Threshold in pixels to consider "at bottom"
@@ -25,6 +30,8 @@ export const MessageList: React.FC<MessageListProps> = ({
   streamingBlocks,
   isGenerating: _isGenerating,
   onAction,
+  onDropFiles,
+  onDropText,
 }) => {
   void _isGenerating;
 
@@ -92,11 +99,61 @@ export const MessageList: React.FC<MessageListProps> = ({
     }
   }, [messages.length, scrollToBottom]);
 
+  const extractFilesFromDataTransfer = useCallback((dataTransfer: DataTransfer): File[] => {
+    if (dataTransfer.files && dataTransfer.files.length > 0) {
+      return Array.from(dataTransfer.files);
+    }
+
+    const items = dataTransfer.items;
+    if (!items || items.length === 0) return [];
+
+    const files: File[] = [];
+    for (const item of Array.from(items)) {
+      if (item.kind !== 'file') continue;
+      const file = item.getAsFile();
+      if (file) files.push(file);
+    }
+    return files;
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    // Prevent default to allow drop
+    e.preventDefault();
+  }, []);
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      // 在 Tauri 里，文件拖拽由 InputArea 统一监听 tauri://drag-drop 处理（避免重复添加）
+      if (isTauri()) {
+        const text = e.dataTransfer.getData('text/plain') || e.dataTransfer.getData('text/uri-list');
+        if (text) onDropText?.(text);
+        return;
+      }
+
+      const droppedFiles = extractFilesFromDataTransfer(e.dataTransfer);
+      if (droppedFiles.length > 0) {
+        onDropFiles?.(droppedFiles);
+        return;
+      }
+
+      const text = e.dataTransfer.getData('text/plain') || e.dataTransfer.getData('text/uri-list');
+      if (text) {
+        onDropText?.(text);
+      }
+    },
+    [extractFilesFromDataTransfer, onDropFiles, onDropText]
+  );
+
   return (
     <div
       ref={containerRef}
       className="flex-1 overflow-y-auto px-4 py-4"
       onScroll={handleScroll}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
     >
       {/* Empty state */}
       {messages.length === 0 && streamingBlocks === null && (

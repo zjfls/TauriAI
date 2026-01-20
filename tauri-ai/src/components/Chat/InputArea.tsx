@@ -14,6 +14,8 @@ import { isValidPdfFile, validatePdfSize, processPdfFile, MAX_PDF_SIZE } from '.
 import type { ContextUsageBreakdown, Agent, ContentPart, PendingImage, PendingTextFile, PendingPdf, ApiProtocolType, ThinkingMode } from '../../types';
 import { SUPPORTED_TEXT_EXTENSIONS, MAX_PDF_COUNT, MAX_TEXT_FILES } from '../../types';
 import { FILE_ERROR_MESSAGES } from '../../utils/textFileUtils';
+import { invoke, isTauri } from '@tauri-apps/api/core';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 
 // Constants for textarea sizing
 const MIN_TEXTAREA_HEIGHT = 40; // Minimum height in pixels
@@ -47,6 +49,78 @@ const PASTE_ERROR_MESSAGES = {
   MIXED_LIMIT_EXCEEDED: '部分文件因数量限制未能添加',
   NO_SUPPORTED_FILES: '未检测到支持的文件类型',
 } as const;
+
+const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.bmp': 'image/bmp',
+  '.svg': 'image/svg+xml',
+  '.heic': 'image/heic',
+  '.heif': 'image/heif',
+};
+
+function inferImageMimeType(filename: string): string | null {
+  const lower = filename.toLowerCase();
+  const dotIndex = lower.lastIndexOf('.');
+  if (dotIndex < 0) return null;
+  const ext = lower.slice(dotIndex);
+  return IMAGE_MIME_BY_EXTENSION[ext] ?? null;
+}
+
+function normalizeDroppedImageFile(file: File): File | null {
+  if (file.type?.startsWith('image/')) return file;
+
+  const inferred = inferImageMimeType(file.name);
+  if (!inferred) return null;
+
+  // 某些 WebView/浏览器会给本地文件的 type 为空，这里按扩展名补齐 MIME，保证后续渲染/发送一致
+  return new File([file], file.name, { type: inferred, lastModified: file.lastModified });
+}
+
+function normalizeDroppedPdfFile(file: File): File | null {
+  if (!file.name.toLowerCase().endsWith('.pdf')) return null;
+
+  if (file.type === 'application/pdf') return file;
+
+  // 某些 WebView/浏览器会给本地 PDF 的 type 为空，这里补齐 MIME，避免 isValidPdfFile 判定失败
+  return new File([file], file.name, { type: 'application/pdf', lastModified: file.lastModified });
+}
+
+function getFilenameFromPath(path: string): string {
+  const trimmed = path.replace(/[\\/]+$/, '');
+  return trimmed.split(/[\\/]/).pop() || trimmed;
+}
+
+function base64ToUint8Array(base64: string): Uint8Array {
+  const chunkSize = 1024 * 1024;
+  const safeChunkSize = chunkSize - (chunkSize % 4);
+
+  const chunks: Uint8Array[] = [];
+  let totalLength = 0;
+
+  for (let offset = 0; offset < base64.length; offset += safeChunkSize) {
+    const slice = base64.slice(offset, offset + safeChunkSize);
+    const binary = atob(slice);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    chunks.push(bytes);
+    totalLength += bytes.length;
+  }
+
+  const result = new Uint8Array(totalLength);
+  let resultOffset = 0;
+  for (const bytes of chunks) {
+    result.set(bytes, resultOffset);
+    resultOffset += bytes.length;
+  }
+
+  return result;
+}
 
 /**
  * Model option for dropdown selector
@@ -525,6 +599,10 @@ function CompactSelector<T extends { label: string; value: string }>({
 export interface InputAreaHandle {
   setValue: (value: string) => void;
   focus: () => void;
+  /** 从外部（例如聊天窗口 drop）追加文件到待发送附件 */
+  addFiles: (files: FileList | File[]) => void;
+  /** 从外部（例如聊天窗口 drop）把纯文本插入到输入框光标处 */
+  insertText: (text: string) => void;
 }
 
 /**
@@ -632,6 +710,43 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   const pdfFileInputRef = useRef<HTMLInputElement>(null);
 
   /**
+   * Insert text at the current cursor position (or append if cursor is unavailable).
+   * Used by drag-drop of plain text from both input area and chat window.
+   */
+  const insertTextAtCursor = useCallback(
+    (text: string) => {
+      if (!text || disabled) return;
+
+      const textarea = textareaRef.current;
+      const current = content ?? '';
+
+      if (!textarea) {
+        handleContentChange(current + text);
+        return;
+      }
+
+      const start = typeof textarea.selectionStart === 'number' ? textarea.selectionStart : current.length;
+      const end = typeof textarea.selectionEnd === 'number' ? textarea.selectionEnd : current.length;
+
+      const next = current.slice(0, start) + text + current.slice(end);
+      handleContentChange(next);
+
+      requestAnimationFrame(() => {
+        const el = textareaRef.current;
+        if (!el) return;
+        el.focus();
+        const cursor = start + text.length;
+        try {
+          el.setSelectionRange(cursor, cursor);
+        } catch {
+          // ignore
+        }
+      });
+    },
+    [content, disabled, isGenerating, handleContentChange]
+  );
+
+  /**
    * Convert file to base64 data URL
    * 
    * Reads a file and converts it to a base64-encoded data URL that can be used
@@ -711,7 +826,8 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
     if (!files || !supportsVision) return;
 
     const newImages: PendingImage[] = [];
-    for (const file of Array.from(files)) {
+    for (const rawFile of Array.from(files)) {
+      const file = normalizeDroppedImageFile(rawFile) ?? rawFile;
       // Only accept image files
       if (!file.type.startsWith('image/')) continue;
       
@@ -828,7 +944,8 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
       }
     }
 
-    for (const file of filesToProcess) {
+    for (const rawFile of filesToProcess) {
+      const file = normalizeDroppedPdfFile(rawFile) ?? rawFile;
       // Validate file type (Requirements: 1.1, 1.2, 1.3)
       if (!isValidPdfFile(file)) {
         setPdfError(PASTE_ERROR_MESSAGES.PDF_INVALID_TYPE);
@@ -1027,7 +1144,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
           // Check for PDF files (Requirements: 1.1, 1.2, 3.4 - check MIME type and extension)
           // Use both MIME type and file extension for robust PDF detection
           else if (item.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
-            pdfFiles.push(file);
+            pdfFiles.push(normalizeDroppedPdfFile(file) ?? file);
           }
           // Check for text files (Requirements: 3.3, 3.5 - use isSupportedTextFile)
           // Delegate to utility function for consistent text file validation
@@ -1184,7 +1301,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
    * (images, text files, PDFs) and passing them to appropriate handlers.
    * 
    * File classification:
-   * - Images: MIME type starts with "image/" AND supportsVision is true
+   * - Images: MIME type starts with "image/" (vision capability checked in validatePasteFiles)
    * - PDFs: MIME type is "application/pdf" OR filename ends with ".pdf"
    * - Text files: Validated using isSupportedTextFile() function
    * - Unsupported files are silently ignored
@@ -1193,46 +1310,218 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
    * 
    * @param {React.DragEvent} e - The drag event
    */
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    const files = e.dataTransfer.files;
-    
-    // Separate image files, text files, and PDF files
-    const imageFiles: File[] = [];
-    const textFiles: File[] = [];
-    const pdfFiles: File[] = [];
-    
-    // Classify each dropped file by type
-    for (const file of Array.from(files)) {
-      if (file.type.startsWith('image/') && supportsVision) {
-        imageFiles.push(file);
-      } else if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
-        pdfFiles.push(file);
-      } else if (isSupportedTextFile(file.name)) {
-        textFiles.push(file);
+  const handleDroppedFiles = useCallback(
+    (files: FileList | File[] | null) => {
+      if (!files || files.length === 0 || disabled) return;
+
+      // Clear previous errors at the start of new operation
+      setFileError(null);
+      setPdfError(null);
+
+      // Separate image files, text files, and PDF files
+      const imageFiles: File[] = [];
+      const textFiles: File[] = [];
+      const pdfFiles: File[] = [];
+
+      // Classify each dropped file by type
+      for (const rawFile of Array.from(files)) {
+        const imageFile = normalizeDroppedImageFile(rawFile);
+        if (imageFile) {
+          imageFiles.push(imageFile);
+          continue;
+        }
+
+        const pdfFile = normalizeDroppedPdfFile(rawFile);
+        if (pdfFile) {
+          pdfFiles.push(pdfFile);
+          continue;
+        }
+
+        if (isSupportedTextFile(rawFile.name)) {
+          textFiles.push(rawFile);
+        }
+        // Silently ignore unsupported files (Requirement 4.3, 7.3)
       }
-      // Silently ignore unsupported files (Requirement 4.3, 7.3)
-    }
-    
-    // Handle image files
-    if (imageFiles.length > 0) {
-      handleImageSelect(createFileList(imageFiles));
-    }
-    
-    // Handle text files
-    if (textFiles.length > 0) {
-      handleTextFileSelect(createFileList(textFiles));
-    }
-    
-    // Handle PDF files (Requirements: 7.1, 7.2, 7.4)
-    if (pdfFiles.length > 0) {
-      handlePdfSelect(createFileList(pdfFiles));
-    }
-  }, [supportsVision, handleImageSelect, handleTextFileSelect, handlePdfSelect, createFileList]);
+
+      if (imageFiles.length === 0 && textFiles.length === 0 && pdfFiles.length === 0) {
+        setFileError(PASTE_ERROR_MESSAGES.NO_SUPPORTED_FILES);
+        return;
+      }
+
+      // Reuse paste validation to enforce limits & capability checks
+      const validation = validatePasteFiles(
+        imageFiles,
+        textFiles,
+        pdfFiles,
+        pendingImages.length,
+        pendingTextFiles.length,
+        pendingPdfs.length,
+        supportsVision
+      );
+
+      if (validation.errors.length > 0) {
+        const pdfErrors = validation.errors.filter((error) => error.toUpperCase().includes('PDF'));
+        const otherErrors = validation.errors.filter((error) => !error.toUpperCase().includes('PDF'));
+
+        if (otherErrors.length > 0) setFileError(otherErrors[0]);
+        if (pdfErrors.length > 0) setPdfError(pdfErrors[0]);
+      }
+
+      if (!validation.canProceed) return;
+
+      if (validation.imageFiles.length > 0) {
+        handleImageSelect(createFileList(validation.imageFiles));
+      }
+      if (validation.textFiles.length > 0) {
+        handleTextFileSelect(createFileList(validation.textFiles));
+      }
+      if (validation.pdfFiles.length > 0) {
+        handlePdfSelect(createFileList(validation.pdfFiles));
+      }
+    },
+    [
+      disabled,
+      isGenerating,
+      pendingImages.length,
+      pendingTextFiles.length,
+      pendingPdfs.length,
+      supportsVision,
+      handleImageSelect,
+      handleTextFileSelect,
+      handlePdfSelect,
+      createFileList,
+    ]
+  );
+
+  const handleDroppedPaths = useCallback(
+    async (paths: string[]) => {
+      if (!paths || paths.length === 0 || disabled) return;
+
+      // Clear previous errors at the start of new operation
+      setFileError(null);
+      setPdfError(null);
+
+      const supportedPaths = paths.filter((path) => {
+        const filename = getFilenameFromPath(path);
+        if (filename.toLowerCase().endsWith('.pdf')) return true;
+        if (inferImageMimeType(filename)) return true;
+        return isSupportedTextFile(filename);
+      });
+
+      if (supportedPaths.length === 0) {
+        setFileError(PASTE_ERROR_MESSAGES.NO_SUPPORTED_FILES);
+        return;
+      }
+
+      type LocalFileBase64 = {
+        filename: string;
+        mime: string;
+        base64: string;
+        size: number;
+      };
+
+      const files: File[] = [];
+      const errors: string[] = [];
+
+      for (const path of supportedPaths) {
+        try {
+          const payload = await invoke<LocalFileBase64>('read_local_file_base64', { path });
+          const bytes = base64ToUint8Array(payload.base64);
+          files.push(new File([bytes], payload.filename, { type: payload.mime, lastModified: Date.now() }));
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          errors.push(message);
+          console.error('Failed to load dropped file from path:', path, error);
+        }
+      }
+
+      if (files.length === 0 && errors.length > 0) {
+        setFileError(errors[0]);
+        return;
+      }
+
+      if (files.length === 0) {
+        setFileError('拖拽文件读取失败，请检查文件是否存在/权限，或尝试用“+”按钮选择文件');
+        return;
+      }
+
+      handleDroppedFiles(files);
+    },
+    [disabled, handleDroppedFiles]
+  );
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const dataTransfer = e.dataTransfer;
+
+      const droppedFiles =
+        dataTransfer.files && dataTransfer.files.length > 0
+          ? Array.from(dataTransfer.files)
+          : Array.from(dataTransfer.items || [])
+              .filter((item) => item.kind === 'file')
+              .map((item) => item.getAsFile())
+              .filter((file): file is File => Boolean(file));
+
+      // 在 Tauri 里，文件拖拽由 tauri://drag-drop 提供真实路径，这里避免与 DOM drop 重复处理
+      if (!isTauri() && droppedFiles.length > 0) {
+        handleDroppedFiles(droppedFiles);
+        return;
+      }
+
+      // Plain text drag-drop (e.g., from browser/editor)
+      const text = dataTransfer.getData('text/plain') || dataTransfer.getData('text/uri-list');
+      if (text) {
+        insertTextAtCursor(text);
+      }
+    },
+    [handleDroppedFiles, insertTextAtCursor]
+  );
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     // Prevent default to allow drop
     e.preventDefault();
+  }, []);
+
+  // 在 Tauri WebView 里，系统层面的文件拖拽不一定会触发 DOM drop 事件
+  // 使用 tauri://drag-drop 事件获取真实的本地路径，再转成 File 复用现有附件逻辑
+  const handleDroppedPathsRef = useRef(handleDroppedPaths);
+  useEffect(() => {
+    handleDroppedPathsRef.current = handleDroppedPaths;
+  }, [handleDroppedPaths]);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+
+    (async () => {
+      try {
+        const unlistenFn = await getCurrentWindow().onDragDropEvent((event) => {
+          if (event.payload.type !== 'drop') return;
+          void handleDroppedPathsRef.current(event.payload.paths);
+        });
+
+        if (disposed) {
+          unlistenFn();
+        } else {
+          unlisten = unlistenFn;
+        }
+      } catch (error) {
+        console.error('Failed to register Tauri drag drop listener:', error);
+        if (!disposed) {
+          setFileError('初始化拖拽监听失败，请检查 Tauri 权限/窗口配置');
+        }
+      }
+    })();
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, []);
 
   /**
@@ -1278,7 +1567,13 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
     },
     focus: () => {
       textareaRef.current?.focus();
-    }
+    },
+    addFiles: (files: FileList | File[]) => {
+      handleDroppedFiles(files);
+    },
+    insertText: (text: string) => {
+      insertTextAtCursor(text);
+    },
   }));
 
   /**

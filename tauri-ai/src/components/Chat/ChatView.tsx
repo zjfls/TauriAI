@@ -4,7 +4,7 @@
  * Requirements: 2.3, 2.4, 4.1, 4.2, 4.3, 4.4
  */
 
-import React, { useMemo, useRef } from 'react';
+import React, { useCallback, useMemo, useRef } from 'react';
 import { useSessionStore } from '../../stores/sessionStore';
 import { useConfigStore } from '../../stores/configStore';
 import { MessageList } from './MessageList';
@@ -32,6 +32,16 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
   const setSessionDraftContent = useSessionStore((state) => state.setSessionDraftContent);
 
   const inputRef = useRef<InputAreaHandle>(null);
+
+  // 允许把文件/文本拖拽到聊天窗口（消息列表）时，直接追加到输入框里
+  const handleDropFilesToInput = useCallback((files: FileList | File[]) => {
+    inputRef.current?.addFiles(files);
+    inputRef.current?.focus();
+  }, []);
+
+  const handleDropTextToInput = useCallback((text: string) => {
+    inputRef.current?.insertText(text);
+  }, []);
 
   // Extract session state with defaults for when no session exists
   const messages = session?.messages ?? [];
@@ -285,6 +295,8 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
         streamingBlocks={streamingBlocks}
         isGenerating={isGenerating}
         onAction={handleAction}
+        onDropFiles={handleDropFilesToInput}
+        onDropText={handleDropTextToInput}
       />
       {/* Conversation total token usage */}
       {showUsage && totalUsage && (
