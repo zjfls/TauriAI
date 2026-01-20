@@ -5,7 +5,7 @@
 //! 这样后续扩展 ToolAgent / CodeAgent / SolutionRunner 时，可以复用同样的分层方式，保持结构干净。
 
 use crate::errors::AppErrorCode;
-use crate::models::{Agent, AppConfig, Message, MessageRole, MessageStatus, Model, ModelConfig, ModelParameters, Provider};
+use crate::models::{Agent, AppConfig, Message, MessageRole, MessageStatus, Model, ModelConfig, ModelParameters, Provider, ProviderType};
 use crate::prompts::{compose_system_prompt, FormatPromptType};
 
 pub struct ResolvedChatModel<'a> {
@@ -92,13 +92,23 @@ pub fn build_model_config(
             system_prompt: None,
         },
         thinking_level: if model.capabilities.thinking {
-            match thinking {
+            let level = match thinking {
                 Some(serde_json::Value::Bool(true)) => Some("medium".to_string()),
                 Some(serde_json::Value::Bool(false)) => Some("disabled".to_string()),
                 Some(serde_json::Value::String(level)) => Some(level),
                 Some(serde_json::Value::Null) => Some("disabled".to_string()),
                 None => Some("medium".to_string()),
                 _ => Some("medium".to_string()),
+            };
+
+            // Google Gemini 的 thinking 等级与 OpenAI Responses 不完全一致：
+            // - Gemini 不支持“超高”，这里统一回退到“高”，避免下游出现无意义/不可用的等级。
+            match provider.provider_type {
+                ProviderType::Google => match level.as_deref() {
+                    Some("xhigh") | Some("very_high") => Some("high".to_string()),
+                    _ => level,
+                },
+                _ => level,
             }
         } else {
             None

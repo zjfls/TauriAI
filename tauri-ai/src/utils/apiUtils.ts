@@ -3,7 +3,7 @@
  * Helper functions for API protocol detection and handling
  */
 
-import type { ApiProtocolType, Provider } from '../types';
+import type { ApiProtocolType, Provider, ProviderType } from '../types';
 
 /**
  * Get API protocol type from model reference
@@ -33,6 +33,20 @@ export function getApiProtocol(
 
   // Default to chat_completions for all other cases
   return 'chat_completions';
+}
+
+/**
+ * Get provider type from model reference
+ *
+ * @param modelRef - Model reference in format "provider_name/model_name"
+ * @param providers - Array of provider configurations
+ */
+export function getProviderType(
+  modelRef: string,
+  providers: Provider[]
+): ProviderType | undefined {
+  const [providerName] = modelRef.split('/');
+  return providers.find(p => p.name === providerName)?.type;
 }
 
 /**

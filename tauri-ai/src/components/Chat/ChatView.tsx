@@ -66,6 +66,18 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
     return provider.models.find(m => m.name === modelName) || null;
   }, [config, session, getProvider, getAgent]);
 
+  // Get provider type for current model (responses thinking levels differ by provider)
+  const currentProviderType = useMemo(() => {
+    const sessionModelRef = session?.modelRef;
+    const agent = session ? getAgent(session.agentName) : null;
+    const modelRef = sessionModelRef || agent?.modelRef;
+
+    if (!modelRef) return undefined;
+
+    const [providerName] = modelRef.split('/');
+    return getProvider(providerName)?.type;
+  }, [config, session, getProvider, getAgent]);
+
   // Check if current model supports thinking
   const supportsThinking = useMemo(() => {
     return currentModel?.capabilities?.thinking ?? false;
@@ -317,6 +329,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
         supportsVision={supportsVision}
         contextUsage={contextUsage}
         apiProtocol={apiProtocol}
+        providerType={currentProviderType}
         value={draftContent}
         onValueChange={(value) => {
           if (!sessionId) return;

@@ -107,6 +107,25 @@ describe('ThinkingSelector', () => {
       expect(menuItems).toHaveLength(5);
     });
 
+    it('hides xhigh for Google provider', () => {
+      const onChange = vi.fn();
+      render(
+        <ThinkingSelector
+          apiProtocol="responses"
+          providerType="google"
+          value="medium"
+          onChange={onChange}
+        />
+      );
+
+      const button = screen.getByRole('button');
+      fireEvent.click(button);
+
+      const menuItems = screen.getAllByRole('menuitem');
+      expect(menuItems).toHaveLength(4);
+      expect(screen.queryByText('超高')).not.toBeInTheDocument();
+    });
+
     it('displays all thinking levels', () => {
       const onChange = vi.fn();
       render(

@@ -11,7 +11,7 @@ import { AttachmentPreview } from './AttachmentPreview';
 import { ThinkingSelector } from './ThinkingSelector';
 import { isSupportedTextFile, readTextFile, validateFileCount } from '../../utils/textFileUtils';
 import { isValidPdfFile, validatePdfSize, processPdfFile, MAX_PDF_SIZE } from '../../utils/pdfUtils';
-import type { ContextUsageBreakdown, Agent, ContentPart, PendingImage, PendingTextFile, PendingPdf, ApiProtocolType, ThinkingMode } from '../../types';
+import type { ContextUsageBreakdown, Agent, ContentPart, PendingImage, PendingTextFile, PendingPdf, ApiProtocolType, ThinkingMode, ProviderType } from '../../types';
 import { SUPPORTED_TEXT_EXTENSIONS, MAX_PDF_COUNT, MAX_TEXT_FILES } from '../../types';
 import { FILE_ERROR_MESSAGES } from '../../utils/textFileUtils';
 import { invoke, isTauri } from '@tauri-apps/api/core';
@@ -159,6 +159,7 @@ interface InputAreaProps {
   supportsVision?: boolean;    // Whether current model supports vision/images
   contextUsage?: ContextUsageBreakdown | null;  // Context usage for indicator
   apiProtocol?: ApiProtocolType;  // API protocol type for thinking mode
+  providerType?: ProviderType; // Provider type (for responses thinking level options)
   value?: string; // Controlled input text (per-session draft)
   onValueChange?: (value: string) => void;
   thinkingMode?: ThinkingMode; // Controlled thinking mode/level (per-session)
@@ -652,6 +653,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   supportsVision = false,
   contextUsage = null,
   apiProtocol = 'chat_completions',
+  providerType,
   value: controlledValue,
   onValueChange,
   thinkingMode: controlledThinkingMode,
@@ -1375,8 +1377,9 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
       if (validation.textFiles.length > 0) {
         handleTextFileSelect(createFileList(validation.textFiles));
       }
-      if (validation.pdfFiles.length > 0) {
-        handlePdfSelect(createFileList(validation.pdfFiles));
+      if (pdfFiles.length > 0) {
+        // PDF 数量限制与错误文案由 handlePdfSelect 统一处理，避免与 validatePasteFiles 的提示不一致
+        handlePdfSelect(createFileList(pdfFiles));
       }
     },
     [
@@ -1786,6 +1789,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
             {supportsThinking && (
               <ThinkingSelector
                 apiProtocol={apiProtocol}
+                providerType={providerType}
                 value={thinkingMode}
                 onChange={handleThinkingModeChange}
                 disabled={isGenerating}

@@ -6,10 +6,12 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { Brain, ChevronDown, Check } from 'lucide-react';
-import type { ApiProtocolType, ThinkingMode, ThinkingLevel } from '../../types';
+import type { ApiProtocolType, ThinkingMode, ThinkingLevel, ProviderType } from '../../types';
 
 interface ThinkingSelectorProps {
   apiProtocol: ApiProtocolType;
+  /** 仅 responses 模式需要：不同 Provider 的 thinking 等级并不完全一致 */
+  providerType?: ProviderType;
   value: ThinkingMode;
   onChange: (value: ThinkingMode) => void;
   disabled?: boolean;
@@ -56,10 +58,13 @@ const FeatureToggle: React.FC<FeatureToggleProps> = ({
  * ThinkingSelector Component
  * Renders different UI based on API protocol:
  * - chat_completions: Binary toggle (on/off)
- * - responses: Multi-level dropdown (无/低/中/高/超高)
+ * - responses: Multi-level dropdown
+ *   - OpenAI Responses: 无/低/中/高/超高
+ *   - Google Gemini: 无/低/中/高（不支持“超高”）
  */
 export const ThinkingSelector: React.FC<ThinkingSelectorProps> = ({
   apiProtocol,
+  providerType,
   value,
   onChange,
   disabled = false,
@@ -92,15 +97,21 @@ export const ThinkingSelector: React.FC<ThinkingSelectorProps> = ({
   }
 
   // Multi-level mode for responses API
-  const levels: { value: ThinkingLevel; label: string }[] = [
+  const baseLevels: { value: ThinkingLevel; label: string }[] = [
     { value: null, label: '无' },
     { value: 'low', label: '低' },
     { value: 'medium', label: '中' },
     { value: 'high', label: '高' },
-    { value: 'xhigh', label: '超高' },
   ];
+  const levels: { value: ThinkingLevel; label: string }[] =
+    providerType === 'google'
+      ? baseLevels
+      : [...baseLevels, { value: 'xhigh', label: '超高' }];
 
-  const currentLevel = value as ThinkingLevel;
+  const rawCurrentLevel =
+    typeof value === 'boolean' ? (value ? ('medium' as const) : null) : (value as ThinkingLevel);
+  const currentLevel =
+    providerType === 'google' && rawCurrentLevel === 'xhigh' ? 'high' : rawCurrentLevel;
   const currentLabel = levels.find(l => l.value === currentLevel)?.label || '无';
 
   return (

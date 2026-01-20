@@ -317,7 +317,7 @@ impl AiClient for GoogleClient {
                 let gemini_level = match level.as_str() {
                     "low" => "LOW",
                     "medium" => "MEDIUM",
-                    "high" | "very_high" | "xhigh" => "HIGH",
+                    "high" => "HIGH",
                     _ => "HIGH", // Default to high
                 };
                 Some(ThinkingConfig {
@@ -420,7 +420,7 @@ impl AiClient for GoogleClient {
                 let gemini_level = match level.as_str() {
                     "low" => "LOW",
                     "medium" => "MEDIUM",
-                    "high" | "very_high" | "xhigh" => "HIGH",
+                    "high" => "HIGH",
                     _ => "HIGH",
                 };
                 Some(ThinkingConfig {

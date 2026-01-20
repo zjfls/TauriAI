@@ -7,8 +7,8 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import type { AgentSession, Message, DebugInfo, TokenUsage, PersistedSession, PersistedSessionState, ContentPart, ThinkingMode, ApiProtocolType, RunEventPayload, MessageBlock } from '../types';
-import { getApiProtocol, getDefaultThinkingMode } from '../utils/apiUtils';
+import type { AgentSession, Message, DebugInfo, TokenUsage, PersistedSession, PersistedSessionState, ContentPart, ThinkingMode, ApiProtocolType, RunEventPayload, MessageBlock, ProviderType } from '../types';
+import { getApiProtocol, getDefaultThinkingMode, getProviderType } from '../utils/apiUtils';
 
 // Constants for persistence
 const SESSION_STORAGE_KEY = 'tauri-ai:sessions';
@@ -19,25 +19,29 @@ let draftPersistTimeout: ReturnType<typeof setTimeout> | null = null;
 
 const coerceThinkingModeForProtocol = (
   thinkingMode: ThinkingMode | undefined,
-  apiProtocol: ApiProtocolType
+  apiProtocol: ApiProtocolType,
+  providerType?: ProviderType
 ): ThinkingMode => {
+  let coerced: ThinkingMode;
+
   if (thinkingMode === undefined) {
-    return getDefaultThinkingMode(apiProtocol) as ThinkingMode;
-  }
-
-  if (apiProtocol === 'responses') {
+    coerced = getDefaultThinkingMode(apiProtocol) as ThinkingMode;
+  } else if (apiProtocol === 'responses') {
     // Convert binary -> multi-level
-    if (typeof thinkingMode === 'boolean') {
-      return thinkingMode ? 'medium' : null;
-    }
-    return thinkingMode;
+    coerced = typeof thinkingMode === 'boolean' ? (thinkingMode ? 'medium' : null) : thinkingMode;
+  } else {
+    // chat_completions: Convert multi-level -> binary
+    coerced =
+      typeof thinkingMode === 'boolean' ? thinkingMode : thinkingMode === null ? false : true;
   }
 
-  // chat_completions: Convert multi-level -> binary
-  if (typeof thinkingMode === 'boolean') {
-    return thinkingMode;
+  // Provider-specific clamp:
+  // - Google Gemini 没有“超高”，统一回退为“高”
+  if (apiProtocol === 'responses' && providerType === 'google' && coerced === 'xhigh') {
+    return 'high';
   }
-  return thinkingMode === null ? false : true;
+
+  return coerced;
 };
 
 export interface SessionState {
@@ -155,7 +159,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     const modelRef = agent?.modelRef;
     const apiProtocol = modelRef && config ? getApiProtocol(modelRef, config.providers) : 'chat_completions';
-    const thinkingMode = coerceThinkingModeForProtocol(undefined, apiProtocol);
+    const providerType = modelRef && config ? getProviderType(modelRef, config.providers) : undefined;
+    const thinkingMode = coerceThinkingModeForProtocol(undefined, apiProtocol, providerType);
 
     // Generate default title with timestamp: 新对话_MM-DD HH:mm
     const nowDate = new Date();
@@ -835,6 +840,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 	    const { useConfigStore } = await import('./configStore');
 	    const config = useConfigStore.getState().config;
 	    const apiProtocol = config ? getApiProtocol(modelRef, config.providers) : 'chat_completions';
+	    const providerType = config ? getProviderType(modelRef, config.providers) : undefined;
 
 	    set((state) => {
 	      const newSessions = new Map(state.sessions);
@@ -844,7 +850,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 	          ...s,
 	          modelRef,
 	          apiType: apiProtocol,
-	          thinkingMode: coerceThinkingModeForProtocol(s.thinkingMode, apiProtocol),
+	          thinkingMode: coerceThinkingModeForProtocol(s.thinkingMode, apiProtocol, providerType),
 	        });
 	      }
 	      return { sessions: newSessions };
@@ -852,7 +858,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     // Sync to DB
     // We need to pass both agent and model because the backend overwrites
-    const nextThinkingMode = coerceThinkingModeForProtocol(session.thinkingMode, apiProtocol);
+    const nextThinkingMode = coerceThinkingModeForProtocol(session.thinkingMode, apiProtocol, providerType);
     invoke('update_conversation_metadata', {
       conversationId: session.conversationId,
       agentName: session.agentName,
@@ -887,8 +893,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const agent = useConfigStore.getState().getAgent(agentName);
     const config = useConfigStore.getState().config;
 
-	    const modelRef = agent?.modelRef;
-	    const apiProtocol = modelRef && config ? getApiProtocol(modelRef, config.providers) : 'chat_completions';
+    const modelRef = agent?.modelRef;
+    const apiProtocol = modelRef && config ? getApiProtocol(modelRef, config.providers) : 'chat_completions';
+    const providerType = modelRef && config ? getProviderType(modelRef, config.providers) : undefined;
 
 	    set((state) => {
 	      const newSessions = new Map(state.sessions);
@@ -899,14 +906,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 	          agentName,
 	          modelRef, // Update to agent's default model
 	          apiType: apiProtocol,
-	          thinkingMode: coerceThinkingModeForProtocol(session.thinkingMode, apiProtocol),
+	          thinkingMode: coerceThinkingModeForProtocol(session.thinkingMode, apiProtocol, providerType),
 	        });
 	      }
 	      return { sessions: newSessions };
 	    });
 
     // Sync to DB
-    const nextThinkingMode = coerceThinkingModeForProtocol(currentSession.thinkingMode, apiProtocol);
+    const nextThinkingMode = coerceThinkingModeForProtocol(currentSession.thinkingMode, apiProtocol, providerType);
     invoke('update_conversation_metadata', {
       conversationId: currentSession.conversationId,
       agentName: agentName,
@@ -1123,6 +1130,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 	        const agent = useConfigStore.getState().getAgent(agentName);
 	        const modelRef = persisted.modelRef || agent?.modelRef;
 	        const apiProtocol = modelRef && config ? getApiProtocol(modelRef, config.providers) : 'chat_completions';
+	        const providerType = modelRef && config ? getProviderType(modelRef, config.providers) : undefined;
 
 	        const session: AgentSession = {
 	          id: persisted.id,
@@ -1131,7 +1139,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 	          modelRef,
 	          conversationId: persisted.conversationId,
 	          apiType: apiProtocol,
-	          thinkingMode: coerceThinkingModeForProtocol(persisted.thinkingMode, apiProtocol),
+	          thinkingMode: coerceThinkingModeForProtocol(persisted.thinkingMode, apiProtocol, providerType),
 	          draftContent: persisted.draftContent ?? '',
 	          messages,
 	          streamingBlocks: null,
@@ -1199,6 +1207,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     const modelRef = conversation?.modelRef || agent?.modelRef;
     const apiProtocol = modelRef && config ? getApiProtocol(modelRef, config.providers) : 'chat_completions';
+    const providerType = modelRef && config ? getProviderType(modelRef, config.providers) : undefined;
 
     // Load messages
     let messages: Message[] = [];
@@ -1230,7 +1239,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 	      modelRef,
 	      conversationId,
 	      apiType: apiProtocol,
-	      thinkingMode: coerceThinkingModeForProtocol(conversation?.thinkingMode, apiProtocol),
+	      thinkingMode: coerceThinkingModeForProtocol(conversation?.thinkingMode, apiProtocol, providerType),
 	      draftContent: '',
 	      messages,
 	      streamingBlocks: null,
