@@ -178,13 +178,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       thinkingMode,
     }).catch(console.error);
 
-    const session: AgentSession = {
+  const session: AgentSession = {
       id: sessionId,
       agentName,
       title: defaultTitle,
       modelRef,
       conversationId: conversation.id,
-      apiType: null,  // Not locked until first message
+      apiType: apiProtocol, // 当前会话协议（不再做“首条消息锁定”）
       thinkingMode,
       draftContent: '',
       messages: [],
@@ -400,7 +400,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    * Send a message in a specific session
    * Requirements: 4.3, 4.4
    */
-  sendMessage: async (sessionId: string, content: string, thinking?: boolean | string, images?: ContentPart[]) => {
+	  sendMessage: async (sessionId: string, content: string, thinking?: boolean | string, images?: ContentPart[]) => {
     // Wait for any pending undo operations to complete first
     // This prevents race conditions where new messages are sent before backend deletion finishes
     await pendingUndoOperation;
@@ -437,35 +437,22 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       createdAt: new Date().toISOString(),
     };
 
-    // Get API type if not locked yet
-    let apiTypeToLock = session.apiType;
-    if (!session.apiType && session.modelRef) {
-      const { useConfigStore } = await import('./configStore');
-      const config = useConfigStore.getState().config;
-      if (config) {
-        const { getApiTypeFromModelRef } = await import('../utils/apiType');
-        apiTypeToLock = getApiTypeFromModelRef(session.modelRef, config);
-      }
-    }
-
-    // Update session state with API type lock
-    set((state) => {
-      const newSessions = new Map(state.sessions);
-      const currentSession = newSessions.get(sessionId);
-      if (currentSession) {
-        newSessions.set(sessionId, {
-          ...currentSession,
-          messages: [...currentSession.messages, userMessage],
-          isGenerating: true,
-          streamingBlocks: [],
-          error: null,
-          lastActiveAt: new Date().toISOString(),
-          // Lock API type on first message
-          apiType: currentSession.apiType || apiTypeToLock,
-        });
-      }
-      return { sessions: newSessions };
-    });
+	    // Update session state (stream start)
+	    set((state) => {
+	      const newSessions = new Map(state.sessions);
+	      const currentSession = newSessions.get(sessionId);
+	      if (currentSession) {
+	        newSessions.set(sessionId, {
+	          ...currentSession,
+	          messages: [...currentSession.messages, userMessage],
+	          isGenerating: true,
+	          streamingBlocks: [],
+	          error: null,
+	          lastActiveAt: new Date().toISOString(),
+	        });
+	      }
+	      return { sessions: newSessions };
+	    });
 
     try {
       await invoke('run_task', {
@@ -791,34 +778,48 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    * Handle error in a session
    * Requirements: 7.4
    */
-  handleError: (sessionId: string, error: string, debugInfo?: DebugInfo) => {
-    console.log('[DEBUG] handleError called:', { sessionId, error, hasDebugInfo: !!debugInfo });
-    set((state) => {
-      const newSessions = new Map(state.sessions);
-      const currentSession = newSessions.get(sessionId);
-      console.log('[DEBUG] handleError - session found:', !!currentSession);
-      if (currentSession) {
-        // Find the last user message and mark as failed
-        const updatedMessages = [...currentSession.messages];
-        for (let i = updatedMessages.length - 1; i >= 0; i--) {
-          if (updatedMessages[i].role === 'user') {
-            updatedMessages[i] = {
-              ...updatedMessages[i],
-              status: 'failed',
-              error: error,
-            };
-            break;
-          }
-        }
+	  handleError: (sessionId: string, error: string, debugInfo?: DebugInfo) => {
+	    set((state) => {
+	      const newSessions = new Map(state.sessions);
+	      const currentSession = newSessions.get(sessionId);
+	      if (currentSession) {
+	        const updatedMessages = [...currentSession.messages];
 
-        newSessions.set(sessionId, {
-          ...currentSession,
-          messages: updatedMessages,
-          error,
-          isGenerating: false,
-          streamingBlocks: null,
-        });
-      }
+	        // 用户消息本身视为已成功发送；错误以 assistant/error 气泡展示，便于查看调试信息。
+	        for (let i = updatedMessages.length - 1; i >= 0; i--) {
+	          if (updatedMessages[i].role === 'user' && updatedMessages[i].status === 'pending') {
+	            updatedMessages[i] = { ...updatedMessages[i], status: 'success', error: undefined };
+	            break;
+	          }
+	        }
+
+	        const errorMessage: Message = {
+	          id: crypto.randomUUID(),
+	          conversationId: currentSession.conversationId || '',
+	          role: 'error',
+	          content: error,
+	          status: 'failed',
+	          debugInfo,
+	          actions: [
+	            {
+	              id: 'copy_error',
+	              label: '复制',
+	              icon: 'Copy',
+	              action_type: 'copy',
+	              payload: error,
+	            },
+	          ],
+	          createdAt: new Date().toISOString(),
+	        };
+
+	        newSessions.set(sessionId, {
+	          ...currentSession,
+	          messages: [...updatedMessages, errorMessage],
+	          error,
+	          isGenerating: false,
+	          streamingBlocks: null,
+	        });
+	      }
       return { sessions: newSessions };
     });
   },
@@ -827,41 +828,27 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    * Set the model for a specific session
    * Requirements: 6.1, 6.2, 6.3
    */
-  setSessionModel: async (sessionId: string, modelRef: string) => {
-    const session = get().sessions.get(sessionId);
-    if (!session) return;
+	  setSessionModel: async (sessionId: string, modelRef: string) => {
+	    const session = get().sessions.get(sessionId);
+	    if (!session) return;
 
-    const { useConfigStore } = await import('./configStore');
-    const config = useConfigStore.getState().config;
-    const apiProtocol =
-      session.apiType ||
-      (config ? getApiProtocol(modelRef, config.providers) : 'chat_completions');
+	    const { useConfigStore } = await import('./configStore');
+	    const config = useConfigStore.getState().config;
+	    const apiProtocol = config ? getApiProtocol(modelRef, config.providers) : 'chat_completions';
 
-    // Check API type compatibility if session is locked
-    if (session.apiType) {
-      if (config) {
-        const { canSwitchModel } = await import('../utils/apiType');
-        const result = canSwitchModel(session.apiType, modelRef, config);
-        if (!result.allowed) {
-          // Cannot switch - UI should handle this error
-          console.warn(`Model switch blocked: ${result.reason}`);
-          throw new Error(result.reason);
-        }
-      }
-    }
-
-    set((state) => {
-      const newSessions = new Map(state.sessions);
-      const s = newSessions.get(sessionId);
-      if (s) {
-        newSessions.set(sessionId, {
-          ...s,
-          modelRef,
-          thinkingMode: coerceThinkingModeForProtocol(s.thinkingMode, apiProtocol),
-        });
-      }
-      return { sessions: newSessions };
-    });
+	    set((state) => {
+	      const newSessions = new Map(state.sessions);
+	      const s = newSessions.get(sessionId);
+	      if (s) {
+	        newSessions.set(sessionId, {
+	          ...s,
+	          modelRef,
+	          apiType: apiProtocol,
+	          thinkingMode: coerceThinkingModeForProtocol(s.thinkingMode, apiProtocol),
+	        });
+	      }
+	      return { sessions: newSessions };
+	    });
 
     // Sync to DB
     // We need to pass both agent and model because the backend overwrites
@@ -891,33 +878,32 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    * Set the agent for a specific session
    * Requirements: 6.1, 6.2
    */
-  setSessionAgent: async (sessionId: string, agentName: string) => {
-    const currentSession = get().sessions.get(sessionId);
-    if (!currentSession) return;
+	  setSessionAgent: async (sessionId: string, agentName: string) => {
+	    const currentSession = get().sessions.get(sessionId);
+	    if (!currentSession) return;
 
     // Get the new agent's default model
     const { useConfigStore } = await import('./configStore');
     const agent = useConfigStore.getState().getAgent(agentName);
     const config = useConfigStore.getState().config;
 
-    const modelRef = agent?.modelRef;
-    const apiProtocol =
-      currentSession.apiType ||
-      (modelRef && config ? getApiProtocol(modelRef, config.providers) : 'chat_completions');
+	    const modelRef = agent?.modelRef;
+	    const apiProtocol = modelRef && config ? getApiProtocol(modelRef, config.providers) : 'chat_completions';
 
-    set((state) => {
-      const newSessions = new Map(state.sessions);
-      const session = newSessions.get(sessionId);
-      if (session) {
-        newSessions.set(sessionId, {
-          ...session,
-          agentName,
-          modelRef, // Update to agent's default model
-          thinkingMode: coerceThinkingModeForProtocol(session.thinkingMode, apiProtocol),
-        });
-      }
-      return { sessions: newSessions };
-    });
+	    set((state) => {
+	      const newSessions = new Map(state.sessions);
+	      const session = newSessions.get(sessionId);
+	      if (session) {
+	        newSessions.set(sessionId, {
+	          ...session,
+	          agentName,
+	          modelRef, // Update to agent's default model
+	          apiType: apiProtocol,
+	          thinkingMode: coerceThinkingModeForProtocol(session.thinkingMode, apiProtocol),
+	        });
+	      }
+	      return { sessions: newSessions };
+	    });
 
     // Sync to DB
     const nextThinkingMode = coerceThinkingModeForProtocol(currentSession.thinkingMode, apiProtocol);
@@ -1134,21 +1120,21 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         const conv = conversations.find(c => c.id === persisted.conversationId);
         const title = conv?.title || '新对话';
 
-        const apiProtocol =
-          persisted.apiType ||
-          (persisted.modelRef && config ? getApiProtocol(persisted.modelRef, config.providers) : 'chat_completions');
+	        const agent = useConfigStore.getState().getAgent(agentName);
+	        const modelRef = persisted.modelRef || agent?.modelRef;
+	        const apiProtocol = modelRef && config ? getApiProtocol(modelRef, config.providers) : 'chat_completions';
 
-        const session: AgentSession = {
-          id: persisted.id,
-          agentName,
-          title,
-          modelRef: persisted.modelRef,
-          conversationId: persisted.conversationId,
-          apiType: persisted.apiType,
-          thinkingMode: coerceThinkingModeForProtocol(persisted.thinkingMode, apiProtocol),
-          draftContent: persisted.draftContent ?? '',
-          messages,
-          streamingBlocks: null,
+	        const session: AgentSession = {
+	          id: persisted.id,
+	          agentName,
+	          title,
+	          modelRef,
+	          conversationId: persisted.conversationId,
+	          apiType: apiProtocol,
+	          thinkingMode: coerceThinkingModeForProtocol(persisted.thinkingMode, apiProtocol),
+	          draftContent: persisted.draftContent ?? '',
+	          messages,
+	          streamingBlocks: null,
           isGenerating: false,
           error: null,
           createdAt: persisted.createdAt,
@@ -1237,17 +1223,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }).catch(console.error);
     }
 
-    const session: AgentSession = {
-      id: sessionId,
-      agentName,
-      title: conversation?.title || '新对话',
-      modelRef,
-      conversationId,
-      apiType: messages.length > 0 ? apiProtocol : null,  // Lock if has messages
-      thinkingMode: coerceThinkingModeForProtocol(conversation?.thinkingMode, apiProtocol),
-      draftContent: '',
-      messages,
-      streamingBlocks: null,
+	    const session: AgentSession = {
+	      id: sessionId,
+	      agentName,
+	      title: conversation?.title || '新对话',
+	      modelRef,
+	      conversationId,
+	      apiType: apiProtocol,
+	      thinkingMode: coerceThinkingModeForProtocol(conversation?.thinkingMode, apiProtocol),
+	      draftContent: '',
+	      messages,
+	      streamingBlocks: null,
       isGenerating: false,
       error: null,
       createdAt: now,

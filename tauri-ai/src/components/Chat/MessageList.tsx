@@ -7,7 +7,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import type { Message, MessageBlock, Action } from '../../types';
 import { MessageItem } from './MessageItem';
-import { ErrorBubble } from './ErrorBubble';
 import { MessageBlocks } from './MessageBlocks';
 import { Bot, ArrowDown } from 'lucide-react';
 
@@ -109,12 +108,9 @@ export const MessageList: React.FC<MessageListProps> = ({
       )}
 
       {/* Message list */}
-      {messages.map((message) => {
-        if (message.role === 'error') {
-          return <ErrorBubble key={message.id} message={message} onAction={onAction} />;
-        }
-        return <MessageItem key={message.id} message={message} onAction={onAction} />;
-      })}
+      {messages.map((message) => (
+        <MessageItem key={message.id} message={message} onAction={onAction} />
+      ))}
 
       {/* Streaming message */}
       {streamingBlocks !== null && (
@@ -151,4 +147,3 @@ export const MessageList: React.FC<MessageListProps> = ({
 };
 
 export default MessageList;
-

@@ -214,24 +214,33 @@ impl AiClient for OllamaClient {
             return Err(AiError::RequestFailed(error_text));
         }
 
-        let mut full_content = String::new();
-        let mut stream = response.bytes_stream();
+	        let mut full_content = String::new();
+	        let mut stream = response.bytes_stream();
+	        // Ollama 返回的是 NDJSON；同样可能在任意字节边界切片，需做行缓冲避免 JSON 被拆分。
+	        let mut line_buffer = String::new();
 
-        while let Some(chunk_result) = stream.next().await {
-            let chunk = chunk_result.map_err(|e| AiError::StreamError(e.to_string()))?;
-            let chunk_str = String::from_utf8_lossy(&chunk);
+	        while let Some(chunk_result) = stream.next().await {
+	            let chunk = chunk_result.map_err(|e| AiError::StreamError(e.to_string()))?;
+	            let chunk_str = String::from_utf8_lossy(&chunk);
+	            line_buffer.push_str(&chunk_str);
 
-            // Ollama sends newline-delimited JSON
-            for line in chunk_str.lines() {
-                if line.trim().is_empty() {
-                    continue;
-                }
+	            // Ollama sends newline-delimited JSON
+	            while let Some(pos) = line_buffer.find('\n') {
+	                let mut line = line_buffer[..pos].to_string();
+	                line_buffer.drain(..pos + 1);
+	                if line.ends_with('\r') {
+	                    line.pop();
+	                }
 
-                if let Ok(stream_response) = serde_json::from_str::<StreamResponse>(line) {
-                    if let Some(message) = stream_response.message {
-                        if !message.content.is_empty() {
-                            full_content.push_str(&message.content);
-                            let _ = token_sender.send(StreamEvent::Token(message.content)).await;
+	                if line.trim().is_empty() {
+	                    continue;
+	                }
+
+	                if let Ok(stream_response) = serde_json::from_str::<StreamResponse>(&line) {
+	                    if let Some(message) = stream_response.message {
+	                        if !message.content.is_empty() {
+	                            full_content.push_str(&message.content);
+	                            let _ = token_sender.send(StreamEvent::Token(message.content)).await;
                         }
                     }
 
@@ -239,13 +248,26 @@ impl AiClient for OllamaClient {
                         let _ = token_sender
                             .send(StreamEvent::Done(full_content.clone()))
                             .await;
-                        return Ok(());
-                    }
-                }
-            }
-        }
+	                        return Ok(());
+	                    }
+	                }
+	            }
+	        }
 
-        let _ = token_sender.send(StreamEvent::Done(full_content)).await;
-        Ok(())
-    }
-}
+	        // Flush the last partial line if it exists
+	        let tail = line_buffer.trim();
+	        if !tail.is_empty() {
+	            if let Ok(stream_response) = serde_json::from_str::<StreamResponse>(tail) {
+	                if let Some(message) = stream_response.message {
+	                    if !message.content.is_empty() {
+	                        full_content.push_str(&message.content);
+	                        let _ = token_sender.send(StreamEvent::Token(message.content)).await;
+	                    }
+	                }
+	            }
+	        }
+
+	        let _ = token_sender.send(StreamEvent::Done(full_content)).await;
+	        Ok(())
+	    }
+	}

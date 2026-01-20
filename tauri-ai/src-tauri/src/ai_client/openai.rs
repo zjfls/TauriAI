@@ -672,22 +672,32 @@ impl OpenAiBaseClient {
         let mut final_usage: Option<TokenUsage> = None;
         let mut tool_calls_accum: HashMap<usize, ToolCallAccum> = HashMap::new();
         let mut legacy_function_name: Option<String> = None;
-        let mut legacy_function_args = String::new();
-        let mut tool_calls_sent = false;
-        let mut stream = response.bytes_stream();
-        let mut all_chunks: Vec<String> = Vec::new();
+	        let mut legacy_function_args = String::new();
+	        let mut tool_calls_sent = false;
+	        let mut stream = response.bytes_stream();
+	        let mut all_chunks: Vec<String> = Vec::new();
+	        // SSE 可能在任意字节边界切片；用行缓冲拼接，避免 JSON 被拆分后解析失败导致丢 token。
+	        let mut sse_buffer = String::new();
 
-        while let Some(chunk_result) = stream.next().await {
-            let chunk = chunk_result.map_err(|e| AiError::StreamError(e.to_string()))?;
-            let chunk_str = String::from_utf8_lossy(&chunk).to_string();
-            all_chunks.push(chunk_str.clone());
+	        while let Some(chunk_result) = stream.next().await {
+	            let chunk = chunk_result.map_err(|e| AiError::StreamError(e.to_string()))?;
+	            let chunk_str = String::from_utf8_lossy(&chunk).to_string();
+	            all_chunks.push(chunk_str.clone());
 
-            // Parse SSE events
-            for line in chunk_str.lines() {
-                if let Some(data) = line.strip_prefix("data: ") {
-                    if data.trim() == "[DONE]" {
-                        if !tool_calls_sent {
-                            let mut calls: Vec<ToolCall> = Vec::new();
+	            sse_buffer.push_str(&chunk_str);
+
+	            // Parse SSE events (line-buffered, handles chunk boundary splits)
+	            while let Some(pos) = sse_buffer.find('\n') {
+	                let mut line = sse_buffer[..pos].to_string();
+	                sse_buffer.drain(..pos + 1);
+	                if line.ends_with('\r') {
+	                    line.pop();
+	                }
+
+	                if let Some(data) = line.strip_prefix("data: ") {
+	                    if data.trim() == "[DONE]" {
+	                        if !tool_calls_sent {
+	                            let mut calls: Vec<ToolCall> = Vec::new();
 
                             if !tool_calls_accum.is_empty() {
                                 let mut items: Vec<(usize, ToolCallAccum)> =
@@ -757,9 +767,9 @@ impl OpenAiBaseClient {
                         return Ok(());
                     }
 
-                    if let Ok(stream_chunk) = serde_json::from_str::<StreamChunk>(data) {
-                        // Capture usage from final chunk
-                        if let Some(usage) = stream_chunk.usage {
+	                    if let Ok(stream_chunk) = serde_json::from_str::<StreamChunk>(data) {
+	                        // Capture usage from final chunk
+	                        if let Some(usage) = stream_chunk.usage {
                             final_usage = Some(TokenUsage {
                                 prompt_tokens: usage.prompt_tokens,
                                 completion_tokens: usage.completion_tokens,
@@ -801,10 +811,10 @@ impl OpenAiBaseClient {
                                         }
                                         if let Some(args) = &func.arguments {
                                             entry.arguments.push_str(args);
-                                        }
-                                    }
-                                }
-                            }
+	                    }
+	                }
+	            }
+	        }
 
                             // Handle legacy function_call deltas
                             if let Some(fc) = &choice.delta.function_call {

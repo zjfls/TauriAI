@@ -631,23 +631,33 @@ impl AiClient for OpenAiResponsesClient {
             return Err(AiError::RequestFailed(error_text));
         }
 
-        let mut full_content = String::new();
-        let mut full_thinking = String::new();
-        let mut final_usage: Option<TokenUsage> = None;
-        let mut stream = response.bytes_stream();
-        let mut chunk_count = 0;
+	        let mut full_content = String::new();
+	        let mut full_thinking = String::new();
+	        let mut final_usage: Option<TokenUsage> = None;
+	        let mut stream = response.bytes_stream();
+	        let mut chunk_count = 0;
+	        // SSE 可能跨 chunk 切分；用行缓冲拼接，避免 JSON 被拆开导致事件丢失（text/thinking/web_search/usage）。
+	        let mut sse_buffer = String::new();
 
-        while let Some(chunk_result) = stream.next().await {
-            let chunk = chunk_result.map_err(|e| AiError::StreamError(e.to_string()))?;
-            let chunk_str = String::from_utf8_lossy(&chunk);
-            chunk_count += 1;
+	        while let Some(chunk_result) = stream.next().await {
+	            let chunk = chunk_result.map_err(|e| AiError::StreamError(e.to_string()))?;
+	            let chunk_str = String::from_utf8_lossy(&chunk);
+	            chunk_count += 1;
 
-            // Parse SSE events
-            for line in chunk_str.lines() {
-                if let Some(data) = line.strip_prefix("data: ") {
-                    if data.trim() == "[DONE]" {
-                        let debug_usage = final_usage.as_ref().map(|u| {
-                            serde_json::json!({
+	            sse_buffer.push_str(&chunk_str);
+
+	            // Parse SSE events (line-buffered)
+	            while let Some(pos) = sse_buffer.find('\n') {
+	                let mut line = sse_buffer[..pos].to_string();
+	                sse_buffer.drain(..pos + 1);
+	                if line.ends_with('\r') {
+	                    line.pop();
+	                }
+
+	                if let Some(data) = line.strip_prefix("data: ") {
+	                    if data.trim() == "[DONE]" {
+	                        let debug_usage = final_usage.as_ref().map(|u| {
+	                            serde_json::json!({
                                 "prompt_tokens": u.prompt_tokens,
                                 "completion_tokens": u.completion_tokens,
                                 "total_tokens": u.total_tokens,
@@ -684,10 +694,10 @@ impl AiClient for OpenAiResponsesClient {
                                 usage: final_usage.clone(),
                             })
                             .await;
-                        return Ok(());
-                    }
+	                        return Ok(());
+	                    }
 
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
+	                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
                         let event_type = v
                             .get("type")
                             .and_then(|t| t.as_str())
@@ -872,11 +882,11 @@ impl AiClient for OpenAiResponsesClient {
                             }
                             _ => {
                                 // Ignore other event types
-                            }
-                        }
-                    }
-                }
-            }
+	                        }
+	                    }
+	                }
+	            }
+	        }
         }
 
         let debug_usage = final_usage.as_ref().map(|u| {

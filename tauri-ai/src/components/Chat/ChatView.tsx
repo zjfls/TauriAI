@@ -317,21 +317,17 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
         }}
         agents={config?.agents || []}
         currentAgentName={session?.agentName || ''}
-        onAgentSelect={(agentName) => sessionId && setSessionAgent(sessionId, agentName)}
-        modelOptions={getModelOptions()}
-        currentModelRef={session?.modelRef || ''}
-        onModelSelect={async (modelRef) => {
-          if (!sessionId) return;
-          try {
-            await setSessionModel(sessionId, modelRef);
-          } catch (error) {
-            // Show error for API type incompatibility
-            alert((error as Error).message || '无法切换模型');
-          }
-        }}
-      />
-    </div>
-  );
+	        onAgentSelect={(agentName) => sessionId && setSessionAgent(sessionId, agentName)}
+	        modelOptions={getModelOptions()}
+	        currentModelRef={session?.modelRef || ''}
+	        onModelSelect={(modelRef) => {
+	          if (!sessionId) return;
+	          // 模型切换已支持跨协议适配：不再弹窗阻断，失败时仅在控制台记录。
+	          setSessionModel(sessionId, modelRef).catch(console.error);
+	        }}
+	      />
+	    </div>
+	  );
 };
 
 export default ChatView;

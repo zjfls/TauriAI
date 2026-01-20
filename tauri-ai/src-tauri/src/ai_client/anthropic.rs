@@ -597,24 +597,33 @@ impl AiClient for AnthropicClient {
             return Err(AiError::RequestFailed(error_text));
         }
 
-        let mut full_content = String::new();
-        let mut full_thinking = String::new();
-        let mut stream = response.bytes_stream();
-        let mut token_usage: Option<TokenUsage> = None;
+	        let mut full_content = String::new();
+	        let mut full_thinking = String::new();
+	        let mut stream = response.bytes_stream();
+	        let mut token_usage: Option<TokenUsage> = None;
+	        // SSE 可能跨 chunk 切分；用行缓冲拼接，避免 JSON 被拆开后无法解析导致输出缺失。
+	        let mut sse_buffer = String::new();
 
         // Store debug parts for later assembly
         // We'll build the final debug_info with full_content at the end
 
-        while let Some(chunk_result) = stream.next().await {
-            let chunk = chunk_result.map_err(|e| AiError::StreamError(e.to_string()))?;
-            let chunk_str = String::from_utf8_lossy(&chunk);
+	        while let Some(chunk_result) = stream.next().await {
+	            let chunk = chunk_result.map_err(|e| AiError::StreamError(e.to_string()))?;
+	            let chunk_str = String::from_utf8_lossy(&chunk);
+	            sse_buffer.push_str(&chunk_str);
 
-            // Parse SSE events
-            for line in chunk_str.lines() {
-                if let Some(data) = line.strip_prefix("data: ") {
-                    if let Ok(event) = serde_json::from_str::<StreamingEvent>(data) {
-                        match event {
-                            StreamingEvent::MessageStart { message } => {
+	            // Parse SSE events (line-buffered)
+	            while let Some(pos) = sse_buffer.find('\n') {
+	                let mut line = sse_buffer[..pos].to_string();
+	                sse_buffer.drain(..pos + 1);
+	                if line.ends_with('\r') {
+	                    line.pop();
+	                }
+
+	                if let Some(data) = line.strip_prefix("data: ") {
+	                    if let Ok(event) = serde_json::from_str::<StreamingEvent>(data) {
+	                        match event {
+	                            StreamingEvent::MessageStart { message } => {
                                 // Capture initial usage from message_start
                                 if let Some(usage) = message.usage {
                                     token_usage = Some(TokenUsage {

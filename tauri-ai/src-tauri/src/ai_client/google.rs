@@ -494,13 +494,23 @@ impl AiClient for GoogleClient {
         let mut full_thinking = String::new();
         let mut stream = response.bytes_stream();
         let mut token_usage: Option<TokenUsage> = None;
+        // SSE 可能跨 chunk 切分；用行缓冲拼接，避免 JSON 被拆开后无法解析、导致 thinking/text 丢失。
+        let mut sse_buffer = String::new();
 
         while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result.map_err(|e| AiError::StreamError(e.to_string()))?;
             let chunk_str = String::from_utf8_lossy(&chunk);
 
-            // Parse SSE events - Google uses "data: " prefix
-            for line in chunk_str.lines() {
+            sse_buffer.push_str(&chunk_str);
+
+            // Parse SSE events - Google uses "data: " prefix (line-buffered)
+            while let Some(pos) = sse_buffer.find('\n') {
+                let mut line = sse_buffer[..pos].to_string();
+                sse_buffer.drain(..pos + 1);
+                if line.ends_with('\r') {
+                    line.pop();
+                }
+
                 if let Some(data) = line.strip_prefix("data: ") {
                     if data.trim().is_empty() {
                         continue;
