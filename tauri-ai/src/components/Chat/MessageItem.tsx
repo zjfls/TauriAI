@@ -125,7 +125,6 @@ export const MessageItem: React.FC<MessageItemProps> = ({
   const { config } = useConfigStore();
   const debugMode = config?.general?.debugMode ?? false;
   const showUsage = config?.general?.showUsage ?? true;
-  const hasMultiTurnDebug = Array.isArray(message.turns) && message.turns.length > 1;
   const hasDebugInfo = Boolean(message.debugInfo) || Boolean(message.turns?.some((t) => t.debugInfo));
 
   const isUser = message.role === 'user';
@@ -294,7 +293,8 @@ export const MessageItem: React.FC<MessageItemProps> = ({
           >
             <MessageToolbar actions={actions} onAction={onAction} />
             {/* Debug button - only for assistant messages and if debugMode is on */}
-            {debugMode && isAssistant && !hasMultiTurnDebug && hasDebugInfo && (
+            {/* 多 Turn 的调试入口在 MessageBlocks 的「第 N 轮」旁边；这里仅兜底 legacy 消息 */}
+            {debugMode && isAssistant && assistantBlocks.every((b) => !b.turnId) && hasDebugInfo && (
               <button
                 onClick={() => setShowDebugModal(true)}
                 className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700 transition-colors"

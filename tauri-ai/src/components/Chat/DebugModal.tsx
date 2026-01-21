@@ -3,14 +3,15 @@
  * Displays raw HTTP request/response information in a structured format
  */
 
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { X, ChevronDown, ChevronRight, Copy, Check } from 'lucide-react';
-import type { DebugInfo } from '../../types';
+import type { DebugInfo, MessageTurn } from '../../types';
 
 interface DebugModalProps {
   isOpen: boolean;
   onClose: () => void;
   debugInfo: DebugInfo | null;
+  turns?: MessageTurn[] | null;
   messageRole: 'user' | 'assistant' | 'error';
 }
 
@@ -241,9 +242,33 @@ export const DebugModal: React.FC<DebugModalProps> = ({
   isOpen,
   onClose,
   debugInfo,
+  turns,
   messageRole,
 }) => {
   if (!isOpen) return null;
+
+  const sortedTurns = useMemo(
+    () => (turns ?? []).slice().sort((a, b) => a.turnIndex - b.turnIndex),
+    [turns]
+  );
+  const [activeTurnId, setActiveTurnId] = useState<string | null>(
+    sortedTurns.length > 0 ? sortedTurns[0].turnId : null
+  );
+
+  useEffect(() => {
+    if (sortedTurns.length === 0) {
+      setActiveTurnId(null);
+      return;
+    }
+    if (!activeTurnId || !sortedTurns.some((t) => t.turnId === activeTurnId)) {
+      setActiveTurnId(sortedTurns[0].turnId);
+    }
+  }, [sortedTurns, activeTurnId]);
+
+  const activeTurn = activeTurnId
+    ? sortedTurns.find((t) => t.turnId === activeTurnId) ?? null
+    : null;
+  const effectiveDebugInfo = activeTurn?.debugInfo ?? debugInfo;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -269,8 +294,41 @@ export const DebugModal: React.FC<DebugModalProps> = ({
         </div>
 
         {/* Content */}
-        <div className="p-6 overflow-auto max-h-[calc(80vh-80px)] space-y-4">
-          {!debugInfo ? (
+        <div className="p-6 max-h-[calc(80vh-80px)] overflow-hidden">
+          {/* Turn selector (multi-turn tasks) */}
+          {sortedTurns.length > 1 && (
+            <div className="mb-4 flex flex-wrap gap-2">
+              {sortedTurns.map((t) => {
+                const isActive = t.turnId === activeTurnId;
+                const status = t.status || 'success';
+                const statusClass =
+                  status === 'success'
+                    ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
+                    : status === 'aborted'
+                      ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300'
+                      : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300';
+
+                return (
+                  <button
+                    key={t.turnId}
+                    onClick={() => setActiveTurnId(t.turnId)}
+                    className={`flex items-center gap-2 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                      isActive
+                        ? 'bg-gray-200 text-gray-900 dark:bg-gray-800 dark:text-gray-100'
+                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-900/40 dark:text-gray-300 dark:hover:bg-gray-800'
+                    }`}
+                    title={t.model ? `model: ${t.model}` : undefined}
+                  >
+                    <span>Turn {t.turnIndex}</span>
+                    <span className={`rounded px-2 py-0.5 ${statusClass}`}>{status}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          <div className="overflow-auto max-h-[calc(80vh-80px-72px)] space-y-4 pr-1">
+          {!effectiveDebugInfo ? (
             <div className="text-center py-8 text-gray-500 dark:text-gray-400">
               <p>暂无调试信息</p>
               <p className="text-sm mt-2">请确保已开启调试模式并重新发送消息</p>
@@ -278,57 +336,57 @@ export const DebugModal: React.FC<DebugModalProps> = ({
           ) : (
             <>
               {/* Request Section */}
-              {debugInfo.request && (
+              {effectiveDebugInfo.request && (
                 <CollapsibleSection title="HTTP 请求">
                   <div className="space-y-4">
                     <div className="flex items-center gap-2 text-sm">
                       <span className="px-2 py-1 bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded font-medium">
-                        {debugInfo.request.method}
+                        {effectiveDebugInfo.request.method}
                       </span>
                       <span className="text-gray-800 dark:text-gray-200 break-all">
-                        {debugInfo.request.url}
+                        {effectiveDebugInfo.request.url}
                       </span>
                     </div>
 
                     <CollapsibleSection title="请求头" defaultExpanded={false}>
-                      <HeadersViewer headers={debugInfo.request.headers} />
+                      <HeadersViewer headers={effectiveDebugInfo.request.headers} />
                     </CollapsibleSection>
 
                     <CollapsibleSection title="请求体">
-                      <JsonViewer data={debugInfo.request.body} />
+                      <JsonViewer data={effectiveDebugInfo.request.body} />
                     </CollapsibleSection>
                   </div>
                 </CollapsibleSection>
               )}
 
               {/* Response Section */}
-              {debugInfo.response && (
+              {effectiveDebugInfo.response && (
                 <CollapsibleSection title="HTTP 响应">
                   <div className="space-y-4">
                     <div className="flex items-center gap-2 text-sm">
                       <span
                         className={`px-2 py-1 rounded font-medium ${
-                          debugInfo.response.status >= 200 &&
-                          debugInfo.response.status < 300
+                          effectiveDebugInfo.response.status >= 200 &&
+                          effectiveDebugInfo.response.status < 300
                             ? 'bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300'
                             : 'bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300'
                         }`}
                       >
-                        {debugInfo.response.status}
+                        {effectiveDebugInfo.response.status}
                       </span>
                     </div>
 
-                    {Object.keys(debugInfo.response.headers).length > 0 && (
+                    {Object.keys(effectiveDebugInfo.response.headers).length > 0 && (
                       <CollapsibleSection title="响应头" defaultExpanded={false}>
-                        <HeadersViewer headers={debugInfo.response.headers} />
+                        <HeadersViewer headers={effectiveDebugInfo.response.headers} />
                       </CollapsibleSection>
                     )}
 
                     <CollapsibleSection title="响应体">
-                      {isSseResponseBody(debugInfo.response.body) ? (
-                        <SseResponseViewer data={debugInfo.response.body} />
+                      {isSseResponseBody(effectiveDebugInfo.response.body) ? (
+                        <SseResponseViewer data={effectiveDebugInfo.response.body} />
                       ) : (
-                        <JsonViewer data={debugInfo.response.body} />
+                        <JsonViewer data={effectiveDebugInfo.response.body} />
                       )}
                     </CollapsibleSection>
                   </div>
@@ -336,6 +394,7 @@ export const DebugModal: React.FC<DebugModalProps> = ({
               )}
             </>
           )}
+          </div>
         </div>
       </div>
     </div>
