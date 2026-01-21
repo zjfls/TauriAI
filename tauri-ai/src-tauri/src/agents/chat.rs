@@ -125,6 +125,7 @@ pub fn build_model_config(
         web_search_enabled: model.capabilities.web_search && web_search_enabled.unwrap_or(true),
         max_images: model.max_images,
         use_reasoning_effort: model.use_reasoning_effort,
+        debug_sse: false,
     }
 }
 

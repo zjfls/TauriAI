@@ -327,6 +327,30 @@ const AgentForm: React.FC<AgentFormProps> = ({
         </div>
 
         <div className="space-y-1">
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">最大 Turn 数</label>
+          <input
+            type="number"
+            min={1}
+            value={agent.maxTurns ?? ''}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (!v) {
+                onFieldChange('maxTurns', undefined);
+                return;
+              }
+              const n = Number(v);
+              onFieldChange('maxTurns', Number.isFinite(n) ? Math.max(1, Math.floor(n)) : undefined);
+            }}
+            disabled={!isEditing}
+            placeholder="例如：10000"
+            className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800"
+          />
+          <p className="text-xs text-gray-500">
+            {supportsToolset ? 'Tool/Code 类型会进行多 Turn 循环；未设置时后端默认 10000。' : '一般 Chat 类型默认单 Turn。'}
+          </p>
+        </div>
+
+        <div className="space-y-1">
           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">描述</label>
           <input
             type="text"

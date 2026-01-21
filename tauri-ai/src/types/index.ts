@@ -121,6 +121,7 @@ export interface Agent {
   systemPrompt: string;
   formatType: FormatPromptType;
   toolset?: string;       // Optional toolset binding (for tool/code agents)
+  maxTurns?: number;      // Max turns per run/task (default depends on agent type)
 }
 
 // ============================================================================
@@ -291,6 +292,10 @@ export type TextBlockFormat = 'markdown' | 'plain' | 'json';
 export interface BaseMessageBlock {
   id: string;
   type: string;
+  /** 仅用于调试/多 Turn 场景：标识该 block 属于哪个 turn */
+  turnId?: string;
+  /** 仅用于调试/多 Turn 场景：turn 的序号（1/2/3...） */
+  turnIndex?: number;
 }
 
 export interface TextMessageBlock extends BaseMessageBlock {
@@ -370,6 +375,8 @@ export interface Message {
   error?: string;
   // Debug info (only populated when debug mode is enabled)
   debugInfo?: DebugInfo;
+  // Per-turn debug info (multi-turn tasks)
+  turns?: MessageTurn[];
   // Token usage for this message
   usage?: TokenUsage;
 }
@@ -385,6 +392,18 @@ export interface TokenUsage {
   reasoningTokens?: number;     // o1 models reasoning tokens
   cacheCreationInputTokens?: number;  // Anthropic cache creation
   cacheReadInputTokens?: number;      // Anthropic cache read
+}
+
+/**
+ * Multi-turn debug info (per model call)
+ */
+export interface MessageTurn {
+  turnId: string;
+  turnIndex: number;
+  status?: TurnStatus;
+  debugInfo?: DebugInfo;
+  usage?: TokenUsage;
+  model?: string;
 }
 
 // ============================================================================
@@ -487,6 +506,11 @@ export type RunEventPayload =
     taskId: string;
     turnId: string;
     status: TurnStatus;
+    turnIndex?: number;
+    assistantMessageId?: string;
+    debugInfo?: DebugInfo;
+    usage?: TokenUsage;
+    model?: string;
   }
   | {
     conversationId: string;
@@ -698,6 +722,8 @@ export interface AgentSession {
   // - null: not streaming
   // - []: stream started but no blocks yet (e.g., first-token latency)
   streamingBlocks: MessageBlock[] | null;
+  // Streaming turn metadata (per model call, multi-turn tasks)
+  streamingTurns?: Map<string, MessageTurn>;
   isGenerating: boolean;              // Whether the session is generating a response
   error: string | null;               // Error message if any
 

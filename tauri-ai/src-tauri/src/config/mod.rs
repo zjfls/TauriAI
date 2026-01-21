@@ -190,6 +190,7 @@ mod tests {
                 system_prompt: "You are a helpful assistant.".to_string(),
                 format_type: FormatPromptType::Chat,
                 toolset: None,
+                max_turns: None,
             }],
             default_agent: "test-agent".to_string(),
             ..Default::default()

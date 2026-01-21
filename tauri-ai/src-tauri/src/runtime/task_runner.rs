@@ -53,6 +53,8 @@ enum TurnStreamResult {
     ToolCalls {
         thinking: String,
         tool_calls: Vec<ToolCall>,
+        debug_info: Option<DebugInfoData>,
+        usage: Option<TokenUsage>,
     },
     Error {
         error: String,
@@ -100,6 +102,7 @@ struct TurnLoop<'a> {
     assistant_message_id: String,
     output_format: Option<String>,
     max_turns: u32,
+    debug_mode: bool,
     emitter: &'a mut RunEmitter,
 }
 
@@ -147,28 +150,45 @@ impl<'a> TurnLoop<'a> {
                         turn_id: turn_id.clone(),
                         phase: TurnPhase::Think,
                     });
+
+                    let turn_debug_info = if self.debug_mode {
+                        debug_info.clone()
+                    } else {
+                        None
+                    };
+                    let turn_usage = if self.debug_mode { usage.clone() } else { None };
                     self.emitter.emit(RunEvent::TurnFinished {
                         task_id: self.task_id.clone(),
                         turn_id: turn_id.clone(),
                         status: TurnStatus::Success,
+                        turn_index: Some(turn_index),
+                        assistant_message_id: Some(self.assistant_message_id.clone()),
+                        debug_info: turn_debug_info,
+                        usage: turn_usage,
+                        model: Some(self.model_config.model.clone()),
                     });
                     return TaskOutcome::Success {
                         last_turn_id: turn_id,
                         content,
                         thinking,
-                        debug_info,
-                        usage,
+                        debug_info: if self.debug_mode { debug_info } else { None },
+                        usage: if self.debug_mode { usage } else { None },
                     };
                 }
                 TurnStreamResult::ToolCalls {
                     thinking,
                     tool_calls,
+                    debug_info,
+                    usage,
                 } => {
                     self.emitter.emit(RunEvent::TurnPhaseFinished {
                         task_id: self.task_id.clone(),
                         turn_id: turn_id.clone(),
                         phase: TurnPhase::Think,
                     });
+
+                    let turn_debug_info = if self.debug_mode { debug_info } else { None };
+                    let turn_usage = if self.debug_mode { usage } else { None };
 
                     // 防止无限循环：达到 max_turns 后仍然在请求工具调用
                     if turn_index >= self.max_turns {
@@ -178,11 +198,16 @@ impl<'a> TurnLoop<'a> {
                             task_id: self.task_id.clone(),
                             turn_id: turn_id.clone(),
                             status: TurnStatus::Failed,
+                            turn_index: Some(turn_index),
+                            assistant_message_id: Some(self.assistant_message_id.clone()),
+                            debug_info: turn_debug_info.clone(),
+                            usage: turn_usage.clone(),
+                            model: Some(self.model_config.model.clone()),
                         });
                         return TaskOutcome::Failed {
                             turn_id,
                             error,
-                            debug_info: None,
+                            debug_info: turn_debug_info,
                         };
                     }
 
@@ -359,6 +384,11 @@ impl<'a> TurnLoop<'a> {
                             task_id: self.task_id.clone(),
                             turn_id: turn_id.clone(),
                             status: TurnStatus::Aborted,
+                            turn_index: Some(turn_index),
+                            assistant_message_id: Some(self.assistant_message_id.clone()),
+                            debug_info: turn_debug_info,
+                            usage: turn_usage,
+                            model: Some(self.model_config.model.clone()),
                         });
                         return TaskOutcome::Aborted {
                             last_turn_id: turn_id,
@@ -377,6 +407,11 @@ impl<'a> TurnLoop<'a> {
                         task_id: self.task_id.clone(),
                         turn_id: turn_id.clone(),
                         status: TurnStatus::Success,
+                        turn_index: Some(turn_index),
+                        assistant_message_id: Some(self.assistant_message_id.clone()),
+                        debug_info: turn_debug_info,
+                        usage: turn_usage,
+                        model: Some(self.model_config.model.clone()),
                     });
 
                     // 继续下一轮 Turn（Think）
@@ -392,11 +427,16 @@ impl<'a> TurnLoop<'a> {
                         task_id: self.task_id.clone(),
                         turn_id: turn_id.clone(),
                         status: TurnStatus::Failed,
+                        turn_index: Some(turn_index),
+                        assistant_message_id: Some(self.assistant_message_id.clone()),
+                        debug_info: if self.debug_mode { debug_info.clone() } else { None },
+                        usage: None,
+                        model: Some(self.model_config.model.clone()),
                     });
                     return TaskOutcome::Failed {
                         turn_id,
                         error,
-                        debug_info,
+                        debug_info: if self.debug_mode { debug_info } else { None },
                     };
                 }
                 TurnStreamResult::Aborted { content, thinking } => {
@@ -409,6 +449,11 @@ impl<'a> TurnLoop<'a> {
                         task_id: self.task_id.clone(),
                         turn_id: turn_id.clone(),
                         status: TurnStatus::Aborted,
+                        turn_index: Some(turn_index),
+                        assistant_message_id: Some(self.assistant_message_id.clone()),
+                        debug_info: None,
+                        usage: None,
+                        model: Some(self.model_config.model.clone()),
                     });
                     return TaskOutcome::Aborted {
                         last_turn_id: turn_id,
@@ -482,8 +527,11 @@ async fn run_task_inner(
         .into());
     }
 
-    let model_config =
+    let mut model_config =
         build_model_config(provider, model, input.thinking, input.web_search_enabled);
+    let debug_mode = config.general.debug_mode;
+    // Debug: 在日志输出原始 SSE（仅流式请求）
+    model_config.debug_sse = debug_mode;
     let client = get_client(&model_config.provider)
         .map_err(|e| AppErrorCode::AiServiceError(e.to_string()))?;
 
@@ -549,11 +597,16 @@ async fn run_task_inner(
         title: None,
     });
 
-    // 4) TurnLoop：Chat = 单 Turn；Tool/Code = 多 Turn（未来可扩展更多 agent 类型）
-    let max_turns: u32 = match agent.agent_type {
-        AgentType::Tool | AgentType::Code => 8,
+    // 4) TurnLoop：Chat = 单 Turn；Tool/Code = 多 Turn（上限可由 Agent 配置）
+    // - 未配置时：Tool/Code 默认 10000（按你的需求），其他类型默认 1
+    let default_max_turns: u32 = match agent.agent_type {
+        AgentType::Tool | AgentType::Code => 10_000,
         _ => 1,
     };
+    let max_turns: u32 = agent
+        .max_turns
+        .unwrap_or(default_max_turns)
+        .max(1);
 
     // tools：按 Agent 选择工具集，并在这里完成“权限过滤 -> 传给模型的 ToolDefinition”
     // - 真实执行时仍会再次做权限检查（防止前端/模型绕过）
@@ -603,6 +656,7 @@ async fn run_task_inner(
         assistant_message_id: assistant_message_id.clone(),
         output_format: output_format.clone(),
         max_turns,
+        debug_mode,
         emitter: &mut emitter,
     };
 
@@ -826,8 +880,7 @@ async fn stream_one_turn(
                     }
                     Some(StreamEvent::ToolCalls(calls)) => {
                         tool_calls = Some(calls);
-                        // Tool call turn：这里先跳出，由上层决定 Act/Observe
-                        break;
+                        // Tool call turn：不要立刻 break，继续等 DoneWithDebug（如果有的话）以便拿到 debug/usage
                     }
                     Some(StreamEvent::Done(content)) => { full_content = content; break; }
                     Some(StreamEvent::DoneWithThinking { content, thinking }) => {
@@ -859,6 +912,8 @@ async fn stream_one_turn(
         return TurnStreamResult::ToolCalls {
             thinking: full_thinking,
             tool_calls: calls,
+            debug_info,
+            usage,
         };
     }
 

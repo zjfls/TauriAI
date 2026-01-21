@@ -9,9 +9,11 @@
  */
 
 import React, { useMemo, useState } from 'react';
-import { Brain, ChevronDown, ChevronRight, Search, Wrench } from 'lucide-react';
-import type { MessageBlock } from '../../types';
+import { Brain, Bug, ChevronDown, ChevronRight, Search, Wrench } from 'lucide-react';
+import type { MessageBlock, MessageTurn } from '../../types';
 import { MarkdownRenderer } from './MarkdownRenderer';
+import { useConfigStore } from '../../stores/configStore';
+import { DebugModal } from './DebugModal';
 
 interface ThinkingBlockProps {
   text: string;
@@ -240,55 +242,154 @@ const WebSearchBlock: React.FC<{ status: string; action?: unknown; isStreaming?:
   );
 };
 
-export const MessageBlocks: React.FC<{ blocks: MessageBlock[]; isStreaming?: boolean }> = ({
-  blocks,
-  isStreaming,
-}) => {
+export const MessageBlocks: React.FC<{
+  blocks: MessageBlock[];
+  isStreaming?: boolean;
+  turns?: MessageTurn[];
+}> = ({ blocks, isStreaming, turns }) => {
   if (!blocks || blocks.length === 0) return null;
+
+  const { config } = useConfigStore();
+  const debugMode = config?.general?.debugMode ?? false;
+  const [activeDebugTurn, setActiveDebugTurn] = useState<MessageTurn | null>(null);
+
+  const turnMetaById = useMemo(() => {
+    const map = new Map<string, MessageTurn>();
+    for (const t of turns || []) {
+      map.set(t.turnId, t);
+    }
+    return map;
+  }, [turns]);
+
+  const distinctTurnIds = useMemo(() => {
+    const set = new Set<string>();
+    for (const b of blocks) {
+      if (b.turnId) set.add(b.turnId);
+    }
+    return set;
+  }, [blocks]);
+  const showTurnHeader = debugMode && distinctTurnIds.size > 0;
+
+  const groups = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        key: string;
+        turnId?: string;
+        turnIndex?: number;
+        blocks: MessageBlock[];
+      }
+    >();
+    const order: string[] = [];
+
+    for (const block of blocks) {
+      const key = block.turnId || '__legacy__';
+      const existing = map.get(key);
+      if (!existing) {
+        order.push(key);
+        const meta = block.turnId ? turnMetaById.get(block.turnId) : undefined;
+        map.set(key, {
+          key,
+          turnId: block.turnId,
+          turnIndex: meta?.turnIndex ?? block.turnIndex,
+          blocks: [block],
+        });
+        continue;
+      }
+
+      existing.blocks.push(block);
+      if (existing.turnIndex === undefined) {
+        const meta = existing.turnId ? turnMetaById.get(existing.turnId) : undefined;
+        existing.turnIndex = meta?.turnIndex ?? block.turnIndex;
+      }
+    }
+
+    return order.map((key) => map.get(key)!);
+  }, [blocks, turnMetaById]);
+
+  const renderBlock = (block: MessageBlock) => {
+    if (block.type === 'thinking') {
+      return <ThinkingBlock text={block.text} isStreaming={isStreaming} />;
+    }
+
+    if (block.type === 'text') {
+      const format = (block.format || 'markdown').toString();
+      if (format === 'plain') {
+        return <p className="whitespace-pre-wrap">{block.text}</p>;
+      }
+      if (format === 'json') {
+        return (
+          <pre className="whitespace-pre-wrap break-words rounded-lg bg-gray-100 px-3 py-2 text-sm text-gray-800 dark:bg-gray-900/40 dark:text-gray-100">
+            {block.text}
+          </pre>
+        );
+      }
+      return <MarkdownRenderer content={block.text} />;
+    }
+
+    if (block.type === 'tool_call') {
+      return (
+        <ToolCallBlock name={block.name} args={block.arguments} isStreaming={isStreaming} />
+      );
+    }
+
+    if (block.type === 'tool_result') {
+      return <ToolResultBlock text={block.text} />;
+    }
+
+    if (block.type === 'web_search') {
+      return <WebSearchBlock status={block.status} action={block.action} isStreaming={isStreaming} />;
+    }
+
+    return <UnknownBlock data={block.data} />;
+  };
 
   return (
     <>
-      {blocks.map((block) => {
-        if (block.type === 'thinking') {
-          return <ThinkingBlock key={block.id} text={block.text} isStreaming={isStreaming} />;
-        }
+      {groups.map((g, idx) => {
+        const turnMeta = g.turnId ? turnMetaById.get(g.turnId) : undefined;
+        const turnIndex = turnMeta?.turnIndex ?? g.turnIndex ?? idx + 1;
+        const debugInfo = turnMeta?.debugInfo;
 
-        if (block.type === 'text') {
-          const format = (block.format || 'markdown').toString();
-          if (format === 'plain') {
-            return (
-              <p key={block.id} className="whitespace-pre-wrap">
-                {block.text}
-              </p>
-            );
-          }
-          if (format === 'json') {
-            return (
-              <pre
-                key={block.id}
-                className="whitespace-pre-wrap break-words rounded-lg bg-gray-100 px-3 py-2 text-sm text-gray-800 dark:bg-gray-900/40 dark:text-gray-100"
-              >
-                {block.text}
-              </pre>
-            );
-          }
-          return <MarkdownRenderer key={block.id} content={block.text} />;
-        }
+        return (
+          <div key={`${g.key}:${idx}`}>
+            {showTurnHeader && g.turnId ? (
+              <div className="mb-1 flex items-center justify-between">
+                <div
+                  className="select-text text-[10px] font-mono text-gray-400 dark:text-gray-500"
+                  title={g.turnId}
+                >
+                  第 {turnIndex} 轮
+                </div>
+                <button
+                  type="button"
+                  onClick={() => debugInfo && setActiveDebugTurn(turnMeta || null)}
+                  disabled={!debugInfo}
+                  className={`flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-medium transition-colors ${debugInfo
+                    ? 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
+                    : 'cursor-not-allowed bg-gray-50 text-gray-300 dark:bg-gray-900/40 dark:text-gray-700'
+                    }`}
+                  title={debugInfo ? '查看该轮请求/响应' : '该轮暂无调试数据'}
+                >
+                  <Bug size={12} />
+                  <span>Debug</span>
+                </button>
+              </div>
+            ) : null}
 
-        if (block.type === 'tool_call') {
-          return <ToolCallBlock key={block.id} name={block.name} args={block.arguments} isStreaming={isStreaming} />;
-        }
-
-        if (block.type === 'tool_result') {
-          return <ToolResultBlock key={block.id} text={block.text} />;
-        }
-
-        if (block.type === 'web_search') {
-          return <WebSearchBlock key={block.id} status={block.status} action={block.action} isStreaming={isStreaming} />;
-        }
-
-        return <UnknownBlock key={block.id} data={block.data} />;
+            {g.blocks.map((block) => (
+              <React.Fragment key={block.id}>{renderBlock(block)}</React.Fragment>
+            ))}
+          </div>
+        );
       })}
+
+      <DebugModal
+        isOpen={!!activeDebugTurn}
+        onClose={() => setActiveDebugTurn(null)}
+        debugInfo={activeDebugTurn?.debugInfo || null}
+        messageRole="assistant"
+      />
     </>
   );
 };

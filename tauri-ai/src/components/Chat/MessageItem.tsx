@@ -125,6 +125,8 @@ export const MessageItem: React.FC<MessageItemProps> = ({
   const { config } = useConfigStore();
   const debugMode = config?.general?.debugMode ?? false;
   const showUsage = config?.general?.showUsage ?? true;
+  const hasMultiTurnDebug = Array.isArray(message.turns) && message.turns.length > 1;
+  const hasDebugInfo = Boolean(message.debugInfo) || Boolean(message.turns?.some((t) => t.debugInfo));
 
   const isUser = message.role === 'user';
   const isAssistant = message.role === 'assistant';
@@ -164,14 +166,14 @@ export const MessageItem: React.FC<MessageItemProps> = ({
             >
               <MessageToolbar actions={actions} onAction={onAction} />
               {/* Debug button for error messages */}
-              {debugMode && message.debugInfo && (
+              {debugMode && hasDebugInfo && (
                 <button
                   onClick={() => setShowDebugModal(true)}
                   className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-md bg-red-100 text-red-700 hover:bg-red-200 dark:bg-red-900/30 dark:text-red-300 dark:hover:bg-red-900/50 transition-colors"
-                  title="查看原始消息"
+                  title="查看调试信息"
                 >
                   <Bug size={14} />
-                  <span>Raw</span>
+                  <span>Debug</span>
                 </button>
               )}
             </div>
@@ -183,6 +185,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
           isOpen={showDebugModal}
           onClose={() => setShowDebugModal(false)}
           debugInfo={message.debugInfo || null}
+          turns={message.turns || null}
           messageRole="error"
         />
       </div>
@@ -238,7 +241,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
         {/* Assistant blocks (extensible output) */}
         {isAssistant && assistantBlocks.length > 0 ? (
           <div>
-            <MessageBlocks blocks={assistantBlocks} />
+            <MessageBlocks blocks={assistantBlocks} turns={message.turns} />
 
             {/* Fallback for multimodal output (future) */}
             {message.contentParts && message.contentParts.length > 0 && (
@@ -291,7 +294,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
           >
             <MessageToolbar actions={actions} onAction={onAction} />
             {/* Debug button - only for assistant messages and if debugMode is on */}
-            {debugMode && isAssistant && message.debugInfo && (
+            {debugMode && isAssistant && !hasMultiTurnDebug && hasDebugInfo && (
               <button
                 onClick={() => setShowDebugModal(true)}
                 className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700 transition-colors"
@@ -310,6 +313,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
         isOpen={showDebugModal}
         onClose={() => setShowDebugModal(false)}
         debugInfo={message.debugInfo || null}
+        turns={message.turns || null}
         messageRole={isUser ? 'user' : 'assistant'}
       />
     </div>
@@ -317,4 +321,3 @@ export const MessageItem: React.FC<MessageItemProps> = ({
 };
 
 export default MessageItem;
-

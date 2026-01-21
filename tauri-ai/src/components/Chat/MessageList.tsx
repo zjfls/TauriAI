@@ -5,7 +5,7 @@
  */
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import type { Message, MessageBlock, Action } from '../../types';
+import type { Message, MessageBlock, Action, MessageTurn } from '../../types';
 import { MessageItem } from './MessageItem';
 import { MessageBlocks } from './MessageBlocks';
 import { Bot, ArrowDown } from 'lucide-react';
@@ -14,6 +14,7 @@ import { isTauri } from '@tauri-apps/api/core';
 interface MessageListProps {
   messages: Message[];
   streamingBlocks: MessageBlock[] | null;
+  streamingTurns?: MessageTurn[];
   isGenerating: boolean;
   onAction: (action: Action) => void;
   /** 拖拽文件到聊天窗口时转发给输入框 */
@@ -28,6 +29,7 @@ const SCROLL_THRESHOLD = 50;
 export const MessageList: React.FC<MessageListProps> = ({
   messages,
   streamingBlocks,
+  streamingTurns,
   isGenerating: _isGenerating,
   onAction,
   onDropFiles,
@@ -179,7 +181,7 @@ export const MessageList: React.FC<MessageListProps> = ({
 
           {/* Streaming content */}
           <div className="relative max-w-[80%] rounded-2xl bg-white px-4 py-2 text-gray-900 shadow-sm dark:bg-gray-800 dark:text-gray-100">
-            <MessageBlocks blocks={streamingBlocks} isStreaming />
+            <MessageBlocks blocks={streamingBlocks} isStreaming turns={streamingTurns} />
             {/* Blinking cursor */}
             <span className="ml-1 inline-block h-4 w-2 animate-pulse bg-gray-400 dark:bg-gray-500" />
           </div>

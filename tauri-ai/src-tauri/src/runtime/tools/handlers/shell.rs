@@ -93,7 +93,12 @@ impl ToolHandler for ShellCommandTool {
                         }
                     }
                 },
-                "required": ["command"],
+                // OpenAI Responses API `strict=true` 要求：required 必须包含 properties 的全部 key
+                // 约定：
+                // - workdir 为空字符串表示“使用默认工作目录”
+                // - timeout_ms=0 表示“不设置超时”
+                // - env=[] 表示“不设置额外环境变量”
+                "required": ["command", "workdir", "timeout_ms", "env"],
                 "additionalProperties": false
             }),
             required_permissions: vec![ToolPermission::ShellExec],
@@ -203,9 +208,9 @@ impl ToolHandler for ShellCommandTool {
 
         let mut output = String::new();
 
-        let deadline = args
-            .timeout_ms
-            .map(|ms| Instant::now() + std::time::Duration::from_millis(ms));
+        let deadline = args.timeout_ms.filter(|ms| *ms > 0).map(|ms| {
+            Instant::now() + std::time::Duration::from_millis(ms)
+        });
 
         loop {
             if let Some(d) = deadline {

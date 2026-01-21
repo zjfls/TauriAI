@@ -745,6 +745,9 @@ impl OpenAiBaseClient {
                 }
 
                 if let Some(data) = line.strip_prefix("data: ") {
+                    if config.debug_sse {
+                        eprintln!("[SSE][{}/{}] {}", config.provider, config.model, data);
+                    }
                     if data.trim() == "[DONE]" {
                         if !tool_calls_sent {
                             let mut calls: Vec<ToolCall> = Vec::new();

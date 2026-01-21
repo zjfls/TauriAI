@@ -128,6 +128,7 @@ pub async fn generate_title(
         web_search_enabled: false, // Don't enable web search for title generation
         max_images: None, // Not needed for title generation
         use_reasoning_effort: None, // Not needed for title generation
+        debug_sse: false,
     };
 
     let client = get_client(&model_config.provider).map_err(|e| e.to_string())?;

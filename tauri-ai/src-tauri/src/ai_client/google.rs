@@ -795,6 +795,9 @@ impl AiClient for GoogleClient {
                 }
 
                 if let Some(data) = line.strip_prefix("data: ") {
+                    if config.debug_sse {
+                        eprintln!("[SSE][{}/{}] {}", config.provider, config.model, data);
+                    }
                     if data.trim().is_empty() {
                         continue;
                     }

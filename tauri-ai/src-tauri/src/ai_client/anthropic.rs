@@ -764,6 +764,9 @@ impl AiClient for AnthropicClient {
                 }
 
                 if let Some(data) = line.strip_prefix("data: ") {
+                    if config.debug_sse {
+                        eprintln!("[SSE][{}/{}] {}", config.provider, config.model, data);
+                    }
                     if let Ok(event) = serde_json::from_str::<StreamingEvent>(data) {
                         match event {
                             StreamingEvent::MessageStart { message } => {

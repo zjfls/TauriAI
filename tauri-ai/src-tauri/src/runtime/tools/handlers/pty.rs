@@ -142,7 +142,9 @@ impl ToolHandler for ExecCommandTool {
                     "workdir": { "type": "string", "description": "可选工作目录" },
                     "yield_time_ms": { "type": "integer", "description": "读取输出的时间窗口（毫秒）" }
                 },
-                "required": ["cmd"],
+                // OpenAI Responses API `strict=true` 要求：required 必须包含 properties 的全部 key
+                // 约定：workdir 为空字符串表示“使用默认工作目录”
+                "required": ["cmd", "workdir", "yield_time_ms"],
                 "additionalProperties": false
             }),
             required_permissions: vec![ToolPermission::PtyExec],
@@ -207,7 +209,8 @@ impl ToolHandler for WriteStdinTool {
                     "chars": { "type": "string", "description": "要写入 stdin 的字符（可包含换行）" },
                     "yield_time_ms": { "type": "integer", "description": "读取输出的时间窗口（毫秒）" }
                 },
-                "required": ["session_id", "chars"],
+                // OpenAI Responses API `strict=true` 要求：required 必须包含 properties 的全部 key
+                "required": ["session_id", "chars", "yield_time_ms"],
                 "additionalProperties": false
             }),
             required_permissions: vec![ToolPermission::PtyExec],

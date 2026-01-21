@@ -774,6 +774,9 @@ impl AiClient for OpenAiResponsesClient {
                 }
 
                 if let Some(data) = line.strip_prefix("data: ") {
+                    if config.debug_sse {
+                        eprintln!("[SSE][{}/{}] {}", config.provider, config.model, data);
+                    }
                     if data.trim() == "[DONE]" {
                         // 兜底：如果没有收到 response.completed，但已经收集到 function tool calls，则按工具调用回传
                         if !function_calls_by_item_id.is_empty() {

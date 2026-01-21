@@ -462,6 +462,9 @@ pub struct Agent {
     /// Optional toolset name (bind different tool collections per agent)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub toolset: Option<String>,
+    /// Max turns for a single run/task (tool/code agents may need multi-turn)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_turns: Option<u32>,
 }
 
 impl Default for Agent {
@@ -475,6 +478,7 @@ impl Default for Agent {
             system_prompt: String::new(),
             format_type: FormatPromptType::default(),
             toolset: None,
+            max_turns: None,
         }
     }
 }
@@ -547,6 +551,9 @@ pub struct ModelConfig {
     /// Whether to use reasoning_effort parameter (for OpenAI GPT-5 series)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub use_reasoning_effort: Option<bool>,
+    /// Debug: log raw SSE lines from providers (streaming only)
+    #[serde(default)]
+    pub debug_sse: bool,
 }
 
 /// A preset combining model config and system prompt (legacy)
@@ -795,6 +802,7 @@ impl AppConfig {
                     .unwrap_or_default(),
                 format_type: FormatPromptType::Chat,
                 toolset: None,
+                max_turns: None,
             });
 
             // Set default agent

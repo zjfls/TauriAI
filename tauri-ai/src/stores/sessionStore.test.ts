@@ -40,7 +40,7 @@ interface TestSessionState {
 
   appendStreamingToken: (sessionId: string, token: string) => void;
   appendThinkingToken: (sessionId: string, token: string) => void;
-  finalizeStreaming: (sessionId: string, fullContent: string, thinking?: string, debugInfo?: DebugInfo, usage?: TokenUsage, model?: string) => void;
+  finalizeStreaming: (sessionId: string, turnId: string, fullContent: string, thinking?: string, debugInfo?: DebugInfo, usage?: TokenUsage, model?: string) => void;
   handleError: (sessionId: string, error: string, debugInfo?: DebugInfo) => void;
   setSessionModel: (sessionId: string, modelRef: string) => void;
   closeOtherSessions: (keepSessionId: string) => void;
@@ -106,7 +106,7 @@ function createTestSessionStore() {
       });
     },
 
-    finalizeStreaming: (sessionId: string, fullContent: string, thinking?: string, debugInfo?: DebugInfo, usage?: TokenUsage, model?: string) => {
+    finalizeStreaming: (sessionId: string, _turnId: string, fullContent: string, thinking?: string, debugInfo?: DebugInfo, usage?: TokenUsage, model?: string) => {
       const session = get().sessions.get(sessionId);
       if (!session?.conversationId) return;
 
@@ -674,6 +674,7 @@ describe('SessionStore Property Tests', () => {
             const targetSession = useTestStore.getState().getSessionByConversationId(session1.conversationId!);
             useTestStore.getState().finalizeStreaming(
               targetSession!.id,
+              'turn_test',
               content,
               thinking ?? undefined
             );

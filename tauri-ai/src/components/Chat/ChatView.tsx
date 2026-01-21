@@ -46,6 +46,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
   // Extract session state with defaults for when no session exists
   const messages = session?.messages ?? [];
   const streamingBlocks = session?.streamingBlocks ?? null;
+  const streamingTurns = session?.streamingTurns ? Array.from(session.streamingTurns.values()) : undefined;
   const isGenerating = session?.isGenerating ?? false;
 
   const { config, getProvider, getAgent, getModelOptions } = useConfigStore();
@@ -315,6 +316,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
       <MessageList
         messages={messages}
         streamingBlocks={streamingBlocks}
+        streamingTurns={streamingTurns}
         isGenerating={isGenerating}
         onAction={handleAction}
         onDropFiles={handleDropFilesToInput}

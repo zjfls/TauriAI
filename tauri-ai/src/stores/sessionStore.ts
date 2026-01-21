@@ -7,7 +7,7 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import type { AgentSession, Message, DebugInfo, TokenUsage, PersistedSession, PersistedSessionState, ContentPart, ThinkingMode, ApiProtocolType, RunEventPayload, MessageBlock, ProviderType } from '../types';
+import type { AgentSession, Message, DebugInfo, TokenUsage, PersistedSession, PersistedSessionState, ContentPart, ThinkingMode, ApiProtocolType, RunEventPayload, MessageBlock, ProviderType, MessageTurn } from '../types';
 import { getApiProtocol, getDefaultThinkingMode, getProviderType } from '../utils/apiUtils';
 
 // Constants for persistence
@@ -66,7 +66,7 @@ export interface SessionState {
   // Streaming updates (internal use)
   appendStreamingToken: (sessionId: string, token: string) => void;
   appendThinkingToken: (sessionId: string, token: string) => void;
-  finalizeStreaming: (sessionId: string, fullContent: string, thinking?: string, debugInfo?: DebugInfo, usage?: TokenUsage, model?: string, assistantMessageId?: string, format?: string) => void;
+  finalizeStreaming: (sessionId: string, turnId: string, fullContent: string, thinking?: string, debugInfo?: DebugInfo, usage?: TokenUsage, model?: string, assistantMessageId?: string, format?: string) => void;
   handleError: (sessionId: string, error: string, debugInfo?: DebugInfo) => void;
 
   // Model switching (async due to API type check)
@@ -443,6 +443,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       createdAt: new Date().toISOString(),
     };
 
+    // Clear any previous run's turn indexes (defensive)
+    clearTurnIndexesForSession(sessionId);
+
     // Update session state (stream start)
     set((state) => {
       const newSessions = new Map(state.sessions);
@@ -453,6 +456,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           messages: [...currentSession.messages, userMessage],
           isGenerating: true,
           streamingBlocks: [],
+          streamingTurns: new Map(),
           error: null,
           lastActiveAt: new Date().toISOString(),
         });
@@ -495,10 +499,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             ...currentSession,
             isGenerating: false,
             streamingBlocks: null,
+            streamingTurns: undefined,
           });
         }
         return { sessions: newSessions };
       });
+
+      // 丢弃节流队列里尚未 flush 的 token，避免中止后“复活” UI
+      clearPendingChunks(sessionId);
+      clearTurnIndexesForSession(sessionId);
     } catch (error) {
       console.error('Failed to abort generation:', error);
     }
@@ -667,46 +676,77 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    * Finalize streaming and add assistant message
    * Requirements: 7.5
    */
-  finalizeStreaming: (sessionId: string, fullContent: string, thinking?: string, debugInfo?: DebugInfo, usage?: TokenUsage, model?: string, assistantMessageId?: string, format?: string) => {
+  finalizeStreaming: (sessionId: string, turnId: string, fullContent: string, thinking?: string, debugInfo?: DebugInfo, usage?: TokenUsage, model?: string, assistantMessageId?: string, format?: string) => {
     const session = get().sessions.get(sessionId);
     if (!session?.conversationId) return;
 
     const baseBlocks = session.streamingBlocks ?? [];
     const blocksById = new Map<string, MessageBlock>(baseBlocks.map((b) => [b.id, b]));
 
-    const baseThinking =
-      thinking ??
-      (blocksById.get('assistant_thinking')?.type === 'thinking'
-        ? (blocksById.get('assistant_thinking') as any).text
-        : undefined);
-    const finalThinking = baseThinking && baseThinking.trim().length > 0 ? baseThinking : undefined;
+    const thinkingBlockId = `${turnId}:assistant_thinking`;
+    const textBlockId = `${turnId}:assistant_text`;
+    const finalTurnIndex =
+      getTurnIndexForSession(sessionId, turnId) ??
+      blocksById.get(thinkingBlockId)?.turnIndex ??
+      blocksById.get(textBlockId)?.turnIndex;
 
-    const baseContent =
-      fullContent ||
-      (blocksById.get('assistant_text')?.type === 'text'
-        ? (blocksById.get('assistant_text') as any).text
-        : '');
-    const finalContent = baseContent && baseContent.trim().length > 0 ? baseContent : '';
+    const getThinkingFromBlocks = (): string | undefined => {
+      const b = blocksById.get(thinkingBlockId);
+      if (b?.type === 'thinking') return b.text;
+      const legacy = blocksById.get('assistant_thinking');
+      if (legacy?.type === 'thinking') return legacy.text;
+      return undefined;
+    };
+
+    const getTextFromBlocks = (): { text: string; format?: string } => {
+      const b = blocksById.get(textBlockId);
+      if (b?.type === 'text') return { text: b.text, format: b.format };
+      const legacy = blocksById.get('assistant_text');
+      if (legacy?.type === 'text') return { text: legacy.text, format: legacy.format };
+      return { text: '' };
+    };
+
+    const baseThinking = thinking ?? getThinkingFromBlocks();
+    let finalThinking = baseThinking && baseThinking.trim().length > 0 ? baseThinking : undefined;
+
+    const baseContent = fullContent || getTextFromBlocks().text;
+    let finalContent = baseContent && baseContent.trim().length > 0 ? baseContent : '';
+
+    // 兜底：某些服务会把“可见输出”错误地放到 thinking 通道里，导致正文为空
+    // 这里把“仅有 thinking、正文为空”的情况当作正文展示，避免用户看到一片空白。
+    if (!finalContent && finalThinking) {
+      finalContent = finalThinking;
+      finalThinking = undefined;
+    }
 
     if (finalThinking) {
-      blocksById.set('assistant_thinking', {
-        id: 'assistant_thinking',
+      blocksById.set(thinkingBlockId, {
+        id: thinkingBlockId,
         type: 'thinking',
+        turnId,
+        turnIndex: finalTurnIndex,
         text: finalThinking,
       });
     } else {
-      blocksById.delete('assistant_thinking');
+      blocksById.delete(thinkingBlockId);
     }
 
     if (finalContent) {
-      blocksById.set('assistant_text', {
-        id: 'assistant_text',
+      const existingFormat =
+        blocksById.get(textBlockId)?.type === 'text' ? (blocksById.get(textBlockId) as any).format : undefined;
+      const legacyFormat = getTextFromBlocks().format;
+      const inferredFormat = format || existingFormat || legacyFormat || 'markdown';
+
+      blocksById.set(textBlockId, {
+        id: textBlockId,
         type: 'text',
-        format: (format || (blocksById.get('assistant_text') as any)?.format || 'markdown'),
+        turnId,
+        turnIndex: finalTurnIndex,
+        format: inferredFormat,
         text: finalContent,
       });
     } else {
-      blocksById.delete('assistant_text');
+      blocksById.delete(textBlockId);
     }
 
     const blocks: MessageBlock[] = [];
@@ -718,8 +758,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         blocksById.delete(id);
       }
     }
-    // Ensure core blocks are appended if they were not present in streaming order
-    for (const id of ['assistant_thinking', 'assistant_text']) {
+    // Ensure final-turn core blocks are appended if they were not present in streaming order
+    for (const id of [thinkingBlockId, textBlockId]) {
       const block = blocksById.get(id);
       if (block) {
         blocks.push(block);
@@ -739,6 +779,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       blocks: blocks.length > 0 ? blocks : undefined,
       meta: model ? { model } : undefined,
       debugInfo,
+      turns: session.streamingTurns
+        ? Array.from(session.streamingTurns.values()).sort((a, b) => a.turnIndex - b.turnIndex)
+        : undefined,
       usage,
       createdAt: new Date().toISOString(),
     };
@@ -760,12 +803,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           ...currentSession,
           messages: [...updatedMessages, assistantMessage],
           streamingBlocks: null,
+          streamingTurns: undefined,
           isGenerating: false,
           lastActiveAt: new Date().toISOString(),
         });
       }
       return { sessions: newSessions };
     });
+
+    clearTurnIndexesForSession(sessionId);
 
     // Trigger auto-title generation
     // Condition: messages >= 3 OR response content >= 100 chars
@@ -825,10 +871,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           error,
           isGenerating: false,
           streamingBlocks: null,
+          streamingTurns: undefined,
         });
       }
       return { sessions: newSessions };
     });
+
+    clearTurnIndexesForSession(sessionId);
   },
 
   /**
@@ -1303,12 +1352,14 @@ const STREAM_UI_UPDATE_FPS = 20;
 const STREAM_UI_UPDATE_INTERVAL_MS = Math.round(1000 / STREAM_UI_UPDATE_FPS);
 
 type PendingStreamChunks = {
-  // key: blockId
+  // key: uiBlockId（turnId:blockId）
   blocks: Map<
     string,
     {
       blockType: string;
       format?: string;
+      turnId: string;
+      turnIndex?: number;
       chunks: string[];
     }
   >;
@@ -1316,6 +1367,26 @@ type PendingStreamChunks = {
 
 const pendingStreamChunksBySessionId = new Map<string, PendingStreamChunks>();
 let streamFlushTimeout: ReturnType<typeof setTimeout> | null = null;
+
+type StreamingTurnsById = Map<string, MessageTurn>;
+const streamingTurnIndexBySessionId = new Map<string, Map<string, number>>();
+
+const setTurnIndexForSession = (sessionId: string, turnId: string, turnIndex: number) => {
+  let byTurn = streamingTurnIndexBySessionId.get(sessionId);
+  if (!byTurn) {
+    byTurn = new Map<string, number>();
+    streamingTurnIndexBySessionId.set(sessionId, byTurn);
+  }
+  byTurn.set(turnId, turnIndex);
+};
+
+const getTurnIndexForSession = (sessionId: string, turnId: string): number | undefined => {
+  return streamingTurnIndexBySessionId.get(sessionId)?.get(turnId);
+};
+
+const clearTurnIndexesForSession = (sessionId: string) => {
+  streamingTurnIndexBySessionId.delete(sessionId);
+};
 
 const getOrCreatePendingChunks = (sessionId: string): PendingStreamChunks => {
   let chunks = pendingStreamChunksBySessionId.get(sessionId);
@@ -1360,7 +1431,8 @@ const flushPendingStreamChunks = () => {
       };
 
       const extractSuffixId = (prefix: string, id: string): string => {
-        return id.startsWith(prefix) ? id.slice(prefix.length) : id;
+        const idx = id.lastIndexOf(prefix);
+        return idx === -1 ? id : id.slice(idx + prefix.length);
       };
 
       // Some block types are emitted as full JSON snapshots; for these we should not concat deltas.
@@ -1373,22 +1445,26 @@ const flushPendingStreamChunks = () => {
         blockId: string,
         blockType: string,
         format: string | undefined,
+        turnId: string,
+        turnIndex: number | undefined,
         delta: string
       ): MessageBlock[] => {
         const idx = blocks.findIndex((b) => b.id === blockId);
 
         const createBlock = (): MessageBlock => {
           if (blockType === 'thinking') {
-            return { id: blockId, type: 'thinking', text: delta };
+            return { id: blockId, type: 'thinking', turnId, turnIndex, text: delta };
           }
           if (blockType === 'text') {
-            return { id: blockId, type: 'text', format: format || 'markdown', text: delta };
+            return { id: blockId, type: 'text', format: format || 'markdown', turnId, turnIndex, text: delta };
           }
           if (blockType === 'tool_result') {
             return {
               id: blockId,
               type: 'tool_result',
               callId: extractSuffixId('tool_result:', blockId),
+              turnId,
+              turnIndex,
               text: delta,
             };
           }
@@ -1398,7 +1474,7 @@ const flushPendingStreamChunks = () => {
               const callId = typeof v.id === 'string' ? v.id : extractSuffixId('tool_call:', blockId);
               const name = typeof v.name === 'string' ? v.name : '';
               const args = typeof v.arguments === 'string' ? v.arguments : '';
-              return { id: blockId, type: 'tool_call', callId, name, arguments: args };
+              return { id: blockId, type: 'tool_call', callId, name, arguments: args, turnId, turnIndex };
             }
           }
           if (blockType === 'web_search') {
@@ -1407,10 +1483,10 @@ const flushPendingStreamChunks = () => {
               const callId = typeof v.id === 'string' ? v.id : extractSuffixId('web_search:', blockId);
               const status = typeof v.status === 'string' ? v.status : 'unknown';
               const action = v.action;
-              return { id: blockId, type: 'web_search', callId, status, action };
+              return { id: blockId, type: 'web_search', callId, status, action, turnId, turnIndex };
             }
           }
-          return { id: blockId, type: 'unknown', data: { blockType, format, text: delta } };
+          return { id: blockId, type: 'unknown', turnId, turnIndex, data: { blockType, format, text: delta } };
         };
 
         if (idx === -1) {
@@ -1420,13 +1496,13 @@ const flushPendingStreamChunks = () => {
         const current = blocks[idx];
         const next: MessageBlock = (() => {
           if (current.type === 'thinking' && blockType === 'thinking') {
-            return { ...current, text: current.text + delta };
+            return { ...current, turnIndex: current.turnIndex ?? turnIndex, text: current.text + delta };
           }
           if (current.type === 'text' && blockType === 'text') {
-            return { ...current, text: current.text + delta, format: current.format || format || 'markdown' };
+            return { ...current, turnIndex: current.turnIndex ?? turnIndex, text: current.text + delta, format: current.format || format || 'markdown' };
           }
           if (current.type === 'tool_result' && blockType === 'tool_result') {
-            return { ...current, text: current.text + delta };
+            return { ...current, turnIndex: current.turnIndex ?? turnIndex, text: current.text + delta };
           }
           if (current.type === 'tool_call' && blockType === 'tool_call') {
             // Snapshot update: overwrite (arguments may arrive in multiple updates in future)
@@ -1446,6 +1522,7 @@ const flushPendingStreamChunks = () => {
             const prevText = typeof data?.text === 'string' ? data.text : '';
             return {
               ...current,
+              turnIndex: current.turnIndex ?? turnIndex,
               data: {
                 ...(typeof data === 'object' && data ? data : {}),
                 blockType,
@@ -1470,7 +1547,7 @@ const flushPendingStreamChunks = () => {
           ? (isSnapshotBlockType(b.blockType) ? b.chunks[b.chunks.length - 1] : b.chunks.join(''))
           : '';
         if (!delta) continue;
-        nextBlocks = upsertBlock(nextBlocks, blockId, b.blockType, b.format, delta);
+        nextBlocks = upsertBlock(nextBlocks, blockId, b.blockType, b.format, b.turnId, b.turnIndex, delta);
       }
 
       if (nextBlocks !== session.streamingBlocks) {
@@ -1501,21 +1578,26 @@ const scheduleStreamFlush = () => {
 
 const queueBlockDelta = (
   sessionId: string,
+  turnId: string,
+  turnIndex: number | undefined,
   blockId: string,
   blockType: string,
   format: string | undefined,
   delta: string
 ) => {
   const chunks = getOrCreatePendingChunks(sessionId);
-  const entry = chunks.blocks.get(blockId);
+  const uiBlockId = `${turnId}:${blockId}`;
+  const entry = chunks.blocks.get(uiBlockId);
   if (entry) {
     entry.chunks.push(delta);
     return scheduleStreamFlush();
   }
 
-  chunks.blocks.set(blockId, {
+  chunks.blocks.set(uiBlockId, {
     blockType,
     format,
+    turnId,
+    turnIndex,
     chunks: [delta],
   });
   scheduleStreamFlush();
@@ -1534,20 +1616,90 @@ export const initStreamListeners = async () => {
       const session = useSessionStore.getState().getSessionByConversationId(payload.conversationId);
       if (!session) return;
 
+      if (payload.type === 'turn_started') {
+        setTurnIndexForSession(session.id, payload.turnId, payload.turnIndex);
+
+        useSessionStore.setState((state) => {
+          const newSessions = new Map(state.sessions);
+          const currentSession = newSessions.get(session.id);
+          if (!currentSession) return {};
+
+          const turns: StreamingTurnsById =
+            currentSession.streamingTurns ?? new Map<string, MessageTurn>();
+          const existing = turns.get(payload.turnId);
+          turns.set(payload.turnId, {
+            turnId: payload.turnId,
+            turnIndex: payload.turnIndex,
+            status: existing?.status,
+            debugInfo: existing?.debugInfo,
+            usage: existing?.usage,
+            model: existing?.model,
+          });
+
+          newSessions.set(session.id, {
+            ...currentSession,
+            streamingTurns: turns,
+          });
+          return { sessions: newSessions };
+        });
+        return;
+      }
+
+      if (payload.type === 'turn_finished') {
+        if (typeof payload.turnIndex === 'number') {
+          setTurnIndexForSession(session.id, payload.turnId, payload.turnIndex);
+        }
+
+        useSessionStore.setState((state) => {
+          const newSessions = new Map(state.sessions);
+          const currentSession = newSessions.get(session.id);
+          if (!currentSession) return {};
+
+          const turns: StreamingTurnsById =
+            currentSession.streamingTurns ?? new Map<string, MessageTurn>();
+          const existing = turns.get(payload.turnId);
+          turns.set(payload.turnId, {
+            turnId: payload.turnId,
+            turnIndex: payload.turnIndex ?? existing?.turnIndex ?? 0,
+            status: payload.status,
+            debugInfo: payload.debugInfo ?? existing?.debugInfo,
+            usage: payload.usage ?? existing?.usage,
+            model: payload.model ?? existing?.model,
+          });
+
+          newSessions.set(session.id, {
+            ...currentSession,
+            streamingTurns: turns,
+          });
+          return { sessions: newSessions };
+        });
+        return;
+      }
+
       if (payload.type === 'block_delta') {
         // 统一缓存所有 block_delta：具体渲染/业务处理由上层按 blockType 决定（thinking/text/tool/websearch/...）。
-        queueBlockDelta(session.id, payload.blockId, payload.blockType, payload.format, payload.delta);
+        queueBlockDelta(
+          session.id,
+          payload.turnId,
+          getTurnIndexForSession(session.id, payload.turnId),
+          payload.blockId,
+          payload.blockType,
+          payload.format,
+          payload.delta
+        );
         return;
       }
 
       if (payload.type === 'done') {
-        clearPendingChunks(session.id);
+        // 收尾前先 flush 一次，避免最后一批 token 被节流队列丢弃
+        flushPendingStreamChunks();
         if (discardNextFinalizeByConversationId.has(payload.conversationId)) {
           discardNextFinalizeByConversationId.delete(payload.conversationId);
           return;
         }
         useSessionStore.getState().finalizeStreaming(
           session.id,
+          payload.turnId,
           payload.fullContent,
           payload.thinking,
           payload.debugInfo,
@@ -1560,7 +1712,7 @@ export const initStreamListeners = async () => {
       }
 
       if (payload.type === 'error') {
-        clearPendingChunks(session.id);
+        flushPendingStreamChunks();
         if (discardNextFinalizeByConversationId.has(payload.conversationId)) {
           discardNextFinalizeByConversationId.delete(payload.conversationId);
           return;

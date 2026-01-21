@@ -65,6 +65,16 @@ pub enum RunEvent {
         task_id: String,
         turn_id: String,
         status: TurnStatus,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_index: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        assistant_message_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none", rename = "debugInfo")]
+        debug_info: Option<DebugInfoData>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        usage: Option<TokenUsage>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
     },
 
     // --------------------
