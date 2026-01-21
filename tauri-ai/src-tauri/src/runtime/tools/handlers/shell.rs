@@ -17,6 +17,19 @@ use crate::runtime::tools::spec::ToolSpec;
 pub struct ShellCommandTool;
 
 #[derive(Debug, Deserialize)]
+struct EnvVar {
+    key: String,
+    value: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum EnvSpec {
+    Map(HashMap<String, String>),
+    List(Vec<EnvVar>),
+}
+
+#[derive(Debug, Deserialize)]
 struct ShellCommandArgs {
     command: String,
     #[serde(default)]
@@ -24,7 +37,7 @@ struct ShellCommandArgs {
     #[serde(default)]
     timeout_ms: Option<u64>,
     #[serde(default)]
-    env: Option<HashMap<String, String>>,
+    env: Option<EnvSpec>,
 }
 
 fn is_known_safe_command(command: &str) -> bool {
@@ -67,12 +80,21 @@ impl ToolHandler for ShellCommandTool {
                     "workdir": { "type": "string", "description": "可选工作目录" },
                     "timeout_ms": { "type": "integer", "description": "可选超时（毫秒）" },
                     "env": {
-                        "type": "object",
-                        "description": "可选环境变量（键值对）",
-                        "additionalProperties": { "type": "string" }
+                        "type": "array",
+                        "description": "可选环境变量（键值对列表）",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "key": { "type": "string" },
+                                "value": { "type": "string" }
+                            },
+                            "required": ["key", "value"],
+                            "additionalProperties": false
+                        }
                     }
                 },
-                "required": ["command"]
+                "required": ["command"],
+                "additionalProperties": false
             }),
             required_permissions: vec![ToolPermission::ShellExec],
         }
@@ -103,8 +125,20 @@ impl ToolHandler for ShellCommandTool {
         if let Some(dir) = args.workdir.as_ref().filter(|s| !s.trim().is_empty()) {
             cmd.current_dir(dir);
         }
-        if let Some(env) = args.env.as_ref() {
-            cmd.envs(env);
+        if let Some(env) = args.env {
+            match env {
+                EnvSpec::Map(m) => {
+                    cmd.envs(m);
+                }
+                EnvSpec::List(list) => {
+                    for v in list {
+                        if v.key.trim().is_empty() {
+                            continue;
+                        }
+                        cmd.env(&v.key, &v.value);
+                    }
+                }
+            }
         }
         cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::piped());

@@ -19,7 +19,8 @@ impl ToolHandler for EchoTool {
                 "properties": {
                     "text": { "type": "string", "description": "要回显的文本" }
                 },
-                "required": ["text"]
+                "required": ["text"],
+                "additionalProperties": false
             }),
             required_permissions: vec![],
         }
@@ -66,7 +67,8 @@ impl ToolHandler for GetTimeTool {
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {},
-                "required": []
+                "required": [],
+                "additionalProperties": false
             }),
             required_permissions: vec![],
         }

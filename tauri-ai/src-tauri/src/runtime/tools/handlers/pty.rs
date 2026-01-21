@@ -142,7 +142,8 @@ impl ToolHandler for ExecCommandTool {
                     "workdir": { "type": "string", "description": "可选工作目录" },
                     "yield_time_ms": { "type": "integer", "description": "读取输出的时间窗口（毫秒）" }
                 },
-                "required": ["cmd"]
+                "required": ["cmd"],
+                "additionalProperties": false
             }),
             required_permissions: vec![ToolPermission::PtyExec],
         }
@@ -206,7 +207,8 @@ impl ToolHandler for WriteStdinTool {
                     "chars": { "type": "string", "description": "要写入 stdin 的字符（可包含换行）" },
                     "yield_time_ms": { "type": "integer", "description": "读取输出的时间窗口（毫秒）" }
                 },
-                "required": ["session_id", "chars"]
+                "required": ["session_id", "chars"],
+                "additionalProperties": false
             }),
             required_permissions: vec![ToolPermission::PtyExec],
         }
