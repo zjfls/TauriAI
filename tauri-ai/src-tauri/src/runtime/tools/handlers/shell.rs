@@ -1,0 +1,255 @@
+use std::collections::HashMap;
+use std::process::Stdio;
+
+use async_trait::async_trait;
+use serde::Deserialize;
+use tokio::io::AsyncReadExt;
+use tokio::process::Command;
+use tokio::sync::mpsc;
+use tokio::time::Instant;
+
+use crate::ai_client::ToolCall;
+use crate::runtime::events::RunEvent;
+use crate::runtime::tools::permissions::ToolPermission;
+use crate::runtime::tools::registry::{ToolCallResult, ToolError, ToolExecutionContext, ToolHandler};
+use crate::runtime::tools::spec::ToolSpec;
+
+pub struct ShellCommandTool;
+
+#[derive(Debug, Deserialize)]
+struct ShellCommandArgs {
+    command: String,
+    #[serde(default)]
+    workdir: Option<String>,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+    #[serde(default)]
+    env: Option<HashMap<String, String>>,
+}
+
+fn is_known_safe_command(command: &str) -> bool {
+    let cmd = command.trim();
+    let first = cmd.split_whitespace().next().unwrap_or_default().to_ascii_lowercase();
+    matches!(
+        first.as_str(),
+        "ls"
+            | "dir"
+            | "pwd"
+            | "whoami"
+            | "cat"
+            | "type"
+            | "echo"
+            | "git"
+    )
+}
+
+fn build_shell_invocation(command: &str) -> (String, Vec<String>) {
+    #[cfg(windows)]
+    {
+        ("cmd.exe".to_string(), vec!["/C".to_string(), command.to_string()])
+    }
+    #[cfg(not(windows))]
+    {
+        ("/bin/sh".to_string(), vec!["-c".to_string(), command.to_string()])
+    }
+}
+
+#[async_trait]
+impl ToolHandler for ShellCommandTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "shell_command".to_string(),
+            description: Some("在本地 shell 执行命令，并返回输出".to_string()),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "command": { "type": "string", "description": "要执行的命令（由 shell 解析）" },
+                    "workdir": { "type": "string", "description": "可选工作目录" },
+                    "timeout_ms": { "type": "integer", "description": "可选超时（毫秒）" },
+                    "env": {
+                        "type": "object",
+                        "description": "可选环境变量（键值对）",
+                        "additionalProperties": { "type": "string" }
+                    }
+                },
+                "required": ["command"]
+            }),
+            required_permissions: vec![ToolPermission::ShellExec],
+        }
+    }
+
+    async fn is_mutating(&self, call: &ToolCall) -> bool {
+        let Ok(args) = serde_json::from_str::<ShellCommandArgs>(&call.arguments) else {
+            return true;
+        };
+        !is_known_safe_command(&args.command)
+    }
+
+    async fn call(
+        &self,
+        ctx: &mut ToolExecutionContext<'_>,
+        call: &ToolCall,
+    ) -> Result<ToolCallResult, ToolError> {
+        let args: ShellCommandArgs = serde_json::from_str(&call.arguments)
+            .map_err(|e| ToolError::invalid(format!("解析 shell_command 参数失败: {e}")))?;
+        if args.command.trim().is_empty() {
+            return Err(ToolError::invalid("command 不能为空"));
+        }
+
+        let (program, program_args) = build_shell_invocation(&args.command);
+
+        let mut cmd = Command::new(program);
+        cmd.args(program_args);
+        if let Some(dir) = args.workdir.as_ref().filter(|s| !s.trim().is_empty()) {
+            cmd.current_dir(dir);
+        }
+        if let Some(env) = args.env.as_ref() {
+            cmd.envs(env);
+        }
+        cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| ToolError::new(format!("启动命令失败: {e}")))?;
+
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| ToolError::internal("无法获取 stdout"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| ToolError::internal("无法获取 stderr"))?;
+
+        let (tx, mut rx) = mpsc::channel::<(bool, Vec<u8>)>(256);
+
+        // stdout reader
+        {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let mut r = stdout;
+                let mut buf = [0u8; 4096];
+                loop {
+                    match r.read(&mut buf).await {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            if tx.send((false, buf[..n].to_vec())).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+        }
+
+        // stderr reader
+        {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let mut r = stderr;
+                let mut buf = [0u8; 4096];
+                loop {
+                    match r.read(&mut buf).await {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            if tx.send((true, buf[..n].to_vec())).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+        }
+
+        drop(tx);
+
+        let mut output = String::new();
+
+        let deadline = args
+            .timeout_ms
+            .map(|ms| Instant::now() + std::time::Duration::from_millis(ms));
+
+        loop {
+            if let Some(d) = deadline {
+                if Instant::now() >= d {
+                    let _ = child.kill().await;
+                    return Err(ToolError::timeout("shell_command 超时"));
+                }
+            }
+
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    // 退出后尽量再 drain 一小段时间，拿到剩余输出
+                    loop {
+                        match tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await {
+                            Ok(Some((_is_stderr, bytes))) => {
+                                let text = String::from_utf8_lossy(&bytes).to_string();
+                                output.push_str(&text);
+                                ctx.emitter.emit(RunEvent::BlockDelta {
+                                    task_id: ctx.task_id.to_string(),
+                                    turn_id: ctx.turn_id.to_string(),
+                                    assistant_message_id: Some(ctx.assistant_message_id.to_string()),
+                                    block_id: format!("tool_result:{}", call.id),
+                                    block_type: "tool_result".to_string(),
+                                    format: Some("plain".to_string()),
+                                    delta: text,
+                                });
+                            }
+                            _ => break,
+                        }
+                    }
+
+                    let code = status.code().unwrap_or(-1);
+                    if code != 0 {
+                        let tail = format!("\n[exit_code={code}]");
+                        output.push_str(&tail);
+                        ctx.emitter.emit(RunEvent::BlockDelta {
+                            task_id: ctx.task_id.to_string(),
+                            turn_id: ctx.turn_id.to_string(),
+                            assistant_message_id: Some(ctx.assistant_message_id.to_string()),
+                            block_id: format!("tool_result:{}", call.id),
+                            block_type: "tool_result".to_string(),
+                            format: Some("plain".to_string()),
+                            delta: tail,
+                        });
+                    }
+                    return Ok(ToolCallResult { content: output });
+                }
+                Ok(None) => {}
+                Err(e) => return Err(ToolError::new(format!("检查进程状态失败: {e}"))),
+            }
+
+            tokio::select! {
+                _ = ctx.abort_rx.recv() => {
+                    let _ = child.kill().await;
+                    return Err(ToolError::aborted("已中止 shell_command"));
+                }
+                chunk = rx.recv() => {
+                    match chunk {
+                        Some((_is_stderr, bytes)) => {
+                            let text = String::from_utf8_lossy(&bytes).to_string();
+                            output.push_str(&text);
+                            ctx.emitter.emit(RunEvent::BlockDelta {
+                                task_id: ctx.task_id.to_string(),
+                                turn_id: ctx.turn_id.to_string(),
+                                assistant_message_id: Some(ctx.assistant_message_id.to_string()),
+                                block_id: format!("tool_result:{}", call.id),
+                                block_type: "tool_result".to_string(),
+                                format: Some("plain".to_string()),
+                                delta: text,
+                            });
+                        }
+                        None => {
+                            // output channel closed; continue to poll process exit
+                        }
+                    }
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_millis(20)) => {}
+            }
+        }
+    }
+}

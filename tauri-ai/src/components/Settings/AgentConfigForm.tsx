@@ -6,10 +6,11 @@
 import React, { useState, useEffect } from 'react';
 import { Plus, Star, Search } from 'lucide-react';
 import { useConfigStore } from '../../stores/configStore';
-import type { Agent, FormatPromptType } from '../../types';
+import type { Agent, AgentType, FormatPromptType } from '../../types';
 
 const defaultAgent: Agent = {
   name: '',
+  type: 'chat',
   displayName: '',
   description: '',
   modelRef: '',
@@ -27,6 +28,7 @@ export const AgentConfigForm: React.FC = () => {
   const agents = config?.agents || [];
   const defaultAgentName = config?.defaultAgent || '';
   const modelOptions = getModelOptions();
+  const toolsetOptions = (config?.tools?.toolsets ?? []).map((t) => ({ label: t.name, value: t.name }));
 
   const filteredAgents = agents.filter(a =>
     a.displayName.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -148,12 +150,15 @@ export const AgentConfigForm: React.FC = () => {
             isEditing={!!editingAgent}
             isDefault={currentAgent.name === defaultAgentName}
             modelOptions={modelOptions}
+            toolsetOptions={toolsetOptions}
             onEdit={handleEdit}
             onSave={handleSave}
             onCancel={handleCancel}
             onDelete={handleDelete}
             onSetDefault={handleSetDefault}
-            onFieldChange={(field, value) => editingAgent && setEditingAgent({ ...editingAgent, [field]: value })}
+            onFieldChange={(field, value) =>
+              setEditingAgent((prev) => (prev ? { ...prev, [field]: value } : prev))
+            }
           />
         ) : (
           <div className="flex items-center justify-center h-64 text-gray-500">
@@ -170,6 +175,7 @@ interface AgentFormProps {
   isEditing: boolean;
   isDefault: boolean;
   modelOptions: { label: string; value: string }[];
+  toolsetOptions: { label: string; value: string }[];
   onEdit: () => void;
   onSave: () => void;
   onCancel: () => void;
@@ -183,6 +189,7 @@ const AgentForm: React.FC<AgentFormProps> = ({
   isEditing,
   isDefault,
   modelOptions,
+  toolsetOptions,
   onEdit,
   onSave,
   onCancel,
@@ -190,6 +197,22 @@ const AgentForm: React.FC<AgentFormProps> = ({
   onSetDefault,
   onFieldChange,
 }) => {
+  const agentTypeOptions: { value: AgentType; label: string }[] = [
+    { value: 'chat', label: 'Chat' },
+    { value: 'tool', label: '工具' },
+    { value: 'code', label: '编码' },
+    { value: 'solution', label: '方案' },
+  ];
+
+  const effectiveType: AgentType = (agent.type ?? 'chat') as AgentType;
+  const supportsToolset = effectiveType === 'tool' || effectiveType === 'code';
+
+  const effectiveToolsetOptions = (() => {
+    if (!agent.toolset) return toolsetOptions;
+    if (toolsetOptions.some((o) => o.value === agent.toolset)) return toolsetOptions;
+    return [{ value: agent.toolset, label: `（不存在）${agent.toolset}` }, ...toolsetOptions];
+  })();
+
   const formatOptions: { value: FormatPromptType; label: string }[] = [
     { value: 'chat', label: 'Chat (富文本)' },
     { value: 'plain', label: '纯文本' },
@@ -256,6 +279,50 @@ const AgentForm: React.FC<AgentFormProps> = ({
               <option value="">选择模型</option>
               {modelOptions.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
             </select>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-1">
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">智能体类型</label>
+            <select
+              value={effectiveType}
+              onChange={(e) => {
+                const nextType = e.target.value as AgentType;
+                onFieldChange('type', nextType);
+                if (nextType !== 'tool' && nextType !== 'code') {
+                  onFieldChange('toolset', undefined);
+                }
+              }}
+              disabled={!isEditing}
+              className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800"
+            >
+              {agentTypeOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="space-y-1">
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Toolset</label>
+            <select
+              value={agent.toolset ?? ''}
+              onChange={(e) => onFieldChange('toolset', e.target.value || undefined)}
+              disabled={!isEditing || !supportsToolset}
+              className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800"
+            >
+              <option value="">（默认：不绑定 toolset）</option>
+              {effectiveToolsetOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-gray-500">
+              {supportsToolset ? '未绑定时默认 allow_all（再由工具权限过滤）。' : '仅 Tool/Code 类型可绑定 toolset。'}
+            </p>
           </div>
         </div>
 

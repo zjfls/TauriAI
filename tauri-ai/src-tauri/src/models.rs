@@ -453,6 +453,9 @@ pub struct Agent {
     /// Output format type
     #[serde(default)]
     pub format_type: FormatPromptType,
+    /// Optional toolset name (bind different tool collections per agent)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub toolset: Option<String>,
 }
 
 impl Default for Agent {
@@ -465,6 +468,7 @@ impl Default for Agent {
             model_ref: String::new(),
             system_prompt: String::new(),
             format_type: FormatPromptType::default(),
+            toolset: None,
         }
     }
 }
@@ -594,12 +598,81 @@ impl Default for GeneralSettings {
     }
 }
 
+// ============================================================================
+// Tooling (permissions + toolsets)
+// ============================================================================
+
+/// 工具权限开关（最小骨架，后续可演进为“按工具/按能力/按目录/按会话”的复杂策略）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolPermissionSettings {
+    /// 允许执行一次性 shell 命令（`shell_command`）
+    #[serde(default)]
+    pub shell_exec: bool,
+    /// 允许创建/操作 PTY 会话（`exec_command` / `write_stdin`）
+    #[serde(default)]
+    pub pty_exec: bool,
+}
+
+impl Default for ToolPermissionSettings {
+    fn default() -> Self {
+        Self {
+            shell_exec: false,
+            pty_exec: false,
+        }
+    }
+}
+
+/// 可复用的工具集合（不同 Agent 可绑定不同 toolset）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolSetConfig {
+    pub name: String,
+    #[serde(default)]
+    pub tools: Vec<String>,
+}
+
+impl Default for ToolSetConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            tools: Vec::new(),
+        }
+    }
+}
+
+/// Tools 总配置：全局开关 + 权限 + toolsets。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolsSettings {
+    /// 全局工具系统开关（默认开启以保持现有 ToolAgent 行为）
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub permissions: ToolPermissionSettings,
+    #[serde(default)]
+    pub toolsets: Vec<ToolSetConfig>,
+}
+
+impl Default for ToolsSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            permissions: ToolPermissionSettings::default(),
+            toolsets: Vec::new(),
+        }
+    }
+}
+
 /// Application configuration (new structure)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
     pub appearance: AppearanceSettings,
     pub general: GeneralSettings,
+    /// Tooling settings (permissions + toolsets)
+    #[serde(default)]
+    pub tools: ToolsSettings,
     /// AI service providers
     #[serde(default)]
     pub providers: Vec<Provider>,
@@ -629,6 +702,7 @@ impl Default for AppConfig {
         Self {
             appearance: AppearanceSettings::default(),
             general: GeneralSettings::default(),
+            tools: ToolsSettings::default(),
             providers: Vec::new(),
             agents: Vec::new(),
             default_agent: String::new(),
@@ -710,6 +784,7 @@ impl AppConfig {
                     .clone()
                     .unwrap_or_default(),
                 format_type: FormatPromptType::Chat,
+                toolset: None,
             });
 
             // Set default agent

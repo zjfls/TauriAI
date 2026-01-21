@@ -26,7 +26,9 @@ use crate::storage::Database;
 
 use super::emitter::RunEmitter;
 use super::run_state::RunState;
-use super::tools::{default_tool_definitions, execute_tool};
+use super::tools::{
+    tool_specs_to_definitions, ToolOrchestrator, ToolOrchestratorConfig, ToolServices,
+};
 
 /// 前端一次 invoke 对应的输入（Task Request）
 pub struct RunTaskInput {
@@ -88,6 +90,10 @@ struct TurnLoop<'a> {
     client: Arc<dyn crate::ai_client::AiClient>,
     model_config: crate::models::ModelConfig,
     tools: Option<Vec<ToolDefinition>>,
+    /// 工具编排器（权限/路由/gate/pty 会话等都在 tools 子系统内部处理）
+    tool_orchestrator: Option<ToolOrchestrator>,
+    /// 工具运行时依赖与状态（例如 PTY 会话管理）
+    tool_services: ToolServices,
     runtime_messages: Vec<Message>,
     conversation_id: String,
     task_id: String,
@@ -252,21 +258,79 @@ impl<'a> TurnLoop<'a> {
                         phase: TurnPhase::Observe,
                     });
 
+                    let mut aborted_in_tools: Option<String> = None;
                     for call in &normalized_calls {
-                        let result = match execute_tool(&call.name, &call.arguments) {
-                            Ok(v) => v,
-                            Err(e) => format!("TOOL_ERROR: {}", e),
+                        let Some(orchestrator) = self.tool_orchestrator.as_ref() else {
+                            let result: String = format!(
+                                "TOOL_ERROR: 当前任务未启用工具系统，但模型请求了工具 '{}'",
+                                call.name
+                            );
+                            self.emitter.emit(RunEvent::BlockDelta {
+                                task_id: self.task_id.clone(),
+                                turn_id: turn_id.clone(),
+                                assistant_message_id: Some(self.assistant_message_id.clone()),
+                                block_id: format!("tool_result:{}", call.id),
+                                block_type: "tool_result".to_string(),
+                                format: Some("plain".to_string()),
+                                delta: result.clone(),
+                            });
+                            self.runtime_messages.push(Message {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                conversation_id: self.conversation_id.clone(),
+                                role: MessageRole::Tool,
+                                content: result,
+                                content_parts: Vec::new(),
+                                thinking: None,
+                                meta: Some(MessageMeta {
+                                    tool_call_id: Some(call.id.clone()),
+                                    ..Default::default()
+                                }),
+                                created_at: chrono::Utc::now(),
+                                status: MessageStatus::Success,
+                                error_message: None,
+                            });
+                            continue;
                         };
 
-                        self.emitter.emit(RunEvent::BlockDelta {
-                            task_id: self.task_id.clone(),
-                            turn_id: turn_id.clone(),
-                            assistant_message_id: Some(self.assistant_message_id.clone()),
-                            block_id: format!("tool_result:{}", call.id),
-                            block_type: "tool_result".to_string(),
-                            format: Some("plain".to_string()),
-                            delta: result.clone(),
-                        });
+                        let mut tool_ctx = super::tools::registry::ToolExecutionContext {
+                            conversation_id: &self.conversation_id,
+                            task_id: &self.task_id,
+                            turn_id: &turn_id,
+                            assistant_message_id: &self.assistant_message_id,
+                            emitter: self.emitter,
+                            abort_rx,
+                            services: &self.tool_services,
+                        };
+
+                        let result = match orchestrator.execute_one(&mut tool_ctx, call).await {
+                            Ok(v) => v.content,
+                            Err(e) => {
+                                if e.kind == super::tools::registry::ToolErrorKind::Aborted {
+                                    tool_ctx.emitter.emit(RunEvent::BlockDelta {
+                                        task_id: self.task_id.clone(),
+                                        turn_id: turn_id.clone(),
+                                        assistant_message_id: Some(self.assistant_message_id.clone()),
+                                        block_id: format!("tool_result:{}", call.id),
+                                        block_type: "tool_result".to_string(),
+                                        format: Some("plain".to_string()),
+                                        delta: format!("TOOL_ABORTED: {}", e.message),
+                                    });
+                                    aborted_in_tools = Some(e.message);
+                                    break;
+                                }
+                                let msg = format!("TOOL_ERROR: {}", e.message);
+                                tool_ctx.emitter.emit(RunEvent::BlockDelta {
+                                    task_id: self.task_id.clone(),
+                                    turn_id: turn_id.clone(),
+                                    assistant_message_id: Some(self.assistant_message_id.clone()),
+                                    block_id: format!("tool_result:{}", call.id),
+                                    block_type: "tool_result".to_string(),
+                                    format: Some("plain".to_string()),
+                                    delta: msg.clone(),
+                                });
+                                msg
+                            }
+                        };
 
                         self.runtime_messages.push(Message {
                             id: uuid::Uuid::new_v4().to_string(),
@@ -283,6 +347,24 @@ impl<'a> TurnLoop<'a> {
                             status: MessageStatus::Success,
                             error_message: None,
                         });
+                    }
+
+                    if aborted_in_tools.is_some() {
+                        self.emitter.emit(RunEvent::TurnPhaseFinished {
+                            task_id: self.task_id.clone(),
+                            turn_id: turn_id.clone(),
+                            phase: TurnPhase::Observe,
+                        });
+                        self.emitter.emit(RunEvent::TurnFinished {
+                            task_id: self.task_id.clone(),
+                            turn_id: turn_id.clone(),
+                            status: TurnStatus::Aborted,
+                        });
+                        return TaskOutcome::Aborted {
+                            last_turn_id: turn_id,
+                            content: String::new(),
+                            thinking: String::new(),
+                        };
                     }
 
                     self.emitter.emit(RunEvent::TurnPhaseFinished {
@@ -473,15 +555,48 @@ async fn run_task_inner(
         _ => 1,
     };
 
-    let tools = match agent.agent_type {
-        AgentType::Tool | AgentType::Code => Some(default_tool_definitions()),
-        _ => None,
+    // tools：按 Agent 选择工具集，并在这里完成“权限过滤 -> 传给模型的 ToolDefinition”
+    // - 真实执行时仍会再次做权限检查（防止前端/模型绕过）
+    let tool_services = ToolServices::default();
+    let (tool_orchestrator, tools) = match agent.agent_type {
+        AgentType::Tool | AgentType::Code => {
+            // ToolSet：Agent 可以绑定不同工具集合；未配置则默认 allow_all（由权限再做过滤）。
+            let toolset = match agent.toolset.as_deref().filter(|s| !s.trim().is_empty()) {
+                Some(name) => match config.tools.toolsets.iter().find(|t| t.name == name) {
+                    Some(ts) => super::tools::spec::ToolSet::allow_list(name, ts.tools.clone()),
+                    // 安全优先：引用了不存在的 toolset 时，默认 deny_all，避免“悄悄变成 allow_all”
+                    None => super::tools::spec::ToolSet::deny_all(name),
+                },
+                None => super::tools::spec::ToolSet::allow_all(),
+            };
+
+            // 权限策略：由 AppConfig 驱动（默认：只允许无权限工具；shell/pty 默认关闭）。
+            let permission_policy: Arc<dyn super::tools::permissions::ToolPermissionPolicy> =
+                if !config.tools.enabled {
+                    Arc::new(super::tools::permissions::DenyAllPolicy::default())
+                } else {
+                    Arc::new(super::tools::permissions::BasicToolPermissionPolicy {
+                        allow_shell_exec: config.tools.permissions.shell_exec,
+                        allow_pty_exec: config.tools.permissions.pty_exec,
+                    })
+                };
+
+            let orchestrator = ToolOrchestrator::new_builtin(ToolOrchestratorConfig {
+                toolset,
+                permission_policy,
+            });
+            let specs = orchestrator.tool_specs_for_model();
+            (Some(orchestrator), Some(tool_specs_to_definitions(&specs)))
+        }
+        _ => (None, None),
     };
 
     let mut turn_loop = TurnLoop {
         client,
         model_config: model_config.clone(),
         tools,
+        tool_orchestrator,
+        tool_services,
         runtime_messages: base_messages,
         conversation_id: input.conversation_id.clone(),
         task_id: task_id.clone(),

@@ -119,6 +119,7 @@ export interface Agent {
   modelRef: string;       // Format: "provider_name/model_name"
   systemPrompt: string;
   formatType: FormatPromptType;
+  toolset?: string;       // Optional toolset binding (for tool/code agents)
 }
 
 // ============================================================================
@@ -606,11 +607,37 @@ export interface GeneralSettings {
 }
 
 /**
+ * Tool permission switches (minimal skeleton, can evolve to complex policies)
+ */
+export interface ToolPermissionSettings {
+  shellExec: boolean; // Allows `shell_command`
+  ptyExec: boolean;   // Allows `exec_command` / `write_stdin`
+}
+
+/**
+ * Reusable toolset definition (bind different tool collections per agent)
+ */
+export interface ToolSetConfig {
+  name: string;
+  tools: string[];
+}
+
+/**
+ * Tools overall settings: global switch + permissions + toolsets
+ */
+export interface ToolsSettings {
+  enabled: boolean;
+  permissions: ToolPermissionSettings;
+  toolsets: ToolSetConfig[];
+}
+
+/**
  * Main application configuration
  */
 export interface AppConfig {
   appearance: AppearanceSettings;
   general: GeneralSettings;
+  tools: ToolsSettings;
   providers: Provider[];
   agents: Agent[];
   defaultAgent: string;

@@ -31,10 +31,10 @@ use tokio::sync::mpsc;
 use super::content_converter::ContentBlock;
 use super::traits::{
     AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent, TokenUsage,
-    ToolDefinition,
+    ToolCall, ToolDefinition,
 };
 use crate::models::{ImageDetail, Message, MessageRole, ModelConfig};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 // ============================================================================
 // Request types
@@ -45,6 +45,24 @@ use std::collections::HashMap;
 struct ResponsesInput {
     role: String,
     content: ResponsesContent,
+}
+
+/// Input items for Responses API (messages + tool call outputs)
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(untagged)]
+enum ResponsesInputItem {
+    Message(ResponsesInput),
+    FunctionCallOutput(ResponsesFunctionCallOutput),
+}
+
+/// Function tool call output item (sent back to the model after running the tool)
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct ResponsesFunctionCallOutput {
+    #[serde(rename = "type")]
+    item_type: String,
+    #[serde(rename = "call_id")]
+    call_id: String,
+    output: String,
 }
 
 /// Responses API message content - either plain text or a list of typed inputs
@@ -86,13 +104,27 @@ enum ResponsesTool {
     /// OpenAI built-in web search tool
     #[serde(rename = "web_search")]
     WebSearch {},
+    /// Function tool (custom tools)
+    #[serde(rename = "function")]
+    Function {
+        /// The name of the function to call.
+        name: String,
+        /// A JSON schema object describing the parameters of the function.
+        parameters: serde_json::Value,
+        /// Whether to enforce strict parameter validation (default: true).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        strict: Option<bool>,
+        /// A description of the function.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
 }
 
 /// OpenAI Responses API request
 #[derive(Debug, Serialize)]
 struct ResponsesRequest {
     model: String,
-    input: Vec<ResponsesInput>,
+    input: Vec<ResponsesInputItem>,
     #[serde(skip_serializing_if = "Option::is_none")]
     instructions: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -137,8 +169,21 @@ enum OutputItem {
     Message(MessageOutput),
     #[serde(rename = "reasoning")]
     Reasoning(ReasoningOutput),
+    #[serde(rename = "function_call")]
+    FunctionCall(FunctionCallOutputItem),
     #[serde(other)]
     Other,
+}
+
+/// Function tool call output item
+#[derive(Debug, Deserialize)]
+struct FunctionCallOutputItem {
+    #[allow(dead_code)]
+    call_id: String,
+    #[allow(dead_code)]
+    name: String,
+    #[allow(dead_code)]
+    arguments: String,
 }
 
 /// Message output item
@@ -265,8 +310,8 @@ fn convert_messages(
     system_prompt: Option<&str>,
     vision_enabled: bool,
     max_images: Option<u32>,
-) -> (Vec<ResponsesInput>, Option<String>) {
-    let mut inputs = Vec::new();
+) -> (Vec<ResponsesInputItem>, Option<String>) {
+    let mut inputs: Vec<ResponsesInputItem> = Vec::new();
     let mut developer_prompt = system_prompt.map(|s| s.to_string());
 
     for msg in messages {
@@ -298,7 +343,8 @@ fn convert_messages(
                 inputs.push(ResponsesInput {
                     role: "user".to_string(),
                     content,
-                });
+                }
+                .into());
             }
             MessageRole::Assistant => {
                 // 对于助手消息，仅提取文本内容
@@ -322,14 +368,34 @@ fn convert_messages(
                 inputs.push(ResponsesInput {
                     role: "assistant".to_string(),
                     content,
-                });
+                }
+                .into());
             }
-            // Responses API tool calling is not wired yet in this layer; keep history compatible.
             MessageRole::Tool => {
-                inputs.push(ResponsesInput {
-                    role: "user".to_string(),
-                    content: ResponsesContent::Text(msg.content.clone()),
-                });
+                // Tool 消息：编码为 Responses API 的 `function_call_output`
+                let call_id = msg
+                    .meta
+                    .as_ref()
+                    .and_then(|m| m.tool_call_id.clone())
+                    .unwrap_or_default();
+
+                if call_id.trim().is_empty() {
+                    // 没有 call_id：降级为普通 user 文本（保持最大兼容性）
+                    inputs.push(ResponsesInput {
+                        role: "user".to_string(),
+                        content: ResponsesContent::Text(msg.content.clone()),
+                    }
+                    .into());
+                } else {
+                    inputs.push(
+                        ResponsesFunctionCallOutput {
+                            item_type: "function_call_output".to_string(),
+                            call_id,
+                            output: msg.content.clone(),
+                        }
+                        .into(),
+                    );
+                }
             }
         }
     }
@@ -338,15 +404,27 @@ fn convert_messages(
     if let Some(prompt) = developer_prompt.filter(|s| !s.is_empty()) {
         inputs.insert(
             0,
-            ResponsesInput {
+            ResponsesInputItem::Message(ResponsesInput {
                 role: "developer".to_string(),
                 content: ResponsesContent::Text(prompt),
-            },
+            }),
         );
     }
 
     // 保持向后兼容：不再使用 instructions 字段
     (inputs, None)
+}
+
+impl From<ResponsesInput> for ResponsesInputItem {
+    fn from(v: ResponsesInput) -> Self {
+        ResponsesInputItem::Message(v)
+    }
+}
+
+impl From<ResponsesFunctionCallOutput> for ResponsesInputItem {
+    fn from(v: ResponsesFunctionCallOutput) -> Self {
+        ResponsesInputItem::FunctionCallOutput(v)
+    }
 }
 
 // ============================================================================
@@ -379,7 +457,7 @@ impl AiClient for OpenAiResponsesClient {
         &self,
         messages: Vec<Message>,
         config: &ModelConfig,
-        _tools: Option<Vec<ToolDefinition>>,
+        tools: Option<Vec<ToolDefinition>>,
     ) -> Result<String, AiError> {
         let api_base = config
             .api_base
@@ -410,14 +488,31 @@ impl AiClient for OpenAiResponsesClient {
             }
         });
 
-        let (tools, tool_choice, include) = if config.web_search_enabled {
-            (
-                Some(vec![ResponsesTool::WebSearch {}]),
-                Some("auto".to_string()),
-                Some(vec!["web_search_call.action.sources".to_string()]),
-            )
+        let mut tools_vec: Vec<ResponsesTool> = Vec::new();
+        if config.web_search_enabled {
+            tools_vec.push(ResponsesTool::WebSearch {});
+        }
+        if let Some(defs) = tools {
+            for t in defs.into_iter() {
+                tools_vec.push(ResponsesTool::Function {
+                    name: t.name,
+                    description: t.description,
+                    parameters: t.parameters,
+                    strict: Some(true),
+                });
+            }
+        }
+
+        let tools = if tools_vec.is_empty() {
+            None
         } else {
-            (None, None, None)
+            Some(tools_vec)
+        };
+        let tool_choice = tools.as_ref().map(|_| "auto".to_string());
+        let include = if config.web_search_enabled {
+            Some(vec!["web_search_call.action.sources".to_string()])
+        } else {
+            None
         };
 
         let request = ResponsesRequest {
@@ -459,6 +554,7 @@ impl AiClient for OpenAiResponsesClient {
 
         // Extract text from output
         let mut result = String::new();
+        let mut saw_function_call = false;
         for item in responses_response.output {
             match item {
                 OutputItem::Message(msg) => {
@@ -478,8 +574,18 @@ impl AiClient for OpenAiResponsesClient {
                         }
                     }
                 }
+                OutputItem::FunctionCall(_call) => {
+                    saw_function_call = true;
+                }
                 OutputItem::Other => {}
             }
+        }
+
+        if saw_function_call {
+            return Err(AiError::InvalidResponse(
+                "Model requested tool calls in non-streaming Responses API; use streaming run_task/turn loop"
+                    .to_string(),
+            ));
         }
 
         if result.is_empty() {
@@ -495,7 +601,7 @@ impl AiClient for OpenAiResponsesClient {
         &self,
         messages: Vec<Message>,
         config: &ModelConfig,
-        _tools: Option<Vec<ToolDefinition>>,
+        tools: Option<Vec<ToolDefinition>>,
         token_sender: mpsc::Sender<StreamEvent>,
     ) -> Result<(), AiError> {
         let api_base = config
@@ -526,14 +632,31 @@ impl AiClient for OpenAiResponsesClient {
             }
         });
 
-        let (tools, tool_choice, include) = if config.web_search_enabled {
-            (
-                Some(vec![ResponsesTool::WebSearch {}]),
-                Some("auto".to_string()),
-                Some(vec!["web_search_call.action.sources".to_string()]),
-            )
+        let mut tools_vec: Vec<ResponsesTool> = Vec::new();
+        if config.web_search_enabled {
+            tools_vec.push(ResponsesTool::WebSearch {});
+        }
+        if let Some(defs) = tools {
+            for t in defs.into_iter() {
+                tools_vec.push(ResponsesTool::Function {
+                    name: t.name,
+                    description: t.description,
+                    parameters: t.parameters,
+                    strict: Some(true),
+                });
+            }
+        }
+
+        let tools = if tools_vec.is_empty() {
+            None
         } else {
-            (None, None, None)
+            Some(tools_vec)
+        };
+        let tool_choice = tools.as_ref().map(|_| "auto".to_string());
+        let include = if config.web_search_enabled {
+            Some(vec!["web_search_call.action.sources".to_string()])
+        } else {
+            None
         };
 
         let request = ResponsesRequest {
@@ -628,6 +751,8 @@ impl AiClient for OpenAiResponsesClient {
         let mut full_content = String::new();
         let mut full_thinking = String::new();
         let mut final_usage: Option<TokenUsage> = None;
+        let mut function_calls_by_item_id: HashMap<String, FunctionCallDraft> = HashMap::new();
+        let mut emitted_call_ids: HashSet<String> = HashSet::new();
         let mut stream = response.bytes_stream();
         let mut chunk_count = 0;
         // SSE 可能跨 chunk 切分；用行缓冲拼接，避免 JSON 被拆开导致事件丢失（text/thinking/web_search/usage）。
@@ -650,6 +775,29 @@ impl AiClient for OpenAiResponsesClient {
 
                 if let Some(data) = line.strip_prefix("data: ") {
                     if data.trim() == "[DONE]" {
+                        // 兜底：如果没有收到 response.completed，但已经收集到 function tool calls，则按工具调用回传
+                        if !function_calls_by_item_id.is_empty() {
+                            let mut calls: Vec<ToolCall> = Vec::new();
+                            for (item_id, draft) in function_calls_by_item_id.iter() {
+                                let call_id =
+                                    draft.call_id.clone().unwrap_or_else(|| item_id.clone());
+                                let Some(name) = draft.name.clone() else {
+                                    continue;
+                                };
+                                if emitted_call_ids.insert(call_id.clone()) {
+                                    calls.push(ToolCall {
+                                        id: call_id,
+                                        name,
+                                        arguments: draft.arguments.clone(),
+                                    });
+                                }
+                            }
+                            if !calls.is_empty() {
+                                let _ = token_sender.send(StreamEvent::ToolCalls(calls)).await;
+                                return Ok(());
+                            }
+                        }
+
                         let debug_usage = final_usage.as_ref().map(|u| {
                             serde_json::json!({
                                 "prompt_tokens": u.prompt_tokens,
@@ -719,6 +867,31 @@ impl AiClient for OpenAiResponsesClient {
                                         .await;
                                 }
                             }
+                            // Function tool call arguments streaming (Responses API)
+                            "response.function_call_arguments.delta" => {
+                                let item_id = v.get("item_id").and_then(|x| x.as_str());
+                                let delta = v.get("delta").and_then(|x| x.as_str());
+                                if let (Some(item_id), Some(delta)) = (item_id, delta) {
+                                    let entry = function_calls_by_item_id
+                                        .entry(item_id.to_string())
+                                        .or_default();
+                                    entry.arguments.push_str(delta);
+                                }
+                            }
+                            "response.function_call_arguments.done" => {
+                                let item_id = v.get("item_id").and_then(|x| x.as_str());
+                                let name = v.get("name").and_then(|x| x.as_str());
+                                let arguments = v.get("arguments").and_then(|x| x.as_str());
+                                if let (Some(item_id), Some(name), Some(arguments)) =
+                                    (item_id, name, arguments)
+                                {
+                                    let entry = function_calls_by_item_id
+                                        .entry(item_id.to_string())
+                                        .or_default();
+                                    entry.name = Some(name.to_string());
+                                    entry.arguments = arguments.to_string();
+                                }
+                            }
                             "response.reasoning_text.delta"
                             | "response.reasoning_summary_text.delta"
                             | "response.reasoning.delta"
@@ -775,6 +948,33 @@ impl AiClient for OpenAiResponsesClient {
                                                     action,
                                                 })
                                                 .await;
+                                        }
+                                    }
+
+                                    if item_type == Some("function_call") {
+                                        // Capture call_id/name/arguments snapshots for function tools
+                                        let item_id = item.get("id").and_then(|x| x.as_str());
+                                        if let Some(item_id) = item_id {
+                                            let entry = function_calls_by_item_id
+                                                .entry(item_id.to_string())
+                                                .or_default();
+                                            if let Some(call_id) =
+                                                item.get("call_id").and_then(|x| x.as_str())
+                                            {
+                                                entry.call_id = Some(call_id.to_string());
+                                            }
+                                            if let Some(name) =
+                                                item.get("name").and_then(|x| x.as_str())
+                                            {
+                                                entry.name = Some(name.to_string());
+                                            }
+                                            if let Some(args) =
+                                                item.get("arguments").and_then(|x| x.as_str())
+                                            {
+                                                if entry.arguments.is_empty() {
+                                                    entry.arguments = args.to_string();
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -851,6 +1051,36 @@ impl AiClient for OpenAiResponsesClient {
                                     }
                                 }
 
+                                // 如果本轮产生了 function tool calls：这里提前结束流，把控制权交回 TurnLoop 进入 Act/Observe。
+                                // 说明：Responses API 的工具调用以 `function_call` 输出项体现，执行结果需要作为 `function_call_output`
+                                // 回传到下一轮输入中。
+                                if !function_calls_by_item_id.is_empty() {
+                                    let mut calls: Vec<ToolCall> = Vec::new();
+
+                                    for (item_id, draft) in function_calls_by_item_id.iter() {
+                                        let call_id = draft
+                                            .call_id
+                                            .clone()
+                                            .unwrap_or_else(|| item_id.clone());
+                                        let Some(name) = draft.name.clone() else {
+                                            continue;
+                                        };
+
+                                        if emitted_call_ids.insert(call_id.clone()) {
+                                            calls.push(ToolCall {
+                                                id: call_id,
+                                                name,
+                                                arguments: draft.arguments.clone(),
+                                            });
+                                        }
+                                    }
+
+                                    if !calls.is_empty() {
+                                        let _ = token_sender.send(StreamEvent::ToolCalls(calls)).await;
+                                        return Ok(());
+                                    }
+                                }
+
                                 let debug_usage = final_usage.as_ref().map(|u| {
                                     serde_json::json!({
                                         "prompt_tokens": u.prompt_tokens,
@@ -906,6 +1136,28 @@ impl AiClient for OpenAiResponsesClient {
             }
         }
 
+        // Stream 意外结束时的兜底：如果已收集到 function tool calls，则按工具调用回传
+        if !function_calls_by_item_id.is_empty() {
+            let mut calls: Vec<ToolCall> = Vec::new();
+            for (item_id, draft) in function_calls_by_item_id.iter() {
+                let call_id = draft.call_id.clone().unwrap_or_else(|| item_id.clone());
+                let Some(name) = draft.name.clone() else {
+                    continue;
+                };
+                if emitted_call_ids.insert(call_id.clone()) {
+                    calls.push(ToolCall {
+                        id: call_id,
+                        name,
+                        arguments: draft.arguments.clone(),
+                    });
+                }
+            }
+            if !calls.is_empty() {
+                let _ = token_sender.send(StreamEvent::ToolCalls(calls)).await;
+                return Ok(());
+            }
+        }
+
         let debug_usage = final_usage.as_ref().map(|u| {
             serde_json::json!({
                 "prompt_tokens": u.prompt_tokens,
@@ -954,11 +1206,25 @@ impl AiClient for OpenAiResponsesClient {
     }
 }
 
+#[derive(Debug, Default)]
+struct FunctionCallDraft {
+    call_id: Option<String>,
+    name: Option<String>,
+    arguments: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::models::{ContentPart, ImageDetail, MessageStatus, PdfPage};
     use chrono::Utc;
+
+    fn unwrap_message(item: &ResponsesInputItem) -> &ResponsesInput {
+        match item {
+            ResponsesInputItem::Message(m) => m,
+            _ => panic!("Expected message input item"),
+        }
+    }
 
     // Helper function to create a test message
     fn create_test_message(
@@ -1184,9 +1450,9 @@ mod tests {
         let (inputs, instructions) = convert_messages(&messages, None, true, None);
 
         assert_eq!(inputs.len(), 1);
-        assert_eq!(inputs[0].role, "user");
+        assert_eq!(unwrap_message(&inputs[0]).role, "user");
         assert_eq!(
-            inputs[0].content,
+            unwrap_message(&inputs[0]).content,
             ResponsesContent::Text("Hello, how are you?".to_string())
         );
         assert!(instructions.is_none());
@@ -1207,9 +1473,9 @@ mod tests {
         let (inputs, _) = convert_messages(&messages, None, true, None);
 
         assert_eq!(inputs.len(), 1);
-        assert_eq!(inputs[0].role, "user");
+        assert_eq!(unwrap_message(&inputs[0]).role, "user");
         assert_eq!(
-            inputs[0].content,
+            unwrap_message(&inputs[0]).content,
             ResponsesContent::Parts(vec![
                 ResponsesContentPart::InputText {
                     text: "分析这张图片".to_string(),
@@ -1240,9 +1506,9 @@ mod tests {
         let (inputs, _) = convert_messages(&messages, None, false, None);
 
         assert_eq!(inputs.len(), 1);
-        assert_eq!(inputs[0].role, "user");
+        assert_eq!(unwrap_message(&inputs[0]).role, "user");
         assert_eq!(
-            inputs[0].content,
+            unwrap_message(&inputs[0]).content,
             ResponsesContent::Parts(vec![
                 ResponsesContentPart::InputText {
                     text: "分析这张图片".to_string(),
@@ -1269,9 +1535,9 @@ mod tests {
         let (inputs, _) = convert_messages(&messages, None, true, None);
 
         assert_eq!(inputs.len(), 1);
-        assert_eq!(inputs[0].role, "user");
+        assert_eq!(unwrap_message(&inputs[0]).role, "user");
         assert_eq!(
-            inputs[0].content,
+            unwrap_message(&inputs[0]).content,
             ResponsesContent::Parts(vec![
                 ResponsesContentPart::InputText {
                     text: "请查看这个文件".to_string(),
@@ -1306,9 +1572,9 @@ mod tests {
         let (inputs, _) = convert_messages(&messages, None, true, None);
 
         assert_eq!(inputs.len(), 1);
-        assert_eq!(inputs[0].role, "user");
+        assert_eq!(unwrap_message(&inputs[0]).role, "user");
         assert_eq!(
-            inputs[0].content,
+            unwrap_message(&inputs[0]).content,
             ResponsesContent::Parts(vec![
                 ResponsesContentPart::InputText {
                     text: "分析这个PDF".to_string(),
@@ -1347,9 +1613,9 @@ mod tests {
         let (inputs, _) = convert_messages(&messages, None, false, None);
 
         assert_eq!(inputs.len(), 1);
-        assert_eq!(inputs[0].role, "user");
+        assert_eq!(unwrap_message(&inputs[0]).role, "user");
         assert_eq!(
-            inputs[0].content,
+            unwrap_message(&inputs[0]).content,
             ResponsesContent::Parts(vec![
                 ResponsesContentPart::InputText {
                     text: "分析这个PDF".to_string(),
@@ -1379,9 +1645,9 @@ mod tests {
         let (inputs, _) = convert_messages(&messages, None, true, None);
 
         assert_eq!(inputs.len(), 1);
-        assert_eq!(inputs[0].role, "assistant");
+        assert_eq!(unwrap_message(&inputs[0]).role, "assistant");
         assert_eq!(
-            inputs[0].content,
+            unwrap_message(&inputs[0]).content,
             ResponsesContent::Parts(vec![ResponsesContentPart::InputText {
                 text: "这是回复".to_string(),
             }])
@@ -1406,15 +1672,15 @@ mod tests {
 
         // System message should be converted to a developer role message
         assert_eq!(inputs.len(), 2);
-        assert_eq!(inputs[0].role, "developer");
+        assert_eq!(unwrap_message(&inputs[0]).role, "developer");
         assert_eq!(
-            inputs[0].content,
+            unwrap_message(&inputs[0]).content,
             ResponsesContent::Text("You are a helpful assistant.".to_string())
         );
 
-        assert_eq!(inputs[1].role, "user");
+        assert_eq!(unwrap_message(&inputs[1]).role, "user");
         assert_eq!(
-            inputs[1].content,
+            unwrap_message(&inputs[1]).content,
             ResponsesContent::Text("Hello".to_string())
         );
     }
@@ -1436,7 +1702,7 @@ mod tests {
 
         assert_eq!(inputs.len(), 1);
         assert_eq!(
-            inputs[0].content,
+            unwrap_message(&inputs[0]).content,
             ResponsesContent::Parts(vec![
                 ResponsesContentPart::InputText {
                     text: "请分析".to_string(),

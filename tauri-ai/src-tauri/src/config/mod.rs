@@ -188,6 +188,7 @@ mod tests {
                 model_ref: "test-provider/gpt-4".to_string(),
                 system_prompt: "You are a helpful assistant.".to_string(),
                 format_type: FormatPromptType::Chat,
+                toolset: None,
             }],
             default_agent: "test-agent".to_string(),
             ..Default::default()

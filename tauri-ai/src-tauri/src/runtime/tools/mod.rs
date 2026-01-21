@@ -1,49 +1,39 @@
-//! 内置工具（ToolAgent 的最小可运行集合）
+//! Tool 子系统（参考 Codex tools 架构，但面向 TauriAI 的多平台/多 Agent 场景做扩展）。
 //!
-//! 设计目标：
-//! - Tool 定义（给模型）：`ToolDefinition`
-//! - Tool 执行（给运行时）：输入 arguments(JSON string) → 输出 string
-//! - 后续可扩展：权限/沙盒/超时/日志/多工具集/可配置工具等
+//! 关键点：
+//! - **Task/Turn** 是更高层抽象；模型返回的 tool call 只是 Turn 的一种输出/动作。
+//! - 工具系统需要独立分层：**spec / registry / router / orchestrator / runtimes / permissions**。
+//! - run_task/task_runner 只做“驱动器”：TurnLoop + 事件编排；工具执行细节下沉到这里。
+//!
+//! 说明：
+//! - 当前阶段工具可以只实现 shell/pty，但架构要完整，方便未来扩展到：
+//!   - 不同 Agent 绑定不同工具集（toolset）
+//!   - 更细粒度权限系统（本地能力/网络/文件/终端/打开器…）
+//!   - 沙箱/审批/并发 gate/重试/审计日志/事件重放
+
+pub mod orchestrator;
+pub mod handlers;
+pub mod permissions;
+pub mod registry;
+pub mod services;
+pub mod spec;
+
+pub use orchestrator::{ToolOrchestrator, ToolOrchestratorConfig};
+pub use permissions::{ToolPermission, ToolPermissionDecision, ToolPermissionPolicy};
+pub use registry::{ToolCallResult, ToolHandler, ToolRegistry};
+pub use services::ToolServices;
+pub use spec::{ToolSet, ToolSpec};
+
 use crate::ai_client::ToolDefinition;
 
-pub fn default_tool_definitions() -> Vec<ToolDefinition> {
-    vec![
-        ToolDefinition {
-            name: "echo".to_string(),
-            description: Some("原样返回传入的文本，用于测试工具调用链路".to_string()),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "text": { "type": "string", "description": "要回显的文本" }
-                },
-                "required": ["text"]
-            }),
-        },
-        ToolDefinition {
-            name: "get_time".to_string(),
-            description: Some("返回当前 UTC 时间（ISO8601）".to_string()),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {},
-                "required": []
-            }),
-        },
-    ]
+/// 将内部 ToolSpec 投影成给模型用的 ToolDefinition（function calling schema）。
+pub fn tool_specs_to_definitions(specs: &[ToolSpec]) -> Vec<ToolDefinition> {
+    specs
+        .iter()
+        .map(|s| ToolDefinition {
+            name: s.name.clone(),
+            description: s.description.clone(),
+            parameters: s.parameters.clone(),
+        })
+        .collect()
 }
-
-pub fn execute_tool(name: &str, arguments_json: &str) -> Result<String, String> {
-    match name {
-        "echo" => {
-            let v: serde_json::Value =
-                serde_json::from_str(arguments_json).map_err(|e| format!("参数不是合法 JSON: {e}"))?;
-            let text = v
-                .get("text")
-                .and_then(|t| t.as_str())
-                .ok_or_else(|| "缺少参数 text".to_string())?;
-            Ok(text.to_string())
-        }
-        "get_time" => Ok(chrono::Utc::now().to_rfc3339()),
-        _ => Err(format!("未知工具: {}", name)),
-    }
-}
-
