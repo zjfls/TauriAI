@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 use super::content_converter::{image_url_to_base64, ContentBlock};
 use super::traits::{
     AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent, TokenUsage,
-    ToolDefinition,
+    ToolCall, ToolDefinition,
 };
 use crate::models::{Message, MessageRole, ModelConfig};
 
@@ -59,6 +59,19 @@ enum AnthropicContentBlock {
     Text { text: String },
     /// Image content block
     Image { source: ImageSource },
+    /// Tool use requested by the assistant (Claude tool calling)
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    /// Tool execution result provided by the user/runtime
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        is_error: Option<bool>,
+    },
 }
 
 /// Image source data structure
@@ -104,7 +117,30 @@ struct MessagesRequest {
     /// Claude extended thinking (requires model support)
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<ThinkingConfig>,
+    /// Tool definitions (Claude tool calling)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<AnthropicTool>>,
+    /// Tool choice (auto / forced)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<AnthropicToolChoice>,
     stream: bool,
+}
+
+/// Anthropic tool definition in Messages API format
+#[derive(Debug, Serialize)]
+struct AnthropicTool {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(rename = "input_schema")]
+    input_schema: serde_json::Value,
+}
+
+/// Tool choice for Anthropic (we currently use auto)
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum AnthropicToolChoice {
+    Auto,
 }
 
 /// Claude extended thinking configuration
@@ -156,6 +192,13 @@ struct AnthropicResponseBlock {
     #[serde(rename = "type")]
     content_type: String,
     text: Option<String>,
+    // Tool use fields (when content_type == "tool_use")
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    input: Option<serde_json::Value>,
 }
 
 /// Anthropic streaming event types
@@ -202,6 +245,9 @@ struct ContentDelta {
     text: Option<String>,
     #[serde(default)]
     thinking: Option<String>,
+    /// For tool use streaming, Anthropic sends incremental JSON via `input_json_delta`
+    #[serde(default)]
+    partial_json: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -257,107 +303,122 @@ fn convert_messages(
     vision_enabled: bool,
     max_images: Option<u32>,
 ) -> Vec<AnthropicMessage> {
-    messages
-        .iter()
-        .filter(|msg| msg.role != MessageRole::System)
-        .map(|msg| {
-            let role = match msg.role {
-                MessageRole::User => "user",
-                MessageRole::Assistant => "assistant",
-                MessageRole::System => "user", // Should not reach here due to filter
-                // Anthropic Messages API doesn't expose an OpenAI-style `tool` role in the same way.
-                // Keep compatibility by treating tool outputs as user messages.
-                MessageRole::Tool => "user",
-            };
+    let mut result: Vec<AnthropicMessage> = Vec::new();
 
-            // Check if message has multimodal content
-            let content = if msg.has_multimodal_content() {
-                // Use unified converter with image limit to get content blocks
-                let content_parts = msg.get_content_parts();
-                eprintln!(
-                    "[Anthropic] Converting {} content parts",
-                    content_parts.len()
-                );
+    for msg in messages.iter().filter(|m| m.role != MessageRole::System) {
+        let role = match msg.role {
+            MessageRole::User => "user",
+            MessageRole::Assistant => "assistant",
+            MessageRole::System => "user", // filtered above
+            // Anthropic Messages API uses tool calling blocks instead of an OpenAI-style `tool` role.
+            MessageRole::Tool => "user",
+        };
 
-                // Use the new function with image limit
-                use super::content_converter::content_parts_to_blocks_with_limit;
-                let (converted_blocks, pdf_images_skipped) =
-                    content_parts_to_blocks_with_limit(&content_parts, vision_enabled, max_images);
+        // Tool outputs are represented as a `tool_result` block inside a user message.
+        if msg.role == MessageRole::Tool {
+            let tool_use_id = msg
+                .meta
+                .as_ref()
+                .and_then(|m| m.tool_call_id.as_ref())
+                .cloned()
+                .unwrap_or_default();
 
-                if pdf_images_skipped {
-                    eprintln!("[Anthropic] PDF images skipped due to max_images limit");
-                }
+            result.push(AnthropicMessage {
+                role: role.to_string(),
+                content: AnthropicContent::Blocks(vec![AnthropicContentBlock::ToolResult {
+                    tool_use_id,
+                    content: msg.content.clone(),
+                    is_error: None,
+                }]),
+            });
+            continue;
+        }
 
-                eprintln!(
-                    "[Anthropic] Total blocks after conversion: {}",
-                    converted_blocks.len()
-                );
+        let mut blocks: Vec<AnthropicContentBlock> = Vec::new();
 
-                let blocks: Vec<AnthropicContentBlock> = converted_blocks
+        if msg.has_multimodal_content() {
+            // Use unified converter with image limit to get content blocks
+            let content_parts = msg.get_content_parts();
+            eprintln!(
+                "[Anthropic] Converting {} content parts",
+                content_parts.len()
+            );
+
+            // Use the new function with image limit
+            use super::content_converter::content_parts_to_blocks_with_limit;
+            let (converted_blocks, pdf_images_skipped) =
+                content_parts_to_blocks_with_limit(&content_parts, vision_enabled, max_images);
+
+            if pdf_images_skipped {
+                eprintln!("[Anthropic] PDF images skipped due to max_images limit");
+            }
+
+            blocks.extend(
+                converted_blocks
                     .into_iter()
-                    .filter_map(|block| {
-                        match block {
-                            ContentBlock::Text { text } => {
-                                eprintln!("[Anthropic] Text block: {} chars", text.len());
-                                Some(AnthropicContentBlock::Text { text })
-                            }
-                            ContentBlock::ImageUrl { url, detail } => {
-                                eprintln!("[Anthropic] ImageUrl block, converting to Base64");
-                                // Try to convert URL to Base64 (Anthropic requirement)
-                                // Reconstruct the block for conversion
-                                let img_block = ContentBlock::ImageUrl { url, detail };
-                                match image_url_to_base64(img_block) {
-                                    Some(ContentBlock::ImageBase64 {
-                                        media_type, data, ..
-                                    }) => {
-                                        eprintln!(
-                                            "[Anthropic] Converted to Base64: {} bytes",
-                                            data.len()
-                                        );
-                                        Some(AnthropicContentBlock::Image {
-                                            source: ImageSource::Base64 { media_type, data },
-                                        })
-                                    }
-                                    _ => {
-                                        eprintln!(
-                                            "[Anthropic] Failed to convert ImageUrl to Base64"
-                                        );
-                                        None
-                                    }
-                                }
-                            }
-                            ContentBlock::ImageBase64 {
-                                media_type, data, ..
-                            } => {
-                                eprintln!("[Anthropic] ImageBase64 block: {} bytes", data.len());
-                                Some(AnthropicContentBlock::Image {
+                    .filter_map(|block| match block {
+                        ContentBlock::Text { text } => Some(AnthropicContentBlock::Text { text }),
+                        ContentBlock::ImageUrl { url, detail } => {
+                            // Try to convert URL to Base64 (Anthropic requirement)
+                            let img_block = ContentBlock::ImageUrl { url, detail };
+                            match image_url_to_base64(img_block) {
+                                Some(ContentBlock::ImageBase64 {
+                                    media_type, data, ..
+                                }) => Some(AnthropicContentBlock::Image {
                                     source: ImageSource::Base64 { media_type, data },
-                                })
+                                }),
+                                _ => None,
                             }
                         }
-                    })
-                    .collect();
+                        ContentBlock::ImageBase64 {
+                            media_type, data, ..
+                        } => Some(AnthropicContentBlock::Image {
+                            source: ImageSource::Base64 { media_type, data },
+                        }),
+                    }),
+            );
+        } else if !msg.content.is_empty() {
+            blocks.push(AnthropicContentBlock::Text {
+                text: msg.content.clone(),
+            });
+        }
 
-                eprintln!(
-                    "[Anthropic] Total blocks after conversion: {}",
-                    blocks.len()
-                );
-                AnthropicContent::Blocks(blocks)
-            } else {
-                // Simple text content
-                eprintln!(
-                    "[Anthropic] Simple text content: {} chars",
-                    msg.content.len()
-                );
-                AnthropicContent::Text(msg.content.clone())
-            };
-
-            AnthropicMessage {
-                role: role.to_string(),
-                content,
+        // Assistant tool calls are represented as `tool_use` blocks.
+        if msg.role == MessageRole::Assistant {
+            if let Some(calls) = msg
+                .meta
+                .as_ref()
+                .and_then(|m| m.tool_calls.as_ref())
+                .filter(|c| !c.is_empty())
+            {
+                for call in calls {
+                    let input = serde_json::from_str::<serde_json::Value>(&call.arguments)
+                        .unwrap_or_else(|_| serde_json::json!({ "__raw": call.arguments }));
+                    blocks.push(AnthropicContentBlock::ToolUse {
+                        id: call.id.clone(),
+                        name: call.name.clone(),
+                        input,
+                    });
+                }
             }
-        })
-        .collect()
+        }
+
+        let content = if blocks.len() == 1 {
+            match &blocks[0] {
+                AnthropicContentBlock::Text { text } => AnthropicContent::Text(text.clone()),
+                _ => AnthropicContent::Blocks(blocks),
+            }
+        } else {
+            AnthropicContent::Blocks(blocks)
+        };
+
+        result.push(AnthropicMessage {
+            role: role.to_string(),
+            content,
+        });
+    }
+
+    result
 }
 
 #[async_trait]
@@ -366,7 +427,7 @@ impl AiClient for AnthropicClient {
         &self,
         messages: Vec<Message>,
         config: &ModelConfig,
-        _tools: Option<Vec<ToolDefinition>>,
+        tools: Option<Vec<ToolDefinition>>,
     ) -> Result<String, AiError> {
         let api_base = config
             .api_base
@@ -409,6 +470,23 @@ impl AiClient for AnthropicClient {
             }])
         };
 
+        let anthropic_tools = tools.and_then(|defs| {
+            if defs.is_empty() {
+                None
+            } else {
+                Some(
+                    defs.into_iter()
+                        .map(|t| AnthropicTool {
+                            name: t.name,
+                            description: t.description,
+                            input_schema: t.parameters,
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            }
+        });
+        let tool_choice = anthropic_tools.as_ref().map(|_| AnthropicToolChoice::Auto);
+
         let request = MessagesRequest {
             model: config.model.clone(),
             messages: anthropic_messages.clone(),
@@ -417,6 +495,8 @@ impl AiClient for AnthropicClient {
             temperature: Some(config.parameters.temperature),
             top_p: config.parameters.top_p,
             thinking: None,
+            tools: anthropic_tools,
+            tool_choice,
             stream: false,
         };
 
@@ -440,6 +520,12 @@ impl AiClient for AnthropicClient {
                             }
                             AnthropicContentBlock::Image { .. } => {
                                 eprintln!("      Block {}: Image", j);
+                            }
+                            AnthropicContentBlock::ToolUse { name, .. } => {
+                                eprintln!("      Block {}: ToolUse ({})", j, name);
+                            }
+                            AnthropicContentBlock::ToolResult { tool_use_id, .. } => {
+                                eprintln!("      Block {}: ToolResult ({})", j, tool_use_id);
                             }
                         }
                     }
@@ -510,7 +596,7 @@ impl AiClient for AnthropicClient {
         &self,
         messages: Vec<Message>,
         config: &ModelConfig,
-        _tools: Option<Vec<ToolDefinition>>,
+        tools: Option<Vec<ToolDefinition>>,
         token_sender: mpsc::Sender<StreamEvent>,
     ) -> Result<(), AiError> {
         let api_base = config
@@ -560,6 +646,23 @@ impl AiClient for AnthropicClient {
         let max_tokens = config.parameters.max_tokens.unwrap_or(4096);
         let thinking = build_thinking_config(config, max_tokens);
 
+        let anthropic_tools = tools.and_then(|defs| {
+            if defs.is_empty() {
+                None
+            } else {
+                Some(
+                    defs.into_iter()
+                        .map(|t| AnthropicTool {
+                            name: t.name,
+                            description: t.description,
+                            input_schema: t.parameters,
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            }
+        });
+        let tool_choice = anthropic_tools.as_ref().map(|_| AnthropicToolChoice::Auto);
+
         let request = MessagesRequest {
             model: config.model.clone(),
             messages: anthropic_messages,
@@ -568,6 +671,8 @@ impl AiClient for AnthropicClient {
             temperature: Some(config.parameters.temperature),
             top_p: config.parameters.top_p,
             thinking,
+            tools: anthropic_tools,
+            tool_choice,
             stream: true,
         };
 
@@ -629,6 +734,17 @@ impl AiClient for AnthropicClient {
         let mut stream = response.bytes_stream();
         let mut token_usage: Option<TokenUsage> = None;
         // SSE 可能跨 chunk 切分；用行缓冲拼接，避免 JSON 被拆开后无法解析导致输出缺失。
+        let mut tool_calls: Vec<ToolCall> = Vec::new();
+
+        #[derive(Debug)]
+        struct ToolUseInProgress {
+            id: String,
+            name: String,
+            initial_input: Option<serde_json::Value>,
+            input_json: String,
+        }
+
+        let mut current_tool_use: Option<ToolUseInProgress> = None;
         let mut sse_buffer = String::new();
 
         // Store debug parts for later assembly
@@ -665,6 +781,21 @@ impl AiClient for AnthropicClient {
                                     });
                                 }
                             }
+                            StreamingEvent::ContentBlockStart { content_block } => {
+                                // Tool use blocks are delivered via content_block_start + input_json_delta deltas.
+                                if content_block.content_type == "tool_use" {
+                                    if let (Some(id), Some(name)) =
+                                        (content_block.id.clone(), content_block.name.clone())
+                                    {
+                                        current_tool_use = Some(ToolUseInProgress {
+                                            id,
+                                            name,
+                                            initial_input: content_block.input.clone(),
+                                            input_json: String::new(),
+                                        });
+                                    }
+                                }
+                            }
                             StreamingEvent::ContentBlockDelta { delta } => {
                                 match delta.delta_type.as_str() {
                                     "text_delta" => {
@@ -682,7 +813,31 @@ impl AiClient for AnthropicClient {
                                                 .await;
                                         }
                                     }
+                                    "input_json_delta" => {
+                                        if let Some(partial) = delta.partial_json {
+                                            if let Some(in_progress) = current_tool_use.as_mut() {
+                                                in_progress.input_json.push_str(&partial);
+                                            }
+                                        }
+                                    }
                                     _ => {}
+                                }
+                            }
+                            StreamingEvent::ContentBlockStop {} => {
+                                if let Some(in_progress) = current_tool_use.take() {
+                                    let arguments = if !in_progress.input_json.trim().is_empty() {
+                                        in_progress.input_json
+                                    } else if let Some(v) = in_progress.initial_input {
+                                        serde_json::to_string(&v)
+                                            .unwrap_or_else(|_| "{}".to_string())
+                                    } else {
+                                        "{}".to_string()
+                                    };
+                                    tool_calls.push(ToolCall {
+                                        id: in_progress.id,
+                                        name: in_progress.name,
+                                        arguments,
+                                    });
                                 }
                             }
                             StreamingEvent::MessageDelta { delta: _, usage } => {
@@ -713,6 +868,30 @@ impl AiClient for AnthropicClient {
                                     usage_entry.prompt_tokens + usage_entry.completion_tokens;
                             }
                             StreamingEvent::MessageStop {} => {
+                                // Flush unfinished tool use (defensive; normally tool_use blocks stop before message_stop).
+                                if let Some(in_progress) = current_tool_use.take() {
+                                    let arguments = if !in_progress.input_json.trim().is_empty() {
+                                        in_progress.input_json
+                                    } else if let Some(v) = in_progress.initial_input {
+                                        serde_json::to_string(&v)
+                                            .unwrap_or_else(|_| "{}".to_string())
+                                    } else {
+                                        "{}".to_string()
+                                    };
+                                    tool_calls.push(ToolCall {
+                                        id: in_progress.id,
+                                        name: in_progress.name,
+                                        arguments,
+                                    });
+                                }
+
+                                // Tool-call turn: stop streaming and hand over to task_runner (Act/Observe loop).
+                                if !tool_calls.is_empty() {
+                                    let _ =
+                                        token_sender.send(StreamEvent::ToolCalls(tool_calls)).await;
+                                    return Ok(());
+                                }
+
                                 // Build debug info with response content
                                 let debug_info = DebugInfoData {
                                     request: Some(debug_request.clone()),
@@ -761,6 +940,25 @@ impl AiClient for AnthropicClient {
         }
 
         // Fallback: stream ended without MessageStop event
+        if let Some(in_progress) = current_tool_use.take() {
+            let arguments = if !in_progress.input_json.trim().is_empty() {
+                in_progress.input_json
+            } else if let Some(v) = in_progress.initial_input {
+                serde_json::to_string(&v).unwrap_or_else(|_| "{}".to_string())
+            } else {
+                "{}".to_string()
+            };
+            tool_calls.push(ToolCall {
+                id: in_progress.id,
+                name: in_progress.name,
+                arguments,
+            });
+        }
+        if !tool_calls.is_empty() {
+            let _ = token_sender.send(StreamEvent::ToolCalls(tool_calls)).await;
+            return Ok(());
+        }
+
         let debug_info = DebugInfoData {
             request: Some(debug_request),
             response: Some(DebugResponseData {

@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 use super::content_converter::{content_parts_to_blocks_with_limit, parse_data_url, ContentBlock};
 use super::traits::{
     AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent, TokenUsage,
-    ToolDefinition,
+    ToolCall, ToolDefinition,
 };
 use crate::models::{Message, MessageRole, ModelConfig};
 
@@ -52,6 +52,16 @@ enum GeminiPart {
     Text { text: String },
     /// Inline image data (base64)
     InlineData { inline_data: InlineData },
+    /// Tool/function call requested by the model (Gemini function calling)
+    FunctionCall {
+        #[serde(rename = "functionCall")]
+        function_call: GeminiFunctionCall,
+    },
+    /// Tool/function response provided by the user/runtime
+    FunctionResponse {
+        #[serde(rename = "functionResponse")]
+        function_response: GeminiFunctionResponse,
+    },
 }
 
 /// Inline data for images
@@ -59,6 +69,22 @@ enum GeminiPart {
 struct InlineData {
     mime_type: String,
     data: String,
+}
+
+/// Gemini function call
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GeminiFunctionCall {
+    name: String,
+    args: serde_json::Value,
+}
+
+/// Gemini function response
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GeminiFunctionResponse {
+    name: String,
+    response: serde_json::Value,
 }
 
 /// System instruction for Gemini
@@ -94,18 +120,48 @@ struct GenerationConfig {
     thinking_config: Option<ThinkingConfig>,
 }
 
-/// Gemini tool for grounding (Google Search)
+/// Gemini tool definition (Google Search grounding / function calling, etc.)
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct GeminiTool {
     /// Google Search tool for grounding
     #[serde(skip_serializing_if = "Option::is_none")]
     google_search: Option<GoogleSearch>,
+    /// Function declarations for Gemini function calling
+    #[serde(skip_serializing_if = "Option::is_none")]
+    function_declarations: Option<Vec<GeminiFunctionDeclaration>>,
+}
+
+/// Gemini function declaration (tool schema)
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GeminiFunctionDeclaration {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    parameters: serde_json::Value,
 }
 
 /// Google Search configuration (empty object enables search)
 #[derive(Debug, Clone, Serialize)]
 struct GoogleSearch {}
+
+/// Tool configuration (function calling mode, etc.)
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ToolConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    function_calling_config: Option<FunctionCallingConfig>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FunctionCallingConfig {
+    /// One of: "AUTO" | "ANY" | "NONE"
+    mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    allowed_function_names: Option<Vec<String>>,
+}
 
 /// Generate content request
 #[derive(Debug, Clone, Serialize)]
@@ -119,6 +175,9 @@ struct GenerateContentRequest {
     /// Tools for grounding (e.g., Google Search)
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<GeminiTool>>,
+    /// Tool configuration (e.g., function calling mode)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_config: Option<ToolConfig>,
 }
 
 // ============================================================================
@@ -203,11 +262,15 @@ struct CandidateContent {
 
 /// Response part
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ResponsePart {
     text: Option<String>,
     /// If true, this part contains thought/reasoning content
     #[serde(default)]
     thought: bool,
+    /// Function call requested by the model (Gemini function calling)
+    #[serde(default)]
+    function_call: Option<GeminiFunctionCall>,
 }
 
 /// Usage metadata
@@ -258,65 +321,116 @@ fn convert_messages(
     vision_enabled: bool,
     max_images: Option<u32>,
 ) -> Vec<GeminiContent> {
-    messages
-        .iter()
-        .filter(|msg| msg.role != MessageRole::System)
-        .map(|msg| {
-            let role = match msg.role {
-                MessageRole::User => "user",
-                MessageRole::Assistant => "model",
-                MessageRole::System => "user", // Should not reach here due to filter
-                // Gemini API history doesn't use OpenAI-style `tool` role.
-                // Keep compatibility by treating tool outputs as user messages.
-                MessageRole::Tool => "user",
-            };
+    let mut result: Vec<GeminiContent> = Vec::new();
+    let mut tool_name_by_id: HashMap<String, String> = HashMap::new();
 
-            let parts = if msg.has_multimodal_content() {
-                let content_parts = msg.get_content_parts();
-                let (converted_blocks, _) =
-                    content_parts_to_blocks_with_limit(&content_parts, vision_enabled, max_images);
+    let content_to_parts = |msg: &Message| -> Vec<GeminiPart> {
+        if msg.has_multimodal_content() {
+            let content_parts = msg.get_content_parts();
+            let (converted_blocks, _) =
+                content_parts_to_blocks_with_limit(&content_parts, vision_enabled, max_images);
 
-                converted_blocks
-                    .into_iter()
-                    .filter_map(|block| match block {
-                        ContentBlock::Text { text } => Some(GeminiPart::Text { text }),
-                        ContentBlock::ImageUrl { url, .. } => {
-                            // Try to convert URL to Base64
-                            // First parse the data URL to get base64 data
-                            if let Some((media_type, data)) = parse_data_url(&url) {
-                                Some(GeminiPart::InlineData {
-                                    inline_data: InlineData {
-                                        mime_type: media_type,
-                                        data,
-                                    },
-                                })
-                            } else {
-                                // Non-data URLs are not supported for inline data
-                                None
-                            }
+            converted_blocks
+                .into_iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text } => Some(GeminiPart::Text { text }),
+                    ContentBlock::ImageUrl { url, .. } => {
+                        // Try to convert URL to Base64
+                        if let Some((media_type, data)) = parse_data_url(&url) {
+                            Some(GeminiPart::InlineData {
+                                inline_data: InlineData {
+                                    mime_type: media_type,
+                                    data,
+                                },
+                            })
+                        } else {
+                            None
                         }
-                        ContentBlock::ImageBase64 {
-                            media_type, data, ..
-                        } => Some(GeminiPart::InlineData {
-                            inline_data: InlineData {
-                                mime_type: media_type,
-                                data,
-                            },
-                        }),
-                    })
-                    .collect()
-            } else {
-                vec![GeminiPart::Text {
-                    text: msg.content.clone(),
-                }]
-            };
+                    }
+                    ContentBlock::ImageBase64 {
+                        media_type, data, ..
+                    } => Some(GeminiPart::InlineData {
+                        inline_data: InlineData {
+                            mime_type: media_type,
+                            data,
+                        },
+                    }),
+                })
+                .collect()
+        } else if msg.content.is_empty() {
+            Vec::new()
+        } else {
+            vec![GeminiPart::Text {
+                text: msg.content.clone(),
+            }]
+        }
+    };
 
-            GeminiContent {
-                role: role.to_string(),
-                parts,
+    for msg in messages.iter().filter(|m| m.role != MessageRole::System) {
+        match msg.role {
+            MessageRole::User => {
+                result.push(GeminiContent {
+                    role: "user".to_string(),
+                    parts: content_to_parts(msg),
+                });
             }
-        })
-        .collect()
+            MessageRole::Assistant => {
+                let mut parts = content_to_parts(msg);
+
+                if let Some(calls) = msg
+                    .meta
+                    .as_ref()
+                    .and_then(|m| m.tool_calls.as_ref())
+                    .filter(|c| !c.is_empty())
+                {
+                    for call in calls {
+                        tool_name_by_id.insert(call.id.clone(), call.name.clone());
+                        let args = serde_json::from_str::<serde_json::Value>(&call.arguments)
+                            .unwrap_or_else(|_| serde_json::json!({ "__raw": call.arguments }));
+                        parts.push(GeminiPart::FunctionCall {
+                            function_call: GeminiFunctionCall {
+                                name: call.name.clone(),
+                                args,
+                            },
+                        });
+                    }
+                }
+
+                result.push(GeminiContent {
+                    role: "model".to_string(),
+                    parts,
+                });
+            }
+            MessageRole::Tool => {
+                let tool_call_id = msg
+                    .meta
+                    .as_ref()
+                    .and_then(|m| m.tool_call_id.as_ref())
+                    .cloned()
+                    .unwrap_or_default();
+                let name = tool_name_by_id
+                    .get(&tool_call_id)
+                    .cloned()
+                    .unwrap_or_else(|| "unknown_tool".to_string());
+
+                let response_value = serde_json::from_str::<serde_json::Value>(&msg.content)
+                    .unwrap_or_else(|_| serde_json::json!({ "content": msg.content }));
+
+                result.push(GeminiContent {
+                    role: "user".to_string(),
+                    parts: vec![GeminiPart::FunctionResponse {
+                        function_response: GeminiFunctionResponse {
+                            name,
+                            response: response_value,
+                        },
+                    }],
+                });
+            }
+            MessageRole::System => {}
+        }
+    }
+
+    result
 }
 
 fn extract_system_prompt(messages: &[Message], config: &ModelConfig) -> Option<SystemInstruction> {
@@ -357,7 +471,7 @@ impl AiClient for GoogleClient {
         &self,
         messages: Vec<Message>,
         config: &ModelConfig,
-        _tools: Option<Vec<ToolDefinition>>,
+        tools: Option<Vec<ToolDefinition>>,
     ) -> Result<String, AiError> {
         let api_base = config
             .api_base
@@ -401,11 +515,50 @@ impl AiClient for GoogleClient {
             thinking_config,
         });
 
-        // Build Google Search grounding tool if web search is enabled
-        let tools = if config.web_search_enabled {
-            Some(vec![GeminiTool {
+        // Build function tools (our tool system) + Google Search grounding tool (provider-native web search)
+        let function_declarations = tools.and_then(|defs| {
+            if defs.is_empty() {
+                None
+            } else {
+                Some(
+                    defs.into_iter()
+                        .map(|t| GeminiFunctionDeclaration {
+                            name: t.name,
+                            description: t.description,
+                            parameters: t.parameters,
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            }
+        });
+        let has_function_tools = function_declarations.is_some();
+
+        let mut request_tools: Vec<GeminiTool> = Vec::new();
+        if let Some(decls) = function_declarations {
+            request_tools.push(GeminiTool {
+                google_search: None,
+                function_declarations: Some(decls),
+            });
+        }
+        if config.web_search_enabled {
+            request_tools.push(GeminiTool {
                 google_search: Some(GoogleSearch {}),
-            }])
+                function_declarations: None,
+            });
+        }
+
+        let tools = if request_tools.is_empty() {
+            None
+        } else {
+            Some(request_tools)
+        };
+        let tool_config = if has_function_tools {
+            Some(ToolConfig {
+                function_calling_config: Some(FunctionCallingConfig {
+                    mode: "AUTO".to_string(),
+                    allowed_function_names: None,
+                }),
+            })
         } else {
             None
         };
@@ -415,6 +568,7 @@ impl AiClient for GoogleClient {
             system_instruction,
             generation_config,
             tools,
+            tool_config,
         };
 
         let url = format!(
@@ -471,7 +625,7 @@ impl AiClient for GoogleClient {
         &self,
         messages: Vec<Message>,
         config: &ModelConfig,
-        _tools: Option<Vec<ToolDefinition>>,
+        tools: Option<Vec<ToolDefinition>>,
         token_sender: mpsc::Sender<StreamEvent>,
     ) -> Result<(), AiError> {
         let api_base = config
@@ -514,11 +668,50 @@ impl AiClient for GoogleClient {
             thinking_config,
         });
 
-        // Build Google Search grounding tool if web search is enabled
-        let tools = if config.web_search_enabled {
-            Some(vec![GeminiTool {
+        // Build function tools (our tool system) + Google Search grounding tool (provider-native web search)
+        let function_declarations = tools.and_then(|defs| {
+            if defs.is_empty() {
+                None
+            } else {
+                Some(
+                    defs.into_iter()
+                        .map(|t| GeminiFunctionDeclaration {
+                            name: t.name,
+                            description: t.description,
+                            parameters: t.parameters,
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            }
+        });
+        let has_function_tools = function_declarations.is_some();
+
+        let mut request_tools: Vec<GeminiTool> = Vec::new();
+        if let Some(decls) = function_declarations {
+            request_tools.push(GeminiTool {
+                google_search: None,
+                function_declarations: Some(decls),
+            });
+        }
+        if config.web_search_enabled {
+            request_tools.push(GeminiTool {
                 google_search: Some(GoogleSearch {}),
-            }])
+                function_declarations: None,
+            });
+        }
+
+        let tools = if request_tools.is_empty() {
+            None
+        } else {
+            Some(request_tools)
+        };
+        let tool_config = if has_function_tools {
+            Some(ToolConfig {
+                function_calling_config: Some(FunctionCallingConfig {
+                    mode: "AUTO".to_string(),
+                    allowed_function_names: None,
+                }),
+            })
         } else {
             None
         };
@@ -528,6 +721,7 @@ impl AiClient for GoogleClient {
             system_instruction,
             generation_config,
             tools,
+            tool_config,
         };
 
         let url = format!(
@@ -583,6 +777,7 @@ impl AiClient for GoogleClient {
         let mut stream = response.bytes_stream();
         let mut token_usage: Option<TokenUsage> = None;
         // SSE 可能跨 chunk 切分；用行缓冲拼接，避免 JSON 被拆开后无法解析、导致 thinking/text 丢失。
+        let mut tool_calls: Vec<ToolCall> = Vec::new();
         let mut sse_buffer = String::new();
 
         while let Some(chunk_result) = stream.next().await {
@@ -654,6 +849,17 @@ impl AiClient for GoogleClient {
                                 if let Some(content) = candidate.content {
                                     if let Some(parts) = content.parts {
                                         for part in parts {
+                                            if let Some(function_call) = part.function_call {
+                                                let arguments =
+                                                    serde_json::to_string(&function_call.args)
+                                                        .unwrap_or_else(|_| "{}".to_string());
+                                                tool_calls.push(ToolCall {
+                                                    id: String::new(),
+                                                    name: function_call.name,
+                                                    arguments,
+                                                });
+                                                continue;
+                                            }
                                             if let Some(text) = part.text {
                                                 if part.thought {
                                                     // This is thinking/reasoning content
@@ -669,6 +875,13 @@ impl AiClient for GoogleClient {
                                                         .await;
                                                 }
                                             }
+                                        }
+
+                                        if !tool_calls.is_empty() {
+                                            let _ = token_sender
+                                                .send(StreamEvent::ToolCalls(tool_calls))
+                                                .await;
+                                            return Ok(());
                                         }
                                     }
                                 }
