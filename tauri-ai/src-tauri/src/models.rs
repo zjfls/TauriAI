@@ -352,6 +352,11 @@ pub struct Model {
     /// - Must be >= 1024 and < max_tokens when enabled
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_budget_tokens: Option<u32>,
+    /// Use reasoning_effort parameter for Chat Completions API (OpenAI GPT-5 series)
+    /// - When true: use reasoning_effort parameter (none/minimal/low/medium/high)
+    /// - When false/None: use thinking parameter (enabled/disabled)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub use_reasoning_effort: Option<bool>,
 }
 
 impl Default for Model {
@@ -365,6 +370,7 @@ impl Default for Model {
             capabilities: ModelCapabilities::default(),
             max_images: None,
             thinking_budget_tokens: None,
+            use_reasoning_effort: None,
         }
     }
 }
@@ -538,6 +544,9 @@ pub struct ModelConfig {
     /// Maximum number of images allowed (default: 10, only for vision models)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_images: Option<u32>,
+    /// Whether to use reasoning_effort parameter (for OpenAI GPT-5 series)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub use_reasoning_effort: Option<bool>,
 }
 
 /// A preset combining model config and system prompt (legacy)
@@ -767,6 +776,7 @@ impl AppConfig {
                 capabilities: ModelCapabilities::default(),
                 max_images: None,
                 thinking_budget_tokens: None,
+                use_reasoning_effort: None,
             });
 
             // Create agent from model's system prompt

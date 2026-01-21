@@ -178,6 +178,7 @@ mod tests {
                     capabilities: crate::models::ModelCapabilities::default(),
                     max_images: None,
                     thinking_budget_tokens: None,
+                    use_reasoning_effort: None,
                 }],
             }],
             agents: vec![Agent {

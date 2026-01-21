@@ -1,7 +1,7 @@
 /**
  * ThinkingSelector Component
  * Adaptive thinking mode selector that supports both binary (on/off) and multi-level modes
- * depending on the API protocol type
+ * depending on the API protocol type and model configuration
  */
 
 import React, { useState, useRef, useEffect } from 'react';
@@ -15,6 +15,7 @@ interface ThinkingSelectorProps {
   value: ThinkingMode;
   onChange: (value: ThinkingMode) => void;
   disabled?: boolean;
+  useReasoningEffort?: boolean; // Whether to use reasoning_effort parameter (for OpenAI GPT-5 series)
 }
 
 /**
@@ -40,11 +41,10 @@ const FeatureToggle: React.FC<FeatureToggleProps> = ({
       type="button"
       onClick={onToggle}
       disabled={disabled}
-      className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors ${
-        enabled
+      className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors ${enabled
           ? 'bg-purple-100 text-purple-600 border-purple-300 dark:bg-purple-900/40 dark:text-purple-400 dark:border-purple-700'
           : 'bg-gray-50 text-gray-400 border-gray-200 hover:bg-gray-100 dark:bg-gray-800 dark:text-gray-500 dark:border-gray-700 dark:hover:bg-gray-700'
-      } disabled:cursor-not-allowed disabled:opacity-50`}
+        } disabled:cursor-not-allowed disabled:opacity-50`}
       title={enabled ? `${label}已开启，点击关闭` : `${label}已关闭，点击开启`}
       aria-pressed={enabled}
     >
@@ -56,11 +56,12 @@ const FeatureToggle: React.FC<FeatureToggleProps> = ({
 
 /**
  * ThinkingSelector Component
- * Renders different UI based on API protocol:
- * - chat_completions: Binary toggle (on/off)
+ * Renders different UI based on API protocol and model configuration:
+ * - chat_completions + useReasoningEffort: Multi-level dropdown (无/低/中/高/超高)
+ * - chat_completions (default): Binary toggle (on/off)
  * - responses: Multi-level dropdown
  *   - OpenAI Responses: 无/低/中/高/超高
- *   - Google Gemini: 无/低/中/高（不支持“超高”）
+ *   - Google Gemini: 无/低/中/高（不支持"超高"）
  */
 export const ThinkingSelector: React.FC<ThinkingSelectorProps> = ({
   apiProtocol,
@@ -68,6 +69,7 @@ export const ThinkingSelector: React.FC<ThinkingSelectorProps> = ({
   value,
   onChange,
   disabled = false,
+  useReasoningEffort = false,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -83,8 +85,13 @@ export const ThinkingSelector: React.FC<ThinkingSelectorProps> = ({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Binary mode for chat_completions API
-  if (apiProtocol === 'chat_completions') {
+  // Determine if we should show multi-level selector
+  // - responses API: always multi-level
+  // - chat_completions API: multi-level if useReasoningEffort is enabled, otherwise binary
+  const showMultiLevel = apiProtocol === 'responses' || (apiProtocol === 'chat_completions' && useReasoningEffort);
+
+  // Binary mode for chat_completions API without reasoning_effort
+  if (!showMultiLevel) {
     return (
       <FeatureToggle
         icon={<Brain size={12} />}
@@ -120,11 +127,10 @@ export const ThinkingSelector: React.FC<ThinkingSelectorProps> = ({
         type="button"
         onClick={() => setIsOpen(!isOpen)}
         disabled={disabled}
-        className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors ${
-          currentLevel
+        className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors ${currentLevel
             ? 'bg-purple-100 text-purple-600 border-purple-300 dark:bg-purple-900/40 dark:text-purple-400 dark:border-purple-700'
             : 'bg-gray-50 text-gray-400 border-gray-200 hover:bg-gray-100 dark:bg-gray-800 dark:text-gray-500 dark:border-gray-700 dark:hover:bg-gray-700'
-        } disabled:cursor-not-allowed disabled:opacity-50`}
+          } disabled:cursor-not-allowed disabled:opacity-50`}
         title={`思考级别: ${currentLabel}`}
         aria-label={`思考级别: ${currentLabel}`}
         aria-expanded={isOpen}
@@ -136,7 +142,7 @@ export const ThinkingSelector: React.FC<ThinkingSelectorProps> = ({
       </button>
 
       {isOpen && (
-        <div 
+        <div
           className="absolute bottom-full left-0 mb-1 w-32 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-1 z-50"
           role="menu"
         >

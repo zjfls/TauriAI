@@ -143,6 +143,7 @@ interface ModelOption {
  * @property {boolean} [supportsVision] - Whether current model supports vision/images
  * @property {ContextUsageBreakdown | null} [contextUsage] - Context usage data for indicator
  * @property {ApiProtocolType} [apiProtocol] - API protocol type for thinking mode
+ * @property {boolean} [useReasoningEffort] - Whether to use reasoning_effort parameter
  * @property {Agent[]} [agents] - Available agents for selection
  * @property {string} [currentAgentName] - Currently selected agent name
  * @property {Function} [onAgentSelect] - Callback when agent is selected
@@ -165,6 +166,7 @@ interface InputAreaProps {
   onValueChange?: (value: string) => void;
   thinkingMode?: ThinkingMode; // Controlled thinking mode/level (per-session)
   onThinkingModeChange?: (value: ThinkingMode) => void;
+  useReasoningEffort?: boolean;  // Whether to use reasoning_effort parameter
   // Agent/Model selection
   agents?: Agent[];
   currentAgentName?: string;
@@ -662,6 +664,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   onValueChange,
   thinkingMode: controlledThinkingMode,
   onThinkingModeChange,
+  useReasoningEffort = false,
   agents = [],
   currentAgentName = '',
   onAgentSelect,
@@ -1470,9 +1473,9 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
         dataTransfer.files && dataTransfer.files.length > 0
           ? Array.from(dataTransfer.files)
           : Array.from(dataTransfer.items || [])
-              .filter((item) => item.kind === 'file')
-              .map((item) => item.getAsFile())
-              .filter((file): file is File => Boolean(file));
+            .filter((item) => item.kind === 'file')
+            .map((item) => item.getAsFile())
+            .filter((file): file is File => Boolean(file));
 
       // 在 Tauri 里，文件拖拽由 tauri://drag-drop 提供真实路径，这里避免与 DOM drop 重复处理
       if (!isTauri() && droppedFiles.length > 0) {
@@ -1799,6 +1802,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
                 value={thinkingMode}
                 onChange={handleThinkingModeChange}
                 disabled={isGenerating}
+                useReasoningEffort={useReasoningEffort}
               />
             )}
             {/* Web search toggle */}

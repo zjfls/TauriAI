@@ -147,9 +147,12 @@ struct ChatCompletionRequest {
     /// Stream options for including usage stats
     #[serde(skip_serializing_if = "Option::is_none")]
     stream_options: Option<StreamOptions>,
-    /// Thinking mode for DeepSeek models
+    /// Thinking mode for DeepSeek models (legacy)
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<ThinkingConfig>,
+    /// Reasoning effort for OpenAI GPT-5 series (new)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<String>,
 }
 
 /// OpenAI chat completion response (non-streaming)
@@ -448,18 +451,34 @@ impl OpenAiBaseClient {
             }
         });
 
-        // Build thinking config based on thinking_level:
-        // - None: Model doesn't support thinking, don't send parameter
-        // - Some("disabled"): Disable thinking explicitly
-        // - Some(level): Enable thinking (level is ignored for chat_completions API)
-        let thinking = config.thinking_level.as_ref().map(|level| ThinkingConfig {
-            thinking_type: if level == "disabled" {
-                "disabled"
-            } else {
-                "enabled"
-            }
-            .to_string(),
-        });
+        // Build thinking/reasoning config based on thinking_level and use_reasoning_effort:
+        // - If use_reasoning_effort is true: use reasoning_effort parameter (OpenAI GPT-5)
+        // - Otherwise: use thinking parameter (DeepSeek, legacy)
+        let (thinking, reasoning_effort) = if config.use_reasoning_effort.unwrap_or(false) {
+            // Use reasoning_effort parameter for OpenAI GPT-5 series
+            let effort = config.thinking_level.as_ref().and_then(|level| {
+                match level.as_str() {
+                    "disabled" => Some("none".to_string()),
+                    "low" => Some("low".to_string()),
+                    "medium" => Some("medium".to_string()),
+                    "high" => Some("high".to_string()),
+                    "xhigh" => Some("high".to_string()), // Chat Completions API doesn't support xhigh
+                    _ => None,
+                }
+            });
+            (None, effort)
+        } else {
+            // Use thinking parameter for DeepSeek and other models
+            let thinking_cfg = config.thinking_level.as_ref().map(|level| ThinkingConfig {
+                thinking_type: if level == "disabled" {
+                    "disabled"
+                } else {
+                    "enabled"
+                }
+                .to_string(),
+            });
+            (thinking_cfg, None)
+        };
 
         // Only send OpenAI-native `web_search_options` to the official OpenAI API client.
         // (Avoid passing unknown fields to OpenAI-compatible services that may 400.)
@@ -484,6 +503,7 @@ impl OpenAiBaseClient {
             stream: false,
             stream_options: None,
             thinking,
+            reasoning_effort,
         };
 
         let response = self
@@ -558,18 +578,34 @@ impl OpenAiBaseClient {
             }
         });
 
-        // Build thinking config based on thinking_level:
-        // - None: Model doesn't support thinking, don't send parameter
-        // - Some("disabled"): Disable thinking explicitly
-        // - Some(level): Enable thinking (level is ignored for chat_completions API)
-        let thinking = config.thinking_level.as_ref().map(|level| ThinkingConfig {
-            thinking_type: if level == "disabled" {
-                "disabled"
-            } else {
-                "enabled"
-            }
-            .to_string(),
-        });
+        // Build thinking/reasoning config based on thinking_level and use_reasoning_effort:
+        // - If use_reasoning_effort is true: use reasoning_effort parameter (OpenAI GPT-5)
+        // - Otherwise: use thinking parameter (DeepSeek, legacy)
+        let (thinking, reasoning_effort) = if config.use_reasoning_effort.unwrap_or(false) {
+            // Use reasoning_effort parameter for OpenAI GPT-5 series
+            let effort = config.thinking_level.as_ref().and_then(|level| {
+                match level.as_str() {
+                    "disabled" => Some("none".to_string()),
+                    "low" => Some("low".to_string()),
+                    "medium" => Some("medium".to_string()),
+                    "high" => Some("high".to_string()),
+                    "xhigh" => Some("high".to_string()), // Chat Completions API doesn't support xhigh
+                    _ => None,
+                }
+            });
+            (None, effort)
+        } else {
+            // Use thinking parameter for DeepSeek and other models
+            let thinking_cfg = config.thinking_level.as_ref().map(|level| ThinkingConfig {
+                thinking_type: if level == "disabled" {
+                    "disabled"
+                } else {
+                    "enabled"
+                }
+                .to_string(),
+            });
+            (thinking_cfg, None)
+        };
 
         // Only send OpenAI-native `web_search_options` to the official OpenAI API client.
         let web_search_options = match self.system_role {
@@ -595,6 +631,7 @@ impl OpenAiBaseClient {
                 include_usage: true,
             }),
             thinking,
+            reasoning_effort,
         };
 
         let url = format!("{api_base}/chat/completions");

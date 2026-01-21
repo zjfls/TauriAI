@@ -93,6 +93,11 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
     return currentModel?.capabilities?.webSearch ?? false;
   }, [currentModel]);
 
+  // Check if current model uses reasoning_effort parameter
+  const useReasoningEffort = useMemo(() => {
+    return currentModel?.useReasoningEffort ?? false;
+  }, [currentModel]);
+
   // Get API protocol type for thinking mode
   const apiProtocol = useMemo(() => {
     const sessionModelRef = session?.modelRef;
@@ -345,6 +350,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
           if (!sessionId) return;
           setSessionThinkingMode(sessionId, value);
         }}
+        useReasoningEffort={useReasoningEffort}
         agents={config?.agents || []}
         currentAgentName={session?.agentName || ''}
         onAgentSelect={(agentName) => sessionId && setSessionAgent(sessionId, agentName)}

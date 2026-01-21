@@ -18,24 +18,17 @@ const inferCapabilities = (modelName: string): ModelCapabilities => {
       nameLower.includes('deepseek-reasoner') ||
       nameLower.includes('-r1-') ||
       nameLower.includes('reasoner') ||
-      nameLower.includes('thinking') ||
-      nameLower.includes('gemini-3'),
+      nameLower.includes('thinking'),
     vision: nameLower.includes('vision') ||
       nameLower.includes('-vl') ||
       nameLower.includes('gpt-4o') ||
       nameLower.includes('gpt-4-turbo') ||
-      nameLower.includes('claude-3') ||
-      nameLower.includes('gemini-1.5') ||
-      nameLower.includes('gemini-2') ||
-      nameLower.includes('gemini-3'),
+      nameLower.includes('claude-3'),
     functionCalling: nameLower.includes('gpt-') ||
       nameLower.includes('claude-') ||
       nameLower.includes('deepseek-v') ||
-      nameLower.includes('qwen') ||
-      nameLower.includes('gemini'),
-    webSearch: nameLower.includes('search') ||
-      nameLower.includes('websearch') ||
-      nameLower.includes('browse'),
+      nameLower.includes('qwen'),
+    webSearch: false,
   };
 };
 
@@ -59,11 +52,6 @@ const inferContextLength = (modelName: string): number | undefined => {
   // Qwen series
   if (nameLower.includes('qwen-72b') || nameLower.includes('qwen2')) return 32768;
   if (nameLower.includes('qwen')) return 8192;
-  // Gemini series
-  if (nameLower.includes('gemini-1.5-pro')) return 2000000;
-  if (nameLower.includes('gemini-1.5-flash')) return 1000000;
-  if (nameLower.includes('gemini-2')) return 1000000;
-  if (nameLower.includes('gemini')) return 128000;
   // Default: don't set, let user configure
   return undefined;
 };
@@ -284,8 +272,8 @@ export const ProviderConfigForm: React.FC = () => {
               key={provider.name}
               onClick={() => handleSelectProvider(provider.name)}
               className={`flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer transition-colors ${selectedProviderName === provider.name && !isCreating
-                ? 'bg-blue-100 dark:bg-blue-900/50'
-                : 'hover:bg-gray-100 dark:hover:bg-gray-700'
+                  ? 'bg-blue-100 dark:bg-blue-900/50'
+                  : 'hover:bg-gray-100 dark:hover:bg-gray-700'
                 }`}
             >
               <div className="flex items-center gap-2 min-w-0">
@@ -298,8 +286,8 @@ export const ProviderConfigForm: React.FC = () => {
                   handleToggleEnabled(provider.name, !provider.enabled);
                 }}
                 className={`text-xs px-2 py-0.5 rounded ${provider.enabled
-                  ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
-                  : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400'
+                    ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+                    : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400'
                   }`}
               >
                 {provider.enabled ? 'ON' : 'OFF'}
@@ -416,7 +404,6 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
     { value: 'openai_compatible', label: 'OpenAI Compatible', description: 'DeepSeek, 硅基流动等' },
     { value: 'openai_responses', label: 'OpenAI Responses', description: '推理模型 (o1, o3, gpt-4.1)' },
     { value: 'anthropic', label: 'Anthropic', description: 'Claude 系列' },
-    { value: 'google', label: 'Google', description: 'Gemini 系列' },
     { value: 'ollama', label: 'Ollama', description: '本地模型' },
   ];
 
@@ -625,69 +612,78 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
                         <Wrench size={12} className="text-green-500" />
                         <span>工具调用</span>
                       </label>
-                      <label className="flex items-center gap-1 text-xs">
-                        <input
-                          type="checkbox"
-                          checked={model.capabilities?.webSearch ?? false}
-                          onChange={(e) => onUpdateModel(index, {
-                            ...model,
-                            capabilities: { ...model.capabilities, webSearch: e.target.checked }
-                          })}
-                          disabled={!isEditing}
-                          className="rounded"
-                        />
-                        <Search size={12} className="text-green-600" />
-                        <span>联网</span>
-                      </label>
                     </div>
                     {/* Advanced Settings */}
-                    {(model.capabilities?.vision || (provider.type === 'anthropic' && (model.capabilities?.thinking ?? false))) && (
-                      <div className="pt-2 border-t border-gray-200 dark:border-gray-700">
-                        <button
-                          onClick={() => onToggleAdvancedExpand(model.name)}
-                          className="flex items-center gap-1 text-xs text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
-                        >
-                          {expandedAdvanced.has(model.name) ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                          <span>高级设置</span>
-                        </button>
-                        {expandedAdvanced.has(model.name) && (
-                          <div className="mt-2 grid grid-cols-4 gap-3">
-                            {model.capabilities?.vision && (
-                              <div>
-                                <label className="block text-xs text-gray-500">最大图片数</label>
-                                <input
-                                  type="number"
-                                  min="1"
-                                  max="100"
-                                  value={model.maxImages ?? 10}
-                                  onChange={(e) => onUpdateModel(index, { ...model, maxImages: parseInt(e.target.value) || 10 })}
-                                  disabled={!isEditing}
-                                  placeholder="10"
-                                  className="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100"
-                                />
-                                <span className="text-xs text-gray-400">默认: 10</span>
-                              </div>
-                            )}
+                    {(model.capabilities?.vision ||
+                      (provider.type === 'anthropic' && (model.capabilities?.thinking ?? false)) ||
+                      ((provider.type === 'openai' || provider.type === 'openai_compatible') && (model.capabilities?.thinking ?? false))) && (
+                        <div className="pt-2 border-t border-gray-200 dark:border-gray-700">
+                          <button
+                            onClick={() => onToggleAdvancedExpand(model.name)}
+                            className="flex items-center gap-1 text-xs text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
+                          >
+                            {expandedAdvanced.has(model.name) ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                            <span>高级设置</span>
+                          </button>
+                          {expandedAdvanced.has(model.name) && (
+                            <div className="mt-2 space-y-3">
+                              <div className="grid grid-cols-4 gap-3">
+                                {model.capabilities?.vision && (
+                                  <div>
+                                    <label className="block text-xs text-gray-500">最大图片数</label>
+                                    <input
+                                      type="number"
+                                      min="1"
+                                      max="100"
+                                      value={model.maxImages ?? 10}
+                                      onChange={(e) => onUpdateModel(index, { ...model, maxImages: parseInt(e.target.value) || 10 })}
+                                      disabled={!isEditing}
+                                      placeholder="10"
+                                      className="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100"
+                                    />
+                                    <span className="text-xs text-gray-400">默认: 10</span>
+                                  </div>
+                                )}
 
-                            {provider.type === 'anthropic' && (model.capabilities?.thinking ?? false) && (
-                              <div>
-                                <label className="block text-xs text-gray-500">思考预算 Tokens</label>
-                                <input
-                                  type="number"
-                                  min="1024"
-                                  value={model.thinkingBudgetTokens || ''}
-                                  onChange={(e) => onUpdateModel(index, { ...model, thinkingBudgetTokens: parseInt(e.target.value) || undefined })}
-                                  disabled={!isEditing}
-                                  placeholder="1024"
-                                  className="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100"
-                                />
-                                <span className="text-xs text-gray-400">留空自动计算（需 ≥1024 且 &lt; Max Tokens）</span>
+                                {provider.type === 'anthropic' && (model.capabilities?.thinking ?? false) && (
+                                  <div>
+                                    <label className="block text-xs text-gray-500">思考预算 Tokens</label>
+                                    <input
+                                      type="number"
+                                      min="1024"
+                                      value={model.thinkingBudgetTokens || ''}
+                                      onChange={(e) => onUpdateModel(index, { ...model, thinkingBudgetTokens: parseInt(e.target.value) || undefined })}
+                                      disabled={!isEditing}
+                                      placeholder="1024"
+                                      className="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100"
+                                    />
+                                    <span className="text-xs text-gray-400">留空自动计算（需 ≥1024 且 &lt; Max Tokens）</span>
+                                  </div>
+                                )}
                               </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    )}
+
+                              {/* Reasoning Effort 选项 (仅 OpenAI/OpenAI Compatible + 思考能力) */}
+                              {(provider.type === 'openai' || provider.type === 'openai_compatible') && (model.capabilities?.thinking ?? false) && (
+                                <div className="pt-2 border-t border-gray-200 dark:border-gray-700">
+                                  <label className="flex items-center gap-2 text-xs">
+                                    <input
+                                      type="checkbox"
+                                      checked={model.useReasoningEffort ?? false}
+                                      onChange={(e) => onUpdateModel(index, { ...model, useReasoningEffort: e.target.checked })}
+                                      disabled={!isEditing}
+                                      className="rounded"
+                                    />
+                                    <span className="text-gray-700 dark:text-gray-300">使用 Reasoning Effort</span>
+                                  </label>
+                                  <p className="mt-1 text-xs text-gray-500">
+                                    启用后在聊天界面支持多级推理控制（适用于 GPT-5 系列等支持 reasoning_effort 参数的模型）
+                                  </p>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
                   </div>
                 )}
               </div>
