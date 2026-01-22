@@ -9,6 +9,7 @@ pub mod prompts;
 pub mod runtime;
 pub mod storage;
 pub mod tray;
+pub mod bundled_tools;
 
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -75,6 +76,9 @@ pub fn run() {
             read_local_file_base64,
         ])
         .setup(|app| {
+            // 将内置工具目录加入 PATH（例如 rg）
+            bundled_tools::init(app.handle());
+
             // 初始化系统托盘
             tray::create_tray(app.handle())?;
 

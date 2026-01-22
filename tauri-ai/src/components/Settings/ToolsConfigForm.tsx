@@ -11,6 +11,9 @@ import type { AppConfig, ToolSetConfig } from '../../types';
 const AVAILABLE_TOOLS = [
   { name: 'echo', label: 'Echo', description: '回显输入（测试用）' },
   { name: 'get_time', label: '时间', description: '获取当前时间（测试用）' },
+  { name: 'read_file', label: '读文件', description: '读取本地文件（带行号）' },
+  { name: 'list_dir', label: '列目录', description: '列出目录结构（带缩进）' },
+  { name: 'rg', label: 'rg', description: '按 pattern 搜索文件（ripgrep）' },
   { name: 'shell_command', label: 'Shell 命令', description: '一次性执行命令', permission: 'shellExec' },
   { name: 'exec_command', label: 'PTY 启动命令', description: '创建交互式会话', permission: 'ptyExec' },
   { name: 'write_stdin', label: 'PTY 写入输入', description: '向交互式会话写入 stdin', permission: 'ptyExec' },
@@ -401,4 +404,3 @@ export const ToolsConfigForm: React.FC = () => {
 };
 
 export default ToolsConfigForm;
-
