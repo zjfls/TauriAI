@@ -14,6 +14,7 @@ import type { MessageBlock, MessageTurn } from '../../types';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { useConfigStore } from '../../stores/configStore';
 import { DebugModal } from './DebugModal';
+import { stripAnsi } from '../../utils/stripAnsi';
 
 interface ThinkingBlockProps {
   text: string;
@@ -107,15 +108,24 @@ const ToolCallBlock: React.FC<{ name: string; args: string; isStreaming?: boolea
   );
 };
 
-const ToolResultBlock: React.FC<{ text: string }> = ({ text }) => {
+const ToolResultBlock: React.FC<{ text: string; showRawAnsi?: boolean }> = ({
+  text,
+  showRawAnsi,
+}) => {
   if (!text) return null;
+
+  const displayText = useMemo(() => {
+    if (showRawAnsi) return text;
+    return stripAnsi(text);
+  }, [text, showRawAnsi]);
+
   return (
     <div className="mb-2 rounded-lg border border-green-200 bg-white px-3 py-2 text-sm text-gray-800 dark:border-green-800 dark:bg-gray-900/40 dark:text-gray-100">
       <div className="mb-1 flex items-center gap-2 text-xs font-medium text-green-700 dark:text-green-300">
         <Wrench size={14} />
         <span>工具结果</span>
       </div>
-      <pre className="whitespace-pre-wrap break-words">{text}</pre>
+      <pre className="whitespace-pre-wrap break-words">{displayText}</pre>
     </div>
   );
 };
@@ -334,7 +344,7 @@ export const MessageBlocks: React.FC<{
     }
 
     if (block.type === 'tool_result') {
-      return <ToolResultBlock text={block.text} />;
+      return <ToolResultBlock text={block.text} showRawAnsi={debugMode} />;
     }
 
     if (block.type === 'web_search') {

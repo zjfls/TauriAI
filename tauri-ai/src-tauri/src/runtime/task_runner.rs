@@ -678,11 +678,12 @@ fn append_tool_trace_for_model_input(mut messages: Vec<Message>) -> Vec<Message>
                     turn_index,
                     ..
                 } => {
+                    let cleaned = sanitize_tool_text_for_model(text);
                     lines.push(format!(
                         "[tool_result] turn={} id={} text={}",
                         turn_index.unwrap_or_default(),
                         call_id,
-                        text
+                        cleaned
                     ));
                 }
                 MessageBlock::WebSearch {
@@ -717,6 +718,101 @@ fn append_tool_trace_for_model_input(mut messages: Vec<Message>) -> Vec<Message>
         msg.content.push_str(&lines.join("\n"));
     }
 
+    messages
+}
+
+fn strip_ansi_codes(input: &str) -> String {
+    if input.is_empty() {
+        return String::new();
+    }
+
+    let bytes = input.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        if bytes[i] != 0x1b {
+            out.push(bytes[i]);
+            i += 1;
+            continue;
+        }
+
+        // ESC
+        i += 1;
+        if i >= bytes.len() {
+            break;
+        }
+
+        match bytes[i] {
+            b'[' => {
+                // CSI
+                i += 1;
+                // parameter bytes 0x30-0x3F
+                while i < bytes.len() && (0x30..=0x3f).contains(&bytes[i]) {
+                    i += 1;
+                }
+                // intermediate bytes 0x20-0x2F
+                while i < bytes.len() && (0x20..=0x2f).contains(&bytes[i]) {
+                    i += 1;
+                }
+                // final byte 0x40-0x7E
+                if i < bytes.len() && (0x40..=0x7e).contains(&bytes[i]) {
+                    i += 1;
+                }
+            }
+            b']' => {
+                // OSC
+                i += 1;
+                while i < bytes.len() {
+                    // BEL terminator
+                    if bytes[i] == 0x07 {
+                        i += 1;
+                        break;
+                    }
+                    // ST terminator: ESC \
+                    if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'\\' {
+                        i += 2;
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            // Other escape sequences: best-effort drop ESC + one byte.
+            _ => {
+                i += 1;
+            }
+        }
+    }
+
+    String::from_utf8_lossy(&out).to_string()
+}
+
+fn sanitize_tool_text_for_model(text: &str) -> String {
+    // 1) Try JSON: sanitize known output-bearing string fields.
+    if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(text) {
+        if let Some(obj) = v.as_object_mut() {
+            for key in ["output", "stdout", "stderr", "text", "result"] {
+                if let Some(serde_json::Value::String(s)) = obj.get_mut(key) {
+                    let cleaned = strip_ansi_codes(s);
+                    *s = cleaned;
+                }
+            }
+        }
+
+        return serde_json::to_string(&v).unwrap_or_else(|_| strip_ansi_codes(text));
+    }
+
+    // 2) Plain text.
+    strip_ansi_codes(text)
+}
+
+fn sanitize_messages_for_model_input(mut messages: Vec<Message>) -> Vec<Message> {
+    for msg in &mut messages {
+        if msg.role != MessageRole::Tool {
+            continue;
+        }
+        msg.content = sanitize_tool_text_for_model(&msg.content);
+    }
     messages
 }
 
@@ -1087,6 +1183,7 @@ async fn stream_one_turn(
     let mut last_error: Option<String> = None;
     let mut tool_calls: Option<Vec<ToolCall>> = None;
 
+    let messages = sanitize_messages_for_model_input(messages);
     let stream_handle = tokio::spawn(async move {
         client
             .chat_stream(messages, &model_config, tools, token_tx)
