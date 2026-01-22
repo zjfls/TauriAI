@@ -191,6 +191,7 @@ mod tests {
                 format_type: FormatPromptType::Chat,
                 toolset: None,
                 max_turns: None,
+                reinject_thinking: false,
             }],
             default_agent: "test-agent".to_string(),
             ..Default::default()

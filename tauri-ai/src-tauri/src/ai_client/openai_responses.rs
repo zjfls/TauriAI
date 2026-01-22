@@ -52,7 +52,19 @@ struct ResponsesInput {
 #[serde(untagged)]
 enum ResponsesInputItem {
     Message(ResponsesInput),
+    FunctionCall(ResponsesFunctionCall),
     FunctionCallOutput(ResponsesFunctionCallOutput),
+}
+
+/// Function tool call item (assistant -> tool)
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct ResponsesFunctionCall {
+    #[serde(rename = "type")]
+    item_type: String,
+    #[serde(rename = "call_id")]
+    call_id: String,
+    name: String,
+    arguments: String,
 }
 
 /// Function tool call output item (sent back to the model after running the tool)
@@ -313,6 +325,7 @@ fn convert_messages(
 ) -> (Vec<ResponsesInputItem>, Option<String>) {
     let mut inputs: Vec<ResponsesInputItem> = Vec::new();
     let mut developer_prompt = system_prompt.map(|s| s.to_string());
+    let mut known_call_ids: HashSet<String> = HashSet::new();
 
     for msg in messages {
         match msg.role {
@@ -340,11 +353,13 @@ fn convert_messages(
                     ResponsesContent::Text(msg.content.clone())
                 };
 
-                inputs.push(ResponsesInput {
-                    role: "user".to_string(),
-                    content,
-                }
-                .into());
+                inputs.push(
+                    ResponsesInput {
+                        role: "user".to_string(),
+                        content,
+                    }
+                    .into(),
+                );
             }
             MessageRole::Assistant => {
                 // 对于助手消息，仅提取文本内容
@@ -365,11 +380,36 @@ fn convert_messages(
                     ResponsesContent::Text(msg.content.clone())
                 };
 
-                inputs.push(ResponsesInput {
-                    role: "assistant".to_string(),
-                    content,
+                inputs.push(
+                    ResponsesInput {
+                        role: "assistant".to_string(),
+                        content,
+                    }
+                    .into(),
+                );
+
+                // Responses API 的工具调用以独立的 `function_call` 输入项表达；
+                // 如果只回传 `function_call_output` 而缺少对应的 `function_call`，服务端会报错：
+                // "No tool call found for function call output with call_id ..."
+                if let Some(calls) = msg
+                    .meta
+                    .as_ref()
+                    .and_then(|m| m.tool_calls.as_ref())
+                    .filter(|c| !c.is_empty())
+                {
+                    for call in calls {
+                        known_call_ids.insert(call.id.clone());
+                        inputs.push(
+                            ResponsesFunctionCall {
+                                item_type: "function_call".to_string(),
+                                call_id: call.id.clone(),
+                                name: call.name.clone(),
+                                arguments: call.arguments.clone(),
+                            }
+                            .into(),
+                        );
+                    }
                 }
-                .into());
             }
             MessageRole::Tool => {
                 // Tool 消息：编码为 Responses API 的 `function_call_output`
@@ -379,13 +419,15 @@ fn convert_messages(
                     .and_then(|m| m.tool_call_id.clone())
                     .unwrap_or_default();
 
-                if call_id.trim().is_empty() {
-                    // 没有 call_id：降级为普通 user 文本（保持最大兼容性）
-                    inputs.push(ResponsesInput {
-                        role: "user".to_string(),
-                        content: ResponsesContent::Text(msg.content.clone()),
-                    }
-                    .into());
+                if call_id.trim().is_empty() || !known_call_ids.contains(&call_id) {
+                    // 没有 call_id，或无法在历史中找到对应的 function_call：降级为普通 user 文本（保持最大兼容性）
+                    inputs.push(
+                        ResponsesInput {
+                            role: "user".to_string(),
+                            content: ResponsesContent::Text(msg.content.clone()),
+                        }
+                        .into(),
+                    );
                 } else {
                     inputs.push(
                         ResponsesFunctionCallOutput {
@@ -418,6 +460,12 @@ fn convert_messages(
 impl From<ResponsesInput> for ResponsesInputItem {
     fn from(v: ResponsesInput) -> Self {
         ResponsesInputItem::Message(v)
+    }
+}
+
+impl From<ResponsesFunctionCall> for ResponsesInputItem {
+    fn from(v: ResponsesFunctionCall) -> Self {
+        ResponsesInputItem::FunctionCall(v)
     }
 }
 
@@ -498,7 +546,8 @@ impl AiClient for OpenAiResponsesClient {
                     name: t.name,
                     description: t.description,
                     parameters: t.parameters,
-                    strict: Some(true),
+                    // 与 Codex 对齐：工具 schema 不做严格模式硬约束（避免要求模型每次都补齐可选字段）。
+                    strict: Some(false),
                 });
             }
         }
@@ -642,7 +691,8 @@ impl AiClient for OpenAiResponsesClient {
                     name: t.name,
                     description: t.description,
                     parameters: t.parameters,
-                    strict: Some(true),
+                    // 与 Codex 对齐：工具 schema 不做严格模式硬约束（避免要求模型每次都补齐可选字段）。
+                    strict: Some(false),
                 });
             }
         }
@@ -753,6 +803,9 @@ impl AiClient for OpenAiResponsesClient {
         let mut final_usage: Option<TokenUsage> = None;
         let mut function_calls_by_item_id: HashMap<String, FunctionCallDraft> = HashMap::new();
         let mut emitted_call_ids: HashSet<String> = HashSet::new();
+        // Tool-call turns must still yield a DoneWithDebug so the UI can show per-turn Debug.
+        // We keep a snapshot for debug response body enrichment.
+        let mut tool_calls_for_debug: Option<Vec<ToolCall>> = None;
         let mut stream = response.bytes_stream();
         let mut chunk_count = 0;
         // SSE 可能跨 chunk 切分；用行缓冲拼接，避免 JSON 被拆开导致事件丢失（text/thinking/web_search/usage）。
@@ -796,8 +849,8 @@ impl AiClient for OpenAiResponsesClient {
                                 }
                             }
                             if !calls.is_empty() {
+                                tool_calls_for_debug = Some(calls.clone());
                                 let _ = token_sender.send(StreamEvent::ToolCalls(calls)).await;
-                                return Ok(());
                             }
                         }
 
@@ -819,6 +872,7 @@ impl AiClient for OpenAiResponsesClient {
                             },
                             "content": full_content,
                             "thinking": if full_thinking.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(full_thinking.clone()) },
+                            "tool_calls": tool_calls_for_debug.clone(),
                             "usage": debug_usage
                         });
 
@@ -1079,8 +1133,9 @@ impl AiClient for OpenAiResponsesClient {
                                     }
 
                                     if !calls.is_empty() {
-                                        let _ = token_sender.send(StreamEvent::ToolCalls(calls)).await;
-                                        return Ok(());
+                                        tool_calls_for_debug = Some(calls.clone());
+                                        let _ =
+                                            token_sender.send(StreamEvent::ToolCalls(calls)).await;
                                     }
                                 }
 
@@ -1104,6 +1159,7 @@ impl AiClient for OpenAiResponsesClient {
                                             "text": full_content
                                         }]
                                     }],
+                                    "tool_calls": tool_calls_for_debug.clone(),
                                     "usage": debug_usage
                                 });
 
@@ -1156,8 +1212,8 @@ impl AiClient for OpenAiResponsesClient {
                 }
             }
             if !calls.is_empty() {
+                tool_calls_for_debug = Some(calls.clone());
                 let _ = token_sender.send(StreamEvent::ToolCalls(calls)).await;
-                return Ok(());
             }
         }
 
@@ -1181,6 +1237,7 @@ impl AiClient for OpenAiResponsesClient {
                     "text": full_content
                 }]
             }],
+            "tool_calls": tool_calls_for_debug.clone(),
             "usage": debug_usage
         });
 
@@ -1219,7 +1276,7 @@ struct FunctionCallDraft {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{ContentPart, ImageDetail, MessageStatus, PdfPage};
+    use crate::models::{ContentPart, ImageDetail, MessageMeta, MessageStatus, PdfPage};
     use chrono::Utc;
 
     fn unwrap_message(item: &ResponsesInputItem) -> &ResponsesInput {
@@ -1721,6 +1778,97 @@ mod tests {
                     text: "📄 data.txt\n```\nfile content\n```".to_string(),
                 },
             ])
+        );
+    }
+
+    #[test]
+    fn test_convert_messages_tool_call_and_output_are_paired() {
+        let call = ToolCall {
+            id: "call_123".to_string(),
+            name: "echo".to_string(),
+            arguments: r#"{"text":"hi"}"#.to_string(),
+        };
+
+        let messages = vec![
+            Message {
+                id: "a1".to_string(),
+                conversation_id: "conv".to_string(),
+                role: MessageRole::Assistant,
+                content: String::new(),
+                content_parts: vec![],
+                thinking: None,
+                meta: Some(MessageMeta {
+                    tool_calls: Some(vec![call.clone()]),
+                    ..Default::default()
+                }),
+                created_at: Utc::now(),
+                status: MessageStatus::Success,
+                error_message: None,
+            },
+            Message {
+                id: "t1".to_string(),
+                conversation_id: "conv".to_string(),
+                role: MessageRole::Tool,
+                content: "OK".to_string(),
+                content_parts: vec![],
+                thinking: None,
+                meta: Some(MessageMeta {
+                    tool_call_id: Some(call.id.clone()),
+                    ..Default::default()
+                }),
+                created_at: Utc::now(),
+                status: MessageStatus::Success,
+                error_message: None,
+            },
+        ];
+
+        let (inputs, _) = convert_messages(&messages, None, true, None);
+        assert_eq!(inputs.len(), 3);
+
+        match &inputs[1] {
+            ResponsesInputItem::FunctionCall(fc) => {
+                assert_eq!(fc.item_type, "function_call");
+                assert_eq!(fc.call_id, "call_123");
+                assert_eq!(fc.name, "echo");
+                assert_eq!(fc.arguments, r#"{"text":"hi"}"#);
+            }
+            _ => panic!("Expected function_call input item"),
+        }
+
+        match &inputs[2] {
+            ResponsesInputItem::FunctionCallOutput(out) => {
+                assert_eq!(out.item_type, "function_call_output");
+                assert_eq!(out.call_id, "call_123");
+                assert_eq!(out.output, "OK");
+            }
+            _ => panic!("Expected function_call_output input item"),
+        }
+    }
+
+    #[test]
+    fn test_convert_messages_tool_output_without_function_call_degrades_to_user_text() {
+        let messages = vec![Message {
+            id: "t1".to_string(),
+            conversation_id: "conv".to_string(),
+            role: MessageRole::Tool,
+            content: "OK".to_string(),
+            content_parts: vec![],
+            thinking: None,
+            meta: Some(MessageMeta {
+                tool_call_id: Some("call_missing".to_string()),
+                ..Default::default()
+            }),
+            created_at: Utc::now(),
+            status: MessageStatus::Success,
+            error_message: None,
+        }];
+
+        let (inputs, _) = convert_messages(&messages, None, true, None);
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(unwrap_message(&inputs[0]).role, "user");
+        assert_eq!(
+            unwrap_message(&inputs[0]).content,
+            ResponsesContent::Text("OK".to_string())
         );
     }
 }

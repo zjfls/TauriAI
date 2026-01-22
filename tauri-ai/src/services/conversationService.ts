@@ -6,6 +6,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import type { Conversation, Message } from '../types';
+import { hydrateMessagesFromBackend } from '../utils/hydrateMessages';
 
 /**
  * Get all conversations sorted by update time descending
@@ -31,11 +32,12 @@ export async function getMessages(
   limit?: number,
   beforeId?: string
 ): Promise<Message[]> {
-  return invoke<Message[]>('get_messages', {
+  const messages = await invoke<Message[]>('get_messages', {
     conversationId,
     limit: limit ?? 50,
     beforeId,
   });
+  return hydrateMessagesFromBackend(messages);
 }
 
 /**

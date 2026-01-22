@@ -778,9 +778,10 @@ impl AiClient for GoogleClient {
         let mut token_usage: Option<TokenUsage> = None;
         // SSE 可能跨 chunk 切分；用行缓冲拼接，避免 JSON 被拆开后无法解析、导致 thinking/text 丢失。
         let mut tool_calls: Vec<ToolCall> = Vec::new();
+        let mut tool_calls_to_emit: Option<Vec<ToolCall>> = None;
         let mut sse_buffer = String::new();
 
-        while let Some(chunk_result) = stream.next().await {
+        'stream: while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result.map_err(|e| AiError::StreamError(e.to_string()))?;
             let chunk_str = String::from_utf8_lossy(&chunk);
 
@@ -881,10 +882,9 @@ impl AiClient for GoogleClient {
                                         }
 
                                         if !tool_calls.is_empty() {
-                                            let _ = token_sender
-                                                .send(StreamEvent::ToolCalls(tool_calls))
-                                                .await;
-                                            return Ok(());
+                                            tool_calls_to_emit =
+                                                Some(std::mem::take(&mut tool_calls));
+                                            break 'stream;
                                         }
                                     }
                                 }
@@ -908,6 +908,12 @@ impl AiClient for GoogleClient {
             }
         }
 
+        // Tool-call turn: emit tool calls first, then DoneWithDebug so the UI can always show Debug.
+        let tool_calls_for_debug = tool_calls_to_emit.clone();
+        if let Some(calls) = tool_calls_to_emit {
+            let _ = token_sender.send(StreamEvent::ToolCalls(calls)).await;
+        }
+
         // Build debug info - using Google Gemini API format
         let debug_info = DebugInfoData {
             request: Some(debug_request),
@@ -925,6 +931,7 @@ impl AiClient for GoogleClient {
                         "finishReason": "STOP",
                         "groundingMetadata": full_grounding
                     }],
+                    "tool_calls": tool_calls_for_debug,
                     "usageMetadata": token_usage.as_ref().map(|u| serde_json::json!({
                         "promptTokenCount": u.prompt_tokens,
                         "candidatesTokenCount": u.completion_tokens,

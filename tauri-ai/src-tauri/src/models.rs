@@ -147,6 +147,100 @@ pub struct MessageMeta {
     /// Tool calls for role=assistant (OpenAI: tool_calls)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<crate::ai_client::ToolCall>>,
+
+    /// Persisted structured output blocks for assistant messages.
+    ///
+    /// - Mainly used to restore multi-turn tool runs after reload.
+    /// - Stored in `messages.meta` for DB compatibility.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocks: Option<Vec<MessageBlock>>,
+
+    /// Persisted per-turn metadata (without sensitive debug headers).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turns: Option<Vec<MessageTurn>>,
+}
+
+// ============================================================================
+// Structured Message Output (blocks/turns)
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum MessageBlock {
+    #[serde(rename_all = "camelCase")]
+    Text {
+        id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_index: Option<u32>,
+        format: String,
+        text: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    Thinking {
+        id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_index: Option<u32>,
+        text: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    ToolCall {
+        id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_index: Option<u32>,
+        call_id: String,
+        name: String,
+        arguments: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    ToolResult {
+        id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_index: Option<u32>,
+        call_id: String,
+        text: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    WebSearch {
+        id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_index: Option<u32>,
+        call_id: String,
+        status: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        action: Option<serde_json::Value>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Unknown {
+        id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_index: Option<u32>,
+        data: serde_json::Value,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageTurn {
+    pub turn_id: String,
+    pub turn_index: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<crate::runtime::types::TurnStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<crate::ai_client::TokenUsage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 /// Status of a message
@@ -465,6 +559,14 @@ pub struct Agent {
     /// Max turns for a single run/task (tool/code agents may need multi-turn)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_turns: Option<u32>,
+
+    /// 是否把 thinking（思考过程）回灌进“同一 Task 的下一轮上下文”。
+    ///
+    /// - 默认关闭：thinking 只用于 UI 展示/调试，不参与后续 turn 的提示词上下文。
+    /// - 打开后：在多 Turn（tool/code agent）场景里，会把 thinking 作为显式文本插入到
+    ///   assistant 的上下文内容中（用于下一轮续写/继续工具循环）。
+    #[serde(default)]
+    pub reinject_thinking: bool,
 }
 
 impl Default for Agent {
@@ -479,6 +581,7 @@ impl Default for Agent {
             format_type: FormatPromptType::default(),
             toolset: None,
             max_turns: None,
+            reinject_thinking: false,
         }
     }
 }
@@ -803,6 +906,7 @@ impl AppConfig {
                 format_type: FormatPromptType::Chat,
                 toolset: None,
                 max_turns: None,
+                reinject_thinking: false,
             });
 
             // Set default agent

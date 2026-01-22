@@ -34,10 +34,20 @@ struct ShellCommandArgs {
     command: String,
     #[serde(default)]
     workdir: Option<String>,
+    #[serde(default = "default_login")]
+    login: bool,
     #[serde(default)]
     timeout_ms: Option<u64>,
     #[serde(default)]
     env: Option<EnvSpec>,
+    #[serde(default)]
+    sandbox_permissions: Option<String>,
+    #[serde(default)]
+    justification: Option<String>,
+}
+
+fn default_login() -> bool {
+    true
 }
 
 fn is_known_safe_command(command: &str) -> bool {
@@ -56,14 +66,20 @@ fn is_known_safe_command(command: &str) -> bool {
     )
 }
 
-fn build_shell_invocation(command: &str) -> (String, Vec<String>) {
+fn build_shell_invocation(command: &str, login: bool) -> (String, Vec<String>) {
     #[cfg(windows)]
     {
+        let _ = login;
         ("cmd.exe".to_string(), vec!["/C".to_string(), command.to_string()])
     }
     #[cfg(not(windows))]
     {
-        ("/bin/sh".to_string(), vec!["-c".to_string(), command.to_string()])
+        // 与 Codex 的 shell_command 一致：默认按 login shell 语义运行（bash -lc）。
+        if login && std::path::Path::new("/bin/bash").exists() {
+            ("/bin/bash".to_string(), vec!["-lc".to_string(), command.to_string()])
+        } else {
+            ("/bin/sh".to_string(), vec!["-c".to_string(), command.to_string()])
+        }
     }
 }
 
@@ -78,6 +94,7 @@ impl ToolHandler for ShellCommandTool {
                 "properties": {
                     "command": { "type": "string", "description": "要执行的命令（由 shell 解析）" },
                     "workdir": { "type": "string", "description": "可选工作目录" },
+                    "login": { "type": "boolean", "description": "可选：是否以 login shell 语义运行（默认 true）。" },
                     "timeout_ms": { "type": "integer", "description": "可选超时（毫秒）" },
                     "env": {
                         "type": "array",
@@ -91,14 +108,11 @@ impl ToolHandler for ShellCommandTool {
                             "required": ["key", "value"],
                             "additionalProperties": false
                         }
-                    }
+                    },
+                    "sandbox_permissions": { "type": "string", "description": "可选：沙箱权限（当前后端暂不实现，仅为兼容）。" },
+                    "justification": { "type": "string", "description": "可选：申请更高权限的理由（当前后端暂不实现，仅为兼容）。" }
                 },
-                // OpenAI Responses API `strict=true` 要求：required 必须包含 properties 的全部 key
-                // 约定：
-                // - workdir 为空字符串表示“使用默认工作目录”
-                // - timeout_ms=0 表示“不设置超时”
-                // - env=[] 表示“不设置额外环境变量”
-                "required": ["command", "workdir", "timeout_ms", "env"],
+                "required": ["command"],
                 "additionalProperties": false
             }),
             required_permissions: vec![ToolPermission::ShellExec],
@@ -123,7 +137,7 @@ impl ToolHandler for ShellCommandTool {
             return Err(ToolError::invalid("command 不能为空"));
         }
 
-        let (program, program_args) = build_shell_invocation(&args.command);
+        let (program, program_args) = build_shell_invocation(&args.command, args.login);
 
         let mut cmd = Command::new(program);
         cmd.args(program_args);

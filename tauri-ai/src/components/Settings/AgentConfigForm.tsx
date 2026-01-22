@@ -16,6 +16,7 @@ const defaultAgent: Agent = {
   modelRef: '',
   systemPrompt: '',
   formatType: 'chat',
+  reinjectThinking: false,
 };
 
 export const AgentConfigForm: React.FC = () => {
@@ -398,6 +399,25 @@ const AgentForm: React.FC<AgentFormProps> = ({
           >
             {formatOptions.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
           </select>
+        </div>
+
+        <div className="space-y-1">
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">思考回灌</label>
+          <div className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={agent.reinjectThinking ?? false}
+              onChange={(e) => onFieldChange('reinjectThinking', e.target.checked)}
+              disabled={!isEditing}
+              className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
+            />
+            <span className="text-sm text-gray-700 dark:text-gray-300">
+              将 thinking 作为文本写入同一 Task 的下一轮上下文
+            </span>
+          </div>
+          <p className="text-xs text-gray-500">
+            默认关闭：thinking 只用于 UI/调试展示；开启会增加上下文长度，并可能影响模型输出风格。
+          </p>
         </div>
       </div>
     </div>

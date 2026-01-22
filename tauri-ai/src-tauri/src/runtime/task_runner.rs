@@ -19,7 +19,10 @@ use crate::ai_client::{
 };
 use crate::config::ConfigManager;
 use crate::errors::{AppErrorCode, SerializableError};
-use crate::models::{AgentType, ContentPart, Message, MessageMeta, MessageRole, MessageStatus};
+use crate::models::{
+    AgentType, ContentPart, Message, MessageBlock, MessageMeta, MessageRole, MessageStatus,
+    MessageTurn,
+};
 use crate::runtime::events::RunEvent;
 use crate::runtime::types::{TaskKind, TurnPhase, TurnStatus};
 use crate::storage::Database;
@@ -51,6 +54,9 @@ enum TurnStreamResult {
         usage: Option<TokenUsage>,
     },
     ToolCalls {
+        /// Some providers may stream visible text before requesting tool calls.
+        /// Keep it so the next turn can receive the full assistant context.
+        content: String,
         thinking: String,
         tool_calls: Vec<ToolCall>,
         debug_info: Option<DebugInfoData>,
@@ -74,11 +80,15 @@ enum TaskOutcome {
         thinking: String,
         debug_info: Option<DebugInfoData>,
         usage: Option<TokenUsage>,
+        blocks: Vec<MessageBlock>,
+        turns: Vec<MessageTurn>,
     },
     Aborted {
         last_turn_id: String,
         content: String,
         thinking: String,
+        blocks: Vec<MessageBlock>,
+        turns: Vec<MessageTurn>,
     },
     Failed {
         turn_id: String,
@@ -102,12 +112,34 @@ struct TurnLoop<'a> {
     assistant_message_id: String,
     output_format: Option<String>,
     max_turns: u32,
+    /// 是否把 thinking 回灌到“同一 Task 的下一轮上下文”（由 Agent 配置控制）。
+    reinject_thinking: bool,
     debug_mode: bool,
     emitter: &'a mut RunEmitter,
 }
 
+fn build_assistant_context_content(content: String, thinking: &str, reinject_thinking: bool) -> String {
+    if !reinject_thinking || thinking.trim().is_empty() {
+        return content;
+    }
+
+    // 把 thinking 写入“上下文可见内容”，用于同一 Task 的多 Turn 续写。
+    // NOTE: 新任务开始时我们会剔除历史 thinking（见 run_task_inner），避免跨任务污染与上下文爆炸。
+    if content.trim().is_empty() {
+        format!("[thinking]\n{thinking}\n[/thinking]")
+    } else {
+        format!("[thinking]\n{thinking}\n[/thinking]\n\n{content}")
+    }
+}
+
 impl<'a> TurnLoop<'a> {
     async fn run(&mut self, abort_rx: &mut mpsc::Receiver<()>) -> TaskOutcome {
+        // Persisted structured outputs for history restore (stored into assistant message meta).
+        // NOTE: We intentionally do NOT persist per-turn DebugInfo to DB because it may contain
+        // sensitive headers (e.g., API keys).
+        let mut blocks: Vec<MessageBlock> = Vec::new();
+        let mut turns: Vec<MessageTurn> = Vec::new();
+
         for turn_index in 1..=self.max_turns {
             let turn_id = uuid::Uuid::new_v4().to_string();
 
@@ -167,15 +199,47 @@ impl<'a> TurnLoop<'a> {
                         usage: turn_usage,
                         model: Some(self.model_config.model.clone()),
                     });
+
+                    if !thinking.trim().is_empty() {
+                        blocks.push(MessageBlock::Thinking {
+                            id: format!("{turn_id}:assistant_thinking"),
+                            turn_id: Some(turn_id.clone()),
+                            turn_index: Some(turn_index),
+                            text: thinking.clone(),
+                        });
+                    }
+                    if !content.trim().is_empty() {
+                        blocks.push(MessageBlock::Text {
+                            id: format!("{turn_id}:assistant_text"),
+                            turn_id: Some(turn_id.clone()),
+                            turn_index: Some(turn_index),
+                            format: self
+                                .output_format
+                                .clone()
+                                .unwrap_or_else(|| "markdown".to_string()),
+                            text: content.clone(),
+                        });
+                    }
+                    turns.push(MessageTurn {
+                        turn_id: turn_id.clone(),
+                        turn_index,
+                        status: Some(TurnStatus::Success),
+                        usage: usage.clone(),
+                        model: Some(self.model_config.model.clone()),
+                    });
+
                     return TaskOutcome::Success {
                         last_turn_id: turn_id,
                         content,
                         thinking,
                         debug_info: if self.debug_mode { debug_info } else { None },
                         usage: if self.debug_mode { usage } else { None },
+                        blocks,
+                        turns,
                     };
                 }
                 TurnStreamResult::ToolCalls {
+                    content,
                     thinking,
                     tool_calls,
                     debug_info,
@@ -187,6 +251,7 @@ impl<'a> TurnLoop<'a> {
                         phase: TurnPhase::Think,
                     });
 
+                    let persisted_usage = usage.clone();
                     let turn_debug_info = if self.debug_mode { debug_info } else { None };
                     let turn_usage = if self.debug_mode { usage } else { None };
 
@@ -212,6 +277,27 @@ impl<'a> TurnLoop<'a> {
                     }
 
                     // Phase: Act（工具调用）
+                    if !thinking.trim().is_empty() {
+                        blocks.push(MessageBlock::Thinking {
+                            id: format!("{turn_id}:assistant_thinking"),
+                            turn_id: Some(turn_id.clone()),
+                            turn_index: Some(turn_index),
+                            text: thinking.clone(),
+                        });
+                    }
+                    if !content.trim().is_empty() {
+                        blocks.push(MessageBlock::Text {
+                            id: format!("{turn_id}:assistant_text"),
+                            turn_id: Some(turn_id.clone()),
+                            turn_index: Some(turn_index),
+                            format: self
+                                .output_format
+                                .clone()
+                                .unwrap_or_else(|| "markdown".to_string()),
+                            text: content.clone(),
+                        });
+                    }
+
                     self.emitter.emit(RunEvent::TurnPhaseStarted {
                         task_id: self.task_id.clone(),
                         turn_id: turn_id.clone(),
@@ -246,6 +332,15 @@ impl<'a> TurnLoop<'a> {
                             .to_string(),
                         });
 
+                        blocks.push(MessageBlock::ToolCall {
+                            id: format!("{turn_id}:tool_call:{id}"),
+                            turn_id: Some(turn_id.clone()),
+                            turn_index: Some(turn_index),
+                            call_id: id.clone(),
+                            name: call.name.clone(),
+                            arguments: call.arguments.clone(),
+                        });
+
                         normalized_calls.push(call);
                     }
 
@@ -256,11 +351,13 @@ impl<'a> TurnLoop<'a> {
                     });
 
                     // 把 assistant 的 tool_calls（以及本轮 thinking）写入运行时消息链，供下一轮继续
+                    let content_for_context =
+                        build_assistant_context_content(content, &thinking, self.reinject_thinking);
                     self.runtime_messages.push(Message {
                         id: uuid::Uuid::new_v4().to_string(),
                         conversation_id: self.conversation_id.clone(),
                         role: MessageRole::Assistant,
-                        content: String::new(),
+                        content: content_for_context,
                         content_parts: Vec::new(),
                         thinking: if thinking.trim().is_empty() {
                             None
@@ -298,6 +395,13 @@ impl<'a> TurnLoop<'a> {
                                 block_type: "tool_result".to_string(),
                                 format: Some("plain".to_string()),
                                 delta: result.clone(),
+                            });
+                            blocks.push(MessageBlock::ToolResult {
+                                id: format!("{turn_id}:tool_result:{}", call.id),
+                                turn_id: Some(turn_id.clone()),
+                                turn_index: Some(turn_index),
+                                call_id: call.id.clone(),
+                                text: result.clone(),
                             });
                             self.runtime_messages.push(Message {
                                 id: uuid::Uuid::new_v4().to_string(),
@@ -340,6 +444,13 @@ impl<'a> TurnLoop<'a> {
                                         format: Some("plain".to_string()),
                                         delta: format!("TOOL_ABORTED: {}", e.message),
                                     });
+                                    blocks.push(MessageBlock::ToolResult {
+                                        id: format!("{turn_id}:tool_result:{}", call.id),
+                                        turn_id: Some(turn_id.clone()),
+                                        turn_index: Some(turn_index),
+                                        call_id: call.id.clone(),
+                                        text: format!("TOOL_ABORTED: {}", e.message),
+                                    });
                                     aborted_in_tools = Some(e.message);
                                     break;
                                 }
@@ -356,6 +467,14 @@ impl<'a> TurnLoop<'a> {
                                 msg
                             }
                         };
+
+                        blocks.push(MessageBlock::ToolResult {
+                            id: format!("{turn_id}:tool_result:{}", call.id),
+                            turn_id: Some(turn_id.clone()),
+                            turn_index: Some(turn_index),
+                            call_id: call.id.clone(),
+                            text: result.clone(),
+                        });
 
                         self.runtime_messages.push(Message {
                             id: uuid::Uuid::new_v4().to_string(),
@@ -390,10 +509,19 @@ impl<'a> TurnLoop<'a> {
                             usage: turn_usage,
                             model: Some(self.model_config.model.clone()),
                         });
+                        turns.push(MessageTurn {
+                            turn_id: turn_id.clone(),
+                            turn_index,
+                            status: Some(TurnStatus::Aborted),
+                            usage: persisted_usage,
+                            model: Some(self.model_config.model.clone()),
+                        });
                         return TaskOutcome::Aborted {
                             last_turn_id: turn_id,
                             content: String::new(),
                             thinking: String::new(),
+                            blocks,
+                            turns,
                         };
                     }
 
@@ -415,6 +543,13 @@ impl<'a> TurnLoop<'a> {
                     });
 
                     // 继续下一轮 Turn（Think）
+                    turns.push(MessageTurn {
+                        turn_id: turn_id.clone(),
+                        turn_index,
+                        status: Some(TurnStatus::Success),
+                        usage: persisted_usage,
+                        model: Some(self.model_config.model.clone()),
+                    });
                     continue;
                 }
                 TurnStreamResult::Error { error, debug_info } => {
@@ -455,10 +590,39 @@ impl<'a> TurnLoop<'a> {
                         usage: None,
                         model: Some(self.model_config.model.clone()),
                     });
+                    if !thinking.trim().is_empty() {
+                        blocks.push(MessageBlock::Thinking {
+                            id: format!("{turn_id}:assistant_thinking"),
+                            turn_id: Some(turn_id.clone()),
+                            turn_index: Some(turn_index),
+                            text: thinking.clone(),
+                        });
+                    }
+                    if !content.trim().is_empty() {
+                        blocks.push(MessageBlock::Text {
+                            id: format!("{turn_id}:assistant_text"),
+                            turn_id: Some(turn_id.clone()),
+                            turn_index: Some(turn_index),
+                            format: self
+                                .output_format
+                                .clone()
+                                .unwrap_or_else(|| "markdown".to_string()),
+                            text: content.clone(),
+                        });
+                    }
+                    turns.push(MessageTurn {
+                        turn_id: turn_id.clone(),
+                        turn_index,
+                        status: Some(TurnStatus::Aborted),
+                        usage: None,
+                        model: Some(self.model_config.model.clone()),
+                    });
                     return TaskOutcome::Aborted {
                         last_turn_id: turn_id,
                         content,
                         thinking,
+                        blocks,
+                        turns,
                     };
                 }
             }
@@ -471,8 +635,89 @@ impl<'a> TurnLoop<'a> {
             thinking: String::new(),
             debug_info: None,
             usage: None,
+            blocks,
+            turns,
         }
     }
+}
+
+fn append_tool_trace_for_model_input(mut messages: Vec<Message>) -> Vec<Message> {
+    for msg in &mut messages {
+        if msg.role != MessageRole::Assistant {
+            continue;
+        }
+
+        let Some(meta) = msg.meta.as_ref() else {
+            continue;
+        };
+        let Some(blocks) = meta.blocks.as_ref() else {
+            continue;
+        };
+
+        let mut lines: Vec<String> = Vec::new();
+        for b in blocks {
+            match b {
+                MessageBlock::ToolCall {
+                    call_id,
+                    name,
+                    arguments,
+                    turn_index,
+                    ..
+                } => {
+                    lines.push(format!(
+                        "[tool_call] turn={} id={} name={} args={}",
+                        turn_index.unwrap_or_default(),
+                        call_id,
+                        name,
+                        arguments
+                    ));
+                }
+                MessageBlock::ToolResult {
+                    call_id,
+                    text,
+                    turn_index,
+                    ..
+                } => {
+                    lines.push(format!(
+                        "[tool_result] turn={} id={} text={}",
+                        turn_index.unwrap_or_default(),
+                        call_id,
+                        text
+                    ));
+                }
+                MessageBlock::WebSearch {
+                    call_id,
+                    status,
+                    action,
+                    turn_index,
+                    ..
+                } => {
+                    let action_str = action
+                        .as_ref()
+                        .and_then(|v| serde_json::to_string(v).ok())
+                        .unwrap_or_else(|| "null".to_string());
+                    lines.push(format!(
+                        "[web_search] turn={} id={} status={} action={}",
+                        turn_index.unwrap_or_default(),
+                        call_id,
+                        status,
+                        action_str
+                    ));
+                }
+                _ => {}
+            }
+        }
+
+        if lines.is_empty() {
+            continue;
+        }
+
+        // Append as plain text trace for maximum cross-provider compatibility.
+        msg.content.push_str("\n\n---\n\n[tool_trace]\n");
+        msg.content.push_str(&lines.join("\n"));
+    }
+
+    messages
 }
 
 pub async fn run_task(
@@ -576,6 +821,7 @@ async fn run_task_inner(
             m
         })
         .collect::<Vec<_>>();
+    let base_messages = append_tool_trace_for_model_input(base_messages);
 
     // 3) 允许 stop/撤回 等并发操作中断当前 run
     let (abort_tx, mut abort_rx) = mpsc::channel::<()>(1);
@@ -656,6 +902,7 @@ async fn run_task_inner(
         assistant_message_id: assistant_message_id.clone(),
         output_format: output_format.clone(),
         max_turns,
+        reinject_thinking: agent.reinject_thinking,
         debug_mode,
         emitter: &mut emitter,
     };
@@ -692,13 +939,19 @@ async fn run_task_inner(
             thinking,
             debug_info,
             usage,
+            blocks,
+            turns,
         } => {
             {
                 let db = db.lock().await;
                 let _ = db.update_message_status(&user_message.id, MessageStatus::Success, None);
             }
 
-            if !content.is_empty() || !thinking.is_empty() {
+            if !content.is_empty()
+                || !thinking.is_empty()
+                || !blocks.is_empty()
+                || !turns.is_empty()
+            {
                 let assistant_message = Message {
                     id: assistant_message_id.clone(),
                     conversation_id: input.conversation_id.clone(),
@@ -712,6 +965,8 @@ async fn run_task_inner(
                     },
                     meta: Some(MessageMeta {
                         model: Some(model_config.model.clone()),
+                        blocks: if blocks.is_empty() { None } else { Some(blocks) },
+                        turns: if turns.is_empty() { None } else { Some(turns) },
                         ..Default::default()
                     }),
                     created_at: chrono::Utc::now(),
@@ -745,13 +1000,19 @@ async fn run_task_inner(
             last_turn_id,
             content,
             thinking,
+            blocks,
+            turns,
         } => {
             {
                 let db = db.lock().await;
                 let _ = db.update_message_status(&user_message.id, MessageStatus::Success, None);
             }
 
-            if !content.is_empty() || !thinking.is_empty() {
+            if !content.is_empty()
+                || !thinking.is_empty()
+                || !blocks.is_empty()
+                || !turns.is_empty()
+            {
                 let assistant_message = Message {
                     id: assistant_message_id.clone(),
                     conversation_id: input.conversation_id.clone(),
@@ -765,6 +1026,8 @@ async fn run_task_inner(
                     },
                     meta: Some(MessageMeta {
                         model: Some(model_config.model.clone()),
+                        blocks: if blocks.is_empty() { None } else { Some(blocks) },
+                        turns: if turns.is_empty() { None } else { Some(turns) },
                         ..Default::default()
                     }),
                     created_at: chrono::Utc::now(),
@@ -910,6 +1173,7 @@ async fn stream_one_turn(
 
     if let Some(calls) = tool_calls {
         return TurnStreamResult::ToolCalls {
+            content: full_content,
             thinking: full_thinking,
             tool_calls: calls,
             debug_info,

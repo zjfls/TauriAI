@@ -39,6 +39,15 @@ struct PtyServiceInner {
 }
 
 pub struct PtySession {
+    // 保持 PTY master 的生命周期与 session 一致。
+    //
+    // 重要：在 Windows 的 ConPTY 实现中，master/slave 内部持有 pseudo console 句柄；
+    // 如果在 spawn 后立刻丢弃它们，可能导致 pseudo console 被释放，从而出现：
+    // - reader 立刻 EOF（工具输出为空）
+    // - try_wait 竞态（exit_code 可能丢失）
+    //
+    // 当前我们不需要调用 master 的方法，仅用于 keepalive。
+    pub _master: Box<dyn portable_pty::MasterPty + Send>,
     pub child: Box<dyn portable_pty::Child + Send>,
     pub writer: Option<Box<dyn Write + Send>>,
     pub rx: mpsc::Receiver<Vec<u8>>,
@@ -103,6 +112,7 @@ impl PtyService {
             .master
             .take_writer()
             .map_err(|e| format!("take pty writer 失败: {e}"))?;
+        let master = pair.master;
 
         let (tx, rx) = mpsc::channel::<Vec<u8>>(256);
 
@@ -123,6 +133,7 @@ impl PtyService {
         });
 
         let session = Arc::new(Mutex::new(PtySession {
+            _master: master,
             child,
             writer: Some(writer),
             rx,

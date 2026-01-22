@@ -18,12 +18,26 @@ struct ExecCommandArgs {
     cmd: String,
     #[serde(default)]
     workdir: Option<String>,
+    #[serde(default)]
+    shell: Option<String>,
+    #[serde(default = "default_login")]
+    login: bool,
     #[serde(default = "default_exec_yield_time_ms")]
     yield_time_ms: u64,
+    #[serde(default)]
+    max_output_tokens: Option<usize>,
+    #[serde(default)]
+    sandbox_permissions: Option<String>,
+    #[serde(default)]
+    justification: Option<String>,
 }
 
 fn default_exec_yield_time_ms() -> u64 {
     10_000
+}
+
+fn default_login() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize)]
@@ -33,21 +47,114 @@ struct WriteStdinArgs {
     chars: String,
     #[serde(default = "default_write_yield_time_ms")]
     yield_time_ms: u64,
+    #[serde(default)]
+    max_output_tokens: Option<usize>,
 }
 
 fn default_write_yield_time_ms() -> u64 {
     250
 }
 
-fn build_shell_invocation(command: &str) -> Vec<String> {
+fn build_shell_invocation(command: &str, shell: Option<&str>, login: bool) -> Vec<String> {
+    let shell = shell.unwrap_or_default().trim();
     #[cfg(windows)]
     {
+        let shell_lower = shell.to_ascii_lowercase();
+
+        // Default: cmd.exe /C
+        if shell.is_empty() || shell_lower.contains("cmd") {
+            return vec!["cmd.exe".to_string(), "/C".to_string(), command.to_string()];
+        }
+
+        // PowerShell-family: treat `cmd` as a PowerShell script.
+        if shell_lower.contains("pwsh") {
+            return vec![
+                "pwsh".to_string(),
+                "-NoProfile".to_string(),
+                "-Command".to_string(),
+                command.to_string(),
+            ];
+        }
+        if shell_lower.contains("powershell") {
+            return vec![
+                "powershell.exe".to_string(),
+                "-NoProfile".to_string(),
+                "-Command".to_string(),
+                command.to_string(),
+            ];
+        }
+
+        // POSIX-like shells that may exist on Windows (Git Bash / MSYS2 / WSL bash on PATH)
+        if shell_lower.contains("bash")
+            || shell_lower.contains("zsh")
+            || shell_lower.ends_with("sh")
+        {
+            let flag = if login { "-lc" } else { "-c" };
+            return vec![shell.to_string(), flag.to_string(), command.to_string()];
+        }
+
+        // Fallback: keep previous behavior for unknown shell strings.
         vec!["cmd.exe".to_string(), "/C".to_string(), command.to_string()]
     }
     #[cfg(not(windows))]
     {
-        vec!["/bin/sh".to_string(), "-c".to_string(), command.to_string()]
+        if shell.is_empty() {
+            // Default to /bin/sh; if login requested and bash exists, prefer bash -lc.
+            if login && std::path::Path::new("/bin/bash").exists() {
+                return vec![
+                    "/bin/bash".to_string(),
+                    "-lc".to_string(),
+                    command.to_string(),
+                ];
+            }
+            return vec!["/bin/sh".to_string(), "-c".to_string(), command.to_string()];
+        }
+
+        let shell_lower = shell.to_ascii_lowercase();
+        let flag = if login && (shell_lower.ends_with("bash") || shell_lower.ends_with("zsh")) {
+            "-lc"
+        } else {
+            "-c"
+        };
+        vec![shell.to_string(), flag.to_string(), command.to_string()]
     }
+}
+
+fn is_pipe_closing_error(err: &std::io::Error) -> bool {
+    if err.kind() == std::io::ErrorKind::BrokenPipe {
+        return true;
+    }
+
+    // Windows: ERROR_NO_DATA (232) = "The pipe is being closed."
+    #[cfg(windows)]
+    {
+        if err.raw_os_error() == Some(232) {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn maybe_truncate_output(output: String, max_output_tokens: Option<usize>) -> String {
+    let Some(max_tokens) = max_output_tokens.filter(|n| *n > 0) else {
+        return output;
+    };
+
+    // 粗略近似：1 token ≈ 4 chars（只用于避免把过长输出塞进上下文）。
+    let max_chars = max_tokens.saturating_mul(4);
+    if max_chars == 0 {
+        return String::new();
+    }
+
+    let mut iter = output.chars();
+    let mut truncated: String = iter.by_ref().take(max_chars).collect();
+    let is_truncated = iter.next().is_some();
+    if !is_truncated {
+        return output;
+    }
+    truncated.push_str("\n...[truncated]\n");
+    truncated
 }
 
 async fn drain_pty_output(
@@ -124,7 +231,45 @@ async fn check_and_maybe_close_session(
             let _ = ctx.services.pty.remove_session(session_id).await;
             Ok((true, Some(code)))
         }
-        Ok(None) => Ok((false, None)),
+        Ok(None) => {
+            // 某些平台/边界情况下 try_wait 可能短暂返回 None，但 PTY reader 已经退出（rx 关闭）。
+            // 这时继续保留 session 会导致下一轮 write_stdin 触发 BrokenPipe/232。
+            if guard.rx.is_closed() {
+                drop(guard);
+
+                // 尽量在回收前拿到退出码（短命令在 Windows/ConPTY 上比较容易发生竞态）。
+                let mut exit_code: Option<u32> = None;
+                let deadline =
+                    tokio::time::Instant::now() + std::time::Duration::from_millis(250);
+                loop {
+                    {
+                        let mut guard = session.lock().await;
+                        match guard.child.try_wait() {
+                            Ok(Some(status)) => {
+                                exit_code = Some(status.exit_code());
+                            }
+                            Ok(None) => {}
+                            Err(_) => {}
+                        }
+                    }
+
+                    if exit_code.is_some() || tokio::time::Instant::now() >= deadline {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+
+                // 兜底：如果管道已关闭但仍拿不到退出码，说明 session 已不可用；尽量避免子进程泄漏。
+                if exit_code.is_none() {
+                    let mut guard = session.lock().await;
+                    let _ = guard.child.kill();
+                }
+
+                let _ = ctx.services.pty.remove_session(session_id).await;
+                return Ok((true, exit_code));
+            }
+            Ok((false, None))
+        }
         Err(e) => Err(ToolError::new(format!("检查 PTY 进程状态失败: {e}"))),
     }
 }
@@ -140,11 +285,17 @@ impl ToolHandler for ExecCommandTool {
                 "properties": {
                     "cmd": { "type": "string", "description": "要执行的命令（由 shell 解析）" },
                     "workdir": { "type": "string", "description": "可选工作目录" },
-                    "yield_time_ms": { "type": "integer", "description": "读取输出的时间窗口（毫秒）" }
+                    "shell": { "type": "string", "description": "可选：指定启动的 shell（例如 powershell/pwsh/cmd/bash）。为空则使用默认 shell。" },
+                    "login": { "type": "boolean", "description": "可选：是否以 login shell 语义运行（默认 true）。" },
+                    "yield_time_ms": { "type": "integer", "description": "可选：读取输出的时间窗口（毫秒，默认 10000）。" },
+                    "max_output_tokens": { "type": "integer", "description": "可选：最大输出 token（超出将截断）。" },
+                    "sandbox_permissions": { "type": "string", "description": "可选：沙箱权限（当前后端暂不实现，仅为兼容）。" },
+                    "justification": { "type": "string", "description": "可选：申请更高权限的理由（当前后端暂不实现，仅为兼容）。" }
                 },
-                // OpenAI Responses API `strict=true` 要求：required 必须包含 properties 的全部 key
-                // 约定：workdir 为空字符串表示“使用默认工作目录”
-                "required": ["cmd", "workdir", "yield_time_ms"],
+                // 约定：
+                // - workdir 为空字符串表示“使用默认工作目录”
+                // - chars 允许为空（用于轮询输出）
+                "required": ["cmd"],
                 "additionalProperties": false
             }),
             required_permissions: vec![ToolPermission::PtyExec],
@@ -167,7 +318,7 @@ impl ToolHandler for ExecCommandTool {
             return Err(ToolError::invalid("cmd 不能为空"));
         }
 
-        let command = build_shell_invocation(&args.cmd);
+        let command = build_shell_invocation(&args.cmd, args.shell.as_deref(), args.login);
         let workdir = args
             .workdir
             .as_ref()
@@ -182,11 +333,18 @@ impl ToolHandler for ExecCommandTool {
             .map_err(ToolError::new)?;
 
         let output = drain_pty_output(ctx, session_id, &call.id, args.yield_time_ms).await?;
+        let output = maybe_truncate_output(output, args.max_output_tokens);
         let (done, exit_code) = check_and_maybe_close_session(ctx, session_id).await?;
 
         Ok(ToolCallResult {
             content: serde_json::json!({
-                "session_id": session_id,
+                // 与 Codex unified exec 语义对齐：只有进程仍在运行时才返回 session_id。
+                //
+                // Codex 侧的测试/调试字段名是 `process_id`；为了兼容模型的既有习惯，这里同时返回：
+                // - `session_id`: i32（write_stdin 入参）
+                // - `process_id`: i32（仅用于对齐 Codex “进程还活着才有 id”的强约束语义）
+                "session_id": if done { serde_json::Value::Null } else { serde_json::Value::from(session_id) },
+                "process_id": if done { serde_json::Value::Null } else { serde_json::Value::from(session_id) },
                 "output": output,
                 "done": done,
                 "exit_code": exit_code
@@ -207,10 +365,10 @@ impl ToolHandler for WriteStdinTool {
                 "properties": {
                     "session_id": { "type": "integer", "description": "exec_command 返回的 session_id" },
                     "chars": { "type": "string", "description": "要写入 stdin 的字符（可包含换行）" },
-                    "yield_time_ms": { "type": "integer", "description": "读取输出的时间窗口（毫秒）" }
+                    "yield_time_ms": { "type": "integer", "description": "可选：读取输出的时间窗口（毫秒，默认 250）。" },
+                    "max_output_tokens": { "type": "integer", "description": "可选：最大输出 token（超出将截断）。" }
                 },
-                // OpenAI Responses API `strict=true` 要求：required 必须包含 properties 的全部 key
-                "required": ["session_id", "chars", "yield_time_ms"],
+                "required": ["session_id"],
                 "additionalProperties": false
             }),
             required_permissions: vec![ToolPermission::PtyExec],
@@ -236,34 +394,59 @@ impl ToolHandler for WriteStdinTool {
             .await
             .ok_or_else(|| ToolError::invalid(format!("PTY session 不存在: {}", args.session_id)))?;
 
-        // 写 stdin（用 take/move 避免在 spawn_blocking 里借用 &mut）
-        let mut guard = session.lock().await;
-        let mut writer = guard
-            .writer
-            .take()
-            .ok_or_else(|| ToolError::internal("PTY writer 不可用"))?;
-        drop(guard);
+        // 允许 chars 为空：仅轮询输出（避免对已退出进程 flush 触发 BrokenPipe/232）。
+        // NOTE: 模型可能会在 exec_command(done=false) 后用 write_stdin(chars="") 来“继续读输出”。
+        let mut pipe_closed_during_write = false;
+        if !args.chars.is_empty() {
+            // 写 stdin（用 take/move 避免在 spawn_blocking 里借用 &mut）
+            let mut guard = session.lock().await;
+            let mut writer = guard
+                .writer
+                .take()
+                .ok_or_else(|| ToolError::internal("PTY writer 不可用"))?;
+            drop(guard);
 
-        let bytes = args.chars.clone().into_bytes();
-        writer = tokio::task::spawn_blocking(move || -> Result<_, std::io::Error> {
-            writer.write_all(&bytes)?;
-            writer.flush()?;
-            Ok(writer)
-        })
-        .await
-        .map_err(|e| ToolError::new(format!("write_stdin 线程失败: {e}")))?
-        .map_err(|e| ToolError::new(format!("write_stdin IO 失败: {e}")))?;
+            let bytes = args.chars.clone().into_bytes();
+            let (writer, write_result) = tokio::task::spawn_blocking(move || {
+                let res = (|| {
+                    writer.write_all(&bytes)?;
+                    writer.flush()?;
+                    Ok::<(), std::io::Error>(())
+                })();
+                (writer, res)
+            })
+            .await
+            .map_err(|e| ToolError::new(format!("write_stdin 线程失败: {e}")))?;
 
-        let mut guard = session.lock().await;
-        guard.writer = Some(writer);
-        drop(guard);
+            // 无论成功/失败都放回 writer，避免 session 被“写坏”导致后续无法收尾。
+            let mut guard = session.lock().await;
+            guard.writer = Some(writer);
+            drop(guard);
+
+            if let Err(e) = write_result {
+                if is_pipe_closing_error(&e) {
+                    pipe_closed_during_write = true;
+                } else {
+                    return Err(ToolError::new(format!("write_stdin IO 失败: {e}")));
+                }
+            }
+        }
 
         let output = drain_pty_output(ctx, args.session_id, &call.id, args.yield_time_ms).await?;
-        let (done, exit_code) = check_and_maybe_close_session(ctx, args.session_id).await?;
+        let output = maybe_truncate_output(output, args.max_output_tokens);
+        let (mut done, mut exit_code) = check_and_maybe_close_session(ctx, args.session_id).await?;
+
+        // 如果本轮写入遇到“管道正在被关闭”，但 try_wait 尚未返回状态：主动回收 session，避免模型下一轮继续写导致报错。
+        if pipe_closed_during_write && !done {
+            let _ = ctx.services.pty.remove_session(args.session_id).await;
+            done = true;
+            exit_code = None;
+        }
 
         Ok(ToolCallResult {
             content: serde_json::json!({
-                "session_id": args.session_id,
+                "session_id": if done { serde_json::Value::Null } else { serde_json::Value::from(args.session_id) },
+                "process_id": if done { serde_json::Value::Null } else { serde_json::Value::from(args.session_id) },
                 "output": output,
                 "done": done,
                 "exit_code": exit_code

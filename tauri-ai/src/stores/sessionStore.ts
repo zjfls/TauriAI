@@ -9,6 +9,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { AgentSession, Message, DebugInfo, TokenUsage, PersistedSession, PersistedSessionState, ContentPart, ThinkingMode, ApiProtocolType, RunEventPayload, MessageBlock, ProviderType, MessageTurn } from '../types';
 import { getApiProtocol, getDefaultThinkingMode, getProviderType } from '../utils/apiUtils';
+import { hydrateMessagesFromBackend } from '../utils/hydrateMessages';
 
 // Constants for persistence
 const SESSION_STORAGE_KEY = 'tauri-ai:sessions';
@@ -1183,10 +1184,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         let messages: Message[] = [];
         if (persisted.conversationId) {
           try {
-            messages = await invoke<Message[]>('get_messages', {
-              conversationId: persisted.conversationId,
-              limit: 100,
-            });
+            messages = hydrateMessagesFromBackend(
+              await invoke<Message[]>('get_messages', {
+                conversationId: persisted.conversationId,
+                limit: 100,
+              })
+            );
           } catch (error) {
             console.error('Failed to load messages for session:', error);
           }
@@ -1284,10 +1287,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // Load messages
     let messages: Message[] = [];
     try {
-      messages = await invoke<Message[]>('get_messages', {
-        conversationId,
-        limit: 100,
-      });
+      messages = hydrateMessagesFromBackend(
+        await invoke<Message[]>('get_messages', {
+          conversationId,
+          limit: 100,
+        })
+      );
     } catch (error) {
       console.error('Failed to load messages:', error);
     }

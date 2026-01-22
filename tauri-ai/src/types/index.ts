@@ -122,6 +122,7 @@ export interface Agent {
   formatType: FormatPromptType;
   toolset?: string;       // Optional toolset binding (for tool/code agents)
   maxTurns?: number;      // Max turns per run/task (default depends on agent type)
+  reinjectThinking?: boolean; // Whether to reinject thinking into next turn context (default: false)
 }
 
 // ============================================================================

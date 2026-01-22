@@ -889,10 +889,13 @@ impl AiClient for AnthropicClient {
                                 }
 
                                 // Tool-call turn: stop streaming and hand over to task_runner (Act/Observe loop).
+                                // Tool-call turns must still yield DoneWithDebug so the UI can show
+                                // per-turn Debug reliably (no dependence on stream timing).
+                                let tool_calls_for_debug =
+                                    if tool_calls.is_empty() { None } else { Some(tool_calls.clone()) };
                                 if !tool_calls.is_empty() {
                                     let _ =
                                         token_sender.send(StreamEvent::ToolCalls(tool_calls)).await;
-                                    return Ok(());
                                 }
 
                                 // Build debug info with response content
@@ -906,6 +909,7 @@ impl AiClient for AnthropicClient {
                                                 "type": "text",
                                                 "text": full_content.clone()
                                             }],
+                                            "tool_calls": tool_calls_for_debug,
                                             "usage": token_usage.as_ref().map(|u| serde_json::json!({
                                                 "input_tokens": u.prompt_tokens,
                                                 "output_tokens": u.completion_tokens,
@@ -957,9 +961,10 @@ impl AiClient for AnthropicClient {
                 arguments,
             });
         }
+        let tool_calls_for_debug =
+            if tool_calls.is_empty() { None } else { Some(tool_calls.clone()) };
         if !tool_calls.is_empty() {
             let _ = token_sender.send(StreamEvent::ToolCalls(tool_calls)).await;
-            return Ok(());
         }
 
         let debug_info = DebugInfoData {
@@ -972,6 +977,7 @@ impl AiClient for AnthropicClient {
                         "type": "text",
                         "text": full_content.clone()
                     }],
+                    "tool_calls": tool_calls_for_debug,
                     "usage": token_usage.as_ref().map(|u| serde_json::json!({
                         "input_tokens": u.prompt_tokens,
                         "output_tokens": u.completion_tokens,
