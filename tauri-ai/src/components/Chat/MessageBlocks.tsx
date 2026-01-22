@@ -138,20 +138,191 @@ const WebSearchBlock: React.FC<{ status: string; action?: unknown; isStreaming?:
   const [isExpanded, setIsExpanded] = useState(Boolean(isStreaming));
 
   const info = useMemo(() => {
-    if (!action || typeof action !== 'object') return null;
-    const a = action as any;
-    const type = typeof a.type === 'string' ? a.type : undefined;
-    const query = typeof a.query === 'string' ? a.query : undefined;
-    const queries = Array.isArray(a.queries) ? a.queries.filter((q: any) => typeof q === 'string') : undefined;
-    const url = typeof a.url === 'string' ? a.url : undefined;
-    const pattern = typeof a.pattern === 'string' ? a.pattern : undefined;
+    if (!action) return null;
+
+    const safeParse = (value: string) => {
+      const trimmed = value.trim();
+      if (!trimmed) return value;
+      if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+        try {
+          return JSON.parse(trimmed);
+        } catch {
+          return value;
+        }
+      }
+      return value;
+    };
+
+    const normalizeValue = (value: string, maxLength = 240) => {
+      const trimmed = value.trim();
+      if (trimmed.length <= maxLength) return trimmed;
+      return `${trimmed.slice(0, maxLength)}...`;
+    };
+
+    const stringifyAction = (value: unknown) => {
+      if (typeof value === 'string') return value;
+      try {
+        return JSON.stringify(value, null, 2);
+      } catch {
+        return String(value);
+      }
+    };
+
+    const parsedAction = typeof action === 'string' ? safeParse(action) : action;
+    const rawText = stringifyAction(parsedAction ?? action);
+
+    if (!parsedAction || typeof parsedAction !== 'object') {
+      const text = parsedAction == null ? '' : String(parsedAction);
+      const extras = text ? [{ label: 'action', value: normalizeValue(text) }] : [];
+      return {
+        rawType: undefined,
+        normalizedType: undefined,
+        query: undefined,
+        queries: undefined,
+        url: undefined,
+        pattern: undefined,
+        sources: undefined,
+        extras,
+        rawText,
+        hasCoreDetails: false,
+        hasDetails: extras.length > 0,
+      };
+    }
+
+    const a = parsedAction as any;
+
+    const rawType = typeof a.type === 'string' ? a.type : undefined;
+    const normalizedType = rawType === 'find_in_page' ? 'find' : rawType;
+
+    const openPage = a.open_page ?? a.openPage ?? a.page;
+    const findInPage = a.find_in_page ?? a.findInPage ?? a.find;
+
+    const pickString = (...values: Array<unknown>) =>
+      values.find((v) => typeof v === 'string') as string | undefined;
+    const pickStringArray = (...values: Array<unknown>) => {
+      const arr = values.find((v) => Array.isArray(v)) as Array<unknown> | undefined;
+      return arr?.filter((q) => typeof q === 'string') as string[] | undefined;
+    };
+
+    const query = pickString(a.query, a.search_query, a.searchQuery);
+    const queries = pickStringArray(a.queries, a.search_queries, a.searchQueries);
+    const url = pickString(
+      a.url,
+      openPage?.url,
+      findInPage?.url,
+      a.page_url,
+      a.pageUrl,
+      a.href,
+      a.link
+    );
+    const pattern = pickString(a.pattern, findInPage?.pattern, findInPage?.query, a.text);
+
     const sources = Array.isArray(a.sources)
       ? a.sources
         .map((s: any) => (typeof s?.url === 'string' ? s.url : null))
         .filter((u: any) => typeof u === 'string')
       : undefined;
 
-    return { type, query, queries, url, pattern, sources };
+    const usedValues = new Set<string>();
+    if (query) usedValues.add(query);
+    if (queries?.length) queries.forEach((q) => usedValues.add(q));
+    if (url) usedValues.add(url);
+    if (pattern) usedValues.add(pattern);
+    if (sources?.length) sources.forEach((s) => usedValues.add(s));
+
+    const extras: Array<{ label: string; value: string }> = [];
+    const extraSet = new Set<string>();
+    const skipKeys = new Set([
+      'type',
+      'query',
+      'search_query',
+      'searchQuery',
+      'queries',
+      'search_queries',
+      'searchQueries',
+      'url',
+      'page_url',
+      'pageUrl',
+      'pattern',
+      'sources',
+    ]);
+
+    const addExtra = (label: string, value: string) => {
+      if (!value) return;
+      const normalized = normalizeValue(value);
+      if (!normalized) return;
+      if (usedValues.has(normalized)) return;
+      const key = `${label}:${normalized}`;
+      if (extraSet.has(key)) return;
+      extraSet.add(key);
+      extras.push({ label, value: normalized });
+    };
+
+    const collectExtras = (obj: unknown, prefix: string, depth: number) => {
+      if (!obj || typeof obj !== 'object') return;
+      if (depth > 2) return;
+      if (Array.isArray(obj)) {
+        if (!obj.length) return;
+        const stringItems = obj.filter((v) => typeof v === 'string') as string[];
+        if (stringItems.length) {
+          addExtra(prefix || 'items', stringItems.map((v) => normalizeValue(v)).join(', '));
+          return;
+        }
+        const urlItems = obj
+          .map((v: any) => (v && typeof v === 'object' ? v.url : null))
+          .filter((v: any) => typeof v === 'string') as string[];
+        if (urlItems.length) {
+          addExtra(`${prefix || 'items'}.url`, urlItems.slice(0, 5).map((v) => normalizeValue(v)).join(', '));
+        }
+        addExtra(`${prefix || 'items'}.count`, String(obj.length));
+        return;
+      }
+
+      for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+        if (skipKeys.has(key)) continue;
+        const label = prefix ? `${prefix}.${key}` : key;
+        if (typeof value === 'string') {
+          addExtra(label, value);
+          continue;
+        }
+        if (typeof value === 'number' || typeof value === 'boolean') {
+          addExtra(label, String(value));
+          continue;
+        }
+        if (Array.isArray(value)) {
+          collectExtras(value, label, depth + 1);
+          continue;
+        }
+        if (value && typeof value === 'object') {
+          collectExtras(value, label, depth + 1);
+        }
+      }
+    };
+
+    collectExtras(a, '', 0);
+
+    const hasCoreDetails = Boolean(
+      (queries && queries.length) ||
+      query ||
+      url ||
+      pattern ||
+      (sources && sources.length)
+    );
+    const hasDetails = hasCoreDetails || extras.length > 0;
+
+    return {
+      rawType,
+      normalizedType,
+      query,
+      queries,
+      url,
+      pattern,
+      sources,
+      extras,
+      rawText,
+      hasCoreDetails,
+      hasDetails,
+    };
   }, [action]);
 
   const statusLabel = useMemo(() => {
@@ -195,17 +366,17 @@ const WebSearchBlock: React.FC<{ status: string; action?: unknown; isStreaming?:
                 <div className="h-2 w-2 animate-bounce rounded-full bg-blue-500" />
               </div>
             ) : (
-              <pre className="whitespace-pre-wrap break-words">{JSON.stringify(action, null, 2)}</pre>
+              <div className="text-xs text-blue-700 dark:text-blue-300">暂无可展示信息</div>
             )
           ) : null}
 
           {info && (
             <div className="space-y-2">
-              {info.type && info.type !== 'search' && (
-                <div className="text-xs text-blue-700 dark:text-blue-300">action: {info.type}</div>
+              {info.rawType && info.rawType !== 'search' && (
+                <div className="text-xs text-blue-700 dark:text-blue-300">action: {info.rawType}</div>
               )}
 
-              {info.type === 'search' && (info.queries?.length || info.query) && (
+              {info.normalizedType === 'search' && (info.queries?.length || info.query) && (
                 <div>
                   <div className="mb-1 text-xs font-medium text-blue-700 dark:text-blue-300">queries</div>
                   <ul className="list-disc pl-5">
@@ -218,14 +389,14 @@ const WebSearchBlock: React.FC<{ status: string; action?: unknown; isStreaming?:
                 </div>
               )}
 
-              {(info.type === 'open_page' || info.type === 'find') && info.url && (
+              {(info.normalizedType === 'open_page' || info.normalizedType === 'find') && info.url && (
                 <div className="break-words">
                   <span className="mr-2 text-xs font-medium text-blue-700 dark:text-blue-300">url</span>
                   <span>{info.url}</span>
                 </div>
               )}
 
-              {info.type === 'find' && info.pattern && (
+              {info.normalizedType === 'find' && info.pattern && (
                 <div className="break-words">
                   <span className="mr-2 text-xs font-medium text-blue-700 dark:text-blue-300">pattern</span>
                   <span>{info.pattern}</span>
@@ -244,6 +415,33 @@ const WebSearchBlock: React.FC<{ status: string; action?: unknown; isStreaming?:
                   </ul>
                 </div>
               ) : null}
+
+              {info.extras?.length ? (
+                <div>
+                  <div className="mb-1 text-xs font-medium text-blue-700 dark:text-blue-300">其他字段</div>
+                  <ul className="list-disc space-y-1 pl-5">
+                    {info.extras.map((item) => (
+                      <li key={`${item.label}:${item.value}`} className="break-words">
+                        <span className="mr-2 text-xs font-medium text-blue-700 dark:text-blue-300">
+                          {item.label}
+                        </span>
+                        <span>{item.value}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+
+              {!info.hasCoreDetails && info.rawText ? (
+                <div>
+                  <div className="mb-1 text-xs font-medium text-blue-700 dark:text-blue-300">原始数据</div>
+                  <pre className="whitespace-pre-wrap break-words">{info.rawText}</pre>
+                </div>
+              ) : null}
+
+              {!info.hasDetails && (
+                <div className="text-xs text-blue-700 dark:text-blue-300">未找到可展示字段</div>
+              )}
             </div>
           )}
         </div>
