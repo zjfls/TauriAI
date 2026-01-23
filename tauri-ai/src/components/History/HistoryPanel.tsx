@@ -4,7 +4,7 @@
  * Requirements: 7.3, 7.4, 8.1, 8.2, 8.3, 8.4
  */
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import { MessageSquare, Trash2, Edit2, Check, X, Plus } from 'lucide-react';
 import { useConversationStore } from '../../stores/conversationStore';
 import { useSessionStore } from '../../stores/sessionStore';
@@ -68,10 +68,19 @@ const formatDate = (dateString: string): string => {
   }
 };
 
+const getNativeModifierState = (e: React.MouseEvent, key: 'Shift' | 'Control' | 'Meta') => {
+  const native = e.nativeEvent as unknown as MouseEvent;
+  if (native && typeof native.getModifierState === 'function') {
+    return native.getModifierState(key);
+  }
+  return false;
+};
+
 interface ConversationItemProps {
   conversation: Conversation;
   isActive: boolean;
   isSelected: boolean;
+  onMouseDown?: (e: React.MouseEvent) => void;
   onSelect: (e: React.MouseEvent) => void;
   onDelete: () => void;
   onRename: (newTitle: string) => void;
@@ -81,6 +90,7 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
   conversation,
   isActive,
   isSelected,
+  onMouseDown,
   onSelect,
   onDelete,
   onRename,
@@ -139,6 +149,7 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
             : 'hover:bg-gray-100 dark:hover:bg-gray-800 border border-transparent'
         }
       `}
+      onMouseDown={onMouseDown}
       onClick={onSelect}
       onMouseEnter={() => setShowActions(true)}
       onMouseLeave={() => setShowActions(false)}
@@ -268,12 +279,29 @@ export const HistoryPanel: React.FC = () => {
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [showBatchDeleteConfirm, setShowBatchDeleteConfirm] = useState(false);
 
+  const modifierSnapshotRef = useRef<{ ctrl: boolean; shift: boolean } | null>(null);
+
+  const handleItemMouseDown = useCallback((e: React.MouseEvent) => {
+    const target = e.target as HTMLElement | null;
+    if (target && target.closest('button, input, textarea, a')) {
+      return;
+    }
+    modifierSnapshotRef.current = {
+      ctrl: e.ctrlKey || e.metaKey || getNativeModifierState(e, 'Control') || getNativeModifierState(e, 'Meta'),
+      shift: e.shiftKey || getNativeModifierState(e, 'Shift'),
+    };
+  }, []);
+
   // Handle item click with Ctrl/Shift multi-select
   const handleItemClick = useCallback(async (e: React.MouseEvent, conversation: Conversation, index: number) => {
-    const isCtrlPressed = e.ctrlKey || e.metaKey;
-    const isShiftPressed = e.shiftKey;
+    const snapshot = modifierSnapshotRef.current;
+    modifierSnapshotRef.current = null;
+
+    const isCtrlPressed = snapshot?.ctrl ?? (e.ctrlKey || e.metaKey || getNativeModifierState(e, 'Control') || getNativeModifierState(e, 'Meta'));
+    const isShiftPressed = snapshot?.shift ?? (e.shiftKey || getNativeModifierState(e, 'Shift'));
 
     if (isCtrlPressed) {
+      e.preventDefault();
       // Ctrl+Click: Toggle single item
       setSelectedIds(prev => {
         const newSet = new Set(prev);
@@ -285,7 +313,14 @@ export const HistoryPanel: React.FC = () => {
         return newSet;
       });
       setLastSelectedIndex(index);
-    } else if (isShiftPressed && lastSelectedIndex !== null) {
+    } else if (isShiftPressed) {
+      e.preventDefault();
+      if (lastSelectedIndex === null) {
+        // Shift+Click without anchor: select current item only.
+        setSelectedIds(new Set([conversation.id]));
+        setLastSelectedIndex(index);
+        return;
+      }
       // Shift+Click: Range select
       const start = Math.min(lastSelectedIndex, index);
       const end = Math.max(lastSelectedIndex, index);
@@ -454,6 +489,7 @@ export const HistoryPanel: React.FC = () => {
               conversation={conversation}
               isActive={conversation.id === currentConversationId}
               isSelected={selectedIds.has(conversation.id)}
+              onMouseDown={handleItemMouseDown}
               onSelect={(e) => handleItemClick(e, conversation, index)}
               onDelete={() => handleDeleteConversation(conversation.id)}
               onRename={(newTitle) => handleRenameConversation(conversation.id, newTitle)}

@@ -10,6 +10,7 @@ import { listen } from '@tauri-apps/api/event';
 import type { AgentSession, Message, DebugInfo, TokenUsage, PersistedSession, PersistedSessionState, ContentPart, ThinkingMode, ApiProtocolType, RunEventPayload, MessageBlock, ProviderType, MessageTurn } from '../types';
 import { getApiProtocol, getDefaultThinkingMode, getProviderType } from '../utils/apiUtils';
 import { hydrateMessagesFromBackend } from '../utils/hydrateMessages';
+import { useConfigStore } from './configStore';
 
 // Constants for persistence
 const SESSION_STORAGE_KEY = 'tauri-ai:sessions';
@@ -466,6 +467,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
 
     try {
+      const debugMode = useConfigStore.getState().config?.general?.debugMode ?? false;
       await invoke('run_task', {
         conversationId: session.conversationId,
         messageId: userMessage.id,
@@ -475,6 +477,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         modelRef: session.modelRef,
         thinking,  // 直接传递 thinking，可以是 boolean 或 string
         webSearchEnabled: session.webSearchEnabled,  // 传递 web search 状态
+        debugMode,
       });
     } catch (err) {
       get().handleError(sessionId, (err as any).message || String(err));

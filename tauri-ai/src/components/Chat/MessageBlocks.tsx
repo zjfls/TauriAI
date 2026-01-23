@@ -101,7 +101,7 @@ const ToolCallBlock: React.FC<{ name: string; args: string; isStreaming?: boolea
       </button>
       {isExpanded && (
         <div className="border-t border-green-200 px-3 py-2 text-sm text-green-900 dark:border-green-800 dark:text-green-100">
-          <pre className="max-h-64 overflow-y-auto whitespace-pre-wrap break-words">{prettyArgs}</pre>
+          <pre className="h-48 overflow-y-auto whitespace-pre-wrap break-words pr-2">{prettyArgs}</pre>
         </div>
       )}
     </div>
@@ -125,7 +125,9 @@ const ToolResultBlock: React.FC<{ text: string; showRawAnsi?: boolean }> = ({
         <Wrench size={14} />
         <span>工具结果</span>
       </div>
-      <pre className="whitespace-pre-wrap break-words">{displayText}</pre>
+      <pre className="h-48 overflow-y-auto whitespace-pre-wrap break-words pr-2">
+        {displayText}
+      </pre>
     </div>
   );
 };

@@ -6,6 +6,7 @@
 //! - Chat = 最简单的 Task（通常单 Turn）
 //! - Tool/Code = 多 Turn 循环（后续可扩展）
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use tauri::AppHandle;
@@ -15,7 +16,8 @@ use crate::agents::chat::{
     build_model_config, build_request_messages, get_output_format, resolve_chat_model,
 };
 use crate::ai_client::{
-    get_client, DebugInfoData, StreamEvent, TokenUsage, ToolCall, ToolDefinition,
+    get_client, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent, TokenUsage,
+    ToolCall, ToolDefinition,
 };
 use crate::config::ConfigManager;
 use crate::errors::{AppErrorCode, SerializableError};
@@ -43,6 +45,7 @@ pub struct RunTaskInput {
     pub model_ref: Option<String>,
     pub thinking: Option<serde_json::Value>,
     pub web_search_enabled: Option<bool>,
+    pub debug_mode: Option<bool>,
 }
 
 #[derive(Debug)]
@@ -142,8 +145,7 @@ fn build_assistant_context_content(content: String, thinking: &str, reinject_thi
 impl<'a> TurnLoop<'a> {
     async fn run(&mut self, abort_rx: &mut mpsc::Receiver<()>) -> TaskOutcome {
         // Persisted structured outputs for history restore (stored into assistant message meta).
-        // NOTE: We intentionally do NOT persist per-turn DebugInfo to DB because it may contain
-        // sensitive headers (e.g., API keys).
+        // NOTE: We only persist redacted per-turn DebugInfo to avoid leaking sensitive headers.
         let mut blocks: Vec<MessageBlock> = Vec::new();
         let mut turns: Vec<MessageTurn> = Vec::new();
 
@@ -196,6 +198,8 @@ impl<'a> TurnLoop<'a> {
                         None
                     };
                     let turn_usage = if self.debug_mode { usage.clone() } else { None };
+                    let persisted_debug_info =
+                        turn_debug_info.as_ref().map(redact_debug_info_for_store);
                     self.emitter.emit(RunEvent::TurnFinished {
                         task_id: self.task_id.clone(),
                         turn_id: turn_id.clone(),
@@ -231,6 +235,7 @@ impl<'a> TurnLoop<'a> {
                         turn_id: turn_id.clone(),
                         turn_index,
                         status: Some(TurnStatus::Success),
+                        debug_info: persisted_debug_info,
                         usage: usage.clone(),
                         model: Some(self.model_config.model.clone()),
                     });
@@ -261,6 +266,8 @@ impl<'a> TurnLoop<'a> {
                     let persisted_usage = usage.clone();
                     let turn_debug_info = if self.debug_mode { debug_info } else { None };
                     let turn_usage = if self.debug_mode { usage } else { None };
+                    let persisted_debug_info =
+                        turn_debug_info.as_ref().map(redact_debug_info_for_store);
 
                     // 防止无限循环：达到 max_turns 后仍然在请求工具调用
                     let max_turns_error = if turn_index >= self.max_turns {
@@ -378,6 +385,7 @@ impl<'a> TurnLoop<'a> {
                             turn_id: turn_id.clone(),
                             turn_index,
                             status: Some(TurnStatus::Failed),
+                            debug_info: persisted_debug_info.clone(),
                             usage: persisted_usage,
                             model: Some(self.model_config.model.clone()),
                         });
@@ -556,6 +564,7 @@ impl<'a> TurnLoop<'a> {
                             turn_id: turn_id.clone(),
                             turn_index,
                             status: Some(TurnStatus::Aborted),
+                            debug_info: persisted_debug_info.clone(),
                             usage: persisted_usage,
                             model: Some(self.model_config.model.clone()),
                         });
@@ -590,6 +599,7 @@ impl<'a> TurnLoop<'a> {
                         turn_id: turn_id.clone(),
                         turn_index,
                         status: Some(TurnStatus::Success),
+                        debug_info: persisted_debug_info.clone(),
                         usage: persisted_usage,
                         model: Some(self.model_config.model.clone()),
                     });
@@ -615,6 +625,8 @@ impl<'a> TurnLoop<'a> {
                         None
                     };
                     let turn_usage = if self.debug_mode { usage } else { None };
+                    let persisted_debug_info =
+                        turn_debug_info.as_ref().map(redact_debug_info_for_store);
 
                     if !thinking.trim().is_empty() {
                         blocks.push(MessageBlock::Thinking {
@@ -668,6 +680,7 @@ impl<'a> TurnLoop<'a> {
                         turn_id: turn_id.clone(),
                         turn_index,
                         status: Some(TurnStatus::Failed),
+                        debug_info: persisted_debug_info,
                         usage: persisted_usage,
                         model: Some(self.model_config.model.clone()),
                     });
@@ -721,6 +734,7 @@ impl<'a> TurnLoop<'a> {
                         turn_id: turn_id.clone(),
                         turn_index,
                         status: Some(TurnStatus::Aborted),
+                        debug_info: None,
                         usage: None,
                         model: Some(self.model_config.model.clone()),
                     });
@@ -828,6 +842,175 @@ fn append_tool_trace_for_model_input(mut messages: Vec<Message>) -> Vec<Message>
     messages
 }
 
+fn expand_persisted_blocks_for_model_input(messages: Vec<Message>) -> Vec<Message> {
+    let mut out: Vec<Message> = Vec::new();
+
+    for msg in messages {
+        if msg.role != MessageRole::Assistant {
+            out.push(msg);
+            continue;
+        }
+
+        let created_at = msg.created_at.clone();
+
+        let Some(meta) = msg.meta.as_ref() else {
+            out.push(msg);
+            continue;
+        };
+        let Some(blocks) = meta.blocks.as_ref().filter(|b| !b.is_empty()) else {
+            out.push(msg);
+            continue;
+        };
+
+        #[derive(Default)]
+        struct TurnBundle {
+            turn_id: Option<String>,
+            turn_index: Option<u32>,
+            text_parts: Vec<String>,
+            tool_calls: Vec<ToolCall>,
+            tool_results: Vec<(String, String)>,
+        }
+
+        let out_start_len = out.len();
+        let mut bundles: Vec<TurnBundle> = Vec::new();
+        let mut idx_by_key: HashMap<String, usize> = HashMap::new();
+
+        fn get_bundle_index(
+            bundles: &mut Vec<TurnBundle>,
+            idx_by_key: &mut HashMap<String, usize>,
+            turn_id: &Option<String>,
+            turn_index: &Option<u32>,
+        ) -> usize {
+            let key = turn_id.clone().unwrap_or_else(|| "__legacy__".to_string());
+            if let Some(idx) = idx_by_key.get(&key).copied() {
+                // Fill missing turn_index if we later encounter it.
+                if bundles[idx].turn_index.is_none() {
+                    bundles[idx].turn_index = *turn_index;
+                }
+                return idx;
+            }
+
+            let idx = bundles.len();
+            bundles.push(TurnBundle {
+                turn_id: turn_id.clone(),
+                turn_index: *turn_index,
+                ..Default::default()
+            });
+            idx_by_key.insert(key, idx);
+            idx
+        }
+
+        for block in blocks {
+            match block {
+                MessageBlock::Text {
+                    text,
+                    turn_id,
+                    turn_index,
+                    ..
+                } => {
+                    let idx = get_bundle_index(&mut bundles, &mut idx_by_key, turn_id, turn_index);
+                    if !text.trim().is_empty() {
+                        bundles[idx].text_parts.push(text.clone());
+                    }
+                }
+                MessageBlock::ToolCall {
+                    call_id,
+                    name,
+                    arguments,
+                    turn_id,
+                    turn_index,
+                    ..
+                } => {
+                    let idx = get_bundle_index(&mut bundles, &mut idx_by_key, turn_id, turn_index);
+                    bundles[idx].tool_calls.push(ToolCall {
+                        id: call_id.clone(),
+                        name: name.clone(),
+                        arguments: arguments.clone(),
+                    });
+                }
+                MessageBlock::ToolResult {
+                    call_id,
+                    text,
+                    turn_id,
+                    turn_index,
+                    ..
+                } => {
+                    let idx = get_bundle_index(&mut bundles, &mut idx_by_key, turn_id, turn_index);
+                    bundles[idx]
+                        .tool_results
+                        .push((call_id.clone(), text.clone()));
+                }
+                _ => {}
+            }
+        }
+
+        // Preserve turn order by turn_index if available; otherwise keep insertion order.
+        bundles.sort_by(|a, b| match (a.turn_index, b.turn_index) {
+            (Some(x), Some(y)) => x.cmp(&y),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        });
+
+        for bundle in bundles {
+            let content = bundle.text_parts.join("\n\n");
+            let has_tool_calls = !bundle.tool_calls.is_empty();
+
+            // Skip empty turns unless they contain tool calls (tool-only turns are valid).
+            if content.trim().is_empty() && !has_tool_calls {
+                continue;
+            }
+
+            out.push(Message {
+                id: uuid::Uuid::new_v4().to_string(),
+                conversation_id: msg.conversation_id.clone(),
+                role: MessageRole::Assistant,
+                content,
+                content_parts: Vec::new(),
+                thinking: None,
+                meta: if has_tool_calls {
+                    Some(MessageMeta {
+                        tool_calls: Some(bundle.tool_calls),
+                        ..Default::default()
+                    })
+                } else {
+                    None
+                },
+                created_at: created_at.clone(),
+                status: MessageStatus::Success,
+                error_message: None,
+            });
+
+            if has_tool_calls {
+                for (call_id, text) in bundle.tool_results {
+                    out.push(Message {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        conversation_id: msg.conversation_id.clone(),
+                        role: MessageRole::Tool,
+                        content: text,
+                        content_parts: Vec::new(),
+                        thinking: None,
+                        meta: Some(MessageMeta {
+                            tool_call_id: Some(call_id),
+                            ..Default::default()
+                        }),
+                        created_at: created_at.clone(),
+                        status: MessageStatus::Success,
+                        error_message: None,
+                    });
+                }
+            }
+        }
+
+        // Defensive fallback: if blocks existed but we produced nothing, keep the original message.
+        if out.len() == out_start_len {
+            out.push(msg);
+        }
+    }
+
+    out
+}
+
 fn strip_ansi_codes(input: &str) -> String {
     if input.is_empty() {
         return String::new();
@@ -913,6 +1096,52 @@ fn sanitize_tool_text_for_model(text: &str) -> String {
     strip_ansi_codes(text)
 }
 
+fn is_sensitive_header_name(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "authorization"
+            | "proxy-authorization"
+            | "x-api-key"
+            | "api-key"
+            | "apikey"
+            | "x-authorization"
+            | "x-auth-token"
+            | "x-access-token"
+            | "x-session-token"
+            | "x-goog-api-key"
+            | "anthropic-api-key"
+    )
+}
+
+fn redact_debug_headers(headers: &HashMap<String, String>) -> HashMap<String, String> {
+    headers
+        .iter()
+        .map(|(key, value)| {
+            if is_sensitive_header_name(key) {
+                (key.clone(), "***".to_string())
+            } else {
+                (key.clone(), value.clone())
+            }
+        })
+        .collect()
+}
+
+fn redact_debug_info_for_store(debug_info: &DebugInfoData) -> DebugInfoData {
+    DebugInfoData {
+        request: debug_info.request.as_ref().map(|req| DebugRequestData {
+            url: req.url.clone(),
+            method: req.method.clone(),
+            headers: redact_debug_headers(&req.headers),
+            body: req.body.clone(),
+        }),
+        response: debug_info.response.as_ref().map(|resp| DebugResponseData {
+            status: resp.status,
+            headers: redact_debug_headers(&resp.headers),
+            body: resp.body.clone(),
+        }),
+    }
+}
+
 fn sanitize_messages_for_model_input(mut messages: Vec<Message>) -> Vec<Message> {
     for msg in &mut messages {
         if msg.role != MessageRole::Tool {
@@ -977,7 +1206,7 @@ async fn run_task_inner(
 
     let mut model_config =
         build_model_config(provider, model, input.thinking, input.web_search_enabled);
-    let debug_mode = config.general.debug_mode;
+    let debug_mode = input.debug_mode.unwrap_or(config.general.debug_mode);
     // Debug: 在日志输出原始 SSE（仅流式请求）
     model_config.debug_sse = debug_mode;
     let client = get_client(&model_config.provider)
@@ -1024,7 +1253,17 @@ async fn run_task_inner(
             m
         })
         .collect::<Vec<_>>();
-    let base_messages = append_tool_trace_for_model_input(base_messages);
+    let base_messages = match agent.agent_type {
+        AgentType::Tool | AgentType::Code => match provider.provider_type {
+            crate::models::ProviderType::Openai
+            | crate::models::ProviderType::OpenaiCompatible
+            | crate::models::ProviderType::OpenaiResponses
+            | crate::models::ProviderType::Anthropic
+            | crate::models::ProviderType::Google => expand_persisted_blocks_for_model_input(base_messages),
+            _ => append_tool_trace_for_model_input(base_messages),
+        },
+        _ => append_tool_trace_for_model_input(base_messages),
+    };
 
     // 3) 允许 stop/撤回 等并发操作中断当前 run
     let (abort_tx, mut abort_rx) = mpsc::channel::<()>(1);

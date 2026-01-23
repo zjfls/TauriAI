@@ -247,6 +247,8 @@ pub struct MessageTurn {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<crate::runtime::types::TurnStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub debug_info: Option<crate::ai_client::DebugInfoData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<crate::ai_client::TokenUsage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
