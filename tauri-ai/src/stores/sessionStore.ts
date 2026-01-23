@@ -68,7 +68,7 @@ export interface SessionState {
   appendStreamingToken: (sessionId: string, token: string) => void;
   appendThinkingToken: (sessionId: string, token: string) => void;
   finalizeStreaming: (sessionId: string, turnId: string, fullContent: string, thinking?: string, debugInfo?: DebugInfo, usage?: TokenUsage, model?: string, assistantMessageId?: string, format?: string) => void;
-  handleError: (sessionId: string, error: string, debugInfo?: DebugInfo) => void;
+  handleError: (sessionId: string, error: string, debugInfo?: DebugInfo, turnId?: string, assistantMessageId?: string) => void;
 
   // Model switching (async due to API type check)
   setSessionModel: (sessionId: string, modelRef: string) => Promise<void>;
@@ -832,49 +832,106 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    * Handle error in a session
    * Requirements: 7.4
    */
-  handleError: (sessionId: string, error: string, debugInfo?: DebugInfo) => {
+  handleError: (sessionId: string, error: string, debugInfo?: DebugInfo, turnId?: string, assistantMessageId?: string) => {
+    const session = get().sessions.get(sessionId);
+    if (!session?.conversationId) return;
+
+    const turnsSorted = session.streamingTurns
+      ? Array.from(session.streamingTurns.values()).sort((a, b) => a.turnIndex - b.turnIndex)
+      : undefined;
+
+    const resolvedTurnId =
+      turnId ||
+      turnsSorted?.[turnsSorted.length - 1]?.turnId ||
+      session.streamingBlocks?.find((b) => b.turnId)?.turnId;
+
+    const resolvedTurnIndex =
+      resolvedTurnId ? getTurnIndexForSession(sessionId, resolvedTurnId) ?? turnsSorted?.find((t) => t.turnId === resolvedTurnId)?.turnIndex : undefined;
+
+    const blocks = (() => {
+      const baseBlocks = session.streamingBlocks ?? [];
+      const blocksById = new Map<string, MessageBlock>(baseBlocks.map((b) => [b.id, b]));
+
+      if (resolvedTurnId) {
+        const errorBlockId = `${resolvedTurnId}:assistant_error`;
+        const existing = blocksById.get(errorBlockId);
+        if (existing && existing.type === 'error') {
+          blocksById.set(errorBlockId, { ...existing, text: existing.text || error, turnIndex: existing.turnIndex ?? resolvedTurnIndex });
+        } else {
+          blocksById.set(errorBlockId, {
+            id: errorBlockId,
+            type: 'error',
+            turnId: resolvedTurnId,
+            turnIndex: resolvedTurnIndex,
+            text: error,
+          });
+        }
+      } else {
+        // 没有 turnId（极少数：模型还没开始 Turn 就失败）时，退化成 legacy block。
+        blocksById.set('assistant_error', { id: 'assistant_error', type: 'error', text: error });
+      }
+
+      // 保持原始顺序，并把新增块追加到末尾
+      const ordered: MessageBlock[] = [];
+      for (const b of baseBlocks) {
+        const v = blocksById.get(b.id);
+        if (v) {
+          ordered.push(v);
+          blocksById.delete(b.id);
+        }
+      }
+      for (const v of blocksById.values()) ordered.push(v);
+      return ordered;
+    })();
+
     set((state) => {
       const newSessions = new Map(state.sessions);
       const currentSession = newSessions.get(sessionId);
-      if (currentSession) {
-        const updatedMessages = [...currentSession.messages];
+      if (!currentSession) return {};
 
-        // 用户消息本身视为已成功发送；错误以 assistant/error 气泡展示，便于查看调试信息。
-        for (let i = updatedMessages.length - 1; i >= 0; i--) {
-          if (updatedMessages[i].role === 'user' && updatedMessages[i].status === 'pending') {
-            updatedMessages[i] = { ...updatedMessages[i], status: 'success', error: undefined };
-            break;
-          }
+      const updatedMessages = [...currentSession.messages];
+      for (let i = updatedMessages.length - 1; i >= 0; i--) {
+        if (updatedMessages[i].role === 'user' && updatedMessages[i].status === 'pending') {
+          updatedMessages[i] = { ...updatedMessages[i], status: 'success', error: undefined };
+          break;
         }
-
-        const errorMessage: Message = {
-          id: crypto.randomUUID(),
-          conversationId: currentSession.conversationId || '',
-          role: 'error',
-          content: error,
-          status: 'failed',
-          debugInfo,
-          actions: [
-            {
-              id: 'copy_error',
-              label: '复制',
-              icon: 'Copy',
-              action_type: 'copy',
-              payload: error,
-            },
-          ],
-          createdAt: new Date().toISOString(),
-        };
-
-        newSessions.set(sessionId, {
-          ...currentSession,
-          messages: [...updatedMessages, errorMessage],
-          error,
-          isGenerating: false,
-          streamingBlocks: null,
-          streamingTurns: undefined,
-        });
       }
+
+      // 把 Error 事件里携带的 debugInfo（若有）补到对应 turn 上，保证出错也能点 Debug。
+      const mergedTurns = (() => {
+        const map = currentSession.streamingTurns ? new Map(currentSession.streamingTurns) : undefined;
+        if (map && resolvedTurnId && debugInfo) {
+          const existing = map.get(resolvedTurnId);
+          map.set(resolvedTurnId, { ...(existing || { turnId: resolvedTurnId, turnIndex: resolvedTurnIndex || 0 }), debugInfo: existing?.debugInfo ?? debugInfo });
+        }
+        return map ? Array.from(map.values()).sort((a, b) => a.turnIndex - b.turnIndex) : turnsSorted;
+      })();
+
+      const lastModel = mergedTurns?.[mergedTurns.length - 1]?.model;
+
+      const assistantMessage: Message = {
+        id: assistantMessageId || crypto.randomUUID(),
+        conversationId: currentSession.conversationId || '',
+        role: 'assistant',
+        content: '',
+        blocks: blocks.length > 0 ? blocks : undefined,
+        meta: lastModel ? { model: lastModel } : undefined,
+        debugInfo,
+        turns: mergedTurns,
+        status: 'failed',
+        error,
+        createdAt: new Date().toISOString(),
+      };
+
+      newSessions.set(sessionId, {
+        ...currentSession,
+        messages: [...updatedMessages, assistantMessage],
+        error,
+        isGenerating: false,
+        streamingBlocks: null,
+        streamingTurns: undefined,
+      });
+
       return { sessions: newSessions };
     });
 
@@ -1473,6 +1530,9 @@ const flushPendingStreamChunks = () => {
               text: delta,
             };
           }
+          if (blockType === 'error') {
+            return { id: blockId, type: 'error', turnId, turnIndex, text: delta };
+          }
           if (blockType === 'tool_call') {
             const v = parseJson(delta);
             if (v && typeof v === 'object') {
@@ -1509,6 +1569,9 @@ const flushPendingStreamChunks = () => {
           if (current.type === 'tool_result' && blockType === 'tool_result') {
             return { ...current, turnIndex: current.turnIndex ?? turnIndex, text: current.text + delta };
           }
+          if (current.type === 'error' && blockType === 'error') {
+            return { ...current, turnIndex: current.turnIndex ?? turnIndex, text: current.text + delta };
+          }
           if (current.type === 'tool_call' && blockType === 'tool_call') {
             // Snapshot update: overwrite (arguments may arrive in multiple updates in future)
             return createBlock();
@@ -1519,7 +1582,7 @@ const flushPendingStreamChunks = () => {
           }
           if (current.type === 'unknown') {
             // If we now recognize the blockType, upgrade it to a typed block; otherwise append text.
-            if (blockType === 'text' || blockType === 'thinking' || blockType === 'tool_call' || blockType === 'tool_result' || blockType === 'web_search') {
+            if (blockType === 'text' || blockType === 'thinking' || blockType === 'tool_call' || blockType === 'tool_result' || blockType === 'web_search' || blockType === 'error') {
               return createBlock();
             }
 
@@ -1722,7 +1785,13 @@ export const initStreamListeners = async () => {
           discardNextFinalizeByConversationId.delete(payload.conversationId);
           return;
         }
-        useSessionStore.getState().handleError(session.id, payload.error, payload.debugInfo);
+        useSessionStore.getState().handleError(
+          session.id,
+          payload.error,
+          payload.debugInfo,
+          payload.turnId,
+          payload.assistantMessageId
+        );
       }
     });
 

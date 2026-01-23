@@ -63,8 +63,11 @@ enum TurnStreamResult {
         usage: Option<TokenUsage>,
     },
     Error {
+        content: String,
+        thinking: String,
         error: String,
         debug_info: Option<DebugInfoData>,
+        usage: Option<TokenUsage>,
     },
     Aborted {
         content: String,
@@ -94,6 +97,10 @@ enum TaskOutcome {
         turn_id: String,
         error: String,
         debug_info: Option<DebugInfoData>,
+        content: String,
+        thinking: String,
+        blocks: Vec<MessageBlock>,
+        turns: Vec<MessageTurn>,
     },
 }
 
@@ -256,25 +263,14 @@ impl<'a> TurnLoop<'a> {
                     let turn_usage = if self.debug_mode { usage } else { None };
 
                     // 防止无限循环：达到 max_turns 后仍然在请求工具调用
-                    if turn_index >= self.max_turns {
-                        let error =
-                            format!("超过最大 Turn 数({})，仍然需要工具调用", self.max_turns);
-                        self.emitter.emit(RunEvent::TurnFinished {
-                            task_id: self.task_id.clone(),
-                            turn_id: turn_id.clone(),
-                            status: TurnStatus::Failed,
-                            turn_index: Some(turn_index),
-                            assistant_message_id: Some(self.assistant_message_id.clone()),
-                            debug_info: turn_debug_info.clone(),
-                            usage: turn_usage.clone(),
-                            model: Some(self.model_config.model.clone()),
-                        });
-                        return TaskOutcome::Failed {
-                            turn_id,
-                            error,
-                            debug_info: turn_debug_info,
-                        };
-                    }
+                    let max_turns_error = if turn_index >= self.max_turns {
+                        Some(format!(
+                            "超过最大 Turn 数({})，仍然需要工具调用",
+                            self.max_turns
+                        ))
+                    } else {
+                        None
+                    };
 
                     // Phase: Act（工具调用）
                     if !thinking.trim().is_empty() {
@@ -349,6 +345,53 @@ impl<'a> TurnLoop<'a> {
                         turn_id: turn_id.clone(),
                         phase: TurnPhase::Act,
                     });
+
+                    if let Some(error) = max_turns_error {
+                        self.emitter.emit(RunEvent::BlockDelta {
+                            task_id: self.task_id.clone(),
+                            turn_id: turn_id.clone(),
+                            assistant_message_id: Some(self.assistant_message_id.clone()),
+                            block_id: "assistant_error".to_string(),
+                            block_type: "error".to_string(),
+                            format: Some("plain".to_string()),
+                            delta: error.clone(),
+                        });
+                        blocks.push(MessageBlock::Error {
+                            id: format!("{turn_id}:assistant_error"),
+                            turn_id: Some(turn_id.clone()),
+                            turn_index: Some(turn_index),
+                            text: error.clone(),
+                        });
+
+                        self.emitter.emit(RunEvent::TurnFinished {
+                            task_id: self.task_id.clone(),
+                            turn_id: turn_id.clone(),
+                            status: TurnStatus::Failed,
+                            turn_index: Some(turn_index),
+                            assistant_message_id: Some(self.assistant_message_id.clone()),
+                            debug_info: turn_debug_info.clone(),
+                            usage: turn_usage.clone(),
+                            model: Some(self.model_config.model.clone()),
+                        });
+
+                        turns.push(MessageTurn {
+                            turn_id: turn_id.clone(),
+                            turn_index,
+                            status: Some(TurnStatus::Failed),
+                            usage: persisted_usage,
+                            model: Some(self.model_config.model.clone()),
+                        });
+
+                        return TaskOutcome::Failed {
+                            turn_id,
+                            error,
+                            debug_info: turn_debug_info,
+                            content,
+                            thinking,
+                            blocks,
+                            turns,
+                        };
+                    }
 
                     // 把 assistant 的 tool_calls（以及本轮 thinking）写入运行时消息链，供下一轮继续
                     let content_for_context =
@@ -552,26 +595,90 @@ impl<'a> TurnLoop<'a> {
                     });
                     continue;
                 }
-                TurnStreamResult::Error { error, debug_info } => {
+                TurnStreamResult::Error {
+                    content,
+                    thinking,
+                    error,
+                    debug_info,
+                    usage,
+                } => {
                     self.emitter.emit(RunEvent::TurnPhaseFinished {
                         task_id: self.task_id.clone(),
                         turn_id: turn_id.clone(),
                         phase: TurnPhase::Think,
                     });
+
+                    let persisted_usage = usage.clone();
+                    let turn_debug_info = if self.debug_mode {
+                        debug_info.clone()
+                    } else {
+                        None
+                    };
+                    let turn_usage = if self.debug_mode { usage } else { None };
+
+                    if !thinking.trim().is_empty() {
+                        blocks.push(MessageBlock::Thinking {
+                            id: format!("{turn_id}:assistant_thinking"),
+                            turn_id: Some(turn_id.clone()),
+                            turn_index: Some(turn_index),
+                            text: thinking.clone(),
+                        });
+                    }
+                    if !content.trim().is_empty() {
+                        blocks.push(MessageBlock::Text {
+                            id: format!("{turn_id}:assistant_text"),
+                            turn_id: Some(turn_id.clone()),
+                            turn_index: Some(turn_index),
+                            format: self
+                                .output_format
+                                .clone()
+                                .unwrap_or_else(|| "markdown".to_string()),
+                            text: content.clone(),
+                        });
+                    }
+
+                    self.emitter.emit(RunEvent::BlockDelta {
+                        task_id: self.task_id.clone(),
+                        turn_id: turn_id.clone(),
+                        assistant_message_id: Some(self.assistant_message_id.clone()),
+                        block_id: "assistant_error".to_string(),
+                        block_type: "error".to_string(),
+                        format: Some("plain".to_string()),
+                        delta: error.clone(),
+                    });
+                    blocks.push(MessageBlock::Error {
+                        id: format!("{turn_id}:assistant_error"),
+                        turn_id: Some(turn_id.clone()),
+                        turn_index: Some(turn_index),
+                        text: error.clone(),
+                    });
+
                     self.emitter.emit(RunEvent::TurnFinished {
                         task_id: self.task_id.clone(),
                         turn_id: turn_id.clone(),
                         status: TurnStatus::Failed,
                         turn_index: Some(turn_index),
                         assistant_message_id: Some(self.assistant_message_id.clone()),
-                        debug_info: if self.debug_mode { debug_info.clone() } else { None },
-                        usage: None,
+                        debug_info: turn_debug_info.clone(),
+                        usage: turn_usage,
+                        model: Some(self.model_config.model.clone()),
+                    });
+
+                    turns.push(MessageTurn {
+                        turn_id: turn_id.clone(),
+                        turn_index,
+                        status: Some(TurnStatus::Failed),
+                        usage: persisted_usage,
                         model: Some(self.model_config.model.clone()),
                     });
                     return TaskOutcome::Failed {
                         turn_id,
                         error,
-                        debug_info: if self.debug_mode { debug_info } else { None },
+                        debug_info: turn_debug_info,
+                        content,
+                        thinking,
+                        blocks,
+                        turns,
                     };
                 }
                 TurnStreamResult::Aborted { content, thinking } => {
@@ -1010,6 +1117,10 @@ async fn run_task_inner(
             turn_id,
             error,
             debug_info,
+            content,
+            thinking,
+            blocks,
+            turns,
         } => {
             {
                 let db = db.lock().await;
@@ -1018,6 +1129,37 @@ async fn run_task_inner(
                     MessageStatus::Failed,
                     Some(error.clone()),
                 );
+            }
+
+            if !content.is_empty()
+                || !thinking.is_empty()
+                || !blocks.is_empty()
+                || !turns.is_empty()
+            {
+                let assistant_message = Message {
+                    id: assistant_message_id.clone(),
+                    conversation_id: input.conversation_id.clone(),
+                    role: MessageRole::Assistant,
+                    content: content.clone(),
+                    content_parts: Vec::new(),
+                    thinking: if thinking.trim().is_empty() {
+                        None
+                    } else {
+                        Some(thinking.clone())
+                    },
+                    meta: Some(MessageMeta {
+                        model: Some(model_config.model.clone()),
+                        blocks: if blocks.is_empty() { None } else { Some(blocks) },
+                        turns: if turns.is_empty() { None } else { Some(turns) },
+                        ..Default::default()
+                    }),
+                    created_at: chrono::Utc::now(),
+                    status: MessageStatus::Failed,
+                    error_message: Some(error.clone()),
+                };
+
+                let db = db.lock().await;
+                let _ = db.add_message(&input.conversation_id, &assistant_message);
             }
 
             emitter.emit(RunEvent::Error {
@@ -1279,7 +1421,13 @@ async fn stream_one_turn(
     }
 
     if let Some(error) = last_error {
-        return TurnStreamResult::Error { error, debug_info };
+        return TurnStreamResult::Error {
+            content: full_content,
+            thinking: full_thinking,
+            error,
+            debug_info,
+            usage,
+        };
     }
 
     TurnStreamResult::Final {

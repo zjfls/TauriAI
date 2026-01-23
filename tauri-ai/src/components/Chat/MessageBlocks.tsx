@@ -9,7 +9,7 @@
  */
 
 import React, { useMemo, useState } from 'react';
-import { Brain, Bug, ChevronDown, ChevronRight, Search, Wrench } from 'lucide-react';
+import { AlertTriangle, Brain, Bug, ChevronDown, ChevronRight, Search, Wrench } from 'lucide-react';
 import type { MessageBlock, MessageTurn } from '../../types';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { useConfigStore } from '../../stores/configStore';
@@ -124,6 +124,22 @@ const ToolResultBlock: React.FC<{ text: string; showRawAnsi?: boolean }> = ({
       <div className="mb-1 flex items-center gap-2 text-xs font-medium text-green-700 dark:text-green-300">
         <Wrench size={14} />
         <span>工具结果</span>
+      </div>
+      <pre className="whitespace-pre-wrap break-words">{displayText}</pre>
+    </div>
+  );
+};
+
+const ErrorBlock: React.FC<{ text: string }> = ({ text }) => {
+  if (!text) return null;
+
+  const displayText = useMemo(() => stripAnsi(text), [text]);
+
+  return (
+    <div className="mb-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-900 dark:border-red-800 dark:bg-red-900/20 dark:text-red-100">
+      <div className="mb-1 flex items-center gap-2 text-xs font-medium text-red-700 dark:text-red-300">
+        <AlertTriangle size={14} />
+        <span>错误</span>
       </div>
       <pre className="whitespace-pre-wrap break-words">{displayText}</pre>
     </div>
@@ -476,7 +492,7 @@ export const MessageBlocks: React.FC<{
     }
     return set;
   }, [blocks]);
-  const showTurnHeader = debugMode && distinctTurnIds.size > 0;
+  const showTurnHeader = distinctTurnIds.size > 0;
 
   const groups = useMemo(() => {
     const map = new Map<
@@ -545,6 +561,10 @@ export const MessageBlocks: React.FC<{
       return <ToolResultBlock text={block.text} showRawAnsi={debugMode} />;
     }
 
+    if (block.type === 'error') {
+      return <ErrorBlock text={block.text} />;
+    }
+
     if (block.type === 'web_search') {
       return <WebSearchBlock status={block.status} action={block.action} isStreaming={isStreaming} />;
     }
@@ -558,6 +578,13 @@ export const MessageBlocks: React.FC<{
         const turnMeta = g.turnId ? turnMetaById.get(g.turnId) : undefined;
         const turnIndex = turnMeta?.turnIndex ?? g.turnIndex ?? idx + 1;
         const debugInfo = turnMeta?.debugInfo;
+        const canOpenDebug = Boolean(debugMode && debugInfo);
+        const debugButtonDisabled = !debugMode || !debugInfo;
+        const debugTitle = !debugMode
+          ? '开启调试模式后可查看该轮请求/响应'
+          : debugInfo
+            ? '查看该轮请求/响应'
+            : '该轮暂无调试数据';
 
         return (
           <div key={`${g.key}:${idx}`}>
@@ -571,13 +598,13 @@ export const MessageBlocks: React.FC<{
                 </div>
                 <button
                   type="button"
-                  onClick={() => debugInfo && setActiveDebugTurn(turnMeta || null)}
-                  disabled={!debugInfo}
-                  className={`flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-medium transition-colors ${debugInfo
+                  onClick={() => canOpenDebug && setActiveDebugTurn(turnMeta || null)}
+                  disabled={debugButtonDisabled}
+                  className={`flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-medium transition-colors ${canOpenDebug
                     ? 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
                     : 'cursor-not-allowed bg-gray-50 text-gray-300 dark:bg-gray-900/40 dark:text-gray-700'
                     }`}
-                  title={debugInfo ? '查看该轮请求/响应' : '该轮暂无调试数据'}
+                  title={debugTitle}
                 >
                   <Bug size={12} />
                   <span>Debug</span>

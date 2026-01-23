@@ -208,6 +208,15 @@ pub enum MessageBlock {
         text: String,
     },
     #[serde(rename_all = "camelCase")]
+    Error {
+        id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_index: Option<u32>,
+        text: String,
+    },
+    #[serde(rename_all = "camelCase")]
     WebSearch {
         id: String,
         #[serde(skip_serializing_if = "Option::is_none")]

@@ -323,6 +323,11 @@ export interface ToolResultMessageBlock extends BaseMessageBlock {
   text: string;
 }
 
+export interface ErrorMessageBlock extends BaseMessageBlock {
+  type: 'error';
+  text: string;
+}
+
 export interface WebSearchMessageBlock extends BaseMessageBlock {
   type: 'web_search';
   callId: string;
@@ -341,6 +346,7 @@ export type MessageBlock =
   | ThinkingMessageBlock
   | ToolCallMessageBlock
   | ToolResultMessageBlock
+  | ErrorMessageBlock
   | WebSearchMessageBlock
   | UnknownMessageBlock;
 
@@ -435,6 +441,7 @@ export type RunBlockType =
   // Future block types (reserved)
   | 'tool_call'
   | 'tool_result'
+  | 'error'
   | 'web_search'
   | 'image'
   | 'file'

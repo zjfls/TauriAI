@@ -55,33 +55,70 @@ fn default_write_yield_time_ms() -> u64 {
     250
 }
 
+#[cfg(windows)]
+fn is_executable_available(binary: &str) -> bool {
+    let path = std::path::Path::new(binary);
+    if path.is_absolute() || binary.contains('\\') || binary.contains('/') {
+        return path.is_file();
+    }
+
+    let mut candidates = vec![binary.to_string()];
+    if path.extension().is_none() {
+        candidates.push(format!("{binary}.exe"));
+    }
+
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
+    for dir in std::env::split_paths(&paths) {
+        for name in &candidates {
+            if dir.join(name).is_file() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn build_shell_invocation(command: &str, shell: Option<&str>, login: bool) -> Vec<String> {
     let shell = shell.unwrap_or_default().trim();
     #[cfg(windows)]
     {
-        let shell_lower = shell.to_ascii_lowercase();
+        // Codex 行为：Windows 默认使用 PowerShell（优先 pwsh，其次 powershell.exe），而不是 cmd.exe。
+        // 这样模型可以直接输出 PowerShell 脚本正文，不需要再外包一层 `powershell -Command ...`。
+        let (shell, shell_lower) = if shell.is_empty() {
+            if is_executable_available("pwsh") {
+                ("pwsh", "pwsh".to_string())
+            } else {
+                ("powershell.exe", "powershell".to_string())
+            }
+        } else {
+            (shell, shell.to_ascii_lowercase())
+        };
 
-        // Default: cmd.exe /C
-        if shell.is_empty() || shell_lower.contains("cmd") {
+        // cmd.exe
+        if shell_lower.contains("cmd") {
             return vec!["cmd.exe".to_string(), "/C".to_string(), command.to_string()];
         }
 
         // PowerShell-family: treat `cmd` as a PowerShell script.
         if shell_lower.contains("pwsh") {
-            return vec![
-                "pwsh".to_string(),
-                "-NoProfile".to_string(),
-                "-Command".to_string(),
-                command.to_string(),
-            ];
+            let mut args = vec![shell.to_string()];
+            if !login {
+                args.push("-NoProfile".to_string());
+            }
+            args.push("-Command".to_string());
+            args.push(command.to_string());
+            return args;
         }
         if shell_lower.contains("powershell") {
-            return vec![
-                "powershell.exe".to_string(),
-                "-NoProfile".to_string(),
-                "-Command".to_string(),
-                command.to_string(),
-            ];
+            let mut args = vec![shell.to_string()];
+            if !login {
+                args.push("-NoProfile".to_string());
+            }
+            args.push("-Command".to_string());
+            args.push(command.to_string());
+            return args;
         }
 
         // POSIX-like shells that may exist on Windows (Git Bash / MSYS2 / WSL bash on PATH)
@@ -280,18 +317,18 @@ impl ToolHandler for ExecCommandTool {
         ToolSpec {
             name: "exec_command".to_string(),
             description: Some("在 PTY 中执行命令（可交互），返回 session_id 与输出".to_string()),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "cmd": { "type": "string", "description": "要执行的命令（由 shell 解析）" },
-                    "workdir": { "type": "string", "description": "可选工作目录" },
-                    "shell": { "type": "string", "description": "可选：指定启动的 shell（例如 powershell/pwsh/cmd/bash）。为空则使用默认 shell。" },
-                    "login": { "type": "boolean", "description": "可选：是否以 login shell 语义运行（默认 true）。" },
-                    "yield_time_ms": { "type": "integer", "description": "可选：读取输出的时间窗口（毫秒，默认 10000）。" },
-                    "max_output_tokens": { "type": "integer", "description": "可选：最大输出 token（超出将截断）。" },
-                    "sandbox_permissions": { "type": "string", "description": "可选：沙箱权限（当前后端暂不实现，仅为兼容）。" },
-                    "justification": { "type": "string", "description": "可选：申请更高权限的理由（当前后端暂不实现，仅为兼容）。" }
-                },
+             parameters: serde_json::json!({
+                 "type": "object",
+                 "properties": {
+                    "cmd": { "type": "string", "description": "要执行的脚本/命令（由 shell 解析）。当 shell=powershell/pwsh 时，把 cmd 当作 PowerShell 脚本正文；不要在 cmd 里再包一层 `powershell -Command ...`。" },
+                     "workdir": { "type": "string", "description": "可选工作目录" },
+                    "shell": { "type": "string", "description": "可选：指定启动的 shell（powershell/pwsh/cmd/bash）。为空则使用默认 shell（Windows 默认 pwsh(若存在)/powershell.exe；非 Windows 默认 /bin/bash(若存在)/bin/sh）。" },
+                    "login": { "type": "boolean", "description": "可选：是否以 login shell 语义运行（默认 true）。对 bash/zsh：login=true 等价于 -lc；对 powershell/pwsh：login=false 会加 -NoProfile。" },
+                     "yield_time_ms": { "type": "integer", "description": "可选：读取输出的时间窗口（毫秒，默认 10000）。" },
+                     "max_output_tokens": { "type": "integer", "description": "可选：最大输出 token（超出将截断）。" },
+                     "sandbox_permissions": { "type": "string", "description": "可选：沙箱权限（当前后端暂不实现，仅为兼容）。" },
+                     "justification": { "type": "string", "description": "可选：申请更高权限的理由（当前后端暂不实现，仅为兼容）。" }
+                 },
                 // 约定：
                 // - workdir 为空字符串表示“使用默认工作目录”
                 // - chars 允许为空（用于轮询输出）

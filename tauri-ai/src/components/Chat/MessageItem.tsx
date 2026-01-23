@@ -130,7 +130,6 @@ export const MessageItem: React.FC<MessageItemProps> = ({
   const isUser = message.role === 'user';
   const isAssistant = message.role === 'assistant';
   const isError = message.role === 'error';
-  const isFailed = message.status === 'failed';
   const isPending = message.status === 'pending';
 
   // Build actions
@@ -211,11 +210,9 @@ export const MessageItem: React.FC<MessageItemProps> = ({
       {/* Message Content */}
       <div
         className={`relative max-w-[80%] rounded-2xl px-4 py-2 overflow-hidden ${isUser
-          ? isFailed
-            ? 'bg-red-500 text-white border-2 border-red-600'
-            : isPending
-              ? 'bg-blue-400 text-white'
-              : 'bg-blue-500 text-white'
+          ? isPending
+            ? 'bg-blue-400 text-white'
+            : 'bg-blue-500 text-white'
           : 'bg-white text-gray-900 shadow-sm dark:bg-gray-800 dark:text-gray-100'
           }`}
       >
@@ -261,14 +258,6 @@ export const MessageItem: React.FC<MessageItemProps> = ({
               textContent={message.content}
               isUser={isUser}
             />
-          </div>
-        )}
-
-        {/* Failed message error display */}
-        {isUser && isFailed && message.error && (
-          <div className="mt-2 text-xs bg-red-600/20 rounded px-2 py-1 flex items-center gap-1.5">
-            <AlertCircle size={12} />
-            <span className="opacity-90">{message.error}</span>
           </div>
         )}
 
