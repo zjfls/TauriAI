@@ -789,6 +789,11 @@ impl OpenAiBaseClient {
                                 },
                                 "finish_reason": "stop"
                             }],
+                            "thinking": if full_thinking.is_empty() {
+                                serde_json::Value::Null
+                            } else {
+                                serde_json::Value::String(full_thinking.clone())
+                            },
                             "usage": final_usage.as_ref().map(|u| serde_json::json!({
                                 "prompt_tokens": u.prompt_tokens,
                                 "completion_tokens": u.completion_tokens,
@@ -970,6 +975,11 @@ impl OpenAiBaseClient {
                 },
                 "finish_reason": "stop"
             }],
+            "thinking": if full_thinking.is_empty() {
+                serde_json::Value::Null
+            } else {
+                serde_json::Value::String(full_thinking.clone())
+            },
             "usage": final_usage.as_ref().map(|u| serde_json::json!({
                 "prompt_tokens": u.prompt_tokens,
                 "completion_tokens": u.completion_tokens,

@@ -931,6 +931,11 @@ impl AiClient for GoogleClient {
                         "finishReason": "STOP",
                         "groundingMetadata": full_grounding
                     }],
+                    "thinking": if full_thinking.is_empty() {
+                        serde_json::Value::Null
+                    } else {
+                        serde_json::Value::String(full_thinking.clone())
+                    },
                     "tool_calls": tool_calls_for_debug,
                     "usageMetadata": token_usage.as_ref().map(|u| serde_json::json!({
                         "promptTokenCount": u.prompt_tokens,

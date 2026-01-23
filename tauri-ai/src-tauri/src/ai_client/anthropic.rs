@@ -891,8 +891,11 @@ impl AiClient for AnthropicClient {
                                 // Tool-call turn: stop streaming and hand over to task_runner (Act/Observe loop).
                                 // Tool-call turns must still yield DoneWithDebug so the UI can show
                                 // per-turn Debug reliably (no dependence on stream timing).
-                                let tool_calls_for_debug =
-                                    if tool_calls.is_empty() { None } else { Some(tool_calls.clone()) };
+                                let tool_calls_for_debug = if tool_calls.is_empty() {
+                                    None
+                                } else {
+                                    Some(tool_calls.clone())
+                                };
                                 if !tool_calls.is_empty() {
                                     let _ =
                                         token_sender.send(StreamEvent::ToolCalls(tool_calls)).await;
@@ -909,6 +912,11 @@ impl AiClient for AnthropicClient {
                                                 "type": "text",
                                                 "text": full_content.clone()
                                             }],
+                                            "thinking": if full_thinking.is_empty() {
+                                                serde_json::Value::Null
+                                            } else {
+                                                serde_json::Value::String(full_thinking.clone())
+                                            },
                                             "tool_calls": tool_calls_for_debug,
                                             "usage": token_usage.as_ref().map(|u| serde_json::json!({
                                                 "input_tokens": u.prompt_tokens,
@@ -961,8 +969,11 @@ impl AiClient for AnthropicClient {
                 arguments,
             });
         }
-        let tool_calls_for_debug =
-            if tool_calls.is_empty() { None } else { Some(tool_calls.clone()) };
+        let tool_calls_for_debug = if tool_calls.is_empty() {
+            None
+        } else {
+            Some(tool_calls.clone())
+        };
         if !tool_calls.is_empty() {
             let _ = token_sender.send(StreamEvent::ToolCalls(tool_calls)).await;
         }
@@ -977,6 +988,11 @@ impl AiClient for AnthropicClient {
                         "type": "text",
                         "text": full_content.clone()
                     }],
+                    "thinking": if full_thinking.is_empty() {
+                        serde_json::Value::Null
+                    } else {
+                        serde_json::Value::String(full_thinking.clone())
+                    },
                     "tool_calls": tool_calls_for_debug,
                     "usage": token_usage.as_ref().map(|u| serde_json::json!({
                         "input_tokens": u.prompt_tokens,

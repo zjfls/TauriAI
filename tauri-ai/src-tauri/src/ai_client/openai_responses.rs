@@ -1159,6 +1159,11 @@ impl AiClient for OpenAiResponsesClient {
                                             "text": full_content
                                         }]
                                     }],
+                                    "thinking": if full_thinking.is_empty() {
+                                        serde_json::Value::Null
+                                    } else {
+                                        serde_json::Value::String(full_thinking.clone())
+                                    },
                                     "tool_calls": tool_calls_for_debug.clone(),
                                     "usage": debug_usage
                                 });
@@ -1237,6 +1242,11 @@ impl AiClient for OpenAiResponsesClient {
                     "text": full_content
                 }]
             }],
+            "thinking": if full_thinking.is_empty() {
+                serde_json::Value::Null
+            } else {
+                serde_json::Value::String(full_thinking.clone())
+            },
             "tool_calls": tool_calls_for_debug.clone(),
             "usage": debug_usage
         });
