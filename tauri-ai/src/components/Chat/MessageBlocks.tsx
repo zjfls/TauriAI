@@ -580,13 +580,14 @@ export const MessageBlocks: React.FC<{
         const turnMeta = g.turnId ? turnMetaById.get(g.turnId) : undefined;
         const turnIndex = turnMeta?.turnIndex ?? g.turnIndex ?? idx + 1;
         const debugInfo = turnMeta?.debugInfo;
-        const canOpenDebug = Boolean(debugMode && debugInfo);
-        const debugButtonDisabled = !debugMode || !debugInfo;
-        const debugTitle = !debugMode
-          ? '开启调试模式后可查看该轮请求/响应'
-          : debugInfo
-            ? '查看该轮请求/响应'
-            : '该轮暂无调试数据';
+        // debugMode 只影响“采集”，不影响“查看历史里已经存在的 debug 数据”。
+        const canOpenDebug = Boolean(debugInfo);
+        const debugButtonDisabled = !debugInfo;
+        const debugTitle = debugInfo
+          ? '查看该轮请求/响应'
+          : debugMode
+            ? '该轮暂无调试数据'
+            : '开启调试模式后可查看该轮请求/响应';
 
         return (
           <div key={`${g.key}:${idx}`}>

@@ -157,14 +157,14 @@ export const MessageItem: React.FC<MessageItemProps> = ({
           <p className="text-sm whitespace-pre-wrap">{message.content}</p>
 
           {/* Action buttons for error messages */}
-          {(actions.length > 0 || debugMode) && (
+          {(actions.length > 0 || hasDebugInfo || debugMode) && (
             <div
               className={`mt-2 flex flex-wrap gap-2 transition-opacity ${isHovered ? 'opacity-100' : 'opacity-0'
                 }`}
             >
               <MessageToolbar actions={actions} onAction={onAction} />
               {/* Debug button for error messages */}
-              {debugMode && hasDebugInfo && (
+              {hasDebugInfo && (
                 <button
                   onClick={() => setShowDebugModal(true)}
                   className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-md bg-red-100 text-red-700 hover:bg-red-200 dark:bg-red-900/30 dark:text-red-300 dark:hover:bg-red-900/50 transition-colors"
@@ -275,7 +275,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
         )}
 
         {/* Action buttons - always rendered for layout stability, visible on hover */}
-        {!isStreaming && (actions.length > 0 || (debugMode && isAssistant)) && (
+        {!isStreaming && (actions.length > 0 || (isAssistant && (debugMode || hasDebugInfo))) && (
           <div
             className={`mt-2 flex flex-wrap gap-2 transition-opacity ${isHovered ? 'opacity-100' : 'opacity-0'
               }`}
@@ -283,7 +283,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
             <MessageToolbar actions={actions} onAction={onAction} />
             {/* Debug button - only for assistant messages and if debugMode is on */}
             {/* 多 Turn 的调试入口在 MessageBlocks 的「第 N 轮」旁边；这里仅兜底 legacy 消息 */}
-            {debugMode && isAssistant && assistantBlocks.every((b) => !b.turnId) && hasDebugInfo && (
+            {isAssistant && assistantBlocks.every((b) => !b.turnId) && hasDebugInfo && (
               <button
                 onClick={() => setShowDebugModal(true)}
                 className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700 transition-colors"
