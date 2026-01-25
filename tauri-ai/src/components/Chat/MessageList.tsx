@@ -17,6 +17,7 @@ interface MessageListProps {
   streamingTurns?: MessageTurn[];
   isGenerating: boolean;
   onAction: (action: Action) => void;
+  onAbortTool?: (callId: string) => void;
   /** 拖拽文件到聊天窗口时转发给输入框 */
   onDropFiles?: (files: FileList | File[]) => void;
   /** 拖拽纯文本/链接到聊天窗口时转发给输入框 */
@@ -32,6 +33,7 @@ export const MessageList: React.FC<MessageListProps> = ({
   streamingTurns,
   isGenerating: _isGenerating,
   onAction,
+  onAbortTool,
   onDropFiles,
   onDropText,
 }) => {
@@ -168,7 +170,7 @@ export const MessageList: React.FC<MessageListProps> = ({
 
       {/* Message list */}
       {messages.map((message) => (
-        <MessageItem key={message.id} message={message} onAction={onAction} />
+        <MessageItem key={message.id} message={message} onAction={onAction} onAbortTool={onAbortTool} />
       ))}
 
       {/* Streaming message */}
@@ -181,7 +183,12 @@ export const MessageList: React.FC<MessageListProps> = ({
 
           {/* Streaming content */}
           <div className="relative max-w-[80%] rounded-2xl bg-white px-4 py-2 text-gray-900 shadow-sm dark:bg-gray-800 dark:text-gray-100">
-            <MessageBlocks blocks={streamingBlocks} isStreaming turns={streamingTurns} />
+            <MessageBlocks
+              blocks={streamingBlocks}
+              isStreaming
+              turns={streamingTurns}
+              onAbortTool={onAbortTool}
+            />
             {/* Blinking cursor */}
             <span className="ml-1 inline-block h-4 w-2 animate-pulse bg-gray-400 dark:bg-gray-500" />
           </div>

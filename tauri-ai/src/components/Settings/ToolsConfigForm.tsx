@@ -87,6 +87,7 @@ export const ToolsConfigForm: React.FC = () => {
     setEditingToolset({
       name: `toolset_${Date.now()}`,
       tools: [],
+      persistanceShellEnhance: false,
     });
   };
 
@@ -118,13 +119,16 @@ export const ToolsConfigForm: React.FC = () => {
     }
 
     const normalizedTools = Array.from(new Set(editingToolset.tools));
+    const persistanceShellEnhance = Boolean(editingToolset.persistanceShellEnhance);
 
     const nextToolsets = (() => {
       if (isCreating) {
-        return [...toolsets, { name, tools: normalizedTools }];
+        return [...toolsets, { name, tools: normalizedTools, persistanceShellEnhance }];
       }
       return toolsets.map((t) =>
-        t.name === originalName ? { ...t, name, tools: normalizedTools } : t
+        t.name === originalName
+          ? { ...t, name, tools: normalizedTools, persistanceShellEnhance }
+          : t
       );
     })();
 
@@ -222,7 +226,7 @@ export const ToolsConfigForm: React.FC = () => {
             <div className="flex items-center justify-between">
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">启用工具系统</label>
-                <p className="text-xs text-gray-500">关闭后，Tool/Code 智能体不会向模型发送工具定义，也不会执行工具调用。</p>
+                <p className="text-xs text-gray-500">关闭后，Tool 智能体不会向模型发送工具定义，也不会执行工具调用。</p>
               </div>
               <button
                 onClick={() => handleEnabledChange(!config.tools.enabled)}
@@ -353,6 +357,38 @@ export const ToolsConfigForm: React.FC = () => {
                 </div>
 
                 <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                        持久进程
+                      </label>
+                      <p className="text-xs text-gray-500">
+                        允许跨任务保留 PTY 会话，并在聊天页显示“持久进程”面板（仅当 toolset 开启时才会影响模型侧工具定义）。
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={!isEditing}
+                      onClick={() => {
+                        setEditingToolset({
+                          ...(currentToolset as ToolSetConfig),
+                          persistanceShellEnhance: !Boolean(currentToolset.persistanceShellEnhance),
+                        });
+                      }}
+                      className={`relative w-11 h-6 rounded-full transition-colors ${
+                        Boolean(currentToolset.persistanceShellEnhance)
+                          ? 'bg-blue-600'
+                          : 'bg-gray-300 dark:bg-gray-600'
+                      } disabled:opacity-60 disabled:cursor-not-allowed`}
+                      title={Boolean(currentToolset.persistanceShellEnhance) ? '已开启' : '已关闭'}
+                    >
+                      <span
+                        className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
+                          Boolean(currentToolset.persistanceShellEnhance) ? 'translate-x-5' : ''
+                        }`}
+                      />
+                    </button>
+                  </div>
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">包含工具</label>
                   <div className="space-y-2 rounded-lg border border-gray-200 dark:border-gray-700 p-3 bg-white dark:bg-gray-800">
                     {AVAILABLE_TOOLS.map((tool) => {
@@ -391,7 +427,7 @@ export const ToolsConfigForm: React.FC = () => {
                     })}
                   </div>
                   <p className="text-xs text-gray-500">
-                    提示：工具是否真正“可用”，还取决于上面的权限开关，以及当前智能体是否为 Tool/Code 类型。
+                    提示：工具是否真正“可用”，还取决于上面的权限开关，以及当前智能体是否为 Tool 类型。
                   </p>
                 </div>
               </div>

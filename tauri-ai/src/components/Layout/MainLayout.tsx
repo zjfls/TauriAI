@@ -5,22 +5,20 @@
  */
 
 import React from 'react';
-import { Sidebar } from './Sidebar';
-import { Header } from './Header';
-import { SessionTabBar } from '../Session/SessionTabBar';
+import { WorkspaceTabBar } from '../Workspace/WorkspaceTabBar';
 import { useUIStore } from '../../stores/uiStore';
 import { useConfigStore } from '../../stores/configStore';
 import { useSessionStore } from '../../stores/sessionStore';
+import { openViewWindow } from '../../utils/viewWindow';
 
 interface MainLayoutProps {
   children: React.ReactNode;
 }
 
 export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
-  const { sidebarExpanded, activeView, setActiveView } = useUIStore();
+  const { setActiveView } = useUIStore();
   const {
     config,
-    getModelOptions,
   } = useConfigStore();
 
   // Session store for multi-agent workspace
@@ -28,12 +26,9 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
   const sessionsMap = useSessionStore((state) => state.sessions);
   const sessions = React.useMemo(() => Array.from(sessionsMap.values()), [sessionsMap]);
   const activeSessionId = useSessionStore((state) => state.activeSessionId);
-  const activeSession = useSessionStore((state) => state.getActiveSession());
   const switchSession = useSessionStore((state) => state.switchSession);
   const closeSession = useSessionStore((state) => state.closeSession);
   const createSession = useSessionStore((state) => state.createSession);
-  const setSessionAgent = useSessionStore((state) => state.setSessionAgent);
-  const setSessionModel = useSessionStore((state) => state.setSessionModel);
 
   // Handle session tab click - switch to session
   const handleTabClick = (sessionId: string) => {
@@ -58,76 +53,31 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
     }
   };
 
-  // Handle agent selection for active session
-  const handleAgentSelect = (agentName: string) => {
-    if (activeView === 'chat' && activeSessionId) {
-      setSessionAgent(activeSessionId, agentName);
-    }
-  };
-
-  // Handle model selection for active session
-  const handleModelSelect = (modelRef: string) => {
-    if (activeView === 'chat' && activeSessionId) {
-      setSessionModel(activeSessionId, modelRef);
-    }
-  };
-
-  // Get current conversation title based on active view
-  const getTitle = () => {
-    switch (activeView) {
-      case 'chat':
-        return undefined; // No title in chat view
-      case 'history':
-        return '历史记录';
-      case 'settings':
-        return '设置';
-      default:
-        return 'TauriAI';
-    }
-  };
-
-  // Get agents for header dropdown
+  // Get agents for session creation dropdown
   const agents = config?.agents || [];
-  const currentAgentName = activeSession?.agentName || config?.defaultAgent || '';
-  const currentModelRef = activeSession?.modelRef || '';
-  const modelOptions = getModelOptions();
+
+  const handlePopoutSession = async (sessionId: string) => {
+    const session = sessions.find((s) => s.id === sessionId);
+    if (!session) return;
+    const conversationId = session.conversationId ?? undefined;
+    openViewWindow('chat', session.title, conversationId ? { conversationId } : undefined);
+    await closeSession(sessionId);
+  };
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-gray-50 dark:bg-gray-900">
-      {/* Sidebar */}
-      <Sidebar
-        activeView={activeView}
-        onViewChange={setActiveView}
-        expanded={sidebarExpanded}
-      />
-
       {/* Main Content Area */}
       <div className="flex flex-1 flex-col min-w-0 overflow-hidden">
-        {/* Header - only show when not in chat view */}
-        {activeView !== 'chat' && (
-          <Header
-            title={getTitle()}
-            onAgentSelect={handleAgentSelect}
-            currentAgentName={currentAgentName}
-            agents={agents}
-            modelOptions={modelOptions}
-            currentModelRef={currentModelRef}
-            onModelSelect={handleModelSelect}
-            showSelectors={true}
-          />
-        )}
-
-        {/* Session Tab Bar - only show in chat view, with drag region */}
-        {activeView === 'chat' && (
-          <SessionTabBar
-            sessions={sessions}
-            activeSessionId={activeSessionId}
-            agents={agents}
-            onTabClick={handleTabClick}
-            onTabClose={handleTabClose}
-            onNewSession={handleNewSession}
-          />
-        )}
+        {/* Workspace Tab Bar (chat sessions) */}
+        <WorkspaceTabBar
+          sessions={sessions}
+          activeSessionId={activeSessionId}
+          agents={agents}
+          onTabClick={handleTabClick}
+          onTabClose={handleTabClose}
+          onNewSession={handleNewSession}
+          onPopoutSession={handlePopoutSession}
+        />
 
         {/* Content */}
         <main className="flex-1 overflow-hidden">

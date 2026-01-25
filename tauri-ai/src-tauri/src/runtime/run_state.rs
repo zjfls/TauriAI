@@ -13,9 +13,13 @@ use std::sync::Arc;
 
 use tokio::sync::{mpsc, Notify, RwLock};
 
+use super::tools::services::PtySessionInfo;
+use super::tools::ToolServices;
+
 pub struct RunState {
     pub abort_senders: RwLock<HashMap<String, mpsc::Sender<()>>>,
     run_notifiers: RwLock<HashMap<String, Arc<Notify>>>,
+    tool_services: RwLock<HashMap<String, Arc<ToolServices>>>,
 }
 
 impl RunState {
@@ -23,6 +27,7 @@ impl RunState {
         Self {
             abort_senders: RwLock::new(HashMap::new()),
             run_notifiers: RwLock::new(HashMap::new()),
+            tool_services: RwLock::new(HashMap::new()),
         }
     }
 
@@ -43,6 +48,61 @@ impl RunState {
         };
         if let Some(n) = notify {
             n.notify_waiters();
+        }
+    }
+
+    pub async fn get_tool_services(&self, conversation_id: &str) -> Arc<ToolServices> {
+        let mut services = self.tool_services.write().await;
+        if let Some(existing) = services.get(conversation_id) {
+            return Arc::clone(existing);
+        }
+        let created = Arc::new(ToolServices::default());
+        services.insert(conversation_id.to_string(), Arc::clone(&created));
+        created
+    }
+
+    pub async fn list_pty_sessions(&self, conversation_id: &str) -> Vec<PtySessionInfo> {
+        let services = self.tool_services.read().await;
+        let Some(tool_services) = services.get(conversation_id) else {
+            return Vec::new();
+        };
+        tool_services.pty.list_sessions(conversation_id).await
+    }
+
+    pub async fn close_pty_session(&self, conversation_id: &str, session_id: i32) -> bool {
+        let services = self.tool_services.read().await;
+        let Some(tool_services) = services.get(conversation_id) else {
+            return false;
+        };
+        if let Some(meta) = tool_services.pty.get_session_meta(session_id).await {
+            if meta.conversation_id != conversation_id {
+                return false;
+            }
+        }
+        tool_services.pty.close_session(session_id).await
+    }
+
+    pub async fn cleanup_task_sessions(
+        &self,
+        conversation_id: &str,
+        task_id: &str,
+        keep_conversation_sessions: bool,
+    ) {
+        let services = self.tool_services.read().await;
+        let Some(tool_services) = services.get(conversation_id) else {
+            return;
+        };
+
+        let _ = tool_services
+            .pty
+            .close_task_sessions(conversation_id, task_id)
+            .await;
+
+        if !keep_conversation_sessions {
+            let _ = tool_services
+                .pty
+                .close_conversation_sessions(conversation_id)
+                .await;
         }
     }
 
@@ -73,4 +133,3 @@ impl Default for RunState {
         Self::new()
     }
 }
-

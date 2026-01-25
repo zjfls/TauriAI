@@ -347,8 +347,70 @@ pub struct Conversation {
     /// - 使用 JSON value 存储以便后续扩展更多设置（draft、rag、memory 开关等）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_mode: Option<serde_json::Value>,
+    /// Optional workstudio binding (many conversations can map to one workstudio).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workstudio_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// A workstudio (workspace) definition, bound to a main folder and optional additional folders.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Workstudio {
+    pub id: String,
+    /// Workstudio 类型（例如 code / doc / mindmap 等）。
+    ///
+    /// 说明：
+    /// - 用于区分同一主文件夹下，不同“工作室类型”的持久化状态（打开的文件、布局等）。
+    /// - 默认 "code"，以保持向后兼容。
+    #[serde(default = "default_workstudio_kind")]
+    pub kind: String,
+    pub main_folder: String,
+    pub folders: Vec<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+fn default_workstudio_kind() -> String {
+    "code".to_string()
+}
+
+/// Workstudio UI 持久化状态（用于恢复上次打开的文件/分屏等）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkstudioUiState {
+    pub open_files: Vec<String>,
+    /// 动态分屏：多个编辑组（每组有自己的标签页与激活文件）。
+    #[serde(default)]
+    pub groups: Vec<WorkstudioUiGroupState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub focused_group_index: Option<usize>,
+    /// Explorer 展开状态（目录 path 列表）。
+    #[serde(default)]
+    pub expanded_dirs: Vec<String>,
+
+    // 兼容旧版本（固定左右 split）的字段：保留读取能力
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_left_file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_right_file: Option<String>,
+    #[serde(default)]
+    pub split_open: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkstudioUiGroupState {
+    pub open_files: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_file: Option<String>,
+    #[serde(default = "default_group_weight")]
+    pub weight: f32,
+}
+
+fn default_group_weight() -> f32 {
+    1.0
 }
 
 // ============================================================================
@@ -523,22 +585,45 @@ impl Default for Provider {
 }
 
 /// Agent runtime type (controls behavior and capabilities)
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentType {
     /// 最简单的 Chat Agent（LLM 单轮/多轮对话）
     Chat,
     /// 工具型 Agent（function/tool calling loop）
     Tool,
-    /// 编码型 Agent（ToolAgent + 编码相关工具/策略）
-    Code,
-    /// 方案/工作流 Agent（编排多个 agent 完成任务）
-    Solution,
 }
 
 impl Default for AgentType {
     fn default() -> Self {
         Self::Chat
+    }
+}
+
+impl Serialize for AgentType {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(match self {
+            Self::Chat => "chat",
+            Self::Tool => "tool",
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for AgentType {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(match s.as_str() {
+            "tool" => Self::Tool,
+            // Backward-compat: map deprecated kinds.
+            "code" => Self::Tool,
+            "solution" => Self::Chat,
+            _ => Self::Chat,
+        })
     }
 }
 
@@ -567,14 +652,21 @@ pub struct Agent {
     /// Optional toolset name (bind different tool collections per agent)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub toolset: Option<String>,
-    /// Max turns for a single run/task (tool/code agents may need multi-turn)
+    /// Whether to enable workspace/workstudio support for Tool agents.
+    ///
+    /// Semantics:
+    /// - None: use default (Tool => true; others => false)
+    /// - Some(true/false): explicit override
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_support: Option<bool>,
+    /// Max turns for a single run/task (tool agents may need multi-turn)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_turns: Option<u32>,
 
     /// 是否把 thinking（思考过程）回灌进“同一 Task 的下一轮上下文”。
     ///
     /// - 默认关闭：thinking 只用于 UI 展示/调试，不参与后续 turn 的提示词上下文。
-    /// - 打开后：在多 Turn（tool/code agent）场景里，会把 thinking 作为显式文本插入到
+    /// - 打开后：在多 Turn（tool agent）场景里，会把 thinking 作为显式文本插入到
     ///   assistant 的上下文内容中（用于下一轮续写/继续工具循环）。
     #[serde(default)]
     pub reinject_thinking: bool,
@@ -591,6 +683,7 @@ impl Default for Agent {
             system_prompt: String::new(),
             format_type: FormatPromptType::default(),
             toolset: None,
+            workspace_support: None,
             max_turns: None,
             reinject_thinking: false,
         }
@@ -708,9 +801,18 @@ pub struct GeneralSettings {
     /// Enable debug mode to show raw HTTP messages
     #[serde(default)]
     pub debug_mode: bool,
+    /// Debug: log raw SSE lines from providers (streaming only)
+    #[serde(default)]
+    pub debug_sse: bool,
     /// Show token usage in messages
     #[serde(default)]
     pub show_usage: bool,
+    /// ANSI render mode for tool output (color/strip/raw)
+    #[serde(default = "default_ansi_render_mode")]
+    pub ansi_render_mode: String,
+    /// ANSI palette selection (auto/xterm/vscode-dark/vscode-light)
+    #[serde(default = "default_ansi_color_mode")]
+    pub ansi_color_mode: String,
     /// Whether to open DevTools on startup (dev builds only)
     #[serde(default)]
     pub open_devtools_on_start: bool,
@@ -722,10 +824,21 @@ impl Default for GeneralSettings {
             language: "zh-CN".to_string(),
             auto_start: false,
             debug_mode: false,
+            debug_sse: false,
             show_usage: true,
+            ansi_render_mode: "color".to_string(),
+            ansi_color_mode: "auto".to_string(),
             open_devtools_on_start: false,
         }
     }
+}
+
+fn default_ansi_render_mode() -> String {
+    "color".to_string()
+}
+
+fn default_ansi_color_mode() -> String {
+    "auto".to_string()
 }
 
 // ============================================================================
@@ -760,6 +873,9 @@ pub struct ToolSetConfig {
     pub name: String,
     #[serde(default)]
     pub tools: Vec<String>,
+    /// Experimental: persistent shell/pty enhancement (opt-in per toolset).
+    #[serde(default)]
+    pub persistance_shell_enhance: bool,
 }
 
 impl Default for ToolSetConfig {
@@ -767,6 +883,7 @@ impl Default for ToolSetConfig {
         Self {
             name: String::new(),
             tools: Vec::new(),
+            persistance_shell_enhance: false,
         }
     }
 }
@@ -916,6 +1033,7 @@ impl AppConfig {
                     .unwrap_or_default(),
                 format_type: FormatPromptType::Chat,
                 toolset: None,
+                workspace_support: None,
                 max_turns: None,
                 reinject_thinking: false,
             });

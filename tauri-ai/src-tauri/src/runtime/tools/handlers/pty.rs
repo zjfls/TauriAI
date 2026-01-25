@@ -8,10 +8,13 @@ use crate::ai_client::ToolCall;
 use crate::runtime::events::RunEvent;
 use crate::runtime::tools::permissions::ToolPermission;
 use crate::runtime::tools::registry::{ToolCallResult, ToolError, ToolExecutionContext, ToolHandler};
+use crate::runtime::tools::services::PtySessionScope;
 use crate::runtime::tools::spec::ToolSpec;
 
 pub struct ExecCommandTool;
 pub struct WriteStdinTool;
+pub struct ExecCommandPersistentTool;
+pub struct WriteStdinPersistentTool;
 
 #[derive(Debug, Deserialize)]
 struct ExecCommandArgs {
@@ -53,6 +56,82 @@ struct WriteStdinArgs {
 
 fn default_write_yield_time_ms() -> u64 {
     250
+}
+
+fn exec_command_spec(name: &str, description: &str) -> ToolSpec {
+    ToolSpec {
+        name: name.to_string(),
+        description: Some(description.to_string()),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "cmd": { "type": "string", "description": "要执行的脚本/命令（由 shell 解析）。当 shell=powershell/pwsh 时，把 cmd 当作 PowerShell 脚本正文；不要在 cmd 里再包一层 `powershell -Command ...`。" },
+                "workdir": { "type": "string", "description": "可选工作目录" },
+                "shell": { "type": "string", "description": "可选：指定启动的 shell（powershell/pwsh/cmd/bash/zsh）。为空则使用默认 shell（Windows 默认 pwsh(若存在)/powershell.exe；非 Windows 默认优先 $SHELL，其次 /bin/bash(若存在)，再退回 /bin/sh）。" },
+                "login": { "type": "boolean", "description": "可选：是否以 login shell 语义运行（默认 true）。对 bash/zsh：login=true 等价于 -lc；对 powershell/pwsh：login=false 会加 -NoProfile。" },
+                "yield_time_ms": { "type": "integer", "description": "可选：读取输出的时间窗口（毫秒，默认 10000）。" },
+                "max_output_tokens": { "type": "integer", "description": "可选：最大输出 token（超出将截断）。" },
+                "sandbox_permissions": { "type": "string", "description": "可选：沙箱权限（当前后端暂不实现，仅为兼容）。" },
+                "justification": { "type": "string", "description": "可选：申请更高权限的理由（当前后端暂不实现，仅为兼容）。" }
+            },
+            // 约定：
+            // - workdir 为空字符串表示“使用默认工作目录”
+            // - chars 允许为空（用于轮询输出）
+            "required": ["cmd"],
+            "additionalProperties": false
+        }),
+        required_permissions: vec![ToolPermission::PtyExec],
+    }
+}
+
+fn write_stdin_spec(name: &str, description: &str) -> ToolSpec {
+    ToolSpec {
+        name: name.to_string(),
+        description: Some(description.to_string()),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "session_id": { "type": "integer", "description": "exec_command 返回的 session_id" },
+                "chars": { "type": "string", "description": "要写入 stdin 的字符（可包含换行）" },
+                "yield_time_ms": { "type": "integer", "description": "可选：读取输出的时间窗口（毫秒，默认 250）。" },
+                "max_output_tokens": { "type": "integer", "description": "可选：最大输出 token（超出将截断）。" }
+            },
+            "required": ["session_id"],
+            "additionalProperties": false
+        }),
+        required_permissions: vec![ToolPermission::PtyExec],
+    }
+}
+
+fn scope_allows(allowed: &[PtySessionScope], scope: PtySessionScope) -> bool {
+    allowed.iter().any(|s| *s == scope)
+}
+
+async fn ensure_session_scope(
+    ctx: &ToolExecutionContext<'_>,
+    session_id: i32,
+    allowed: &[PtySessionScope],
+) -> Result<PtySessionScope, ToolError> {
+    let meta = ctx
+        .services
+        .pty
+        .get_session_meta(session_id)
+        .await
+        .ok_or_else(|| ToolError::invalid(format!("PTY session 不存在: {session_id}")))?;
+
+    if meta.conversation_id != ctx.conversation_id {
+        return Err(ToolError::denied("PTY session 不属于当前对话"));
+    }
+
+    if meta.scope == PtySessionScope::Task && meta.task_id != ctx.task_id {
+        return Err(ToolError::denied("PTY session 已不属于当前任务"));
+    }
+
+    if !scope_allows(allowed, meta.scope) {
+        return Err(ToolError::denied("PTY session 范围不匹配"));
+    }
+
+    Ok(meta.scope)
 }
 
 #[cfg(windows)]
@@ -136,7 +215,16 @@ fn build_shell_invocation(command: &str, shell: Option<&str>, login: bool) -> Ve
     #[cfg(not(windows))]
     {
         if shell.is_empty() {
-            // Default to /bin/sh; if login requested and bash exists, prefer bash -lc.
+            // 尽量贴近用户在 Terminal 里的体验：优先使用 $SHELL（通常是 /bin/zsh 或 /bin/bash）。
+            if let Ok(shell) = std::env::var("SHELL") {
+                let shell = shell.trim();
+                if !shell.is_empty() && std::path::Path::new(shell).exists() {
+                    let flag = if login { "-lc" } else { "-c" };
+                    return vec![shell.to_string(), flag.to_string(), command.to_string()];
+                }
+            }
+
+            // Fallback: if login requested and bash exists, prefer bash -lc; otherwise /bin/sh -c.
             if login && std::path::Path::new("/bin/bash").exists() {
                 return vec![
                     "/bin/bash".to_string(),
@@ -311,32 +399,145 @@ async fn check_and_maybe_close_session(
     }
 }
 
+async fn exec_command_with_scope(
+    ctx: &mut ToolExecutionContext<'_>,
+    call: &ToolCall,
+    scope: PtySessionScope,
+) -> Result<ToolCallResult, ToolError> {
+    let args: ExecCommandArgs = serde_json::from_str(&call.arguments)
+        .map_err(|e| ToolError::invalid(format!("解析 exec_command 参数失败: {e}")))?;
+
+    if args.cmd.trim().is_empty() {
+        return Err(ToolError::invalid("cmd 不能为空"));
+    }
+
+    let command = build_shell_invocation(&args.cmd, args.shell.as_deref(), args.login);
+    let workdir = args
+        .workdir
+        .as_ref()
+        .filter(|s| !s.trim().is_empty())
+        .map(PathBuf::from)
+        .or_else(|| ctx.default_workdir.clone());
+
+    let session_id = ctx
+        .services
+        .pty
+        .create_session(
+            command,
+            workdir,
+            ctx.conversation_id,
+            ctx.task_id,
+            scope,
+        )
+        .await
+        .map_err(ToolError::new)?;
+
+    let output = drain_pty_output(ctx, session_id, &call.id, args.yield_time_ms).await?;
+    let output = maybe_truncate_output(output, args.max_output_tokens);
+    let (done, exit_code) = check_and_maybe_close_session(ctx, session_id).await?;
+
+    Ok(ToolCallResult {
+        content: serde_json::json!({
+            // 与 Codex unified exec 语义对齐：只有进程仍在运行时才返回 session_id。
+            //
+            // Codex 侧的测试/调试字段名是 `process_id`；为了兼容模型的既有习惯，这里同时返回：
+            // - `session_id`: i32（write_stdin 入参）
+            // - `process_id`: i32（仅用于对齐 Codex “进程还活着才有 id”的强约束语义）
+            "session_id": if done { serde_json::Value::Null } else { serde_json::Value::from(session_id) },
+            "process_id": if done { serde_json::Value::Null } else { serde_json::Value::from(session_id) },
+            "output": output,
+            "done": done,
+            "exit_code": exit_code
+        })
+        .to_string(),
+    })
+}
+
+async fn write_stdin_with_scope(
+    ctx: &mut ToolExecutionContext<'_>,
+    call: &ToolCall,
+    allowed_scopes: &[PtySessionScope],
+) -> Result<ToolCallResult, ToolError> {
+    let args: WriteStdinArgs = serde_json::from_str(&call.arguments)
+        .map_err(|e| ToolError::invalid(format!("解析 write_stdin 参数失败: {e}")))?;
+
+    ensure_session_scope(ctx, args.session_id, allowed_scopes).await?;
+
+    let session = ctx
+        .services
+        .pty
+        .get_session(args.session_id)
+        .await
+        .ok_or_else(|| ToolError::invalid(format!("PTY session 不存在: {}", args.session_id)))?;
+
+    // 允许 chars 为空：仅轮询输出（避免对已退出进程 flush 触发 BrokenPipe/232）。
+    // NOTE: 模型可能会在 exec_command(done=false) 后用 write_stdin(chars="") 来“继续读输出”。
+    let mut pipe_closed_during_write = false;
+    if !args.chars.is_empty() {
+        // 写 stdin（用 take/move 避免在 spawn_blocking 里借用 &mut）
+        let mut guard = session.lock().await;
+        let mut writer = guard
+            .writer
+            .take()
+            .ok_or_else(|| ToolError::internal("PTY writer 不可用"))?;
+        drop(guard);
+
+        let bytes = args.chars.clone().into_bytes();
+        let (writer, write_result) = tokio::task::spawn_blocking(move || {
+            let res = (|| {
+                writer.write_all(&bytes)?;
+                writer.flush()?;
+                Ok::<(), std::io::Error>(())
+            })();
+            (writer, res)
+        })
+        .await
+        .map_err(|e| ToolError::new(format!("write_stdin 线程失败: {e}")))?;
+
+        // 无论成功/失败都放回 writer，避免 session 被“写坏”导致后续无法收尾。
+        let mut guard = session.lock().await;
+        guard.writer = Some(writer);
+        drop(guard);
+
+        if let Err(e) = write_result {
+            if is_pipe_closing_error(&e) {
+                pipe_closed_during_write = true;
+            } else {
+                return Err(ToolError::new(format!("write_stdin IO 失败: {e}")));
+            }
+        }
+    }
+
+    let output = drain_pty_output(ctx, args.session_id, &call.id, args.yield_time_ms).await?;
+    let output = maybe_truncate_output(output, args.max_output_tokens);
+    let (mut done, mut exit_code) = check_and_maybe_close_session(ctx, args.session_id).await?;
+
+    // 如果本轮写入遇到“管道正在被关闭”，但 try_wait 尚未返回状态：主动回收 session，避免模型下一轮继续写导致报错。
+    if pipe_closed_during_write && !done {
+        let _ = ctx.services.pty.remove_session(args.session_id).await;
+        done = true;
+        exit_code = None;
+    }
+
+    Ok(ToolCallResult {
+        content: serde_json::json!({
+            "session_id": if done { serde_json::Value::Null } else { serde_json::Value::from(args.session_id) },
+            "process_id": if done { serde_json::Value::Null } else { serde_json::Value::from(args.session_id) },
+            "output": output,
+            "done": done,
+            "exit_code": exit_code
+        })
+        .to_string(),
+    })
+}
+
 #[async_trait]
 impl ToolHandler for ExecCommandTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "exec_command".to_string(),
-            description: Some("在 PTY 中执行命令（可交互），返回 session_id 与输出".to_string()),
-             parameters: serde_json::json!({
-                 "type": "object",
-                 "properties": {
-                    "cmd": { "type": "string", "description": "要执行的脚本/命令（由 shell 解析）。当 shell=powershell/pwsh 时，把 cmd 当作 PowerShell 脚本正文；不要在 cmd 里再包一层 `powershell -Command ...`。" },
-                     "workdir": { "type": "string", "description": "可选工作目录" },
-                    "shell": { "type": "string", "description": "可选：指定启动的 shell（powershell/pwsh/cmd/bash）。为空则使用默认 shell（Windows 默认 pwsh(若存在)/powershell.exe；非 Windows 默认 /bin/bash(若存在)/bin/sh）。" },
-                    "login": { "type": "boolean", "description": "可选：是否以 login shell 语义运行（默认 true）。对 bash/zsh：login=true 等价于 -lc；对 powershell/pwsh：login=false 会加 -NoProfile。" },
-                     "yield_time_ms": { "type": "integer", "description": "可选：读取输出的时间窗口（毫秒，默认 10000）。" },
-                     "max_output_tokens": { "type": "integer", "description": "可选：最大输出 token（超出将截断）。" },
-                     "sandbox_permissions": { "type": "string", "description": "可选：沙箱权限（当前后端暂不实现，仅为兼容）。" },
-                     "justification": { "type": "string", "description": "可选：申请更高权限的理由（当前后端暂不实现，仅为兼容）。" }
-                 },
-                // 约定：
-                // - workdir 为空字符串表示“使用默认工作目录”
-                // - chars 允许为空（用于轮询输出）
-                "required": ["cmd"],
-                "additionalProperties": false
-            }),
-            required_permissions: vec![ToolPermission::PtyExec],
-        }
+        exec_command_spec(
+            "exec_command",
+            "在 PTY 中执行命令（可交互），返回 session_id 与输出",
+        )
     }
 
     async fn is_mutating(&self, _call: &ToolCall) -> bool {
@@ -348,68 +549,36 @@ impl ToolHandler for ExecCommandTool {
         ctx: &mut ToolExecutionContext<'_>,
         call: &ToolCall,
     ) -> Result<ToolCallResult, ToolError> {
-        let args: ExecCommandArgs = serde_json::from_str(&call.arguments)
-            .map_err(|e| ToolError::invalid(format!("解析 exec_command 参数失败: {e}")))?;
+        exec_command_with_scope(ctx, call, PtySessionScope::Task).await
+    }
+}
 
-        if args.cmd.trim().is_empty() {
-            return Err(ToolError::invalid("cmd 不能为空"));
-        }
+#[async_trait]
+impl ToolHandler for ExecCommandPersistentTool {
+    fn spec(&self) -> ToolSpec {
+        exec_command_spec(
+            "exec_command_persistent",
+            "在 PTY 中执行命令（跨任务持久会话），返回 session_id 与输出",
+        )
+    }
 
-        let command = build_shell_invocation(&args.cmd, args.shell.as_deref(), args.login);
-        let workdir = args
-            .workdir
-            .as_ref()
-            .filter(|s| !s.trim().is_empty())
-            .map(PathBuf::from);
+    async fn is_mutating(&self, _call: &ToolCall) -> bool {
+        true
+    }
 
-        let session_id = ctx
-            .services
-            .pty
-            .create_session(command, workdir)
-            .await
-            .map_err(ToolError::new)?;
-
-        let output = drain_pty_output(ctx, session_id, &call.id, args.yield_time_ms).await?;
-        let output = maybe_truncate_output(output, args.max_output_tokens);
-        let (done, exit_code) = check_and_maybe_close_session(ctx, session_id).await?;
-
-        Ok(ToolCallResult {
-            content: serde_json::json!({
-                // 与 Codex unified exec 语义对齐：只有进程仍在运行时才返回 session_id。
-                //
-                // Codex 侧的测试/调试字段名是 `process_id`；为了兼容模型的既有习惯，这里同时返回：
-                // - `session_id`: i32（write_stdin 入参）
-                // - `process_id`: i32（仅用于对齐 Codex “进程还活着才有 id”的强约束语义）
-                "session_id": if done { serde_json::Value::Null } else { serde_json::Value::from(session_id) },
-                "process_id": if done { serde_json::Value::Null } else { serde_json::Value::from(session_id) },
-                "output": output,
-                "done": done,
-                "exit_code": exit_code
-            })
-            .to_string(),
-        })
+    async fn call(
+        &self,
+        ctx: &mut ToolExecutionContext<'_>,
+        call: &ToolCall,
+    ) -> Result<ToolCallResult, ToolError> {
+        exec_command_with_scope(ctx, call, PtySessionScope::Conversation).await
     }
 }
 
 #[async_trait]
 impl ToolHandler for WriteStdinTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "write_stdin".to_string(),
-            description: Some("向 PTY session 写入输入，并读取一段输出".to_string()),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "session_id": { "type": "integer", "description": "exec_command 返回的 session_id" },
-                    "chars": { "type": "string", "description": "要写入 stdin 的字符（可包含换行）" },
-                    "yield_time_ms": { "type": "integer", "description": "可选：读取输出的时间窗口（毫秒，默认 250）。" },
-                    "max_output_tokens": { "type": "integer", "description": "可选：最大输出 token（超出将截断）。" }
-                },
-                "required": ["session_id"],
-                "additionalProperties": false
-            }),
-            required_permissions: vec![ToolPermission::PtyExec],
-        }
+        write_stdin_spec("write_stdin", "向 PTY session 写入输入，并读取一段输出")
     }
 
     async fn is_mutating(&self, _call: &ToolCall) -> bool {
@@ -421,74 +590,28 @@ impl ToolHandler for WriteStdinTool {
         ctx: &mut ToolExecutionContext<'_>,
         call: &ToolCall,
     ) -> Result<ToolCallResult, ToolError> {
-        let args: WriteStdinArgs = serde_json::from_str(&call.arguments)
-            .map_err(|e| ToolError::invalid(format!("解析 write_stdin 参数失败: {e}")))?;
+        write_stdin_with_scope(ctx, call, &[PtySessionScope::Task]).await
+    }
+}
 
-        let session = ctx
-            .services
-            .pty
-            .get_session(args.session_id)
-            .await
-            .ok_or_else(|| ToolError::invalid(format!("PTY session 不存在: {}", args.session_id)))?;
+#[async_trait]
+impl ToolHandler for WriteStdinPersistentTool {
+    fn spec(&self) -> ToolSpec {
+        write_stdin_spec(
+            "write_stdin_persistent",
+            "向持久 PTY session 写入输入，并读取一段输出",
+        )
+    }
 
-        // 允许 chars 为空：仅轮询输出（避免对已退出进程 flush 触发 BrokenPipe/232）。
-        // NOTE: 模型可能会在 exec_command(done=false) 后用 write_stdin(chars="") 来“继续读输出”。
-        let mut pipe_closed_during_write = false;
-        if !args.chars.is_empty() {
-            // 写 stdin（用 take/move 避免在 spawn_blocking 里借用 &mut）
-            let mut guard = session.lock().await;
-            let mut writer = guard
-                .writer
-                .take()
-                .ok_or_else(|| ToolError::internal("PTY writer 不可用"))?;
-            drop(guard);
+    async fn is_mutating(&self, _call: &ToolCall) -> bool {
+        true
+    }
 
-            let bytes = args.chars.clone().into_bytes();
-            let (writer, write_result) = tokio::task::spawn_blocking(move || {
-                let res = (|| {
-                    writer.write_all(&bytes)?;
-                    writer.flush()?;
-                    Ok::<(), std::io::Error>(())
-                })();
-                (writer, res)
-            })
-            .await
-            .map_err(|e| ToolError::new(format!("write_stdin 线程失败: {e}")))?;
-
-            // 无论成功/失败都放回 writer，避免 session 被“写坏”导致后续无法收尾。
-            let mut guard = session.lock().await;
-            guard.writer = Some(writer);
-            drop(guard);
-
-            if let Err(e) = write_result {
-                if is_pipe_closing_error(&e) {
-                    pipe_closed_during_write = true;
-                } else {
-                    return Err(ToolError::new(format!("write_stdin IO 失败: {e}")));
-                }
-            }
-        }
-
-        let output = drain_pty_output(ctx, args.session_id, &call.id, args.yield_time_ms).await?;
-        let output = maybe_truncate_output(output, args.max_output_tokens);
-        let (mut done, mut exit_code) = check_and_maybe_close_session(ctx, args.session_id).await?;
-
-        // 如果本轮写入遇到“管道正在被关闭”，但 try_wait 尚未返回状态：主动回收 session，避免模型下一轮继续写导致报错。
-        if pipe_closed_during_write && !done {
-            let _ = ctx.services.pty.remove_session(args.session_id).await;
-            done = true;
-            exit_code = None;
-        }
-
-        Ok(ToolCallResult {
-            content: serde_json::json!({
-                "session_id": if done { serde_json::Value::Null } else { serde_json::Value::from(args.session_id) },
-                "process_id": if done { serde_json::Value::Null } else { serde_json::Value::from(args.session_id) },
-                "output": output,
-                "done": done,
-                "exit_code": exit_code
-            })
-            .to_string(),
-        })
+    async fn call(
+        &self,
+        ctx: &mut ToolExecutionContext<'_>,
+        call: &ToolCall,
+    ) -> Result<ToolCallResult, ToolError> {
+        write_stdin_with_scope(ctx, call, &[PtySessionScope::Conversation]).await
     }
 }

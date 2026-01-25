@@ -36,6 +36,10 @@ pub struct ToolOrchestrator {
     permission_policy: Arc<dyn ToolPermissionPolicy>,
 }
 
+fn is_persistent_tool(name: &str) -> bool {
+    name.ends_with("_persistent")
+}
+
 impl ToolOrchestrator {
     /// 创建一个带内置工具（echo/get_time）的 orchestrator。
     pub fn new_builtin(config: ToolOrchestratorConfig) -> Self {
@@ -62,7 +66,10 @@ impl ToolOrchestrator {
     }
 
     fn is_tool_enabled_for_model(&self, spec: &ToolSpec) -> bool {
-        if !self.toolset.contains(&spec.name) {
+        if is_persistent_tool(&spec.name) && !self.toolset.persistance_shell_enhance {
+            return false;
+        }
+        if !is_persistent_tool(&spec.name) && !self.toolset.contains(&spec.name) {
             return false;
         }
         matches!(
@@ -73,7 +80,12 @@ impl ToolOrchestrator {
     }
 
     fn resolve_handler(&self, tool_name: &str) -> Result<Arc<dyn ToolHandler>, ToolError> {
-        if !self.toolset.contains(tool_name) {
+        if is_persistent_tool(tool_name) && !self.toolset.persistance_shell_enhance {
+            return Err(ToolError::denied(
+                "持久工具需要在 toolset 中开启“持久进程”",
+            ));
+        }
+        if !is_persistent_tool(tool_name) && !self.toolset.contains(tool_name) {
             return Err(ToolError::denied(format!(
                 "工具 '{tool_name}' 不在当前 toolset"
             )));

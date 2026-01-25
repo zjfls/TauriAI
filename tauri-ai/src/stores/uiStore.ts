@@ -132,3 +132,78 @@ if (typeof window !== 'undefined') {
   // Set up listener for system theme changes
   setupSystemThemeListener();
 }
+
+// -----------------------------------------------------------------------------
+// Debug: UI store update storm detector (DEV only)
+// -----------------------------------------------------------------------------
+const UI_STORE_DEBUG_LAST_STORM_KEY = 'tauri-ai:debug:last_ui_store_storm';
+const uiStoreStormDebugEnabled = (() => {
+  try {
+    return import.meta.env.DEV;
+  } catch {
+    return false;
+  }
+})();
+
+if (uiStoreStormDebugEnabled) {
+  let windowStart = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  let updatesInWindow = 0;
+  let tracedInWindow = false;
+
+  const WINDOW_MS = 500;
+  const TRACE_THRESHOLD = 40;
+
+  useUIStore.subscribe((state, prev) => {
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    if (now - windowStart > WINDOW_MS) {
+      windowStart = now;
+      updatesInWindow = 0;
+      tracedInWindow = false;
+    }
+
+    updatesInWindow += 1;
+
+    if (!tracedInWindow && updatesInWindow >= TRACE_THRESHOLD) {
+      tracedInWindow = true;
+
+      const stack = (() => {
+        try {
+          return new Error('uiStore update storm').stack || '';
+        } catch {
+          return '';
+        }
+      })();
+
+      try {
+        if (typeof localStorage !== 'undefined') {
+          const record = {
+            ts: Date.now(),
+            updatesInWindow,
+            windowMs: WINDOW_MS,
+            state: {
+              sidebarExpanded: state.sidebarExpanded,
+              activeView: state.activeView,
+              theme: state.theme,
+            },
+            prevState: {
+              sidebarExpanded: prev.sidebarExpanded,
+              activeView: prev.activeView,
+              theme: prev.theme,
+            },
+            stack,
+          };
+          localStorage.setItem(UI_STORE_DEBUG_LAST_STORM_KEY, JSON.stringify(record));
+        }
+      } catch {
+        // ignore
+      }
+
+      console.groupCollapsed(`[debug] uiStore 更新风暴: ${updatesInWindow}/${WINDOW_MS}ms`);
+      console.log('state:', state);
+      console.log('prev:', prev);
+      console.trace('uiStore update storm stack');
+      if (stack) console.log('captured stack:', stack);
+      console.groupEnd();
+    }
+  });
+}

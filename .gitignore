@@ -1,5 +1,19 @@
 .DS_Store
 TauriAI.code-workspace
+TauriAI-thinking-context.code-workspace
+
+# Local app state
+.tauriai/
 
 # Rust build artifacts
 target/
+
+# Python cache
+**/__pycache__/
+**/*.pyc
+
+# Generated/temporary docs artifacts
+**/*.bak-*
+
+# Local analyst outputs
+tauri-ai/.system-analyst/

@@ -37,6 +37,8 @@ pub struct ToolSet {
     pub name: String,
     pub mode: ToolSetMode,
     pub tools: Vec<String>,
+    /// Experimental: enable persistent shell/pty enhancement for this toolset.
+    pub persistance_shell_enhance: bool,
 }
 
 impl ToolSet {
@@ -45,6 +47,7 @@ impl ToolSet {
             name: String::new(),
             mode: ToolSetMode::AllowAll,
             tools: Vec::new(),
+            persistance_shell_enhance: false,
         }
     }
 
@@ -53,6 +56,7 @@ impl ToolSet {
             name: name.into(),
             mode: ToolSetMode::AllowList,
             tools,
+            persistance_shell_enhance: false,
         }
     }
 
@@ -61,7 +65,13 @@ impl ToolSet {
             name: name.into(),
             mode: ToolSetMode::AllowList,
             tools: Vec::new(),
+            persistance_shell_enhance: false,
         }
+    }
+
+    pub fn with_persistance_shell_enhance(mut self, enabled: bool) -> Self {
+        self.persistance_shell_enhance = enabled;
+        self
     }
 
     pub fn contains(&self, tool_name: &str) -> bool {
@@ -69,6 +79,13 @@ impl ToolSet {
             ToolSetMode::AllowAll => true,
             ToolSetMode::AllowList => self.tools.iter().any(|t| t == tool_name),
         }
+    }
+
+    /// 显式白名单判断：仅当 toolset 为 AllowList 且包含该工具时返回 true。
+    /// 用于“实验/持久”工具的显式启用，避免默认 allow_all 污染提示词。
+    pub fn contains_explicit(&self, tool_name: &str) -> bool {
+        matches!(self.mode, ToolSetMode::AllowList)
+            && self.tools.iter().any(|t| t == tool_name)
     }
 }
 

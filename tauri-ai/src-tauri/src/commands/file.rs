@@ -6,6 +6,7 @@
 use serde::Serialize;
 use std::path::Path;
 use base64::Engine as _;
+use tokio::fs;
 
 const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024; // 20MB
 const MAX_PDF_BYTES: u64 = 20 * 1024 * 1024; // 20MB
@@ -75,6 +76,14 @@ pub struct LocalFileBase64 {
     pub size: u64,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalDirEntry {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+}
+
 /// Read a local file and return base64-encoded bytes for the frontend.
 ///
 /// Security notes:
@@ -123,4 +132,118 @@ pub async fn read_local_file_base64(path: String) -> Result<LocalFileBase64, Str
         base64,
         size,
     })
+}
+
+/// List a local directory (one level).
+///
+/// Notes:
+/// - 仅用于 Workstudio 文件浏览器，返回目录 + “已知可读的文本文件”。
+/// - 不递归；递归由前端按需展开触发。
+#[tauri::command]
+pub async fn list_local_directory(path: String) -> Result<Vec<LocalDirEntry>, String> {
+    if path.trim().is_empty() {
+        return Err("路径为空".to_string());
+    }
+
+    let dir_path = Path::new(&path);
+    let metadata = fs::metadata(dir_path)
+        .await
+        .map_err(|e| format!("无法读取目录信息: {e}"))?;
+
+    if !metadata.is_dir() {
+        return Err("目标不是文件夹".to_string());
+    }
+
+    let mut rd = fs::read_dir(dir_path)
+        .await
+        .map_err(|e| format!("读取目录失败: {e}"))?;
+
+    let mut out: Vec<LocalDirEntry> = Vec::new();
+
+    while let Some(entry) = rd
+        .next_entry()
+        .await
+        .map_err(|e| format!("遍历目录失败: {e}"))?
+    {
+        let file_type = entry
+            .file_type()
+            .await
+            .map_err(|e| format!("读取文件类型失败: {e}"))?;
+
+        let name = entry.file_name().to_string_lossy().to_string();
+        let is_dir = file_type.is_dir();
+
+        if !is_dir {
+            // Only include files that we can open as text with current allow-list.
+            let mime = infer_mime_from_filename(&name);
+            if mime != Some("text/plain") {
+                continue;
+            }
+        }
+
+        out.push(LocalDirEntry {
+            name,
+            path: entry.path().to_string_lossy().to_string(),
+            is_dir,
+        });
+    }
+
+    // Sort: dirs first, then name (case-insensitive).
+    out.sort_by(|a, b| {
+        match (a.is_dir, b.is_dir) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()),
+        }
+    });
+
+    Ok(out)
+}
+
+/// Write a local text file.
+///
+/// Security notes:
+/// - Restricts file extensions to the same allow-list as `read_local_file_base64` (text only).
+/// - Caps payload size to avoid huge IPC transfers.
+#[tauri::command]
+pub async fn write_local_text_file(path: String, content: String) -> Result<(), String> {
+    if path.trim().is_empty() {
+        return Err("路径为空".to_string());
+    }
+
+    let file_path = Path::new(&path);
+    let filename = file_path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".to_string());
+
+    let mime = infer_mime_from_filename(&filename)
+        .ok_or_else(|| "不支持的文件类型（仅支持文本文件）".to_string())?;
+    if mime != "text/plain" {
+        return Err("仅支持写入文本文件".to_string());
+    }
+
+    let size = content.as_bytes().len() as u64;
+    if size > MAX_TEXT_BYTES {
+        let max_mb = MAX_TEXT_BYTES / 1024 / 1024;
+        return Err(format!("内容过大（{size} bytes），请保持小于 {max_mb}MB"));
+    }
+
+    if let Ok(meta) = fs::metadata(file_path).await {
+        if meta.is_dir() {
+            return Err("目标是文件夹，无法写入".to_string());
+        }
+    }
+
+    if let Some(parent) = file_path.parent() {
+        fs::create_dir_all(parent)
+            .await
+            .map_err(|e| format!("创建父目录失败: {e}"))?;
+    }
+
+    fs::write(file_path, content)
+        .await
+        .map_err(|e| format!("写入文件失败: {e}"))?;
+
+    Ok(())
 }

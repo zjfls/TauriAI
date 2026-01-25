@@ -5,13 +5,17 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { X, ChevronDown, ChevronRight, Copy, Check } from 'lucide-react';
-import type { DebugInfo, MessageTurn } from '../../types';
+import type { DebugInfo, MessageBlock, MessageTurn, AnsiColorMode, AnsiRenderMode } from '../../types';
+import { useConfigStore } from '../../stores/configStore';
+import { AnsiText } from './AnsiText';
 
 interface DebugModalProps {
   isOpen: boolean;
   onClose: () => void;
   debugInfo: DebugInfo | null;
   turns?: MessageTurn[] | null;
+  blocks?: MessageBlock[] | null;
+  initialTurnId?: string | null;
   messageRole: 'user' | 'assistant' | 'error';
 }
 
@@ -49,6 +53,24 @@ interface JsonViewerProps {
   label?: string;
 }
 
+interface TextViewerProps {
+  text: string;
+  label?: string;
+  maxHeightClassName?: string;
+  containerClassName?: string;
+  renderAnsi?: boolean;
+  ansiRenderMode?: AnsiRenderMode;
+  ansiColorMode?: AnsiColorMode;
+}
+
+type SseUsage = {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cached_tokens?: number;
+  reasoning_tokens?: number;
+};
+
 // Check if response body contains SSE info
 interface SseResponseBody {
   _sseInfo?: {
@@ -57,13 +79,8 @@ interface SseResponseBody {
   };
   content?: string;
   thinking?: string | null;
-  usage?: {
-    prompt_tokens: number;
-    completion_tokens: number;
-    total_tokens: number;
-    cached_tokens?: number;
-    reasoning_tokens?: number;
-  } | null;
+  tool_calls?: unknown;
+  usage?: SseUsage | null;
 }
 
 const isSseResponseBody = (data: unknown): data is SseResponseBody => {
@@ -107,6 +124,56 @@ const JsonViewer: React.FC<JsonViewerProps> = ({ data, label }) => {
   );
 };
 
+const TextViewer: React.FC<TextViewerProps> = ({
+  text,
+  label,
+  maxHeightClassName = 'max-h-64',
+  containerClassName = 'bg-gray-50 dark:bg-gray-800 text-gray-800 dark:text-gray-200',
+  renderAnsi = false,
+  ansiRenderMode,
+  ansiColorMode,
+}) => {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="relative">
+      {label && (
+        <div className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
+          {label}
+        </div>
+      )}
+      <div className="relative group">
+        <pre
+          className={`text-xs p-3 rounded-lg overflow-auto ${maxHeightClassName} whitespace-pre-wrap ${containerClassName}`}
+        >
+          {renderAnsi ? (
+            <AnsiText text={text} renderMode={ansiRenderMode} colorMode={ansiColorMode} />
+          ) : (
+            text
+          )}
+        </pre>
+        <button
+          onClick={handleCopy}
+          className="absolute top-2 right-2 p-1.5 rounded bg-gray-200 dark:bg-gray-700 opacity-0 group-hover:opacity-100 transition-opacity"
+          title="复制"
+        >
+          {copied ? (
+            <Check size={14} className="text-green-500" />
+          ) : (
+            <Copy size={14} className="text-gray-500 dark:text-gray-400" />
+          )}
+        </button>
+      </div>
+    </div>
+  );
+};
+
 // Component to display SSE response in a more readable format
 interface SseResponseViewerProps {
   data: SseResponseBody;
@@ -114,11 +181,56 @@ interface SseResponseViewerProps {
 
 const SseResponseViewer: React.FC<SseResponseViewerProps> = ({ data }) => {
   const [copied, setCopied] = useState(false);
+  const usage: SseUsage | null = data.usage ?? null;
 
   const handleCopyContent = async () => {
     await navigator.clipboard.writeText(data.content || '');
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const renderUsageBlock: () => any = () => {
+    if (!usage) {
+      return (
+        <div className="p-3 bg-yellow-50 dark:bg-yellow-900/30 rounded-lg">
+          <div className="text-xs text-yellow-700 dark:text-yellow-300">
+            ⚠️ 服务方未返回 Token 用量信息
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="p-3 bg-blue-50 dark:bg-blue-900/30 rounded-lg">
+        <div className="text-xs font-medium text-blue-700 dark:text-blue-300 mb-2">Token 用量</div>
+        <div className="grid grid-cols-3 gap-2 text-xs">
+          <div>
+            <span className="text-gray-500 dark:text-gray-400">输入: </span>
+            <span className="text-gray-800 dark:text-gray-200">{usage.prompt_tokens}</span>
+          </div>
+          <div>
+            <span className="text-gray-500 dark:text-gray-400">输出: </span>
+            <span className="text-gray-800 dark:text-gray-200">{usage.completion_tokens}</span>
+          </div>
+          <div>
+            <span className="text-gray-500 dark:text-gray-400">总计: </span>
+            <span className="text-gray-800 dark:text-gray-200">{usage.total_tokens}</span>
+          </div>
+          {usage.cached_tokens && (
+            <div>
+              <span className="text-gray-500 dark:text-gray-400">缓存: </span>
+              <span className="text-gray-800 dark:text-gray-200">{usage.cached_tokens}</span>
+            </div>
+          )}
+          {usage.reasoning_tokens && (
+            <div>
+              <span className="text-gray-500 dark:text-gray-400">推理: </span>
+              <span className="text-gray-800 dark:text-gray-200">{usage.reasoning_tokens}</span>
+            </div>
+          )}
+        </div>
+      </div>
+    );
   };
 
   return (
@@ -134,45 +246,7 @@ const SseResponseViewer: React.FC<SseResponseViewerProps> = ({ data }) => {
       </div>
 
       {/* Usage Stats */}
-      {data.usage && (
-        <div className="p-3 bg-blue-50 dark:bg-blue-900/30 rounded-lg">
-          <div className="text-xs font-medium text-blue-700 dark:text-blue-300 mb-2">Token 用量</div>
-          <div className="grid grid-cols-3 gap-2 text-xs">
-            <div>
-              <span className="text-gray-500 dark:text-gray-400">输入: </span>
-              <span className="text-gray-800 dark:text-gray-200">{data.usage.prompt_tokens}</span>
-            </div>
-            <div>
-              <span className="text-gray-500 dark:text-gray-400">输出: </span>
-              <span className="text-gray-800 dark:text-gray-200">{data.usage.completion_tokens}</span>
-            </div>
-            <div>
-              <span className="text-gray-500 dark:text-gray-400">总计: </span>
-              <span className="text-gray-800 dark:text-gray-200">{data.usage.total_tokens}</span>
-            </div>
-            {data.usage.cached_tokens && (
-              <div>
-                <span className="text-gray-500 dark:text-gray-400">缓存: </span>
-                <span className="text-gray-800 dark:text-gray-200">{data.usage.cached_tokens}</span>
-              </div>
-            )}
-            {data.usage.reasoning_tokens && (
-              <div>
-                <span className="text-gray-500 dark:text-gray-400">推理: </span>
-                <span className="text-gray-800 dark:text-gray-200">{data.usage.reasoning_tokens}</span>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {!data.usage && (
-        <div className="p-3 bg-yellow-50 dark:bg-yellow-900/30 rounded-lg">
-          <div className="text-xs text-yellow-700 dark:text-yellow-300">
-            ⚠️ 服务方未返回 Token 用量信息
-          </div>
-        </div>
-      )}
+      {renderUsageBlock()}
 
       {/* Thinking Content */}
       {data.thinking && (
@@ -181,6 +255,14 @@ const SseResponseViewer: React.FC<SseResponseViewerProps> = ({ data }) => {
           <pre className="text-xs bg-purple-50 dark:bg-purple-900/30 p-3 rounded-lg overflow-auto max-h-32 text-purple-800 dark:text-purple-200 whitespace-pre-wrap">
             {data.thinking}
           </pre>
+        </div>
+      )}
+
+      {/* Tool Calls */}
+      {data.tool_calls && (
+        <div>
+          <div className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">工具调用</div>
+          <JsonViewer data={data.tool_calls} />
         </div>
       )}
 
@@ -243,32 +325,81 @@ export const DebugModal: React.FC<DebugModalProps> = ({
   onClose,
   debugInfo,
   turns,
+  blocks,
+  initialTurnId,
   messageRole,
 }) => {
-  if (!isOpen) return null;
+  const { config } = useConfigStore();
+  const ansiRenderMode = config?.general?.ansiRenderMode;
+  const ansiColorMode = config?.general?.ansiColorMode;
 
   const sortedTurns = useMemo(
     () => (turns ?? []).slice().sort((a, b) => a.turnIndex - b.turnIndex),
     [turns]
   );
   const [activeTurnId, setActiveTurnId] = useState<string | null>(
-    sortedTurns.length > 0 ? sortedTurns[0].turnId : null
+    sortedTurns.length > 0
+      ? (initialTurnId && sortedTurns.some((t) => t.turnId === initialTurnId)
+        ? initialTurnId
+        : sortedTurns[0].turnId)
+      : (initialTurnId ?? null)
   );
 
   useEffect(() => {
-    if (sortedTurns.length === 0) {
-      setActiveTurnId(null);
-      return;
-    }
+    if (!isOpen) return;
+    if (sortedTurns.length === 0) return;
     if (!activeTurnId || !sortedTurns.some((t) => t.turnId === activeTurnId)) {
       setActiveTurnId(sortedTurns[0].turnId);
     }
-  }, [sortedTurns, activeTurnId]);
+  }, [sortedTurns, activeTurnId, isOpen]);
+
+  if (!isOpen) return null;
 
   const activeTurn = activeTurnId
     ? sortedTurns.find((t) => t.turnId === activeTurnId) ?? null
     : null;
   const effectiveDebugInfo = activeTurn?.debugInfo ?? debugInfo;
+  const effectiveBlocks = useMemo(() => {
+    const allBlocks = blocks ?? [];
+    if (allBlocks.length === 0) return [];
+    if (!activeTurnId) return allBlocks;
+
+    const byTurn = allBlocks.filter((b) => b.turnId === activeTurnId);
+    if (byTurn.length > 0) return byTurn;
+
+    const legacy = allBlocks.filter((b) => !b.turnId);
+    return legacy.length > 0 ? legacy : allBlocks;
+  }, [blocks, activeTurnId]);
+
+  const thinkingText = useMemo(() => {
+    const chunks = effectiveBlocks
+      .filter((b): b is Extract<MessageBlock, { type: 'thinking' }> => b.type === 'thinking')
+      .map((b) => b.text)
+      .filter((t) => typeof t === 'string' && t.trim().length > 0);
+    return chunks.length > 0 ? chunks.join('\n\n') : null;
+  }, [effectiveBlocks]);
+
+  const toolCalls = useMemo(
+    () =>
+      effectiveBlocks.filter(
+        (b): b is Extract<MessageBlock, { type: 'tool_call' }> => b.type === 'tool_call'
+      ),
+    [effectiveBlocks]
+  );
+  const toolResults = useMemo(
+    () =>
+      effectiveBlocks.filter(
+        (b): b is Extract<MessageBlock, { type: 'tool_result' }> => b.type === 'tool_result'
+      ),
+    [effectiveBlocks]
+  );
+  const webSearchBlocks = useMemo(
+    () =>
+      effectiveBlocks.filter(
+        (b): b is Extract<MessageBlock, { type: 'web_search' }> => b.type === 'web_search'
+      ),
+    [effectiveBlocks]
+  );
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -328,6 +459,87 @@ export const DebugModal: React.FC<DebugModalProps> = ({
           )}
 
           <div className="overflow-auto max-h-[calc(80vh-80px-72px)] space-y-4 pr-1">
+          {thinkingText && (
+            <CollapsibleSection title="思考过程" defaultExpanded={false}>
+              <TextViewer
+                text={thinkingText}
+                containerClassName="bg-purple-50 dark:bg-purple-900/30 text-purple-800 dark:text-purple-200"
+                maxHeightClassName="max-h-64"
+              />
+            </CollapsibleSection>
+          )}
+
+          {(toolCalls.length > 0 || webSearchBlocks.length > 0) && (
+            <CollapsibleSection title="工具调用" defaultExpanded={false}>
+              <div className="space-y-3">
+                {toolCalls.map((call) => {
+                  let prettyArgs: string = call.arguments;
+                  try {
+                    prettyArgs = JSON.stringify(JSON.parse(call.arguments), null, 2);
+                  } catch {
+                    // keep raw
+                  }
+                  return (
+                    <div
+                      key={call.id}
+                      className="rounded-lg border border-green-200 bg-green-50 p-3 dark:border-green-800 dark:bg-green-900/30"
+                    >
+                      <div className="mb-2 text-xs font-medium text-green-800 dark:text-green-200">
+                        {call.name} <span className="opacity-70">({call.callId})</span>
+                      </div>
+                      <TextViewer
+                        text={prettyArgs}
+                        maxHeightClassName="max-h-48"
+                        containerClassName="bg-white/60 dark:bg-black/20 text-green-900 dark:text-green-100"
+                      />
+                    </div>
+                  );
+                })}
+
+                {webSearchBlocks.map((b) => (
+                  <div
+                    key={b.id}
+                    className="rounded-lg border border-blue-200 bg-blue-50 p-3 dark:border-blue-800 dark:bg-blue-900/30"
+                  >
+                    <div className="mb-2 text-xs font-medium text-blue-800 dark:text-blue-200">
+                      web_search <span className="opacity-70">({b.callId})</span>
+                    </div>
+                    <JsonViewer
+                      data={{
+                        status: b.status,
+                        action: b.action,
+                      }}
+                    />
+                  </div>
+                ))}
+              </div>
+            </CollapsibleSection>
+          )}
+
+          {toolResults.length > 0 && (
+            <CollapsibleSection title="工具输出" defaultExpanded={false}>
+              <div className="space-y-3">
+                {toolResults.map((r) => (
+                  <div
+                    key={r.id}
+                    className="rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-800/40"
+                  >
+                    <div className="mb-2 text-xs font-medium text-gray-700 dark:text-gray-300">
+                      call_id: <span className="font-mono">{r.callId}</span>
+                    </div>
+                    <TextViewer
+                      text={r.text}
+                      maxHeightClassName="max-h-64"
+                      renderAnsi
+                      ansiRenderMode={ansiRenderMode}
+                      ansiColorMode={ansiColorMode}
+                    />
+                  </div>
+                ))}
+              </div>
+            </CollapsibleSection>
+          )}
+
           {!effectiveDebugInfo ? (
             <div className="text-center py-8 text-gray-500 dark:text-gray-400">
               <p>暂无调试信息</p>

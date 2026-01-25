@@ -1,19 +1,47 @@
 use serde::{Deserialize, Serialize};
 
 /// 顶层任务类型（面向未来扩展）
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskKind {
     /// 最简单的对话任务：一次输入→一次模型生成
     Chat,
     /// 工具型任务：会产生 tool call / observation
     Tool,
-    /// 编码型任务：Tool 的特化（如代码生成/修复/运行）
-    Code,
     /// 规划任务：生成 Plan（Task 列表）
     Planner,
-    /// Solution 级任务：可能编排多个 Agent/Task
-    Solution,
+}
+
+impl Serialize for TaskKind {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let value = match self {
+            Self::Chat => "chat",
+            Self::Tool => "tool",
+            Self::Planner => "planner",
+        };
+        serializer.serialize_str(value)
+    }
+}
+
+impl<'de> Deserialize<'de> for TaskKind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        let kind = match raw.as_str() {
+            "chat" => Self::Chat,
+            "tool" => Self::Tool,
+            "planner" => Self::Planner,
+            // 兼容旧值（之前计划中的扩展类型）
+            "code" => Self::Tool,
+            "solution" => Self::Chat,
+            _ => Self::Chat,
+        };
+        Ok(kind)
+    }
 }
 
 /// Turn 状态（单次 ReAct 循环）
@@ -51,4 +79,3 @@ pub struct Plan {
     pub plan_id: String,
     pub tasks: Vec<PlannedTask>,
 }
-

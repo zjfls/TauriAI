@@ -4,32 +4,49 @@
  * Requirements: 2.3, 2.4, 4.1, 4.2, 4.3, 4.4
  */
 
-import React, { useCallback, useMemo, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useShallow } from 'zustand/shallow';
+import { invoke } from '@tauri-apps/api/core';
 import { useSessionStore } from '../../stores/sessionStore';
 import { useConfigStore } from '../../stores/configStore';
 import { MessageList } from './MessageList';
 import { InputArea, type InputAreaHandle } from './InputArea';
+import { ToolSessionsPanel } from './ToolSessionsPanel';
 import { countTokens } from '../../utils/tokenizer';
 import { getApiProtocol } from '../../utils/apiUtils';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import type { TokenUsage, ContextUsageBreakdown, ContentPart, ThinkingMode } from '../../types';
+import type { TokenUsage, ContextUsageBreakdown, ContentPart, ThinkingMode, PtySessionInfo, Workstudio, Agent } from '../../types';
+import { useToolSessionStore } from '../../stores/toolSessionStore';
+import { openOrFocusViewWindow } from '../../utils/viewWindow';
 
 interface ChatViewProps {
   sessionId: string | null;
 }
 
+const EMPTY_PTY_SESSIONS: PtySessionInfo[] = [];
+
 export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
   // Get session from SessionStore
-  const session = useSessionStore((state) =>
-    sessionId ? state.sessions.get(sessionId) : undefined
+  const {
+    session,
+    sendMessage,
+    abortGeneration,
+    setSessionModel,
+    undoToMessage,
+    setSessionThinkingMode,
+    setSessionDraftContent,
+  } = useSessionStore(
+    useShallow((state) => ({
+      session: sessionId ? state.sessions.get(sessionId) : undefined,
+      sendMessage: state.sendMessage,
+      abortGeneration: state.abortGeneration,
+      setSessionModel: state.setSessionModel,
+      undoToMessage: state.undoToMessage,
+      setSessionThinkingMode: state.setSessionThinkingMode,
+      setSessionDraftContent: state.setSessionDraftContent,
+    }))
   );
-  const sendMessage = useSessionStore((state) => state.sendMessage);
-  const abortGeneration = useSessionStore((state) => state.abortGeneration);
-  const setSessionAgent = useSessionStore((state) => state.setSessionAgent);
-  const setSessionModel = useSessionStore((state) => state.setSessionModel);
-  const undoToMessage = useSessionStore((state) => state.undoToMessage);
-  const setSessionThinkingMode = useSessionStore((state) => state.setSessionThinkingMode);
-  const setSessionDraftContent = useSessionStore((state) => state.setSessionDraftContent);
+  const [showToolSessions, setShowToolSessions] = useState(false);
 
   const inputRef = useRef<InputAreaHandle>(null);
 
@@ -48,8 +65,16 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
   const streamingBlocks = session?.streamingBlocks ?? null;
   const streamingTurns = session?.streamingTurns ? Array.from(session.streamingTurns.values()) : undefined;
   const isGenerating = session?.isGenerating ?? false;
+  const conversationId = session?.conversationId ?? '';
 
-  const { config, getProvider, getAgent, getModelOptions } = useConfigStore();
+  const { config, getProvider, getAgent, getModelOptions } = useConfigStore(
+    useShallow((state) => ({
+      config: state.config,
+      getProvider: state.getProvider,
+      getAgent: state.getAgent,
+      getModelOptions: state.getModelOptions,
+    }))
+  );
 
   // Get current model's context length based on session's model or agent's default
   const currentModel = useMemo(() => {
@@ -93,6 +118,15 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
   const supportsWebSearch = useMemo(() => {
     return currentModel?.capabilities?.webSearch ?? false;
   }, [currentModel]);
+
+  const persistanceShellEnhance = useMemo(() => {
+    if (!session) return false;
+    const agent = getAgent(session.agentName);
+    const toolsetName = agent?.toolset;
+    if (!toolsetName) return false;
+    const toolset = config?.tools?.toolsets?.find((t) => t.name === toolsetName);
+    return Boolean(toolset?.persistanceShellEnhance);
+  }, [session, getAgent, config]);
 
   // Check if current model uses reasoning_effort parameter
   const useReasoningEffort = useMemo(() => {
@@ -141,6 +175,89 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
   }, [messages]);
 
   const showUsage = config?.general?.showUsage ?? true;
+
+  const refreshToolSessions = useToolSessionStore((state) => state.refreshSessions);
+  const toolSessions = useToolSessionStore(
+    (state) =>
+      conversationId
+        ? state.sessionsByConversation[conversationId] ?? EMPTY_PTY_SESSIONS
+        : EMPTY_PTY_SESSIONS
+  );
+  const persistentToolSessions = useMemo(() => {
+    if (!persistanceShellEnhance) return EMPTY_PTY_SESSIONS;
+    if (toolSessions.length === 0) return EMPTY_PTY_SESSIONS;
+    const filtered = toolSessions.filter((s) => s.scope === 'conversation');
+    return filtered.length > 0 ? filtered : EMPTY_PTY_SESSIONS;
+  }, [toolSessions, persistanceShellEnhance]);
+  const activeToolCount = persistentToolSessions.filter((s) => s.isAlive).length;
+
+  const workspaceEnabled = useMemo(() => {
+    if (!session) return false;
+    const agent = getAgent(session.agentName);
+    const agentType = agent?.type ?? 'chat';
+    return agentType === 'tool' && (agent?.workspaceSupport ?? true);
+  }, [session, getAgent]);
+
+  const [workstudio, setWorkstudio] = useState<Workstudio | null>(null);
+  const [workstudioLoading, setWorkstudioLoading] = useState(false);
+
+  const currentAgentForDisplay = useMemo((): Agent | null => {
+    if (!session) return null;
+    return getAgent(session.agentName) ?? null;
+  }, [session, getAgent]);
+
+  useEffect(() => {
+    if (!workspaceEnabled) {
+      setWorkstudio(null);
+      return;
+    }
+    const wsId = session?.workstudioId;
+    const convId = session?.conversationId;
+    if (!convId) return;
+
+    let cancelled = false;
+    const run = async () => {
+      setWorkstudioLoading(true);
+      try {
+        let ws: Workstudio | null = null;
+        if (wsId) {
+          ws = await invoke<Workstudio | null>('get_workstudio', { workstudioId: wsId });
+        }
+        if (!ws) {
+          ws = await invoke<Workstudio>('ensure_workstudio_for_conversation', { conversationId: convId });
+        }
+        if (!cancelled) setWorkstudio(ws);
+      } catch (e) {
+        if (!cancelled) setWorkstudio(null);
+      } finally {
+        if (!cancelled) setWorkstudioLoading(false);
+      }
+    };
+
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [workspaceEnabled, session?.workstudioId, session?.conversationId]);
+
+  const prevConversationIdRef = useRef<string | null>(null);
+  const prevIsGeneratingRef = useRef<boolean>(false);
+  const prevPersistentEnhanceRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    if (!conversationId) return;
+    const conversationChanged = prevConversationIdRef.current !== conversationId;
+    const generationFinished = prevIsGeneratingRef.current && !isGenerating;
+    const enhanceJustEnabled = !prevPersistentEnhanceRef.current && persistanceShellEnhance;
+
+    prevConversationIdRef.current = conversationId;
+    prevIsGeneratingRef.current = isGenerating;
+    prevPersistentEnhanceRef.current = persistanceShellEnhance;
+
+    if (persistanceShellEnhance && (conversationChanged || generationFinished || enhanceJustEnabled)) {
+      refreshToolSessions(conversationId);
+    }
+  }, [conversationId, isGenerating, refreshToolSessions, persistanceShellEnhance]);
 
   // Format prompt content (same as CHAT_FORMAT_PROMPT in backend)
   const FORMAT_PROMPT_CHAT = `
@@ -311,14 +428,86 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
     }
   };
 
+  const handleAbortTool = useCallback(
+    (_callId: string) => {
+      if (!sessionId) return;
+      abortGeneration(sessionId).catch(console.error);
+    },
+    [abortGeneration, sessionId]
+  );
+
   return (
     <div className="flex h-full flex-col overflow-hidden">
+      {workspaceEnabled && (
+        <div className="flex items-center justify-between border-b border-gray-100 px-4 py-2 text-xs text-gray-500 dark:border-gray-800 dark:text-gray-400">
+          <div className="min-w-0">
+            <div className="text-[11px] text-gray-400">工作区</div>
+            <div
+              className="truncate text-sm font-semibold text-gray-800 dark:text-gray-100"
+              title={workstudio?.mainFolder || ''}
+            >
+              {workstudioLoading
+                ? '加载中...'
+                : workstudio?.mainFolder
+                  ? workstudio.mainFolder
+                  : '(未绑定工作区)'}
+            </div>
+            {/* agent 已在输入框工具条展示，这里不重复显示 */}
+          </div>
+          <button
+            type="button"
+            onClick={async () => {
+              let ws = workstudio;
+              if (!ws) {
+                if (!conversationId) return;
+                setWorkstudioLoading(true);
+                try {
+                  ws = await invoke<Workstudio>('ensure_workstudio_for_conversation', { conversationId });
+                  setWorkstudio(ws);
+                } catch (e) {
+                  setWorkstudio(null);
+                  return;
+                } finally {
+                  setWorkstudioLoading(false);
+                }
+              }
+              if (!ws) return;
+              void openOrFocusViewWindow('workstudio', `Workstudio: ${ws.mainFolder}`, {
+                workstudioId: ws.id,
+                // Must match capability window patterns (default allows "view-*").
+                label: `view-workstudio-${ws.id}`,
+              });
+            }}
+            disabled={workstudioLoading}
+            className="rounded border border-gray-200 px-3 py-1 text-xs font-medium text-gray-600 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+          >
+            打开 Workstudio
+          </button>
+        </div>
+      )}
+      {persistanceShellEnhance && (
+        <div className="flex items-center justify-between border-b border-gray-100 px-4 py-2 text-xs text-gray-500 dark:border-gray-800 dark:text-gray-400">
+          <button
+            type="button"
+            onClick={() => conversationId && setShowToolSessions(true)}
+            className="flex items-center gap-2 rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+            title="查看持久进程（跨任务 PTY 会话）"
+            disabled={!conversationId}
+          >
+            <span>持久进程</span>
+            <span className="rounded-full bg-gray-200 px-1.5 text-[10px] text-gray-700 dark:bg-gray-700 dark:text-gray-200">
+              {activeToolCount}
+            </span>
+          </button>
+        </div>
+      )}
       <MessageList
         messages={messages}
         streamingBlocks={streamingBlocks}
         streamingTurns={streamingTurns}
         isGenerating={isGenerating}
         onAction={handleAction}
+        onAbortTool={handleAbortTool}
         onDropFiles={handleDropFilesToInput}
         onDropText={handleDropTextToInput}
       />
@@ -337,6 +526,8 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
         onAbort={handleAbort}
         disabled={false}
         isGenerating={isGenerating}
+        agents={currentAgentForDisplay ? [currentAgentForDisplay] : []}
+        currentAgentName={currentAgentForDisplay?.name || session?.agentName || ''}
         supportsThinking={supportsThinking}
         supportsVision={supportsVision}
         contextUsage={contextUsage}
@@ -353,9 +544,6 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
           setSessionThinkingMode(sessionId, value);
         }}
         useReasoningEffort={useReasoningEffort}
-        agents={config?.agents || []}
-        currentAgentName={session?.agentName || ''}
-        onAgentSelect={(agentName) => sessionId && setSessionAgent(sessionId, agentName)}
         modelOptions={getModelOptions()}
         currentModelRef={session?.modelRef || ''}
         onModelSelect={(modelRef) => {
@@ -370,6 +558,13 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
           useSessionStore.getState().setSessionWebSearchEnabled(sessionId, enabled);
         }}
       />
+      {persistanceShellEnhance && conversationId && (
+        <ToolSessionsPanel
+          conversationId={conversationId}
+          isOpen={showToolSessions}
+          onClose={() => setShowToolSessions(false)}
+        />
+      )}
     </div>
   );
 };

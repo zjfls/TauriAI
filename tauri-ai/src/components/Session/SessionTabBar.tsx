@@ -17,6 +17,7 @@ interface SessionTabBarProps {
   onTabClick: (sessionId: string) => void;
   onTabClose: (sessionId: string) => void;
   onNewSession: (agentName: string) => void;
+  onPopoutSession?: (sessionId: string) => void;
 }
 
 /**
@@ -197,6 +198,7 @@ export const SessionTabBar: React.FC<SessionTabBarProps> = ({
   onTabClick,
   onTabClose,
   onNewSession,
+  onPopoutSession,
 }) => {
   const [showAgentSelector, setShowAgentSelector] = useState(false);
   const tabContainerRef = useRef<HTMLDivElement>(null);
@@ -267,6 +269,13 @@ export const SessionTabBar: React.FC<SessionTabBarProps> = ({
   const handleCloseCurrent = () => {
     if (contextMenu) {
       onTabClose(contextMenu.targetSessionId);
+      handleCloseContextMenu();
+    }
+  };
+
+  const handlePopoutCurrent = () => {
+    if (contextMenu && onPopoutSession) {
+      onPopoutSession(contextMenu.targetSessionId);
       handleCloseContextMenu();
     }
   };
@@ -348,6 +357,7 @@ export const SessionTabBar: React.FC<SessionTabBarProps> = ({
           targetSessionIndex={contextMenu.targetSessionIndex}
           totalSessions={sessions.length}
           onClose={handleCloseContextMenu}
+          onOpenInNewWindow={onPopoutSession ? handlePopoutCurrent : undefined}
           onCloseOthers={handleCloseOthers}
           onCloseToLeft={handleCloseToLeft}
           onCloseToRight={handleCloseToRight}

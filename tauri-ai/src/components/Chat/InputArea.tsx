@@ -4,7 +4,7 @@
  * Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.6
  */
 
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Send, Square, Bot, Cpu, ChevronDown, Check, ImagePlus, Paperclip, FileText } from 'lucide-react';
 import { ContextUsageIndicator } from './ContextUsageIndicator';
 import { AttachmentPreview } from './AttachmentPreview';
@@ -1751,8 +1751,18 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   const hasAttachments = pendingImages.length > 0 || pendingTextFiles.length > 0 || pendingPdfs.length > 0;
   const isSendDisabled = disabled || (isWhitespaceOnly(content) && !hasAttachments);
 
-  // Convert agents to selector options
-  const agentOptions = agents.map(a => ({ label: a.displayName, value: a.name }));
+  const currentAgent = useMemo(() => {
+    if (!currentAgentName) return undefined;
+    return agents.find((a) => a.name === currentAgentName);
+  }, [agents, currentAgentName]);
+
+  // Convert agents to selector options (include type to make it visible even when truncated)
+  const agentOptions = useMemo(() => {
+    return agents.map((a) => ({
+      label: a.type ? `${a.displayName} (${a.type})` : a.displayName,
+      value: a.name,
+    }));
+  }, [agents]);
 
   // Check if we have selectors to show
   const hasSelectors = agents.length > 0 || modelOptions.length > 0;
@@ -1769,15 +1779,32 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
         <div className="mb-2 flex items-center justify-between">
           <div className="flex items-center gap-2">
             {/* Agent selector */}
-            {agents.length > 0 && onAgentSelect && (
-              <CompactSelector
-                icon={<Bot size={12} />}
-                options={agentOptions}
-                currentValue={currentAgentName}
-                onSelect={onAgentSelect}
-                disabled={isGenerating}
-                placeholder="智能体"
-              />
+            {agents.length > 0 && currentAgentName && (
+              onAgentSelect ? (
+                <CompactSelector
+                  icon={<Bot size={12} />}
+                  options={agentOptions}
+                  currentValue={currentAgentName}
+                  onSelect={onAgentSelect}
+                  disabled={isGenerating}
+                  placeholder="智能体"
+                />
+              ) : (
+                <div
+                  className={[
+                    'flex items-center gap-1.5 px-3 py-1.5 rounded-lg border',
+                    'bg-gray-50 dark:bg-gray-900 border-gray-200 dark:border-gray-700',
+                    'text-gray-700 dark:text-gray-200',
+                  ].join(' ')}
+                  title={currentAgent?.type ? `${currentAgent.displayName} (${currentAgent.type})` : (currentAgent?.displayName || currentAgentName)}
+                >
+                  <Bot size={12} className="text-gray-500 dark:text-gray-400" />
+                  <span className="text-sm font-medium max-w-40 truncate">
+                    {currentAgent?.displayName || currentAgentName}
+                    {currentAgent?.type ? ` (${currentAgent.type})` : ''}
+                  </span>
+                </div>
+              )
             )}
             {/* Model selector */}
             {modelOptions.length > 0 && onModelSelect && (

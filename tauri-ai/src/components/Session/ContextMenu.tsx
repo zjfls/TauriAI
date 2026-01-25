@@ -26,6 +26,7 @@ export interface ContextMenuProps {
   targetSessionIndex: number;          // 被右键点击的 session 在列表中的索引
   totalSessions: number;               // 总 session 数量
   onClose: () => void;                 // 关闭菜单的回调函数
+  onOpenInNewWindow?: () => void;      // 在独立窗口打开（可选）
   onCloseOthers: () => void;           // 关闭其他标签页的回调
   onCloseToLeft: () => void;           // 关闭左侧标签页的回调
   onCloseToRight: () => void;          // 关闭右侧标签页的回调
@@ -42,6 +43,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   targetSessionIndex,
   totalSessions,
   onClose,
+  onOpenInNewWindow,
   onCloseOthers,
   onCloseToLeft,
   onCloseToRight,
@@ -184,6 +186,16 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
 
   // 定义菜单项配置
   const menuItems: MenuItemConfig[] = [
+    ...(onOpenInNewWindow
+      ? [
+          {
+            label: '在新窗口打开',
+            action: onOpenInNewWindow,
+            disabled: false,
+            divider: true,
+          },
+        ]
+      : []),
     {
       label: '关闭其他标签页',
       action: onCloseOthers,

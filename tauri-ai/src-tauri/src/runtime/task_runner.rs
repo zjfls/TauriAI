@@ -4,10 +4,11 @@
 //! - `commands/run.rs` 只负责 Tauri 参数接入
 //! - 运行时抽象集中在这里：Task / Turn / ReAct（Think → Act → Observe）
 //! - Chat = 最简单的 Task（通常单 Turn）
-//! - Tool/Code = 多 Turn 循环（后续可扩展）
+//! - Tool = 多 Turn 循环（后续可扩展）
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use tauri::AppHandle;
 use tokio::sync::{mpsc, Mutex};
@@ -25,6 +26,7 @@ use crate::models::{
     AgentType, ContentPart, Message, MessageBlock, MessageMeta, MessageRole, MessageStatus,
     MessageTurn,
 };
+use crate::prompts::{PERSISTENT_PROCESS_PROMPT, PYTHON3_FALLBACK_PROMPT, WORKSTUDIO_PROMPT_GUIDE};
 use crate::runtime::events::RunEvent;
 use crate::runtime::types::{TaskKind, TurnPhase, TurnStatus};
 use crate::storage::Database;
@@ -115,7 +117,9 @@ struct TurnLoop<'a> {
     /// 工具编排器（权限/路由/gate/pty 会话等都在 tools 子系统内部处理）
     tool_orchestrator: Option<ToolOrchestrator>,
     /// 工具运行时依赖与状态（例如 PTY 会话管理）
-    tool_services: ToolServices,
+    tool_services: Arc<ToolServices>,
+    /// Default working directory for tools (when workspace support is enabled).
+    default_workdir: Option<std::path::PathBuf>,
     runtime_messages: Vec<Message>,
     conversation_id: String,
     task_id: String,
@@ -140,6 +144,199 @@ fn build_assistant_context_content(content: String, thinking: &str, reinject_thi
     } else {
         format!("[thinking]\n{thinking}\n[/thinking]\n\n{content}")
     }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct PythonAvailability {
+    has_python: bool,
+    has_python3: bool,
+}
+
+static PYTHON_AVAILABILITY: OnceLock<PythonAvailability> = OnceLock::new();
+
+fn python_availability() -> PythonAvailability {
+    *PYTHON_AVAILABILITY.get_or_init(detect_python_availability)
+}
+
+fn detect_python_availability() -> PythonAvailability {
+    #[cfg(windows)]
+    {
+        fn path_contains_exe(name: &str) -> bool {
+            let Some(paths) = std::env::var_os("PATH") else {
+                return false;
+            };
+            for dir in std::env::split_paths(&paths) {
+                if dir.join(name).is_file() {
+                    return true;
+                }
+            }
+            false
+        }
+
+        return PythonAvailability {
+            has_python: path_contains_exe("python.exe"),
+            has_python3: path_contains_exe("python3.exe"),
+        };
+    }
+
+    #[cfg(not(windows))]
+    {
+        // Best-effort probe in a login shell to match tool execution semantics.
+        // Use sentinel strings to tolerate any rc output.
+        let shell = std::env::var("SHELL")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .filter(|s| std::path::Path::new(s).exists())
+            .unwrap_or_else(|| {
+                if std::path::Path::new("/bin/bash").exists() {
+                    "/bin/bash".to_string()
+                } else {
+                    "/bin/sh".to_string()
+                }
+            });
+        let shell_lower = shell.to_ascii_lowercase();
+        // Only bash/zsh reliably support "-lc". Fall back to "-c" for other shells.
+        let shell_flag = if shell_lower.ends_with("bash") || shell_lower.ends_with("zsh") {
+            "-lc"
+        } else {
+            "-c"
+        };
+
+        let probe_cmd = "command -v python >/dev/null 2>&1 && echo __TAURIAI_HAS_PYTHON__ ; command -v python3 >/dev/null 2>&1 && echo __TAURIAI_HAS_PYTHON3__";
+
+        if let Ok(out) = std::process::Command::new(shell)
+            .arg(shell_flag)
+            .arg(probe_cmd)
+            .output()
+        {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            return PythonAvailability {
+                has_python: stdout.contains("__TAURIAI_HAS_PYTHON__"),
+                has_python3: stdout.contains("__TAURIAI_HAS_PYTHON3__"),
+            };
+        }
+
+        // Fallback: use the backend process PATH.
+        let Some(paths) = std::env::var_os("PATH") else {
+            return PythonAvailability::default();
+        };
+        let mut has_python = false;
+        let mut has_python3 = false;
+        for dir in std::env::split_paths(&paths) {
+            if dir.join("python").is_file() {
+                has_python = true;
+            }
+            if dir.join("python3").is_file() {
+                has_python3 = true;
+            }
+        }
+        PythonAvailability {
+            has_python,
+            has_python3,
+        }
+    }
+}
+
+fn inject_persistent_process_prompt(messages: &mut Vec<Message>, conversation_id: &str) {
+    let mut content = PERSISTENT_PROCESS_PROMPT.trim().to_string();
+    if content.is_empty() {
+        return;
+    }
+
+    let py = python_availability();
+    if !py.has_python && py.has_python3 {
+        let snippet = PYTHON3_FALLBACK_PROMPT.trim();
+        if !snippet.is_empty() {
+            content.push_str("\n\n");
+            content.push_str(snippet);
+        }
+    }
+
+    // Keep the original system prompt as the first message, then append guidance right after
+    // any leading system messages.
+    let insert_at = messages
+        .iter()
+        .take_while(|m| m.role == MessageRole::System)
+        .count();
+
+    messages.insert(
+        insert_at,
+        Message {
+            id: uuid::Uuid::new_v4().to_string(),
+            conversation_id: conversation_id.to_string(),
+            role: MessageRole::System,
+            content,
+            content_parts: Vec::new(),
+            thinking: None,
+            meta: None,
+            created_at: chrono::Utc::now(),
+            status: MessageStatus::Success,
+            error_message: None,
+        },
+    );
+}
+
+fn inject_workstudio_prompt(
+    messages: &mut Vec<Message>,
+    conversation_id: &str,
+    ws: &crate::models::Workstudio,
+) {
+    let main = ws.main_folder.trim();
+    if main.is_empty() {
+        return;
+    }
+
+    let folders_preview = if ws.folders.is_empty() {
+        String::new()
+    } else {
+        let mut lines = String::new();
+        for f in &ws.folders {
+            if f.trim().is_empty() {
+                continue;
+            }
+            lines.push_str("- ");
+            lines.push_str(f);
+            lines.push('\n');
+        }
+        lines
+    };
+
+    let mut content = String::new();
+    content.push_str("\n\n## 当前工作区\n\n");
+    content.push_str("workstudio_id: `");
+    content.push_str(&ws.id);
+    content.push_str("`\n\n");
+    content.push_str("主文件夹（默认工作目录）：`");
+    content.push_str(main);
+    content.push_str("`\n\n");
+    if !folders_preview.is_empty() {
+        content.push_str("工作文件夹列表：\n");
+        content.push_str(&folders_preview);
+        content.push('\n');
+    }
+    content.push_str(WORKSTUDIO_PROMPT_GUIDE.trim());
+
+    let insert_at = messages
+        .iter()
+        .take_while(|m| m.role == MessageRole::System)
+        .count();
+
+    messages.insert(
+        insert_at,
+        Message {
+            id: uuid::Uuid::new_v4().to_string(),
+            conversation_id: conversation_id.to_string(),
+            role: MessageRole::System,
+            content,
+            content_parts: Vec::new(),
+            thinking: None,
+            meta: None,
+            created_at: chrono::Utc::now(),
+            status: MessageStatus::Success,
+            error_message: None,
+        },
+    );
 }
 
 impl<'a> TurnLoop<'a> {
@@ -477,9 +674,10 @@ impl<'a> TurnLoop<'a> {
                             task_id: &self.task_id,
                             turn_id: &turn_id,
                             assistant_message_id: &self.assistant_message_id,
+                            default_workdir: self.default_workdir.clone(),
                             emitter: self.emitter,
                             abort_rx,
-                            services: &self.tool_services,
+                            services: self.tool_services.as_ref(),
                         };
 
                         let result = match orchestrator.execute_one(&mut tool_ctx, call).await {
@@ -1208,7 +1406,7 @@ async fn run_task_inner(
         build_model_config(provider, model, input.thinking, input.web_search_enabled);
     let debug_mode = input.debug_mode.unwrap_or(config.general.debug_mode);
     // Debug: 在日志输出原始 SSE（仅流式请求）
-    model_config.debug_sse = debug_mode;
+    model_config.debug_sse = debug_mode && config.general.debug_sse;
     let client = get_client(&model_config.provider)
         .map_err(|e| AppErrorCode::AiServiceError(e.to_string()))?;
 
@@ -1254,7 +1452,7 @@ async fn run_task_inner(
         })
         .collect::<Vec<_>>();
     let base_messages = match agent.agent_type {
-        AgentType::Tool | AgentType::Code => match provider.provider_type {
+        AgentType::Tool => match provider.provider_type {
             crate::models::ProviderType::Openai
             | crate::models::ProviderType::OpenaiCompatible
             | crate::models::ProviderType::OpenaiResponses
@@ -1263,6 +1461,21 @@ async fn run_task_inner(
             _ => append_tool_trace_for_model_input(base_messages),
         },
         _ => append_tool_trace_for_model_input(base_messages),
+    };
+
+    // 2.5) Workstudio: tool agents can bind a working directory (main folder).
+    let workspace_enabled = matches!(agent.agent_type, AgentType::Tool)
+        && agent.workspace_support.unwrap_or(true);
+    let (workstudio, default_workdir) = if workspace_enabled {
+        let ws = {
+            let db = db.lock().await;
+            db.ensure_workstudio_for_conversation(&input.conversation_id)
+                .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?
+        };
+        let dir = std::path::PathBuf::from(ws.main_folder.clone());
+        (Some(ws), Some(dir))
+    } else {
+        (None, None)
     };
 
     // 3) 允许 stop/撤回 等并发操作中断当前 run
@@ -1278,17 +1491,15 @@ async fn run_task_inner(
         task_id: task_id.clone(),
         task_kind: match agent.agent_type {
             AgentType::Tool => TaskKind::Tool,
-            AgentType::Code => TaskKind::Code,
-            AgentType::Solution => TaskKind::Solution,
             AgentType::Chat => TaskKind::Chat,
         },
         title: None,
     });
 
-    // 4) TurnLoop：Chat = 单 Turn；Tool/Code = 多 Turn（上限可由 Agent 配置）
-    // - 未配置时：Tool/Code 默认 10000（按你的需求），其他类型默认 1
+    // 4) TurnLoop：Chat = 单 Turn；Tool = 多 Turn（上限可由 Agent 配置）
+    // - 未配置时：Tool 默认 10000（按你的需求），其他类型默认 1
     let default_max_turns: u32 = match agent.agent_type {
-        AgentType::Tool | AgentType::Code => 10_000,
+        AgentType::Tool => 10_000,
         _ => 1,
     };
     let max_turns: u32 = agent
@@ -1298,13 +1509,15 @@ async fn run_task_inner(
 
     // tools：按 Agent 选择工具集，并在这里完成“权限过滤 -> 传给模型的 ToolDefinition”
     // - 真实执行时仍会再次做权限检查（防止前端/模型绕过）
-    let tool_services = ToolServices::default();
+    let tool_services = run_state.get_tool_services(&input.conversation_id).await;
+    let mut allow_persistent_pty = false;
     let (tool_orchestrator, tools) = match agent.agent_type {
-        AgentType::Tool | AgentType::Code => {
+        AgentType::Tool => {
             // ToolSet：Agent 可以绑定不同工具集合；未配置则默认 allow_all（由权限再做过滤）。
             let toolset = match agent.toolset.as_deref().filter(|s| !s.trim().is_empty()) {
                 Some(name) => match config.tools.toolsets.iter().find(|t| t.name == name) {
-                    Some(ts) => super::tools::spec::ToolSet::allow_list(name, ts.tools.clone()),
+                    Some(ts) => super::tools::spec::ToolSet::allow_list(name, ts.tools.clone())
+                        .with_persistance_shell_enhance(ts.persistance_shell_enhance),
                     // 安全优先：引用了不存在的 toolset 时，默认 deny_all，避免“悄悄变成 allow_all”
                     None => super::tools::spec::ToolSet::deny_all(name),
                 },
@@ -1322,6 +1535,8 @@ async fn run_task_inner(
                     })
                 };
 
+            allow_persistent_pty = toolset.persistance_shell_enhance;
+
             let orchestrator = ToolOrchestrator::new_builtin(ToolOrchestratorConfig {
                 toolset,
                 permission_policy,
@@ -1332,13 +1547,22 @@ async fn run_task_inner(
         _ => (None, None),
     };
 
+    let mut runtime_messages = base_messages;
+    if let Some(ws) = workstudio.as_ref() {
+        inject_workstudio_prompt(&mut runtime_messages, &input.conversation_id, ws);
+    }
+    if allow_persistent_pty {
+        inject_persistent_process_prompt(&mut runtime_messages, &input.conversation_id);
+    }
+
     let mut turn_loop = TurnLoop {
         client,
         model_config: model_config.clone(),
         tools,
         tool_orchestrator,
         tool_services,
-        runtime_messages: base_messages,
+        default_workdir,
+        runtime_messages,
         conversation_id: input.conversation_id.clone(),
         task_id: task_id.clone(),
         assistant_message_id: assistant_message_id.clone(),
@@ -1350,6 +1574,9 @@ async fn run_task_inner(
     };
 
     let outcome = turn_loop.run(&mut abort_rx).await;
+    run_state
+        .cleanup_task_sessions(&input.conversation_id, &task_id, allow_persistent_pty)
+        .await;
 
     match outcome {
         TaskOutcome::Failed {

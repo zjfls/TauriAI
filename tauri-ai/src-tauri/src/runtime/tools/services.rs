@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use serde::Serialize;
 use tokio::sync::{mpsc, Mutex};
 
 /// ToolServices：工具运行时依赖/状态的集合。
@@ -25,7 +27,7 @@ impl std::fmt::Debug for ToolServices {
 /// PTY 会话服务：跨 turn 的交互式终端会话管理。
 ///
 /// 说明：
-/// - 当前实现面向“单 run 内可复用”；未来可以提升为“按 conversation 复用”。
+/// - 当前实现支持按 conversation 复用（由 run_state 持有）。
 /// - 这里只做会话存取/生命周期；具体的输出聚合/事件输出由 handler 负责。
 #[derive(Default)]
 pub struct PtyService {
@@ -35,7 +37,44 @@ pub struct PtyService {
 #[derive(Default)]
 struct PtyServiceInner {
     next_id: i32,
-    sessions: HashMap<i32, Arc<Mutex<PtySession>>>,
+    sessions: HashMap<i32, PtySessionEntry>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PtySessionScope {
+    Task,
+    Conversation,
+}
+
+#[derive(Clone, Debug)]
+pub struct PtySessionMeta {
+    pub conversation_id: String,
+    pub task_id: String,
+    pub scope: PtySessionScope,
+    pub command: Vec<String>,
+    pub workdir: Option<PathBuf>,
+    pub created_at_ms: i64,
+    pub last_used_ms: i64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PtySessionInfo {
+    pub session_id: i32,
+    pub conversation_id: String,
+    pub task_id: String,
+    pub scope: PtySessionScope,
+    pub command: String,
+    pub workdir: Option<String>,
+    pub created_at_ms: i64,
+    pub last_used_ms: i64,
+    pub is_alive: bool,
+}
+
+struct PtySessionEntry {
+    session: Arc<Mutex<PtySession>>,
+    meta: PtySessionMeta,
 }
 
 pub struct PtySession {
@@ -61,10 +100,20 @@ impl Drop for PtySession {
 }
 
 impl PtyService {
+    fn now_ms() -> i64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0)
+    }
+
     pub async fn create_session(
         &self,
         command: Vec<String>,
         workdir: Option<PathBuf>,
+        conversation_id: &str,
+        task_id: &str,
+        scope: PtySessionScope,
     ) -> Result<i32, String> {
         if command.is_empty() {
             return Err("pty command 为空".to_string());
@@ -139,18 +188,150 @@ impl PtyService {
             rx,
         }));
 
+        let now_ms = Self::now_ms();
+        let meta = PtySessionMeta {
+            conversation_id: conversation_id.to_string(),
+            task_id: task_id.to_string(),
+            scope,
+            command: command.clone(),
+            workdir: workdir.clone(),
+            created_at_ms: now_ms,
+            last_used_ms: now_ms,
+        };
+
         let mut inner = self.inner.lock().await;
-        inner.sessions.insert(session_id, session);
+        inner.sessions.insert(
+            session_id,
+            PtySessionEntry {
+                session,
+                meta,
+            },
+        );
         Ok(session_id)
     }
 
     pub async fn get_session(&self, session_id: i32) -> Option<Arc<Mutex<PtySession>>> {
+        let mut inner = self.inner.lock().await;
+        let entry = inner.sessions.get_mut(&session_id)?;
+        entry.meta.last_used_ms = Self::now_ms();
+        Some(Arc::clone(&entry.session))
+    }
+
+    pub async fn get_session_meta(&self, session_id: i32) -> Option<PtySessionMeta> {
         let inner = self.inner.lock().await;
-        inner.sessions.get(&session_id).cloned()
+        inner.sessions.get(&session_id).map(|entry| entry.meta.clone())
     }
 
     pub async fn remove_session(&self, session_id: i32) -> Option<Arc<Mutex<PtySession>>> {
-        let mut inner = self.inner.lock().await;
-        inner.sessions.remove(&session_id)
+        let entry = {
+            let mut inner = self.inner.lock().await;
+            inner.sessions.remove(&session_id)
+        };
+        entry.map(|entry| entry.session)
+    }
+
+    pub async fn close_session(&self, session_id: i32) -> bool {
+        let entry = {
+            let mut inner = self.inner.lock().await;
+            inner.sessions.remove(&session_id)
+        };
+
+        if let Some(entry) = entry {
+            let mut guard = entry.session.lock().await;
+            let _ = guard.child.kill();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub async fn close_task_sessions(&self, conversation_id: &str, task_id: &str) -> usize {
+        let entries = {
+            let mut inner = self.inner.lock().await;
+            let ids: Vec<i32> = inner
+                .sessions
+                .iter()
+                .filter(|(_, entry)| {
+                    entry.meta.scope == PtySessionScope::Task
+                        && entry.meta.conversation_id == conversation_id
+                        && entry.meta.task_id == task_id
+                })
+                .map(|(id, _)| *id)
+                .collect();
+
+            ids.into_iter()
+                .filter_map(|id| inner.sessions.remove(&id))
+                .collect::<Vec<_>>()
+        };
+
+        let count = entries.len();
+        for entry in entries {
+            let mut guard = entry.session.lock().await;
+            let _ = guard.child.kill();
+        }
+        count
+    }
+
+    pub async fn close_conversation_sessions(&self, conversation_id: &str) -> usize {
+        let entries = {
+            let mut inner = self.inner.lock().await;
+            let ids: Vec<i32> = inner
+                .sessions
+                .iter()
+                .filter(|(_, entry)| {
+                    entry.meta.scope == PtySessionScope::Conversation
+                        && entry.meta.conversation_id == conversation_id
+                })
+                .map(|(id, _)| *id)
+                .collect();
+
+            ids.into_iter()
+                .filter_map(|id| inner.sessions.remove(&id))
+                .collect::<Vec<_>>()
+        };
+
+        let count = entries.len();
+        for entry in entries {
+            let mut guard = entry.session.lock().await;
+            let _ = guard.child.kill();
+        }
+        count
+    }
+
+    pub async fn list_sessions(&self, conversation_id: &str) -> Vec<PtySessionInfo> {
+        let entries = {
+            let inner = self.inner.lock().await;
+            inner
+                .sessions
+                .iter()
+                .filter(|(_, entry)| entry.meta.conversation_id == conversation_id)
+                .map(|(id, entry)| (*id, Arc::clone(&entry.session), entry.meta.clone()))
+                .collect::<Vec<_>>()
+        };
+
+        let mut out = Vec::with_capacity(entries.len());
+        for (session_id, session, meta) in entries {
+            let is_alive = {
+                let mut guard = session.lock().await;
+                match guard.child.try_wait() {
+                    Ok(Some(_)) => false,
+                    Ok(None) => true,
+                    Err(_) => true,
+                }
+            };
+
+            out.push(PtySessionInfo {
+                session_id,
+                conversation_id: meta.conversation_id.clone(),
+                task_id: meta.task_id.clone(),
+                scope: meta.scope,
+                command: meta.command.join(" "),
+                workdir: meta.workdir.as_ref().map(|p| p.display().to_string()),
+                created_at_ms: meta.created_at_ms,
+                last_used_ms: meta.last_used_ms,
+                is_alive,
+            });
+        }
+        out
     }
 }

@@ -83,3 +83,86 @@ export const useConversationStore = create<ConversationState>((set) => ({
 
   clearError: () => set({ error: null }),
 }));
+
+// -----------------------------------------------------------------------------
+// Debug: conversation store update storm detector (DEV only)
+// -----------------------------------------------------------------------------
+const CONVERSATION_STORE_DEBUG_LAST_STORM_KEY = 'tauri-ai:debug:last_conversation_store_storm';
+const conversationStoreStormDebugEnabled = (() => {
+  try {
+    return import.meta.env.DEV;
+  } catch {
+    return false;
+  }
+})();
+
+if (conversationStoreStormDebugEnabled) {
+  let windowStart = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  let updatesInWindow = 0;
+  let tracedInWindow = false;
+
+  const WINDOW_MS = 500;
+  const TRACE_THRESHOLD = 40;
+
+  useConversationStore.subscribe((state, prev) => {
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    if (now - windowStart > WINDOW_MS) {
+      windowStart = now;
+      updatesInWindow = 0;
+      tracedInWindow = false;
+    }
+
+    updatesInWindow += 1;
+
+    if (!tracedInWindow && updatesInWindow >= TRACE_THRESHOLD) {
+      tracedInWindow = true;
+
+      const stack = (() => {
+        try {
+          return new Error('conversationStore update storm').stack || '';
+        } catch {
+          return '';
+        }
+      })();
+
+      try {
+        if (typeof localStorage !== 'undefined') {
+          const record = {
+            ts: Date.now(),
+            updatesInWindow,
+            windowMs: WINDOW_MS,
+            state: {
+              conversations: state.conversations.length,
+              currentConversationId: state.currentConversationId,
+              error: state.error,
+            },
+            prevState: {
+              conversations: prev.conversations.length,
+              currentConversationId: prev.currentConversationId,
+              error: prev.error,
+            },
+            stack,
+          };
+          localStorage.setItem(CONVERSATION_STORE_DEBUG_LAST_STORM_KEY, JSON.stringify(record));
+        }
+      } catch {
+        // ignore
+      }
+
+      console.groupCollapsed(`[debug] conversationStore 更新风暴: ${updatesInWindow}/${WINDOW_MS}ms`);
+      console.log('state:', {
+        conversations: state.conversations.length,
+        currentConversationId: state.currentConversationId,
+        error: state.error,
+      });
+      console.log('prev:', {
+        conversations: prev.conversations.length,
+        currentConversationId: prev.currentConversationId,
+        error: prev.error,
+      });
+      console.trace('conversationStore update storm stack');
+      if (stack) console.log('captured stack:', stack);
+      console.groupEnd();
+    }
+  });
+}

@@ -17,6 +17,7 @@ const defaultAgent: Agent = {
   systemPrompt: '',
   formatType: 'chat',
   reinjectThinking: false,
+  workspaceSupport: undefined,
 };
 
 export const AgentConfigForm: React.FC = () => {
@@ -201,12 +202,11 @@ const AgentForm: React.FC<AgentFormProps> = ({
   const agentTypeOptions: { value: AgentType; label: string }[] = [
     { value: 'chat', label: 'Chat' },
     { value: 'tool', label: '工具' },
-    { value: 'code', label: '编码' },
-    { value: 'solution', label: '方案' },
   ];
 
   const effectiveType: AgentType = (agent.type ?? 'chat') as AgentType;
-  const supportsToolset = effectiveType === 'tool' || effectiveType === 'code';
+  const supportsToolset = effectiveType === 'tool';
+  const effectiveWorkspaceSupport = supportsToolset ? (agent.workspaceSupport ?? true) : false;
 
   const effectiveToolsetOptions = (() => {
     if (!agent.toolset) return toolsetOptions;
@@ -291,8 +291,9 @@ const AgentForm: React.FC<AgentFormProps> = ({
               onChange={(e) => {
                 const nextType = e.target.value as AgentType;
                 onFieldChange('type', nextType);
-                if (nextType !== 'tool' && nextType !== 'code') {
+                if (nextType !== 'tool') {
                   onFieldChange('toolset', undefined);
+                  onFieldChange('workspaceSupport', undefined);
                 }
               }}
               disabled={!isEditing}
@@ -322,10 +323,31 @@ const AgentForm: React.FC<AgentFormProps> = ({
               ))}
             </select>
             <p className="text-xs text-gray-500">
-              {supportsToolset ? '未绑定时默认 allow_all（再由工具权限过滤）。' : '仅 Tool/Code 类型可绑定 toolset。'}
+              {supportsToolset ? '未绑定时默认 allow_all（再由工具权限过滤）。' : '仅 Tool 类型可绑定 toolset。'}
             </p>
           </div>
         </div>
+
+        {supportsToolset && (
+          <div className="space-y-1">
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">WorkSpaceSupport</label>
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={effectiveWorkspaceSupport}
+                onChange={(e) => onFieldChange('workspaceSupport', e.target.checked)}
+                disabled={!isEditing}
+                className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
+              />
+              <span className="text-sm text-gray-700 dark:text-gray-300">
+                启用工作区/Workstudio（默认开启）
+              </span>
+            </div>
+            <p className="text-xs text-gray-500">
+              开启后：Tool 智能体会绑定一个工作目录（支持多个文件夹），并在提示词中明确当前工作目录。
+            </p>
+          </div>
+        )}
 
         <div className="space-y-1">
           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">最大 Turn 数</label>
@@ -347,7 +369,7 @@ const AgentForm: React.FC<AgentFormProps> = ({
             className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800"
           />
           <p className="text-xs text-gray-500">
-            {supportsToolset ? 'Tool/Code 类型会进行多 Turn 循环；未设置时后端默认 10000。' : '一般 Chat 类型默认单 Turn。'}
+            {supportsToolset ? 'Tool 类型会进行多 Turn 循环；未设置时后端默认 10000。' : '一般 Chat 类型默认单 Turn。'}
           </p>
         </div>
 

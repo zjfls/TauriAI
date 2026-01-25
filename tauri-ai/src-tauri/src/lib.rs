@@ -17,13 +17,22 @@ use tokio::sync::Mutex;
 use commands::{
     abort_run, create_conversation, delete_conversation, delete_messages_from,
     fetch_provider_models, generate_title, get_app_config, get_conversations, get_messages,
-    read_local_file_base64, run_task, save_app_config, test_connection, update_conversation_metadata,
-    update_conversation_title,
+    list_local_directory, read_local_file_base64, run_task, save_app_config, test_connection,
+    update_conversation_metadata, write_local_text_file,
+    update_conversation_title, list_pty_sessions, close_pty_session,
+    ensure_workstudio_for_conversation, get_workstudio, add_workstudio_folder, create_workstudio,
+    set_workstudio_main_folder, remove_workstudio_folder,
+    get_workstudio_ui_state, set_workstudio_ui_state,
+    workstudio_terminal_close, workstudio_terminal_create, workstudio_terminal_read,
+    workstudio_terminal_read_base64,
+    workstudio_terminal_write,
 };
 use runtime::RunState;
 use config::ConfigManager;
 use storage::Database;
-use tauri::Manager;
+use tauri::{Emitter, Manager, Url};
+use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu};
+use tauri::WebviewUrl;
 
 /// Get the default database path (~/.tauri-ai/data.db)
 fn get_database_path() -> std::path::PathBuf {
@@ -50,7 +59,120 @@ pub fn run() {
     let run_state = Arc::new(RunState::new());
 
     tauri::Builder::default()
+        .menu(|app| {
+            // Start from Tauri's default menu (macOS has one by default).
+            // Then inject our "Open File" entry into the File submenu.
+            let menu = Menu::default(app)?;
+
+            let open_file = MenuItem::with_id(
+                app,
+                "open_file",
+                "打开文件…",
+                true,
+                Some("CmdOrCtrl+O"),
+            )?;
+
+            let separator = PredefinedMenuItem::separator(app)?;
+            let test_window = MenuItem::with_id(
+                app,
+                "test_window",
+                "测试多窗口",
+                true,
+                Some("CmdOrCtrl+Shift+N"),
+            )?;
+
+            // Find existing "File" submenu and insert at the top. If not found (e.g. Linux),
+            // create one.
+            let mut file_submenu: Option<Submenu<_>> = None;
+            for item in menu.items().unwrap_or_default() {
+                if let MenuItemKind::Submenu(submenu) = item {
+                    if let Ok(text) = submenu.text() {
+                        if text == "File" || text == "文件" {
+                            file_submenu = Some(submenu);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if let Some(file) = file_submenu {
+                file.insert_items(&[&open_file, &test_window, &separator], 0)?;
+            } else {
+                let file = Submenu::with_items(app, "File", true, &[&open_file, &test_window])?;
+                // On macOS, index 0 is the app menu. Insert after it.
+                let pos = if cfg!(target_os = "macos") { 1 } else { 0 };
+                menu.insert(&file, pos)?;
+            }
+
+            Ok(menu)
+        })
+        .on_menu_event(|app, event| {
+            match event.id().as_ref() {
+                "open_file" => {
+                    // Send the event only to the focused window (fall back to main).
+                    let focused = app
+                        .webview_windows()
+                        .into_values()
+                        .find(|w| w.is_focused().unwrap_or(false));
+
+                    if let Some(window) = focused.or_else(|| app.get_webview_window("main")) {
+                        let _ = window.emit("menu:open_file", ());
+                    } else {
+                        let _ = app.emit("menu:open_file", ());
+                    }
+                }
+                "test_window" => {
+                    // Create a standalone window for testing multi-window behavior.
+                    // On Windows, window creation can deadlock inside event handlers; use a new thread.
+                    let handle = app.clone();
+                    std::thread::spawn(move || {
+                        let label = format!(
+                            "view-window-test-{}",
+                            chrono::Utc::now().timestamp_millis()
+                        );
+
+                        let url = if cfg!(debug_assertions) {
+                            handle
+                                .config()
+                                .build
+                                .dev_url
+                                .clone()
+                                .and_then(|base| {
+                                    let base = base.as_str().trim_end_matches('/').to_string();
+                                    Url::parse(&format!(
+                                        "{base}/?view=window_test&standalone=1"
+                                    ))
+                                    .ok()
+                                })
+                                .unwrap_or_else(|| {
+                                    Url::parse("tauri://localhost/?view=window_test&standalone=1")
+                                        .expect("valid tauri url")
+                                })
+                        } else {
+                            Url::parse("tauri://localhost/?view=window_test&standalone=1")
+                                .expect("valid tauri url")
+                        };
+
+                        let webview_url = match url.scheme() {
+                            "http" | "https" => WebviewUrl::External(url),
+                            _ => WebviewUrl::CustomProtocol(url),
+                        };
+
+                        let _ = tauri::WebviewWindowBuilder::new(
+                            &handle,
+                            label,
+                            webview_url,
+                        )
+                        .title("Window Test")
+                        .inner_size(900.0, 700.0)
+                        .build();
+                    });
+                }
+                _ => {}
+            }
+        })
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(database)
         .manage(config_manager)
         .manage(run_state)
@@ -58,6 +180,24 @@ pub fn run() {
             // Runtime commands
             run_task,
             abort_run,
+            list_pty_sessions,
+            close_pty_session,
+            // Workstudio commands
+            ensure_workstudio_for_conversation,
+            get_workstudio,
+            add_workstudio_folder,
+            create_workstudio,
+            set_workstudio_main_folder,
+            remove_workstudio_folder,
+            // Workstudio terminal (UI)
+            workstudio_terminal_create,
+            workstudio_terminal_write,
+            workstudio_terminal_read,
+            workstudio_terminal_read_base64,
+            workstudio_terminal_close,
+            // Workstudio state (UI persisted)
+            get_workstudio_ui_state,
+            set_workstudio_ui_state,
             // Conversation commands
             get_conversations,
             get_messages,
@@ -74,6 +214,8 @@ pub fn run() {
             fetch_provider_models,
             // File commands (drag & drop paths -> data)
             read_local_file_base64,
+            list_local_directory,
+            write_local_text_file,
         ])
         .setup(|app| {
             // 将内置工具目录加入 PATH（例如 rg）

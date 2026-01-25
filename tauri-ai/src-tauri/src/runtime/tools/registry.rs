@@ -9,7 +9,12 @@ use crate::runtime::emitter::RunEmitter;
 
 use super::handlers::builtin::{EchoTool, GetTimeTool};
 use super::handlers::file_tools::{ListDirTool, ReadFileTool, RgTool};
-use super::handlers::pty::{ExecCommandTool, WriteStdinTool};
+use super::handlers::pty::{
+    ExecCommandPersistentTool,
+    ExecCommandTool,
+    WriteStdinPersistentTool,
+    WriteStdinTool,
+};
 use super::handlers::shell::ShellCommandTool;
 use super::services::ToolServices;
 use super::spec::ToolSpec;
@@ -22,6 +27,8 @@ pub struct ToolExecutionContext<'a> {
     pub task_id: &'a str,
     pub turn_id: &'a str,
     pub assistant_message_id: &'a str,
+    /// Default working directory for tools when the model does not provide `workdir`.
+    pub default_workdir: Option<std::path::PathBuf>,
     pub emitter: &'a mut RunEmitter,
     pub abort_rx: &'a mut tokio::sync::mpsc::Receiver<()>,
     pub services: &'a ToolServices,
@@ -168,4 +175,6 @@ pub fn register_builtin_handlers(registry: &mut ToolRegistry) {
     registry.register(Arc::new(ShellCommandTool));
     registry.register(Arc::new(ExecCommandTool));
     registry.register(Arc::new(WriteStdinTool));
+    registry.register(Arc::new(ExecCommandPersistentTool));
+    registry.register(Arc::new(WriteStdinPersistentTool));
 }

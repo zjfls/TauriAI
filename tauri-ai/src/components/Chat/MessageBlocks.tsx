@@ -12,9 +12,10 @@ import React, { useMemo, useState } from 'react';
 import { AlertTriangle, Brain, Bug, ChevronDown, ChevronRight, Search, Wrench } from 'lucide-react';
 import type { MessageBlock, MessageTurn } from '../../types';
 import { MarkdownRenderer } from './MarkdownRenderer';
+import { AnsiText } from './AnsiText';
 import { useConfigStore } from '../../stores/configStore';
 import { DebugModal } from './DebugModal';
-import { stripAnsi } from '../../utils/stripAnsi';
+import type { AnsiColorMode, AnsiRenderMode } from '../../types';
 
 interface ThinkingBlockProps {
   text: string;
@@ -108,34 +109,46 @@ const ToolCallBlock: React.FC<{ name: string; args: string; isStreaming?: boolea
   );
 };
 
-const ToolResultBlock: React.FC<{ text: string; showRawAnsi?: boolean }> = ({
-  text,
-  showRawAnsi,
-}) => {
+const ToolResultBlock: React.FC<{
+  text: string;
+  callId?: string;
+  isStreaming?: boolean;
+  onAbortTool?: (callId: string) => void;
+  ansiRenderMode?: AnsiRenderMode;
+  ansiColorMode?: AnsiColorMode;
+}> = ({ text, callId, isStreaming, onAbortTool, ansiRenderMode, ansiColorMode }) => {
   if (!text) return null;
-
-  const displayText = useMemo(() => {
-    if (showRawAnsi) return text;
-    return stripAnsi(text);
-  }, [text, showRawAnsi]);
+  const canAbort = Boolean(onAbortTool && callId && isStreaming);
 
   return (
     <div className="mb-2 rounded-lg border border-green-200 bg-white px-3 py-2 text-sm text-gray-800 dark:border-green-800 dark:bg-gray-900/40 dark:text-gray-100">
       <div className="mb-1 flex items-center gap-2 text-xs font-medium text-green-700 dark:text-green-300">
         <Wrench size={14} />
         <span>工具结果</span>
+        {canAbort ? (
+          <button
+            type="button"
+            onClick={() => callId && onAbortTool?.(callId)}
+            className="ml-auto rounded border border-green-300 px-2 py-0.5 text-[10px] font-medium text-green-700 hover:bg-green-100 dark:border-green-700 dark:text-green-200 dark:hover:bg-green-900/40"
+            title="强制关闭当前工具（将终止本轮）"
+          >
+            强制关闭
+          </button>
+        ) : null}
       </div>
       <pre className="h-48 overflow-y-auto whitespace-pre-wrap break-words pr-2">
-        {displayText}
+        <AnsiText text={text} renderMode={ansiRenderMode} colorMode={ansiColorMode} />
       </pre>
     </div>
   );
 };
 
-const ErrorBlock: React.FC<{ text: string }> = ({ text }) => {
+const ErrorBlock: React.FC<{
+  text: string;
+  ansiRenderMode?: AnsiRenderMode;
+  ansiColorMode?: AnsiColorMode;
+}> = ({ text, ansiRenderMode, ansiColorMode }) => {
   if (!text) return null;
-
-  const displayText = useMemo(() => stripAnsi(text), [text]);
 
   return (
     <div className="mb-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-900 dark:border-red-800 dark:bg-red-900/20 dark:text-red-100">
@@ -143,7 +156,9 @@ const ErrorBlock: React.FC<{ text: string }> = ({ text }) => {
         <AlertTriangle size={14} />
         <span>错误</span>
       </div>
-      <pre className="whitespace-pre-wrap break-words">{displayText}</pre>
+      <pre className="whitespace-pre-wrap break-words">
+        <AnsiText text={text} renderMode={ansiRenderMode} colorMode={ansiColorMode} />
+      </pre>
     </div>
   );
 };
@@ -219,7 +234,7 @@ const WebSearchBlock: React.FC<{ status: string; action?: unknown; isStreaming?:
       values.find((v) => typeof v === 'string') as string | undefined;
     const pickStringArray = (...values: Array<unknown>) => {
       const arr = values.find((v) => Array.isArray(v)) as Array<unknown> | undefined;
-      return arr?.filter((q) => typeof q === 'string') as string[] | undefined;
+      return arr?.filter((q): q is string => typeof q === 'string');
     };
 
     const query = pickString(a.query, a.search_query, a.searchQuery);
@@ -236,9 +251,9 @@ const WebSearchBlock: React.FC<{ status: string; action?: unknown; isStreaming?:
     const pattern = pickString(a.pattern, findInPage?.pattern, findInPage?.query, a.text);
 
     const sources = Array.isArray(a.sources)
-      ? a.sources
-        .map((s: any) => (typeof s?.url === 'string' ? s.url : null))
-        .filter((u: any) => typeof u === 'string')
+      ? (a.sources as Array<{ url?: unknown }>)
+        .map((s) => (typeof s?.url === 'string' ? s.url : null))
+        .filter((u): u is string => typeof u === 'string')
       : undefined;
 
     const usedValues = new Set<string>();
@@ -343,6 +358,13 @@ const WebSearchBlock: React.FC<{ status: string; action?: unknown; isStreaming?:
     };
   }, [action]);
 
+  const queryItems =
+    info && info.normalizedType === 'search'
+      ? (info.queries?.length ? info.queries : info.query ? [info.query] : []).filter(
+        (q): q is string => typeof q === 'string' && q.trim().length > 0
+      )
+      : [];
+
   const statusLabel = useMemo(() => {
     switch (status) {
       case 'in_progress':
@@ -394,13 +416,13 @@ const WebSearchBlock: React.FC<{ status: string; action?: unknown; isStreaming?:
                 <div className="text-xs text-blue-700 dark:text-blue-300">action: {info.rawType}</div>
               )}
 
-              {info.normalizedType === 'search' && (info.queries?.length || info.query) && (
+              {info.normalizedType === 'search' && queryItems.length > 0 && (
                 <div>
                   <div className="mb-1 text-xs font-medium text-blue-700 dark:text-blue-300">queries</div>
                   <ul className="list-disc pl-5">
-                    {(info.queries?.length ? info.queries : [info.query]).filter(Boolean).map((q: string) => (
-                      <li key={q as string} className="break-words">
-                        {q as string}
+                    {queryItems.map((q) => (
+                      <li key={q} className="break-words">
+                        {q}
                       </li>
                     ))}
                   </ul>
@@ -472,11 +494,14 @@ export const MessageBlocks: React.FC<{
   blocks: MessageBlock[];
   isStreaming?: boolean;
   turns?: MessageTurn[];
-}> = ({ blocks, isStreaming, turns }) => {
+  onAbortTool?: (callId: string) => void;
+}> = ({ blocks, isStreaming, turns, onAbortTool }) => {
   if (!blocks || blocks.length === 0) return null;
 
   const { config } = useConfigStore();
   const debugMode = config?.general?.debugMode ?? false;
+  const ansiRenderMode = config?.general?.ansiRenderMode;
+  const ansiColorMode = config?.general?.ansiColorMode;
   const [activeDebugTurn, setActiveDebugTurn] = useState<MessageTurn | null>(null);
 
   const turnMetaById = useMemo(() => {
@@ -560,11 +585,26 @@ export const MessageBlocks: React.FC<{
     }
 
     if (block.type === 'tool_result') {
-      return <ToolResultBlock text={block.text} showRawAnsi={debugMode} />;
+      return (
+        <ToolResultBlock
+          text={block.text}
+          callId={block.callId}
+          isStreaming={isStreaming}
+          onAbortTool={onAbortTool}
+          ansiRenderMode={ansiRenderMode}
+          ansiColorMode={ansiColorMode}
+        />
+      );
     }
 
     if (block.type === 'error') {
-      return <ErrorBlock text={block.text} />;
+      return (
+        <ErrorBlock
+          text={block.text}
+          ansiRenderMode={ansiRenderMode}
+          ansiColorMode={ansiColorMode}
+        />
+      );
     }
 
     if (block.type === 'web_search') {
@@ -626,6 +666,8 @@ export const MessageBlocks: React.FC<{
         isOpen={!!activeDebugTurn}
         onClose={() => setActiveDebugTurn(null)}
         debugInfo={activeDebugTurn?.debugInfo || null}
+        blocks={blocks}
+        initialTurnId={activeDebugTurn?.turnId || null}
         messageRole="assistant"
       />
     </>

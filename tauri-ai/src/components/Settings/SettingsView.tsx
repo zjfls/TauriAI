@@ -10,7 +10,7 @@ import { AgentConfigForm } from './AgentConfigForm';
 import { ToolsConfigForm } from './ToolsConfigForm';
 import { useConfigStore } from '../../stores/configStore';
 import { useUIStore } from '../../stores/uiStore';
-import type { AppConfig, Theme } from '../../types';
+import type { AppConfig, Theme, AnsiColorMode, AnsiRenderMode } from '../../types';
 
 type SettingsTab = 'providers' | 'agents' | 'tools' | 'appearance' | 'general';
 
@@ -94,11 +94,38 @@ export const SettingsView: React.FC = () => {
     saveConfig(updatedConfig);
   };
 
+  const handleDebugSseChange = (debugSse: boolean) => {
+    if (!config) return;
+    const updatedConfig: AppConfig = {
+      ...config,
+      general: { ...config.general, debugSse },
+    };
+    saveConfig(updatedConfig);
+  };
+
   const handleShowUsageChange = (showUsage: boolean) => {
     if (!config) return;
     const updatedConfig: AppConfig = {
       ...config,
       general: { ...config.general, showUsage },
+    };
+    saveConfig(updatedConfig);
+  };
+
+  const handleAnsiRenderModeChange = (ansiRenderMode: AnsiRenderMode) => {
+    if (!config) return;
+    const updatedConfig: AppConfig = {
+      ...config,
+      general: { ...config.general, ansiRenderMode },
+    };
+    saveConfig(updatedConfig);
+  };
+
+  const handleAnsiColorModeChange = (ansiColorMode: AnsiColorMode) => {
+    if (!config) return;
+    const updatedConfig: AppConfig = {
+      ...config,
+      general: { ...config.general, ansiColorMode },
     };
     saveConfig(updatedConfig);
   };
@@ -152,15 +179,21 @@ export const SettingsView: React.FC = () => {
             language={config.general.language}
             autoStart={config.general.autoStart}
             debugMode={config.general.debugMode ?? false}
+            debugSse={config.general.debugSse ?? false}
             openDevtoolsOnStart={config.general.openDevtoolsOnStart ?? false}
             showUsage={config.general.showUsage ?? true}
             pdfDebugMode={config.general.pdfDebugMode ?? false}
+            ansiRenderMode={config.general.ansiRenderMode ?? 'color'}
+            ansiColorMode={config.general.ansiColorMode ?? 'auto'}
             onLanguageChange={handleLanguageChange}
             onAutoStartChange={handleAutoStartChange}
             onDebugModeChange={handleDebugModeChange}
+            onDebugSseChange={handleDebugSseChange}
             onOpenDevtoolsOnStartChange={handleOpenDevtoolsOnStartChange}
             onShowUsageChange={handleShowUsageChange}
             onPdfDebugModeChange={handlePdfDebugModeChange}
+            onAnsiRenderModeChange={handleAnsiRenderModeChange}
+            onAnsiColorModeChange={handleAnsiColorModeChange}
           />
         );
       default:
@@ -246,34 +279,59 @@ interface GeneralSettingsProps {
   language: string;
   autoStart: boolean;
   debugMode: boolean;
+  debugSse: boolean;
   openDevtoolsOnStart: boolean;
   showUsage: boolean;
   pdfDebugMode: boolean;
+  ansiRenderMode: AnsiRenderMode;
+  ansiColorMode: AnsiColorMode;
   onLanguageChange: (language: string) => void;
   onAutoStartChange: (value: boolean) => void;
   onDebugModeChange: (value: boolean) => void;
+  onDebugSseChange: (value: boolean) => void;
   onOpenDevtoolsOnStartChange: (value: boolean) => void;
   onShowUsageChange: (value: boolean) => void;
   onPdfDebugModeChange: (value: boolean) => void;
+  onAnsiRenderModeChange: (value: AnsiRenderMode) => void;
+  onAnsiColorModeChange: (value: AnsiColorMode) => void;
 }
 
 const GeneralSettings: React.FC<GeneralSettingsProps> = ({
   language,
   autoStart,
   debugMode,
+  debugSse,
   openDevtoolsOnStart,
   showUsage,
   pdfDebugMode,
+  ansiRenderMode,
+  ansiColorMode,
   onLanguageChange,
   onAutoStartChange,
   onDebugModeChange,
+  onDebugSseChange,
   onOpenDevtoolsOnStartChange,
   onShowUsageChange,
   onPdfDebugModeChange,
+  onAnsiRenderModeChange,
+  onAnsiColorModeChange,
 }) => {
   const languageOptions = [
     { value: 'zh-CN', label: '简体中文' },
     { value: 'en-US', label: 'English' },
+  ];
+
+  const ansiRenderOptions: { value: AnsiRenderMode; label: string }[] = [
+    { value: 'color', label: '彩色（ANSI）' },
+    { value: 'strip', label: '纯文本（去色）' },
+    { value: 'raw', label: '原始控制码' },
+  ];
+
+  const ansiColorOptions: { value: AnsiColorMode; label: string }[] = [
+    { value: 'auto', label: '跟随主题（VS Code）' },
+    { value: 'vscode-dark', label: 'VS Code 深色' },
+    { value: 'vscode-light', label: 'VS Code 浅色' },
+    { value: 'xterm', label: 'xterm（经典）' },
   ];
 
   return (
@@ -314,6 +372,44 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
         >
           <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${debugMode ? 'translate-x-5' : ''}`} />
         </button>
+      </div>
+      <div className="flex items-center justify-between">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">输出流式 Raw 消息</label>
+          <p className="text-xs text-gray-500">在控制台打印流式 SSE data（需开启调试模式）</p>
+        </div>
+        <button
+          onClick={() => onDebugSseChange(!debugSse)}
+          className={`relative w-11 h-6 rounded-full transition-colors ${debugSse ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'}`}
+        >
+          <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${debugSse ? 'translate-x-5' : ''}`} />
+        </button>
+      </div>
+      <div className="space-y-2">
+        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">工具输出显示</label>
+        <select
+          value={ansiRenderMode}
+          onChange={(e) => onAnsiRenderModeChange(e.target.value as AnsiRenderMode)}
+          className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700"
+        >
+          {ansiRenderOptions.map((option) => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
+        </select>
+        <p className="text-xs text-gray-500">彩色模式会解析 ANSI 控制码显示颜色</p>
+      </div>
+      <div className="space-y-2">
+        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">ANSI 颜色方案</label>
+        <select
+          value={ansiColorMode}
+          onChange={(e) => onAnsiColorModeChange(e.target.value as AnsiColorMode)}
+          className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700"
+        >
+          {ansiColorOptions.map((option) => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
+        </select>
+        <p className="text-xs text-gray-500">仅影响 ANSI 16 色调色板，256 色与真彩保持不变</p>
       </div>
       <div className="flex items-center justify-between">
         <div>

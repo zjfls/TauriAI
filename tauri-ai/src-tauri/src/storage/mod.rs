@@ -6,10 +6,12 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use thiserror::Error;
+use serde::Serialize;
 
-use crate::models::{ContentPart, Conversation, Message, MessageRole};
+use crate::models::{ContentPart, Conversation, Message, MessageRole, Workstudio};
+use crate::models::WorkstudioUiState;
 
 /// Errors that can occur during storage operations
 #[derive(Debug, Error)]
@@ -95,6 +97,7 @@ impl Database {
                 agent_name TEXT,
                 model_ref TEXT,
                 thinking_mode TEXT,
+                workstudio_id TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )",
@@ -106,6 +109,34 @@ impl Database {
         let _ = conn.execute("ALTER TABLE conversations ADD COLUMN agent_name TEXT", []);
         let _ = conn.execute("ALTER TABLE conversations ADD COLUMN model_ref TEXT", []);
         let _ = conn.execute("ALTER TABLE conversations ADD COLUMN thinking_mode TEXT", []);
+        let _ = conn.execute("ALTER TABLE conversations ADD COLUMN workstudio_id TEXT", []);
+
+        // Create workstudios table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS workstudios (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL DEFAULT 'code',
+                main_folder TEXT NOT NULL,
+                folders_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )",
+            [],
+        )?;
+        // Migration: Add kind column if it doesn't exist
+        let _ = conn.execute("ALTER TABLE workstudios ADD COLUMN kind TEXT NOT NULL DEFAULT 'code'", []);
+
+        // Create workstudio_states table (UI persisted state, keyed by main_folder + kind)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS workstudio_states (
+                main_folder TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                state_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (main_folder, kind)
+            )",
+            [],
+        )?;
 
         // Create messages table
         conn.execute(
@@ -175,8 +206,8 @@ impl Database {
         let now_str = now.to_rfc3339();
 
         conn.execute(
-            "INSERT INTO conversations (id, title, model_id, agent_name, model_ref, thinking_mode, created_at, updated_at)
-             VALUES (?1, ?2, NULL, NULL, NULL, NULL, ?3, ?4)",
+            "INSERT INTO conversations (id, title, model_id, agent_name, model_ref, thinking_mode, workstudio_id, created_at, updated_at)
+             VALUES (?1, ?2, NULL, NULL, NULL, NULL, NULL, ?3, ?4)",
             params![id, title, now_str, now_str],
         )?;
 
@@ -186,6 +217,7 @@ impl Database {
             agent_name: None,
             model_ref: None,
             thinking_mode: None,
+            workstudio_id: None,
             created_at: now,
             updated_at: now,
         })
@@ -199,7 +231,7 @@ impl Database {
             .map_err(|e| StorageError::Lock(e.to_string()))?;
 
         let mut stmt = conn.prepare(
-            "SELECT id, title, agent_name, model_ref, thinking_mode, created_at, updated_at 
+            "SELECT id, title, agent_name, model_ref, thinking_mode, workstudio_id, created_at, updated_at 
              FROM conversations 
              ORDER BY updated_at DESC",
         )?;
@@ -207,8 +239,9 @@ impl Database {
         let conversations = stmt
             .query_map([], |row| {
                 let thinking_mode_str: Option<String> = row.get(4)?;
-                let created_at_str: String = row.get(5)?;
-                let updated_at_str: String = row.get(6)?;
+                let workstudio_id: Option<String> = row.get(5)?;
+                let created_at_str: String = row.get(6)?;
+                let updated_at_str: String = row.get(7)?;
 
                 let thinking_mode: Option<serde_json::Value> = thinking_mode_str
                     .as_deref()
@@ -220,6 +253,7 @@ impl Database {
                     agent_name: row.get(2)?,
                     model_ref: row.get(3)?,
                     thinking_mode,
+                    workstudio_id,
                     created_at: DateTime::parse_from_rfc3339(&created_at_str)
                         .map(|dt| dt.with_timezone(&Utc))
                         .unwrap_or_else(|_| Utc::now()),
@@ -241,7 +275,7 @@ impl Database {
             .map_err(|e| StorageError::Lock(e.to_string()))?;
 
         let mut stmt = conn.prepare(
-            "SELECT id, title, agent_name, model_ref, thinking_mode, created_at, updated_at 
+            "SELECT id, title, agent_name, model_ref, thinking_mode, workstudio_id, created_at, updated_at 
              FROM conversations 
              WHERE id = ?1",
         )?;
@@ -250,8 +284,9 @@ impl Database {
 
         if let Some(row) = rows.next()? {
             let thinking_mode_str: Option<String> = row.get(4)?;
-            let created_at_str: String = row.get(5)?;
-            let updated_at_str: String = row.get(6)?;
+            let workstudio_id: Option<String> = row.get(5)?;
+            let created_at_str: String = row.get(6)?;
+            let updated_at_str: String = row.get(7)?;
 
             let thinking_mode: Option<serde_json::Value> = thinking_mode_str
                 .as_deref()
@@ -263,6 +298,7 @@ impl Database {
                 agent_name: row.get(2)?,
                 model_ref: row.get(3)?,
                 thinking_mode,
+                workstudio_id,
                 created_at: DateTime::parse_from_rfc3339(&created_at_str)
                     .map(|dt| dt.with_timezone(&Utc))
                     .unwrap_or_else(|_| Utc::now()),
@@ -282,6 +318,7 @@ impl Database {
         agent_name: Option<&str>,
         model_ref: Option<&str>,
         thinking_mode: Option<&serde_json::Value>,
+        workstudio_id: Option<&str>,
     ) -> Result<(), StorageError> {
         let conn = self
             .conn
@@ -301,9 +338,17 @@ impl Database {
              SET agent_name = COALESCE(?1, agent_name),
                  model_ref = COALESCE(?2, model_ref),
                  thinking_mode = COALESCE(?3, thinking_mode),
-                 updated_at = ?4 
-             WHERE id = ?5",
-            params![agent_name, model_ref, thinking_mode_json, now, id],
+                 workstudio_id = COALESCE(?4, workstudio_id),
+                 updated_at = ?5 
+             WHERE id = ?6",
+            params![
+                agent_name,
+                model_ref,
+                thinking_mode_json,
+                workstudio_id,
+                now,
+                id
+            ],
         )?;
 
         Ok(())
@@ -353,6 +398,454 @@ impl Database {
                 "Conversation {id} not found"
             )));
         }
+
+        Ok(())
+    }
+
+    // ==================== Workstudio Operations ====================
+
+    fn default_workstudio_main_folder(id: &str) -> Result<PathBuf, StorageError> {
+        let home_dir = dirs::home_dir()
+            .ok_or_else(|| StorageError::Io("Home directory not found".to_string()))?;
+        Ok(home_dir.join(".tauri-ai").join("workstudios").join(id))
+    }
+
+    fn write_workstudio_marker(main_folder: &PathBuf, ws: &Workstudio) -> Result<(), StorageError> {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Marker<'a> {
+            id: &'a str,
+            kind: &'a str,
+            main_folder: &'a str,
+            folders: &'a [String],
+        }
+
+        let meta_dir = main_folder.join(".tauriai");
+        std::fs::create_dir_all(&meta_dir)
+            .map_err(|e| StorageError::Io(format!("create .tauriai failed: {e}")))?;
+
+        let marker = Marker {
+            id: &ws.id,
+            kind: &ws.kind,
+            main_folder: &ws.main_folder,
+            folders: &ws.folders,
+        };
+        let json = serde_json::to_string_pretty(&marker)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        std::fs::write(meta_dir.join("workstudio.json"), json)
+            .map_err(|e| StorageError::Io(format!("write workstudio.json failed: {e}")))?;
+        Ok(())
+    }
+
+    pub fn get_workstudio(&self, id: &str) -> Result<Option<Workstudio>, StorageError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Lock(e.to_string()))?;
+
+        let mut stmt = conn.prepare(
+            "SELECT id, kind, main_folder, folders_json, created_at, updated_at
+             FROM workstudios
+             WHERE id = ?1",
+        )?;
+
+        let row = stmt
+            .query_row(params![id], |row| {
+                let folders_json: String = row.get(3)?;
+                let folders: Vec<String> =
+                    serde_json::from_str(&folders_json).unwrap_or_else(|_| Vec::new());
+                Ok(Workstudio {
+                    id: row.get(0)?,
+                    kind: row.get(1)?,
+                    main_folder: row.get(2)?,
+                    folders,
+                    created_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(4)?)
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .unwrap_or_else(|_| Utc::now()),
+                    updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(5)?)
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .unwrap_or_else(|_| Utc::now()),
+                })
+            })
+            .optional()?;
+
+        Ok(row)
+    }
+
+    /// Ensure a workstudio exists for a conversation.
+    ///
+    /// - If the conversation already binds to a workstudio, returns it.
+    /// - Otherwise creates a new workstudio with a default main folder under `~/.tauri-ai/workstudios/<id>`,
+    ///   binds the conversation to it, and writes `.tauriai/workstudio.json` in the main folder.
+    pub fn ensure_workstudio_for_conversation(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Workstudio, StorageError> {
+        // 1) Check conversation existence + current binding (lock scope kept small to avoid re-entrant locks).
+        let existing_id_opt: Option<String> = {
+            let conn = self
+                .conn
+                .lock()
+                .map_err(|e| StorageError::Lock(e.to_string()))?;
+
+            let row: Option<Option<String>> = conn
+                .query_row(
+                    "SELECT workstudio_id FROM conversations WHERE id = ?1",
+                    params![conversation_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+
+            let Some(existing_id_opt) = row else {
+                return Err(StorageError::NotFound(format!(
+                    "Conversation {conversation_id} not found"
+                )));
+            };
+
+            existing_id_opt
+        };
+
+        if let Some(existing_id) = existing_id_opt {
+            if let Some(ws) = self.get_workstudio(&existing_id)? {
+                return Ok(ws);
+            }
+            // Broken binding (workstudio row missing): fall through and recreate.
+        }
+
+        // 2) Create new workstudio + default folder
+        let id = uuid::Uuid::new_v4().to_string();
+        let main_folder_path = Self::default_workstudio_main_folder(&id)?;
+        std::fs::create_dir_all(&main_folder_path)
+            .map_err(|e| StorageError::Io(format!("create workstudio folder failed: {e}")))?;
+
+        let main_folder = main_folder_path.to_string_lossy().to_string();
+        let folders = vec![main_folder.clone()];
+        let folders_json =
+            serde_json::to_string(&folders).map_err(|e| StorageError::Serialization(e.to_string()))?;
+
+        let now = Utc::now();
+        let now_str = now.to_rfc3339();
+
+        {
+            let conn = self
+                .conn
+                .lock()
+                .map_err(|e| StorageError::Lock(e.to_string()))?;
+
+            conn.execute(
+                "INSERT INTO workstudios (id, kind, main_folder, folders_json, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![id, "code", main_folder, folders_json, now_str, now_str],
+            )?;
+
+            conn.execute(
+                "UPDATE conversations
+                 SET workstudio_id = ?1,
+                     updated_at = ?2
+                 WHERE id = ?3",
+                params![id, now_str, conversation_id],
+            )?;
+        }
+
+        let ws = Workstudio {
+            id,
+            kind: "code".to_string(),
+            main_folder: main_folder_path.to_string_lossy().to_string(),
+            folders,
+            created_at: now,
+            updated_at: now,
+        };
+
+        // Best-effort: marker file lives in the main folder, for quick bootstrap.
+        let _ = Self::write_workstudio_marker(&main_folder_path, &ws);
+
+        Ok(ws)
+    }
+
+    /// Create a standalone workstudio (not bound to any conversation).
+    ///
+    /// Useful for testing multi-window routing and as a building block for
+    /// future "open workstudio" flows that don't start from a chat session.
+    pub fn create_workstudio(&self) -> Result<Workstudio, StorageError> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let main_folder_path = Self::default_workstudio_main_folder(&id)?;
+        std::fs::create_dir_all(&main_folder_path)
+            .map_err(|e| StorageError::Io(format!("create workstudio folder failed: {e}")))?;
+
+        let main_folder = main_folder_path.to_string_lossy().to_string();
+        let folders = vec![main_folder.clone()];
+        let folders_json =
+            serde_json::to_string(&folders).map_err(|e| StorageError::Serialization(e.to_string()))?;
+
+        let now = Utc::now();
+        let now_str = now.to_rfc3339();
+
+        {
+            let conn = self
+                .conn
+                .lock()
+                .map_err(|e| StorageError::Lock(e.to_string()))?;
+
+            conn.execute(
+                "INSERT INTO workstudios (id, kind, main_folder, folders_json, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![id, "code", main_folder, folders_json, now_str, now_str],
+            )?;
+        }
+
+        let ws = Workstudio {
+            id,
+            kind: "code".to_string(),
+            main_folder: main_folder_path.to_string_lossy().to_string(),
+            folders,
+            created_at: now,
+            updated_at: now,
+        };
+
+        let _ = Self::write_workstudio_marker(&main_folder_path, &ws);
+        Ok(ws)
+    }
+
+    pub fn add_workstudio_folder(
+        &self,
+        workstudio_id: &str,
+        folder: &str,
+        set_as_main: bool,
+    ) -> Result<Workstudio, StorageError> {
+        let folder = folder.trim();
+        if folder.is_empty() {
+            return Err(StorageError::Serialization("folder is empty".to_string()));
+        }
+
+        let folder_path = PathBuf::from(folder);
+        if !folder_path.exists() {
+            std::fs::create_dir_all(&folder_path)
+                .map_err(|e| StorageError::Io(format!("create folder failed: {e}")))?;
+        }
+
+        let mut ws = self
+            .get_workstudio(workstudio_id)?
+            .ok_or_else(|| StorageError::NotFound(format!("Workstudio {workstudio_id} not found")))?;
+
+        let folder_str = folder_path.to_string_lossy().to_string();
+
+        // If the workstudio only has the system default folder (auto-created under ~/.tauri-ai)
+        // and the user adds another folder, promote the user folder to main and drop the default.
+        // This matches the "user workspace overrides system workspace" UX.
+        let mut effective_set_as_main = set_as_main;
+        let default_main = Self::default_workstudio_main_folder(workstudio_id)?
+            .to_string_lossy()
+            .to_string();
+        if ws.main_folder == default_main && folder_str != default_main {
+            effective_set_as_main = true;
+            ws.folders.retain(|f| f != &default_main);
+        }
+        if !ws.folders.iter().any(|f| f == &folder_str) {
+            ws.folders.push(folder_str.clone());
+        }
+
+        if effective_set_as_main {
+            ws.main_folder = folder_str.clone();
+            // Keep main folder as the first entry.
+            ws.folders.retain(|f| f != &folder_str);
+            ws.folders.insert(0, folder_str.clone());
+        }
+
+        let now = Utc::now();
+        let now_str = now.to_rfc3339();
+        ws.updated_at = now;
+
+        let folders_json =
+            serde_json::to_string(&ws.folders).map_err(|e| StorageError::Serialization(e.to_string()))?;
+
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Lock(e.to_string()))?;
+
+        conn.execute(
+            "UPDATE workstudios
+             SET main_folder = ?1,
+                 folders_json = ?2,
+                 updated_at = ?3
+             WHERE id = ?4",
+            params![ws.main_folder, folders_json, now_str, workstudio_id],
+        )?;
+
+        // Best-effort: marker file in (new) main folder.
+        let _ = Self::write_workstudio_marker(&PathBuf::from(&ws.main_folder), &ws);
+
+        Ok(ws)
+    }
+
+    pub fn set_workstudio_main_folder(
+        &self,
+        workstudio_id: &str,
+        folder: &str,
+    ) -> Result<Workstudio, StorageError> {
+        let folder = folder.trim();
+        if folder.is_empty() {
+            return Err(StorageError::Serialization("folder is empty".to_string()));
+        }
+
+        let mut ws = self
+            .get_workstudio(workstudio_id)?
+            .ok_or_else(|| StorageError::NotFound(format!("Workstudio {workstudio_id} not found")))?;
+
+        if !ws.folders.iter().any(|f| f == folder) {
+            return Err(StorageError::NotFound(format!(
+                "Folder not found in workstudio: {folder}"
+            )));
+        }
+
+        ws.main_folder = folder.to_string();
+        ws.folders.retain(|f| f != folder);
+        ws.folders.insert(0, folder.to_string());
+
+        let now = Utc::now();
+        let now_str = now.to_rfc3339();
+        ws.updated_at = now;
+
+        let folders_json =
+            serde_json::to_string(&ws.folders).map_err(|e| StorageError::Serialization(e.to_string()))?;
+
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Lock(e.to_string()))?;
+
+        conn.execute(
+            "UPDATE workstudios
+             SET main_folder = ?1,
+                 folders_json = ?2,
+                 updated_at = ?3
+             WHERE id = ?4",
+            params![ws.main_folder, folders_json, now_str, workstudio_id],
+        )?;
+
+        let _ = Self::write_workstudio_marker(&PathBuf::from(&ws.main_folder), &ws);
+        Ok(ws)
+    }
+
+    pub fn remove_workstudio_folder(
+        &self,
+        workstudio_id: &str,
+        folder: &str,
+    ) -> Result<Workstudio, StorageError> {
+        let folder = folder.trim();
+        if folder.is_empty() {
+            return Err(StorageError::Serialization("folder is empty".to_string()));
+        }
+
+        let mut ws = self
+            .get_workstudio(workstudio_id)?
+            .ok_or_else(|| StorageError::NotFound(format!("Workstudio {workstudio_id} not found")))?;
+
+        if ws.folders.len() <= 1 {
+            return Err(StorageError::Serialization(
+                "cannot remove the last folder".to_string(),
+            ));
+        }
+
+        if !ws.folders.iter().any(|f| f == folder) {
+            return Err(StorageError::NotFound(format!(
+                "Folder not found in workstudio: {folder}"
+            )));
+        }
+
+        ws.folders.retain(|f| f != folder);
+        if ws.main_folder == folder {
+            ws.main_folder = ws
+                .folders
+                .first()
+                .cloned()
+                .ok_or_else(|| StorageError::Serialization("workstudio has no folders".to_string()))?;
+        }
+
+        // Keep main folder as the first entry.
+        let main = ws.main_folder.clone();
+        ws.folders.retain(|f| f != &main);
+        ws.folders.insert(0, main.clone());
+
+        let now = Utc::now();
+        let now_str = now.to_rfc3339();
+        ws.updated_at = now;
+
+        let folders_json =
+            serde_json::to_string(&ws.folders).map_err(|e| StorageError::Serialization(e.to_string()))?;
+
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Lock(e.to_string()))?;
+
+        conn.execute(
+            "UPDATE workstudios
+             SET main_folder = ?1,
+                 folders_json = ?2,
+                 updated_at = ?3
+             WHERE id = ?4",
+            params![ws.main_folder, folders_json, now_str, workstudio_id],
+        )?;
+
+        let _ = Self::write_workstudio_marker(&PathBuf::from(&ws.main_folder), &ws);
+        Ok(ws)
+    }
+
+    // ==================== Workstudio State (UI) ====================
+
+    pub fn get_workstudio_ui_state(
+        &self,
+        main_folder: &str,
+        kind: &str,
+    ) -> Result<Option<WorkstudioUiState>, StorageError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Lock(e.to_string()))?;
+
+        let mut stmt = conn.prepare(
+            "SELECT state_json
+             FROM workstudio_states
+             WHERE main_folder = ?1 AND kind = ?2",
+        )?;
+
+        let row: Option<String> = stmt
+            .query_row(params![main_folder, kind], |r| r.get(0))
+            .optional()?;
+
+        let Some(json) = row else {
+            return Ok(None);
+        };
+
+        let parsed: WorkstudioUiState =
+            serde_json::from_str(&json).map_err(|e| StorageError::Serialization(e.to_string()))?;
+        Ok(Some(parsed))
+    }
+
+    pub fn set_workstudio_ui_state(
+        &self,
+        main_folder: &str,
+        kind: &str,
+        state: &WorkstudioUiState,
+    ) -> Result<(), StorageError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Lock(e.to_string()))?;
+
+        let now_str = Utc::now().to_rfc3339();
+        let json =
+            serde_json::to_string(state).map_err(|e| StorageError::Serialization(e.to_string()))?;
+
+        conn.execute(
+            "INSERT INTO workstudio_states (main_folder, kind, state_json, updated_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(main_folder, kind) DO UPDATE
+               SET state_json = excluded.state_json,
+                   updated_at = excluded.updated_at",
+            params![main_folder, kind, json, now_str],
+        )?;
 
         Ok(())
     }

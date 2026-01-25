@@ -5,9 +5,10 @@
  */
 
 import React from 'react';
-import { MessageSquare, History, Settings, PanelLeftClose, PanelLeft } from 'lucide-react';
+import { PanelLeftClose, PanelLeft } from 'lucide-react';
 import type { ActiveView } from '../../types';
 import { useUIStore } from '../../stores/uiStore';
+import { VIEW_DEFINITIONS } from '../../views/registry';
 
 interface SidebarProps {
   activeView: ActiveView;
@@ -51,11 +52,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const { toggleSidebar } = useUIStore();
 
-  const navItems: { view: ActiveView; icon: React.ReactNode; label: string }[] = [
-    { view: 'chat', icon: <MessageSquare size={20} />, label: '聊天' },
-    { view: 'history', icon: <History size={20} />, label: '历史' },
-    { view: 'settings', icon: <Settings size={20} />, label: '设置' },
-  ];
+  const navItems = VIEW_DEFINITIONS.filter((def) => def.inSidebar !== false).map((def) => ({
+    view: def.id,
+    icon: def.icon,
+    label: def.label,
+  }));
 
   return (
     <aside

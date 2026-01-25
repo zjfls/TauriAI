@@ -33,6 +33,22 @@ export class ErrorBoundary extends Component<Props, State> {
 
   render() {
     if (this.state.hasError) {
+      const debugStormInfo = (() => {
+        try {
+          if (!import.meta.env.DEV) return null;
+          if (typeof localStorage === 'undefined') return null;
+          return {
+            sessionStore: localStorage.getItem('tauri-ai:debug:last_session_store_storm'),
+            configStore: localStorage.getItem('tauri-ai:debug:last_config_store_storm'),
+            toolSessionStore: localStorage.getItem('tauri-ai:debug:last_tool_session_store_storm'),
+            uiStore: localStorage.getItem('tauri-ai:debug:last_ui_store_storm'),
+            conversationStore: localStorage.getItem('tauri-ai:debug:last_conversation_store_storm'),
+          };
+        } catch {
+          return null;
+        }
+      })();
+
       if (this.props.fallback) {
         return this.props.fallback;
       }
@@ -54,6 +70,41 @@ export class ErrorBoundary extends Component<Props, State> {
                 {this.state.error?.toString()}
                 {'\n\n'}
                 {this.state.errorInfo?.componentStack}
+                {debugStormInfo?.sessionStore ? (
+                  <>
+                    {'\n\n'}
+                    {'[debug] last sessionStore storm (localStorage tauri-ai:debug:last_session_store_storm)\n'}
+                    {debugStormInfo.sessionStore}
+                  </>
+                ) : null}
+                {debugStormInfo?.configStore ? (
+                  <>
+                    {'\n\n'}
+                    {'[debug] last configStore storm (localStorage tauri-ai:debug:last_config_store_storm)\n'}
+                    {debugStormInfo.configStore}
+                  </>
+                ) : null}
+                {debugStormInfo?.toolSessionStore ? (
+                  <>
+                    {'\n\n'}
+                    {'[debug] last toolSessionStore storm (localStorage tauri-ai:debug:last_tool_session_store_storm)\n'}
+                    {debugStormInfo.toolSessionStore}
+                  </>
+                ) : null}
+                {debugStormInfo?.uiStore ? (
+                  <>
+                    {'\n\n'}
+                    {'[debug] last uiStore storm (localStorage tauri-ai:debug:last_ui_store_storm)\n'}
+                    {debugStormInfo.uiStore}
+                  </>
+                ) : null}
+                {debugStormInfo?.conversationStore ? (
+                  <>
+                    {'\n\n'}
+                    {'[debug] last conversationStore storm (localStorage tauri-ai:debug:last_conversation_store_storm)\n'}
+                    {debugStormInfo.conversationStore}
+                  </>
+                ) : null}
               </pre>
             </details>
             <button

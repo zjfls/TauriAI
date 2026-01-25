@@ -7,10 +7,11 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import type { AgentSession, Message, DebugInfo, TokenUsage, PersistedSession, PersistedSessionState, ContentPart, ThinkingMode, ApiProtocolType, RunEventPayload, MessageBlock, ProviderType, MessageTurn } from '../types';
+import type { AgentSession, Message, DebugInfo, TokenUsage, PersistedSession, PersistedSessionState, ContentPart, ThinkingMode, ApiProtocolType, RunEventPayload, MessageBlock, ProviderType, MessageTurn, Workstudio } from '../types';
 import { getApiProtocol, getDefaultThinkingMode, getProviderType } from '../utils/apiUtils';
 import { hydrateMessagesFromBackend } from '../utils/hydrateMessages';
 import { useConfigStore } from './configStore';
+import { useWorkspaceTabStore } from './workspaceTabStore';
 
 // Constants for persistence
 const SESSION_STORAGE_KEY = 'tauri-ai:sessions';
@@ -165,6 +166,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const providerType = modelRef && config ? getProviderType(modelRef, config.providers) : undefined;
     const thinkingMode = coerceThinkingModeForProtocol(undefined, apiProtocol, providerType);
 
+    const agentType = agent?.type ?? 'chat';
+    const workspaceEnabled = agentType === 'tool' && (agent?.workspaceSupport ?? true);
+
     // Generate default title with timestamp: 新对话_MM-DD HH:mm
     const nowDate = new Date();
     const month = (nowDate.getMonth() + 1).toString().padStart(2, '0');
@@ -186,12 +190,25 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       thinkingMode,
     }).catch(console.error);
 
+    let resolvedWorkstudioId: string | null = null;
+    if (workspaceEnabled) {
+      try {
+        const ws = await invoke<Workstudio>('ensure_workstudio_for_conversation', {
+          conversationId: conversation.id,
+        });
+        resolvedWorkstudioId = ws.id;
+      } catch (error) {
+        console.warn('ensure_workstudio_for_conversation failed:', error);
+      }
+    }
+
     const session: AgentSession = {
       id: sessionId,
       agentName,
       title: defaultTitle,
       modelRef,
       conversationId: conversation.id,
+      workstudioId: resolvedWorkstudioId,
       apiType: apiProtocol, // 当前会话协议（不再做“首条消息锁定”）
       thinkingMode,
       draftContent: '',
@@ -211,6 +228,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         activeSessionId: sessionId,
       };
     });
+
+    // WorkspaceTabBar uses a separate order list; keep it in sync.
+    useWorkspaceTabStore.getState().upsertChatTab(sessionId);
 
     // Save state after creating session
     get().saveSessionState();
@@ -250,6 +270,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         activeSessionId: newActiveId,
       };
     });
+
+    useWorkspaceTabStore.getState().removeChatTab(sessionId);
 
     // Save state after closing session
     get().saveSessionState();
@@ -307,6 +329,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       activeSessionId: keepSessionId,
     });
 
+    useWorkspaceTabStore.getState().syncTabs([keepSessionId], []);
+
     // Save state after closing sessions
     get().saveSessionState();
   },
@@ -353,6 +377,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       activeSessionId: newActiveId,
     });
 
+    useWorkspaceTabStore.getState().syncTabs(Array.from(newSessions.keys()), []);
+
     // Save state after closing sessions
     get().saveSessionState();
   },
@@ -398,6 +424,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       sessions: newSessions,
       activeSessionId: newActiveId,
     });
+
+    useWorkspaceTabStore.getState().syncTabs(Array.from(newSessions.keys()), []);
 
     // Save state after closing sessions
     get().saveSessionState();
@@ -818,11 +846,20 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     clearTurnIndexesForSession(sessionId);
 
     // Trigger auto-title generation
-    // Condition: messages >= 3 OR response content >= 100 chars
+    // Condition: messages >= 3 OR substantial single-reply OR multi-turn run
     const updatedSession = get().sessions.get(sessionId);
     if (updatedSession) {
       const newMessagesCount = updatedSession.messages.length;
-      const shouldGenerateTitle = newMessagesCount >= 3 || fullContent.length >= 100;
+      // NOTE:
+      // - `fullContent` comes from the backend `done` payload, but some providers (or multi-turn
+      //   runs) may deliver the visible text via `block_delta` instead, leaving `fullContent` empty.
+      // - Tool agents can have many internal turns while still producing only one assistant message
+      //   (so `messages.length` may stay at 2 for a "substantial" run).
+      const turnCount = assistantMessage.turns?.length ?? 0;
+      const shouldGenerateTitle =
+        newMessagesCount >= 3 ||
+        assistantMessage.content.length >= 100 ||
+        turnCount >= 2;
 
       if (shouldGenerateTitle) {
         // Async - don't await, let it run in background
@@ -1188,8 +1225,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       agentName: session.agentName,
       modelRef: session.modelRef,
       conversationId: session.conversationId,
+      workstudioId: session.workstudioId ?? null,
       apiType: session.apiType,
       thinkingMode: session.thinkingMode,
+      webSearchEnabled: session.webSearchEnabled,
       draftContent: session.draftContent,
       createdAt: session.createdAt,
       lastActiveAt: session.lastActiveAt,
@@ -1260,6 +1299,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         const conversations = useConversationStore.getState().conversations;
         const conv = conversations.find(c => c.id === persisted.conversationId);
         const title = conv?.title || '新对话';
+        const convWorkstudioId = conv?.workstudioId ?? null;
 
         const agent = useConfigStore.getState().getAgent(agentName);
         const modelRef = persisted.modelRef || agent?.modelRef;
@@ -1272,6 +1312,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           title,
           modelRef,
           conversationId: persisted.conversationId,
+          workstudioId: persisted.workstudioId ?? convWorkstudioId,
           apiType: apiProtocol,
           thinkingMode: coerceThinkingModeForProtocol(persisted.thinkingMode, apiProtocol, providerType),
           webSearchEnabled: persisted.webSearchEnabled,
@@ -1297,6 +1338,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         sessions: newSessions,
         activeSessionId,
       });
+
+      useWorkspaceTabStore.getState().syncTabs(Array.from(newSessions.keys()), []);
     } catch (error) {
       console.error('Failed to restore session state:', error);
     }
@@ -1344,6 +1387,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const apiProtocol = modelRef && config ? getApiProtocol(modelRef, config.providers) : 'chat_completions';
     const providerType = modelRef && config ? getProviderType(modelRef, config.providers) : undefined;
 
+    const agentType = agent?.type ?? 'chat';
+    const workspaceEnabled = agentType === 'tool' && (agent?.workspaceSupport ?? true);
+
+    let resolvedWorkstudioId: string | null = conversation?.workstudioId ?? null;
+    if (workspaceEnabled) {
+      try {
+        const ws = await invoke<Workstudio>('ensure_workstudio_for_conversation', { conversationId });
+        resolvedWorkstudioId = ws.id;
+      } catch (error) {
+        console.warn('ensure_workstudio_for_conversation failed:', error);
+      }
+    }
+
     // Load messages
     let messages: Message[] = [];
     try {
@@ -1375,6 +1431,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       title: conversation?.title || '新对话',
       modelRef,
       conversationId,
+      workstudioId: resolvedWorkstudioId,
       apiType: apiProtocol,
       thinkingMode: coerceThinkingModeForProtocol(conversation?.thinkingMode, apiProtocol, providerType),
       draftContent: '',
@@ -1394,6 +1451,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         activeSessionId: sessionId,
       };
     });
+
+    useWorkspaceTabStore.getState().upsertChatTab(sessionId);
 
     // Save state
     get().saveSessionState();
@@ -1805,3 +1864,109 @@ export const initStreamListeners = async () => {
     listenersInitialized = false;
   }
 };
+
+// -----------------------------------------------------------------------------
+// Debug: store update storm detector
+// -----------------------------------------------------------------------------
+// 用于定位类似 "Maximum update depth exceeded" 这类循环更新问题。
+// 说明：
+// - 很多情况下用户打不开 DevTools（应用直接崩），所以这里默认在 DEV 下启用，
+//   并把关键堆栈写入 localStorage，方便 ErrorBoundary 直接展示。
+// - 触发后也会打印一次 console.trace()（若 DevTools 可用更直观）。
+const SESSION_STORE_DEBUG_LAST_STORM_KEY = 'tauri-ai:debug:last_session_store_storm';
+const sessionStoreStormDebugEnabled = (() => {
+  try {
+    return import.meta.env.DEV;
+  } catch {
+    return false;
+  }
+})();
+
+if (sessionStoreStormDebugEnabled) {
+  let windowStart = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  let updatesInWindow = 0;
+  let tracedInWindow = false;
+
+  // 500ms 内更新次数过多，基本可以判定为“循环更新/风暴”
+  const WINDOW_MS = 500;
+  // React "Maximum update depth exceeded" 通常在 ~50 次左右触发，这里提前一点点抓堆栈。
+  const TRACE_THRESHOLD = 40;
+
+  useSessionStore.subscribe((state, prev) => {
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    if (now - windowStart > WINDOW_MS) {
+      windowStart = now;
+      updatesInWindow = 0;
+      tracedInWindow = false;
+    }
+
+    updatesInWindow += 1;
+
+    if (!tracedInWindow && updatesInWindow >= TRACE_THRESHOLD) {
+      tracedInWindow = true;
+
+      const activeId = state.activeSessionId;
+      const active = activeId ? state.sessions.get(activeId) : undefined;
+      const prevActive = prev.activeSessionId ? prev.sessions.get(prev.activeSessionId) : undefined;
+
+      const stack = (() => {
+        try {
+          return new Error('sessionStore update storm').stack || '';
+        } catch {
+          return '';
+        }
+      })();
+
+      // 记录到 localStorage，方便 ErrorBoundary 在“没法开 DevTools”时直接展示
+      try {
+        if (typeof localStorage !== 'undefined') {
+          const record = {
+            ts: Date.now(),
+            updatesInWindow,
+            windowMs: WINDOW_MS,
+            activeSessionId: activeId ?? null,
+            active: {
+              conversationId: active?.conversationId ?? null,
+              isGenerating: active?.isGenerating ?? null,
+              messages: active?.messages?.length ?? null,
+              streamingBlocks: active?.streamingBlocks ? active.streamingBlocks.length : null,
+              draftLen: active?.draftContent?.length ?? 0,
+            },
+            prevActive: {
+              conversationId: prevActive?.conversationId ?? null,
+              isGenerating: prevActive?.isGenerating ?? null,
+              messages: prevActive?.messages?.length ?? null,
+              streamingBlocks: prevActive?.streamingBlocks ? prevActive.streamingBlocks.length : null,
+              draftLen: prevActive?.draftContent?.length ?? 0,
+            },
+            stack,
+          };
+          localStorage.setItem(SESSION_STORE_DEBUG_LAST_STORM_KEY, JSON.stringify(record));
+        }
+      } catch {
+        // ignore
+      }
+
+      console.groupCollapsed(
+        `[debug] sessionStore 更新风暴: ${updatesInWindow}/${WINDOW_MS}ms (active=${activeId ?? 'null'})`
+      );
+      console.log('active snapshot:', {
+        conversationId: active?.conversationId,
+        isGenerating: active?.isGenerating,
+        messages: active?.messages?.length,
+        streamingBlocks: active?.streamingBlocks ? active.streamingBlocks.length : null,
+        draftLen: active?.draftContent?.length ?? 0,
+      });
+      console.log('active prev snapshot:', {
+        conversationId: prevActive?.conversationId,
+        isGenerating: prevActive?.isGenerating,
+        messages: prevActive?.messages?.length,
+        streamingBlocks: prevActive?.streamingBlocks ? prevActive.streamingBlocks.length : null,
+        draftLen: prevActive?.draftContent?.length ?? 0,
+      });
+      console.trace('sessionStore update storm stack');
+      if (stack) console.log('captured stack:', stack);
+      console.groupEnd();
+    }
+  });
+}

@@ -12,14 +12,18 @@ export type MessageStatus = 'pending' | 'success' | 'failed';
 // Theme options
 export type Theme = 'light' | 'dark' | 'system';
 
+// ANSI rendering options
+export type AnsiRenderMode = 'color' | 'strip' | 'raw';
+export type AnsiColorMode = 'auto' | 'xterm' | 'vscode-dark' | 'vscode-light';
+
 // View types for navigation
-export type ActiveView = 'chat' | 'history' | 'settings';
+export type ActiveView = 'chat' | 'history' | 'settings' | 'document' | 'workstudio' | 'window_test';
 
 // Format prompt types
 export type FormatPromptType = 'chat' | 'plain' | 'json' | 'none';
 
 // Agent type for extensible runtime behaviors
-export type AgentType = 'chat' | 'tool' | 'code' | 'solution';
+export type AgentType = 'chat' | 'tool';
 
 // ============================================================================
 // New Provider-Model-Agent Architecture
@@ -120,7 +124,8 @@ export interface Agent {
   modelRef: string;       // Format: "provider_name/model_name"
   systemPrompt: string;
   formatType: FormatPromptType;
-  toolset?: string;       // Optional toolset binding (for tool/code agents)
+  toolset?: string;       // Optional toolset binding (for tool agents)
+  workspaceSupport?: boolean; // Tool agent workspace support (default: true for tool, else false)
   maxTurns?: number;      // Max turns per run/task (default depends on agent type)
   reinjectThinking?: boolean; // Whether to reinject thinking into next turn context (default: false)
 }
@@ -335,6 +340,20 @@ export interface WebSearchMessageBlock extends BaseMessageBlock {
   action?: unknown;
 }
 
+export type PtySessionScope = 'task' | 'conversation';
+
+export interface PtySessionInfo {
+  sessionId: number;
+  conversationId: string;
+  taskId: string;
+  scope: PtySessionScope;
+  command: string;
+  workdir?: string;
+  createdAtMs: number;
+  lastUsedMs: number;
+  isAlive: boolean;
+}
+
 // Reserved for future expansion (tools/websearch/multimodal, etc.)
 export interface UnknownMessageBlock extends BaseMessageBlock {
   type: 'unknown';
@@ -431,7 +450,7 @@ export type RunEventType =
   | 'done'
   | 'error';
 
-export type TaskKind = 'chat' | 'tool' | 'code' | 'planner' | 'solution';
+export type TaskKind = 'chat' | 'tool' | 'planner';
 export type TurnStatus = 'success' | 'failed' | 'aborted';
 export type TurnPhase = 'think' | 'act' | 'observe';
 
@@ -610,8 +629,34 @@ export interface Conversation {
   agentName?: string;
   modelRef?: string;      // Model reference used in this conversation
   thinkingMode?: ThinkingMode; // Conversation-scoped thinking mode/level
+  workstudioId?: string;  // Optional workstudio binding
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * Workstudio definition (workspace bound to one main folder and optional additional folders).
+ */
+export interface Workstudio {
+  id: string;
+  kind: string;
+  mainFolder: string;
+  folders: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Workstudio UI 持久化状态（用于恢复上次打开的文件/分屏等）。
+ */
+export interface WorkstudioUiState {
+  openFiles: string[];
+  groups?: { openFiles: string[]; activeFile?: string; weight?: number }[];
+  focusedGroupIndex?: number;
+  expandedDirs?: string[];
+  activeLeftFile?: string;
+  activeRightFile?: string;
+  splitOpen?: boolean;
 }
 
 // ============================================================================
@@ -633,10 +678,13 @@ export interface GeneralSettings {
   language: string;
   autoStart: boolean;
   debugMode?: boolean;  // Enable debug mode to show raw HTTP messages
+  debugSse?: boolean;   // Log raw SSE chunks during streaming (requires debug mode)
   showUsage?: boolean;  // Show token usage in messages
   theme?: Theme;        // UI theme preference (light/dark/system)
   pdfDebugMode?: boolean;  // Enable PDF debug mode to select page ranges
   openDevtoolsOnStart?: boolean; // Open DevTools on startup (dev builds only)
+  ansiRenderMode?: AnsiRenderMode; // How to render ANSI sequences (color/strip/raw)
+  ansiColorMode?: AnsiColorMode;   // ANSI 16-color palette selection
 }
 
 /**
@@ -653,6 +701,11 @@ export interface ToolPermissionSettings {
 export interface ToolSetConfig {
   name: string;
   tools: string[];
+  /**
+   * 实验性：持久 shell/pty 增强（跨 task 保活 + 显示“持久进程”面板）。
+   * 仅当 toolset 显式开启时才会影响模型侧工具定义，避免默认污染提示词。
+   */
+  persistanceShellEnhance?: boolean;
 }
 
 /**
@@ -715,6 +768,7 @@ export interface AgentSession {
   title: string;                      // Conversation title for display in tab
   modelRef?: string;                  // Current model reference (can override agent default)
   conversationId: string | null;      // Associated conversation ID
+  workstudioId?: string | null;       // Optional workstudio binding (workspace-enabled agents)
 
   // API type isolation (locked after first message)
   apiType: ApiProtocolType | null;    // null = not locked yet
@@ -751,6 +805,7 @@ export interface PersistedSession {
   agentName: string;
   modelRef?: string;
   conversationId: string | null;
+  workstudioId?: string | null;
   apiType: ApiProtocolType | null;  // Persisted API type lock
   thinkingMode?: ThinkingMode;      // Persisted thinking mode/level
   webSearchEnabled?: boolean;       // Persisted web search state

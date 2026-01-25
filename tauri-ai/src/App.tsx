@@ -5,26 +5,39 @@
  */
 
 import { useEffect, useRef } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { MainLayout } from './components/Layout/MainLayout';
-import { ChatView } from './components/Chat/ChatView';
-import { SettingsView } from './components/Settings/SettingsView';
-import { HistoryPanel } from './components/History/HistoryPanel';
+import { StandaloneLayout } from './components/Layout/StandaloneLayout';
 import { useConfigStore } from './stores/configStore';
 import { useConversationStore } from './stores/conversationStore';
 import { useSessionStore, initStreamListeners } from './stores/sessionStore';
+import { useDocumentStore } from './stores/documentStore';
 import { useUIStore } from './stores/uiStore';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
+import { getViewDefinition } from './views/registry';
+import { getViewWindowParams } from './utils/viewWindow';
 import './App.css';
 
 function App() {
   const { loadConfig, config, isLoading: configLoading, error: configError } = useConfigStore();
   const loadConversations = useConversationStore((state) => state.loadConversations);
-  const { activeView } = useUIStore();
+  const { activeView, setActiveView } = useUIStore();
+
+  const windowParams = getViewWindowParams();
+  const viewOverride = windowParams.view;
+  const isStandalone = windowParams.standalone;
+  const conversationIdOverride = windowParams.conversationId;
+  const documentPathOverride = windowParams.documentPath;
+  // Standalone non-chat views should not start/restore chat sessions or stream listeners.
+  // Otherwise opening a "文本/导图" window can create or mutate chat sessions unexpectedly.
+  const shouldInitChatRuntime = !isStandalone || viewOverride === 'chat';
   
   // Session store for multi-agent workspace
-  const activeSessionId = useSessionStore((state) => state.activeSessionId);
   const restoreSessionState = useSessionStore((state) => state.restoreSessionState);
   const createSession = useSessionStore((state) => state.createSession);
+  const openHistoricalConversation = useSessionStore((state) => state.openHistoricalConversation);
   
   // Track if session initialization has been done to prevent duplicate execution
   const sessionInitialized = useRef(false);
@@ -39,6 +52,95 @@ function App() {
    * Requirements: 9.1, 9.2, 9.3, 9.4, 9.5
    */
   useKeyboardShortcuts({ enabled: true });
+
+  /**
+   * Menu: File -> Open File...
+   * The native menu event is emitted from Rust as `menu:open_file`.
+   */
+  useEffect(() => {
+    // Workstudio 窗口需要把“打开文件”路由到自己的编辑器，而不是切换到全局 DocumentView。
+    // 因此在 workstudio standalone 窗口里跳过这里的监听（由 WorkstudioView 自己处理）。
+    if (viewOverride === 'workstudio') return;
+
+    let unlisten: null | (() => void) = null;
+
+    void listen('menu:open_file', async () => {
+      try {
+        const selected = await openDialog({
+          title: '打开文件',
+          multiple: false,
+          directory: false,
+        });
+
+        if (!selected || Array.isArray(selected)) return;
+
+        const file = await invoke<{
+          filename: string;
+          mime: string;
+          base64: string;
+          size: number;
+        }>('read_local_file_base64', { path: selected });
+
+        const bytes = Uint8Array.from(atob(file.base64), (c) => c.charCodeAt(0));
+        const content = new TextDecoder('utf-8').decode(bytes);
+
+        useDocumentStore.getState().openDocument({
+          title: file.filename,
+          path: selected,
+          kind: 'text',
+          content,
+        });
+
+        useUIStore.getState().setActiveView('document');
+      } catch (error) {
+        console.error('Failed to open file:', error);
+      }
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => {
+        // In non-Tauri environments (tests/browser), the listener may not be available.
+      });
+
+    return () => {
+      unlisten?.();
+    };
+  }, [viewOverride]);
+
+  /**
+   * Standalone document window: open a local file if provided via query param.
+   */
+  useEffect(() => {
+    if (!isStandalone) return;
+    if (viewOverride !== 'document') return;
+    if (!documentPathOverride) return;
+
+    void (async () => {
+      try {
+        const file = await invoke<{
+          filename: string;
+          mime: string;
+          base64: string;
+          size: number;
+        }>('read_local_file_base64', { path: documentPathOverride });
+
+        const bytes = Uint8Array.from(atob(file.base64), (c) => c.charCodeAt(0));
+        const content = new TextDecoder('utf-8').decode(bytes);
+
+        useDocumentStore.getState().openDocument({
+          title: file.filename,
+          path: documentPathOverride,
+          kind: 'text',
+          content,
+        });
+
+        useUIStore.getState().setActiveView('document');
+      } catch (error) {
+        console.error('Failed to open document in standalone window:', error);
+      }
+    })();
+  }, [isStandalone, viewOverride, documentPathOverride]);
 
   /**
    * Handle window resize to force re-render
@@ -69,8 +171,10 @@ function App() {
    */
   useEffect(() => {
     console.log('Initializing app...');
-    // Initialize stream listeners first
-    initStreamListeners();
+    // Initialize chat stream listeners only for chat-capable windows.
+    if (shouldInitChatRuntime) {
+      initStreamListeners();
+    }
     // Load configuration from backend
     loadConfig().then(() => {
       console.log('Config loaded');
@@ -78,12 +182,14 @@ function App() {
       console.error('Failed to load config:', err);
     });
     // Load conversations from backend
-    loadConversations().then(() => {
-      console.log('Conversations loaded');
-    }).catch((err) => {
-      console.error('Failed to load conversations:', err);
-    });
-  }, [loadConfig, loadConversations]);
+    if (!isStandalone || viewOverride === 'history' || viewOverride === 'chat') {
+      loadConversations().then(() => {
+        console.log('Conversations loaded');
+      }).catch((err) => {
+        console.error('Failed to load conversations:', err);
+      });
+    }
+  }, [loadConfig, loadConversations, shouldInitChatRuntime, isStandalone, viewOverride]);
 
   /**
    * Restore session state after config is loaded
@@ -93,6 +199,7 @@ function App() {
    */
   useEffect(() => {
     const initSessions = async () => {
+      if (!shouldInitChatRuntime) return;
       // Wait for config to be loaded
       if (!config) {
         console.log('Waiting for config to load...');
@@ -112,12 +219,31 @@ function App() {
       } catch (err) {
         console.error('Failed to restore session state:', err);
       }
-      
+
+      // Standalone chat window can target a specific conversation. Ensure it is opened & active.
+      if (isStandalone && viewOverride === 'chat' && conversationIdOverride) {
+        try {
+          // Best-effort: ensure conversation metadata is loaded for title/agent/model.
+          await loadConversations();
+        } catch (err) {
+          console.warn('Failed to load conversations for standalone chat:', err);
+        }
+        try {
+          await openHistoricalConversation(conversationIdOverride);
+        } catch (err) {
+          console.error('Failed to open conversation in standalone chat:', err);
+        }
+      }
+
       // If no sessions exist after restore, create a default session
       const currentSessions = useSessionStore.getState().sessions;
       console.log('Current sessions count:', currentSessions.size);
       
       if (currentSessions.size === 0) {
+        // If a standalone chat window is bound to an existing conversation, don't create a new one.
+        if (isStandalone && viewOverride === 'chat' && conversationIdOverride) {
+          return;
+        }
         const defaultAgent = config.defaultAgent || config.agents?.[0]?.name;
         console.log('Creating default session with agent:', defaultAgent);
         if (defaultAgent) {
@@ -134,7 +260,17 @@ function App() {
     };
     
     initSessions();
-  }, [config, restoreSessionState, createSession]);
+  }, [
+    config,
+    restoreSessionState,
+    createSession,
+    openHistoricalConversation,
+    shouldInitChatRuntime,
+    isStandalone,
+    viewOverride,
+    conversationIdOverride,
+    loadConversations,
+  ]);
 
   // 事件监听器已在 sessionStore 模块初始化时自动设置，无需在组件中处理
 
@@ -142,29 +278,26 @@ function App() {
    * Render the active view based on UI state
    * Requirements: 2.1-2.6
    */
-  const renderActiveView = () => {
-    switch (activeView) {
-      case 'chat':
-        // Render ChatView with activeSessionId, handle no active session
-        if (!activeSessionId) {
-          return (
-            <div className="flex h-full items-center justify-center text-gray-500 dark:text-gray-400">
-              <div className="text-center">
-                <p className="text-lg mb-2">暂无活动会话</p>
-                <p className="text-sm">点击上方 "+" 按钮创建新会话</p>
-              </div>
-            </div>
-          );
-        }
-        return <ChatView sessionId={activeSessionId} />;
-      case 'history':
-        return <HistoryPanel />;
-      case 'settings':
-        return <SettingsView />;
-      default:
-        return <ChatView sessionId={activeSessionId} />;
+  const resolvedView = viewOverride || activeView;
+  const viewDef = getViewDefinition(resolvedView) || getViewDefinition('chat');
+
+  useEffect(() => {
+    if (viewOverride && viewOverride !== activeView) {
+      setActiveView(viewOverride);
     }
+  }, [viewOverride, activeView, setActiveView]);
+
+  const renderActiveView = () => {
+    return viewDef?.render() ?? null;
   };
+
+  if (isStandalone) {
+    return (
+      <StandaloneLayout title={viewDef?.title}>
+        {renderActiveView()}
+      </StandaloneLayout>
+    );
+  }
 
   return (
     <MainLayout>

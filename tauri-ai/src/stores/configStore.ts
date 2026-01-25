@@ -285,3 +285,96 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
     return options;
   },
 }));
+
+// -----------------------------------------------------------------------------
+// Debug: config store update storm detector (DEV only)
+// -----------------------------------------------------------------------------
+// 目的：定位“循环 setState / 最大更新深度”这类问题时，不依赖 DevTools。
+// 触发后会把堆栈写入 localStorage，供 ErrorBoundary 展示。
+const CONFIG_STORE_DEBUG_LAST_STORM_KEY = 'tauri-ai:debug:last_config_store_storm';
+const configStoreStormDebugEnabled = (() => {
+  try {
+    return import.meta.env.DEV;
+  } catch {
+    return false;
+  }
+})();
+
+if (configStoreStormDebugEnabled) {
+  let windowStart = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  let updatesInWindow = 0;
+  let tracedInWindow = false;
+
+  const WINDOW_MS = 500;
+  const TRACE_THRESHOLD = 40;
+
+  useConfigStore.subscribe((state, prev) => {
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    if (now - windowStart > WINDOW_MS) {
+      windowStart = now;
+      updatesInWindow = 0;
+      tracedInWindow = false;
+    }
+
+    updatesInWindow += 1;
+
+    if (!tracedInWindow && updatesInWindow >= TRACE_THRESHOLD) {
+      tracedInWindow = true;
+
+      const stack = (() => {
+        try {
+          return new Error('configStore update storm').stack || '';
+        } catch {
+          return '';
+        }
+      })();
+
+      try {
+        if (typeof localStorage !== 'undefined') {
+          const record = {
+            ts: Date.now(),
+            updatesInWindow,
+            windowMs: WINDOW_MS,
+            state: {
+              isLoading: state.isLoading,
+              hasConfig: Boolean(state.config),
+              providers: state.config?.providers?.length ?? null,
+              agents: state.config?.agents?.length ?? null,
+              error: state.error ?? null,
+            },
+            prevState: {
+              isLoading: prev.isLoading,
+              hasConfig: Boolean(prev.config),
+              providers: prev.config?.providers?.length ?? null,
+              agents: prev.config?.agents?.length ?? null,
+              error: prev.error ?? null,
+            },
+            stack,
+          };
+          localStorage.setItem(CONFIG_STORE_DEBUG_LAST_STORM_KEY, JSON.stringify(record));
+        }
+      } catch {
+        // ignore
+      }
+
+      console.groupCollapsed(`[debug] configStore 更新风暴: ${updatesInWindow}/${WINDOW_MS}ms`);
+      console.log('state:', {
+        isLoading: state.isLoading,
+        hasConfig: Boolean(state.config),
+        providers: state.config?.providers?.length,
+        agents: state.config?.agents?.length,
+        error: state.error,
+      });
+      console.log('prev:', {
+        isLoading: prev.isLoading,
+        hasConfig: Boolean(prev.config),
+        providers: prev.config?.providers?.length,
+        agents: prev.config?.agents?.length,
+        error: prev.error,
+      });
+      console.trace('configStore update storm stack');
+      if (stack) console.log('captured stack:', stack);
+      console.groupEnd();
+    }
+  });
+}

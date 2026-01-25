@@ -113,12 +113,14 @@ interface MessageItemProps {
   message: Message;
   isStreaming?: boolean;
   onAction: (action: Action) => void;
+  onAbortTool?: (callId: string) => void;
 }
 
 export const MessageItem: React.FC<MessageItemProps> = ({
   message,
   isStreaming = false,
   onAction,
+  onAbortTool,
 }) => {
   const [isHovered, setIsHovered] = useState(false);
   const [showDebugModal, setShowDebugModal] = useState(false);
@@ -184,6 +186,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
           onClose={() => setShowDebugModal(false)}
           debugInfo={message.debugInfo || null}
           turns={message.turns || null}
+          blocks={message.blocks || null}
           messageRole="error"
         />
       </div>
@@ -237,7 +240,11 @@ export const MessageItem: React.FC<MessageItemProps> = ({
         {/* Assistant blocks (extensible output) */}
         {isAssistant && assistantBlocks.length > 0 ? (
           <div>
-            <MessageBlocks blocks={assistantBlocks} turns={message.turns} />
+            <MessageBlocks
+              blocks={assistantBlocks}
+              turns={message.turns}
+              onAbortTool={onAbortTool}
+            />
 
             {/* Fallback for multimodal output (future) */}
             {message.contentParts && message.contentParts.length > 0 && (
@@ -303,6 +310,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
         onClose={() => setShowDebugModal(false)}
         debugInfo={message.debugInfo || null}
         turns={message.turns || null}
+        blocks={isAssistant ? assistantBlocks : message.blocks || null}
         messageRole={isUser ? 'user' : 'assistant'}
       />
     </div>

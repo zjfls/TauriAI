@@ -74,7 +74,18 @@ fn build_shell_invocation(command: &str, login: bool) -> (String, Vec<String>) {
     }
     #[cfg(not(windows))]
     {
-        // 与 Codex 的 shell_command 一致：默认按 login shell 语义运行（bash -lc）。
+        // 尽量贴近用户在 Terminal 里的体验：优先使用 $SHELL（通常是 /bin/zsh 或 /bin/bash）。
+        let shell = std::env::var("SHELL")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .filter(|s| std::path::Path::new(s).exists());
+
+        if let Some(shell) = shell {
+            let flag = if login { "-lc" } else { "-c" };
+            return (shell, vec![flag.to_string(), command.to_string()]);
+        }
+
         if login && std::path::Path::new("/bin/bash").exists() {
             ("/bin/bash".to_string(), vec!["-lc".to_string(), command.to_string()])
         } else {
@@ -141,7 +152,14 @@ impl ToolHandler for ShellCommandTool {
 
         let mut cmd = Command::new(program);
         cmd.args(program_args);
-        if let Some(dir) = args.workdir.as_ref().filter(|s| !s.trim().is_empty()) {
+        let resolved_workdir = args
+            .workdir
+            .as_ref()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .map(std::path::PathBuf::from)
+            .or_else(|| ctx.default_workdir.clone());
+        if let Some(dir) = resolved_workdir.as_ref() {
             cmd.current_dir(dir);
         }
         if let Some(env) = args.env {
