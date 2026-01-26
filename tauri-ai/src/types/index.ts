@@ -693,6 +693,7 @@ export interface GeneralSettings {
 export interface ToolPermissionSettings {
   shellExec: boolean; // Allows `shell_command`
   ptyExec: boolean;   // Allows `exec_command` / `write_stdin`
+  fileWrite: boolean; // Allows `apply_patch`
 }
 
 /**

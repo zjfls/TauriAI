@@ -7,6 +7,7 @@ use tokio::sync::Mutex;
 use crate::ai_client::ToolCall;
 use crate::runtime::emitter::RunEmitter;
 
+use super::handlers::apply_patch::ApplyPatchTool;
 use super::handlers::builtin::{EchoTool, GetTimeTool};
 use super::handlers::file_tools::{ListDirTool, ReadFileTool, RgTool};
 use super::handlers::pty::{
@@ -171,6 +172,7 @@ pub fn register_builtin_handlers(registry: &mut ToolRegistry) {
     registry.register(Arc::new(ReadFileTool));
     registry.register(Arc::new(ListDirTool));
     registry.register(Arc::new(RgTool));
+    registry.register(Arc::new(ApplyPatchTool));
     // 终端能力（当前阶段先落地 shell/pty 两类工具；权限默认拒绝，需要显式开启）
     registry.register(Arc::new(ShellCommandTool));
     registry.register(Arc::new(ExecCommandTool));

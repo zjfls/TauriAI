@@ -11,6 +11,8 @@ pub enum ToolPermission {
     ShellExec,
     /// 允许创建/操作 PTY 会话（交互式终端）。
     PtyExec,
+    /// 允许写入工作区文件（例如 apply_patch）。
+    FileWrite,
 }
 
 #[derive(Debug, Clone)]
@@ -72,6 +74,7 @@ impl ToolPermissionPolicy for DenyAllPolicy {
 pub struct BasicToolPermissionPolicy {
     pub allow_shell_exec: bool,
     pub allow_pty_exec: bool,
+    pub allow_file_write: bool,
 }
 
 impl Default for BasicToolPermissionPolicy {
@@ -79,6 +82,7 @@ impl Default for BasicToolPermissionPolicy {
         Self {
             allow_shell_exec: false,
             allow_pty_exec: false,
+            allow_file_write: false,
         }
     }
 }
@@ -99,6 +103,11 @@ impl ToolPermissionPolicy for BasicToolPermissionPolicy {
                 ToolPermission::PtyExec if !self.allow_pty_exec => {
                     return ToolPermissionDecision::Deny {
                         reason: format!("工具 '{tool_name}' 需要 PtyExec 权限，但未开启"),
+                    };
+                }
+                ToolPermission::FileWrite if !self.allow_file_write => {
+                    return ToolPermissionDecision::Deny {
+                        reason: format!("工具 '{tool_name}' 需要 FileWrite 权限，但未开启"),
                     };
                 }
                 _ => {}

@@ -162,6 +162,7 @@ mod tests {
         let policy: Arc<dyn ToolPermissionPolicy> = Arc::new(BasicToolPermissionPolicy {
             allow_shell_exec: true,
             allow_pty_exec: false,
+            allow_file_write: false,
         });
         let orchestrator = ToolOrchestrator::new_builtin(ToolOrchestratorConfig {
             toolset: ToolSet::allow_all(),
@@ -178,6 +179,7 @@ mod tests {
         let policy: Arc<dyn ToolPermissionPolicy> = Arc::new(BasicToolPermissionPolicy {
             allow_shell_exec: true,
             allow_pty_exec: true,
+            allow_file_write: false,
         });
         let orchestrator = ToolOrchestrator::new_builtin(ToolOrchestratorConfig {
             toolset: ToolSet::allow_list("only-shell", vec!["shell_command".to_string()]),

@@ -1533,6 +1533,7 @@ async fn run_task_inner(
                     Arc::new(super::tools::permissions::BasicToolPermissionPolicy {
                         allow_shell_exec: config.tools.permissions.shell_exec,
                         allow_pty_exec: config.tools.permissions.pty_exec,
+                        allow_file_write: config.tools.permissions.file_write,
                     })
                 };
 

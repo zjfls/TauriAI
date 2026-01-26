@@ -855,6 +855,9 @@ pub struct ToolPermissionSettings {
     /// 允许创建/操作 PTY 会话（`exec_command` / `write_stdin`）
     #[serde(default)]
     pub pty_exec: bool,
+    /// 允许写入工作区文件（`apply_patch`）
+    #[serde(default)]
+    pub file_write: bool,
 }
 
 impl Default for ToolPermissionSettings {
@@ -862,6 +865,7 @@ impl Default for ToolPermissionSettings {
         Self {
             shell_exec: false,
             pty_exec: false,
+            file_write: false,
         }
     }
 }
