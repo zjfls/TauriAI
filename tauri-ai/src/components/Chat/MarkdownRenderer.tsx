@@ -307,6 +307,22 @@ function protectContent(content: string): ProtectedContent {
     return placeholder;
   });
 
+  // Protect all other fenced code blocks (avoid DOMPurify escaping `<` / `>` inside code)
+  // NOTE: Mermaid/plot blocks have already been replaced above, so they won't match here.
+  result = result.replace(/```[^\n]*\s*[\s\S]*?```/g, (match) => {
+    const placeholder = generatePlaceholder();
+    blocks.set(placeholder, match);
+    return placeholder;
+  });
+
+  // Protect inline code spans (avoid DOMPurify escaping `<` / `>` inside `...`)
+  // This intentionally targets the common single-backtick form.
+  result = result.replace(/`[^`\n]+`/g, (match) => {
+    const placeholder = generatePlaceholder();
+    blocks.set(placeholder, match);
+    return placeholder;
+  });
+
   // Protect and normalize block math: $$...$$ (including multiline)
   result = result.replace(/\$\$([\s\S]*?)\$\$/g, (match) => {
     const placeholder = generatePlaceholder();
