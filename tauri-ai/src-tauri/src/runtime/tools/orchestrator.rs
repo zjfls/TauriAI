@@ -1,7 +1,11 @@
 use std::sync::Arc;
 
-use crate::ai_client::ToolCall;
+use serde_json::Value;
 
+use crate::ai_client::ToolCall;
+use crate::runtime::events::RunEvent;
+
+use super::handlers::apply_patch;
 use super::permissions::{ToolPermissionDecision, ToolPermissionPolicy};
 use super::registry::{register_builtin_handlers, ToolCallResult, ToolError, ToolExecutionContext, ToolHandler, ToolRegistry};
 use super::spec::{ToolSet, ToolSpec};
@@ -34,6 +38,12 @@ pub struct ToolOrchestrator {
     registry: Arc<ToolRegistry>,
     toolset: ToolSet,
     permission_policy: Arc<dyn ToolPermissionPolicy>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ApplyPatchInterceptMode {
+    PlainText,
+    ExecCommandJson,
 }
 
 fn is_persistent_tool(name: &str) -> bool {
@@ -98,12 +108,83 @@ impl ToolOrchestrator {
             })
     }
 
+    fn maybe_extract_apply_patch_from_call(
+        call: &ToolCall,
+    ) -> Option<(String, ApplyPatchInterceptMode)> {
+        let (field, mode) = match call.name.as_str() {
+            "shell_command" => ("command", ApplyPatchInterceptMode::PlainText),
+            "exec_command" | "exec_command_persistent" => ("cmd", ApplyPatchInterceptMode::ExecCommandJson),
+            _ => return None,
+        };
+
+        let v: Value = serde_json::from_str(&call.arguments).ok()?;
+        let cmd = v.get(field)?.as_str()?;
+        let patch = apply_patch::extract_verified_apply_patch_from_text(cmd)?;
+        Some((patch, mode))
+    }
+
     /// 执行单个 tool call（带权限检查与 mutating gate）。
     pub async fn execute_one(
         &self,
         ctx: &mut ToolExecutionContext<'_>,
         call: &ToolCall,
     ) -> Result<ToolCallResult, ToolError> {
+        // Codex-like interception: when a model mistakenly sends an apply_patch body
+        // via shell/pty exec tools, redirect to the real `apply_patch` tool.
+        if let Some((patch_text, mode)) = Self::maybe_extract_apply_patch_from_call(call) {
+            let rewritten = ToolCall {
+                id: call.id.clone(),
+                name: "apply_patch".to_string(),
+                arguments: serde_json::json!({ "input": patch_text }).to_string(),
+            };
+
+            let applier = self.resolve_handler("apply_patch")?;
+            let spec = applier.spec();
+            match self
+                .permission_policy
+                .decide(&spec.name, &spec.required_permissions)
+            {
+                ToolPermissionDecision::Allow => {}
+                ToolPermissionDecision::Deny { reason } => return Err(ToolError::denied(reason)),
+            }
+
+            let notice = format!(
+                "[提示] 检测到 apply_patch 补丁文本被作为 `{}` 的命令提交，已自动按 apply_patch 处理。后续请直接调用 apply_patch 工具。\n\n",
+                call.name
+            );
+            ctx.emitter.emit(RunEvent::BlockDelta {
+                task_id: ctx.task_id.to_string(),
+                turn_id: ctx.turn_id.to_string(),
+                assistant_message_id: Some(ctx.assistant_message_id.to_string()),
+                block_id: format!("tool_result:{}", call.id),
+                block_type: "tool_result".to_string(),
+                format: Some("plain".to_string()),
+                delta: notice.clone(),
+            });
+
+            let out = if applier.is_mutating(&rewritten).await {
+                let _guard = self.registry.acquire_mutating_gate().await;
+                applier.call(ctx, &rewritten).await?
+            } else {
+                applier.call(ctx, &rewritten).await?
+            };
+
+            let combined = format!("{}{}", notice, out.content);
+            return Ok(match mode {
+                ApplyPatchInterceptMode::PlainText => ToolCallResult { content: combined },
+                ApplyPatchInterceptMode::ExecCommandJson => ToolCallResult {
+                    content: serde_json::json!({
+                        "session_id": Value::Null,
+                        "process_id": Value::Null,
+                        "output": combined,
+                        "done": true,
+                        "exit_code": 0
+                    })
+                    .to_string(),
+                },
+            });
+        }
+
         let handler = self.resolve_handler(&call.name)?;
         let spec = handler.spec();
 
@@ -187,5 +268,39 @@ mod tests {
         });
         let names = tool_names(&orchestrator.tool_specs_for_model());
         assert_eq!(names, vec!["shell_command".to_string()]);
+    }
+
+    #[test]
+    fn intercept_detects_apply_patch_in_shell_command() {
+        let patch = r#"*** Begin Patch
+*** Add File: a.txt
++hello
+*** End Patch"#;
+        let call = ToolCall {
+            id: "call_1".to_string(),
+            name: "shell_command".to_string(),
+            arguments: serde_json::json!({ "command": patch }).to_string(),
+        };
+        let (extracted, mode) =
+            ToolOrchestrator::maybe_extract_apply_patch_from_call(&call).expect("detect patch");
+        assert_eq!(extracted, patch);
+        assert_eq!(mode, ApplyPatchInterceptMode::PlainText);
+    }
+
+    #[test]
+    fn intercept_detects_apply_patch_in_exec_command() {
+        let patch = r#"*** Begin Patch
+*** Add File: a.txt
++hello
+*** End Patch"#;
+        let call = ToolCall {
+            id: "call_2".to_string(),
+            name: "exec_command".to_string(),
+            arguments: serde_json::json!({ "cmd": patch }).to_string(),
+        };
+        let (extracted, mode) =
+            ToolOrchestrator::maybe_extract_apply_patch_from_call(&call).expect("detect patch");
+        assert_eq!(extracted, patch);
+        assert_eq!(mode, ApplyPatchInterceptMode::ExecCommandJson);
     }
 }

@@ -462,6 +462,40 @@ fn parse_patch(input: &str) -> Result<Vec<Hunk>, ToolError> {
     Ok(hunks)
 }
 
+/// Detect whether a freeform text is actually an `apply_patch` body.
+///
+/// This is used to intercept common model mistakes where the patch text is
+/// sent to `shell_command` / `exec_command` instead of calling the `apply_patch`
+/// tool directly.
+pub(crate) fn extract_verified_apply_patch_from_text(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    // Accept either a raw patch body, or a patch body prefixed by the literal
+    // `apply_patch` token (common when a model tries to "run" apply_patch).
+    let candidate = if trimmed.starts_with("*** Begin Patch") {
+        trimmed
+    } else if let Some(rest) = trimmed.strip_prefix("apply_patch") {
+        let rest = rest.trim_start();
+        if rest.starts_with("*** Begin Patch") {
+            rest
+        } else {
+            return None;
+        }
+    } else {
+        return None;
+    };
+
+    // Fast reject before invoking the full parser.
+    if !candidate.contains("*** End Patch") {
+        return None;
+    }
+
+    parse_patch(candidate).ok().map(|_| candidate.to_string())
+}
+
 fn is_hunk_start(line: &str) -> bool {
     line.starts_with("*** Add File:")
         || line.starts_with("*** Delete File:")
@@ -722,5 +756,19 @@ mod tests {
         assert!(updated.contains("\r\n"));
         assert_eq!(updated, "a\r\nB\r\n");
     }
-}
 
+    #[test]
+    fn extract_verified_apply_patch_from_text_detects_patch_bodies() {
+        let patch = r#"*** Begin Patch
+*** Add File: a.txt
++hello
+*** End Patch"#;
+        assert!(extract_verified_apply_patch_from_text(patch).is_some());
+
+        let prefixed = format!("apply_patch\n{patch}");
+        assert!(extract_verified_apply_patch_from_text(&prefixed).is_some());
+
+        assert!(extract_verified_apply_patch_from_text("not a patch").is_none());
+        assert!(extract_verified_apply_patch_from_text("").is_none());
+    }
+}
