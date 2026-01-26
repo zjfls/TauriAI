@@ -15,15 +15,20 @@ import { ToolSessionsPanel } from './ToolSessionsPanel';
 import { countTokens } from '../../utils/tokenizer';
 import { getApiProtocol } from '../../utils/apiUtils';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import type { TokenUsage, ContextUsageBreakdown, ContentPart, ThinkingMode, PtySessionInfo, Workstudio, Agent } from '../../types';
 import { useToolSessionStore } from '../../stores/toolSessionStore';
 import { openOrFocusViewWindow } from '../../utils/viewWindow';
+import { ChevronDown } from 'lucide-react';
 
 interface ChatViewProps {
   sessionId: string | null;
 }
 
 const EMPTY_PTY_SESSIONS: PtySessionInfo[] = [];
+
+const normalizePath = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '');
+const isSystemWorkstudioPath = (p: string) => normalizePath(p).includes('/.tauri-ai/workstudios/');
 
 export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
   // Get session from SessionStore
@@ -200,6 +205,8 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
 
   const [workstudio, setWorkstudio] = useState<Workstudio | null>(null);
   const [workstudioLoading, setWorkstudioLoading] = useState(false);
+  const [workstudioMenuOpen, setWorkstudioMenuOpen] = useState(false);
+  const workstudioMenuRef = useRef<HTMLDivElement | null>(null);
 
   const currentAgentForDisplay = useMemo((): Agent | null => {
     if (!session) return null;
@@ -239,6 +246,78 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
       cancelled = true;
     };
   }, [workspaceEnabled, session?.workstudioId, session?.conversationId]);
+
+  useEffect(() => {
+    if (!workstudioMenuOpen) return;
+    const handlePointerDown = (event: MouseEvent | TouchEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (workstudioMenuRef.current?.contains(target)) return;
+      setWorkstudioMenuOpen(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setWorkstudioMenuOpen(false);
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('touchstart', handlePointerDown);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('touchstart', handlePointerDown);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [workstudioMenuOpen]);
+
+  const openWorkstudioWindow = useCallback((ws: Workstudio) => {
+    void openOrFocusViewWindow('workstudio', `Workstudio: ${ws.mainFolder}`, {
+      workstudioId: ws.id,
+      label: `view-workstudio-${ws.id}`,
+    });
+  }, []);
+
+  const ensureWorkstudio = useCallback(async (): Promise<Workstudio | null> => {
+    let ws = workstudio;
+    if (ws) return ws;
+    if (!conversationId) return null;
+    setWorkstudioLoading(true);
+    try {
+      ws = await invoke<Workstudio>('ensure_workstudio_for_conversation', { conversationId });
+      setWorkstudio(ws);
+      return ws;
+    } catch {
+      setWorkstudio(null);
+      return null;
+    } finally {
+      setWorkstudioLoading(false);
+    }
+  }, [conversationId, workstudio]);
+
+  const handleSetWorkstudioMainFolder = useCallback(async () => {
+    const ws = await ensureWorkstudio();
+    if (!ws) return;
+
+    const selected = await openDialog({
+      title: '设置主目录',
+      multiple: false,
+      directory: true,
+    });
+    if (!selected || Array.isArray(selected)) return;
+
+    setWorkstudioLoading(true);
+    try {
+      const updated = await invoke<Workstudio>('add_workstudio_folder', {
+        workstudioId: ws.id,
+        folder: selected,
+        setAsMain: true,
+      });
+      setWorkstudio(updated);
+      openWorkstudioWindow(updated);
+    } catch (e) {
+      console.error('set workstudio main folder failed:', e);
+    } finally {
+      setWorkstudioLoading(false);
+    }
+  }, [ensureWorkstudio, openWorkstudioWindow]);
 
   const prevConversationIdRef = useRef<string | null>(null);
   const prevIsGeneratingRef = useRef<boolean>(false);
@@ -454,35 +533,53 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
             </div>
             {/* agent 已在输入框工具条展示，这里不重复显示 */}
           </div>
-          <button
-            type="button"
-            onClick={async () => {
-              let ws = workstudio;
-              if (!ws) {
-                if (!conversationId) return;
-                setWorkstudioLoading(true);
-                try {
-                  ws = await invoke<Workstudio>('ensure_workstudio_for_conversation', { conversationId });
-                  setWorkstudio(ws);
-                } catch (e) {
-                  setWorkstudio(null);
-                  return;
-                } finally {
-                  setWorkstudioLoading(false);
-                }
-              }
-              if (!ws) return;
-              void openOrFocusViewWindow('workstudio', `Workstudio: ${ws.mainFolder}`, {
-                workstudioId: ws.id,
-                // Must match capability window patterns (default allows "view-*").
-                label: `view-workstudio-${ws.id}`,
-              });
-            }}
-            disabled={workstudioLoading}
-            className="rounded border border-gray-200 px-3 py-1 text-xs font-medium text-gray-600 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-          >
-            打开 Workstudio
-          </button>
+          <div ref={workstudioMenuRef} className="relative flex items-center">
+            <button
+              type="button"
+              onClick={() => setWorkstudioMenuOpen((v) => !v)}
+              disabled={workstudioLoading}
+              className="flex items-center gap-1 rounded border border-gray-200 px-3 py-1 text-xs font-medium text-gray-600 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+              title={workstudioLoading ? '加载中…' : 'Workstudio 菜单'}
+            >
+              <span>打开 Workstudio</span>
+              <ChevronDown
+                size={14}
+                className={workstudioMenuOpen ? 'rotate-180 transition-transform' : 'transition-transform'}
+              />
+            </button>
+
+            {workstudioMenuOpen && (
+              <div className="absolute right-0 top-full z-[120] mt-1 w-48 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900">
+                {!workstudioLoading &&
+                  (!workstudio?.mainFolder || isSystemWorkstudioPath(workstudio.mainFolder)) && (
+                    <button
+                      type="button"
+                      className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+                      onClick={() => {
+                        setWorkstudioMenuOpen(false);
+                        void handleSetWorkstudioMainFolder();
+                      }}
+                    >
+                      设置主目录…
+                    </button>
+                  )}
+
+                <button
+                  type="button"
+                  className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+                  onClick={() => {
+                    setWorkstudioMenuOpen(false);
+                    void ensureWorkstudio().then((ws) => {
+                      if (!ws) return;
+                      openWorkstudioWindow(ws);
+                    });
+                  }}
+                >
+                  打开 Workstudio
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       )}
       {persistanceShellEnhance && (
