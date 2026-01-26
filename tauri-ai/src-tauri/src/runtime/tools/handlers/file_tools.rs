@@ -211,7 +211,7 @@ impl ToolHandler for ReadFileTool {
             return Err(ToolError::invalid("limit 必须大于 0"));
         }
 
-        let path = resolve_path(&args.file_path)?;
+        let path = resolve_path(ctx, &args.file_path)?;
         let metadata = fs::metadata(&path)
             .await
             .map_err(|e| ToolError::new(format!("读取文件失败: {e}")))?;
@@ -276,7 +276,7 @@ impl ToolHandler for ListDirTool {
             return Err(ToolError::invalid("depth 必须大于 0"));
         }
 
-        let path = resolve_path(&args.dir_path)?;
+        let path = resolve_path(ctx, &args.dir_path)?;
         let metadata = fs::metadata(&path)
             .await
             .map_err(|e| ToolError::new(format!("读取目录失败: {e}")))?;
@@ -337,13 +337,15 @@ impl ToolHandler for RgTool {
             return Err(ToolError::invalid("limit 必须大于 0"));
         }
 
-        let search_root =
-            if let Some(path) = args.path.as_ref().filter(|s| !s.trim().is_empty()) {
-                resolve_path(path)?
-            } else {
-                std::env::current_dir()
-                    .map_err(|e| ToolError::new(format!("无法获取当前目录: {e}")))? 
-            };
+        let search_root = if let Some(path) = args.path.as_ref().filter(|s| !s.trim().is_empty())
+        {
+            resolve_path(ctx, path)?
+        } else if let Some(default_workdir) = ctx.default_workdir.as_ref() {
+            default_workdir.clone()
+        } else {
+            std::env::current_dir()
+                .map_err(|e| ToolError::new(format!("无法获取当前目录: {e}")))? 
+        };
 
         fs::metadata(&search_root)
             .await
@@ -375,7 +377,7 @@ fn emit_tool_result(ctx: &mut ToolExecutionContext<'_>, call_id: &str, content: 
     });
 }
 
-fn resolve_path(input: &str) -> Result<PathBuf, ToolError> {
+fn resolve_path(ctx: &ToolExecutionContext<'_>, input: &str) -> Result<PathBuf, ToolError> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return Err(ToolError::invalid("路径不能为空"));
@@ -383,6 +385,9 @@ fn resolve_path(input: &str) -> Result<PathBuf, ToolError> {
     let path = PathBuf::from(trimmed);
     if path.is_absolute() {
         return Ok(path);
+    }
+    if let Some(default_workdir) = ctx.default_workdir.as_ref() {
+        return Ok(default_workdir.join(path));
     }
     let cwd = std::env::current_dir()
         .map_err(|e| ToolError::new(format!("无法获取当前目录: {e}")))?;

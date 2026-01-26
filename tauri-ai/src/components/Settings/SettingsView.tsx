@@ -4,7 +4,7 @@
  */
 
 import React, { useState } from 'react';
-import { Server, Bot, Palette, Sliders, Wrench } from 'lucide-react';
+import { Server, Bot, Palette, Sliders, Wrench, ChevronDown } from 'lucide-react';
 import { ProviderConfigForm } from './ProviderConfigForm';
 import { AgentConfigForm } from './AgentConfigForm';
 import { ToolsConfigForm } from './ToolsConfigForm';
@@ -334,119 +334,182 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
     { value: 'xterm', label: 'xterm（经典）' },
   ];
 
+  const [sections, setSections] = useState({
+    general: true,
+    debug: true,
+    display: true,
+  });
+
+  const toggleSection = (key: keyof typeof sections) => {
+    setSections((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const SettingsSection: React.FC<{
+    title: string;
+    open: boolean;
+    onToggle: () => void;
+    children: React.ReactNode;
+  }> = ({ title, open, onToggle, children }) => (
+    <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="w-full flex items-center justify-between px-4 py-3 text-left"
+      >
+        <span className="text-sm font-semibold text-gray-800 dark:text-white">{title}</span>
+        <ChevronDown
+          size={18}
+          className={`text-gray-500 transition-transform ${open ? 'rotate-0' : '-rotate-90'}`}
+        />
+      </button>
+      {open && <div className="px-4 pb-4 space-y-4">{children}</div>}
+    </div>
+  );
+
   return (
     <div className="max-w-2xl space-y-6">
       <h2 className="text-lg font-semibold text-gray-800 dark:text-white">通用设置</h2>
-      <div className="space-y-2">
-        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">语言</label>
-        <select
-          value={language}
-          onChange={(e) => onLanguageChange(e.target.value)}
-          className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700"
-        >
-          {languageOptions.map((option) => (
-            <option key={option.value} value={option.value}>{option.label}</option>
-          ))}
-        </select>
-      </div>
-      <div className="flex items-center justify-between">
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">开机自启动</label>
-          <p className="text-xs text-gray-500">系统启动时自动运行</p>
+
+      <SettingsSection
+        title="通用"
+        open={sections.general}
+        onToggle={() => toggleSection('general')}
+      >
+        <div className="space-y-2">
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">语言</label>
+          <select
+            value={language}
+            onChange={(e) => onLanguageChange(e.target.value)}
+            className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700"
+          >
+            {languageOptions.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
         </div>
-        <button
-          onClick={() => onAutoStartChange(!autoStart)}
-          className={`relative w-11 h-6 rounded-full transition-colors ${autoStart ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'}`}
-        >
-          <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${autoStart ? 'translate-x-5' : ''}`} />
-        </button>
-      </div>
-      <div className="flex items-center justify-between">
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">调试模式</label>
-          <p className="text-xs text-gray-500">显示原始 HTTP 请求/响应信息</p>
+
+        <div className="flex items-center justify-between">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">开机自启动</label>
+            <p className="text-xs text-gray-500">系统启动时自动运行</p>
+          </div>
+          <button
+            onClick={() => onAutoStartChange(!autoStart)}
+            className={`relative w-11 h-6 rounded-full transition-colors ${autoStart ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'}`}
+          >
+            <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${autoStart ? 'translate-x-5' : ''}`} />
+          </button>
         </div>
-        <button
-          onClick={() => onDebugModeChange(!debugMode)}
-          className={`relative w-11 h-6 rounded-full transition-colors ${debugMode ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'}`}
-        >
-          <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${debugMode ? 'translate-x-5' : ''}`} />
-        </button>
-      </div>
-      <div className="flex items-center justify-between">
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">输出流式 Raw 消息</label>
-          <p className="text-xs text-gray-500">在控制台打印流式 SSE data（需开启调试模式）</p>
+      </SettingsSection>
+
+      <SettingsSection
+        title="调试"
+        open={sections.debug}
+        onToggle={() => toggleSection('debug')}
+      >
+        <div className="flex items-center justify-between">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">调试模式</label>
+            <p className="text-xs text-gray-500">显示原始 HTTP 请求/响应信息</p>
+          </div>
+          <button
+            onClick={() => onDebugModeChange(!debugMode)}
+            className={`relative w-11 h-6 rounded-full transition-colors ${debugMode ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'}`}
+          >
+            <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${debugMode ? 'translate-x-5' : ''}`} />
+          </button>
         </div>
-        <button
-          onClick={() => onDebugSseChange(!debugSse)}
-          className={`relative w-11 h-6 rounded-full transition-colors ${debugSse ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'}`}
-        >
-          <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${debugSse ? 'translate-x-5' : ''}`} />
-        </button>
-      </div>
-      <div className="space-y-2">
-        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">工具输出显示</label>
-        <select
-          value={ansiRenderMode}
-          onChange={(e) => onAnsiRenderModeChange(e.target.value as AnsiRenderMode)}
-          className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700"
-        >
-          {ansiRenderOptions.map((option) => (
-            <option key={option.value} value={option.value}>{option.label}</option>
-          ))}
-        </select>
-        <p className="text-xs text-gray-500">彩色模式会解析 ANSI 控制码显示颜色</p>
-      </div>
-      <div className="space-y-2">
-        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">ANSI 颜色方案</label>
-        <select
-          value={ansiColorMode}
-          onChange={(e) => onAnsiColorModeChange(e.target.value as AnsiColorMode)}
-          className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700"
-        >
-          {ansiColorOptions.map((option) => (
-            <option key={option.value} value={option.value}>{option.label}</option>
-          ))}
-        </select>
-        <p className="text-xs text-gray-500">仅影响 ANSI 16 色调色板，256 色与真彩保持不变</p>
-      </div>
-      <div className="flex items-center justify-between">
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">启动时打开 DevTools</label>
-          <p className="text-xs text-gray-500">仅开发模式生效，需要重启应用</p>
+
+        <div className="flex items-center justify-between">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">输出流式 Raw 消息</label>
+            <p className="text-xs text-gray-500">在控制台打印流式 SSE data（需开启调试模式）</p>
+          </div>
+          <button
+            disabled={!debugMode}
+            onClick={() => onDebugSseChange(!debugSse)}
+            className={`relative w-11 h-6 rounded-full transition-colors ${
+              debugSse ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'
+            } ${!debugMode ? 'opacity-60 cursor-not-allowed' : ''}`}
+            title={!debugMode ? '请先开启调试模式' : debugSse ? '已开启' : '已关闭'}
+          >
+            <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${debugSse ? 'translate-x-5' : ''}`} />
+          </button>
         </div>
-        <button
-          onClick={() => onOpenDevtoolsOnStartChange(!openDevtoolsOnStart)}
-          className={`relative w-11 h-6 rounded-full transition-colors ${openDevtoolsOnStart ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'}`}
-        >
-          <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${openDevtoolsOnStart ? 'translate-x-5' : ''}`} />
-        </button>
-      </div>
-      <div className="flex items-center justify-between">
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">显示用量</label>
-          <p className="text-xs text-gray-500">在消息中显示 Token 用量统计</p>
+
+        <div className="flex items-center justify-between">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">启动时打开 DevTools</label>
+            <p className="text-xs text-gray-500">仅开发模式生效，需要重启应用</p>
+          </div>
+          <button
+            onClick={() => onOpenDevtoolsOnStartChange(!openDevtoolsOnStart)}
+            className={`relative w-11 h-6 rounded-full transition-colors ${openDevtoolsOnStart ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'}`}
+          >
+            <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${openDevtoolsOnStart ? 'translate-x-5' : ''}`} />
+          </button>
         </div>
-        <button
-          onClick={() => onShowUsageChange(!showUsage)}
-          className={`relative w-11 h-6 rounded-full transition-colors ${showUsage ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'}`}
-        >
-          <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${showUsage ? 'translate-x-5' : ''}`} />
-        </button>
-      </div>
-      <div className="flex items-center justify-between">
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">PDF 调试模式</label>
-          <p className="text-xs text-gray-500">允许选择 PDF 的特定页面范围进行发送</p>
+
+        <div className="flex items-center justify-between">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">PDF 调试模式</label>
+            <p className="text-xs text-gray-500">允许选择 PDF 的特定页面范围进行发送</p>
+          </div>
+          <button
+            onClick={() => onPdfDebugModeChange(!pdfDebugMode)}
+            className={`relative w-11 h-6 rounded-full transition-colors ${pdfDebugMode ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'}`}
+          >
+            <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${pdfDebugMode ? 'translate-x-5' : ''}`} />
+          </button>
         </div>
-        <button
-          onClick={() => onPdfDebugModeChange(!pdfDebugMode)}
-          className={`relative w-11 h-6 rounded-full transition-colors ${pdfDebugMode ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'}`}
-        >
-          <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${pdfDebugMode ? 'translate-x-5' : ''}`} />
-        </button>
-      </div>
+      </SettingsSection>
+
+      <SettingsSection
+        title="显示"
+        open={sections.display}
+        onToggle={() => toggleSection('display')}
+      >
+        <div className="space-y-2">
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">工具输出显示</label>
+          <select
+            value={ansiRenderMode}
+            onChange={(e) => onAnsiRenderModeChange(e.target.value as AnsiRenderMode)}
+            className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700"
+          >
+            {ansiRenderOptions.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+          <p className="text-xs text-gray-500">彩色模式会解析 ANSI 控制码显示颜色</p>
+        </div>
+
+        <div className="space-y-2">
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">ANSI 颜色方案</label>
+          <select
+            value={ansiColorMode}
+            onChange={(e) => onAnsiColorModeChange(e.target.value as AnsiColorMode)}
+            className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700"
+          >
+            {ansiColorOptions.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+          <p className="text-xs text-gray-500">仅影响 ANSI 16 色调色板，256 色与真彩保持不变</p>
+        </div>
+
+        <div className="flex items-center justify-between">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">显示用量</label>
+            <p className="text-xs text-gray-500">在消息中显示 Token 用量统计</p>
+          </div>
+          <button
+            onClick={() => onShowUsageChange(!showUsage)}
+            className={`relative w-11 h-6 rounded-full transition-colors ${showUsage ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'}`}
+          >
+            <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${showUsage ? 'translate-x-5' : ''}`} />
+          </button>
+        </div>
+      </SettingsSection>
     </div>
   );
 };

@@ -76,6 +76,13 @@ impl ToolOrchestrator {
     }
 
     fn is_tool_enabled_for_model(&self, spec: &ToolSpec) -> bool {
+        // 开启“持久进程”增强时，避免把同一类工具的 persistent/non-persistent 版本同时暴露给模型，
+        // 否则模型很容易混用导致行为不稳定（尤其是 exec_command / write_stdin）。
+        if self.toolset.persistance_shell_enhance
+            && matches!(spec.name.as_str(), "exec_command" | "write_stdin")
+        {
+            return false;
+        }
         if is_persistent_tool(&spec.name) && !self.toolset.persistance_shell_enhance {
             return false;
         }
@@ -268,6 +275,25 @@ mod tests {
         });
         let names = tool_names(&orchestrator.tool_specs_for_model());
         assert_eq!(names, vec!["shell_command".to_string()]);
+    }
+
+    #[test]
+    fn persistance_shell_enhance_hides_non_persistent_pty_tools() {
+        let policy: Arc<dyn ToolPermissionPolicy> = Arc::new(BasicToolPermissionPolicy {
+            allow_shell_exec: true,
+            allow_pty_exec: true,
+            allow_file_write: false,
+        });
+        let orchestrator = ToolOrchestrator::new_builtin(ToolOrchestratorConfig {
+            toolset: ToolSet::allow_all().with_persistance_shell_enhance(true),
+            permission_policy: policy,
+        });
+
+        let names = tool_names(&orchestrator.tool_specs_for_model());
+        assert!(names.contains(&"exec_command_persistent".to_string()));
+        assert!(names.contains(&"write_stdin_persistent".to_string()));
+        assert!(!names.contains(&"exec_command".to_string()));
+        assert!(!names.contains(&"write_stdin".to_string()));
     }
 
     #[test]

@@ -80,6 +80,8 @@ interface SseResponseBody {
   content?: string;
   thinking?: string | null;
   tool_calls?: unknown;
+  tool_results?: unknown;
+  tool_runs?: unknown;
   usage?: SseUsage | null;
 }
 
@@ -259,10 +261,11 @@ const SseResponseViewer: React.FC<SseResponseViewerProps> = ({ data }) => {
       )}
 
       {/* Tool Calls */}
-      {data.tool_calls && (
+      {/* Tool Runs */}
+      {data.tool_runs && (
         <div>
-          <div className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">工具调用</div>
-          <JsonViewer data={data.tool_calls} />
+          <div className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">工具执行</div>
+          <JsonViewer data={data.tool_runs} />
         </div>
       )}
 
@@ -399,6 +402,59 @@ export const DebugModal: React.FC<DebugModalProps> = ({
     [effectiveBlocks]
   );
 
+  const pairedToolRuns = useMemo(() => {
+    const resultsByCallId = new Map<string, Extract<MessageBlock, { type: 'tool_result' }>>();
+    for (const r of toolResults) resultsByCallId.set(r.callId, r);
+
+    const runs = toolCalls.map((call) => ({
+      call,
+      result: resultsByCallId.get(call.callId) ?? null,
+    }));
+
+    const callsById = new Set(toolCalls.map((c) => c.callId));
+    const orphanResults = toolResults.filter((r) => !callsById.has(r.callId));
+
+    return { runs, orphanResults };
+  }, [toolCalls, toolResults]);
+
+  const responseBodyForDisplay = useMemo(() => {
+    const body = effectiveDebugInfo?.response?.body;
+    if (!body) return body;
+    if (toolResults.length === 0 && toolCalls.length === 0) return body;
+
+    const tool_runs = toolCalls.map((call) => {
+      let parsedArgs: unknown = call.arguments;
+      try {
+        parsedArgs = JSON.parse(call.arguments);
+      } catch {
+        // keep raw
+      }
+      return {
+        call_id: call.callId,
+        name: call.name,
+        arguments: parsedArgs,
+        result_text: toolResults.find((r) => r.callId === call.callId)?.text ?? null,
+      };
+    });
+
+    if (typeof body === 'object' && body !== null) {
+      // 为避免重复展示，这里只注入 tool_runs，并在展示用响应体里剔除 tool_calls/tool_results。
+      //（工具调用/输出已在 DebugModal 的“工具执行”区块成对展示）
+      const sanitized = { ...(body as Record<string, unknown>) };
+      delete sanitized.tool_calls;
+      delete sanitized.tool_results;
+      delete sanitized.tool_runs;
+      return {
+        ...sanitized,
+        ...(tool_runs.length > 0 ? { tool_runs } : {}),
+      };
+    }
+    return {
+      body,
+      ...(tool_runs.length > 0 ? { tool_runs } : {}),
+    };
+  }, [effectiveDebugInfo?.response?.body, toolResults, toolCalls]);
+
   if (!isOpen) return null;
 
   return (
@@ -469,16 +525,17 @@ export const DebugModal: React.FC<DebugModalProps> = ({
             </CollapsibleSection>
           )}
 
-          {(toolCalls.length > 0 || webSearchBlocks.length > 0) && (
-            <CollapsibleSection title="工具调用" defaultExpanded={false}>
+          {(toolCalls.length > 0 || toolResults.length > 0 || webSearchBlocks.length > 0) && (
+            <CollapsibleSection title="工具执行" defaultExpanded={false}>
               <div className="space-y-3">
-                {toolCalls.map((call) => {
+                {pairedToolRuns.runs.map(({ call, result }) => {
                   let prettyArgs: string = call.arguments;
                   try {
                     prettyArgs = JSON.stringify(JSON.parse(call.arguments), null, 2);
                   } catch {
                     // keep raw
                   }
+
                   return (
                     <div
                       key={call.id}
@@ -487,14 +544,55 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                       <div className="mb-2 text-xs font-medium text-green-800 dark:text-green-200">
                         {call.name} <span className="opacity-70">({call.callId})</span>
                       </div>
-                      <TextViewer
-                        text={prettyArgs}
-                        maxHeightClassName="max-h-48"
-                        containerClassName="bg-white/60 dark:bg-black/20 text-green-900 dark:text-green-100"
-                      />
+
+                      <div className="space-y-2">
+                        <TextViewer
+                          label="参数"
+                          text={prettyArgs}
+                          maxHeightClassName="max-h-48"
+                          containerClassName="bg-white/60 dark:bg-black/20 text-green-900 dark:text-green-100"
+                        />
+
+                        <TextViewer
+                          label="结果"
+                          text={result?.text ?? '(暂无工具结果)'}
+                          maxHeightClassName="max-h-64"
+                          containerClassName="bg-white/60 dark:bg-black/20 text-gray-900 dark:text-gray-100"
+                          renderAnsi={Boolean(result?.text)}
+                          ansiRenderMode={ansiRenderMode}
+                          ansiColorMode={ansiColorMode}
+                        />
+                      </div>
                     </div>
                   );
                 })}
+
+                {pairedToolRuns.orphanResults.length > 0 && (
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-800/40">
+                    <div className="mb-2 text-xs font-medium text-gray-700 dark:text-gray-300">
+                      未配对的工具结果
+                    </div>
+                    <div className="space-y-3">
+                      {pairedToolRuns.orphanResults.map((r) => (
+                        <div
+                          key={r.id}
+                          className="rounded border border-gray-200 bg-white/60 p-2 dark:border-gray-700 dark:bg-black/20"
+                        >
+                          <div className="mb-2 text-xs font-medium text-gray-700 dark:text-gray-300">
+                            call_id: <span className="font-mono">{r.callId}</span>
+                          </div>
+                          <TextViewer
+                            text={r.text}
+                            maxHeightClassName="max-h-64"
+                            renderAnsi
+                            ansiRenderMode={ansiRenderMode}
+                            ansiColorMode={ansiColorMode}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 {webSearchBlocks.map((b) => (
                   <div
@@ -509,30 +607,6 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                         status: b.status,
                         action: b.action,
                       }}
-                    />
-                  </div>
-                ))}
-              </div>
-            </CollapsibleSection>
-          )}
-
-          {toolResults.length > 0 && (
-            <CollapsibleSection title="工具输出" defaultExpanded={false}>
-              <div className="space-y-3">
-                {toolResults.map((r) => (
-                  <div
-                    key={r.id}
-                    className="rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-800/40"
-                  >
-                    <div className="mb-2 text-xs font-medium text-gray-700 dark:text-gray-300">
-                      call_id: <span className="font-mono">{r.callId}</span>
-                    </div>
-                    <TextViewer
-                      text={r.text}
-                      maxHeightClassName="max-h-64"
-                      renderAnsi
-                      ansiRenderMode={ansiRenderMode}
-                      ansiColorMode={ansiColorMode}
                     />
                   </div>
                 ))}
@@ -595,10 +669,10 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                     )}
 
                     <CollapsibleSection title="响应体">
-                      {isSseResponseBody(effectiveDebugInfo.response.body) ? (
-                        <SseResponseViewer data={effectiveDebugInfo.response.body} />
+                      {isSseResponseBody(responseBodyForDisplay) ? (
+                        <SseResponseViewer data={responseBodyForDisplay} />
                       ) : (
-                        <JsonViewer data={effectiveDebugInfo.response.body} />
+                        <JsonViewer data={responseBodyForDisplay} />
                       )}
                     </CollapsibleSection>
                   </div>

@@ -149,6 +149,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
     hasWideVisualFence(message.content) ||
     assistantBlocks.some((b) => b.type === 'text' && hasWideVisualFence(b.text));
   const bubbleWidthClass = shouldPreferWideBubble ? 'w-full max-w-[92%]' : 'max-w-[80%]';
+  const minBubbleWidthClass = isAssistant ? 'min-w-[min(420px,100%)]' : '';
 
   // Error message styling
   if (isError) {
@@ -224,7 +225,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
 
       {/* Message Content */}
       <div
-        className={`relative ${bubbleWidthClass} rounded-2xl px-4 py-2 overflow-hidden ${isUser
+        className={`relative ${bubbleWidthClass} ${minBubbleWidthClass} rounded-2xl px-4 py-2 overflow-hidden ${isUser
           ? isPending
             ? 'bg-blue-400 text-white'
             : 'bg-blue-500 text-white'

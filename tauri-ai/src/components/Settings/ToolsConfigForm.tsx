@@ -4,7 +4,7 @@
  */
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { Plus, Search, Trash2 } from 'lucide-react';
+import { Plus, Search, Trash2, Copy } from 'lucide-react';
 import { useConfigStore } from '../../stores/configStore';
 import type { AppConfig, ToolSetConfig } from '../../types';
 
@@ -166,6 +166,41 @@ export const ToolsConfigForm: React.FC = () => {
     setEditingToolset(null);
     setIsCreating(false);
     setSelectedToolsetName(nextToolsets[0]?.name ?? null);
+  };
+
+  const nextUniqueToolsetName = (baseName: string) => {
+    const existing = new Set(toolsets.map((t) => t.name));
+    const cleanedBase = baseName.trim() || 'toolset';
+    let candidate = `${cleanedBase}_copy`;
+    let i = 2;
+    while (existing.has(candidate)) {
+      candidate = `${cleanedBase}_copy${i}`;
+      i += 1;
+    }
+    return candidate;
+  };
+
+  const handleDuplicateToolset = () => {
+    if (!selectedToolsetName) return;
+    if (isEditing) return;
+    const toolset = toolsets.find((t) => t.name === selectedToolsetName);
+    if (!toolset) return;
+
+    const duplicated: ToolSetConfig = {
+      ...toolset,
+      name: nextUniqueToolsetName(toolset.name),
+      tools: [...toolset.tools],
+      persistanceShellEnhance: Boolean(toolset.persistanceShellEnhance),
+    };
+
+    save({
+      ...config,
+      tools: { ...config.tools, toolsets: [...toolsets, duplicated] },
+    });
+
+    setSelectedToolsetName(duplicated.name);
+    setEditingToolset(null);
+    setIsCreating(false);
   };
 
   const currentToolset = editingToolset ?? toolsets.find((t) => t.name === selectedToolsetName) ?? null;
@@ -339,6 +374,14 @@ export const ToolsConfigForm: React.FC = () => {
                       </>
                     ) : (
                       <>
+                        <button
+                          onClick={handleDuplicateToolset}
+                          className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg flex items-center gap-1"
+                          title="复制 toolset"
+                        >
+                          <Copy size={14} />
+                          复制
+                        </button>
                         <button
                           onClick={handleEditToolset}
                           className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg"

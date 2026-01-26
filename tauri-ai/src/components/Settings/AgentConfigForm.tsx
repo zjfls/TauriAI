@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { Plus, Star, Search } from 'lucide-react';
+import { Plus, Star, Search, Copy } from 'lucide-react';
 import { useConfigStore } from '../../stores/configStore';
 import type { Agent, AgentType, FormatPromptType } from '../../types';
 
@@ -87,6 +87,35 @@ export const AgentConfigForm: React.FC = () => {
     }
   };
 
+  const nextUniqueAgentName = (baseName: string) => {
+    const existing = new Set(agents.map((a) => a.name));
+    const cleanedBase = baseName.trim() || 'agent';
+    let candidate = `${cleanedBase}_copy`;
+    let i = 2;
+    while (existing.has(candidate)) {
+      candidate = `${cleanedBase}_copy${i}`;
+      i += 1;
+    }
+    return candidate;
+  };
+
+  const handleDuplicate = () => {
+    if (editingAgent) return;
+    const agent = agents.find((a) => a.name === selectedAgentName);
+    if (!agent) return;
+
+    const duplicated: Agent = {
+      ...agent,
+      name: nextUniqueAgentName(agent.name),
+      displayName: agent.displayName ? `${agent.displayName}（复制）` : `${agent.name}（复制）`,
+    };
+
+    addAgent(duplicated);
+    setSelectedAgentName(duplicated.name);
+    setEditingAgent(null);
+    setIsCreating(false);
+  };
+
   const handleSetDefault = () => {
     if (selectedAgentName) {
       setDefaultAgent(selectedAgentName);
@@ -154,6 +183,7 @@ export const AgentConfigForm: React.FC = () => {
             modelOptions={modelOptions}
             toolsetOptions={toolsetOptions}
             onEdit={handleEdit}
+            onDuplicate={handleDuplicate}
             onSave={handleSave}
             onCancel={handleCancel}
             onDelete={handleDelete}
@@ -179,6 +209,7 @@ interface AgentFormProps {
   modelOptions: { label: string; value: string }[];
   toolsetOptions: { label: string; value: string }[];
   onEdit: () => void;
+  onDuplicate: () => void;
   onSave: () => void;
   onCancel: () => void;
   onDelete: () => void;
@@ -193,6 +224,7 @@ const AgentForm: React.FC<AgentFormProps> = ({
   modelOptions,
   toolsetOptions,
   onEdit,
+  onDuplicate,
   onSave,
   onCancel,
   onDelete,
@@ -248,6 +280,14 @@ const AgentForm: React.FC<AgentFormProps> = ({
                   设为默认
                 </button>
               )}
+              <button
+                onClick={onDuplicate}
+                className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg flex items-center gap-1"
+                title="复制智能体"
+              >
+                <Copy size={14} />
+                复制
+              </button>
               <button onClick={onEdit} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">编辑</button>
               <button onClick={onDelete} className="px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg">删除</button>
             </>

@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { Plus, Trash2, ChevronDown, ChevronRight, Wifi, WifiOff, Loader2, Search, Download, Brain, Eye, Wrench } from 'lucide-react';
+import { Plus, Trash2, ChevronDown, ChevronRight, Wifi, WifiOff, Loader2, Search, Download, Brain, Eye, Wrench, Copy } from 'lucide-react';
 import { useConfigStore } from '../../stores/configStore';
 import { testConnection } from '../../services/configService';
 import { ModelPickerModal } from './ModelPickerModal';
@@ -149,6 +149,37 @@ export const ProviderConfigForm: React.FC = () => {
       deleteProvider(selectedProviderName);
       setSelectedProviderName(providers.find(p => p.name !== selectedProviderName)?.name || null);
     }
+  };
+
+  const nextUniqueProviderName = (baseName: string) => {
+    const existing = new Set(providers.map((p) => p.name));
+    const cleanedBase = baseName.trim() || 'provider';
+    let candidate = `${cleanedBase}_copy`;
+    let i = 2;
+    while (existing.has(candidate)) {
+      candidate = `${cleanedBase}_copy${i}`;
+      i += 1;
+    }
+    return candidate;
+  };
+
+  const handleDuplicate = () => {
+    if (editingProvider) return;
+    const provider = providers.find((p) => p.name === selectedProviderName);
+    if (!provider) return;
+
+    const duplicated: Provider = {
+      ...provider,
+      name: nextUniqueProviderName(provider.name),
+      displayName: provider.displayName ? `${provider.displayName}（复制）` : `${provider.name}（复制）`,
+      models: provider.models.map((m) => ({ ...m, capabilities: { ...m.capabilities } })),
+    };
+
+    addProvider(duplicated);
+    setSelectedProviderName(duplicated.name);
+    setEditingProvider(null);
+    setIsCreating(false);
+    setTestStatus('idle');
   };
 
   const handleToggleEnabled = (name: string, enabled: boolean) => {
@@ -322,6 +353,7 @@ export const ProviderConfigForm: React.FC = () => {
             testMessage={testMessage}
             testModelName={testModelName}
             onEdit={handleEdit}
+            onDuplicate={handleDuplicate}
             onSave={handleSave}
             onCancel={handleCancel}
             onDelete={handleDelete}
@@ -363,6 +395,7 @@ interface ProviderFormProps {
   testMessage: string;
   testModelName: string;
   onEdit: () => void;
+  onDuplicate: () => void;
   onSave: () => void;
   onCancel: () => void;
   onDelete: () => void;
@@ -386,6 +419,7 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
   testMessage,
   testModelName,
   onEdit,
+  onDuplicate,
   onSave,
   onCancel,
   onDelete,
@@ -422,6 +456,14 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
             </>
           ) : (
             <>
+              <button
+                onClick={onDuplicate}
+                className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg flex items-center gap-1"
+                title="复制提供商"
+              >
+                <Copy size={14} />
+                复制
+              </button>
               <button onClick={onEdit} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">编辑</button>
               <button onClick={onDelete} className="px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg">删除</button>
             </>

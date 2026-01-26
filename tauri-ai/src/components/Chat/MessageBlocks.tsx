@@ -85,6 +85,19 @@ const ToolCallBlock: React.FC<{ name: string; args: string; isStreaming?: boolea
     }
   }, [args]);
 
+  const summary = useMemo(() => {
+    if (!args) return '';
+    try {
+      const v = JSON.parse(args);
+      if (!v || typeof v !== 'object') return '';
+      if (name === 'exec_command' && typeof (v as any).cmd === 'string') return (v as any).cmd;
+      if (name === 'shell_command' && typeof (v as any).command === 'string') return (v as any).command;
+      return '';
+    } catch {
+      return '';
+    }
+  }, [args, name]);
+
   return (
     <div className="mb-2 rounded-lg border border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-900/30">
       <button
@@ -93,6 +106,11 @@ const ToolCallBlock: React.FC<{ name: string; args: string; isStreaming?: boolea
       >
         <Wrench size={16} className="shrink-0" />
         <span className="font-medium">工具调用：{name || 'unknown'}</span>
+        {summary ? (
+          <span className="ml-2 max-w-[50%] truncate font-mono text-xs text-green-700/70 dark:text-green-200/70">
+            {summary}
+          </span>
+        ) : null}
         {isStreaming && (
           <span className="ml-1 inline-block h-2 w-2 animate-pulse rounded-full bg-green-500" />
         )}
@@ -109,6 +127,112 @@ const ToolCallBlock: React.FC<{ name: string; args: string; isStreaming?: boolea
   );
 };
 
+const ToolRunBlock: React.FC<{
+  name: string;
+  args: string;
+  resultText?: string;
+  callId?: string;
+  isStreaming?: boolean;
+  onAbortTool?: (callId: string) => void;
+  ansiRenderMode?: AnsiRenderMode;
+  ansiColorMode?: AnsiColorMode;
+}> = ({
+  name,
+  args,
+  resultText,
+  callId,
+  isStreaming,
+  onAbortTool,
+  ansiRenderMode,
+  ansiColorMode,
+}) => {
+  const [isExpanded, setIsExpanded] = useState(Boolean(isStreaming));
+  const canAbort = Boolean(onAbortTool && callId && isStreaming);
+
+  const prettyArgs = useMemo(() => {
+    if (!args) return '';
+    try {
+      return JSON.stringify(JSON.parse(args), null, 2);
+    } catch {
+      return args;
+    }
+  }, [args]);
+
+  const summary = useMemo(() => {
+    if (!args) return '';
+    try {
+      const v = JSON.parse(args);
+      if (!v || typeof v !== 'object') return '';
+      if (name === 'exec_command' && typeof (v as any).cmd === 'string') return (v as any).cmd;
+      if (name === 'shell_command' && typeof (v as any).command === 'string') return (v as any).command;
+      return '';
+    } catch {
+      return '';
+    }
+  }, [args, name]);
+
+  return (
+    <div className="mb-2 rounded-lg border border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-900/30">
+      <div className="flex items-center gap-2 px-3 py-2 text-left text-sm text-green-700 dark:text-green-300">
+        <button
+          type="button"
+          onClick={() => setIsExpanded(!isExpanded)}
+          className="flex min-w-0 flex-1 items-center gap-2 rounded py-0.5 text-left hover:bg-green-100 dark:hover:bg-green-900/50"
+        >
+          <Wrench size={16} className="shrink-0" />
+          <span className="font-medium">工具：{name || 'unknown'}</span>
+          {summary ? (
+            <span className="ml-2 max-w-[60%] truncate font-mono text-xs text-green-700/70 dark:text-green-200/70">
+              {summary}
+            </span>
+          ) : null}
+          {isStreaming ? (
+            <span className="ml-1 inline-block h-2 w-2 animate-pulse rounded-full bg-green-500" />
+          ) : null}
+          <span className="ml-auto">
+            {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+          </span>
+        </button>
+
+        {canAbort ? (
+          <button
+            type="button"
+            onClick={() => callId && onAbortTool?.(callId)}
+            className="rounded border border-green-300 px-2 py-0.5 text-[10px] font-medium text-green-700 hover:bg-green-100 dark:border-green-700 dark:text-green-200 dark:hover:bg-green-900/40"
+            title="强制关闭当前工具（将终止本轮）"
+          >
+            强制关闭
+          </button>
+        ) : null}
+      </div>
+
+      {isExpanded ? (
+        <div className="border-t border-green-200 px-3 py-2 dark:border-green-800">
+          {prettyArgs ? (
+            <>
+              <div className="mb-1 text-xs font-medium text-green-700/80 dark:text-green-200/80">参数</div>
+              <pre className="mb-3 max-h-48 overflow-y-auto whitespace-pre-wrap break-words pr-2 text-sm text-green-900 dark:text-green-100">
+                {prettyArgs}
+              </pre>
+            </>
+          ) : null}
+
+          {resultText ? (
+            <>
+              <div className="mb-1 text-xs font-medium text-green-700/80 dark:text-green-200/80">输出</div>
+              <pre className="h-48 overflow-y-auto whitespace-pre-wrap break-words pr-2 text-sm text-gray-800 dark:text-gray-100">
+                <AnsiText text={resultText} renderMode={ansiRenderMode} colorMode={ansiColorMode} />
+              </pre>
+            </>
+          ) : (
+            <div className="text-xs text-green-700/70 dark:text-green-200/70">等待工具输出…</div>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+};
+
 const ToolResultBlock: React.FC<{
   text: string;
   callId?: string;
@@ -119,26 +243,39 @@ const ToolResultBlock: React.FC<{
 }> = ({ text, callId, isStreaming, onAbortTool, ansiRenderMode, ansiColorMode }) => {
   if (!text) return null;
   const canAbort = Boolean(onAbortTool && callId && isStreaming);
+  const [isExpanded, setIsExpanded] = useState(Boolean(isStreaming));
 
   return (
     <div className="mb-2 rounded-lg border border-green-200 bg-white px-3 py-2 text-sm text-gray-800 dark:border-green-800 dark:bg-gray-900/40 dark:text-gray-100">
       <div className="mb-1 flex items-center gap-2 text-xs font-medium text-green-700 dark:text-green-300">
-        <Wrench size={14} />
-        <span>工具结果</span>
+        <button
+          type="button"
+          onClick={() => setIsExpanded(!isExpanded)}
+          className="flex flex-1 items-center gap-2 rounded px-1 py-0.5 text-left hover:bg-green-50 dark:hover:bg-green-900/20"
+        >
+          <Wrench size={14} />
+          <span>工具结果</span>
+          <span className="ml-auto">
+            {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+          </span>
+        </button>
+
         {canAbort ? (
           <button
             type="button"
             onClick={() => callId && onAbortTool?.(callId)}
-            className="ml-auto rounded border border-green-300 px-2 py-0.5 text-[10px] font-medium text-green-700 hover:bg-green-100 dark:border-green-700 dark:text-green-200 dark:hover:bg-green-900/40"
+            className="rounded border border-green-300 px-2 py-0.5 text-[10px] font-medium text-green-700 hover:bg-green-100 dark:border-green-700 dark:text-green-200 dark:hover:bg-green-900/40"
             title="强制关闭当前工具（将终止本轮）"
           >
             强制关闭
           </button>
         ) : null}
       </div>
-      <pre className="h-48 overflow-y-auto whitespace-pre-wrap break-words pr-2">
-        <AnsiText text={text} renderMode={ansiRenderMode} colorMode={ansiColorMode} />
-      </pre>
+      {isExpanded ? (
+        <pre className="h-48 overflow-y-auto whitespace-pre-wrap break-words pr-2">
+          <AnsiText text={text} renderMode={ansiRenderMode} colorMode={ansiColorMode} />
+        </pre>
+      ) : null}
     </div>
   );
 };
@@ -503,6 +640,7 @@ export const MessageBlocks: React.FC<{
   const ansiRenderMode = config?.general?.ansiRenderMode;
   const ansiColorMode = config?.general?.ansiColorMode;
   const [activeDebugTurn, setActiveDebugTurn] = useState<MessageTurn | null>(null);
+  const [collapsedTurns, setCollapsedTurns] = useState<Set<string>>(new Set());
 
   const turnMetaById = useMemo(() => {
     const map = new Map<string, MessageTurn>();
@@ -555,7 +693,59 @@ export const MessageBlocks: React.FC<{
       }
     }
 
-    return order.map((key) => map.get(key)!);
+    const pairToolBlocks = (turnBlocks: MessageBlock[]): MessageBlock[] => {
+      const toolResultsByCallId = new Map<string, MessageBlock[]>();
+      for (const b of turnBlocks) {
+        if (b.type !== 'tool_result') continue;
+        const callId = b.callId || '';
+        const list = toolResultsByCallId.get(callId) ?? [];
+        list.push(b);
+        toolResultsByCallId.set(callId, list);
+      }
+
+      const used = new Set<string>();
+      const ordered: MessageBlock[] = [];
+
+      for (const b of turnBlocks) {
+        if (used.has(b.id)) continue;
+
+        if (b.type === 'tool_call') {
+          ordered.push(b);
+          used.add(b.id);
+
+          const callId = b.callId || '';
+          const results = toolResultsByCallId.get(callId);
+          const nextResult = results && results.length > 0 ? results.shift() : undefined;
+          if (nextResult && !used.has(nextResult.id)) {
+            ordered.push(nextResult);
+            used.add(nextResult.id);
+          }
+          continue;
+        }
+
+        if (b.type === 'tool_result') {
+          // 先跳过：稍后按剩余顺序追加，避免把结果挤到最前面
+          continue;
+        }
+
+        ordered.push(b);
+        used.add(b.id);
+      }
+
+      for (const b of turnBlocks) {
+        if (b.type !== 'tool_result') continue;
+        if (used.has(b.id)) continue;
+        ordered.push(b);
+        used.add(b.id);
+      }
+
+      return ordered;
+    };
+
+    return order.map((key) => {
+      const g = map.get(key)!;
+      return { ...g, blocks: pairToolBlocks(g.blocks) };
+    });
   }, [blocks, turnMetaById]);
 
   const renderBlock = (block: MessageBlock) => {
@@ -628,17 +818,37 @@ export const MessageBlocks: React.FC<{
           : debugMode
             ? '该轮暂无调试数据'
             : '开启调试模式后可查看该轮请求/响应';
+        const isCollapsed = Boolean(g.turnId && collapsedTurns.has(g.turnId));
 
         return (
           <div key={`${g.key}:${idx}`}>
             {showTurnHeader && g.turnId ? (
               <div className="mb-1 flex items-center justify-between">
-                <div
-                  className="select-text text-[10px] font-mono text-gray-400 dark:text-gray-500"
-                  title={g.turnId}
-                >
-                  第 {turnIndex} 轮
+                <div className="flex items-center gap-2">
+                  <div
+                    className="select-text text-[10px] font-mono text-gray-400 dark:text-gray-500"
+                    title={g.turnId}
+                  >
+                    第 {turnIndex} 轮
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCollapsedTurns((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(g.turnId!)) next.delete(g.turnId!);
+                        else next.add(g.turnId!);
+                        return next;
+                      });
+                    }}
+                    className="flex items-center gap-1 rounded bg-gray-50 px-2 py-0.5 text-[10px] font-medium text-gray-600 hover:bg-gray-100 dark:bg-gray-900/40 dark:text-gray-300 dark:hover:bg-gray-800"
+                    title={isCollapsed ? '展开本轮' : '收起本轮'}
+                  >
+                    {isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+                    <span>{isCollapsed ? '展开' : '收起'}</span>
+                  </button>
                 </div>
+
                 <button
                   type="button"
                   onClick={() => canOpenDebug && setActiveDebugTurn(turnMeta || null)}
@@ -655,9 +865,37 @@ export const MessageBlocks: React.FC<{
               </div>
             ) : null}
 
-            {g.blocks.map((block) => (
-              <React.Fragment key={block.id}>{renderBlock(block)}</React.Fragment>
-            ))}
+            {isCollapsed ? null : (
+              g.blocks.map((block, blockIdx) => {
+                if (block.type === 'tool_call') {
+                  const next = g.blocks[blockIdx + 1];
+                  if (next && next.type === 'tool_result' && next.callId === block.callId) {
+                    return (
+                      <ToolRunBlock
+                        key={`${block.id}:${next.id}`}
+                        name={block.name}
+                        args={block.arguments}
+                        resultText={next.text}
+                        callId={block.callId}
+                        isStreaming={isStreaming}
+                        onAbortTool={onAbortTool}
+                        ansiRenderMode={ansiRenderMode}
+                        ansiColorMode={ansiColorMode}
+                      />
+                    );
+                  }
+                }
+
+                if (block.type === 'tool_result') {
+                  const prev = g.blocks[blockIdx - 1];
+                  if (prev && prev.type === 'tool_call' && prev.callId === block.callId) {
+                    return null;
+                  }
+                }
+
+                return <React.Fragment key={block.id}>{renderBlock(block)}</React.Fragment>;
+              })
+            )}
           </div>
         );
       })}
