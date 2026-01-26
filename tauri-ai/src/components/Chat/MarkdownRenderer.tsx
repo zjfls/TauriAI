@@ -18,6 +18,14 @@ mermaid.initialize({
   startOnLoad: false,
   theme: 'neutral',
   securityLevel: 'loose',
+  // Prefer fixed-size diagrams and let the container handle horizontal scrolling.
+  // This avoids diagrams becoming overly narrow when the message bubble is constrained by other content.
+  flowchart: { useMaxWidth: false },
+  sequence: { useMaxWidth: false },
+  gantt: { useMaxWidth: false },
+  class: { useMaxWidth: false },
+  state: { useMaxWidth: false },
+  er: { useMaxWidth: false },
   // Force KaTeX CSS rendering for consistent cross-browser math display
   forceLegacyMathML: true,
   suppressErrorRendering: false,
@@ -197,7 +205,7 @@ const MermaidBlock = React.memo(function MermaidBlock({ code }: MermaidBlockProp
   return (
     <>
       <div
-        className="my-2 overflow-x-auto rounded-lg bg-gray-100 dark:bg-gray-700/50 p-4 cursor-zoom-in"
+        className="my-2 w-full overflow-x-auto rounded-lg bg-gray-100 dark:bg-gray-700/50 p-4 cursor-zoom-in flex justify-center [&_svg]:max-w-none"
         onClick={() => setIsFullscreen(true)}
         title="点击放大查看"
         dangerouslySetInnerHTML={{ __html: svg }}

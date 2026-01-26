@@ -26,6 +26,7 @@ interface MessageListProps {
 
 // Threshold in pixels to consider "at bottom"
 const SCROLL_THRESHOLD = 50;
+const WIDE_VISUAL_FENCE_RE = /```(?:mermaid|plot|mafs|json\\s+mafs)\\b/i;
 
 export const MessageList: React.FC<MessageListProps> = ({
   messages,
@@ -151,6 +152,10 @@ export const MessageList: React.FC<MessageListProps> = ({
     [extractFilesFromDataTransfer, onDropFiles, onDropText]
   );
 
+  const streamingPreferWideBubble =
+    streamingBlocks?.some((b) => b.type === 'text' && WIDE_VISUAL_FENCE_RE.test(b.text)) ?? false;
+  const streamingBubbleWidthClass = streamingPreferWideBubble ? 'w-full max-w-[92%]' : 'max-w-[80%]';
+
   return (
     <div
       ref={containerRef}
@@ -173,16 +178,18 @@ export const MessageList: React.FC<MessageListProps> = ({
         <MessageItem key={message.id} message={message} onAction={onAction} onAbortTool={onAbortTool} />
       ))}
 
-      {/* Streaming message */}
-      {streamingBlocks !== null && (
-        <div className="group flex gap-3 px-4 py-3">
+       {/* Streaming message */}
+       {streamingBlocks !== null && (
+         <div className="group flex gap-3 px-4 py-3">
           {/* AI Avatar */}
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300">
             <Bot size={18} />
           </div>
 
           {/* Streaming content */}
-          <div className="relative max-w-[80%] rounded-2xl bg-white px-4 py-2 text-gray-900 shadow-sm dark:bg-gray-800 dark:text-gray-100">
+          <div
+            className={`relative ${streamingBubbleWidthClass} rounded-2xl bg-white px-4 py-2 text-gray-900 shadow-sm dark:bg-gray-800 dark:text-gray-100`}
+          >
             <MessageBlocks
               blocks={streamingBlocks}
               isStreaming

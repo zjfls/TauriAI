@@ -15,6 +15,12 @@ import { useConfigStore } from '../../stores/configStore';
 import { getAssistantMessageBlocks } from '../../utils/messageBlocks';
 import { MessageBlocks } from './MessageBlocks';
 
+const WIDE_VISUAL_FENCE_RE = /```(?:mermaid|plot|mafs|json\\s+mafs)\\b/i;
+
+function hasWideVisualFence(text: string): boolean {
+  return WIDE_VISUAL_FENCE_RE.test(text);
+}
+
 /**
  * Image preview modal component
  */
@@ -139,6 +145,10 @@ export const MessageItem: React.FC<MessageItemProps> = ({
 
   // 统一以 blocks 作为 assistant 输出渲染入口（未来可扩展 tool/websearch/多模态输出）
   const assistantBlocks = isAssistant ? getAssistantMessageBlocks(message) : [];
+  const shouldPreferWideBubble =
+    hasWideVisualFence(message.content) ||
+    assistantBlocks.some((b) => b.type === 'text' && hasWideVisualFence(b.text));
+  const bubbleWidthClass = shouldPreferWideBubble ? 'w-full max-w-[92%]' : 'max-w-[80%]';
 
   // Error message styling
   if (isError) {
@@ -154,7 +164,9 @@ export const MessageItem: React.FC<MessageItemProps> = ({
         </div>
 
         {/* Error Content */}
-        <div className="relative max-w-[80%] rounded-2xl px-4 py-2 bg-red-50 text-red-800 border border-red-200 dark:bg-red-900/20 dark:text-red-300 dark:border-red-800">
+        <div
+          className={`relative ${bubbleWidthClass} rounded-2xl px-4 py-2 bg-red-50 text-red-800 border border-red-200 dark:bg-red-900/20 dark:text-red-300 dark:border-red-800`}
+        >
           <div className="text-sm font-medium mb-1">请求失败</div>
           <p className="text-sm whitespace-pre-wrap">{message.content}</p>
 
@@ -212,7 +224,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
 
       {/* Message Content */}
       <div
-        className={`relative max-w-[80%] rounded-2xl px-4 py-2 overflow-hidden ${isUser
+        className={`relative ${bubbleWidthClass} rounded-2xl px-4 py-2 overflow-hidden ${isUser
           ? isPending
             ? 'bg-blue-400 text-white'
             : 'bg-blue-500 text-white'
