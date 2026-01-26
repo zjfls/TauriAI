@@ -33,6 +33,7 @@ use super::traits::{
     AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent, TokenUsage,
     ToolCall, ToolDefinition,
 };
+use super::utf8_stream::Utf8StreamDecoder;
 use crate::models::{ImageDetail, Message, MessageRole, ModelConfig};
 use std::collections::{HashMap, HashSet};
 
@@ -810,10 +811,11 @@ impl AiClient for OpenAiResponsesClient {
         let mut chunk_count = 0;
         // SSE 可能跨 chunk 切分；用行缓冲拼接，避免 JSON 被拆开导致事件丢失（text/thinking/web_search/usage）。
         let mut sse_buffer = String::new();
+        let mut utf8 = Utf8StreamDecoder::default();
 
         while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result.map_err(|e| AiError::StreamError(e.to_string()))?;
-            let chunk_str = String::from_utf8_lossy(&chunk);
+            let chunk_str = utf8.push(&chunk);
             chunk_count += 1;
 
             sse_buffer.push_str(&chunk_str);

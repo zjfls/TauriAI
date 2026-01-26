@@ -16,6 +16,7 @@ use super::traits::{
     AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent, TokenUsage,
     ToolCall, ToolDefinition,
 };
+use super::utf8_stream::Utf8StreamDecoder;
 use crate::models::{ImageDetail, Message, MessageRole, ModelConfig};
 
 // ============================================================================
@@ -728,10 +729,11 @@ impl OpenAiBaseClient {
         let mut all_chunks: Vec<String> = Vec::new();
         // SSE 可能在任意字节边界切片；用行缓冲拼接，避免 JSON 被拆分后解析失败导致丢 token。
         let mut sse_buffer = String::new();
+        let mut utf8 = Utf8StreamDecoder::default();
 
         while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result.map_err(|e| AiError::StreamError(e.to_string()))?;
-            let chunk_str = String::from_utf8_lossy(&chunk).to_string();
+            let chunk_str = utf8.push(&chunk);
             all_chunks.push(chunk_str.clone());
 
             sse_buffer.push_str(&chunk_str);

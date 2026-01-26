@@ -12,6 +12,7 @@ use super::traits::{
     AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent, TokenUsage,
     ToolCall, ToolDefinition,
 };
+use super::utf8_stream::Utf8StreamDecoder;
 use crate::models::{Message, MessageRole, ModelConfig};
 
 /// Google Gemini API client
@@ -780,10 +781,11 @@ impl AiClient for GoogleClient {
         let mut tool_calls: Vec<ToolCall> = Vec::new();
         let mut tool_calls_to_emit: Option<Vec<ToolCall>> = None;
         let mut sse_buffer = String::new();
+        let mut utf8 = Utf8StreamDecoder::default();
 
         'stream: while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result.map_err(|e| AiError::StreamError(e.to_string()))?;
-            let chunk_str = String::from_utf8_lossy(&chunk);
+            let chunk_str = utf8.push(&chunk);
 
             sse_buffer.push_str(&chunk_str);
 

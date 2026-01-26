@@ -12,6 +12,7 @@ use super::traits::{
     AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent,
     ToolDefinition,
 };
+use super::utf8_stream::Utf8StreamDecoder;
 use crate::models::{Message, MessageRole, ModelConfig};
 
 /// Ollama API client
@@ -269,10 +270,11 @@ impl AiClient for OllamaClient {
         let mut stream = response.bytes_stream();
         // Ollama 返回的是 NDJSON；同样可能在任意字节边界切片，需做行缓冲避免 JSON 被拆分。
         let mut line_buffer = String::new();
+        let mut utf8 = Utf8StreamDecoder::default();
 
         while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result.map_err(|e| AiError::StreamError(e.to_string()))?;
-            let chunk_str = String::from_utf8_lossy(&chunk);
+            let chunk_str = utf8.push(&chunk);
             line_buffer.push_str(&chunk_str);
 
             // Ollama sends newline-delimited JSON

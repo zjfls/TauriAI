@@ -11,6 +11,7 @@ mod ollama;
 mod openai;
 mod openai_responses;
 mod traits;
+mod utf8_stream;
 
 pub use anthropic::AnthropicClient;
 pub use content_converter::{content_part_to_blocks, parse_data_url, ContentBlock};

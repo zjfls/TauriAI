@@ -12,6 +12,7 @@ use super::traits::{
     AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent, TokenUsage,
     ToolCall, ToolDefinition,
 };
+use super::utf8_stream::Utf8StreamDecoder;
 use crate::models::{Message, MessageRole, ModelConfig};
 
 /// Anthropic API client
@@ -746,13 +747,14 @@ impl AiClient for AnthropicClient {
 
         let mut current_tool_use: Option<ToolUseInProgress> = None;
         let mut sse_buffer = String::new();
+        let mut utf8 = Utf8StreamDecoder::default();
 
         // Store debug parts for later assembly
         // We'll build the final debug_info with full_content at the end
 
         while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result.map_err(|e| AiError::StreamError(e.to_string()))?;
-            let chunk_str = String::from_utf8_lossy(&chunk);
+            let chunk_str = utf8.push(&chunk);
             sse_buffer.push_str(&chunk_str);
 
             // Parse SSE events (line-buffered)
