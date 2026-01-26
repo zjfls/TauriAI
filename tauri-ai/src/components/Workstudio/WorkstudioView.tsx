@@ -246,6 +246,36 @@ export const WorkstudioView: React.FC = () => {
     () => groups.find((g) => g.id === focusedGroupId) ?? groups[0],
     [groups, focusedGroupId]
   );
+
+  // Monaco 编辑器在 flex 布局变化（拆分/关闭组/拖拽/分屏比例调整）时偶发不会自动重算尺寸，
+  // 导致右侧出现“白色死区”。这里在布局相关状态变化后，强制触发一次 layout。
+  useEffect(() => {
+    const aliveGroupIds = new Set(groups.map((g) => g.id));
+    for (const key of editorByGroupRef.current.keys()) {
+      if (!aliveGroupIds.has(key)) {
+        editorByGroupRef.current.delete(key);
+      }
+    }
+
+    let raf2: number | null = null;
+    const raf1 = window.requestAnimationFrame(() => {
+      raf2 = window.requestAnimationFrame(() => {
+        for (const [groupId, editor] of editorByGroupRef.current.entries()) {
+          if (!aliveGroupIds.has(groupId)) continue;
+          try {
+            editor.layout();
+          } catch {
+            // ignore
+          }
+        }
+      });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(raf1);
+      if (raf2) window.cancelAnimationFrame(raf2);
+    };
+  }, [groups, terminalOpen]);
   const rootFolders = useMemo(() => {
     if (!ws) return [];
     const out: string[] = [];
@@ -1157,14 +1187,39 @@ export const WorkstudioView: React.FC = () => {
                         className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 disabled:opacity-60 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
                         onClick={() => {
                           setGroups((prev) => {
-                            const nextGroups = prev.filter((g) => g.id !== group.id);
+                            const removedIndex = prev.findIndex((g) => g.id === group.id);
+                            if (removedIndex < 0) return prev;
+
+                            const removedWeight = prev[removedIndex]?.weight || 1;
+                            let nextGroups = prev.filter((g) => g.id !== group.id);
+                            if (!nextGroups.length) {
+                              nextGroups = [
+                                { id: 'g-0', openFileIds: [], activeFileId: null, weight: 1 },
+                              ];
+                            } else {
+                              nextGroups = redistributeWeightOnRemove(
+                                nextGroups,
+                                removedIndex,
+                                removedWeight
+                              );
+                              nextGroups = normalizeGroupWeights(nextGroups);
+                            }
+
                             setOpenFiles((prevFiles) => {
                               const used = new Set(nextGroups.flatMap((g) => g.openFileIds));
                               return prevFiles.filter((f) => used.has(f.id));
                             });
-                            const fallback = nextGroups[0]?.id ?? 'g-0';
-                            setFocusedGroupId((curr) => (curr === group.id ? fallback : curr));
-                            return nextGroups.length ? nextGroups : [{ id: 'g-0', openFileIds: [], activeFileId: null, weight: 1 }];
+
+                            const fallback =
+                              nextGroups[Math.min(removedIndex, nextGroups.length - 1)]?.id ??
+                              nextGroups[0]?.id ??
+                              'g-0';
+                            setFocusedGroupId((curr) => {
+                              if (curr === group.id) return fallback;
+                              return nextGroups.some((g) => g.id === curr) ? curr : fallback;
+                            });
+
+                            return nextGroups;
                           });
                         }}
                         title="关闭编辑组"
