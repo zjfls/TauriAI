@@ -295,26 +295,27 @@ fn inject_workstudio_prompt(
             if f.trim().is_empty() {
                 continue;
             }
-            lines.push_str("- ");
+            lines.push_str("- `");
             lines.push_str(f);
-            lines.push('\n');
+            lines.push_str("`\n");
         }
         lines
     };
 
     let mut content = String::new();
     content.push_str("\n\n## 当前工作区\n\n");
-    content.push_str("workstudio_id: `");
-    content.push_str(&ws.id);
-    content.push_str("`\n\n");
-    content.push_str("主文件夹（默认工作目录）：`");
+    content.push_str("- 主文件夹（默认 workdir；工具参数省略 `workdir` 时就在这里执行）：`");
     content.push_str(main);
-    content.push_str("`\n\n");
+    content.push_str("`\n");
+    content.push_str("- workstudio_id: `");
+    content.push_str(&ws.id);
+    content.push_str("`\n");
     if !folders_preview.is_empty() {
-        content.push_str("工作文件夹列表：\n");
+        content.push_str("\n额外工作文件夹：\n");
         content.push_str(&folders_preview);
         content.push('\n');
     }
+    content.push('\n');
     content.push_str(WORKSTUDIO_PROMPT_GUIDE.trim());
 
     let insert_at = messages

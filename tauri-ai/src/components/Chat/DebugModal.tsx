@@ -353,8 +353,6 @@ export const DebugModal: React.FC<DebugModalProps> = ({
     }
   }, [sortedTurns, activeTurnId, isOpen]);
 
-  if (!isOpen) return null;
-
   const activeTurn = activeTurnId
     ? sortedTurns.find((t) => t.turnId === activeTurnId) ?? null
     : null;
@@ -400,6 +398,8 @@ export const DebugModal: React.FC<DebugModalProps> = ({
       ),
     [effectiveBlocks]
   );
+
+  if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
