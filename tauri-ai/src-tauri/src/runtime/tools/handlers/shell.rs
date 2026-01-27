@@ -9,7 +9,11 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 
 use crate::ai_client::ToolCall;
+use crate::models::SandboxPolicy;
 use crate::runtime::events::RunEvent;
+use crate::runtime::tools::sandbox::{
+    dedupe_paths, effective_workspace_roots, is_path_under_any_root, normalize_root_for_join,
+};
 use crate::runtime::tools::permissions::ToolPermission;
 use crate::runtime::tools::registry::{ToolCallResult, ToolError, ToolExecutionContext, ToolHandler};
 use crate::runtime::tools::spec::ToolSpec;
@@ -52,18 +56,25 @@ fn default_login() -> bool {
 
 fn is_known_safe_command(command: &str) -> bool {
     let cmd = command.trim();
-    let first = cmd.split_whitespace().next().unwrap_or_default().to_ascii_lowercase();
-    matches!(
-        first.as_str(),
-        "ls"
-            | "dir"
-            | "pwd"
-            | "whoami"
-            | "cat"
-            | "type"
-            | "echo"
-            | "git"
-    )
+    if cmd.is_empty() {
+        return false;
+    }
+
+    // Reject common shell metacharacters that enable redirection / chaining.
+    if cmd.contains('>') || cmd.contains('<') || cmd.contains('|') || cmd.contains('&') || cmd.contains(';') {
+        return false;
+    }
+
+    let mut parts = cmd.split_whitespace();
+    let first = parts.next().unwrap_or_default().to_ascii_lowercase();
+    match first.as_str() {
+        "ls" | "dir" | "pwd" | "whoami" | "cat" | "type" => true,
+        "git" => match parts.next().unwrap_or_default().to_ascii_lowercase().as_str() {
+            "status" | "diff" | "log" | "show" => true,
+            _ => false,
+        },
+        _ => false,
+    }
 }
 
 fn build_shell_invocation(command: &str, login: bool) -> (String, Vec<String>) {
@@ -148,17 +159,57 @@ impl ToolHandler for ShellCommandTool {
             return Err(ToolError::invalid("command 不能为空"));
         }
 
+        let policy = &ctx.sandbox_policy;
+        if matches!(policy, SandboxPolicy::ReadOnly) && !is_known_safe_command(&args.command) {
+            return Err(ToolError::denied(
+                "read-only 策略下仅允许只读命令（建议优先使用 read_file/list_dir/rg 等工具）",
+            ));
+        }
+
         let (program, program_args) = build_shell_invocation(&args.command, args.login);
 
         let mut cmd = Command::new(program);
         cmd.args(program_args);
-        let resolved_workdir = args
+        let mut resolved_workdir = args
             .workdir
             .as_ref()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .map(std::path::PathBuf::from)
             .or_else(|| ctx.default_workdir.clone());
+
+        if !policy.has_full_disk_write_access() {
+            let base_dir_for_roots = ctx
+                .default_workdir
+                .clone()
+                .or_else(|| std::env::current_dir().ok())
+                .unwrap_or_else(|| std::path::PathBuf::from("."));
+
+            let mut roots =
+                effective_workspace_roots(ctx.default_workdir.as_ref(), &ctx.workspace_roots);
+            if let SandboxPolicy::WorkspaceWrite { writable_roots, .. } = policy {
+                for r in writable_roots {
+                    if let Some(p) = normalize_root_for_join(&base_dir_for_roots, r) {
+                        roots.push(p);
+                    }
+                }
+            }
+            let roots = dedupe_paths(roots);
+            if roots.is_empty() {
+                return Err(ToolError::denied(
+                    "当前沙盒策略要求绑定工作区目录，但当前未绑定",
+                ));
+            }
+
+            let chosen = resolved_workdir.clone().unwrap_or_else(|| roots[0].clone());
+            if !is_path_under_any_root(&chosen, &roots) {
+                return Err(ToolError::denied(format!(
+                    "workdir 不在允许范围内: {}",
+                    chosen.display()
+                )));
+            }
+            resolved_workdir = Some(chosen);
+        }
         if let Some(dir) = resolved_workdir.as_ref() {
             cmd.current_dir(dir);
         }

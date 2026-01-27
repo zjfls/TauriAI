@@ -5,9 +5,13 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::ai_client::ToolCall;
+use crate::models::SandboxPolicy;
 use crate::runtime::events::RunEvent;
 use crate::runtime::tools::permissions::ToolPermission;
 use crate::runtime::tools::registry::{ToolCallResult, ToolError, ToolExecutionContext, ToolHandler};
+use crate::runtime::tools::sandbox::{
+    dedupe_paths, effective_workspace_roots, is_path_under_any_root, normalize_root_for_join,
+};
 use crate::runtime::tools::services::PtySessionScope;
 use crate::runtime::tools::spec::ToolSpec;
 
@@ -411,13 +415,53 @@ async fn exec_command_with_scope(
         return Err(ToolError::invalid("cmd 不能为空"));
     }
 
+    let policy = &ctx.sandbox_policy;
+    if matches!(policy, SandboxPolicy::ReadOnly) {
+        return Err(ToolError::denied(
+            "read-only 策略下禁止使用 exec_command（交互式终端）",
+        ));
+    }
+
     let command = build_shell_invocation(&args.cmd, args.shell.as_deref(), args.login);
-    let workdir = args
+    let mut workdir = args
         .workdir
         .as_ref()
         .filter(|s| !s.trim().is_empty())
         .map(PathBuf::from)
         .or_else(|| ctx.default_workdir.clone());
+
+    if !policy.has_full_disk_write_access() {
+        let base_dir_for_roots = ctx
+            .default_workdir
+            .clone()
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
+
+        let mut roots =
+            effective_workspace_roots(ctx.default_workdir.as_ref(), &ctx.workspace_roots);
+        if let SandboxPolicy::WorkspaceWrite { writable_roots, .. } = policy {
+            for r in writable_roots {
+                if let Some(p) = normalize_root_for_join(&base_dir_for_roots, r) {
+                    roots.push(p);
+                }
+            }
+        }
+        let roots = dedupe_paths(roots);
+        if roots.is_empty() {
+            return Err(ToolError::denied(
+                "当前沙盒策略要求绑定工作区目录，但当前未绑定",
+            ));
+        }
+
+        let chosen = workdir.clone().unwrap_or_else(|| roots[0].clone());
+        if !is_path_under_any_root(&chosen, &roots) {
+            return Err(ToolError::denied(format!(
+                "workdir 不在允许范围内: {}",
+                chosen.display()
+            )));
+        }
+        workdir = Some(chosen);
+    }
 
     let session_id = ctx
         .services
@@ -460,6 +504,12 @@ async fn write_stdin_with_scope(
 ) -> Result<ToolCallResult, ToolError> {
     let args: WriteStdinArgs = serde_json::from_str(&call.arguments)
         .map_err(|e| ToolError::invalid(format!("解析 write_stdin 参数失败: {e}")))?;
+
+    if matches!(ctx.sandbox_policy, SandboxPolicy::ReadOnly) {
+        return Err(ToolError::denied(
+            "read-only 策略下禁止使用 write_stdin（交互式终端）",
+        ));
+    }
 
     ensure_session_scope(ctx, args.session_id, allowed_scopes).await?;
 

@@ -652,6 +652,9 @@ pub struct Agent {
     /// Optional toolset name (bind different tool collections per agent)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub toolset: Option<String>,
+    /// Optional sandbox policy override (defaults to global security policy).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sandbox_policy: Option<SandboxPolicy>,
     /// Whether to enable workspace/workstudio support for Tool agents.
     ///
     /// Semantics:
@@ -683,6 +686,7 @@ impl Default for Agent {
             system_prompt: String::new(),
             format_type: FormatPromptType::default(),
             toolset: None,
+            sandbox_policy: None,
             workspace_support: None,
             max_turns: None,
             reinject_thinking: false,
@@ -915,6 +919,115 @@ impl Default for ToolsSettings {
     }
 }
 
+// ============================================================================
+// Security (sandbox policy)
+// ============================================================================
+
+/// Represents whether outbound network access is available to the agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum NetworkAccess {
+    #[default]
+    Restricted,
+    Enabled,
+}
+
+impl NetworkAccess {
+    pub fn is_enabled(self) -> bool {
+        matches!(self, NetworkAccess::Enabled)
+    }
+}
+
+/// Determines execution restrictions for model shell/PTY commands.
+///
+/// Notes:
+/// - This models Codex's sandbox policy shape for compatibility.
+/// - Enforcement happens in the tool runtime layer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum SandboxPolicy {
+    /// No restrictions whatsoever. Use with caution.
+    #[serde(rename = "danger-full-access")]
+    DangerFullAccess,
+
+    /// Read-only execution environment.
+    #[serde(rename = "read-only")]
+    ReadOnly,
+
+    /// Indicates the process is already in an external sandbox.
+    #[serde(rename = "external-sandbox")]
+    ExternalSandbox {
+        /// Whether the external sandbox permits outbound network traffic.
+        #[serde(default, rename = "networkAccess")]
+        network_access: NetworkAccess,
+    },
+
+    /// Same as `ReadOnly` but additionally grants write access to the workspace roots.
+    #[serde(rename = "workspace-write")]
+    WorkspaceWrite {
+        /// Additional writable roots (beyond workspace roots).
+        #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "writableRoots")]
+        writable_roots: Vec<String>,
+
+        /// When set to `true`, outbound network access is allowed. `false` by default.
+        #[serde(default, rename = "networkAccess")]
+        network_access: bool,
+
+        /// When set to `true`, will NOT include the per-user `TMPDIR` env var among defaults.
+        #[serde(default, rename = "excludeTmpdirEnvVar")]
+        exclude_tmpdir_env_var: bool,
+
+        /// When set to `true`, will NOT include `/tmp` among defaults on UNIX.
+        #[serde(default, rename = "excludeSlashTmp")]
+        exclude_slash_tmp: bool,
+    },
+}
+
+impl Default for SandboxPolicy {
+    fn default() -> Self {
+        SandboxPolicy::WorkspaceWrite {
+            writable_roots: Vec::new(),
+            network_access: false,
+            exclude_tmpdir_env_var: false,
+            exclude_slash_tmp: false,
+        }
+    }
+}
+
+impl SandboxPolicy {
+    pub fn has_full_disk_write_access(&self) -> bool {
+        matches!(
+            self,
+            SandboxPolicy::DangerFullAccess | SandboxPolicy::ExternalSandbox { .. }
+        )
+    }
+
+    pub fn has_full_network_access(&self) -> bool {
+        match self {
+            SandboxPolicy::DangerFullAccess => true,
+            SandboxPolicy::ExternalSandbox { network_access } => network_access.is_enabled(),
+            SandboxPolicy::ReadOnly => false,
+            SandboxPolicy::WorkspaceWrite { network_access, .. } => *network_access,
+        }
+    }
+}
+
+/// Security policy settings (sandbox, future approvals, etc.).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecuritySettings {
+    #[serde(default)]
+    pub sandbox_policy: SandboxPolicy,
+}
+
+impl Default for SecuritySettings {
+    fn default() -> Self {
+        Self {
+            sandbox_policy: SandboxPolicy::default(),
+        }
+    }
+}
+
 /// Application configuration (new structure)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -924,6 +1037,9 @@ pub struct AppConfig {
     /// Tooling settings (permissions + toolsets)
     #[serde(default)]
     pub tools: ToolsSettings,
+    /// Security settings (sandbox policy, etc.)
+    #[serde(default)]
+    pub security: SecuritySettings,
     /// AI service providers
     #[serde(default)]
     pub providers: Vec<Provider>,
@@ -954,6 +1070,7 @@ impl Default for AppConfig {
             appearance: AppearanceSettings::default(),
             general: GeneralSettings::default(),
             tools: ToolsSettings::default(),
+            security: SecuritySettings::default(),
             providers: Vec::new(),
             agents: Vec::new(),
             default_agent: String::new(),
@@ -1037,6 +1154,7 @@ impl AppConfig {
                     .unwrap_or_default(),
                 format_type: FormatPromptType::Chat,
                 toolset: None,
+                sandbox_policy: None,
                 workspace_support: None,
                 max_turns: None,
                 reinject_thinking: false,

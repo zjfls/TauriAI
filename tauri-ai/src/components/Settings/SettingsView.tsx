@@ -4,15 +4,16 @@
  */
 
 import React, { useState } from 'react';
-import { Server, Bot, Palette, Sliders, Wrench, ChevronDown } from 'lucide-react';
+import { Server, Bot, Palette, Sliders, Wrench, Shield, ChevronDown } from 'lucide-react';
 import { ProviderConfigForm } from './ProviderConfigForm';
 import { AgentConfigForm } from './AgentConfigForm';
 import { ToolsConfigForm } from './ToolsConfigForm';
+import { SecurityConfigForm } from './SecurityConfigForm';
 import { useConfigStore } from '../../stores/configStore';
 import { useUIStore } from '../../stores/uiStore';
 import type { AppConfig, Theme, AnsiColorMode, AnsiRenderMode } from '../../types';
 
-type SettingsTab = 'providers' | 'agents' | 'tools' | 'appearance' | 'general';
+type SettingsTab = 'providers' | 'agents' | 'tools' | 'security' | 'appearance' | 'general';
 
 interface TabButtonProps {
   icon: React.ReactNode;
@@ -44,6 +45,7 @@ export const SettingsView: React.FC = () => {
     { id: 'providers', icon: <Server size={18} />, label: '提供商' },
     { id: 'agents', icon: <Bot size={18} />, label: '智能体' },
     { id: 'tools', icon: <Wrench size={18} />, label: '工具' },
+    { id: 'security', icon: <Shield size={18} />, label: '安全' },
     { id: 'appearance', icon: <Palette size={18} />, label: '外观' },
     { id: 'general', icon: <Sliders size={18} />, label: '通用' },
   ];
@@ -164,6 +166,8 @@ export const SettingsView: React.FC = () => {
         return <AgentConfigForm />;
       case 'tools':
         return <ToolsConfigForm />;
+      case 'security':
+        return <SecurityConfigForm />;
       case 'appearance':
         return (
           <AppearanceSettings

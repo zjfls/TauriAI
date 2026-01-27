@@ -120,6 +120,10 @@ struct TurnLoop<'a> {
     tool_services: Arc<ToolServices>,
     /// Default working directory for tools (when workspace support is enabled).
     default_workdir: Option<std::path::PathBuf>,
+    /// Workspace root folders (main folder + additional mounts) for this run.
+    workspace_roots: Vec<std::path::PathBuf>,
+    /// Effective sandbox policy for this run.
+    sandbox_policy: crate::models::SandboxPolicy,
     runtime_messages: Vec<Message>,
     conversation_id: String,
     task_id: String,
@@ -676,6 +680,8 @@ impl<'a> TurnLoop<'a> {
                             turn_id: &turn_id,
                             assistant_message_id: &self.assistant_message_id,
                             default_workdir: self.default_workdir.clone(),
+                            workspace_roots: self.workspace_roots.clone(),
+                            sandbox_policy: self.sandbox_policy.clone(),
                             emitter: self.emitter,
                             abort_rx,
                             services: self.tool_services.as_ref(),
@@ -1478,6 +1484,20 @@ async fn run_task_inner(
     } else {
         (None, None)
     };
+    let workspace_roots: Vec<std::path::PathBuf> = workstudio
+        .as_ref()
+        .map(|ws| {
+            let mut roots = Vec::new();
+            roots.push(std::path::PathBuf::from(ws.main_folder.clone()));
+            roots.extend(ws.folders.iter().map(|p| std::path::PathBuf::from(p.clone())));
+            roots
+        })
+        .unwrap_or_default();
+
+    let sandbox_policy = agent
+        .sandbox_policy
+        .clone()
+        .unwrap_or_else(|| config.security.sandbox_policy.clone());
 
     // 3) 允许 stop/撤回 等并发操作中断当前 run
     let (abort_tx, mut abort_rx) = mpsc::channel::<()>(1);
@@ -1564,6 +1584,8 @@ async fn run_task_inner(
         tool_orchestrator,
         tool_services,
         default_workdir,
+        workspace_roots,
+        sandbox_policy,
         runtime_messages,
         conversation_id: input.conversation_id.clone(),
         task_id: task_id.clone(),

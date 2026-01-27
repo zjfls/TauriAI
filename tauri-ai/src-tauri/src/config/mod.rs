@@ -190,6 +190,7 @@ mod tests {
                 system_prompt: "You are a helpful assistant.".to_string(),
                 format_type: FormatPromptType::Chat,
                 toolset: None,
+                sandbox_policy: None,
                 workspace_support: None,
                 max_turns: None,
                 reinject_thinking: false,

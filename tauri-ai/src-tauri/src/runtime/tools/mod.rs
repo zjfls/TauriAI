@@ -15,6 +15,7 @@ pub mod orchestrator;
 pub mod handlers;
 pub mod permissions;
 pub mod registry;
+pub mod sandbox;
 pub mod services;
 pub mod spec;
 

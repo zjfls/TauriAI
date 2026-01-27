@@ -26,6 +26,28 @@ export type FormatPromptType = 'chat' | 'plain' | 'json' | 'none';
 export type AgentType = 'chat' | 'tool';
 
 // ============================================================================
+// Security / Sandboxing
+// ============================================================================
+
+export type NetworkAccess = 'restricted' | 'enabled';
+
+export type SandboxPolicy =
+  | { type: 'danger-full-access' }
+  | { type: 'read-only' }
+  | { type: 'external-sandbox'; networkAccess?: NetworkAccess }
+  | {
+      type: 'workspace-write';
+      writableRoots?: string[];
+      networkAccess?: boolean;
+      excludeTmpdirEnvVar?: boolean;
+      excludeSlashTmp?: boolean;
+    };
+
+export interface SecuritySettings {
+  sandboxPolicy: SandboxPolicy;
+}
+
+// ============================================================================
 // New Provider-Model-Agent Architecture
 // ============================================================================
 
@@ -125,6 +147,7 @@ export interface Agent {
   systemPrompt: string;
   formatType: FormatPromptType;
   toolset?: string;       // Optional toolset binding (for tool agents)
+  sandboxPolicy?: SandboxPolicy; // Optional sandbox policy override (defaults to global policy)
   workspaceSupport?: boolean; // Tool agent workspace support (default: true for tool, else false)
   maxTurns?: number;      // Max turns per run/task (default depends on agent type)
   reinjectThinking?: boolean; // Whether to reinject thinking into next turn context (default: false)
@@ -725,6 +748,7 @@ export interface AppConfig {
   appearance: AppearanceSettings;
   general: GeneralSettings;
   tools: ToolsSettings;
+  security: SecuritySettings;
   providers: Provider[];
   agents: Agent[];
   defaultAgent: string;

@@ -5,7 +5,11 @@ use serde::Deserialize;
 use tokio::fs;
 
 use crate::ai_client::ToolCall;
+use crate::models::SandboxPolicy;
 use crate::runtime::events::RunEvent;
+use crate::runtime::tools::sandbox::{
+    dedupe_paths, effective_workspace_roots, is_path_under_any_root, normalize_root_for_join,
+};
 use crate::runtime::tools::permissions::ToolPermission;
 use crate::runtime::tools::registry::{ToolCallResult, ToolError, ToolExecutionContext, ToolHandler};
 use crate::runtime::tools::spec::ToolSpec;
@@ -57,7 +61,7 @@ impl ToolHandler for ApplyPatchTool {
         ToolSpec {
             name: "apply_patch".to_string(),
             description: Some(
-                "使用补丁格式编辑工作区文件（Add/Delete/Update/Move）。文件路径必须为相对路径，且必须落在当前默认工作目录内。".to_string(),
+                "使用补丁格式编辑工作区文件（Add/Delete/Update/Move）。文件路径支持相对路径（基于默认工作目录），也支持绝对路径（必须落在允许写入的根目录内）。".to_string(),
             ),
             parameters: serde_json::json!({
                 "type": "object",
@@ -90,6 +94,12 @@ impl ToolHandler for ApplyPatchTool {
             return Err(ToolError::invalid("input 不能为空"));
         }
 
+        if matches!(ctx.sandbox_policy, SandboxPolicy::ReadOnly) {
+            return Err(ToolError::denied(
+                "当前沙盒策略为 read-only：禁止使用 apply_patch 写入文件",
+            ));
+        }
+
         let base_dir = ctx
             .default_workdir
             .clone()
@@ -97,7 +107,8 @@ impl ToolHandler for ApplyPatchTool {
             .ok_or_else(|| ToolError::internal("无法确定默认工作目录"))?;
 
         let hunks = parse_patch(patch_text)?;
-        let affected = apply_hunks(&base_dir, &hunks).await?;
+        let affected =
+            apply_hunks(&base_dir, &ctx.sandbox_policy, &ctx.workspace_roots, &hunks).await?;
 
         let summary = format_summary(&base_dir, &affected);
         emit_tool_result(ctx, call.id.as_str(), &summary);
@@ -155,17 +166,67 @@ fn format_summary(base_dir: &Path, affected: &AffectedPaths) -> String {
     lines.join("\n")
 }
 
-async fn apply_hunks(base_dir: &Path, hunks: &[Hunk]) -> Result<AffectedPaths, ToolError> {
+async fn apply_hunks(
+    base_dir: &Path,
+    policy: &SandboxPolicy,
+    workspace_roots: &[PathBuf],
+    hunks: &[Hunk],
+) -> Result<AffectedPaths, ToolError> {
     if hunks.is_empty() {
         return Err(ToolError::invalid("补丁为空：没有任何文件操作"));
     }
 
     let mut affected = AffectedPaths::default();
 
+    let allowed_roots: Option<Vec<PathBuf>> = match policy {
+        SandboxPolicy::WorkspaceWrite {
+            writable_roots,
+            exclude_tmpdir_env_var,
+            exclude_slash_tmp,
+            ..
+        } => {
+            let base_dir_buf = base_dir.to_path_buf();
+            let mut roots = effective_workspace_roots(Some(&base_dir_buf), workspace_roots);
+
+            for r in writable_roots {
+                if let Some(p) = normalize_root_for_join(base_dir, r) {
+                    roots.push(p);
+                }
+            }
+
+            if !*exclude_tmpdir_env_var {
+                roots.push(std::env::temp_dir());
+            }
+
+            #[cfg(not(unix))]
+            let _ = exclude_slash_tmp;
+
+            #[cfg(unix)]
+            if !*exclude_slash_tmp && std::path::Path::new("/tmp").exists() {
+                roots.push(PathBuf::from("/tmp"));
+            }
+
+            let roots = dedupe_paths(roots);
+            if roots.is_empty() {
+                return Err(ToolError::denied(
+                    "workspace-write 策略需要可写根目录，但当前未绑定工作区目录",
+                ));
+            }
+            Some(roots)
+        }
+        SandboxPolicy::DangerFullAccess | SandboxPolicy::ExternalSandbox { .. } => None,
+        SandboxPolicy::ReadOnly => {
+            return Err(ToolError::denied(
+                "当前沙盒策略为 read-only：禁止写入文件",
+            ))
+        }
+    };
+
     for hunk in hunks {
         match hunk {
             Hunk::AddFile { path, contents } => {
-                let abs = resolve_under_base(base_dir, path)?;
+                let abs = resolve_patch_path(base_dir, path)?;
+                ensure_writable(policy, allowed_roots.as_ref(), &abs)?;
                 if let Ok(meta) = fs::metadata(&abs).await {
                     if meta.is_dir() {
                         return Err(ToolError::invalid(format!(
@@ -189,7 +250,8 @@ async fn apply_hunks(base_dir: &Path, hunks: &[Hunk]) -> Result<AffectedPaths, T
                 affected.added.push(abs);
             }
             Hunk::DeleteFile { path } => {
-                let abs = resolve_under_base(base_dir, path)?;
+                let abs = resolve_patch_path(base_dir, path)?;
+                ensure_writable(policy, allowed_roots.as_ref(), &abs)?;
                 let meta = fs::metadata(&abs)
                     .await
                     .map_err(|e| ToolError::new(format!("读取文件失败: {e}")))?;
@@ -209,7 +271,8 @@ async fn apply_hunks(base_dir: &Path, hunks: &[Hunk]) -> Result<AffectedPaths, T
                 move_path,
                 chunks,
             } => {
-                let src_abs = resolve_under_base(base_dir, path)?;
+                let src_abs = resolve_patch_path(base_dir, path)?;
+                ensure_writable(policy, allowed_roots.as_ref(), &src_abs)?;
                 let meta = fs::metadata(&src_abs)
                     .await
                     .map_err(|e| ToolError::new(format!("读取文件失败: {e}")))?;
@@ -229,7 +292,8 @@ async fn apply_hunks(base_dir: &Path, hunks: &[Hunk]) -> Result<AffectedPaths, T
                 };
 
                 if let Some(dest_rel) = move_path {
-                    let dest_abs = resolve_under_base(base_dir, dest_rel)?;
+                    let dest_abs = resolve_patch_path(base_dir, dest_rel)?;
+                    ensure_writable(policy, allowed_roots.as_ref(), &dest_abs)?;
                     if dest_abs == src_abs {
                         fs::write(&src_abs, new_contents)
                             .await
@@ -275,48 +339,78 @@ async fn apply_hunks(base_dir: &Path, hunks: &[Hunk]) -> Result<AffectedPaths, T
     Ok(affected)
 }
 
-fn resolve_under_base(base_dir: &Path, rel: &Path) -> Result<PathBuf, ToolError> {
-    if rel.as_os_str().is_empty() {
+fn resolve_patch_path(base_dir: &Path, path: &Path) -> Result<PathBuf, ToolError> {
+    if path.as_os_str().is_empty() {
         return Err(ToolError::invalid("文件路径不能为空"));
     }
-    if rel.is_absolute() {
-        return Err(ToolError::invalid("补丁文件路径必须为相对路径（不允许绝对路径）"));
+
+    // Absolute patch paths are allowed, but still need to pass sandbox checks later.
+    if path.is_absolute() {
+        for comp in path.components() {
+            if matches!(comp, Component::ParentDir) {
+                return Err(ToolError::invalid(
+                    "补丁文件路径不允许包含 '..'（禁止路径穿越）",
+                ));
+            }
+        }
+        return Ok(path.to_path_buf());
     }
 
-    let mut out = PathBuf::from(base_dir);
-    let mut depth: usize = 0;
-
-    for comp in rel.components() {
+    // Relative patch paths are resolved under base_dir.
+    for comp in path.components() {
         match comp {
             Component::Prefix(_) | Component::RootDir => {
-                return Err(ToolError::invalid(
-                    "补丁文件路径必须为相对路径（不允许盘符/根路径）",
-                ))
+                return Err(ToolError::invalid("相对路径不允许包含盘符/根路径"))
             }
             Component::CurDir => {}
             Component::ParentDir => {
-                if depth == 0 {
-                    return Err(ToolError::invalid(
-                        "补丁文件路径越界：不允许使用 .. 跳出默认工作目录",
-                    ));
-                }
-                out.pop();
-                depth -= 1;
+                return Err(ToolError::invalid(
+                    "相对路径不允许包含 '..'（禁止路径穿越）",
+                ))
             }
             Component::Normal(part) => {
                 let part = part.to_string_lossy();
                 if part.contains(':') {
                     return Err(ToolError::invalid(
-                        "补丁文件路径不允许包含 ':'（疑似 Windows 盘符）",
+                        "相对路径不允许包含 ':'（疑似 Windows 盘符）",
                     ));
                 }
-                out.push(part.as_ref());
-                depth += 1;
             }
         }
     }
 
-    Ok(out)
+    Ok(base_dir.join(path))
+}
+
+fn ensure_writable(
+    policy: &SandboxPolicy,
+    allowed_roots: Option<&Vec<PathBuf>>,
+    abs_path: &Path,
+) -> Result<(), ToolError> {
+    if policy.has_full_disk_write_access() {
+        return Ok(());
+    }
+
+    match policy {
+        SandboxPolicy::WorkspaceWrite { .. } => {
+            let Some(roots) = allowed_roots else {
+                return Err(ToolError::internal(
+                    "workspace-write 策略缺少 allowed_roots 计算结果",
+                ));
+            };
+            if !is_path_under_any_root(abs_path, roots) {
+                return Err(ToolError::denied(format!(
+                    "路径不在允许写入的根目录内: {}",
+                    abs_path.display()
+                )));
+            }
+            Ok(())
+        }
+        SandboxPolicy::ReadOnly => Err(ToolError::denied(
+            "当前沙盒策略为 read-only：禁止写入文件",
+        )),
+        SandboxPolicy::DangerFullAccess | SandboxPolicy::ExternalSandbox { .. } => Ok(()),
+    }
 }
 
 fn parse_patch(input: &str) -> Result<Vec<Hunk>, ToolError> {
@@ -343,7 +437,7 @@ fn parse_patch(input: &str) -> Result<Vec<Hunk>, ToolError> {
         }
 
         if let Some(rest) = line.strip_prefix("*** Add File:") {
-            let path = parse_rel_path(rest)?;
+            let path = parse_patch_path(rest)?;
             idx += 1;
             let mut contents_lines: Vec<String> = Vec::new();
             while idx < end_idx && !is_hunk_start(lines[idx]) {
@@ -365,20 +459,20 @@ fn parse_patch(input: &str) -> Result<Vec<Hunk>, ToolError> {
         }
 
         if let Some(rest) = line.strip_prefix("*** Delete File:") {
-            let path = parse_rel_path(rest)?;
+            let path = parse_patch_path(rest)?;
             idx += 1;
             hunks.push(Hunk::DeleteFile { path });
             continue;
         }
 
         if let Some(rest) = line.strip_prefix("*** Update File:") {
-            let path = parse_rel_path(rest)?;
+            let path = parse_patch_path(rest)?;
             idx += 1;
 
             let mut move_path: Option<PathBuf> = None;
             if idx < end_idx {
                 if let Some(rest) = lines[idx].strip_prefix("*** Move to:") {
-                    move_path = Some(parse_rel_path(rest)?);
+                    move_path = Some(parse_patch_path(rest)?);
                     idx += 1;
                 }
             }
@@ -503,16 +597,12 @@ fn is_hunk_start(line: &str) -> bool {
         || line.trim_end() == "*** End Patch"
 }
 
-fn parse_rel_path(rest: &str) -> Result<PathBuf, ToolError> {
+fn parse_patch_path(rest: &str) -> Result<PathBuf, ToolError> {
     let raw = rest.trim();
     if raw.is_empty() {
         return Err(ToolError::invalid("文件路径不能为空"));
     }
-    let path = PathBuf::from(raw);
-    if path.is_absolute() {
-        return Err(ToolError::invalid("补丁文件路径必须为相对路径"));
-    }
-    Ok(path)
+    Ok(PathBuf::from(raw))
 }
 
 fn finish_chunk(current: &mut Option<UpdateChunk>, out: &mut Vec<UpdateChunk>) {
@@ -729,7 +819,9 @@ mod tests {
 *** End Patch"#;
 
         let hunks = parse_patch(patch).expect("parse");
-        let affected = apply_hunks(base, &hunks).await.expect("apply");
+        let affected = apply_hunks(base, &SandboxPolicy::DangerFullAccess, &[], &hunks)
+            .await
+            .expect("apply");
         assert_eq!(affected.added.len(), 1);
         assert_eq!(affected.modified.len(), 1);
         assert_eq!(affected.deleted.len(), 1);
@@ -751,7 +843,9 @@ mod tests {
 +B
 *** End Patch"#;
         let hunks = parse_patch(patch).expect("parse");
-        let _ = apply_hunks(base, &hunks).await.expect("apply");
+        let _ = apply_hunks(base, &SandboxPolicy::DangerFullAccess, &[], &hunks)
+            .await
+            .expect("apply");
         let updated = fs::read_to_string(&file_path).await.expect("read");
         assert!(updated.contains("\r\n"));
         assert_eq!(updated, "a\r\nB\r\n");

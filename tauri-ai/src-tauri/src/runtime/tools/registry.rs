@@ -6,6 +6,7 @@ use tokio::sync::Mutex;
 
 use crate::ai_client::ToolCall;
 use crate::runtime::emitter::RunEmitter;
+use crate::models::SandboxPolicy;
 
 use super::handlers::apply_patch::ApplyPatchTool;
 use super::handlers::builtin::{EchoTool, GetTimeTool};
@@ -30,6 +31,10 @@ pub struct ToolExecutionContext<'a> {
     pub assistant_message_id: &'a str,
     /// Default working directory for tools when the model does not provide `workdir`.
     pub default_workdir: Option<std::path::PathBuf>,
+    /// Workspace root folders bound to this run (main folder + additional mounts).
+    pub workspace_roots: Vec<std::path::PathBuf>,
+    /// Effective sandbox policy for this run (agent override > global config).
+    pub sandbox_policy: SandboxPolicy,
     pub emitter: &'a mut RunEmitter,
     pub abort_rx: &'a mut tokio::sync::mpsc::Receiver<()>,
     pub services: &'a ToolServices,

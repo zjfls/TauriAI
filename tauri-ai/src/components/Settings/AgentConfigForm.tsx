@@ -6,7 +6,7 @@
 import React, { useState, useEffect } from 'react';
 import { Plus, Star, Search, Copy } from 'lucide-react';
 import { useConfigStore } from '../../stores/configStore';
-import type { Agent, AgentType, FormatPromptType } from '../../types';
+import type { Agent, AgentType, FormatPromptType, SandboxPolicy } from '../../types';
 
 const defaultAgent: Agent = {
   name: '',
@@ -182,6 +182,7 @@ export const AgentConfigForm: React.FC = () => {
             isDefault={currentAgent.name === defaultAgentName}
             modelOptions={modelOptions}
             toolsetOptions={toolsetOptions}
+            globalSandboxPolicy={config?.security?.sandboxPolicy ?? { type: 'workspace-write' }}
             onEdit={handleEdit}
             onDuplicate={handleDuplicate}
             onSave={handleSave}
@@ -208,6 +209,7 @@ interface AgentFormProps {
   isDefault: boolean;
   modelOptions: { label: string; value: string }[];
   toolsetOptions: { label: string; value: string }[];
+  globalSandboxPolicy: SandboxPolicy;
   onEdit: () => void;
   onDuplicate: () => void;
   onSave: () => void;
@@ -223,6 +225,7 @@ const AgentForm: React.FC<AgentFormProps> = ({
   isDefault,
   modelOptions,
   toolsetOptions,
+  globalSandboxPolicy,
   onEdit,
   onDuplicate,
   onSave,
@@ -252,6 +255,43 @@ const AgentForm: React.FC<AgentFormProps> = ({
     { value: 'json', label: 'JSON' },
     { value: 'none', label: '无格式' },
   ];
+
+  const sandboxSummary = (policy: SandboxPolicy) => {
+    switch (policy.type) {
+      case 'read-only':
+        return '只读';
+      case 'workspace-write':
+        return '工作区可写';
+      case 'external-sandbox':
+        return '外部沙盒';
+      case 'danger-full-access':
+        return '完全访问';
+      default:
+        return '未知';
+    }
+  };
+
+  const effectiveSandboxPolicy: SandboxPolicy = agent.sandboxPolicy ?? globalSandboxPolicy;
+
+  const defaultPolicyForType = (type: SandboxPolicy['type']): SandboxPolicy => {
+    switch (type) {
+      case 'read-only':
+        return { type: 'read-only' };
+      case 'danger-full-access':
+        return { type: 'danger-full-access' };
+      case 'external-sandbox':
+        return { type: 'external-sandbox', networkAccess: 'restricted' };
+      case 'workspace-write':
+      default:
+        return {
+          type: 'workspace-write',
+          writableRoots: [],
+          networkAccess: false,
+          excludeTmpdirEnvVar: false,
+          excludeSlashTmp: false,
+        };
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -388,6 +428,34 @@ const AgentForm: React.FC<AgentFormProps> = ({
             </p>
           </div>
         )}
+
+        <div className="space-y-1">
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">沙盒策略</label>
+          <select
+            value={agent.sandboxPolicy?.type ?? ''}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (!v) {
+                onFieldChange('sandboxPolicy', undefined);
+                return;
+              }
+              const type = v as SandboxPolicy['type'];
+              const nextPolicy =
+                globalSandboxPolicy.type === type ? globalSandboxPolicy : defaultPolicyForType(type);
+              onFieldChange('sandboxPolicy', nextPolicy);
+            }}
+            disabled={!isEditing}
+            className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800"
+          >
+            <option value="">（默认：使用全局策略 - {sandboxSummary(globalSandboxPolicy)}）</option>
+            <option value="read-only">Read Only（只读）</option>
+            <option value="workspace-write">Workspace Write（工作区可写）</option>
+            <option value="danger-full-access">Full Access（完全访问）</option>
+          </select>
+          <p className="text-xs text-gray-500">
+            生效策略：{sandboxSummary(effectiveSandboxPolicy)}。Read Only 会禁用 apply_patch 与 PTY 交互式终端。
+          </p>
+        </div>
 
         <div className="space-y-1">
           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">最大 Turn 数</label>
