@@ -552,9 +552,17 @@ export const SecurityConfigForm: React.FC = () => {
                     <Toggle
                       checked={Boolean(currentPolicy.sandboxPolicy.networkAccess)}
                       disabled={!isEditing}
-                      onChange={(next) =>
-                        onFieldChange('sandboxPolicy', { ...currentPolicy.sandboxPolicy, networkAccess: next })
-                      }
+                      onChange={(next) => {
+                        const sp = currentPolicy.sandboxPolicy;
+                        if (sp.type !== 'workspace-write') return;
+                        onFieldChange('sandboxPolicy', {
+                          type: 'workspace-write',
+                          writableRoots: sp.writableRoots,
+                          networkAccess: next,
+                          excludeTmpdirEnvVar: sp.excludeTmpdirEnvVar,
+                          excludeSlashTmp: sp.excludeSlashTmp,
+                        });
+                      }}
                     />
                   </div>
 
@@ -565,12 +573,17 @@ export const SecurityConfigForm: React.FC = () => {
                     <textarea
                       rows={4}
                       value={(currentPolicy.sandboxPolicy.writableRoots ?? []).join('\n')}
-                      onChange={(e) =>
+                      onChange={(e) => {
+                        const sp = currentPolicy.sandboxPolicy;
+                        if (sp.type !== 'workspace-write') return;
                         onFieldChange('sandboxPolicy', {
-                          ...currentPolicy.sandboxPolicy,
+                          type: 'workspace-write',
                           writableRoots: parseRoots(e.target.value),
-                        })
-                      }
+                          networkAccess: sp.networkAccess,
+                          excludeTmpdirEnvVar: sp.excludeTmpdirEnvVar,
+                          excludeSlashTmp: sp.excludeSlashTmp,
+                        });
+                      }}
                       disabled={!isEditing}
                       className="w-full resize-none rounded-lg border border-gray-300 bg-white px-3 py-2 font-mono text-sm dark:border-gray-600 dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800"
                       placeholder="例如：D:\\work\\extra\n/opt/data"

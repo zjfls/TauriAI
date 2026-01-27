@@ -15,6 +15,11 @@
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   -webkit-text-size-adjust: 100%;
+
+  /* Theme variants (non-intrusive): background + subtle hue shift */
+  --tauriai-app-bg: #ffffff;
+  --tauriai-root-filter: none;
+  --tauriai-root-saturation: 1;
 }
 
 /* Ensure full height for the app */
@@ -24,6 +29,43 @@ html, body, #root {
   margin: 0;
   padding: 0;
   overflow: hidden;
+}
+
+body {
+  background: var(--tauriai-app-bg);
+}
+
+#root {
+  filter: var(--tauriai-root-filter);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Theme variants (popular palettes)                                           */
+/* -------------------------------------------------------------------------- */
+
+html[data-theme="tokyo-night"] {
+  --tauriai-app-bg: radial-gradient(1200px 800px at 20% 10%, #1f2a54 0%, #0b1022 55%, #050712 100%);
+  --tauriai-root-filter: hue-rotate(210deg) saturate(1.15);
+}
+
+html[data-theme="dracula"] {
+  --tauriai-app-bg: radial-gradient(1200px 800px at 30% 15%, #3b2b5a 0%, #1b1630 55%, #0f0b1f 100%);
+  --tauriai-root-filter: hue-rotate(285deg) saturate(1.2);
+}
+
+html[data-theme="nord"] {
+  --tauriai-app-bg: radial-gradient(1200px 800px at 25% 10%, #2e3440 0%, #1f2632 55%, #111620 100%);
+  --tauriai-root-filter: hue-rotate(165deg) saturate(1.05);
+}
+
+html[data-theme="catppuccin"] {
+  --tauriai-app-bg: radial-gradient(1200px 800px at 30% 15%, #3a2f4a 0%, #211a2f 55%, #120d1c 100%);
+  --tauriai-root-filter: hue-rotate(320deg) saturate(1.18);
+}
+
+html[data-theme="solarized"] {
+  --tauriai-app-bg: radial-gradient(1200px 800px at 30% 10%, #fdf6e3 0%, #f5efe0 55%, #efe6d2 100%);
+  --tauriai-root-filter: hue-rotate(25deg) saturate(1.05);
 }
 
 /* Custom scrollbar styles */

@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 
 use tauri::AppHandle;
+use tauri::Manager;
 use tokio::sync::{mpsc, Mutex};
 
 use crate::agents::chat::{
@@ -26,8 +27,14 @@ use crate::models::{
     AgentType, AskForApproval, ContentPart, Message, MessageBlock, MessageMeta, MessageRole,
     MessageStatus, MessageTurn,
 };
-use crate::prompts::{PERSISTENT_PROCESS_PROMPT, PYTHON3_FALLBACK_PROMPT, WORKSTUDIO_PROMPT_GUIDE};
+use crate::prompts::{
+    PERSISTENT_PROCESS_PROMPT, PYTHON3_FALLBACK_PROMPT, WEB_SEARCH_TOOL_PROMPT,
+    WORKSTUDIO_PROMPT_GUIDE,
+};
+use crate::skills::loader::{index_by_name as index_skills_by_name, load_skills as load_skill_files};
+use crate::skills::SkillEntry;
 use crate::runtime::events::RunEvent;
+use crate::runtime::mcp::global_mcp_runtime;
 use crate::runtime::types::{TaskKind, TurnPhase, TurnStatus};
 use crate::storage::Database;
 
@@ -37,6 +44,8 @@ use super::run_state::RunState;
 use super::tools::{
     tool_specs_to_definitions, ToolOrchestrator, ToolOrchestratorConfig, ToolServices,
 };
+use super::tools::registry::{register_builtin_handlers, ToolRegistry};
+use sha1::{Digest, Sha1};
 
 /// 前端一次 invoke 对应的输入（Task Request）
 pub struct RunTaskInput {
@@ -146,6 +155,24 @@ struct TurnLoop<'a> {
     reinject_thinking: bool,
     debug_mode: bool,
     emitter: &'a mut RunEmitter,
+}
+
+const MCP_TOOL_NAME_DELIMITER: &str = "__";
+const MAX_TOOL_NAME_LENGTH: usize = 64;
+
+fn qualify_mcp_tool_name(server_name: &str, tool_name: &str) -> String {
+    let mut qualified = format!("mcp{MCP_TOOL_NAME_DELIMITER}{server_name}{MCP_TOOL_NAME_DELIMITER}{tool_name}");
+    if qualified.len() <= MAX_TOOL_NAME_LENGTH {
+        return qualified;
+    }
+
+    let mut hasher = Sha1::new();
+    hasher.update(qualified.as_bytes());
+    let sha1 = hasher.finalize();
+    let sha1_str = format!("{sha1:x}");
+    let prefix_len = MAX_TOOL_NAME_LENGTH.saturating_sub(sha1_str.len());
+    qualified.truncate(prefix_len);
+    format!("{qualified}{sha1_str}")
 }
 
 fn build_assistant_context_content(content: String, thinking: &str, reinject_thinking: bool) -> String {
@@ -354,6 +381,124 @@ fn inject_workstudio_prompt(
             error_message: None,
         },
     );
+}
+
+fn inject_web_search_tool_prompt(messages: &mut Vec<Message>, conversation_id: &str) {
+    let content = WEB_SEARCH_TOOL_PROMPT.trim().to_string();
+    if content.is_empty() {
+        return;
+    }
+    let insert_at = messages
+        .iter()
+        .take_while(|m| m.role == MessageRole::System)
+        .count();
+    messages.insert(
+        insert_at,
+        Message {
+            id: uuid::Uuid::new_v4().to_string(),
+            conversation_id: conversation_id.to_string(),
+            role: MessageRole::System,
+            content,
+            content_parts: Vec::new(),
+            thinking: None,
+            meta: None,
+            created_at: chrono::Utc::now(),
+            status: MessageStatus::Success,
+            error_message: None,
+        },
+    );
+}
+
+fn build_skill_prompt_block(skills: &[SkillEntry]) -> String {
+    let mut out = String::new();
+    out.push_str("## Skills\n\n");
+    out.push_str("以下为已启用的技能指令（skills），请在本次任务中遵循。\n\n");
+    for s in skills {
+        out.push_str("<skill>\n");
+        out.push_str("<name>");
+        out.push_str(&s.meta.name);
+        out.push_str("</name>\n");
+        out.push_str("<path>");
+        out.push_str(&s.meta.path);
+        out.push_str("</path>\n");
+        out.push_str(&s.contents);
+        if !s.contents.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str("\n</skill>\n\n");
+    }
+    out
+}
+
+fn inject_skills_prompt(messages: &mut Vec<Message>, conversation_id: &str, skills: Vec<SkillEntry>) {
+    if skills.is_empty() {
+        return;
+    }
+    let content = build_skill_prompt_block(&skills);
+    let insert_at = messages
+        .iter()
+        .take_while(|m| m.role == MessageRole::System)
+        .count();
+    messages.insert(
+        insert_at,
+        Message {
+            id: uuid::Uuid::new_v4().to_string(),
+            conversation_id: conversation_id.to_string(),
+            role: MessageRole::System,
+            content,
+            content_parts: Vec::new(),
+            thinking: None,
+            meta: None,
+            created_at: chrono::Utc::now(),
+            status: MessageStatus::Success,
+            error_message: None,
+        },
+    );
+}
+
+fn select_enabled_skills(
+    config: &crate::models::AppConfig,
+    agent: &crate::models::Agent,
+    app_skills_dir: Option<&std::path::Path>,
+    repo_skills_dir: Option<&std::path::Path>,
+    workstudio_skills_dir: Option<&std::path::Path>,
+) -> Vec<SkillEntry> {
+    let Some(set_name) = agent
+        .skill_set
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    else {
+        return Vec::new();
+    };
+    let Some(set) = config.skills.sets.iter().find(|s| s.name == set_name) else {
+        return Vec::new();
+    };
+    if !set.enabled {
+        return Vec::new();
+    }
+
+    let disabled_global: HashSet<&str> =
+        config.skills.disabled_skills.iter().map(|s| s.as_str()).collect();
+    let disabled_set: HashSet<&str> =
+        set.disabled_skills.iter().map(|s| s.as_str()).collect();
+
+    let allow: Vec<&str> = set
+        .skills
+        .iter()
+        .map(|s| s.as_str())
+        .filter(|name| !disabled_global.contains(name) && !disabled_set.contains(name))
+        .collect();
+    if allow.is_empty() {
+        return Vec::new();
+    }
+
+    let outcome = load_skill_files(app_skills_dir, repo_skills_dir, workstudio_skills_dir, true);
+    let map = index_skills_by_name(&outcome);
+    allow
+        .into_iter()
+        .filter_map(|name| map.get(name).cloned())
+        .collect()
 }
 
 impl<'a> TurnLoop<'a> {
@@ -1900,7 +2045,7 @@ async fn run_task_inner(
     // 一个 Task 最终只落一条 assistant 消息（tool/websearch 等作为 blocks 扩展）
     let assistant_message_id = uuid::Uuid::new_v4().to_string();
 
-    let mut emitter = RunEmitter::new(app, input.conversation_id.clone(), run_id.clone());
+    let mut emitter = RunEmitter::new(app.clone(), input.conversation_id.clone(), run_id.clone());
 
     let resolved = resolve_chat_model(
         &config,
@@ -2047,61 +2192,162 @@ async fn run_task_inner(
     // - 真实执行时仍会再次做权限检查（防止前端/模型绕过）
     let tool_services = run_state.get_tool_services(&input.conversation_id).await;
     let approval_store = run_state.get_approval_store(&input.conversation_id).await;
+
+    let tools_enabled = config.tools.enabled;
     let mut allow_persistent_pty = false;
-    let (tool_orchestrator, tools, allowed_tool_names) = match runtime_agent_type {
-        AgentType::Tool => {
-            // ToolSet：Agent 可以绑定不同工具集合；未配置则默认 allow_all（由权限再做过滤）。
-            let toolset = match agent.toolset.as_deref().filter(|s| !s.trim().is_empty()) {
-                Some(name) => match config.tools.toolsets.iter().find(|t| t.name == name) {
-                    Some(ts) => super::tools::spec::ToolSet::allow_list(name, ts.tools.clone())
-                        .with_persistance_shell_enhance(ts.persistance_shell_enhance),
-                    // 安全优先：引用了不存在的 toolset 时，默认 deny_all，避免“悄悄变成 allow_all”
-                    None => super::tools::spec::ToolSet::deny_all(name),
+    let mut enable_local_web_search_tool = false;
+
+    let (tool_orchestrator, tools, allowed_tool_names) = if !tools_enabled {
+        (None, None, None)
+    } else {
+        // ToolSet：Agent 可以绑定不同工具集合；未配置则默认 allow_all（由权限再做过滤）。
+        let mut toolset = match agent.toolset.as_deref().filter(|s| !s.trim().is_empty()) {
+            Some(name) => match config.tools.toolsets.iter().find(|t| t.name == name) {
+                Some(ts) => super::tools::spec::ToolSet::allow_list(name, ts.tools.clone())
+                    .with_persistance_shell_enhance(ts.persistance_shell_enhance),
+                // 安全优先：引用了不存在的 toolset 时，默认 deny_all，避免“悄悄变成 allow_all”
+                None => super::tools::spec::ToolSet::deny_all(name),
+            },
+            None => super::tools::spec::ToolSet::allow_all(),
+        };
+
+        // 权限策略：由 AppConfig 驱动（默认：只允许无权限工具；shell/pty/file_write/mcp 默认关闭）。
+        let permission_policy: Arc<dyn super::tools::permissions::ToolPermissionPolicy> =
+            Arc::new(super::tools::permissions::BasicToolPermissionPolicy {
+                allow_shell_exec: config.tools.permissions.shell_exec,
+                allow_pty_exec: config.tools.permissions.pty_exec,
+                allow_file_write: config.tools.permissions.file_write,
+                allow_mcp_exec: config.tools.permissions.mcp_exec,
+            });
+
+        allow_persistent_pty = toolset.persistance_shell_enhance;
+
+        // Registry：每个 run 构建一次（便于按 agent/mcp set 动态注入工具）。
+        let mut registry = ToolRegistry::new();
+        register_builtin_handlers(&mut registry);
+
+        // MCP tools：按 agent 绑定的 MCP Set 进行注入（工具名：mcp__{server}__{tool}）。
+        let mut mcp_tool_names: Vec<String> = Vec::new();
+        if config.tools.permissions.mcp_exec {
+            if let Some(set_name) = agent.mcp_set.as_deref().filter(|s| !s.trim().is_empty()) {
+                let server_map: HashMap<String, crate::models::McpServerConfig> = config
+                    .mcp
+                    .servers
+                    .iter()
+                    .map(|e| (e.name.clone(), e.config.clone()))
+                    .collect();
+
+                if let Some(mcp_set) = config.mcp.sets.iter().find(|s| s.name == set_name) {
+                    for set_server in &mcp_set.servers {
+                        if !set_server.enabled {
+                            continue;
+                        }
+                        let Some(server_cfg) = server_map.get(&set_server.server) else {
+                            continue;
+                        };
+                        if !server_cfg.enabled {
+                            continue;
+                        }
+
+                        let tools = match global_mcp_runtime()
+                            .list_tools(&set_server.server, server_cfg)
+                            .await
+                        {
+                            Ok(t) => t,
+                            Err(err) => {
+                                eprintln!(
+                                    "[MCP] 列工具失败: server={} err={}",
+                                    set_server.server, err
+                                );
+                                continue;
+                            }
+                        };
+
+                        let mut tools = tools;
+                        // Apply MCP Set per-server tool filters on top of server config filters.
+                        if !set_server.enabled_tools.is_empty() {
+                            let allow: std::collections::HashSet<&str> =
+                                set_server.enabled_tools.iter().map(|s| s.as_str()).collect();
+                            tools.retain(|t| allow.contains(t.name.as_ref()));
+                        }
+                        if !set_server.disabled_tools.is_empty() {
+                            let deny: std::collections::HashSet<&str> =
+                                set_server.disabled_tools.iter().map(|s| s.as_str()).collect();
+                            tools.retain(|t| !deny.contains(t.name.as_ref()));
+                        }
+
+                        for tool in tools {
+                            let tool_name = tool.name.as_ref().to_string();
+                            let qualified = qualify_mcp_tool_name(&set_server.server, &tool_name);
+                            mcp_tool_names.push(qualified.clone());
+                            registry.register(Arc::new(
+                                crate::runtime::tools::handlers::mcp::McpToolHandler {
+                                    qualified_name: qualified,
+                                    server_name: set_server.server.clone(),
+                                    tool_name,
+                                    tool,
+                                    server_config: server_cfg.clone(),
+                                },
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Local web search tool:
+        // - User explicitly enabled web_search for this run
+        // - And local tool is enabled + has API key configured
+        let want_web_search = input.web_search_enabled.unwrap_or(false);
+        let ws_cfg = &config.general.web_search_tool;
+        let has_key = match ws_cfg.provider {
+            crate::models::WebSearchProvider::Tavily => ws_cfg
+                .tavily_api_key
+                .as_ref()
+                .is_some_and(|k| !k.trim().is_empty()),
+            crate::models::WebSearchProvider::Brave => ws_cfg
+                .brave_api_key
+                .as_ref()
+                .is_some_and(|k| !k.trim().is_empty()),
+            crate::models::WebSearchProvider::Google => {
+                ws_cfg.google_api_key.as_ref().is_some_and(|k| !k.trim().is_empty())
+                    && ws_cfg.google_cx.as_ref().is_some_and(|k| !k.trim().is_empty())
+            }
+        };
+
+        enable_local_web_search_tool = want_web_search && ws_cfg.enabled && has_key;
+
+        if enable_local_web_search_tool {
+            registry.register(Arc::new(
+                crate::runtime::tools::handlers::web_search::WebSearchTool {
+                    settings: ws_cfg.clone(),
                 },
-                None => super::tools::spec::ToolSet::allow_all(),
-            };
-
-            // 权限策略：由 AppConfig 驱动（默认：只允许无权限工具；shell/pty 默认关闭）。
-            let permission_policy: Arc<dyn super::tools::permissions::ToolPermissionPolicy> =
-                Arc::new(super::tools::permissions::BasicToolPermissionPolicy {
-                    allow_shell_exec: true,
-                    allow_pty_exec: true,
-                    allow_file_write: true,
-                });
-
-            allow_persistent_pty = toolset.persistance_shell_enhance;
-
-            let orchestrator = ToolOrchestrator::new_builtin(ToolOrchestratorConfig {
-                toolset,
-                permission_policy,
-            });
-            let specs = orchestrator.tool_specs_for_model();
-            let allowed_tool_names: HashSet<String> =
-                specs.iter().map(|s| s.name.clone()).collect();
-            (
-                Some(orchestrator),
-                Some(tool_specs_to_definitions(&specs)),
-                Some(allowed_tool_names),
-            )
+            ));
+            if matches!(toolset.mode, super::tools::spec::ToolSetMode::AllowList) {
+                toolset.tools.push("web_search".to_string());
+            }
         }
-        AgentType::Chat => {
-            // Chat 也允许使用只读工具（read_file/list_dir/rg 等），用于“读代码/查文件”。
-            let permission_policy: Arc<dyn super::tools::permissions::ToolPermissionPolicy> =
-                Arc::new(super::tools::permissions::DenyByDefaultPolicy::default());
 
-            let orchestrator = ToolOrchestrator::new_builtin(ToolOrchestratorConfig {
-                toolset: super::tools::spec::ToolSet::allow_all(),
-                permission_policy,
-            });
-            let specs = orchestrator.tool_specs_for_model();
-            let allowed_tool_names: HashSet<String> =
-                specs.iter().map(|s| s.name.clone()).collect();
-            (
-                Some(orchestrator),
-                Some(tool_specs_to_definitions(&specs)),
-                Some(allowed_tool_names),
-            )
+        // 如果 agent 使用 allow_list toolset，需要把 MCP 工具名也显式加入 allow_list，
+        // 否则 orchestrator 会把它们过滤掉（即使 registry 已注册）。
+        if matches!(toolset.mode, super::tools::spec::ToolSetMode::AllowList)
+            && !mcp_tool_names.is_empty()
+        {
+            toolset.tools.extend(mcp_tool_names);
         }
+
+        let orchestrator = ToolOrchestrator::new(Arc::new(registry), ToolOrchestratorConfig {
+            toolset,
+            permission_policy,
+        });
+
+        let specs = orchestrator.tool_specs_for_model();
+        let allowed_tool_names: HashSet<String> = specs.iter().map(|s| s.name.clone()).collect();
+        (
+            Some(orchestrator),
+            Some(tool_specs_to_definitions(&specs)),
+            Some(allowed_tool_names),
+        )
     };
 
     // 4) TurnLoop：Chat 默认单 Turn，但只要启用了工具调用，就至少需要 2 Turn 才能完成
@@ -2126,8 +2372,51 @@ async fn run_task_inner(
     if let Some(ws) = workstudio.as_ref() {
         inject_workstudio_prompt(&mut runtime_messages, &input.conversation_id, ws);
     }
+
+    // Skills: load + inject (only when agent binds a skill set).
+    let app_skills_dir = config_manager
+        .config_path()
+        .parent()
+        .map(|p| p.join("skills"));
+    let repo_skills_dir = app
+        .path()
+        .resource_dir()
+        .ok()
+        .map(|p| p.join("skills"))
+        .filter(|p| p.is_dir())
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .map(|cwd| cwd.join("tauri-ai").join("skills"))
+                .filter(|p| p.is_dir())
+        })
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .map(|cwd| cwd.join("skills"))
+                .filter(|p| p.is_dir())
+        });
+    let workstudio_skills_dir = workstudio
+        .as_ref()
+        .map(|ws| std::path::PathBuf::from(&ws.main_folder).join("skills"))
+        .filter(|p| p.is_dir());
+
+    let enabled_skills = select_enabled_skills(
+        &config,
+        agent,
+        app_skills_dir.as_deref(),
+        repo_skills_dir.as_deref(),
+        workstudio_skills_dir.as_deref(),
+    );
+    if !enabled_skills.is_empty() {
+        inject_skills_prompt(&mut runtime_messages, &input.conversation_id, enabled_skills);
+    }
+
     if allow_persistent_pty {
         inject_persistent_process_prompt(&mut runtime_messages, &input.conversation_id);
+    }
+    if enable_local_web_search_tool {
+        inject_web_search_tool_prompt(&mut runtime_messages, &input.conversation_id);
     }
 
     let mut turn_loop = TurnLoop {

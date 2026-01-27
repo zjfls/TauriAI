@@ -10,12 +10,14 @@ import type { Agent, AgentType, AskForApproval, FormatPromptType, SandboxPolicy,
 
 const defaultAgent: Agent = {
   name: '',
+  enabled: true,
   type: 'chat',
   displayName: '',
   description: '',
   modelRef: '',
   systemPrompt: '',
   formatType: 'chat',
+  skillSet: undefined,
   reinjectThinking: false,
   workspaceSupport: undefined,
 };
@@ -31,6 +33,8 @@ export const AgentConfigForm: React.FC = () => {
   const defaultAgentName = config?.defaultAgent || '';
   const modelOptions = getModelOptions();
   const toolsetOptions = (config?.tools?.toolsets ?? []).map((t) => ({ label: t.name, value: t.name }));
+  const mcpSetOptions = (config?.mcp?.sets ?? []).map((s) => ({ label: s.name, value: s.name }));
+  const skillSetOptions = (config?.skills?.sets ?? []).map((s) => ({ label: s.name, value: s.name }));
 
   const filteredAgents = agents.filter(a =>
     a.displayName.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -151,10 +155,30 @@ export const AgentConfigForm: React.FC = () => {
                   : 'hover:bg-gray-100 dark:hover:bg-gray-700'
                 }`}
             >
-              <span className="text-sm truncate">{agent.displayName}</span>
-              {agent.name === defaultAgentName && (
-                <Star size={14} className="text-yellow-500 fill-yellow-500" />
-              )}
+              <span className={`text-sm truncate ${agent.enabled === false ? 'opacity-50' : ''}`}>
+                {agent.displayName}
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    updateAgent({ ...agent, enabled: !(agent.enabled ?? true) });
+                  }}
+                  className={`relative w-10 h-5 rounded-full transition-colors ${(agent.enabled ?? true)
+                      ? 'bg-blue-600'
+                      : 'bg-gray-300 dark:bg-gray-600'
+                    }`}
+                  title={(agent.enabled ?? true) ? '已激活，点击关闭' : '已关闭，点击激活'}
+                >
+                  <span
+                    className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${(agent.enabled ?? true) ? 'translate-x-5' : ''}`}
+                  />
+                </button>
+                {agent.name === defaultAgentName && (
+                  <Star size={14} className="text-yellow-500 fill-yellow-500" />
+                )}
+              </div>
             </div>
           ))}
           {isCreating && (
@@ -182,6 +206,8 @@ export const AgentConfigForm: React.FC = () => {
             isDefault={currentAgent.name === defaultAgentName}
             modelOptions={modelOptions}
             toolsetOptions={toolsetOptions}
+            mcpSetOptions={mcpSetOptions}
+            skillSetOptions={skillSetOptions}
             securityPolicies={config?.security?.policies ?? []}
             defaultSecurityPolicyName={config?.security?.defaultPolicy ?? ''}
             onEdit={handleEdit}
@@ -210,6 +236,8 @@ interface AgentFormProps {
   isDefault: boolean;
   modelOptions: { label: string; value: string }[];
   toolsetOptions: { label: string; value: string }[];
+  mcpSetOptions: { label: string; value: string }[];
+  skillSetOptions: { label: string; value: string }[];
   securityPolicies: SecurityPolicyConfig[];
   defaultSecurityPolicyName: string;
   onEdit: () => void;
@@ -227,6 +255,8 @@ const AgentForm: React.FC<AgentFormProps> = ({
   isDefault,
   modelOptions,
   toolsetOptions,
+  mcpSetOptions,
+  skillSetOptions,
   securityPolicies,
   defaultSecurityPolicyName,
   onEdit,
@@ -250,6 +280,18 @@ const AgentForm: React.FC<AgentFormProps> = ({
     if (!agent.toolset) return toolsetOptions;
     if (toolsetOptions.some((o) => o.value === agent.toolset)) return toolsetOptions;
     return [{ value: agent.toolset, label: `（不存在）${agent.toolset}` }, ...toolsetOptions];
+  })();
+
+  const effectiveMcpSetOptions = (() => {
+    if (!agent.mcpSet) return mcpSetOptions;
+    if (mcpSetOptions.some((o) => o.value === agent.mcpSet)) return mcpSetOptions;
+    return [{ value: agent.mcpSet, label: `（不存在）${agent.mcpSet}` }, ...mcpSetOptions];
+  })();
+
+  const effectiveSkillSetOptions = (() => {
+    if (!agent.skillSet) return skillSetOptions;
+    if (skillSetOptions.some((o) => o.value === agent.skillSet)) return skillSetOptions;
+    return [{ value: agent.skillSet, label: `（不存在）${agent.skillSet}` }, ...skillSetOptions];
   })();
 
   const formatOptions: { value: FormatPromptType; label: string }[] = [
@@ -431,8 +473,49 @@ const AgentForm: React.FC<AgentFormProps> = ({
                 </option>
               ))}
             </select>
+              <p className="text-xs text-gray-500">
+                {supportsToolset ? '未绑定时默认 allow_all（再由工具权限过滤）。' : '仅 Tool 类型可绑定 toolset。'}
+              </p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-1">
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">MCP Set</label>
+            <select
+              value={agent.mcpSet ?? ''}
+              onChange={(e) => onFieldChange('mcpSet', e.target.value || undefined)}
+              disabled={!isEditing}
+              className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800"
+            >
+              <option value="">（默认：不绑定 MCP set）</option>
+              {effectiveMcpSetOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
             <p className="text-xs text-gray-500">
-              {supportsToolset ? '未绑定时默认 allow_all（再由工具权限过滤）。' : '仅 Tool 类型可绑定 toolset。'}
+              绑定后：运行时会按 set 注入 MCP 工具（仍受工具权限与 server 配置控制）。
+            </p>
+          </div>
+          <div className="space-y-1">
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Skill Set</label>
+            <select
+              value={agent.skillSet ?? ''}
+              onChange={(e) => onFieldChange('skillSet', e.target.value || undefined)}
+              disabled={!isEditing}
+              className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800"
+            >
+              <option value="">（默认：不绑定 skill set）</option>
+              {effectiveSkillSetOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-gray-500">
+              绑定后：运行时会把启用的 skills 作为系统指令注入提示词。
             </p>
           </div>
         </div>

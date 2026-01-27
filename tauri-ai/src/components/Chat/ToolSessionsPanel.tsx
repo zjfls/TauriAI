@@ -97,7 +97,7 @@ export const ToolSessionsPanel: React.FC<ToolSessionsPanelProps> = ({
         className="absolute inset-0 bg-black/40 backdrop-blur-[1px]"
         onClick={onClose}
       />
-      <div className="absolute right-6 top-16 w-[420px] max-w-[90vw] rounded-2xl border border-gray-200 bg-white shadow-xl dark:border-gray-700 dark:bg-gray-900">
+      <div className="absolute left-6 top-16 w-[420px] max-w-[90vw] rounded-2xl border border-gray-200 bg-white shadow-xl dark:border-gray-700 dark:bg-gray-900">
         <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3 dark:border-gray-700">
           <div className="flex items-center gap-2 text-sm font-semibold text-gray-800 dark:text-gray-100">
             <PlugZap size={16} />

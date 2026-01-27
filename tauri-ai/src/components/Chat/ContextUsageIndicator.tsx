@@ -6,7 +6,7 @@
  */
 
 import React, { useState } from 'react';
-import { X, FileText, MessageSquare, Wrench, Plug, BookOpen } from 'lucide-react';
+import { X, FileText, MessageSquare, Wrench, Plug, BookOpen, Sparkles } from 'lucide-react';
 import type { ContextUsageBreakdown } from '../../types';
 
 interface ContextUsageIndicatorProps {
@@ -131,6 +131,7 @@ const DetailModal: React.FC<DetailModalProps> = ({ usage, isOpen, onClose }) => 
   const items = [
     { icon: <FileText size={14} />, label: '系统提示词', tokens: usage.systemPrompt },
     { icon: <BookOpen size={14} />, label: '格式提示词', tokens: usage.formatPrompt || 0 },
+    { icon: <Sparkles size={14} />, label: 'Skills', tokens: usage.skills || 0 },
     { icon: <MessageSquare size={14} />, label: '对话消息', tokens: usage.messages },
     { icon: <Wrench size={14} />, label: '工具定义', tokens: usage.tools || 0 },
     { icon: <Plug size={14} />, label: 'MCP 上下文', tokens: usage.mcp || 0 },

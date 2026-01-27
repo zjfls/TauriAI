@@ -7,6 +7,7 @@ pub mod errors;
 pub mod models;
 pub mod prompts;
 pub mod runtime;
+pub mod skills;
 pub mod storage;
 pub mod tray;
 pub mod bundled_tools;
@@ -18,10 +19,13 @@ use commands::{
     abort_run, create_conversation, delete_conversation, delete_messages_from,
     fetch_provider_models, generate_title, get_app_config, get_conversations, get_messages,
     list_local_directory, read_local_file_base64, respond_approval, run_task, save_app_config, test_connection,
+    delete_mcp_server, delete_mcp_set, list_mcp_server_tools, list_mcp_servers, list_mcp_sets,
+    set_agent_mcp_set, test_mcp_server, upsert_mcp_server, upsert_mcp_set,
+    list_skills, create_skill,
     update_conversation_metadata, write_local_text_file,
     update_conversation_title, list_pty_sessions, close_pty_session,
     ensure_workstudio_for_conversation, get_workstudio, add_workstudio_folder, create_workstudio,
-    set_workstudio_main_folder, remove_workstudio_folder,
+    set_workstudio_main_folder, remove_workstudio_folder, workstudio_find_files,
     get_workstudio_ui_state, set_workstudio_ui_state,
     workstudio_terminal_close, workstudio_terminal_create, workstudio_terminal_read,
     workstudio_terminal_read_base64,
@@ -33,6 +37,8 @@ use storage::Database;
 use tauri::{Emitter, Manager, Url};
 use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu};
 use tauri::WebviewUrl;
+use skills::watcher::{SkillsWatcher, SkillsWatcherState};
+use skills::installer::install_bundled_skills;
 
 /// Get the default database path (~/.tauri-ai/data.db)
 fn get_database_path() -> std::path::PathBuf {
@@ -164,7 +170,7 @@ pub fn run() {
                             webview_url,
                         )
                         .title("Window Test")
-                        .inner_size(900.0, 700.0)
+                        .inner_size(1170.0, 910.0)
                         .build();
                     });
                 }
@@ -190,6 +196,7 @@ pub fn run() {
             create_workstudio,
             set_workstudio_main_folder,
             remove_workstudio_folder,
+            workstudio_find_files,
             // Workstudio terminal (UI)
             workstudio_terminal_create,
             workstudio_terminal_write,
@@ -213,12 +220,38 @@ pub fn run() {
             save_app_config,
             test_connection,
             fetch_provider_models,
+            // MCP commands
+            list_mcp_servers,
+            list_mcp_sets,
+            list_mcp_server_tools,
+            test_mcp_server,
+            upsert_mcp_server,
+            delete_mcp_server,
+            upsert_mcp_set,
+            delete_mcp_set,
+            set_agent_mcp_set,
+            // Skills commands
+            list_skills,
+            create_skill,
             // File commands (drag & drop paths -> data)
             read_local_file_base64,
             list_local_directory,
             write_local_text_file,
         ])
         .setup(|app| {
+            // Skills watcher for realtime refresh
+            app.manage(SkillsWatcherState(SkillsWatcher::new(app.handle().clone())));
+
+            // Install bundled (repo/system) skills into app skills dir (~/.tauri-ai/skills)
+            if let Ok(resource_dir) = app.path().resource_dir() {
+                let src_skills = resource_dir.join("skills");
+                if let Some(cfg) = app.try_state::<Arc<ConfigManager>>() {
+                    if let Some(dest_root) = cfg.config_path().parent().map(|p| p.join("skills")) {
+                        let _ = install_bundled_skills(&src_skills, &dest_root);
+                    }
+                }
+            }
+
             // 将内置工具目录加入 PATH（例如 rg）
             bundled_tools::init(app.handle());
 

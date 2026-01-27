@@ -7,6 +7,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/shallow';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { useSessionStore } from '../../stores/sessionStore';
 import { useConfigStore } from '../../stores/configStore';
 import { MessageList } from './MessageList';
@@ -16,7 +17,7 @@ import { countTokens } from '../../utils/tokenizer';
 import { getApiProtocol } from '../../utils/apiUtils';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
-import type { TokenUsage, ContextUsageBreakdown, ContentPart, ThinkingMode, PtySessionInfo, Workstudio, Agent } from '../../types';
+import type { TokenUsage, ContextUsageBreakdown, ContentPart, ThinkingMode, PtySessionInfo, Workstudio, Agent, SkillLoadOutcome } from '../../types';
 import { useToolSessionStore } from '../../stores/toolSessionStore';
 import { openOrFocusViewWindow } from '../../utils/viewWindow';
 import { ChevronDown } from 'lucide-react';
@@ -121,10 +122,47 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
     return currentModel?.capabilities?.vision ?? false;
   }, [currentModel]);
 
-  // Check if current model supports web search
-  const supportsWebSearch = useMemo(() => {
-    return currentModel?.capabilities?.webSearch ?? false;
-  }, [currentModel]);
+  // Web search mode:
+  // - native: model/provider built-in web_search
+  // - tool: hidden local web_search tool (Tavily/Google/Brave)
+  const webSearchMode = useMemo(() => {
+    const native = currentModel?.capabilities?.webSearch ?? false;
+    if (native) return 'native' as const;
+
+    const ws = config?.general?.webSearchTool;
+    if (!ws?.enabled) return 'none' as const;
+
+    const hasKey =
+      ws.provider === 'tavily'
+        ? Boolean(ws.tavilyApiKey?.trim())
+        : ws.provider === 'brave'
+          ? Boolean(ws.braveApiKey?.trim())
+          : Boolean(ws.googleApiKey?.trim()) && Boolean(ws.googleCx?.trim());
+
+    return hasKey ? ('tool' as const) : ('none' as const);
+  }, [currentModel, config]);
+
+  const supportsWebSearch = useMemo(() => webSearchMode !== 'none', [webSearchMode]);
+
+  const webSearchToggleMode = useMemo(() => {
+    if (webSearchMode === 'native') return 'native' as const;
+    if (webSearchMode === 'tool') return 'tool' as const;
+    return undefined;
+  }, [webSearchMode]);
+
+  const webSearchDetails = useMemo(() => {
+    if (webSearchMode === 'native') return '使用模型内置 web_search 能力';
+    if (webSearchMode !== 'tool') {
+      const ws = config?.general?.webSearchTool;
+      if (!ws?.enabled) return '未启用本地搜索工具（设置→通用）';
+      return '本地搜索工具缺少 API Key（设置→通用）';
+    }
+    const ws = config?.general?.webSearchTool;
+    const providerLabel =
+      ws?.provider === 'tavily' ? 'Tavily' : ws?.provider === 'brave' ? 'Brave Search' : 'Google CSE';
+    const interval = ws?.minIntervalMs ?? 1200;
+    return `提供方：${providerLabel}｜最小间隔：${interval}ms`;
+  }, [webSearchMode, config]);
 
   const persistanceShellEnhance = useMemo(() => {
     if (!session) return false;
@@ -372,6 +410,52 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
 - 上下标：H<sub>2</sub>O、x<sup>2</sup>
 `;
 
+  // Skills catalog (for context usage estimation & tooltip)
+  const [skillOutcome, setSkillOutcome] = useState<SkillLoadOutcome | null>(null);
+
+  useEffect(() => {
+    const agent = session ? getAgent(session.agentName) : null;
+    const hasSkillSet = Boolean(agent?.skillSet);
+    if (!hasSkillSet) {
+      setSkillOutcome(null);
+      return;
+    }
+
+    let cancelled = false;
+    let unlisten: null | (() => void) = null;
+
+    const load = async () => {
+      try {
+        const res = await invoke<[any, SkillLoadOutcome]>('list_skills', {
+          args: {
+            workstudioMainFolder: workstudio?.mainFolder || undefined,
+            includeContents: true,
+          },
+        });
+        if (cancelled) return;
+        setSkillOutcome(res[1]);
+      } catch (e) {
+        if (cancelled) return;
+        setSkillOutcome({ skills: [], errors: [String(e)] });
+      }
+    };
+
+    void load();
+
+    void listen('skills:changed', () => {
+      void load();
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [session, getAgent, workstudio?.mainFolder]);
+
   // Calculate context usage breakdown
   const contextUsage = useMemo((): ContextUsageBreakdown | null => {
     const contextLength = currentModel?.contextLength;
@@ -396,8 +480,32 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
     }
     // 'none' type has no format prompt
 
-    // Base context usage (system prompt + format prompt, always present)
-    const baseTokens = systemPromptTokens + formatPromptTokens;
+    // Skills tokens (only when agent binds a skill set)
+    let skillTokens = 0;
+    const skillSetName = agent?.skillSet;
+    if (skillSetName && config?.skills?.sets?.length && skillOutcome?.skills?.length) {
+      const set = config.skills.sets.find((s) => s.name === skillSetName);
+      if (set && (set.enabled ?? true)) {
+        const disabledGlobal = new Set(config.skills.disabledSkills ?? []);
+        const disabledSet = new Set(set.disabledSkills ?? []);
+        const enabledNames = (set.skills ?? []).filter((n) => !disabledGlobal.has(n) && !disabledSet.has(n));
+        const map = new Map(skillOutcome.skills.map((s) => [s.meta.name, s.contents]));
+        skillTokens = enabledNames.reduce((sum, n) => sum + countTokens(map.get(n) || ''), 0);
+      }
+    }
+
+    // MCP tokens (rough estimate based on selected MCP set config)
+    let mcpTokens = 0;
+    const mcpSetName = agent?.mcpSet;
+    if (mcpSetName && config?.mcp?.sets?.length) {
+      const set = config.mcp.sets.find((s) => s.name === mcpSetName);
+      if (set) {
+        mcpTokens = countTokens(JSON.stringify(set));
+      }
+    }
+
+    // Base context usage (system prompt + format prompt + skills + mcp)
+    const baseTokens = systemPromptTokens + formatPromptTokens + skillTokens + mcpTokens;
 
     // Calculate message tokens
     let messageTokens = 0;
@@ -421,14 +529,15 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
     return {
       systemPrompt: systemPromptTokens,
       formatPrompt: formatPromptTokens,
+      skills: skillTokens,
       messages: messageTokens,
       tools: 0,  // Future: tool definitions
-      mcp: 0,    // Future: MCP context
+      mcp: mcpTokens,
       total: totalContextTokens,
       limit: contextLength,
       percentage: Math.min(percentage, 100),
     };
-  }, [currentModel, messages, session, getAgent]);
+  }, [currentModel, messages, session, getAgent, config, skillOutcome, workstudio?.mainFolder]);
 
   // 消息加载由 setCurrentConversation 负责，这里不再调用 loadMessages
   // 这样创建新对话时不会触发 loadMessages，避免竞态条件
@@ -656,11 +765,13 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
           setSessionModel(sessionId, modelRef).catch(console.error);
         }}
         supportsWebSearch={supportsWebSearch}
-        webSearchEnabled={session?.webSearchEnabled ?? supportsWebSearch}
+        webSearchEnabled={session?.webSearchEnabled ?? (webSearchMode === 'native')}
         onWebSearchToggle={(enabled) => {
           if (!sessionId) return;
           useSessionStore.getState().setSessionWebSearchEnabled(sessionId, enabled);
         }}
+        webSearchToggleMode={webSearchToggleMode}
+        webSearchDetails={webSearchDetails}
       />
       {persistanceShellEnhance && conversationId && (
         <ToolSessionsPanel

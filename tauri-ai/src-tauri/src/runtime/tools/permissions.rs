@@ -13,6 +13,8 @@ pub enum ToolPermission {
     PtyExec,
     /// 允许写入工作区文件（例如 apply_patch）。
     FileWrite,
+    /// 允许调用 MCP（外部工具服务器）。
+    McpExec,
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +77,7 @@ pub struct BasicToolPermissionPolicy {
     pub allow_shell_exec: bool,
     pub allow_pty_exec: bool,
     pub allow_file_write: bool,
+    pub allow_mcp_exec: bool,
 }
 
 impl Default for BasicToolPermissionPolicy {
@@ -83,6 +86,7 @@ impl Default for BasicToolPermissionPolicy {
             allow_shell_exec: false,
             allow_pty_exec: false,
             allow_file_write: false,
+            allow_mcp_exec: false,
         }
     }
 }
@@ -108,6 +112,11 @@ impl ToolPermissionPolicy for BasicToolPermissionPolicy {
                 ToolPermission::FileWrite if !self.allow_file_write => {
                     return ToolPermissionDecision::Deny {
                         reason: format!("工具 '{tool_name}' 需要 FileWrite 权限，但未开启"),
+                    };
+                }
+                ToolPermission::McpExec if !self.allow_mcp_exec => {
+                    return ToolPermissionDecision::Deny {
+                        reason: format!("工具 '{tool_name}' 需要 McpExec 权限，但未开启"),
                     };
                 }
                 _ => {}

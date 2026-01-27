@@ -10,7 +10,15 @@ export type MessageRole = 'user' | 'assistant' | 'system' | 'error';
 export type MessageStatus = 'pending' | 'success' | 'failed';
 
 // Theme options
-export type Theme = 'light' | 'dark' | 'system';
+export type Theme =
+  | 'system'
+  | 'light'
+  | 'dark'
+  | 'tokyo-night'
+  | 'dracula'
+  | 'nord'
+  | 'catppuccin'
+  | 'solarized';
 
 // ANSI rendering options
 export type AnsiRenderMode = 'color' | 'strip' | 'raw';
@@ -135,6 +143,7 @@ export interface ContextUsageBreakdown {
   messages: number;         // Conversation messages tokens
   tools?: number;           // Tool definitions tokens (future)
   mcp?: number;             // MCP context tokens (future)
+  skills?: number;          // Skills prompt tokens (from SKILL.md)
   total: number;            // Total used tokens
   limit: number;            // Model's context limit
   percentage: number;       // Usage percentage (0-100)
@@ -158,6 +167,7 @@ export interface Provider {
  */
 export interface Agent {
   name: string;           // Unique identifier
+  enabled?: boolean;      // Whether the agent is enabled (default: true)
   type?: AgentType;       // Agent runtime type (default: 'chat')
   displayName: string;    // Display name
   description?: string;
@@ -165,6 +175,8 @@ export interface Agent {
   systemPrompt: string;
   formatType: FormatPromptType;
   toolset?: string;       // Optional toolset binding (for tool agents)
+  mcpSet?: string;        // Optional MCP Set binding (servers/tools per agent)
+  skillSet?: string;      // Optional Skill Set binding (skills per agent)
   securityPolicy?: string; // Optional security policy name (defaults to global defaultPolicy)
   sandboxPolicy?: SandboxPolicy; // Optional sandbox policy override (defaults to global policy)
   approvalPolicy?: AskForApproval; // Optional approval policy override (defaults to global policy)
@@ -744,6 +756,20 @@ export interface GeneralSettings {
   openDevtoolsOnStart?: boolean; // Open DevTools on startup (dev builds only)
   ansiRenderMode?: AnsiRenderMode; // How to render ANSI sequences (color/strip/raw)
   ansiColorMode?: AnsiColorMode;   // ANSI 16-color palette selection
+  webSearchTool?: WebSearchToolSettings; // Local web search tool settings
+}
+
+export type WebSearchProvider = 'tavily' | 'google' | 'brave';
+
+export interface WebSearchToolSettings {
+  enabled: boolean;
+  provider: WebSearchProvider;
+  minIntervalMs?: number;
+  tavilyApiKey?: string;
+  braveApiKey?: string;
+  googleApiKey?: string;
+  googleCx?: string; // Google Custom Search CX
+  maxResults?: number;
 }
 
 /**
@@ -753,6 +779,7 @@ export interface ToolPermissionSettings {
   shellExec: boolean; // Allows `shell_command`
   ptyExec: boolean;   // Allows `exec_command` / `write_stdin`
   fileWrite: boolean; // Allows `apply_patch`
+  mcpExec: boolean;   // Allows `mcp__*` tools
 }
 
 /**
@@ -777,6 +804,102 @@ export interface ToolsSettings {
   toolsets: ToolSetConfig[];
 }
 
+// ============================================================================
+// MCP (Model Context Protocol)
+// ============================================================================
+
+export type McpServerTransportConfig =
+  | {
+      transport: 'stdio';
+      command: string;
+      args: string[];
+      env?: Record<string, string>;
+      envVars: string[];
+      cwd?: string;
+    }
+  | {
+      transport: 'streamable_http';
+      url: string;
+      bearerTokenEnvVar?: string;
+      httpHeaders?: Record<string, string>;
+      envHttpHeaders?: Record<string, string>;
+    };
+
+export interface McpServerConfig {
+  transport: McpServerTransportConfig;
+  enabled: boolean;
+  startupTimeoutMs?: number;
+  toolTimeoutMs?: number;
+  enabledTools: string[];
+  disabledTools: string[];
+}
+
+export interface McpServerEntry {
+  name: string;
+  config: McpServerConfig;
+}
+
+export interface McpSetServerConfig {
+  server: string;
+  enabled: boolean;
+  enabledTools: string[];
+  disabledTools: string[];
+}
+
+export interface McpSetConfig {
+  name: string;
+  servers: McpSetServerConfig[];
+}
+
+export interface McpSettings {
+  enabled: boolean;
+  servers: McpServerEntry[];
+  sets: McpSetConfig[];
+}
+
+// ============================================================================
+// Skills
+// ============================================================================
+
+export interface SkillSetConfig {
+  name: string;
+  enabled?: boolean;
+  skills: string[];
+  disabledSkills: string[];
+}
+
+export interface SkillsSettings {
+  disabledSkills: string[];
+  sets: SkillSetConfig[];
+}
+
+export type SkillRootKind = 'app' | 'workstudio' | 'repo';
+
+export interface SkillMetadata {
+  name: string;
+  description: string;
+  shortDescription?: string;
+  category: string; // learn/system/code/...
+  rootKind: SkillRootKind;
+  path: string;
+}
+
+export interface SkillEntry {
+  meta: SkillMetadata;
+  contents: string; // Full SKILL.md
+}
+
+export interface SkillLoadOutcome {
+  skills: SkillEntry[];
+  errors: string[];
+}
+
+export interface SkillRootsSnapshot {
+  appSkillsDir?: string;
+  repoSkillsDir?: string;
+  workstudioSkillsDir?: string;
+}
+
 /**
  * Main application configuration
  */
@@ -784,6 +907,8 @@ export interface AppConfig {
   appearance: AppearanceSettings;
   general: GeneralSettings;
   tools: ToolsSettings;
+  mcp: McpSettings;
+  skills: SkillsSettings;
   security: SecuritySettings;
   providers: Provider[];
   agents: Agent[];

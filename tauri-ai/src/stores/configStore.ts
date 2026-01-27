@@ -211,6 +211,7 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
     const { config, saveConfig, getAgent } = get();
     if (!config) return;
     const agent = getAgent(agentName);
+    if (!agent) return;
     // When switching agent, reset to agent's default model
     const updatedConfig = {
       ...config,
@@ -257,16 +258,17 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
 
   getAgent: (name: string) => {
     const { config } = get();
-    return config?.agents.find((a) => a.name === name);
+    return config?.agents.find((a) => a.name === name && (a.enabled ?? true));
   },
 
   getDefaultAgent: () => {
     const { config } = get();
     if (!config) return undefined;
     if (config.defaultAgent) {
-      return config.agents.find((a) => a.name === config.defaultAgent);
+      const byName = config.agents.find((a) => a.name === config.defaultAgent);
+      if (byName && (byName.enabled ?? true)) return byName;
     }
-    return config.agents[0];
+    return config.agents.find((a) => (a.enabled ?? true));
   },
 
   getModelOptions: () => {

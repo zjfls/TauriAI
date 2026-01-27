@@ -251,6 +251,7 @@ mod tests {
             allow_shell_exec: true,
             allow_pty_exec: false,
             allow_file_write: false,
+            allow_mcp_exec: false,
         });
         let orchestrator = ToolOrchestrator::new_builtin(ToolOrchestratorConfig {
             toolset: ToolSet::allow_all(),
@@ -268,6 +269,7 @@ mod tests {
             allow_shell_exec: true,
             allow_pty_exec: true,
             allow_file_write: false,
+            allow_mcp_exec: false,
         });
         let orchestrator = ToolOrchestrator::new_builtin(ToolOrchestratorConfig {
             toolset: ToolSet::allow_list("only-shell", vec!["shell_command".to_string()]),
@@ -283,6 +285,7 @@ mod tests {
             allow_shell_exec: true,
             allow_pty_exec: true,
             allow_file_write: false,
+            allow_mcp_exec: false,
         });
         let orchestrator = ToolOrchestrator::new_builtin(ToolOrchestratorConfig {
             toolset: ToolSet::allow_all().with_persistance_shell_enhance(true),

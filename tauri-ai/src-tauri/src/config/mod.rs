@@ -195,6 +195,7 @@ mod tests {
             }],
             agents: vec![Agent {
                 name: "test-agent".to_string(),
+                enabled: true,
                 agent_type: crate::models::AgentType::Chat,
                 display_name: "Test Agent".to_string(),
                 description: Some("A test agent".to_string()),
@@ -202,6 +203,8 @@ mod tests {
                 system_prompt: "You are a helpful assistant.".to_string(),
                 format_type: FormatPromptType::Chat,
                 toolset: None,
+                mcp_set: None,
+                skill_set: None,
                 security_policy: None,
                 sandbox_policy: None,
                 approval_policy: None,

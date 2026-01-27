@@ -4,16 +4,18 @@
  */
 
 import React, { useState } from 'react';
-import { Server, Bot, Palette, Sliders, Wrench, Shield, ChevronDown } from 'lucide-react';
+import { Server, Bot, Palette, Sliders, Wrench, Shield, Plug, Sparkles, ChevronDown } from 'lucide-react';
 import { ProviderConfigForm } from './ProviderConfigForm';
 import { AgentConfigForm } from './AgentConfigForm';
 import { ToolsConfigForm } from './ToolsConfigForm';
 import { SecurityConfigForm } from './SecurityConfigForm';
+import { McpConfigForm } from './McpConfigForm';
+import { SkillsConfigForm } from './SkillsConfigForm';
 import { useConfigStore } from '../../stores/configStore';
 import { useUIStore } from '../../stores/uiStore';
-import type { AppConfig, Theme, AnsiColorMode, AnsiRenderMode } from '../../types';
+import type { AppConfig, Theme, AnsiColorMode, AnsiRenderMode, WebSearchToolSettings, WebSearchProvider } from '../../types';
 
-type SettingsTab = 'providers' | 'agents' | 'tools' | 'security' | 'appearance' | 'general';
+type SettingsTab = 'providers' | 'agents' | 'tools' | 'mcp' | 'skills' | 'security' | 'appearance' | 'general';
 
 interface TabButtonProps {
   icon: React.ReactNode;
@@ -45,6 +47,8 @@ export const SettingsView: React.FC = () => {
     { id: 'providers', icon: <Server size={18} />, label: '提供商' },
     { id: 'agents', icon: <Bot size={18} />, label: '智能体' },
     { id: 'tools', icon: <Wrench size={18} />, label: '工具' },
+    { id: 'mcp', icon: <Plug size={18} />, label: 'MCP' },
+    { id: 'skills', icon: <Sparkles size={18} />, label: 'Skills' },
     { id: 'security', icon: <Shield size={18} />, label: '安全' },
     { id: 'appearance', icon: <Palette size={18} />, label: '外观' },
     { id: 'general', icon: <Sliders size={18} />, label: '通用' },
@@ -132,6 +136,15 @@ export const SettingsView: React.FC = () => {
     saveConfig(updatedConfig);
   };
 
+  const handleWebSearchToolChange = (webSearchTool: WebSearchToolSettings) => {
+    if (!config) return;
+    const updatedConfig: AppConfig = {
+      ...config,
+      general: { ...config.general, webSearchTool },
+    };
+    saveConfig(updatedConfig);
+  };
+
   const handleOpenDevtoolsOnStartChange = (openDevtoolsOnStart: boolean) => {
     if (!config) return;
     const updatedConfig: AppConfig = {
@@ -166,6 +179,10 @@ export const SettingsView: React.FC = () => {
         return <AgentConfigForm />;
       case 'tools':
         return <ToolsConfigForm />;
+      case 'mcp':
+        return <McpConfigForm />;
+      case 'skills':
+        return <SkillsConfigForm />;
       case 'security':
         return <SecurityConfigForm />;
       case 'appearance':
@@ -189,6 +206,7 @@ export const SettingsView: React.FC = () => {
             pdfDebugMode={config.general.pdfDebugMode ?? false}
             ansiRenderMode={config.general.ansiRenderMode ?? 'color'}
             ansiColorMode={config.general.ansiColorMode ?? 'auto'}
+            webSearchTool={config.general.webSearchTool}
             onLanguageChange={handleLanguageChange}
             onAutoStartChange={handleAutoStartChange}
             onDebugModeChange={handleDebugModeChange}
@@ -198,6 +216,7 @@ export const SettingsView: React.FC = () => {
             onPdfDebugModeChange={handlePdfDebugModeChange}
             onAnsiRenderModeChange={handleAnsiRenderModeChange}
             onAnsiColorModeChange={handleAnsiColorModeChange}
+            onWebSearchToolChange={handleWebSearchToolChange}
           />
         );
       default:
@@ -240,6 +259,11 @@ const AppearanceSettings: React.FC<AppearanceSettingsProps> = ({
     { value: 'system', label: '跟随系统' },
     { value: 'light', label: '浅色模式' },
     { value: 'dark', label: '深色模式' },
+    { value: 'tokyo-night', label: 'Tokyo Night' },
+    { value: 'dracula', label: 'Dracula' },
+    { value: 'nord', label: 'Nord' },
+    { value: 'catppuccin', label: 'Catppuccin' },
+    { value: 'solarized', label: 'Solarized' },
   ];
 
   return (
@@ -289,6 +313,7 @@ interface GeneralSettingsProps {
   pdfDebugMode: boolean;
   ansiRenderMode: AnsiRenderMode;
   ansiColorMode: AnsiColorMode;
+  webSearchTool?: WebSearchToolSettings;
   onLanguageChange: (language: string) => void;
   onAutoStartChange: (value: boolean) => void;
   onDebugModeChange: (value: boolean) => void;
@@ -298,6 +323,7 @@ interface GeneralSettingsProps {
   onPdfDebugModeChange: (value: boolean) => void;
   onAnsiRenderModeChange: (value: AnsiRenderMode) => void;
   onAnsiColorModeChange: (value: AnsiColorMode) => void;
+  onWebSearchToolChange: (value: WebSearchToolSettings) => void;
 }
 
 const GeneralSettings: React.FC<GeneralSettingsProps> = ({
@@ -310,6 +336,7 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
   pdfDebugMode,
   ansiRenderMode,
   ansiColorMode,
+  webSearchTool,
   onLanguageChange,
   onAutoStartChange,
   onDebugModeChange,
@@ -319,6 +346,7 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
   onPdfDebugModeChange,
   onAnsiRenderModeChange,
   onAnsiColorModeChange,
+  onWebSearchToolChange,
 }) => {
   const languageOptions = [
     { value: 'zh-CN', label: '简体中文' },
@@ -342,6 +370,7 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
     general: true,
     debug: true,
     display: true,
+    webSearch: true,
   });
 
   const toggleSection = (key: keyof typeof sections) => {
@@ -513,6 +542,146 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
             <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${showUsage ? 'translate-x-5' : ''}`} />
           </button>
         </div>
+      </SettingsSection>
+
+      <SettingsSection
+        title="网络搜索工具"
+        open={sections.webSearch}
+        onToggle={() => toggleSection('webSearch')}
+      >
+        {(() => {
+          const current: WebSearchToolSettings = webSearchTool ?? {
+            enabled: false,
+            provider: 'tavily',
+            minIntervalMs: 1200,
+            maxResults: 5,
+          };
+
+          const set = (next: Partial<WebSearchToolSettings>) => {
+            onWebSearchToolChange({ ...current, ...next });
+          };
+
+          const providerOptions: { value: WebSearchProvider; label: string }[] = [
+            { value: 'tavily', label: 'Tavily' },
+            { value: 'google', label: 'Google CSE' },
+            { value: 'brave', label: 'Brave Search' },
+          ];
+
+          return (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">启用本地搜索工具</label>
+                  <p className="text-xs text-gray-500">
+                    开启后：会对模型暴露本地工具 <span className="font-mono">web_search</span>（仍受沙箱网络策略与 API Key 配置限制）。
+                  </p>
+                </div>
+                <button
+                  onClick={() => set({ enabled: !current.enabled })}
+                  className={`relative w-11 h-6 rounded-full transition-colors ${current.enabled ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'}`}
+                >
+                  <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${current.enabled ? 'translate-x-5' : ''}`} />
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Provider</label>
+                  <select
+                    value={current.provider}
+                    onChange={(e) => set({ provider: e.target.value as WebSearchProvider })}
+                    className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700"
+                  >
+                    {providerOptions.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">速率限制（最小间隔 ms）</label>
+                  <input
+                    type="number"
+                    value={current.minIntervalMs ?? 1200}
+                    onChange={(e) => set({ minIntervalMs: e.target.value ? Number(e.target.value) : undefined })}
+                    className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">最大返回条数</label>
+                  <input
+                    type="number"
+                    value={current.maxResults ?? 5}
+                    onChange={(e) => set({ maxResults: e.target.value ? Number(e.target.value) : undefined })}
+                    className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">提示</label>
+                  <p className="text-xs text-gray-500">
+                    输入窗口的“搜索”图标悬停会展示当前使用的是“模型内置”还是“本地工具”，以及配置状态。
+                  </p>
+                </div>
+              </div>
+
+              {current.provider === 'tavily' && (
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Tavily API Key</label>
+                  <input
+                    type="password"
+                    value={current.tavilyApiKey ?? ''}
+                    onChange={(e) => set({ tavilyApiKey: e.target.value || undefined })}
+                    placeholder="tavily api key"
+                    className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700"
+                  />
+                </div>
+              )}
+
+              {current.provider === 'brave' && (
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Brave Search API Key</label>
+                  <input
+                    type="password"
+                    value={current.braveApiKey ?? ''}
+                    onChange={(e) => set({ braveApiKey: e.target.value || undefined })}
+                    placeholder="brave api key"
+                    className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700"
+                  />
+                </div>
+              )}
+
+              {current.provider === 'google' && (
+                <div className="space-y-4">
+                  <div className="space-y-2">
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Google API Key</label>
+                    <input
+                      type="password"
+                      value={current.googleApiKey ?? ''}
+                      onChange={(e) => set({ googleApiKey: e.target.value || undefined })}
+                      placeholder="google api key"
+                      className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Google CX</label>
+                    <input
+                      value={current.googleCx ?? ''}
+                      onChange={(e) => set({ googleCx: e.target.value || undefined })}
+                      placeholder="custom search engine cx"
+                      className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700"
+                    />
+                    <p className="text-xs text-gray-500">使用 Google Custom Search JSON API，需要同时配置 Key 与 CX。</p>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })()}
       </SettingsSection>
     </div>
   );

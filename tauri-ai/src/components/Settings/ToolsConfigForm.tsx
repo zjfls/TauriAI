@@ -14,13 +14,14 @@ const AVAILABLE_TOOLS = [
   { name: 'read_file', label: '读文件', description: '读取本地文件（带行号）' },
   { name: 'list_dir', label: '列目录', description: '列出目录结构（带缩进）' },
   { name: 'rg', label: 'rg', description: '按 pattern 搜索文件（ripgrep）' },
+  { name: 'web_search', label: '网络搜索', description: '调用本地网络搜索（Tavily/Google CSE/Brave）' },
   { name: 'apply_patch', label: 'Apply Patch', description: '按补丁格式修改/创建文件', permission: 'fileWrite' },
   { name: 'shell_command', label: 'Shell 命令', description: '一次性执行命令', permission: 'shellExec' },
   { name: 'exec_command', label: 'PTY 启动命令', description: '创建交互式会话', permission: 'ptyExec' },
   { name: 'write_stdin', label: 'PTY 写入输入', description: '向交互式会话写入 stdin', permission: 'ptyExec' },
 ] as const;
 
-type ToolPermissionKey = 'shellExec' | 'ptyExec' | 'fileWrite';
+type ToolPermissionKey = 'shellExec' | 'ptyExec' | 'fileWrite' | 'mcpExec';
 
 const toggleInList = (list: string[], value: string) =>
   list.includes(value) ? list.filter((x) => x !== value) : [...list, value];
@@ -331,6 +332,25 @@ export const ToolsConfigForm: React.FC = () => {
                   <span
                     className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
                       config.tools.permissions.fileWrite ? 'translate-x-5' : ''
+                    }`}
+                  />
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">允许 MCP 工具调用</label>
+                  <p className="text-xs text-gray-500">开启后才会暴露 `mcp__*`（由 MCP Set 决定哪些工具对模型可见）。</p>
+                </div>
+                <button
+                  onClick={() => handlePermissionChange('mcpExec', !config.tools.permissions.mcpExec)}
+                  className={`relative w-11 h-6 rounded-full transition-colors ${
+                    config.tools.permissions.mcpExec ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'
+                  }`}
+                >
+                  <span
+                    className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
+                      config.tools.permissions.mcpExec ? 'translate-x-5' : ''
                     }`}
                   />
                 </button>

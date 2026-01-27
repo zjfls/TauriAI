@@ -5,8 +5,9 @@
  */
 
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Send, Square, Bot, Cpu, ChevronDown, Check, ImagePlus, Paperclip, FileText } from 'lucide-react';
+import { Send, Square, Bot, Cpu, ChevronDown, Check, ImagePlus, Paperclip, FileText, Plug } from 'lucide-react';
 import { ContextUsageIndicator } from './ContextUsageIndicator';
+import { McpModal } from './McpModal';
 import { AttachmentPreview } from './AttachmentPreview';
 import { ThinkingSelector } from './ThinkingSelector';
 import { WebSearchToggle } from './WebSearchToggle';
@@ -187,6 +188,8 @@ interface InputAreaProps {
   supportsWebSearch?: boolean;  // Whether current model supports web search
   webSearchEnabled?: boolean;   // Whether web search is enabled
   onWebSearchToggle?: (enabled: boolean) => void;  // Callback when web search is toggled
+  webSearchToggleMode?: 'native' | 'tool';
+  webSearchDetails?: string;
   // PDF debug mode
   pdfDebugMode?: boolean;  // Whether to enable PDF debug mode controls
 }
@@ -685,6 +688,8 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   supportsWebSearch = false,
   webSearchEnabled = false,
   onWebSearchToggle,
+  webSearchToggleMode,
+  webSearchDetails,
   pdfDebugMode = false,
 }, ref) => {
   const [contentDraft, setContentDraft] = useState('');
@@ -1767,6 +1772,9 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
     return agents.find((a) => a.name === currentAgentName);
   }, [agents, currentAgentName]);
 
+  const [isMcpModalOpen, setIsMcpModalOpen] = useState(false);
+  const hasMcpSetBinding = Boolean(currentAgent?.mcpSet);
+
   // Convert agents to selector options (include type to make it visible even when truncated)
   const agentOptions = useMemo(() => {
     return agents.map((a) => ({
@@ -1791,31 +1799,16 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
       {hasFeatureToggles && (
         <div className="mb-2 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            {/* Run mode selector */}
+            {/* Run mode selector (menu) */}
             {onRunModeChange && (
-              <div className="inline-flex overflow-hidden rounded-md border border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-800">
-                {RUN_MODE_OPTIONS.map((option) => {
-                  const active = option.value === runMode;
-                  return (
-                    <button
-                      key={option.value}
-                      type="button"
-                      disabled={isGenerating}
-                      onClick={() => onRunModeChange(option.value)}
-                      className={[
-                        'px-2 py-1 text-xs font-medium transition-colors',
-                        active
-                          ? 'bg-blue-600 text-white'
-                          : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700',
-                        isGenerating ? 'cursor-not-allowed opacity-60' : '',
-                      ].join(' ')}
-                      title={option.label}
-                    >
-                      {option.label}
-                    </button>
-                  );
-                })}
-              </div>
+              <CompactSelector
+                icon={<span className="text-[10px] text-gray-500 dark:text-gray-400">模式</span>}
+                options={RUN_MODE_OPTIONS}
+                currentValue={runMode}
+                onSelect={(value) => onRunModeChange(value as RunMode)}
+                disabled={isGenerating}
+                placeholder="模式"
+              />
             )}
             {/* Agent selector */}
             {agents.length > 0 && currentAgentName && (
@@ -1877,7 +1870,30 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
                 enabled={webSearchEnabled}
                 onToggle={() => onWebSearchToggle(!webSearchEnabled)}
                 disabled={isGenerating}
+                mode={webSearchToggleMode}
+                details={webSearchDetails}
               />
+            )}
+
+            {/* MCP button (shows bound MCP set + tools) */}
+            {hasMcpSetBinding && (
+              <button
+                type="button"
+                disabled={disabled || isGenerating}
+                onClick={() => setIsMcpModalOpen(true)}
+                className={[
+                  'inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-colors',
+                  'border-gray-200 dark:border-gray-700',
+                  'bg-gray-50 dark:bg-gray-900',
+                  'text-gray-700 dark:text-gray-200',
+                  'hover:bg-gray-100 dark:hover:bg-gray-800',
+                  disabled || isGenerating ? 'opacity-60 cursor-not-allowed' : '',
+                ].join(' ')}
+                title={'查看 MCP'}
+              >
+                <Plug size={12} />
+                <span>MCP</span>
+              </button>
             )}
           </div>
           {/* Context usage indicator on the right */}
@@ -2027,6 +2043,15 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
           disabled={disabled || isGenerating}
         />
       </div>
+
+      {/* MCP modal */}
+      {currentAgentName && (
+        <McpModal
+          isOpen={isMcpModalOpen}
+          onClose={() => setIsMcpModalOpen(false)}
+          agentName={currentAgentName}
+        />
+      )}
     </div>
   );
 });

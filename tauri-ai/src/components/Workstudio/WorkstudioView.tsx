@@ -40,9 +40,14 @@ type OpenFile = {
   id: string;
   title: string;
   path: string;
-  content: string;
-  originalContent: string;
-  dirty: boolean;
+  kind: 'text' | 'image' | 'pdf' | 'binary';
+  mime: string;
+  size: number;
+  content?: string;
+  originalContent?: string;
+  dirty?: boolean;
+  dataUrl?: string; // for image preview
+  base64?: string;  // raw bytes (for binary/pdf preview or external open)
 };
 
 type EditorGroup = {
@@ -122,7 +127,8 @@ const SortableTab: React.FC<{
   title: string;
   onClick: () => void;
   onClose: () => void;
-}> = ({ id, active, title, onClick, onClose }) => {
+  onContextMenu?: (e: React.MouseEvent) => void;
+}> = ({ id, active, title, onClick, onClose, onContextMenu }) => {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
   const style: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),
@@ -136,6 +142,7 @@ const SortableTab: React.FC<{
       style={style}
       type="button"
       onClick={onClick}
+      onContextMenu={onContextMenu}
       className={[
         'group flex items-center gap-2 rounded px-2 py-1 text-xs',
         active
@@ -184,6 +191,13 @@ const basename = (p: string) => {
   return segments.length === 0 ? p : segments[segments.length - 1];
 };
 
+const dirname = (p: string) => {
+  const normalized = p.replace(/\\/g, '/').replace(/\/+$/, '');
+  const idx = normalized.lastIndexOf('/');
+  if (idx <= 0) return normalized;
+  return normalized.slice(0, idx);
+};
+
 const decodeBase64ToUtf8 = (base64: string) => {
   const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
   return new TextDecoder('utf-8').decode(bytes);
@@ -192,6 +206,46 @@ const decodeBase64ToUtf8 = (base64: string) => {
 const decodeBase64ToBytes = (base64: string) => Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
 
 const normalizePath = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '');
+
+const fileKindFor = (path: string, mime: string): OpenFile['kind'] => {
+  const lower = path.toLowerCase();
+  if (lower.endsWith('.pdf') || mime === 'application/pdf') return 'pdf';
+  if (mime.startsWith('image/')) return 'image';
+  if (mime.startsWith('text/')) return 'text';
+  if (
+    lower.endsWith('.ts') ||
+    lower.endsWith('.tsx') ||
+    lower.endsWith('.js') ||
+    lower.endsWith('.jsx') ||
+    lower.endsWith('.json') ||
+    lower.endsWith('.md') ||
+    lower.endsWith('.markdown') ||
+    lower.endsWith('.rs') ||
+    lower.endsWith('.toml') ||
+    lower.endsWith('.yaml') ||
+    lower.endsWith('.yml') ||
+    lower.endsWith('.css') ||
+    lower.endsWith('.html') ||
+    lower.endsWith('.htm') ||
+    lower.endsWith('.txt') ||
+    lower.endsWith('.log') ||
+    lower.endsWith('.sh') ||
+    lower.endsWith('.bash') ||
+    lower.endsWith('.zsh')
+  ) {
+    return 'text';
+  }
+  return 'binary';
+};
+
+const bytesToHexPreview = (bytes: Uint8Array, max: number) => {
+  const len = Math.min(bytes.length, max);
+  const parts: string[] = [];
+  for (let i = 0; i < len; i++) {
+    parts.push(bytes[i]!.toString(16).padStart(2, '0'));
+  }
+  return parts.join(' ');
+};
 
 const isSubpath = (child: string, parent: string) => {
   const c = normalizePath(child);
@@ -206,6 +260,7 @@ export const WorkstudioView: React.FC = () => {
   const editorByGroupRef = useRef(
     new Map<string, import('monaco-editor').editor.IStandaloneCodeEditor>()
   );
+  const filePaletteInputRef = useRef<HTMLInputElement | null>(null);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [terminalSessionId, setTerminalSessionId] = useState<number | null>(null);
   const terminalContainerRef = useRef<HTMLDivElement | null>(null);
@@ -230,6 +285,15 @@ export const WorkstudioView: React.FC = () => {
     | { visible: true; x: number; y: number; kind: 'blank' }
     | null
   >(null);
+  const [tabMenu, setTabMenu] = useState<
+    | { visible: true; x: number; y: number; path: string }
+    | null
+  >(null);
+
+  const [filePaletteOpen, setFilePaletteOpen] = useState(false);
+  const [filePaletteQuery, setFilePaletteQuery] = useState('');
+  const [filePaletteResults, setFilePaletteResults] = useState<string[]>([]);
+  const [filePaletteIndex, setFilePaletteIndex] = useState(0);
 
   const saveStateTimerRef = useRef<number | null>(null);
   const groupRowRef = useRef<HTMLDivElement | null>(null);
@@ -362,15 +426,21 @@ export const WorkstudioView: React.FC = () => {
         'read_local_file_base64',
         { path }
       );
-      const content = decodeBase64ToUtf8(file.base64);
       const id = path;
+      const kind = fileKindFor(path, file.mime);
+      const content = kind === 'text' ? decodeBase64ToUtf8(file.base64) : undefined;
       const next: OpenFile = {
         id,
         title: file.filename,
         path,
+        kind,
+        mime: file.mime,
+        size: file.size,
         content,
         originalContent: content,
         dirty: false,
+        dataUrl: kind === 'image' ? `data:${file.mime};base64,${file.base64}` : undefined,
+        base64: file.base64,
       };
       setOpenFiles((prev) => [...prev, next]);
       setGroups((prev) =>
@@ -502,7 +572,8 @@ export const WorkstudioView: React.FC = () => {
     async (fileId: string, editor: import('monaco-editor').editor.IStandaloneCodeEditor | null) => {
       const file = openFiles.find((f) => f.id === fileId);
       if (!file) return;
-      const latest = editor?.getValue() ?? file.content;
+      if (file.kind !== 'text') return;
+      const latest = editor?.getValue() ?? file.content ?? '';
       await invoke('write_local_text_file', { path: file.path, content: latest });
       setOpenFiles((prev) =>
         prev.map((f) =>
@@ -784,6 +855,76 @@ export const WorkstudioView: React.FC = () => {
     }
   }, [ws, listDir]);
 
+  const openMainFolder = useCallback(async () => {
+    if (!ws) return;
+    const selected = await openDialog({ title: '打开文件夹为主工作区', multiple: false, directory: true });
+    if (!selected || Array.isArray(selected)) return;
+    try {
+      const updated = await invoke<Workstudio>('add_workstudio_folder', {
+        workstudioId: ws.id,
+        folder: selected,
+        setAsMain: true,
+      });
+      setWs(updated);
+      setExpandedDirs((prev) => {
+        const next = new Set(prev);
+        next.add(updated.mainFolder);
+        return next;
+      });
+      void listDir(updated.mainFolder);
+    } catch (error) {
+      console.error('open main folder failed:', error);
+    }
+  }, [ws, listDir]);
+
+  const openFileFromDialog = useCallback(async () => {
+    const selected = await openDialog({ title: '打开文件', multiple: false, directory: false });
+    if (!selected || Array.isArray(selected)) return;
+    await openFileAtPath(selected);
+  }, [openFileAtPath]);
+
+  // Cmd/Ctrl+P: file search palette
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const key = e.key.toLowerCase();
+      if ((e.metaKey || e.ctrlKey) && key === 'p') {
+        e.preventDefault();
+        setFilePaletteOpen(true);
+        window.setTimeout(() => filePaletteInputRef.current?.focus(), 0);
+      }
+      if (key === 'escape') {
+        setFilePaletteOpen(false);
+        setFilePaletteQuery('');
+        setFilePaletteResults([]);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  useEffect(() => {
+    if (!filePaletteOpen) return;
+    if (!ws) return;
+    const q = filePaletteQuery.trim();
+    if (!q) {
+      setFilePaletteResults([]);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void invoke<string[]>('workstudio_find_files', {
+        args: { workstudioId: ws.id, query: q, limit: 200 },
+      })
+        .then((res) => {
+          setFilePaletteResults(res);
+          setFilePaletteIndex(0);
+        })
+        .catch(() => {
+          setFilePaletteResults([]);
+        });
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [filePaletteOpen, filePaletteQuery, ws]);
+
   useEffect(() => {
     if (!workstudioId) return;
     void loadWorkstudio(workstudioId);
@@ -814,15 +955,21 @@ export const WorkstudioView: React.FC = () => {
                 'read_local_file_base64',
                 { path }
               );
-              const content = decodeBase64ToUtf8(file.base64);
               const id = path;
+              const kind = fileKindFor(path, file.mime);
+              const content = kind === 'text' ? decodeBase64ToUtf8(file.base64) : undefined;
               const next: OpenFile = {
                 id,
                 title: file.filename,
                 path,
+                kind,
+                mime: file.mime,
+                size: file.size,
                 content,
                 originalContent: content,
                 dirty: false,
+                dataUrl: kind === 'image' ? `data:${file.mime};base64,${file.base64}` : undefined,
+                base64: file.base64,
               };
               return next;
             } catch {
@@ -932,19 +1079,20 @@ export const WorkstudioView: React.FC = () => {
   }, [ws, expandedDirs, entriesByDir, loadingDirs, listDir]);
 
   useEffect(() => {
-    if (!contextMenu) return;
-    const onDown = () => setContextMenu(null);
+    if (!contextMenu && !tabMenu) return;
+    const onDown = () => {
+      setContextMenu(null);
+      setTabMenu(null);
+    };
     window.addEventListener('mousedown', onDown);
     return () => window.removeEventListener('mousedown', onDown);
-  }, [contextMenu]);
+  }, [contextMenu, tabMenu]);
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     void listen('menu:open_file', async () => {
       try {
-        const selected = await openDialog({ title: '打开文件', multiple: false, directory: false });
-        if (!selected || Array.isArray(selected)) return;
-        await openFileAtPath(selected);
+        await openFileFromDialog();
       } catch (error) {
         console.error('Workstudio open file failed:', error);
       }
@@ -957,7 +1105,7 @@ export const WorkstudioView: React.FC = () => {
     return () => {
       unlisten?.();
     };
-  }, [openFileAtPath]);
+  }, [openFileFromDialog]);
 
   const renderDirNode = (dirPath: string, depth: number, opts?: { isRoot?: boolean; isMainRoot?: boolean }) => {
     const expanded = expandedDirs.has(dirPath);
@@ -1170,6 +1318,11 @@ export const WorkstudioView: React.FC = () => {
                                     setFocusedGroupId(group.id);
                                   }}
                                   onClose={() => closeFileInGroup(group.id, file.id)}
+                                  onContextMenu={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    setTabMenu({ visible: true, x: e.clientX, y: e.clientY, path: file.path });
+                                  }}
                                 />
                               );
                             })
@@ -1232,34 +1385,88 @@ export const WorkstudioView: React.FC = () => {
 
                   <div className="min-h-0 flex-1">
                     {groupActive ? (
-                      <Editor
-                        path={groupActive.path}
-                        language={languageForPath(groupActive.path)}
-                        value={groupActive.content}
-                        onMount={handleEditorMountForGroup(group.id)}
-                        onChange={(value) => {
-                          const nextValue = value ?? '';
-                          setOpenFiles((prev) =>
-                            prev.map((file) =>
-                              file.id === groupActive.id
-                                ? { ...file, content: nextValue, dirty: nextValue !== file.originalContent }
-                                : file
-                            )
-                          );
-                        }}
-                        theme={editorTheme}
-                        options={{
-                          minimap: { enabled: false },
-                          fontSize: 13,
-                          fontFamily:
-                            'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
-                          lineNumbers: 'on',
-                          wordWrap: 'on',
-                          renderWhitespace: 'selection',
-                          automaticLayout: true,
-                          scrollBeyondLastLine: false,
-                        }}
-                      />
+                      groupActive.kind === 'text' ? (
+                        <Editor
+                          path={groupActive.path}
+                          language={languageForPath(groupActive.path)}
+                          value={groupActive.content ?? ''}
+                          onMount={handleEditorMountForGroup(group.id)}
+                          onChange={(value) => {
+                            const nextValue = value ?? '';
+                            setOpenFiles((prev) =>
+                              prev.map((file) =>
+                                file.id === groupActive.id
+                                  ? {
+                                      ...file,
+                                      content: nextValue,
+                                      dirty: nextValue !== (file.originalContent ?? ''),
+                                    }
+                                  : file
+                              )
+                            );
+                          }}
+                          theme={editorTheme}
+                          options={{
+                            minimap: { enabled: false },
+                            fontSize: 13,
+                            fontFamily:
+                              'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+                            lineNumbers: 'on',
+                            wordWrap: 'on',
+                            renderWhitespace: 'selection',
+                            automaticLayout: true,
+                            scrollBeyondLastLine: false,
+                          }}
+                        />
+                      ) : (
+                        <div className="flex h-full flex-col gap-3 p-4">
+                          <div className="flex items-center justify-between">
+                            <div className="min-w-0">
+                              <div className="truncate text-sm font-medium text-gray-800 dark:text-gray-100">
+                                {groupActive.title}
+                              </div>
+                              <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                                {groupActive.kind} · {groupActive.mime} · {groupActive.size} bytes
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              className="rounded border border-gray-200 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+                              onClick={() => void openUrl(groupActive.path)}
+                              title="在系统默认应用中打开"
+                            >
+                              在系统中打开
+                            </button>
+                          </div>
+
+                          {groupActive.kind === 'image' && groupActive.dataUrl ? (
+                            <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-950">
+                              <img
+                                src={groupActive.dataUrl}
+                                alt={groupActive.title}
+                                className="max-h-[70vh] max-w-full rounded"
+                              />
+                            </div>
+                          ) : groupActive.kind === 'pdf' && groupActive.base64 ? (
+                            <div className="min-h-0 flex-1 overflow-hidden rounded-lg border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-950">
+                              <iframe
+                                title={groupActive.title}
+                                className="h-full w-full"
+                                src={`data:application/pdf;base64,${groupActive.base64}`}
+                              />
+                            </div>
+                          ) : (
+                            <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-gray-200 bg-white p-3 text-xs text-gray-700 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-200">
+                              <div className="font-medium">二进制预览（前 256 bytes）</div>
+                              <div className="mt-2 font-mono break-words">
+                                {groupActive.base64
+                                  ? bytesToHexPreview(decodeBase64ToBytes(groupActive.base64), 256)
+                                  : '(无数据)'}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )
                     ) : (
                       <div className="flex h-full items-center justify-center text-sm text-gray-400">
                         在左侧 Explorer 里选择一个文件
@@ -1276,6 +1483,88 @@ export const WorkstudioView: React.FC = () => {
         </div>
       </div>
 
+      {filePaletteOpen && (
+        <div className="fixed inset-0 z-[210]">
+          <div
+            className="absolute inset-0 bg-black/25 backdrop-blur-[1px]"
+            onClick={() => setFilePaletteOpen(false)}
+          />
+          <div className="absolute left-1/2 top-16 w-[720px] max-w-[92vw] -translate-x-1/2 rounded-2xl border border-gray-200 bg-white shadow-xl dark:border-gray-700 dark:bg-gray-900">
+            <div className="border-b border-gray-200 px-4 py-3 dark:border-gray-700">
+              <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">搜索文件</div>
+              <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">快捷键：Ctrl/Cmd + P</div>
+            </div>
+            <div className="p-4">
+              <input
+                ref={filePaletteInputRef}
+                value={filePaletteQuery}
+                onChange={(e) => setFilePaletteQuery(e.target.value)}
+                placeholder="输入文件名或路径片段..."
+                className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') {
+                    e.preventDefault();
+                    setFilePaletteOpen(false);
+                    return;
+                  }
+                  if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    setFilePaletteIndex((i) => Math.min(i + 1, Math.max(0, filePaletteResults.length - 1)));
+                  }
+                  if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    setFilePaletteIndex((i) => Math.max(0, i - 1));
+                  }
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    const picked = filePaletteResults[filePaletteIndex];
+                    if (!picked) return;
+                    setFilePaletteOpen(false);
+                    setFilePaletteQuery('');
+                    setFilePaletteResults([]);
+                    void openFileAtPath(picked);
+                  }
+                }}
+              />
+
+              <div className="mt-3 max-h-[55vh] overflow-auto rounded-xl border border-gray-200 dark:border-gray-700">
+                {filePaletteResults.length === 0 ? (
+                  <div className="px-3 py-3 text-sm text-gray-500 dark:text-gray-400">
+                    {filePaletteQuery.trim() ? '未找到匹配文件' : '输入关键字开始搜索'}
+                  </div>
+                ) : (
+                  filePaletteResults.map((p, idx) => (
+                    <button
+                      key={p}
+                      type="button"
+                      className={[
+                        'w-full px-3 py-2 text-left text-sm',
+                        idx === filePaletteIndex
+                          ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
+                          : 'text-gray-700 hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-gray-800',
+                      ].join(' ')}
+                      onMouseEnter={() => setFilePaletteIndex(idx)}
+                      onClick={() => {
+                        setFilePaletteOpen(false);
+                        setFilePaletteQuery('');
+                        setFilePaletteResults([]);
+                        void openFileAtPath(p);
+                      }}
+                      title={p}
+                    >
+                      <div className="truncate font-mono text-[12px]">{basename(p)}</div>
+                      <div className="mt-0.5 truncate text-[11px] text-gray-500 dark:text-gray-400">
+                        {p}
+                      </div>
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {contextMenu && (
         <div
           className="fixed z-[200] min-w-[180px] rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900"
@@ -1284,6 +1573,26 @@ export const WorkstudioView: React.FC = () => {
         >
           {contextMenu.kind === 'blank' && (
             <div className="py-1 text-sm">
+              <button
+                type="button"
+                className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+                onClick={() => {
+                  setContextMenu(null);
+                  void openFileFromDialog();
+                }}
+              >
+                打开文件...
+              </button>
+              <button
+                type="button"
+                className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+                onClick={() => {
+                  setContextMenu(null);
+                  void openMainFolder();
+                }}
+              >
+                打开文件夹为主工作区...
+              </button>
               <button
                 type="button"
                 className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
@@ -1422,6 +1731,53 @@ export const WorkstudioView: React.FC = () => {
 
           <div className="min-h-0 flex-1">
             <div ref={terminalContainerRef} className="h-full w-full" />
+          </div>
+        </div>
+      )}
+
+      {tabMenu && (
+        <div
+          className="fixed z-[220] min-w-[220px] rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900"
+          style={{ left: tabMenu.x, top: tabMenu.y }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400 truncate" title={tabMenu.path}>
+            {tabMenu.path}
+          </div>
+          <div className="py-1 text-sm">
+            <button
+              type="button"
+              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+              onClick={() => {
+                const folder = dirname(tabMenu.path);
+                setTabMenu(null);
+                void openUrl(folder);
+              }}
+            >
+              在系统中打开所在文件夹
+            </button>
+            <button
+              type="button"
+              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+              onClick={() => {
+                const p = tabMenu.path;
+                setTabMenu(null);
+                void openUrl(p);
+              }}
+            >
+              在系统中打开文件
+            </button>
+            <button
+              type="button"
+              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+              onClick={() => {
+                const p = tabMenu.path;
+                setTabMenu(null);
+                void navigator.clipboard.writeText(p);
+              }}
+            >
+              复制路径
+            </button>
           </div>
         </div>
       )}

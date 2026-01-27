@@ -170,7 +170,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const agentType = agent?.type ?? 'chat';
     const workspaceEnabled = agentType === 'tool' && (agent?.workspaceSupport ?? true);
     const runMode: RunMode = agentType === 'tool' ? 'agent' : 'chat';
-    const runMode: RunMode = agentType === 'tool' ? 'agent' : 'chat';
 
     // Generate default title with timestamp: 新对话_MM-DD HH:mm
     const nowDate = new Date();
@@ -1419,6 +1418,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     const agentType = agent?.type ?? 'chat';
     const workspaceEnabled = agentType === 'tool' && (agent?.workspaceSupport ?? true);
+    const runMode: RunMode = agentType === 'tool' ? 'agent' : 'chat';
 
     let resolvedWorkstudioId: string | null = conversation?.workstudioId ?? null;
     if (workspaceEnabled) {

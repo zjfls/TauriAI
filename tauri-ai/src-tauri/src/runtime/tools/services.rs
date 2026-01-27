@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use tokio::sync::{mpsc, Mutex};
@@ -15,12 +15,57 @@ use tokio::sync::{mpsc, Mutex};
 #[derive(Default)]
 pub struct ToolServices {
     pub pty: PtyService,
+    pub web_search: WebSearchService,
 }
 
 impl std::fmt::Debug for ToolServices {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // 避免把内部句柄/通道打印出来（也避免要求所有字段都实现 Debug）
         f.debug_struct("ToolServices").finish()
+    }
+}
+
+/// WebSearch service: rate limit / state across turns.
+#[derive(Default)]
+pub struct WebSearchService {
+    last_call_ms: Mutex<Option<i64>>,
+}
+
+impl WebSearchService {
+    fn now_ms() -> i64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0)
+    }
+
+    pub async fn wait_for_interval(&self, min_interval_ms: u64) {
+        let min_interval_ms = min_interval_ms.max(0);
+        loop {
+            let wait_ms = {
+                let mut guard = self.last_call_ms.lock().await;
+                let now = Self::now_ms();
+                match *guard {
+                    None => {
+                        *guard = Some(now);
+                        0
+                    }
+                    Some(prev) => {
+                        let elapsed = (now - prev).max(0) as u64;
+                        if elapsed >= min_interval_ms {
+                            *guard = Some(now);
+                            0
+                        } else {
+                            min_interval_ms - elapsed
+                        }
+                    }
+                }
+            };
+            if wait_ms == 0 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(wait_ms)).await;
+        }
     }
 }
 

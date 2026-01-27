@@ -122,6 +122,19 @@ pub const PERSISTENT_PROCESS_PROMPT: &str = r#"
 - `shell_command` 不支持交互式 stdin；需要交互时请改用 PTY（尤其是持久 PTY）。
 "#;
 
+/// Prompt guide for the hidden local web search tool (`web_search`).
+pub const WEB_SEARCH_TOOL_PROMPT: &str = r#"
+
+## 网络搜索（工具）
+
+当你需要最新信息、事实核验或引用来源时，并且 tools 列表里提供了 `web_search` 工具，你可以调用它进行网络搜索。
+
+使用建议：
+- 先明确查询词（query），尽量包含关键实体/时间范围。
+- 结果返回后，优先引用结果里的链接与标题；不要凭空编造引用。
+- 注意：该工具可能有速率限制（会自动按最小间隔节流），不要在短时间内重复发起大量搜索。
+"#;
+
 /// Optional hint for Python command selection when `python` is not available but `python3` is.
 pub const PYTHON3_FALLBACK_PROMPT: &str = r#"
 

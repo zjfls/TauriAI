@@ -37,7 +37,11 @@ export const getSystemTheme = (): 'light' | 'dark' => {
  * Get the effective theme (resolves 'system' to actual theme)
  */
 export const getEffectiveTheme = (theme: Theme): 'light' | 'dark' => {
-  return theme === 'system' ? getSystemTheme() : theme;
+  if (theme === 'system') return getSystemTheme();
+  // Theme variants default to either light or dark base.
+  if (theme === 'light') return 'light';
+  if (theme === 'solarized') return 'light';
+  return 'dark';
 };
 
 /**
@@ -49,6 +53,9 @@ export const applyTheme = (theme: Theme) => {
 
   const effectiveTheme = getEffectiveTheme(theme);
   const root = document.documentElement;
+
+  // Store selected theme for CSS (variants can style via [data-theme="..."])
+  root.setAttribute('data-theme', theme);
 
   if (effectiveTheme === 'dark') {
     root.classList.add('dark');

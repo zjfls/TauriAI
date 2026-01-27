@@ -5,6 +5,8 @@
 use crate::prompts::FormatPromptType;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::PathBuf;
 
 /// Role of a message in a conversation
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -647,6 +649,9 @@ impl<'de> Deserialize<'de> for AgentType {
 pub struct Agent {
     /// Unique identifier
     pub name: String,
+    /// Whether this agent is enabled (visible/selectable).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     /// Agent type (default: chat)
     #[serde(default, rename = "type")]
     pub agent_type: AgentType,
@@ -666,6 +671,12 @@ pub struct Agent {
     /// Optional toolset name (bind different tool collections per agent)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub toolset: Option<String>,
+    /// Optional MCP Set name (bind a group of MCP servers/tools per agent)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp_set: Option<String>,
+    /// Optional Skill Set name (bind a group of skills per agent)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skill_set: Option<String>,
     /// Optional security policy name (defaults to global default policy).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub security_policy: Option<String>,
@@ -699,6 +710,7 @@ impl Default for Agent {
     fn default() -> Self {
         Self {
             name: String::new(),
+            enabled: true,
             agent_type: AgentType::default(),
             display_name: String::new(),
             description: None,
@@ -706,12 +718,63 @@ impl Default for Agent {
             system_prompt: String::new(),
             format_type: FormatPromptType::default(),
             toolset: None,
+            mcp_set: None,
+            skill_set: None,
             security_policy: None,
             sandbox_policy: None,
             approval_policy: None,
             workspace_support: None,
             max_turns: None,
             reinject_thinking: false,
+        }
+    }
+}
+
+// ============================================================================
+// Skills (discovered from filesystem)
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillSetConfig {
+    pub name: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Explicit allow-list of skill names for this set. Empty means "no skills".
+    #[serde(default)]
+    pub skills: Vec<String>,
+    /// Optional deny-list (applied after `skills`).
+    #[serde(default)]
+    pub disabled_skills: Vec<String>,
+}
+
+impl Default for SkillSetConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            enabled: true,
+            skills: Vec::new(),
+            disabled_skills: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillsSettings {
+    /// Globally disabled skill names (applies to all sets).
+    #[serde(default)]
+    pub disabled_skills: Vec<String>,
+    /// Named skill sets.
+    #[serde(default)]
+    pub sets: Vec<SkillSetConfig>,
+}
+
+impl Default for SkillsSettings {
+    fn default() -> Self {
+        Self {
+            disabled_skills: Vec::new(),
+            sets: Vec::new(),
         }
     }
 }
@@ -842,6 +905,9 @@ pub struct GeneralSettings {
     /// Whether to open DevTools on startup (dev builds only)
     #[serde(default)]
     pub open_devtools_on_start: bool,
+    /// Hidden: local web search tool settings (used only when model has no native web search)
+    #[serde(default)]
+    pub web_search_tool: WebSearchToolSettings,
 }
 
 impl Default for GeneralSettings {
@@ -855,6 +921,58 @@ impl Default for GeneralSettings {
             ansi_render_mode: "color".to_string(),
             ansi_color_mode: "auto".to_string(),
             open_devtools_on_start: false,
+            web_search_tool: WebSearchToolSettings::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSearchProvider {
+    Tavily,
+    Google,
+    Brave,
+}
+
+impl Default for WebSearchProvider {
+    fn default() -> Self {
+        Self::Tavily
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebSearchToolSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub provider: WebSearchProvider,
+    /// Minimum interval between requests (rate limit), ms
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_interval_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tavily_api_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub brave_api_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub google_api_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub google_cx: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_results: Option<u32>,
+}
+
+impl Default for WebSearchToolSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            provider: WebSearchProvider::default(),
+            min_interval_ms: Some(1200),
+            tavily_api_key: None,
+            brave_api_key: None,
+            google_api_key: None,
+            google_cx: None,
+            max_results: Some(5),
         }
     }
 }
@@ -884,6 +1002,9 @@ pub struct ToolPermissionSettings {
     /// 允许写入工作区文件（`apply_patch`）
     #[serde(default)]
     pub file_write: bool,
+    /// 允许调用 MCP（外部工具服务器，mcp__*）。
+    #[serde(default)]
+    pub mcp_exec: bool,
 }
 
 impl Default for ToolPermissionSettings {
@@ -892,6 +1013,7 @@ impl Default for ToolPermissionSettings {
             shell_exec: false,
             pty_exec: false,
             file_write: false,
+            mcp_exec: false,
         }
     }
 }
@@ -937,6 +1059,129 @@ impl Default for ToolsSettings {
             enabled: true,
             permissions: ToolPermissionSettings::default(),
             toolsets: Vec::new(),
+        }
+    }
+}
+
+// ============================================================================
+// MCP (Model Context Protocol)
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "transport", rename_all = "snake_case")]
+pub enum McpServerTransportConfig {
+    /// Stdio transport: spawn a local process and talk JSON-RPC via stdin/stdout.
+    #[serde(rename_all = "camelCase")]
+    Stdio {
+        command: String,
+        #[serde(default)]
+        args: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        env: Option<HashMap<String, String>>,
+        #[serde(default)]
+        env_vars: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<PathBuf>,
+    },
+    /// Streamable HTTP transport: talk to a remote MCP server via HTTP.
+    #[serde(rename_all = "camelCase")]
+    StreamableHttp {
+        url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bearer_token_env_var: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        http_headers: Option<HashMap<String, String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        env_http_headers: Option<HashMap<String, String>>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerConfig {
+    pub transport: McpServerTransportConfig,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Startup timeout in ms for initialize + initial tools/list
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub startup_timeout_ms: Option<u64>,
+    /// Default timeout in ms for tools/call
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_timeout_ms: Option<u64>,
+    /// Allow-list of tools exposed from this server (empty = allow all)
+    #[serde(default)]
+    pub enabled_tools: Vec<String>,
+    /// Deny-list of tools (applied after enabled_tools)
+    #[serde(default)]
+    pub disabled_tools: Vec<String>,
+}
+
+impl Default for McpServerConfig {
+    fn default() -> Self {
+        Self {
+            transport: McpServerTransportConfig::Stdio {
+                command: String::new(),
+                args: Vec::new(),
+                env: None,
+                env_vars: Vec::new(),
+                cwd: None,
+            },
+            enabled: true,
+            startup_timeout_ms: None,
+            tool_timeout_ms: None,
+            enabled_tools: Vec::new(),
+            disabled_tools: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerEntry {
+    pub name: String,
+    pub config: McpServerConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpSetServerConfig {
+    pub server: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Allow-list (empty = allow all tools from this server)
+    #[serde(default)]
+    pub enabled_tools: Vec<String>,
+    /// Deny-list (applied after enabled_tools)
+    #[serde(default)]
+    pub disabled_tools: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpSetConfig {
+    pub name: String,
+    #[serde(default)]
+    pub servers: Vec<McpSetServerConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub servers: Vec<McpServerEntry>,
+    #[serde(default)]
+    pub sets: Vec<McpSetConfig>,
+}
+
+impl Default for McpSettings {
+    fn default() -> Self {
+        Self {
+            // MCP 在 TauriAI 中更多是“按 agent/mcp set 生效”的能力；不再提供全局开关。
+            enabled: true,
+            servers: Vec::new(),
+            sets: Vec::new(),
         }
     }
 }
@@ -1170,6 +1415,12 @@ pub struct AppConfig {
     /// Tooling settings (permissions + toolsets)
     #[serde(default)]
     pub tools: ToolsSettings,
+    /// MCP settings (servers + sets)
+    #[serde(default)]
+    pub mcp: McpSettings,
+    /// Skills settings (skill sets + disabled list)
+    #[serde(default)]
+    pub skills: SkillsSettings,
     /// Security settings (sandbox policy, etc.)
     #[serde(default)]
     pub security: SecuritySettings,
@@ -1203,6 +1454,8 @@ impl Default for AppConfig {
             appearance: AppearanceSettings::default(),
             general: GeneralSettings::default(),
             tools: ToolsSettings::default(),
+            mcp: McpSettings::default(),
+            skills: SkillsSettings::default(),
             security: SecuritySettings::default(),
             providers: Vec::new(),
             agents: Vec::new(),
@@ -1280,6 +1533,7 @@ impl AppConfig {
             let model_ref = format!("{}/{}", model_config.provider, model_config.model);
             self.agents.push(Agent {
                 name: agent_name.clone(),
+                enabled: true,
                 agent_type: AgentType::Chat,
                 display_name: model_config.name.clone(),
                 description: None,
@@ -1291,6 +1545,8 @@ impl AppConfig {
                     .unwrap_or_default(),
                 format_type: FormatPromptType::Chat,
                 toolset: None,
+                mcp_set: None,
+                skill_set: None,
                 security_policy: None,
                 sandbox_policy: None,
                 approval_policy: None,
@@ -1317,13 +1573,15 @@ impl AppConfig {
 
     /// Get agent by name
     pub fn get_agent(&self, name: &str) -> Option<&Agent> {
-        self.agents.iter().find(|a| a.name == name)
+        self.agents
+            .iter()
+            .find(|a| a.name == name && a.enabled)
     }
 
     /// Get default agent
     pub fn get_default_agent(&self) -> Option<&Agent> {
         if self.default_agent.is_empty() {
-            self.agents.first()
+            self.agents.iter().find(|a| a.enabled)
         } else {
             self.get_agent(&self.default_agent)
         }

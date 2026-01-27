@@ -14,10 +14,10 @@
       {
         "label": "main",
         "title": "tauri-ai",
-        "width": 1000,
-        "height": 700,
-        "minWidth": 800,
-        "minHeight": 600,
+        "width": 1300,
+        "height": 910,
+        "minWidth": 1040,
+        "minHeight": 780,
         "skipTaskbar": false
       }
     ],
@@ -29,7 +29,8 @@
     "active": true,
     "targets": "all",
     "resources": {
-      "resources/rg/": "rg/"
+      "resources/rg/": "rg/",
+      "../skills/": "skills/"
     },
     "icon": [
       "icons/32x32.png",
