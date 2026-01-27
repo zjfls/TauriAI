@@ -5,6 +5,9 @@ TauriAI-thinking-context.code-workspace
 # Local app state
 .tauriai/
 
+# Local scratch (e.g. vendored references)
+.tmp/
+
 # Rust build artifacts
 target/
 

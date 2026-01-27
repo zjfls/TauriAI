@@ -5,7 +5,7 @@
 
 import React from 'react';
 import { useConfigStore } from '../../stores/configStore';
-import type { AppConfig, NetworkAccess, SandboxPolicy } from '../../types';
+import type { AppConfig, AskForApproval, NetworkAccess, SandboxPolicy } from '../../types';
 
 const Toggle: React.FC<{
   checked: boolean;
@@ -40,6 +40,21 @@ const policySummary = (policy: SandboxPolicy) => {
       return '外部沙盒';
     case 'danger-full-access':
       return '完全访问';
+    default:
+      return '未知';
+  }
+};
+
+const approvalSummary = (policy: AskForApproval) => {
+  switch (policy) {
+    case 'untrusted':
+      return 'Untrusted（更谨慎）';
+    case 'on-failure':
+      return 'On Failure（失败再问）';
+    case 'on-request':
+      return 'On Request（模型决定）';
+    case 'never':
+      return 'Never（永不询问）';
     default:
       return '未知';
   }
@@ -82,14 +97,18 @@ export const SecurityConfigForm: React.FC = () => {
     );
   }
 
-  const sandboxPolicy: SandboxPolicy = config.security?.sandboxPolicy ?? defaultPolicyForType('workspace-write');
+  const sandboxPolicy: SandboxPolicy =
+    config.security?.sandboxPolicy ?? defaultPolicyForType('workspace-write');
+  const approvalPolicy: AskForApproval = config.security?.approvalPolicy ?? 'on-request';
 
-  const save = (nextSandboxPolicy: SandboxPolicy) => {
+  const save = (next: Partial<AppConfig['security']>) => {
     const updatedConfig: AppConfig = {
       ...config,
       security: {
-        ...(config.security ?? { sandboxPolicy: nextSandboxPolicy }),
-        sandboxPolicy: nextSandboxPolicy,
+        ...(config.security ?? { sandboxPolicy, approvalPolicy }),
+        sandboxPolicy,
+        approvalPolicy,
+        ...next,
       },
     };
     saveConfig(updatedConfig);
@@ -98,10 +117,29 @@ export const SecurityConfigForm: React.FC = () => {
   return (
     <div className="space-y-6">
       <div className="space-y-2">
-        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">沙盒策略</label>
+        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+          审批策略（AskForApproval）
+        </label>
         <select
+          value={approvalPolicy}
+          onChange={(e) => save({ approvalPolicy: e.target.value as AskForApproval })}
+          className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700"
+        >
+          <option value="untrusted">Untrusted</option>
+          <option value="on-failure">On Failure</option>
+          <option value="on-request">On Request</option>
+          <option value="never">Never</option>
+        </select>
+        <p className="text-xs text-gray-500">当前：{approvalSummary(approvalPolicy)}。</p>
+      </div>
+
+      <div className="space-y-2">
+        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">沙盒策略</label>
+          <select
           value={sandboxPolicy.type}
-          onChange={(e) => save(defaultPolicyForType(e.target.value as SandboxPolicy['type']))}
+          onChange={(e) =>
+            save({ sandboxPolicy: defaultPolicyForType(e.target.value as SandboxPolicy['type']) })
+          }
           className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700"
         >
           <option value="read-only">Read Only（只读）</option>
@@ -137,8 +175,10 @@ export const SecurityConfigForm: React.FC = () => {
             value={(sandboxPolicy.networkAccess ?? 'restricted') as NetworkAccess}
             onChange={(e) =>
               save({
-                type: 'external-sandbox',
-                networkAccess: e.target.value as NetworkAccess,
+                sandboxPolicy: {
+                  type: 'external-sandbox',
+                  networkAccess: e.target.value as NetworkAccess,
+                },
               })
             }
             className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700"
@@ -159,7 +199,9 @@ export const SecurityConfigForm: React.FC = () => {
             </div>
             <Toggle
               checked={Boolean(sandboxPolicy.networkAccess)}
-              onChange={(next) => save({ ...sandboxPolicy, networkAccess: next })}
+              onChange={(next) =>
+                save({ sandboxPolicy: { ...sandboxPolicy, networkAccess: next } })
+              }
             />
           </div>
 
@@ -168,7 +210,11 @@ export const SecurityConfigForm: React.FC = () => {
             <textarea
               rows={4}
               value={(sandboxPolicy.writableRoots ?? []).join('\n')}
-              onChange={(e) => save({ ...sandboxPolicy, writableRoots: parseRoots(e.target.value) })}
+              onChange={(e) =>
+                save({
+                  sandboxPolicy: { ...sandboxPolicy, writableRoots: parseRoots(e.target.value) },
+                })
+              }
               className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 resize-none font-mono text-sm"
               placeholder="例如：D:\\work\\extra\n/opt/data"
             />
@@ -184,7 +230,9 @@ export const SecurityConfigForm: React.FC = () => {
             </div>
             <Toggle
               checked={Boolean(sandboxPolicy.excludeTmpdirEnvVar)}
-              onChange={(next) => save({ ...sandboxPolicy, excludeTmpdirEnvVar: next })}
+              onChange={(next) =>
+                save({ sandboxPolicy: { ...sandboxPolicy, excludeTmpdirEnvVar: next } })
+              }
             />
           </div>
 
@@ -195,7 +243,9 @@ export const SecurityConfigForm: React.FC = () => {
             </div>
             <Toggle
               checked={Boolean(sandboxPolicy.excludeSlashTmp)}
-              onChange={(next) => save({ ...sandboxPolicy, excludeSlashTmp: next })}
+              onChange={(next) =>
+                save({ sandboxPolicy: { ...sandboxPolicy, excludeSlashTmp: next } })
+              }
             />
           </div>
         </div>

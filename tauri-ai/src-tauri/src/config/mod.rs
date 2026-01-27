@@ -191,6 +191,7 @@ mod tests {
                 format_type: FormatPromptType::Chat,
                 toolset: None,
                 sandbox_policy: None,
+                approval_policy: None,
                 workspace_support: None,
                 max_turns: None,
                 reinject_thinking: false,

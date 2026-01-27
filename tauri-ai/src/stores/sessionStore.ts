@@ -1561,7 +1561,7 @@ const flushPendingStreamChunks = () => {
 
       // Some block types are emitted as full JSON snapshots; for these we should not concat deltas.
       const isSnapshotBlockType = (blockType: string) => {
-        return blockType === 'web_search' || blockType === 'tool_call';
+        return blockType === 'web_search' || blockType === 'tool_call' || blockType === 'approval';
       };
 
       const upsertBlock = (
@@ -1604,6 +1604,31 @@ const flushPendingStreamChunks = () => {
               return { id: blockId, type: 'tool_call', callId, name, arguments: args, turnId, turnIndex };
             }
           }
+          if (blockType === 'approval') {
+            const v = parseJson(delta);
+            if (v && typeof v === 'object') {
+              const requestId = typeof v.request_id === 'string' ? v.request_id : extractSuffixId('approval:', blockId);
+              const callId = typeof v.call_id === 'string' ? v.call_id : requestId;
+              const toolName = typeof v.tool_name === 'string' ? v.tool_name : '';
+              const args = typeof v.arguments === 'string' ? v.arguments : '';
+              const status = typeof v.status === 'string' ? v.status : 'unknown';
+              const escalated = typeof v.escalated === 'boolean' ? v.escalated : undefined;
+              const reason = typeof v.reason === 'string' ? v.reason : undefined;
+              return {
+                id: blockId,
+                type: 'approval',
+                requestId,
+                callId,
+                toolName,
+                arguments: args,
+                status,
+                escalated,
+                reason,
+                turnId,
+                turnIndex,
+              };
+            }
+          }
           if (blockType === 'web_search') {
             const v = parseJson(delta);
             if (v && typeof v === 'object') {
@@ -1638,13 +1663,17 @@ const flushPendingStreamChunks = () => {
             // Snapshot update: overwrite (arguments may arrive in multiple updates in future)
             return createBlock();
           }
+          if (current.type === 'approval' && blockType === 'approval') {
+            // Snapshot update: overwrite
+            return createBlock();
+          }
           if (current.type === 'web_search' && blockType === 'web_search') {
             // Snapshot update: overwrite
             return createBlock();
           }
           if (current.type === 'unknown') {
             // If we now recognize the blockType, upgrade it to a typed block; otherwise append text.
-            if (blockType === 'text' || blockType === 'thinking' || blockType === 'tool_call' || blockType === 'tool_result' || blockType === 'web_search' || blockType === 'error') {
+            if (blockType === 'text' || blockType === 'thinking' || blockType === 'tool_call' || blockType === 'tool_result' || blockType === 'web_search' || blockType === 'error' || blockType === 'approval') {
               return createBlock();
             }
 

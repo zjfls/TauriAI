@@ -17,7 +17,7 @@ use tokio::sync::Mutex;
 use commands::{
     abort_run, create_conversation, delete_conversation, delete_messages_from,
     fetch_provider_models, generate_title, get_app_config, get_conversations, get_messages,
-    list_local_directory, read_local_file_base64, run_task, save_app_config, test_connection,
+    list_local_directory, read_local_file_base64, respond_approval, run_task, save_app_config, test_connection,
     update_conversation_metadata, write_local_text_file,
     update_conversation_title, list_pty_sessions, close_pty_session,
     ensure_workstudio_for_conversation, get_workstudio, add_workstudio_folder, create_workstudio,
@@ -180,6 +180,7 @@ pub fn run() {
             // Runtime commands
             run_task,
             abort_run,
+            respond_approval,
             list_pty_sessions,
             close_pty_session,
             // Workstudio commands

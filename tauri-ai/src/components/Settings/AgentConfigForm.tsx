@@ -6,7 +6,7 @@
 import React, { useState, useEffect } from 'react';
 import { Plus, Star, Search, Copy } from 'lucide-react';
 import { useConfigStore } from '../../stores/configStore';
-import type { Agent, AgentType, FormatPromptType, SandboxPolicy } from '../../types';
+import type { Agent, AgentType, AskForApproval, FormatPromptType, SandboxPolicy } from '../../types';
 
 const defaultAgent: Agent = {
   name: '',
@@ -183,6 +183,7 @@ export const AgentConfigForm: React.FC = () => {
             modelOptions={modelOptions}
             toolsetOptions={toolsetOptions}
             globalSandboxPolicy={config?.security?.sandboxPolicy ?? { type: 'workspace-write' }}
+            globalApprovalPolicy={config?.security?.approvalPolicy ?? 'on-request'}
             onEdit={handleEdit}
             onDuplicate={handleDuplicate}
             onSave={handleSave}
@@ -210,6 +211,7 @@ interface AgentFormProps {
   modelOptions: { label: string; value: string }[];
   toolsetOptions: { label: string; value: string }[];
   globalSandboxPolicy: SandboxPolicy;
+  globalApprovalPolicy: AskForApproval;
   onEdit: () => void;
   onDuplicate: () => void;
   onSave: () => void;
@@ -226,6 +228,7 @@ const AgentForm: React.FC<AgentFormProps> = ({
   modelOptions,
   toolsetOptions,
   globalSandboxPolicy,
+  globalApprovalPolicy,
   onEdit,
   onDuplicate,
   onSave,
@@ -271,7 +274,23 @@ const AgentForm: React.FC<AgentFormProps> = ({
     }
   };
 
+  const approvalSummary = (policy: AskForApproval) => {
+    switch (policy) {
+      case 'untrusted':
+        return 'Untrusted（更谨慎）';
+      case 'on-failure':
+        return 'On Failure（失败再问）';
+      case 'on-request':
+        return 'On Request（模型决定）';
+      case 'never':
+        return 'Never（永不询问）';
+      default:
+        return '未知';
+    }
+  };
+
   const effectiveSandboxPolicy: SandboxPolicy = agent.sandboxPolicy ?? globalSandboxPolicy;
+  const effectiveApprovalPolicy: AskForApproval = agent.approvalPolicy ?? globalApprovalPolicy;
 
   const defaultPolicyForType = (type: SandboxPolicy['type']): SandboxPolicy => {
     switch (type) {
@@ -428,6 +447,28 @@ const AgentForm: React.FC<AgentFormProps> = ({
             </p>
           </div>
         )}
+
+        <div className="space-y-1">
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+            审批策略（AskForApproval）
+          </label>
+          <select
+            value={agent.approvalPolicy ?? ''}
+            onChange={(e) => {
+              const v = e.target.value;
+              onFieldChange('approvalPolicy', v ? (v as AskForApproval) : undefined);
+            }}
+            disabled={!isEditing}
+            className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800"
+          >
+            <option value="">（默认：使用全局策略 - {approvalSummary(globalApprovalPolicy)}）</option>
+            <option value="untrusted">Untrusted</option>
+            <option value="on-failure">On Failure</option>
+            <option value="on-request">On Request</option>
+            <option value="never">Never</option>
+          </select>
+          <p className="text-xs text-gray-500">生效策略：{approvalSummary(effectiveApprovalPolicy)}</p>
+        </div>
 
         <div className="space-y-1">
           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">沙盒策略</label>

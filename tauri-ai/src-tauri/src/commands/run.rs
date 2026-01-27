@@ -11,6 +11,7 @@ use tokio::sync::Mutex;
 use crate::config::ConfigManager;
 use crate::errors::SerializableError;
 use crate::models::ContentPart;
+use crate::runtime::approvals::ApprovalDecision;
 use crate::runtime::task_runner::{run_task as run_task_impl, RunTaskInput};
 use crate::runtime::RunState;
 use crate::storage::Database;
@@ -59,4 +60,21 @@ pub async fn abort_run(
     // Best-effort：abort + wait，确保 run fully 退出（避免并发写入导致状态错乱）
     run_state.abort_and_wait(&conversation_id, 5_000).await;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn respond_approval(
+    conversation_id: String,
+    request_id: String,
+    decision: ApprovalDecision,
+    run_state: tauri::State<'_, Arc<RunState>>,
+) -> Result<(), String> {
+    if run_state
+        .resolve_approval(&conversation_id, &request_id, decision)
+        .await
+    {
+        Ok(())
+    } else {
+        Err("没有找到待审批的请求（可能已超时/已处理/任务已结束）".to_string())
+    }
 }

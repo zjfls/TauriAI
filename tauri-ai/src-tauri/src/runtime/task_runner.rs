@@ -6,7 +6,7 @@
 //! - Chat = 最简单的 Task（通常单 Turn）
 //! - Tool = 多 Turn 循环（后续可扩展）
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::OnceLock;
 
@@ -23,8 +23,8 @@ use crate::ai_client::{
 use crate::config::ConfigManager;
 use crate::errors::{AppErrorCode, SerializableError};
 use crate::models::{
-    AgentType, ContentPart, Message, MessageBlock, MessageMeta, MessageRole, MessageStatus,
-    MessageTurn,
+    AgentType, AskForApproval, ContentPart, Message, MessageBlock, MessageMeta, MessageRole,
+    MessageStatus, MessageTurn,
 };
 use crate::prompts::{PERSISTENT_PROCESS_PROMPT, PYTHON3_FALLBACK_PROMPT, WORKSTUDIO_PROMPT_GUIDE};
 use crate::runtime::events::RunEvent;
@@ -32,6 +32,7 @@ use crate::runtime::types::{TaskKind, TurnPhase, TurnStatus};
 use crate::storage::Database;
 
 use super::emitter::RunEmitter;
+use super::approvals::ApprovalDecision;
 use super::run_state::RunState;
 use super::tools::{
     tool_specs_to_definitions, ToolOrchestrator, ToolOrchestratorConfig, ToolServices,
@@ -114,6 +115,7 @@ struct TurnLoop<'a> {
     client: Arc<dyn crate::ai_client::AiClient>,
     model_config: crate::models::ModelConfig,
     tools: Option<Vec<ToolDefinition>>,
+    allowed_tool_names: Option<HashSet<String>>,
     /// 工具编排器（权限/路由/gate/pty 会话等都在 tools 子系统内部处理）
     tool_orchestrator: Option<ToolOrchestrator>,
     /// 工具运行时依赖与状态（例如 PTY 会话管理）
@@ -124,6 +126,11 @@ struct TurnLoop<'a> {
     workspace_roots: Vec<std::path::PathBuf>,
     /// Effective sandbox policy for this run.
     sandbox_policy: crate::models::SandboxPolicy,
+    /// Effective approval policy for this run.
+    approval_policy: AskForApproval,
+    /// Per-conversation approval cache (for "approve for session").
+    approval_store: Arc<Mutex<super::approvals::ApprovalStore>>,
+    run_state: Arc<RunState>,
     runtime_messages: Vec<Message>,
     conversation_id: String,
     task_id: String,
@@ -345,6 +352,220 @@ fn inject_workstudio_prompt(
 }
 
 impl<'a> TurnLoop<'a> {
+    fn is_safe_readonly_tool(tool_name: &str) -> bool {
+        matches!(tool_name, "echo" | "get_time" | "read_file" | "list_dir" | "rg")
+    }
+
+    fn is_exec_tool(tool_name: &str) -> bool {
+        matches!(
+            tool_name,
+            "shell_command"
+                | "exec_command"
+                | "write_stdin"
+                | "exec_command_persistent"
+                | "write_stdin_persistent"
+        )
+    }
+
+    fn is_write_tool(tool_name: &str) -> bool {
+        matches!(tool_name, "apply_patch")
+    }
+
+    fn approval_cache_key(call: &ToolCall) -> String {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut h = DefaultHasher::new();
+        call.name.hash(&mut h);
+        call.arguments.hash(&mut h);
+        format!("{}:{:x}", call.name, h.finish())
+    }
+
+    fn sandbox_policy_for_approved_call(
+        &self,
+        tool_name: &str,
+        escalated: bool,
+    ) -> crate::models::SandboxPolicy {
+        if escalated {
+            return crate::models::SandboxPolicy::DangerFullAccess;
+        }
+
+        // In "read-only" mode, a successful approval implies we can temporarily
+        // lift restrictions for this call. To stay close to Codex semantics,
+        // we upgrade to "workspace-write" (still confined to workspace roots).
+        if matches!(self.sandbox_policy, crate::models::SandboxPolicy::ReadOnly)
+            && (Self::is_exec_tool(tool_name) || Self::is_write_tool(tool_name))
+        {
+            return crate::models::SandboxPolicy::WorkspaceWrite {
+                writable_roots: Vec::new(),
+                network_access: false,
+                exclude_tmpdir_env_var: false,
+                exclude_slash_tmp: false,
+            };
+        }
+
+        self.sandbox_policy.clone()
+    }
+
+    fn decision_status(decision: ApprovalDecision) -> &'static str {
+        match decision {
+            ApprovalDecision::Approved => "approved",
+            ApprovalDecision::ApprovedForSession => "approved_for_session",
+            ApprovalDecision::Denied => "denied",
+            ApprovalDecision::Abort => "abort",
+        }
+    }
+
+    fn should_prompt_for_tool(&self, tool_name: &str) -> bool {
+        // Tools not enabled for this run should not pop approval UIs.
+        if let Some(allowed) = self.allowed_tool_names.as_ref() {
+            if !allowed.contains(tool_name) {
+                return false;
+            }
+        }
+
+        // Always allow safe read-only tools without asking.
+        if Self::is_safe_readonly_tool(tool_name) {
+            return false;
+        }
+
+        // Only exec/write tools participate in approval flow for now.
+        if !Self::is_exec_tool(tool_name) && !Self::is_write_tool(tool_name) {
+            return false;
+        }
+
+        match self.approval_policy {
+            AskForApproval::Never | AskForApproval::OnFailure => false,
+            AskForApproval::OnRequest => {
+                // Read-only sandbox still needs approval to lift restrictions.
+                // Workspace-write allows `apply_patch` without prompting (Codex-like).
+                if Self::is_write_tool(tool_name)
+                    && matches!(self.sandbox_policy, crate::models::SandboxPolicy::WorkspaceWrite { .. })
+                {
+                    return false;
+                }
+                !self.sandbox_policy.has_full_disk_write_access()
+            }
+            AskForApproval::UnlessTrusted => true,
+        }
+    }
+
+    async fn request_tool_approval(
+        &mut self,
+        abort_rx: &mut mpsc::Receiver<()>,
+        turn_id: &str,
+        _turn_index: u32,
+        call: &ToolCall,
+        reason: Option<String>,
+        escalated: bool,
+        force_prompt: bool,
+    ) -> (bool, ApprovalDecision, Option<crate::models::SandboxPolicy>) {
+        let tool_name = call.name.as_str();
+
+        if self.allowed_tool_names.as_ref().is_some_and(|s| !s.contains(tool_name)) {
+            return (false, ApprovalDecision::Approved, None);
+        }
+
+        if Self::is_safe_readonly_tool(tool_name) {
+            return (false, ApprovalDecision::Approved, None);
+        }
+
+        let mut needs_prompt = if force_prompt {
+            !matches!(self.approval_policy, AskForApproval::Never)
+        } else {
+            self.should_prompt_for_tool(tool_name)
+        };
+
+        // OnFailure: first attempt never prompts; only retry will.
+        if matches!(self.approval_policy, AskForApproval::OnFailure) && !force_prompt {
+            needs_prompt = false;
+        }
+
+        if !needs_prompt {
+            // Policy allows running without asking; keep the current sandbox policy.
+            return (false, ApprovalDecision::Approved, Some(self.sandbox_policy.clone()));
+        }
+
+        let approval_key = Self::approval_cache_key(call);
+        let already_approved_for_session = {
+            let store = self.approval_store.lock().await;
+            store.is_approved_for_session(&approval_key)
+        };
+        if already_approved_for_session {
+            let sandbox = self.sandbox_policy_for_approved_call(tool_name, escalated);
+            return (false, ApprovalDecision::ApprovedForSession, Some(sandbox));
+        }
+
+        let request_id = call.id.clone();
+        let block_id = format!("approval:{request_id}");
+
+        let payload = serde_json::json!({
+            "request_id": request_id,
+            "call_id": call.id,
+            "tool_name": call.name,
+            "arguments": call.arguments,
+            "status": "pending",
+            "escalated": escalated,
+            "reason": reason,
+        })
+        .to_string();
+
+        self.emitter.emit(RunEvent::BlockDelta {
+            task_id: self.task_id.clone(),
+            turn_id: turn_id.to_string(),
+            assistant_message_id: Some(self.assistant_message_id.clone()),
+            block_id: block_id.clone(),
+            block_type: "approval".to_string(),
+            format: Some("json".to_string()),
+            delta: payload,
+        });
+
+        let mut rx = self
+            .run_state
+            .register_approval_waiter(&self.conversation_id, request_id.clone())
+            .await;
+
+        let decision = tokio::select! {
+            _ = abort_rx.recv() => ApprovalDecision::Abort,
+            v = &mut rx => v.unwrap_or(ApprovalDecision::Abort),
+        };
+
+        if decision == ApprovalDecision::ApprovedForSession {
+            let mut store = self.approval_store.lock().await;
+            store.put(approval_key, decision);
+        }
+
+        let resolved = serde_json::json!({
+            "request_id": request_id,
+            "call_id": call.id,
+            "tool_name": call.name,
+            "arguments": call.arguments,
+            "status": Self::decision_status(decision),
+            "escalated": escalated,
+            "reason": reason,
+        })
+        .to_string();
+
+        self.emitter.emit(RunEvent::BlockDelta {
+            task_id: self.task_id.clone(),
+            turn_id: turn_id.to_string(),
+            assistant_message_id: Some(self.assistant_message_id.clone()),
+            block_id,
+            block_type: "approval".to_string(),
+            format: Some("json".to_string()),
+            delta: resolved,
+        });
+
+        let sandbox = match decision {
+            ApprovalDecision::Approved | ApprovalDecision::ApprovedForSession => {
+                Some(self.sandbox_policy_for_approved_call(tool_name, escalated))
+            }
+            _ => None,
+        };
+
+        (true, decision, sandbox)
+    }
+
     async fn run(&mut self, abort_rx: &mut mpsc::Receiver<()>) -> TaskOutcome {
         // Persisted structured outputs for history restore (stored into assistant message meta).
         // NOTE: We only persist redacted per-turn DebugInfo to avoid leaking sensitive headers.
@@ -635,7 +856,7 @@ impl<'a> TurnLoop<'a> {
 
                     let mut aborted_in_tools: Option<String> = None;
                     for call in &normalized_calls {
-                        let Some(orchestrator) = self.tool_orchestrator.as_ref() else {
+                        if self.tool_orchestrator.is_none() {
                             let result: String = format!(
                                 "TOOL_ERROR: 当前任务未启用工具系统，但模型请求了工具 '{}'",
                                 call.name
@@ -674,24 +895,273 @@ impl<'a> TurnLoop<'a> {
                             continue;
                         };
 
-                        let mut tool_ctx = super::tools::registry::ToolExecutionContext {
-                            conversation_id: &self.conversation_id,
-                            task_id: &self.task_id,
-                            turn_id: &turn_id,
-                            assistant_message_id: &self.assistant_message_id,
-                            default_workdir: self.default_workdir.clone(),
-                            workspace_roots: self.workspace_roots.clone(),
-                            sandbox_policy: self.sandbox_policy.clone(),
-                            emitter: self.emitter,
-                            abort_rx,
-                            services: self.tool_services.as_ref(),
+                        let mut approval_record: Option<(String, Option<String>)> = None;
+
+                        // 1) Policy-based approval (AskForApproval)
+                        let (asked, decision, sandbox_override) = self
+                            .request_tool_approval(
+                                abort_rx,
+                                &turn_id,
+                                turn_index,
+                                call,
+                                None,
+                                false,
+                                false,
+                            )
+                            .await;
+                        if asked {
+                            approval_record = Some((Self::decision_status(decision).to_string(), None));
+                        }
+
+                        match decision {
+                            ApprovalDecision::Abort => {
+                                aborted_in_tools = Some("用户终止了工具审批".to_string());
+                                if let Some((status, reason)) = approval_record.take() {
+                                    blocks.push(MessageBlock::Approval {
+                                        id: format!("{turn_id}:approval:{}", call.id),
+                                        turn_id: Some(turn_id.clone()),
+                                        turn_index: Some(turn_index),
+                                        request_id: call.id.clone(),
+                                        tool_name: call.name.clone(),
+                                        arguments: call.arguments.clone(),
+                                        status,
+                                        reason,
+                                    });
+                                }
+                                break;
+                            }
+                            ApprovalDecision::Denied => {
+                                let msg = format!("TOOL_DENIED: 用户拒绝执行工具 '{}'", call.name);
+                                self.emitter.emit(RunEvent::BlockDelta {
+                                    task_id: self.task_id.clone(),
+                                    turn_id: turn_id.clone(),
+                                    assistant_message_id: Some(self.assistant_message_id.clone()),
+                                    block_id: format!("tool_result:{}", call.id),
+                                    block_type: "tool_result".to_string(),
+                                    format: Some("plain".to_string()),
+                                    delta: msg.clone(),
+                                });
+
+                                if let Some((status, reason)) = approval_record.take() {
+                                    blocks.push(MessageBlock::Approval {
+                                        id: format!("{turn_id}:approval:{}", call.id),
+                                        turn_id: Some(turn_id.clone()),
+                                        turn_index: Some(turn_index),
+                                        request_id: call.id.clone(),
+                                        tool_name: call.name.clone(),
+                                        arguments: call.arguments.clone(),
+                                        status,
+                                        reason,
+                                    });
+                                }
+
+                                blocks.push(MessageBlock::ToolResult {
+                                    id: format!("{turn_id}:tool_result:{}", call.id),
+                                    turn_id: Some(turn_id.clone()),
+                                    turn_index: Some(turn_index),
+                                    call_id: call.id.clone(),
+                                    text: msg.clone(),
+                                });
+                                self.runtime_messages.push(Message {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    conversation_id: self.conversation_id.clone(),
+                                    role: MessageRole::Tool,
+                                    content: msg,
+                                    content_parts: Vec::new(),
+                                    thinking: None,
+                                    meta: Some(MessageMeta {
+                                        tool_call_id: Some(call.id.clone()),
+                                        ..Default::default()
+                                    }),
+                                    created_at: chrono::Utc::now(),
+                                    status: MessageStatus::Success,
+                                    error_message: None,
+                                });
+                                continue;
+                            }
+                            ApprovalDecision::Approved | ApprovalDecision::ApprovedForSession => {}
+                        }
+
+                        let mut sandbox_policy_for_call =
+                            sandbox_override.unwrap_or_else(|| self.sandbox_policy.clone());
+
+                        let mut exec = {
+                            let mut tool_ctx = super::tools::registry::ToolExecutionContext {
+                                conversation_id: &self.conversation_id,
+                                task_id: &self.task_id,
+                                turn_id: &turn_id,
+                                assistant_message_id: &self.assistant_message_id,
+                                default_workdir: self.default_workdir.clone(),
+                                workspace_roots: self.workspace_roots.clone(),
+                                sandbox_policy: sandbox_policy_for_call.clone(),
+                                emitter: self.emitter,
+                                abort_rx,
+                                services: self.tool_services.as_ref(),
+                            };
+                            let orchestrator = self
+                                .tool_orchestrator
+                                .as_ref()
+                                .expect("tool_orchestrator checked above");
+                            orchestrator.execute_one(&mut tool_ctx, call).await
                         };
 
-                        let result = match orchestrator.execute_one(&mut tool_ctx, call).await {
+                        // 2) OnFailure: if denied by sandbox, ask to retry with escalation.
+                        if matches!(self.approval_policy, AskForApproval::OnFailure) {
+                            if let Err(e) = &exec {
+                                if e.kind == super::tools::registry::ToolErrorKind::Denied
+                                    && !sandbox_policy_for_call.has_full_disk_write_access()
+                                {
+                                    let retry_reason = format!(
+                                        "工具被沙盒拒绝：{}。是否允许以完全访问权限重试？",
+                                        e.message
+                                    );
+                                    let (asked2, decision2, sandbox2) = self
+                                        .request_tool_approval(
+                                            abort_rx,
+                                            &turn_id,
+                                            turn_index,
+                                            call,
+                                            Some(retry_reason.clone()),
+                                            true,
+                                            true,
+                                        )
+                                        .await;
+                                    if asked2 {
+                                        approval_record = Some((
+                                            Self::decision_status(decision2).to_string(),
+                                            Some(retry_reason),
+                                        ));
+                                    }
+
+                                    match decision2 {
+                                        ApprovalDecision::Abort => {
+                                            aborted_in_tools =
+                                                Some("用户终止了工具提权审批".to_string());
+                                            if let Some((status, reason)) = approval_record.take() {
+                                                blocks.push(MessageBlock::Approval {
+                                                    id: format!("{turn_id}:approval:{}", call.id),
+                                                    turn_id: Some(turn_id.clone()),
+                                                    turn_index: Some(turn_index),
+                                                    request_id: call.id.clone(),
+                                                    tool_name: call.name.clone(),
+                                                    arguments: call.arguments.clone(),
+                                                    status,
+                                                    reason,
+                                                });
+                                            }
+                                            break;
+                                        }
+                                        ApprovalDecision::Denied => {
+                                            let msg = format!(
+                                                "TOOL_DENIED: 用户拒绝提升权限重试（原始错误：{}）",
+                                                e.message
+                                            );
+                                            self.emitter.emit(RunEvent::BlockDelta {
+                                                task_id: self.task_id.clone(),
+                                                turn_id: turn_id.clone(),
+                                                assistant_message_id: Some(
+                                                    self.assistant_message_id.clone(),
+                                                ),
+                                                block_id: format!("tool_result:{}", call.id),
+                                                block_type: "tool_result".to_string(),
+                                                format: Some("plain".to_string()),
+                                                delta: msg.clone(),
+                                            });
+
+                                            if let Some((status, reason)) = approval_record.take() {
+                                                blocks.push(MessageBlock::Approval {
+                                                    id: format!("{turn_id}:approval:{}", call.id),
+                                                    turn_id: Some(turn_id.clone()),
+                                                    turn_index: Some(turn_index),
+                                                    request_id: call.id.clone(),
+                                                    tool_name: call.name.clone(),
+                                                    arguments: call.arguments.clone(),
+                                                    status,
+                                                    reason,
+                                                });
+                                            }
+
+                                            blocks.push(MessageBlock::ToolResult {
+                                                id: format!("{turn_id}:tool_result:{}", call.id),
+                                                turn_id: Some(turn_id.clone()),
+                                                turn_index: Some(turn_index),
+                                                call_id: call.id.clone(),
+                                                text: msg.clone(),
+                                            });
+                                            self.runtime_messages.push(Message {
+                                                id: uuid::Uuid::new_v4().to_string(),
+                                                conversation_id: self.conversation_id.clone(),
+                                                role: MessageRole::Tool,
+                                                content: msg,
+                                                content_parts: Vec::new(),
+                                                thinking: None,
+                                                meta: Some(MessageMeta {
+                                                    tool_call_id: Some(call.id.clone()),
+                                                    ..Default::default()
+                                                }),
+                                                created_at: chrono::Utc::now(),
+                                                status: MessageStatus::Success,
+                                                error_message: None,
+                                            });
+                                            continue;
+                                        }
+                                        ApprovalDecision::Approved
+                                        | ApprovalDecision::ApprovedForSession => {
+                                            sandbox_policy_for_call = sandbox2.unwrap_or(
+                                                crate::models::SandboxPolicy::DangerFullAccess,
+                                            );
+                                            exec = {
+                                                let mut tool_ctx =
+                                                    super::tools::registry::ToolExecutionContext {
+                                                        conversation_id: &self.conversation_id,
+                                                        task_id: &self.task_id,
+                                                        turn_id: &turn_id,
+                                                        assistant_message_id:
+                                                            &self.assistant_message_id,
+                                                        default_workdir: self
+                                                            .default_workdir
+                                                            .clone(),
+                                                        workspace_roots: self
+                                                            .workspace_roots
+                                                            .clone(),
+                                                        sandbox_policy: sandbox_policy_for_call
+                                                            .clone(),
+                                                        emitter: self.emitter,
+                                                        abort_rx,
+                                                        services: self
+                                                            .tool_services
+                                                            .as_ref(),
+                                                    };
+                                                let orchestrator = self
+                                                    .tool_orchestrator
+                                                    .as_ref()
+                                                    .expect("tool_orchestrator checked above");
+                                                orchestrator.execute_one(&mut tool_ctx, call).await
+                                            };
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if let Some((status, reason)) = approval_record.take() {
+                            blocks.push(MessageBlock::Approval {
+                                id: format!("{turn_id}:approval:{}", call.id),
+                                turn_id: Some(turn_id.clone()),
+                                turn_index: Some(turn_index),
+                                request_id: call.id.clone(),
+                                tool_name: call.name.clone(),
+                                arguments: call.arguments.clone(),
+                                status,
+                                reason,
+                            });
+                        }
+
+                        let result = match exec {
                             Ok(v) => v.content,
                             Err(e) => {
                                 if e.kind == super::tools::registry::ToolErrorKind::Aborted {
-                                    tool_ctx.emitter.emit(RunEvent::BlockDelta {
+                                    self.emitter.emit(RunEvent::BlockDelta {
                                         task_id: self.task_id.clone(),
                                         turn_id: turn_id.clone(),
                                         assistant_message_id: Some(self.assistant_message_id.clone()),
@@ -711,7 +1181,7 @@ impl<'a> TurnLoop<'a> {
                                     break;
                                 }
                                 let msg = format!("TOOL_ERROR: {}", e.message);
-                                tool_ctx.emitter.emit(RunEvent::BlockDelta {
+                                self.emitter.emit(RunEvent::BlockDelta {
                                     task_id: self.task_id.clone(),
                                     turn_id: turn_id.clone(),
                                     assistant_message_id: Some(self.assistant_message_id.clone()),
@@ -1499,6 +1969,10 @@ async fn run_task_inner(
         .clone()
         .unwrap_or_else(|| config.security.sandbox_policy.clone());
 
+    let approval_policy = agent
+        .approval_policy
+        .unwrap_or(config.security.approval_policy);
+
     // 3) 允许 stop/撤回 等并发操作中断当前 run
     let (abort_tx, mut abort_rx) = mpsc::channel::<()>(1);
     {
@@ -1517,22 +1991,12 @@ async fn run_task_inner(
         title: None,
     });
 
-    // 4) TurnLoop：Chat = 单 Turn；Tool = 多 Turn（上限可由 Agent 配置）
-    // - 未配置时：Tool 默认 10000（按你的需求），其他类型默认 1
-    let default_max_turns: u32 = match agent.agent_type {
-        AgentType::Tool => 10_000,
-        _ => 1,
-    };
-    let max_turns: u32 = agent
-        .max_turns
-        .unwrap_or(default_max_turns)
-        .max(1);
-
     // tools：按 Agent 选择工具集，并在这里完成“权限过滤 -> 传给模型的 ToolDefinition”
     // - 真实执行时仍会再次做权限检查（防止前端/模型绕过）
     let tool_services = run_state.get_tool_services(&input.conversation_id).await;
+    let approval_store = run_state.get_approval_store(&input.conversation_id).await;
     let mut allow_persistent_pty = false;
-    let (tool_orchestrator, tools) = match agent.agent_type {
+    let (tool_orchestrator, tools, allowed_tool_names) = match agent.agent_type {
         AgentType::Tool => {
             // ToolSet：Agent 可以绑定不同工具集合；未配置则默认 allow_all（由权限再做过滤）。
             let toolset = match agent.toolset.as_deref().filter(|s| !s.trim().is_empty()) {
@@ -1564,10 +2028,55 @@ async fn run_task_inner(
                 permission_policy,
             });
             let specs = orchestrator.tool_specs_for_model();
-            (Some(orchestrator), Some(tool_specs_to_definitions(&specs)))
+            let allowed_tool_names: HashSet<String> =
+                specs.iter().map(|s| s.name.clone()).collect();
+            (
+                Some(orchestrator),
+                Some(tool_specs_to_definitions(&specs)),
+                Some(allowed_tool_names),
+            )
         }
-        _ => (None, None),
+        AgentType::Chat => {
+            // Chat 也允许使用只读工具（read_file/list_dir/rg 等），用于“读代码/查文件”。
+            let permission_policy: Arc<dyn super::tools::permissions::ToolPermissionPolicy> =
+                if !config.tools.enabled {
+                    Arc::new(super::tools::permissions::DenyAllPolicy::default())
+                } else {
+                    Arc::new(super::tools::permissions::DenyByDefaultPolicy::default())
+                };
+
+            let orchestrator = ToolOrchestrator::new_builtin(ToolOrchestratorConfig {
+                toolset: super::tools::spec::ToolSet::allow_all(),
+                permission_policy,
+            });
+            let specs = orchestrator.tool_specs_for_model();
+            let allowed_tool_names: HashSet<String> =
+                specs.iter().map(|s| s.name.clone()).collect();
+            (
+                Some(orchestrator),
+                Some(tool_specs_to_definitions(&specs)),
+                Some(allowed_tool_names),
+            )
+        }
     };
+
+    // 4) TurnLoop：Chat 默认单 Turn，但只要启用了工具调用，就至少需要 2 Turn 才能完成
+    //    （Turn1: tool_calls -> 执行工具；Turn2: 带工具结果继续生成最终回复）。
+    let has_tools = tools.as_ref().map(|t| !t.is_empty()).unwrap_or(false);
+    let default_max_turns: u32 = match agent.agent_type {
+        AgentType::Tool => 10_000,
+        AgentType::Chat => {
+            if has_tools {
+                20
+            } else {
+                1
+            }
+        }
+    };
+    let mut max_turns: u32 = agent.max_turns.unwrap_or(default_max_turns).max(1);
+    if matches!(agent.agent_type, AgentType::Chat) && has_tools && agent.max_turns.is_none() {
+        max_turns = max_turns.max(2);
+    }
 
     let mut runtime_messages = base_messages;
     if let Some(ws) = workstudio.as_ref() {
@@ -1581,11 +2090,15 @@ async fn run_task_inner(
         client,
         model_config: model_config.clone(),
         tools,
+        allowed_tool_names,
         tool_orchestrator,
         tool_services,
         default_workdir,
         workspace_roots,
         sandbox_policy,
+        approval_policy,
+        approval_store,
+        run_state: run_state.clone(),
         runtime_messages,
         conversation_id: input.conversation_id.clone(),
         task_id: task_id.clone(),

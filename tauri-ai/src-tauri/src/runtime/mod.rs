@@ -9,6 +9,7 @@
 
 pub mod events;
 pub mod emitter;
+pub mod approvals;
 pub mod run_state;
 pub mod task_runner;
 pub mod tools;

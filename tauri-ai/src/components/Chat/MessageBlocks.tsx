@@ -10,6 +10,7 @@
 
 import React, { useMemo, useState } from 'react';
 import { AlertTriangle, Brain, Bug, ChevronDown, ChevronRight, Search, Wrench } from 'lucide-react';
+import { invoke, isTauri } from '@tauri-apps/api/core';
 import type { MessageBlock, MessageTurn } from '../../types';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { AnsiText } from './AnsiText';
@@ -123,6 +124,174 @@ const ToolCallBlock: React.FC<{ name: string; args: string; isStreaming?: boolea
           <pre className="h-48 overflow-y-auto whitespace-pre-wrap break-words pr-2">{prettyArgs}</pre>
         </div>
       )}
+    </div>
+  );
+};
+
+const ApprovalBlock: React.FC<{
+  conversationId?: string;
+  block: Extract<MessageBlock, { type: 'approval' }>;
+  isStreaming?: boolean;
+}> = ({ conversationId, block, isStreaming }) => {
+  const [isExpanded, setIsExpanded] = useState(Boolean(isStreaming || block.status === 'pending'));
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const prettyArgs = useMemo(() => {
+    if (!block.arguments) return '';
+    try {
+      return JSON.stringify(JSON.parse(block.arguments), null, 2);
+    } catch {
+      return block.arguments;
+    }
+  }, [block.arguments]);
+
+  const summary = useMemo(() => {
+    if (!block.arguments) return '';
+    try {
+      const v = JSON.parse(block.arguments);
+      if (!v || typeof v !== 'object') return '';
+      if (block.toolName === 'exec_command' && typeof (v as any).cmd === 'string') return (v as any).cmd;
+      if (block.toolName === 'shell_command' && typeof (v as any).command === 'string') return (v as any).command;
+      if (block.toolName === 'apply_patch' && typeof (v as any).input === 'string') return 'apply_patch';
+      return '';
+    } catch {
+      return '';
+    }
+  }, [block.arguments, block.toolName]);
+
+  const statusText = useMemo(() => {
+    switch (block.status) {
+      case 'pending':
+        return '等待确认';
+      case 'approved':
+        return '已允许';
+      case 'approved_for_session':
+        return '本会话已允许';
+      case 'denied':
+        return '已拒绝';
+      case 'abort':
+        return '已终止';
+      default:
+        return block.status || '未知';
+    }
+  }, [block.status]);
+
+  const canInvoke = Boolean(conversationId && isTauri());
+  const canClick = canInvoke && block.status === 'pending' && !isSubmitting;
+
+  const send = async (decision: 'approved' | 'approved_for_session' | 'denied' | 'abort') => {
+    if (!canClick) return;
+    if (!conversationId) return;
+    setIsSubmitting(true);
+    try {
+      await invoke('respond_approval', {
+        conversationId,
+        requestId: block.requestId,
+        decision,
+      });
+    } catch (e) {
+      console.error('respond_approval failed:', e);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="mb-2 rounded-lg border border-orange-200 bg-orange-50 dark:border-orange-800 dark:bg-orange-900/20">
+      <button
+        type="button"
+        onClick={() => setIsExpanded(!isExpanded)}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-orange-800 hover:bg-orange-100 dark:text-orange-200 dark:hover:bg-orange-900/40"
+      >
+        <AlertTriangle size={16} className="shrink-0" />
+        <span className="font-medium">需要审批：{block.toolName || 'unknown'}</span>
+        {summary ? (
+          <span className="ml-2 max-w-[45%] truncate font-mono text-xs text-orange-700/70 dark:text-orange-200/70">
+            {summary}
+          </span>
+        ) : null}
+        {block.escalated ? (
+          <span className="ml-2 rounded bg-orange-200 px-1.5 py-0.5 text-[10px] font-medium text-orange-900 dark:bg-orange-800 dark:text-orange-100">
+            提权重试
+          </span>
+        ) : null}
+        <span className="ml-auto flex items-center gap-2">
+          <span className="rounded bg-orange-200 px-1.5 py-0.5 text-[10px] font-medium text-orange-900 dark:bg-orange-800 dark:text-orange-100">
+            {statusText}
+          </span>
+          {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+        </span>
+      </button>
+
+      {isExpanded ? (
+        <div className="border-t border-orange-200 px-3 py-2 dark:border-orange-800">
+          {block.reason ? (
+            <div className="mb-2 text-xs text-orange-800/80 dark:text-orange-200/80">
+              <span className="font-medium">原因：</span>
+              <span className="whitespace-pre-wrap">{block.reason}</span>
+            </div>
+          ) : null}
+
+          {prettyArgs ? (
+            <>
+              <div className="mb-1 text-xs font-medium text-orange-800/80 dark:text-orange-200/80">参数</div>
+              <pre className="mb-3 max-h-48 overflow-y-auto whitespace-pre-wrap break-words pr-2 text-sm text-orange-950 dark:text-orange-50">
+                {prettyArgs}
+              </pre>
+            </>
+          ) : null}
+
+          {block.status === 'pending' ? (
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={!canClick}
+                onClick={() => send('approved')}
+                className={`rounded border px-2 py-1 text-xs font-medium ${canClick
+                  ? 'border-orange-300 bg-white text-orange-900 hover:bg-orange-50 dark:border-orange-700 dark:bg-orange-950/30 dark:text-orange-100 dark:hover:bg-orange-900/30'
+                  : 'cursor-not-allowed border-orange-200 bg-orange-50 text-orange-400 dark:border-orange-900/50 dark:bg-orange-950/20 dark:text-orange-600'
+                  }`}
+              >
+                允许一次
+              </button>
+              <button
+                type="button"
+                disabled={!canClick}
+                onClick={() => send('approved_for_session')}
+                className={`rounded border px-2 py-1 text-xs font-medium ${canClick
+                  ? 'border-orange-300 bg-white text-orange-900 hover:bg-orange-50 dark:border-orange-700 dark:bg-orange-950/30 dark:text-orange-100 dark:hover:bg-orange-900/30'
+                  : 'cursor-not-allowed border-orange-200 bg-orange-50 text-orange-400 dark:border-orange-900/50 dark:bg-orange-950/20 dark:text-orange-600'
+                  }`}
+              >
+                本会话允许
+              </button>
+              <button
+                type="button"
+                disabled={!canClick}
+                onClick={() => send('denied')}
+                className={`rounded border px-2 py-1 text-xs font-medium ${canClick
+                  ? 'border-orange-300 bg-white text-orange-900 hover:bg-orange-50 dark:border-orange-700 dark:bg-orange-950/30 dark:text-orange-100 dark:hover:bg-orange-900/30'
+                  : 'cursor-not-allowed border-orange-200 bg-orange-50 text-orange-400 dark:border-orange-900/50 dark:bg-orange-950/20 dark:text-orange-600'
+                  }`}
+              >
+                拒绝
+              </button>
+              <button
+                type="button"
+                disabled={!canClick}
+                onClick={() => send('abort')}
+                className={`rounded border px-2 py-1 text-xs font-medium ${canClick
+                  ? 'border-orange-300 bg-white text-orange-900 hover:bg-orange-50 dark:border-orange-700 dark:bg-orange-950/30 dark:text-orange-100 dark:hover:bg-orange-900/30'
+                  : 'cursor-not-allowed border-orange-200 bg-orange-50 text-orange-400 dark:border-orange-900/50 dark:bg-orange-950/20 dark:text-orange-600'
+                  }`}
+                  title="终止当前任务（Stop）"
+              >
+                终止任务
+              </button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 };
@@ -629,10 +798,11 @@ const WebSearchBlock: React.FC<{ status: string; action?: unknown; isStreaming?:
 
 export const MessageBlocks: React.FC<{
   blocks: MessageBlock[];
+  conversationId?: string;
   isStreaming?: boolean;
   turns?: MessageTurn[];
   onAbortTool?: (callId: string) => void;
-}> = ({ blocks, isStreaming, turns, onAbortTool }) => {
+}> = ({ blocks, conversationId, isStreaming, turns, onAbortTool }) => {
   if (!blocks || blocks.length === 0) return null;
 
   const { config } = useConfigStore();
@@ -703,6 +873,15 @@ export const MessageBlocks: React.FC<{
         toolResultsByCallId.set(callId, list);
       }
 
+      const approvalsByCallId = new Map<string, MessageBlock[]>();
+      for (const b of turnBlocks) {
+        if (b.type !== 'approval') continue;
+        const callId = b.callId || b.requestId || '';
+        const list = approvalsByCallId.get(callId) ?? [];
+        list.push(b);
+        approvalsByCallId.set(callId, list);
+      }
+
       const used = new Set<string>();
       const ordered: MessageBlock[] = [];
 
@@ -714,6 +893,14 @@ export const MessageBlocks: React.FC<{
           used.add(b.id);
 
           const callId = b.callId || '';
+
+          const approvals = approvalsByCallId.get(callId);
+          const nextApproval = approvals && approvals.length > 0 ? approvals.shift() : undefined;
+          if (nextApproval && !used.has(nextApproval.id)) {
+            ordered.push(nextApproval);
+            used.add(nextApproval.id);
+          }
+
           const results = toolResultsByCallId.get(callId);
           const nextResult = results && results.length > 0 ? results.shift() : undefined;
           if (nextResult && !used.has(nextResult.id)) {
@@ -728,12 +915,24 @@ export const MessageBlocks: React.FC<{
           continue;
         }
 
+        if (b.type === 'approval') {
+          // 先跳过：优先贴在 tool_call 后面，不然顺序会很怪
+          continue;
+        }
+
         ordered.push(b);
         used.add(b.id);
       }
 
       for (const b of turnBlocks) {
         if (b.type !== 'tool_result') continue;
+        if (used.has(b.id)) continue;
+        ordered.push(b);
+        used.add(b.id);
+      }
+
+      for (const b of turnBlocks) {
+        if (b.type !== 'approval') continue;
         if (used.has(b.id)) continue;
         ordered.push(b);
         used.add(b.id);
@@ -772,6 +971,10 @@ export const MessageBlocks: React.FC<{
       return (
         <ToolCallBlock name={block.name} args={block.arguments} isStreaming={isStreaming} />
       );
+    }
+
+    if (block.type === 'approval') {
+      return <ApprovalBlock conversationId={conversationId} block={block} isStreaming={isStreaming} />;
     }
 
     if (block.type === 'tool_result') {

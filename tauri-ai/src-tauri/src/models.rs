@@ -208,6 +208,20 @@ pub enum MessageBlock {
         text: String,
     },
     #[serde(rename_all = "camelCase")]
+    Approval {
+        id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_index: Option<u32>,
+        request_id: String,
+        tool_name: String,
+        arguments: String,
+        status: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+    #[serde(rename_all = "camelCase")]
     Error {
         id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -655,6 +669,9 @@ pub struct Agent {
     /// Optional sandbox policy override (defaults to global security policy).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sandbox_policy: Option<SandboxPolicy>,
+    /// Optional approval policy override (defaults to global security policy).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval_policy: Option<AskForApproval>,
     /// Whether to enable workspace/workstudio support for Tool agents.
     ///
     /// Semantics:
@@ -687,6 +704,7 @@ impl Default for Agent {
             format_type: FormatPromptType::default(),
             toolset: None,
             sandbox_policy: None,
+            approval_policy: None,
             workspace_support: None,
             max_turns: None,
             reinject_thinking: false,
@@ -923,6 +941,23 @@ impl Default for ToolsSettings {
 // Security (sandbox policy)
 // ============================================================================
 
+/// Determines the conditions under which the user is consulted to approve
+/// running the tool action proposed by the agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum AskForApproval {
+    /// Only "known safe" read-only actions are auto-approved; everything else asks.
+    #[serde(rename = "untrusted")]
+    UnlessTrusted,
+    /// Auto-approve in sandbox; if denied by sandbox, ask to retry with escalation.
+    OnFailure,
+    /// The model decides when to ask the user for approval.
+    #[default]
+    OnRequest,
+    /// Never ask the user for approval.
+    Never,
+}
+
 /// Represents whether outbound network access is available to the agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
@@ -1018,12 +1053,15 @@ impl SandboxPolicy {
 pub struct SecuritySettings {
     #[serde(default)]
     pub sandbox_policy: SandboxPolicy,
+    #[serde(default)]
+    pub approval_policy: AskForApproval,
 }
 
 impl Default for SecuritySettings {
     fn default() -> Self {
         Self {
             sandbox_policy: SandboxPolicy::default(),
+            approval_policy: AskForApproval::default(),
         }
     }
 }
@@ -1155,6 +1193,7 @@ impl AppConfig {
                 format_type: FormatPromptType::Chat,
                 toolset: None,
                 sandbox_policy: None,
+                approval_policy: None,
                 workspace_support: None,
                 max_turns: None,
                 reinject_thinking: false,

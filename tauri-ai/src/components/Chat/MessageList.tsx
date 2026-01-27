@@ -192,6 +192,7 @@ export const MessageList: React.FC<MessageListProps> = ({
           >
             <MessageBlocks
               blocks={streamingBlocks}
+              conversationId={messages[0]?.conversationId}
               isStreaming
               turns={streamingTurns}
               onAbortTool={onAbortTool}

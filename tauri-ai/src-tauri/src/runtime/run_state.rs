@@ -11,8 +11,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tokio::sync::{mpsc, Notify, RwLock};
+use tokio::sync::{mpsc, oneshot, Mutex, Notify, RwLock};
 
+use super::approvals::{ApprovalDecision, ApprovalStore};
 use super::tools::services::PtySessionInfo;
 use super::tools::ToolServices;
 
@@ -20,6 +21,8 @@ pub struct RunState {
     pub abort_senders: RwLock<HashMap<String, mpsc::Sender<()>>>,
     run_notifiers: RwLock<HashMap<String, Arc<Notify>>>,
     tool_services: RwLock<HashMap<String, Arc<ToolServices>>>,
+    approval_waiters: RwLock<HashMap<String, HashMap<String, oneshot::Sender<ApprovalDecision>>>>,
+    approval_stores: RwLock<HashMap<String, Arc<Mutex<ApprovalStore>>>>,
 }
 
 impl RunState {
@@ -28,6 +31,8 @@ impl RunState {
             abort_senders: RwLock::new(HashMap::new()),
             run_notifiers: RwLock::new(HashMap::new()),
             tool_services: RwLock::new(HashMap::new()),
+            approval_waiters: RwLock::new(HashMap::new()),
+            approval_stores: RwLock::new(HashMap::new()),
         }
     }
 
@@ -49,6 +54,8 @@ impl RunState {
         if let Some(n) = notify {
             n.notify_waiters();
         }
+        // Best-effort: drop any pending approval waiters (a finished run should not block UI).
+        let _ = self.approval_waiters.write().await.remove(conversation_id);
     }
 
     pub async fn get_tool_services(&self, conversation_id: &str) -> Arc<ToolServices> {
@@ -59,6 +66,58 @@ impl RunState {
         let created = Arc::new(ToolServices::default());
         services.insert(conversation_id.to_string(), Arc::clone(&created));
         created
+    }
+
+    pub async fn get_approval_store(&self, conversation_id: &str) -> Arc<Mutex<ApprovalStore>> {
+        let mut stores = self.approval_stores.write().await;
+        if let Some(existing) = stores.get(conversation_id) {
+            return Arc::clone(existing);
+        }
+        let created = Arc::new(Mutex::new(ApprovalStore::default()));
+        stores.insert(conversation_id.to_string(), Arc::clone(&created));
+        created
+    }
+
+    pub async fn register_approval_waiter(
+        &self,
+        conversation_id: &str,
+        request_id: String,
+    ) -> oneshot::Receiver<ApprovalDecision> {
+        let (tx, rx) = oneshot::channel();
+        let mut waiters = self.approval_waiters.write().await;
+        waiters
+            .entry(conversation_id.to_string())
+            .or_default()
+            .insert(request_id, tx);
+        rx
+    }
+
+    pub async fn resolve_approval(
+        &self,
+        conversation_id: &str,
+        request_id: &str,
+        decision: ApprovalDecision,
+    ) -> bool {
+        let tx = {
+            let mut waiters = self.approval_waiters.write().await;
+            waiters
+                .get_mut(conversation_id)
+                .and_then(|m| m.remove(request_id))
+        };
+        let Some(tx) = tx else {
+            return false;
+        };
+        tx.send(decision).is_ok()
+    }
+
+    async fn abort_pending_approvals(&self, conversation_id: &str) {
+        let entries = { self.approval_waiters.write().await.remove(conversation_id) };
+        let Some(entries) = entries else {
+            return;
+        };
+        for (_, tx) in entries {
+            let _ = tx.send(ApprovalDecision::Abort);
+        }
     }
 
     pub async fn list_pty_sessions(&self, conversation_id: &str) -> Vec<PtySessionInfo> {
@@ -116,6 +175,9 @@ impl RunState {
         if let Some(sender) = self.abort_senders.read().await.get(conversation_id) {
             let _ = sender.send(()).await;
         }
+
+        // Also abort any pending tool approvals so a run won't deadlock waiting for UI.
+        self.abort_pending_approvals(conversation_id).await;
 
         // 2) Wait for run completion (if notifier exists)
         if let Some(notify) = self.run_notifiers.read().await.get(conversation_id).cloned() {

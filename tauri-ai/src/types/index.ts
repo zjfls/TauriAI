@@ -29,6 +29,8 @@ export type AgentType = 'chat' | 'tool';
 // Security / Sandboxing
 // ============================================================================
 
+export type AskForApproval = 'untrusted' | 'on-failure' | 'on-request' | 'never';
+
 export type NetworkAccess = 'restricted' | 'enabled';
 
 export type SandboxPolicy =
@@ -45,6 +47,7 @@ export type SandboxPolicy =
 
 export interface SecuritySettings {
   sandboxPolicy: SandboxPolicy;
+  approvalPolicy: AskForApproval;
 }
 
 // ============================================================================
@@ -148,6 +151,7 @@ export interface Agent {
   formatType: FormatPromptType;
   toolset?: string;       // Optional toolset binding (for tool agents)
   sandboxPolicy?: SandboxPolicy; // Optional sandbox policy override (defaults to global policy)
+  approvalPolicy?: AskForApproval; // Optional approval policy override (defaults to global policy)
   workspaceSupport?: boolean; // Tool agent workspace support (default: true for tool, else false)
   maxTurns?: number;      // Max turns per run/task (default depends on agent type)
   reinjectThinking?: boolean; // Whether to reinject thinking into next turn context (default: false)
@@ -351,6 +355,19 @@ export interface ToolResultMessageBlock extends BaseMessageBlock {
   text: string;
 }
 
+export type ApprovalStatus = 'pending' | 'approved' | 'approved_for_session' | 'denied' | 'abort';
+
+export interface ApprovalMessageBlock extends BaseMessageBlock {
+  type: 'approval';
+  requestId: string;
+  callId: string;
+  toolName: string;
+  arguments: string;
+  status: ApprovalStatus | string;
+  escalated?: boolean;
+  reason?: string;
+}
+
 export interface ErrorMessageBlock extends BaseMessageBlock {
   type: 'error';
   text: string;
@@ -388,6 +405,7 @@ export type MessageBlock =
   | ThinkingMessageBlock
   | ToolCallMessageBlock
   | ToolResultMessageBlock
+  | ApprovalMessageBlock
   | ErrorMessageBlock
   | WebSearchMessageBlock
   | UnknownMessageBlock;
@@ -483,6 +501,7 @@ export type RunBlockType =
   // Future block types (reserved)
   | 'tool_call'
   | 'tool_result'
+  | 'approval'
   | 'error'
   | 'web_search'
   | 'image'

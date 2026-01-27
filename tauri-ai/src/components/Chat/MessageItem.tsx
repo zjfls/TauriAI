@@ -255,6 +255,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
           <div>
             <MessageBlocks
               blocks={assistantBlocks}
+              conversationId={message.conversationId}
               turns={message.turns}
               onAbortTool={onAbortTool}
             />
