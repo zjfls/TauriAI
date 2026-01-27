@@ -6,7 +6,7 @@
 import React, { useState, useEffect } from 'react';
 import { Plus, Star, Search, Copy } from 'lucide-react';
 import { useConfigStore } from '../../stores/configStore';
-import type { Agent, AgentType, AskForApproval, FormatPromptType, SandboxPolicy } from '../../types';
+import type { Agent, AgentType, AskForApproval, FormatPromptType, SandboxPolicy, SecurityPolicyConfig } from '../../types';
 
 const defaultAgent: Agent = {
   name: '',
@@ -182,8 +182,8 @@ export const AgentConfigForm: React.FC = () => {
             isDefault={currentAgent.name === defaultAgentName}
             modelOptions={modelOptions}
             toolsetOptions={toolsetOptions}
-            globalSandboxPolicy={config?.security?.sandboxPolicy ?? { type: 'workspace-write' }}
-            globalApprovalPolicy={config?.security?.approvalPolicy ?? 'on-request'}
+            securityPolicies={config?.security?.policies ?? []}
+            defaultSecurityPolicyName={config?.security?.defaultPolicy ?? ''}
             onEdit={handleEdit}
             onDuplicate={handleDuplicate}
             onSave={handleSave}
@@ -210,8 +210,8 @@ interface AgentFormProps {
   isDefault: boolean;
   modelOptions: { label: string; value: string }[];
   toolsetOptions: { label: string; value: string }[];
-  globalSandboxPolicy: SandboxPolicy;
-  globalApprovalPolicy: AskForApproval;
+  securityPolicies: SecurityPolicyConfig[];
+  defaultSecurityPolicyName: string;
   onEdit: () => void;
   onDuplicate: () => void;
   onSave: () => void;
@@ -227,8 +227,8 @@ const AgentForm: React.FC<AgentFormProps> = ({
   isDefault,
   modelOptions,
   toolsetOptions,
-  globalSandboxPolicy,
-  globalApprovalPolicy,
+  securityPolicies,
+  defaultSecurityPolicyName,
   onEdit,
   onDuplicate,
   onSave,
@@ -289,8 +289,20 @@ const AgentForm: React.FC<AgentFormProps> = ({
     }
   };
 
-  const effectiveSandboxPolicy: SandboxPolicy = agent.sandboxPolicy ?? globalSandboxPolicy;
-  const effectiveApprovalPolicy: AskForApproval = agent.approvalPolicy ?? globalApprovalPolicy;
+  const globalDefaultPolicy =
+    securityPolicies.find((p) => p.name === defaultSecurityPolicyName) ??
+    securityPolicies[0] ?? {
+      name: defaultSecurityPolicyName || 'default',
+      sandboxPolicy: { type: 'workspace-write', writableRoots: [], networkAccess: true } as SandboxPolicy,
+      approvalPolicy: 'on-request' as AskForApproval,
+      trustedCommands: [],
+    };
+
+  const baseSecurityPolicy =
+    securityPolicies.find((p) => p.name === (agent.securityPolicy ?? '')) ?? globalDefaultPolicy;
+
+  const effectiveSandboxPolicy: SandboxPolicy = agent.sandboxPolicy ?? baseSecurityPolicy.sandboxPolicy;
+  const effectiveApprovalPolicy: AskForApproval = agent.approvalPolicy ?? baseSecurityPolicy.approvalPolicy;
 
   const defaultPolicyForType = (type: SandboxPolicy['type']): SandboxPolicy => {
     switch (type) {
@@ -305,9 +317,7 @@ const AgentForm: React.FC<AgentFormProps> = ({
         return {
           type: 'workspace-write',
           writableRoots: [],
-          networkAccess: false,
-          excludeTmpdirEnvVar: false,
-          excludeSlashTmp: false,
+          networkAccess: true,
         };
     }
   };
@@ -449,6 +459,27 @@ const AgentForm: React.FC<AgentFormProps> = ({
         )}
 
         <div className="space-y-1">
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">安全策略</label>
+          <select
+            value={agent.securityPolicy ?? ''}
+            onChange={(e) => {
+              const v = e.target.value.trim();
+              onFieldChange('securityPolicy', v ? v : undefined);
+            }}
+            disabled={!isEditing}
+            className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800"
+          >
+            <option value="">（默认：使用全局默认策略 - {globalDefaultPolicy.name}）</option>
+            {securityPolicies.map((p) => (
+              <option key={p.name} value={p.name}>
+                {p.name}（{sandboxSummary(p.sandboxPolicy)} / {approvalSummary(p.approvalPolicy)}）
+              </option>
+            ))}
+          </select>
+          <p className="text-xs text-gray-500">生效策略：{baseSecurityPolicy.name}</p>
+        </div>
+
+        <div className="space-y-1">
           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
             审批策略（AskForApproval）
           </label>
@@ -461,7 +492,7 @@ const AgentForm: React.FC<AgentFormProps> = ({
             disabled={!isEditing}
             className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800"
           >
-            <option value="">（默认：使用全局策略 - {approvalSummary(globalApprovalPolicy)}）</option>
+            <option value="">（默认：使用安全策略 - {approvalSummary(baseSecurityPolicy.approvalPolicy)}）</option>
             <option value="untrusted">Untrusted</option>
             <option value="on-failure">On Failure</option>
             <option value="on-request">On Request</option>
@@ -482,13 +513,15 @@ const AgentForm: React.FC<AgentFormProps> = ({
               }
               const type = v as SandboxPolicy['type'];
               const nextPolicy =
-                globalSandboxPolicy.type === type ? globalSandboxPolicy : defaultPolicyForType(type);
+                baseSecurityPolicy.sandboxPolicy.type === type
+                  ? baseSecurityPolicy.sandboxPolicy
+                  : defaultPolicyForType(type);
               onFieldChange('sandboxPolicy', nextPolicy);
             }}
             disabled={!isEditing}
             className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800"
           >
-            <option value="">（默认：使用全局策略 - {sandboxSummary(globalSandboxPolicy)}）</option>
+            <option value="">（默认：使用安全策略 - {sandboxSummary(baseSecurityPolicy.sandboxPolicy)}）</option>
             <option value="read-only">Read Only（只读）</option>
             <option value="workspace-write">Workspace Write（工作区可写）</option>
             <option value="danger-full-access">Full Access（完全访问）</option>

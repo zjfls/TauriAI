@@ -135,6 +135,7 @@ const ApprovalBlock: React.FC<{
 }> = ({ conversationId, block, isStreaming }) => {
   const [isExpanded, setIsExpanded] = useState(Boolean(isStreaming || block.status === 'pending'));
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const { config, saveConfig } = useConfigStore();
 
   const prettyArgs = useMemo(() => {
     if (!block.arguments) return '';
@@ -159,6 +160,28 @@ const ApprovalBlock: React.FC<{
     }
   }, [block.arguments, block.toolName]);
 
+  const trustCandidate = useMemo(() => {
+    if (!block.arguments) return null;
+    try {
+      const v = JSON.parse(block.arguments);
+      if (!v || typeof v !== 'object') return null;
+
+      const tool = block.toolName;
+      const raw =
+        tool === 'shell_command' && typeof (v as any).command === 'string'
+          ? (v as any).command
+          : (tool === 'exec_command' || tool === 'exec_command_persistent') && typeof (v as any).cmd === 'string'
+            ? (v as any).cmd
+            : null;
+
+      const command = typeof raw === 'string' ? raw.trim() : '';
+      if (!command) return null;
+      return { tool, command };
+    } catch {
+      return null;
+    }
+  }, [block.arguments, block.toolName]);
+
   const statusText = useMemo(() => {
     switch (block.status) {
       case 'pending':
@@ -178,6 +201,50 @@ const ApprovalBlock: React.FC<{
 
   const canInvoke = Boolean(conversationId && isTauri());
   const canClick = canInvoke && block.status === 'pending' && !isSubmitting;
+  const canTrust = canClick && Boolean(trustCandidate) && Boolean(config);
+
+  const trustAndApprove = async () => {
+    if (!canTrust) return;
+    if (!conversationId) return;
+    if (!trustCandidate) return;
+    if (!config) return;
+
+    setIsSubmitting(true);
+    try {
+      const policyFromBlock = block.securityPolicy;
+      const fallbackName = config.security.defaultPolicy || config.security.policies[0]?.name;
+      const policyName = policyFromBlock || fallbackName;
+
+      const idx = config.security.policies.findIndex((p) => p.name === policyName);
+      const fallbackIdx = config.security.policies.findIndex((p) => p.name === config.security.defaultPolicy);
+      const targetIndex = idx !== -1 ? idx : fallbackIdx !== -1 ? fallbackIdx : 0;
+
+      const targetPolicy = config.security.policies[targetIndex];
+      const existing = targetPolicy.trustedCommands ?? [];
+      const nextEntry = { tool: trustCandidate.tool, command: trustCandidate.command };
+      const already = existing.some((t) => t.tool === nextEntry.tool && t.command === nextEntry.command);
+
+      if (!already) {
+        const nextPolicies = config.security.policies.map((p, i) =>
+          i === targetIndex ? { ...p, trustedCommands: [...existing, nextEntry] } : p
+        );
+        await saveConfig({
+          ...config,
+          security: { ...config.security, policies: nextPolicies },
+        });
+      }
+
+      await invoke('respond_approval', {
+        conversationId,
+        requestId: block.requestId,
+        decision: 'approved',
+      });
+    } catch (e) {
+      console.error('trustAndApprove failed:', e);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
   const send = async (decision: 'approved' | 'approved_for_session' | 'denied' | 'abort') => {
     if (!canClick) return;
@@ -254,6 +321,20 @@ const ApprovalBlock: React.FC<{
               >
                 允许一次
               </button>
+              {trustCandidate ? (
+                <button
+                  type="button"
+                  disabled={!canTrust}
+                  onClick={trustAndApprove}
+                  className={`rounded border px-2 py-1 text-xs font-medium ${canTrust
+                    ? 'border-orange-300 bg-white text-orange-900 hover:bg-orange-50 dark:border-orange-700 dark:bg-orange-950/30 dark:text-orange-100 dark:hover:bg-orange-900/30'
+                    : 'cursor-not-allowed border-orange-200 bg-orange-50 text-orange-400 dark:border-orange-900/50 dark:bg-orange-950/20 dark:text-orange-600'
+                    }`}
+                  title="加入信任列表并执行（后续相同命令将自动通过）"
+                >
+                  信任并允许
+                </button>
+              ) : null}
               <button
                 type="button"
                 disabled={!canClick}

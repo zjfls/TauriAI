@@ -367,13 +367,15 @@ function restoreContent(content: string, blocks: Map<string, string>): string {
   blocks.forEach((original, placeholder) => {
     // Replace all occurrences (use global regex)
     const escaped = placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    result = result.replace(new RegExp(escaped, 'g'), original);
+    // IMPORTANT: Use a replacer function so `$` in the original content (e.g. `$$` math fences)
+    // is not treated as a replacement pattern and accidentally rewritten (e.g. `$$` -> `$`).
+    result = result.replace(new RegExp(escaped, 'g'), () => original);
 
     // Also handle HTML-escaped version (e.g., &amp; instead of &)
     const htmlEscaped = placeholder.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     if (htmlEscaped !== placeholder) {
       const escapedHtml = htmlEscaped.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      result = result.replace(new RegExp(escapedHtml, 'g'), original);
+      result = result.replace(new RegExp(escapedHtml, 'g'), () => original);
     }
   });
   return result;

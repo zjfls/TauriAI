@@ -12,7 +12,7 @@ import { ThinkingSelector } from './ThinkingSelector';
 import { WebSearchToggle } from './WebSearchToggle';
 import { isSupportedTextFile, readTextFile, validateFileCount } from '../../utils/textFileUtils';
 import { isValidPdfFile, validatePdfSize, processPdfFile, MAX_PDF_SIZE } from '../../utils/pdfUtils';
-import type { ContextUsageBreakdown, Agent, ContentPart, PendingImage, PendingTextFile, PendingPdf, ApiProtocolType, ThinkingMode, ProviderType } from '../../types';
+import type { ContextUsageBreakdown, Agent, ContentPart, PendingImage, PendingTextFile, PendingPdf, ApiProtocolType, ThinkingMode, ProviderType, RunMode } from '../../types';
 import { SUPPORTED_TEXT_EXTENSIONS, MAX_PDF_COUNT, MAX_TEXT_FILES } from '../../types';
 import { FILE_ERROR_MESSAGES } from '../../utils/textFileUtils';
 import { invoke, isTauri } from '@tauri-apps/api/core';
@@ -21,6 +21,12 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 // Constants for textarea sizing
 const MIN_TEXTAREA_HEIGHT = 40; // Minimum height in pixels
 const MAX_TEXTAREA_HEIGHT = 200; // Maximum height in pixels (Requirement 4.1)
+
+const RUN_MODE_OPTIONS: { value: RunMode; label: string }[] = [
+  { value: 'chat', label: 'Chat' },
+  { value: 'agent', label: 'Agent' },
+  { value: 'agent-full-access', label: 'Agent Full Access' },
+];
 
 /**
  * Error messages for paste operations
@@ -167,6 +173,9 @@ interface InputAreaProps {
   thinkingMode?: ThinkingMode; // Controlled thinking mode/level (per-session)
   onThinkingModeChange?: (value: ThinkingMode) => void;
   useReasoningEffort?: boolean;  // Whether to use reasoning_effort parameter
+  // Run mode selection (chat/agent/full access)
+  runMode?: RunMode;
+  onRunModeChange?: (mode: RunMode) => void;
   // Agent/Model selection
   agents?: Agent[];
   currentAgentName?: string;
@@ -665,6 +674,8 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   thinkingMode: controlledThinkingMode,
   onThinkingModeChange,
   useReasoningEffort = false,
+  runMode = 'chat',
+  onRunModeChange,
   agents = [],
   currentAgentName = '',
   onAgentSelect,
@@ -1766,7 +1777,9 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
 
   // Check if we have selectors to show
   const hasSelectors = agents.length > 0 || modelOptions.length > 0;
-  const hasFeatureToggles = supportsThinking || supportsWebSearch || supportsVision || contextUsage || hasSelectors;
+  const hasModeSelector = Boolean(onRunModeChange);
+  const hasFeatureToggles =
+    hasModeSelector || supportsThinking || supportsWebSearch || supportsVision || contextUsage || hasSelectors;
 
   return (
     <div
@@ -1778,6 +1791,32 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
       {hasFeatureToggles && (
         <div className="mb-2 flex items-center justify-between">
           <div className="flex items-center gap-2">
+            {/* Run mode selector */}
+            {onRunModeChange && (
+              <div className="inline-flex overflow-hidden rounded-md border border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-800">
+                {RUN_MODE_OPTIONS.map((option) => {
+                  const active = option.value === runMode;
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      disabled={isGenerating}
+                      onClick={() => onRunModeChange(option.value)}
+                      className={[
+                        'px-2 py-1 text-xs font-medium transition-colors',
+                        active
+                          ? 'bg-blue-600 text-white'
+                          : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700',
+                        isGenerating ? 'cursor-not-allowed opacity-60' : '',
+                      ].join(' ')}
+                      title={option.label}
+                    >
+                      {option.label}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
             {/* Agent selector */}
             {agents.length > 0 && currentAgentName && (
               onAgentSelect ? (

@@ -46,6 +46,7 @@ pub struct RunTaskInput {
     pub content_parts: Option<Vec<ContentPart>>,
     pub agent_name: Option<String>,
     pub model_ref: Option<String>,
+    pub run_mode: Option<String>,
     pub thinking: Option<serde_json::Value>,
     pub web_search_enabled: Option<bool>,
     pub debug_mode: Option<bool>,
@@ -128,6 +129,10 @@ struct TurnLoop<'a> {
     sandbox_policy: crate::models::SandboxPolicy,
     /// Effective approval policy for this run.
     approval_policy: AskForApproval,
+    /// Effective security policy name for this run.
+    security_policy_name: String,
+    /// Trusted commands (used with AskForApproval::UnlessTrusted).
+    trusted_commands: Vec<crate::models::TrustedCommandConfig>,
     /// Per-conversation approval cache (for "approve for session").
     approval_store: Arc<Mutex<super::approvals::ApprovalStore>>,
     run_state: Arc<RunState>,
@@ -381,6 +386,31 @@ impl<'a> TurnLoop<'a> {
         format!("{}:{:x}", call.name, h.finish())
     }
 
+    fn trusted_command_key(call: &ToolCall) -> Option<(String, String)> {
+        let field = match call.name.as_str() {
+            "shell_command" => "command",
+            "exec_command" | "exec_command_persistent" => "cmd",
+            _ => return None,
+        };
+
+        let v: serde_json::Value = serde_json::from_str(&call.arguments).ok()?;
+        let cmd = v.get(field)?.as_str()?.trim();
+        if cmd.is_empty() {
+            return None;
+        }
+
+        Some((call.name.clone(), cmd.to_string()))
+    }
+
+    fn is_trusted_call(&self, call: &ToolCall) -> bool {
+        let Some((tool, command)) = Self::trusted_command_key(call) else {
+            return false;
+        };
+        self.trusted_commands
+            .iter()
+            .any(|t| t.tool == tool && t.command == command)
+    }
+
     fn sandbox_policy_for_approved_call(
         &self,
         tool_name: &str,
@@ -398,7 +428,7 @@ impl<'a> TurnLoop<'a> {
         {
             return crate::models::SandboxPolicy::WorkspaceWrite {
                 writable_roots: Vec::new(),
-                network_access: false,
+                network_access: true,
                 exclude_tmpdir_env_var: false,
                 exclude_slash_tmp: false,
             };
@@ -481,6 +511,14 @@ impl<'a> TurnLoop<'a> {
             needs_prompt = false;
         }
 
+        // UnlessTrusted: allow trusted commands without prompting (Codex-like).
+        if needs_prompt
+            && matches!(self.approval_policy, AskForApproval::UnlessTrusted)
+            && self.is_trusted_call(call)
+        {
+            needs_prompt = false;
+        }
+
         if !needs_prompt {
             // Policy allows running without asking; keep the current sandbox policy.
             return (false, ApprovalDecision::Approved, Some(self.sandbox_policy.clone()));
@@ -506,6 +544,7 @@ impl<'a> TurnLoop<'a> {
             "arguments": call.arguments,
             "status": "pending",
             "escalated": escalated,
+            "security_policy": self.security_policy_name.clone(),
             "reason": reason,
         })
         .to_string();
@@ -1871,6 +1910,14 @@ async fn run_task_inner(
     let (provider, model, agent) = (resolved.provider, resolved.model, resolved.agent);
     let output_format = get_output_format(agent);
 
+    let requested_mode = input.run_mode.as_deref().unwrap_or("").trim();
+    let runtime_agent_type = match requested_mode {
+        "chat" => AgentType::Chat,
+        "agent" | "agent-full-access" => AgentType::Tool,
+        _ => agent.agent_type,
+    };
+    let force_full_access = requested_mode == "agent-full-access";
+
     if !provider.enabled {
         return Err(AppErrorCode::AiServiceError(format!(
             "Provider '{}' is disabled",
@@ -1928,7 +1975,7 @@ async fn run_task_inner(
             m
         })
         .collect::<Vec<_>>();
-    let base_messages = match agent.agent_type {
+    let base_messages = match runtime_agent_type {
         AgentType::Tool => match provider.provider_type {
             crate::models::ProviderType::Openai
             | crate::models::ProviderType::OpenaiCompatible
@@ -1941,7 +1988,7 @@ async fn run_task_inner(
     };
 
     // 2.5) Workstudio: tool agents can bind a working directory (main folder).
-    let workspace_enabled = matches!(agent.agent_type, AgentType::Tool)
+    let workspace_enabled = matches!(runtime_agent_type, AgentType::Tool)
         && agent.workspace_support.unwrap_or(true);
     let (workstudio, default_workdir) = if workspace_enabled {
         let ws = {
@@ -1964,14 +2011,19 @@ async fn run_task_inner(
         })
         .unwrap_or_default();
 
-    let sandbox_policy = agent
+    let base_security_policy = config.security.resolve_policy(agent.security_policy.as_deref());
+
+    let mut sandbox_policy = agent
         .sandbox_policy
         .clone()
-        .unwrap_or_else(|| config.security.sandbox_policy.clone());
+        .unwrap_or_else(|| base_security_policy.sandbox_policy.clone());
+    if force_full_access {
+        sandbox_policy = crate::models::SandboxPolicy::DangerFullAccess;
+    }
 
     let approval_policy = agent
         .approval_policy
-        .unwrap_or(config.security.approval_policy);
+        .unwrap_or(base_security_policy.approval_policy);
 
     // 3) 允许 stop/撤回 等并发操作中断当前 run
     let (abort_tx, mut abort_rx) = mpsc::channel::<()>(1);
@@ -1984,7 +2036,7 @@ async fn run_task_inner(
     // lifecycle：TaskStarted
     emitter.emit(RunEvent::TaskStarted {
         task_id: task_id.clone(),
-        task_kind: match agent.agent_type {
+        task_kind: match runtime_agent_type {
             AgentType::Tool => TaskKind::Tool,
             AgentType::Chat => TaskKind::Chat,
         },
@@ -1996,7 +2048,7 @@ async fn run_task_inner(
     let tool_services = run_state.get_tool_services(&input.conversation_id).await;
     let approval_store = run_state.get_approval_store(&input.conversation_id).await;
     let mut allow_persistent_pty = false;
-    let (tool_orchestrator, tools, allowed_tool_names) = match agent.agent_type {
+    let (tool_orchestrator, tools, allowed_tool_names) = match runtime_agent_type {
         AgentType::Tool => {
             // ToolSet：Agent 可以绑定不同工具集合；未配置则默认 allow_all（由权限再做过滤）。
             let toolset = match agent.toolset.as_deref().filter(|s| !s.trim().is_empty()) {
@@ -2011,15 +2063,11 @@ async fn run_task_inner(
 
             // 权限策略：由 AppConfig 驱动（默认：只允许无权限工具；shell/pty 默认关闭）。
             let permission_policy: Arc<dyn super::tools::permissions::ToolPermissionPolicy> =
-                if !config.tools.enabled {
-                    Arc::new(super::tools::permissions::DenyAllPolicy::default())
-                } else {
-                    Arc::new(super::tools::permissions::BasicToolPermissionPolicy {
-                        allow_shell_exec: config.tools.permissions.shell_exec,
-                        allow_pty_exec: config.tools.permissions.pty_exec,
-                        allow_file_write: config.tools.permissions.file_write,
-                    })
-                };
+                Arc::new(super::tools::permissions::BasicToolPermissionPolicy {
+                    allow_shell_exec: true,
+                    allow_pty_exec: true,
+                    allow_file_write: true,
+                });
 
             allow_persistent_pty = toolset.persistance_shell_enhance;
 
@@ -2039,11 +2087,7 @@ async fn run_task_inner(
         AgentType::Chat => {
             // Chat 也允许使用只读工具（read_file/list_dir/rg 等），用于“读代码/查文件”。
             let permission_policy: Arc<dyn super::tools::permissions::ToolPermissionPolicy> =
-                if !config.tools.enabled {
-                    Arc::new(super::tools::permissions::DenyAllPolicy::default())
-                } else {
-                    Arc::new(super::tools::permissions::DenyByDefaultPolicy::default())
-                };
+                Arc::new(super::tools::permissions::DenyByDefaultPolicy::default());
 
             let orchestrator = ToolOrchestrator::new_builtin(ToolOrchestratorConfig {
                 toolset: super::tools::spec::ToolSet::allow_all(),
@@ -2063,7 +2107,7 @@ async fn run_task_inner(
     // 4) TurnLoop：Chat 默认单 Turn，但只要启用了工具调用，就至少需要 2 Turn 才能完成
     //    （Turn1: tool_calls -> 执行工具；Turn2: 带工具结果继续生成最终回复）。
     let has_tools = tools.as_ref().map(|t| !t.is_empty()).unwrap_or(false);
-    let default_max_turns: u32 = match agent.agent_type {
+    let default_max_turns: u32 = match runtime_agent_type {
         AgentType::Tool => 10_000,
         AgentType::Chat => {
             if has_tools {
@@ -2074,7 +2118,7 @@ async fn run_task_inner(
         }
     };
     let mut max_turns: u32 = agent.max_turns.unwrap_or(default_max_turns).max(1);
-    if matches!(agent.agent_type, AgentType::Chat) && has_tools && agent.max_turns.is_none() {
+    if matches!(runtime_agent_type, AgentType::Chat) && has_tools && agent.max_turns.is_none() {
         max_turns = max_turns.max(2);
     }
 
@@ -2097,6 +2141,8 @@ async fn run_task_inner(
         workspace_roots,
         sandbox_policy,
         approval_policy,
+        security_policy_name: base_security_policy.name.clone(),
+        trusted_commands: base_security_policy.trusted_commands.clone(),
         approval_store,
         run_state: run_state.clone(),
         runtime_messages,

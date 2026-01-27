@@ -25,6 +25,9 @@ export type FormatPromptType = 'chat' | 'plain' | 'json' | 'none';
 // Agent type for extensible runtime behaviors
 export type AgentType = 'chat' | 'tool';
 
+// Run mode (input-level): chat / agent / agent full access
+export type RunMode = 'chat' | 'agent' | 'agent-full-access';
+
 // ============================================================================
 // Security / Sandboxing
 // ============================================================================
@@ -45,9 +48,21 @@ export type SandboxPolicy =
       excludeSlashTmp?: boolean;
     };
 
-export interface SecuritySettings {
+export interface TrustedCommandConfig {
+  tool: string;
+  command: string;
+}
+
+export interface SecurityPolicyConfig {
+  name: string;
   sandboxPolicy: SandboxPolicy;
   approvalPolicy: AskForApproval;
+  trustedCommands?: TrustedCommandConfig[];
+}
+
+export interface SecuritySettings {
+  policies: SecurityPolicyConfig[];
+  defaultPolicy: string;
 }
 
 // ============================================================================
@@ -150,6 +165,7 @@ export interface Agent {
   systemPrompt: string;
   formatType: FormatPromptType;
   toolset?: string;       // Optional toolset binding (for tool agents)
+  securityPolicy?: string; // Optional security policy name (defaults to global defaultPolicy)
   sandboxPolicy?: SandboxPolicy; // Optional sandbox policy override (defaults to global policy)
   approvalPolicy?: AskForApproval; // Optional approval policy override (defaults to global policy)
   workspaceSupport?: boolean; // Tool agent workspace support (default: true for tool, else false)
@@ -364,6 +380,7 @@ export interface ApprovalMessageBlock extends BaseMessageBlock {
   toolName: string;
   arguments: string;
   status: ApprovalStatus | string;
+  securityPolicy?: string;
   escalated?: boolean;
   reason?: string;
 }
@@ -818,6 +835,7 @@ export interface AgentSession {
   apiType: ApiProtocolType | null;    // null = not locked yet
 
   // Per-session settings
+  runMode?: RunMode;                  // Input run mode: chat/agent/agent-full-access
   thinkingMode?: ThinkingMode;        // Current thinking mode/level for this session
   webSearchEnabled?: boolean;         // Whether web search is enabled for this session
   draftContent?: string;              // Unsent input text for this session
@@ -851,6 +869,7 @@ export interface PersistedSession {
   conversationId: string | null;
   workstudioId?: string | null;
   apiType: ApiProtocolType | null;  // Persisted API type lock
+  runMode?: RunMode;                // Persisted run mode selection
   thinkingMode?: ThinkingMode;      // Persisted thinking mode/level
   webSearchEnabled?: boolean;       // Persisted web search state
   draftContent?: string;            // Persisted unsent input text

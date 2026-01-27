@@ -38,6 +38,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
     abortGeneration,
     setSessionModel,
     undoToMessage,
+    setSessionRunMode,
     setSessionThinkingMode,
     setSessionDraftContent,
   } = useSessionStore(
@@ -47,6 +48,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
       abortGeneration: state.abortGeneration,
       setSessionModel: state.setSessionModel,
       undoToMessage: state.undoToMessage,
+      setSessionRunMode: state.setSessionRunMode,
       setSessionThinkingMode: state.setSessionThinkingMode,
       setSessionDraftContent: state.setSessionDraftContent,
     }))
@@ -623,6 +625,11 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
         onAbort={handleAbort}
         disabled={false}
         isGenerating={isGenerating}
+        runMode={session?.runMode ?? 'chat'}
+        onRunModeChange={(mode) => {
+          if (!sessionId) return;
+          setSessionRunMode(sessionId, mode);
+        }}
         agents={currentAgentForDisplay ? [currentAgentForDisplay] : []}
         currentAgentName={currentAgentForDisplay?.name || session?.agentName || ''}
         supportsThinking={supportsThinking}

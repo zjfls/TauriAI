@@ -7,7 +7,7 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import type { AgentSession, Message, DebugInfo, TokenUsage, PersistedSession, PersistedSessionState, ContentPart, ThinkingMode, ApiProtocolType, RunEventPayload, MessageBlock, ProviderType, MessageTurn, Workstudio } from '../types';
+import type { AgentSession, Message, DebugInfo, TokenUsage, PersistedSession, PersistedSessionState, ContentPart, ThinkingMode, ApiProtocolType, RunEventPayload, MessageBlock, ProviderType, MessageTurn, Workstudio, RunMode } from '../types';
 import { getApiProtocol, getDefaultThinkingMode, getProviderType } from '../utils/apiUtils';
 import { hydrateMessagesFromBackend } from '../utils/hydrateMessages';
 import { useConfigStore } from './configStore';
@@ -79,6 +79,7 @@ export interface SessionState {
   setSessionAgent: (sessionId: string, agentName: string) => void;
 
   // Per-session settings
+  setSessionRunMode: (sessionId: string, runMode: RunMode) => void;
   setSessionThinkingMode: (sessionId: string, thinkingMode: ThinkingMode) => void;
   setSessionWebSearchEnabled: (sessionId: string, enabled: boolean) => void;
   setSessionDraftContent: (sessionId: string, draftContent: string) => void;
@@ -168,6 +169,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     const agentType = agent?.type ?? 'chat';
     const workspaceEnabled = agentType === 'tool' && (agent?.workspaceSupport ?? true);
+    const runMode: RunMode = agentType === 'tool' ? 'agent' : 'chat';
+    const runMode: RunMode = agentType === 'tool' ? 'agent' : 'chat';
 
     // Generate default title with timestamp: 新对话_MM-DD HH:mm
     const nowDate = new Date();
@@ -210,6 +213,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       conversationId: conversation.id,
       workstudioId: resolvedWorkstudioId,
       apiType: apiProtocol, // 当前会话协议（不再做“首条消息锁定”）
+      runMode,
       thinkingMode,
       draftContent: '',
       messages: [],
@@ -503,6 +507,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         contentParts: contentParts.length > 0 ? contentParts : undefined,
         agentName: session.agentName,
         modelRef: session.modelRef,
+        runMode: session.runMode,
         thinking,  // 直接传递 thinking，可以是 boolean 或 string
         webSearchEnabled: session.webSearchEnabled,  // 传递 web search 状态
         debugMode,
@@ -1084,6 +1089,27 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   /**
+   * Update per-session run mode (chat/agent/full access)
+   */
+  setSessionRunMode: (sessionId: string, runMode: RunMode) => {
+    set((state) => {
+      const newSessions = new Map(state.sessions);
+      const session = newSessions.get(sessionId);
+      if (!session) return {};
+
+      newSessions.set(sessionId, {
+        ...session,
+        runMode,
+        lastActiveAt: new Date().toISOString(),
+      });
+
+      return { sessions: newSessions };
+    });
+
+    get().saveSessionState();
+  },
+
+  /**
    * Update per-session thinking mode/level
    */
   setSessionThinkingMode: (sessionId: string, thinkingMode: ThinkingMode) => {
@@ -1227,6 +1253,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       conversationId: session.conversationId,
       workstudioId: session.workstudioId ?? null,
       apiType: session.apiType,
+      runMode: session.runMode,
       thinkingMode: session.thinkingMode,
       webSearchEnabled: session.webSearchEnabled,
       draftContent: session.draftContent,
@@ -1305,6 +1332,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         const modelRef = persisted.modelRef || agent?.modelRef;
         const apiProtocol = modelRef && config ? getApiProtocol(modelRef, config.providers) : 'chat_completions';
         const providerType = modelRef && config ? getProviderType(modelRef, config.providers) : undefined;
+        const defaultRunMode: RunMode = (agent?.type ?? 'chat') === 'tool' ? 'agent' : 'chat';
+        const runMode = persisted.runMode ?? defaultRunMode;
 
         const session: AgentSession = {
           id: persisted.id,
@@ -1314,6 +1343,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           conversationId: persisted.conversationId,
           workstudioId: persisted.workstudioId ?? convWorkstudioId,
           apiType: apiProtocol,
+          runMode,
           thinkingMode: coerceThinkingModeForProtocol(persisted.thinkingMode, apiProtocol, providerType),
           webSearchEnabled: persisted.webSearchEnabled,
           draftContent: persisted.draftContent ?? '',
@@ -1433,6 +1463,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       conversationId,
       workstudioId: resolvedWorkstudioId,
       apiType: apiProtocol,
+      runMode,
       thinkingMode: coerceThinkingModeForProtocol(conversation?.thinkingMode, apiProtocol, providerType),
       draftContent: '',
       messages,
@@ -1612,6 +1643,7 @@ const flushPendingStreamChunks = () => {
               const toolName = typeof v.tool_name === 'string' ? v.tool_name : '';
               const args = typeof v.arguments === 'string' ? v.arguments : '';
               const status = typeof v.status === 'string' ? v.status : 'unknown';
+              const securityPolicy = typeof (v as any).security_policy === 'string' ? (v as any).security_policy : undefined;
               const escalated = typeof v.escalated === 'boolean' ? v.escalated : undefined;
               const reason = typeof v.reason === 'string' ? v.reason : undefined;
               return {
@@ -1622,6 +1654,7 @@ const flushPendingStreamChunks = () => {
                 toolName,
                 arguments: args,
                 status,
+                securityPolicy,
                 escalated,
                 reason,
                 turnId,

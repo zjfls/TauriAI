@@ -99,14 +99,26 @@ impl ConfigManager {
     pub fn ensure_default(&self) -> Result<AppConfig, ConfigError> {
         if self.config_path.exists() {
             let mut config = self.load()?;
+            let mut changed = false;
+
             // Auto-migrate if needed
             if config.needs_migration() {
                 config.migrate();
+                changed = true;
+            }
+
+            // Ensure new defaults / shape are present (e.g. security policies)
+            if config.normalize() {
+                changed = true;
+            }
+
+            if changed {
                 self.save(&config)?;
             }
             Ok(config)
         } else {
-            let config = Self::create_default_config();
+            let mut config = Self::create_default_config();
+            let _ = config.normalize();
             self.save(&config)?;
             Ok(config)
         }
@@ -190,6 +202,7 @@ mod tests {
                 system_prompt: "You are a helpful assistant.".to_string(),
                 format_type: FormatPromptType::Chat,
                 toolset: None,
+                security_policy: None,
                 sandbox_policy: None,
                 approval_policy: None,
                 workspace_support: None,

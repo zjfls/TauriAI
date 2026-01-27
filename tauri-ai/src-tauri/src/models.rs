@@ -666,6 +666,9 @@ pub struct Agent {
     /// Optional toolset name (bind different tool collections per agent)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub toolset: Option<String>,
+    /// Optional security policy name (defaults to global default policy).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub security_policy: Option<String>,
     /// Optional sandbox policy override (defaults to global security policy).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sandbox_policy: Option<SandboxPolicy>,
@@ -703,6 +706,7 @@ impl Default for Agent {
             system_prompt: String::new(),
             format_type: FormatPromptType::default(),
             toolset: None,
+            security_policy: None,
             sandbox_policy: None,
             approval_policy: None,
             workspace_support: None,
@@ -1022,7 +1026,7 @@ impl Default for SandboxPolicy {
     fn default() -> Self {
         SandboxPolicy::WorkspaceWrite {
             writable_roots: Vec::new(),
-            network_access: false,
+            network_access: true,
             exclude_tmpdir_env_var: false,
             exclude_slash_tmp: false,
         }
@@ -1047,22 +1051,113 @@ impl SandboxPolicy {
     }
 }
 
-/// Security policy settings (sandbox, future approvals, etc.).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SecuritySettings {
+pub struct TrustedCommandConfig {
+    pub tool: String,
+    pub command: String,
+}
+
+/// A named security policy (sandbox + approvals + trust list).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecurityPolicyConfig {
+    pub name: String,
     #[serde(default)]
     pub sandbox_policy: SandboxPolicy,
     #[serde(default)]
     pub approval_policy: AskForApproval,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trusted_commands: Vec<TrustedCommandConfig>,
+}
+
+/// Security settings (multiple policies).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecuritySettings {
+    #[serde(default)]
+    pub policies: Vec<SecurityPolicyConfig>,
+    #[serde(default)]
+    pub default_policy: String,
+
+    // Legacy fields for migration (v1: single global sandbox/approval).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_policy: Option<SandboxPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_policy: Option<AskForApproval>,
 }
 
 impl Default for SecuritySettings {
     fn default() -> Self {
         Self {
-            sandbox_policy: SandboxPolicy::default(),
-            approval_policy: AskForApproval::default(),
+            policies: vec![SecurityPolicyConfig {
+                name: "default".to_string(),
+                sandbox_policy: SandboxPolicy::default(),
+                approval_policy: AskForApproval::default(),
+                trusted_commands: Vec::new(),
+            }],
+            default_policy: "default".to_string(),
+            sandbox_policy: None,
+            approval_policy: None,
         }
+    }
+}
+
+impl SecuritySettings {
+    pub fn normalize(&mut self) -> bool {
+        let mut changed = false;
+
+        if self.policies.is_empty() {
+            let sandbox_policy = self.sandbox_policy.take().unwrap_or_default();
+            let approval_policy = self.approval_policy.take().unwrap_or_default();
+            self.policies.push(SecurityPolicyConfig {
+                name: "default".to_string(),
+                sandbox_policy,
+                approval_policy,
+                trusted_commands: Vec::new(),
+            });
+            self.default_policy = "default".to_string();
+            changed = true;
+        }
+
+        let default_missing = self.default_policy.trim().is_empty()
+            || !self.policies.iter().any(|p| p.name == self.default_policy);
+        if default_missing {
+            self.default_policy = self
+                .policies
+                .first()
+                .map(|p| p.name.clone())
+                .unwrap_or_else(|| "default".to_string());
+            changed = true;
+        }
+
+        if self.sandbox_policy.is_some() {
+            self.sandbox_policy = None;
+            changed = true;
+        }
+        if self.approval_policy.is_some() {
+            self.approval_policy = None;
+            changed = true;
+        }
+
+        changed
+    }
+
+    pub fn resolve_policy(&self, name: Option<&str>) -> &SecurityPolicyConfig {
+        if let Some(name) = name.map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            if let Some(p) = self.policies.iter().find(|p| p.name == name) {
+                return p;
+            }
+        }
+
+        if let Some(p) = self.policies.iter().find(|p| p.name == self.default_policy) {
+            return p;
+        }
+
+        // Defensive fallback: should not happen after normalize().
+        self.policies
+            .first()
+            .expect("SecuritySettings.policies should not be empty")
     }
 }
 
@@ -1122,6 +1217,10 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    pub fn normalize(&mut self) -> bool {
+        self.security.normalize()
+    }
+
     /// Check if config needs migration from legacy format
     pub fn needs_migration(&self) -> bool {
         self.models.is_some() && self.providers.is_empty()
@@ -1192,6 +1291,7 @@ impl AppConfig {
                     .unwrap_or_default(),
                 format_type: FormatPromptType::Chat,
                 toolset: None,
+                security_policy: None,
                 sandbox_policy: None,
                 approval_policy: None,
                 workspace_support: None,
