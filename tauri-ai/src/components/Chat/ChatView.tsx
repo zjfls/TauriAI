@@ -149,6 +149,20 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
 
   const supportsWebSearch = useMemo(() => availableWebSearchProviders.length > 0, [availableWebSearchProviders]);
 
+  // 默认选择：仅在“未设置”时自动选一个；若用户显式选择了“不搜索”(null)则不覆盖。
+  useEffect(() => {
+    if (!sessionId) return;
+    if (!supportsWebSearch) return;
+    if (!availableWebSearchProviders.length) return;
+    if (!session) return;
+    if (session.webSearchProvider !== undefined) return;
+
+    const preferred =
+      (availableWebSearchProviders.includes('native') ? 'native' : availableWebSearchProviders[0]) ??
+      null;
+    useSessionStore.getState().setSessionWebSearchProvider(sessionId, preferred);
+  }, [sessionId, session, supportsWebSearch, availableWebSearchProviders]);
+
   const webSearchDetails = useMemo(() => {
     if (availableWebSearchProviders.length === 0) {
       return '未配置搜索提供方（设置→通用）';
@@ -904,7 +918,7 @@ Guidelines:
         }}
         supportsWebSearch={supportsWebSearch}
         availableProviders={availableWebSearchProviders}
-        selectedProvider={session?.webSearchProvider ?? null}
+        selectedProvider={session?.webSearchProvider}
         onProviderSelect={(provider) => {
           if (!sessionId) return;
           useSessionStore.getState().setSessionWebSearchProvider(sessionId, provider);

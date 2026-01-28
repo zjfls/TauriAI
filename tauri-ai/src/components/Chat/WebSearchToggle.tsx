@@ -227,49 +227,6 @@ export const WebSearchToggle: React.FC<WebSearchToggleProps> = ({
             zIndex: 1000,
           }}
         >
-          {/* None option - turn off search */}
-          <button
-            onClick={() => handleSelect(null)}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px',
-              width: '100%',
-              padding: '8px 12px',
-              borderRadius: '6px',
-              border: 'none',
-              backgroundColor: selected === null || selected === undefined ? 'rgba(156, 163, 175, 0.2)' : 'transparent',
-              color: selected === null || selected === undefined ? '#f3f4f6' : '#9ca3af',
-              cursor: 'pointer',
-              fontSize: '13px',
-              textAlign: 'left',
-              transition: 'all 0.15s ease',
-            }}
-            onMouseEnter={(e) => {
-              if (selected !== null && selected !== undefined) {
-                e.currentTarget.style.backgroundColor = 'rgba(156, 163, 175, 0.15)';
-                e.currentTarget.style.color = '#d1d5db';
-              }
-            }}
-            onMouseLeave={(e) => {
-              if (selected !== null && selected !== undefined) {
-                e.currentTarget.style.backgroundColor = 'transparent';
-                e.currentTarget.style.color = '#9ca3af';
-              }
-            }}
-          >
-            <span style={{ display: 'flex', alignItems: 'center' }}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M18 6 6 18"/>
-                <path d="m6 6 12 12"/>
-              </svg>
-            </span>
-            <span>不搜索</span>
-          </button>
-
-          {/* Divider */}
-          <div style={{ height: '1px', backgroundColor: '#374151', margin: '4px 0' }} />
-
           {/* Provider options */}
           {providers.map((provider) => {
             const config = PROVIDER_CONFIG[provider];
@@ -319,6 +276,54 @@ export const WebSearchToggle: React.FC<WebSearchToggleProps> = ({
               </button>
             );
           })}
+
+          {/* Divider */}
+          <div style={{ height: '1px', backgroundColor: '#374151', margin: '4px 0' }} />
+
+          {/* None option - turn off search */}
+          <button
+            onClick={() => handleSelect(null)}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              width: '100%',
+              padding: '8px 12px',
+              borderRadius: '6px',
+              border: 'none',
+              backgroundColor: selected === null ? 'rgba(156, 163, 175, 0.2)' : 'transparent',
+              color: selected === null ? '#f3f4f6' : '#9ca3af',
+              cursor: 'pointer',
+              fontSize: '13px',
+              textAlign: 'left',
+              transition: 'all 0.15s ease',
+            }}
+            onMouseEnter={(e) => {
+              if (selected !== null) {
+                e.currentTarget.style.backgroundColor = 'rgba(156, 163, 175, 0.15)';
+                e.currentTarget.style.color = '#d1d5db';
+              }
+            }}
+            onMouseLeave={(e) => {
+              if (selected !== null) {
+                e.currentTarget.style.backgroundColor = 'transparent';
+                e.currentTarget.style.color = '#9ca3af';
+              }
+            }}
+          >
+            <span style={{ display: 'flex', alignItems: 'center' }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M18 6 6 18"/>
+                <path d="m6 6 12 12"/>
+              </svg>
+            </span>
+            <span>不搜索</span>
+            {selected === null && (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginLeft: 'auto' }}>
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+            )}
+          </button>
         </div>
       )}
     </div>
