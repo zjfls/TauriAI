@@ -22,6 +22,6 @@ target/
 tauri-ai/.system-analyst/
 
 # Local-only helper scripts / generated docs
-scripts/
+/scripts/
 tauri-ai/docs/
 tauri-ai/metadata.json
