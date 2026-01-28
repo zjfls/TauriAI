@@ -6,7 +6,15 @@
 import React, { useState, useEffect } from 'react';
 import { Plus, Star, Search, Copy } from 'lucide-react';
 import { useConfigStore } from '../../stores/configStore';
-import type { Agent, AgentType, AskForApproval, FormatPromptType, SandboxPolicy, SecurityPolicyConfig } from '../../types';
+import type {
+  Agent,
+  AgentType,
+  AskForApproval,
+  FormatPromptType,
+  SandboxPolicy,
+  SecurityPolicyConfig,
+  SkillSetConfig,
+} from '../../types';
 
 const defaultAgent: Agent = {
   name: '',
@@ -199,6 +207,7 @@ export const AgentConfigForm: React.FC = () => {
             toolsetOptions={toolsetOptions}
             mcpSetOptions={mcpSetOptions}
             skillSetOptions={skillSetOptions}
+            skillSets={config?.skills?.sets ?? []}
             securityPolicies={config?.security?.policies ?? []}
             defaultSecurityPolicyName={config?.security?.defaultPolicy ?? ''}
             onDuplicate={handleDuplicate}
@@ -231,6 +240,7 @@ interface AgentFormProps {
   toolsetOptions: { label: string; value: string }[];
   mcpSetOptions: { label: string; value: string }[];
   skillSetOptions: { label: string; value: string }[];
+  skillSets: SkillSetConfig[];
   securityPolicies: SecurityPolicyConfig[];
   defaultSecurityPolicyName: string;
   onDuplicate: () => void;
@@ -247,6 +257,7 @@ const AgentForm: React.FC<AgentFormProps> = ({
   toolsetOptions,
   mcpSetOptions,
   skillSetOptions,
+  skillSets,
   securityPolicies,
   defaultSecurityPolicyName,
   onDuplicate,
@@ -280,6 +291,10 @@ const AgentForm: React.FC<AgentFormProps> = ({
     if (skillSetOptions.some((o) => o.value === agent.skillSet)) return skillSetOptions;
     return [{ value: agent.skillSet, label: `（不存在）${agent.skillSet}` }, ...skillSetOptions];
   })();
+
+  const selectedSkillSet = agent.skillSet
+    ? skillSets.find((s) => s.name === agent.skillSet) ?? null
+    : null;
 
   const formatOptions: { value: FormatPromptType; label: string }[] = [
     { value: 'chat', label: 'Chat (富文本)' },
@@ -503,6 +518,11 @@ const AgentForm: React.FC<AgentFormProps> = ({
             <p className="text-xs text-gray-500">
               绑定后：运行时会把启用的 skills 作为系统指令注入提示词。
             </p>
+            {agent.skillSet && selectedSkillSet && (selectedSkillSet.skills?.length ?? 0) === 0 && (
+              <p className="text-xs text-yellow-700 dark:text-yellow-300">
+                提示：该 Skill Set 当前未选择任何技能，因此不会注入到对话上下文，也不会在 Context 统计里显示。
+              </p>
+            )}
           </div>
         </div>
 
