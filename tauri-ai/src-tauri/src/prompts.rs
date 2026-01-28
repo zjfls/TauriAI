@@ -131,7 +131,10 @@ pub const WEB_SEARCH_TOOL_PROMPT: &str = r#"
 
 ## 网络搜索（工具）
 
-当你需要最新信息、事实核验或引用来源时，并且 tools 列表里提供了 `web_search` 工具，你可以调用它进行网络搜索。
+当你需要最新信息、事实核验或引用来源时，并且 tools 列表里提供了 `web_search` 工具，请优先调用它进行网络搜索。
+
+重要：
+- 当用户在输入框启用了 Tavily/Google/Brave 搜索时，优先使用 `web_search` 获取外部信息；不要用 `shell_command`/`curl` 直接抓取网页或 RSS 来“代替搜索”。
 
 使用建议：
 - 先明确查询词（query），尽量包含关键实体/时间范围。

@@ -602,6 +602,10 @@ impl<'a> TurnLoop<'a> {
         matches!(tool_name, "apply_patch")
     }
 
+    fn is_network_tool(tool_name: &str) -> bool {
+        matches!(tool_name, "web_search")
+    }
+
     fn approval_cache_key(call: &ToolCall) -> String {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
@@ -646,6 +650,35 @@ impl<'a> TurnLoop<'a> {
             return crate::models::SandboxPolicy::DangerFullAccess;
         }
 
+        // Network tools: approval can be used to temporarily lift network restrictions.
+        if Self::is_network_tool(tool_name) && !self.sandbox_policy.has_full_network_access() {
+            return match &self.sandbox_policy {
+                crate::models::SandboxPolicy::DangerFullAccess => {
+                    crate::models::SandboxPolicy::DangerFullAccess
+                }
+                crate::models::SandboxPolicy::ReadOnly => crate::models::SandboxPolicy::WorkspaceWrite {
+                    writable_roots: Vec::new(),
+                    network_access: true,
+                    exclude_tmpdir_env_var: false,
+                    exclude_slash_tmp: false,
+                },
+                crate::models::SandboxPolicy::ExternalSandbox { .. } => crate::models::SandboxPolicy::ExternalSandbox {
+                    network_access: crate::models::NetworkAccess::Enabled,
+                },
+                crate::models::SandboxPolicy::WorkspaceWrite {
+                    writable_roots,
+                    exclude_tmpdir_env_var,
+                    exclude_slash_tmp,
+                    ..
+                } => crate::models::SandboxPolicy::WorkspaceWrite {
+                    writable_roots: writable_roots.clone(),
+                    network_access: true,
+                    exclude_tmpdir_env_var: *exclude_tmpdir_env_var,
+                    exclude_slash_tmp: *exclude_slash_tmp,
+                },
+            };
+        }
+
         // In "read-only" mode, a successful approval implies we can temporarily
         // lift restrictions for this call. To stay close to Codex semantics,
         // we upgrade to "workspace-write" (still confined to workspace roots).
@@ -683,6 +716,17 @@ impl<'a> TurnLoop<'a> {
         // Always allow safe read-only tools without asking.
         if Self::is_safe_readonly_tool(tool_name) {
             return false;
+        }
+
+        // Network tools: when sandbox forbids network, require approval (if policy allows).
+        if Self::is_network_tool(tool_name) {
+            if self.sandbox_policy.has_full_network_access() {
+                return false;
+            }
+            return match self.approval_policy {
+                AskForApproval::Never | AskForApproval::OnFailure => false,
+                AskForApproval::OnRequest | AskForApproval::UnlessTrusted => true,
+            };
         }
 
         // Only exec/write tools participate in approval flow for now.
@@ -1273,13 +1317,30 @@ impl<'a> TurnLoop<'a> {
                         // 2) OnFailure: if denied by sandbox, ask to retry with escalation.
                         if matches!(self.approval_policy, AskForApproval::OnFailure) {
                             if let Err(e) = &exec {
+                                let web_search_needs_network =
+                                    call.name == "web_search"
+                                        && !sandbox_policy_for_call.has_full_network_access();
                                 if e.kind == super::tools::registry::ToolErrorKind::Denied
-                                    && !sandbox_policy_for_call.has_full_disk_write_access()
+                                    && (!sandbox_policy_for_call.has_full_disk_write_access()
+                                        || web_search_needs_network)
                                 {
-                                    let retry_reason = format!(
-                                        "工具被沙盒拒绝：{}。是否允许以完全访问权限重试？",
-                                        e.message
-                                    );
+                                    let (retry_reason, escalated) = if web_search_needs_network {
+                                        (
+                                            format!(
+                                                "工具被沙盒拒绝：{}。是否允许为 web_search 临时开启网络访问并重试？",
+                                                e.message
+                                            ),
+                                            false,
+                                        )
+                                    } else {
+                                        (
+                                            format!(
+                                                "工具被沙盒拒绝：{}。是否允许以完全访问权限重试？",
+                                                e.message
+                                            ),
+                                            true,
+                                        )
+                                    };
                                     let (asked2, decision2, sandbox2) = self
                                         .request_tool_approval(
                                             abort_rx,
@@ -1287,7 +1348,7 @@ impl<'a> TurnLoop<'a> {
                                             turn_index,
                                             call,
                                             Some(retry_reason.clone()),
-                                            true,
+                                            escalated,
                                             true,
                                         )
                                         .await;
@@ -1318,7 +1379,7 @@ impl<'a> TurnLoop<'a> {
                                         }
                                         ApprovalDecision::Denied => {
                                             let msg = format!(
-                                                "TOOL_DENIED: 用户拒绝提升权限重试（原始错误：{}）",
+                                                "TOOL_DENIED: 用户拒绝重试（原始错误：{}）",
                                                 e.message
                                             );
                                             self.emitter.emit(RunEvent::BlockDelta {
@@ -1372,9 +1433,14 @@ impl<'a> TurnLoop<'a> {
                                         }
                                         ApprovalDecision::Approved
                                         | ApprovalDecision::ApprovedForSession => {
-                                            sandbox_policy_for_call = sandbox2.unwrap_or(
-                                                crate::models::SandboxPolicy::DangerFullAccess,
-                                            );
+                                            sandbox_policy_for_call = if let Some(policy) = sandbox2
+                                            {
+                                                policy
+                                            } else if escalated {
+                                                crate::models::SandboxPolicy::DangerFullAccess
+                                            } else {
+                                                sandbox_policy_for_call.clone()
+                                            };
                                             exec = {
                                                 let mut tool_ctx =
                                                     super::tools::registry::ToolExecutionContext {
@@ -2484,8 +2550,7 @@ async fn run_task_inner(
             (false, false)
         };
 
-        enable_local_web_search_tool =
-            selected_provider.is_some() && provider_enabled && has_key && sandbox_policy.has_full_network_access();
+        enable_local_web_search_tool = selected_provider.is_some() && provider_enabled && has_key;
 
         if enable_local_web_search_tool {
             registry.register(Arc::new(
@@ -2495,7 +2560,9 @@ async fn run_task_inner(
                 },
             ));
             if matches!(toolset.mode, super::tools::spec::ToolSetMode::AllowList) {
-                toolset.tools.push("web_search".to_string());
+                if !toolset.tools.iter().any(|t| t == "web_search") {
+                    toolset.tools.push("web_search".to_string());
+                }
             }
         }
 

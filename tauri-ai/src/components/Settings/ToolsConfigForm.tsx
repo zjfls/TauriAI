@@ -14,7 +14,6 @@ const AVAILABLE_TOOLS = [
   { name: 'read_file', label: '读文件', description: '读取本地文件（带行号）' },
   { name: 'list_dir', label: '列目录', description: '列出目录结构（带缩进）' },
   { name: 'rg', label: 'rg', description: '按 pattern 搜索文件（ripgrep）' },
-  { name: 'web_search', label: '网络搜索', description: '调用本地网络搜索（Tavily / Google CSE / Brave）' },
   { name: 'apply_patch', label: 'Apply Patch', description: '按补丁格式修改/创建文件' },
   { name: 'shell_command', label: 'Shell 命令', description: '一次性执行命令' },
   { name: 'exec_command', label: 'PTY 启动命令', description: '创建交互式会话' },
