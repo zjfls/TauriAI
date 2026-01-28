@@ -144,6 +144,12 @@ export interface ContextUsageBreakdown {
   tools?: number;           // Tool definitions tokens (future)
   mcp?: number;             // MCP context tokens (future)
   skills?: number;          // Skills prompt tokens (from SKILL.md)
+  // Optional preview texts for the context detail modal
+  systemPromptText?: string;
+  formatPromptText?: string;
+  skillsSectionText?: string;
+  skillsInjectedText?: string;
+  mcpPromptText?: string;
   total: number;            // Total used tokens
   limit: number;            // Model's context limit
   percentage: number;       // Usage percentage (0-100)
@@ -777,16 +783,6 @@ export interface WebSearchToolSettings {
 }
 
 /**
- * Tool permission switches (minimal skeleton, can evolve to complex policies)
- */
-export interface ToolPermissionSettings {
-  shellExec: boolean; // Allows `shell_command`
-  ptyExec: boolean;   // Allows `exec_command` / `write_stdin`
-  fileWrite: boolean; // Allows `apply_patch`
-  mcpExec: boolean;   // Allows `mcp__*` tools
-}
-
-/**
  * Reusable toolset definition (bind different tool collections per agent)
  */
 export interface ToolSetConfig {
@@ -800,11 +796,9 @@ export interface ToolSetConfig {
 }
 
 /**
- * Tools overall settings: global switch + permissions + toolsets
+ * Tools overall settings: toolsets only
  */
 export interface ToolsSettings {
-  enabled: boolean;
-  permissions: ToolPermissionSettings;
   toolsets: ToolSetConfig[];
 }
 

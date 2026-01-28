@@ -7,6 +7,7 @@ import React, { useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { X, RefreshCw } from 'lucide-react';
 import { useConfigStore } from '../../stores/configStore';
+import type { SandboxPolicy, SecurityPolicyConfig } from '../../types';
 
 type McpToolInfo = { name: string; description?: string; inputSchema: unknown };
 type McpTestResult = { success: boolean; message: string; tools: McpToolInfo[] };
@@ -29,7 +30,41 @@ export const McpModal: React.FC<McpModalProps> = ({ isOpen, onClose, agentName }
     [config, setName]
   );
 
-  const mcpPermissionEnabled = Boolean(config?.tools?.permissions?.mcpExec);
+  const effectiveSecurity = useMemo(() => {
+    if (!config || !agent) return null;
+
+    const hasFullNetworkAccess = (policy: SandboxPolicy): boolean => {
+      switch (policy.type) {
+        case 'danger-full-access':
+          return true;
+        case 'external-sandbox':
+          return policy.networkAccess === 'enabled';
+        case 'read-only':
+          return false;
+        case 'workspace-write':
+          return policy.networkAccess ?? true;
+        default:
+          return false;
+      }
+    };
+
+    const securityPolicies = config.security?.policies ?? [];
+    const defaultPolicyName = config.security?.defaultPolicy ?? securityPolicies[0]?.name ?? '';
+    const basePolicyName = agent.securityPolicy ?? defaultPolicyName;
+    const basePolicy: SecurityPolicyConfig | undefined =
+      securityPolicies.find((p) => p.name === basePolicyName) ??
+      securityPolicies.find((p) => p.name === defaultPolicyName) ??
+      securityPolicies[0];
+
+    const sandboxPolicy: SandboxPolicy =
+      agent.sandboxPolicy ?? basePolicy?.sandboxPolicy ?? { type: 'workspace-write', networkAccess: true };
+
+    return {
+      policyName: basePolicy?.name ?? basePolicyName,
+      sandboxPolicy,
+      allowMcpExec: hasFullNetworkAccess(sandboxPolicy),
+    };
+  }, [config, agent]);
 
   const testServer = async (serverName: string) => {
     setTestingServer(serverName);
@@ -78,10 +113,21 @@ export const McpModal: React.FC<McpModalProps> = ({ isOpen, onClose, agentName }
         <div className="p-5 space-y-4">
           <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-4 bg-gray-50 dark:bg-gray-800">
             <div className="text-sm text-gray-700 dark:text-gray-300">
-              MCP 工具权限：{mcpPermissionEnabled ? <span className="text-green-600">已开启</span> : <span className="text-red-600">未开启</span>}
+              MCP 网络访问：
+              {effectiveSecurity?.allowMcpExec ? (
+                <span className="text-green-600">已允许</span>
+              ) : (
+                <span className="text-red-600">受限</span>
+              )}
             </div>
+            {effectiveSecurity && (
+              <p className="mt-1 text-xs text-gray-500">
+                安全策略：<span className="font-mono">{effectiveSecurity.policyName || '(未命名)'}</span> | sandbox:{' '}
+                <span className="font-mono">{effectiveSecurity.sandboxPolicy.type}</span>
+              </p>
+            )}
             <p className="mt-1 text-xs text-gray-500">
-              提示：若「工具 → 允许 MCP 工具调用」关闭，则不会向模型暴露 <span className="font-mono">mcp__*</span> 工具。
+              提示：MCP 工具是否暴露给模型取决于本次运行的安全策略是否允许网络访问，以及输入框选择的模式（Agent / Agent Full Access）。
             </p>
           </div>
 

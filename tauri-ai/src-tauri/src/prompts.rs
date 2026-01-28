@@ -139,6 +139,22 @@ pub const WEB_SEARCH_TOOL_PROMPT: &str = r#"
 - 注意：该工具可能有速率限制（会自动按最小间隔节流），不要在短时间内重复发起大量搜索。
 "#;
 
+/// Prompt guide for MCP resource tools (Codex-like).
+pub const MCP_RESOURCE_TOOL_PROMPT: &str = r#"
+
+## MCP (Model Context Protocol)
+
+If MCP tools are available in the current tool list, you can use them to fetch additional context:
+
+- `list_mcp_resources`: Lists resources provided by MCP servers.
+- `list_mcp_resource_templates`: Lists parameterized resource templates.
+- `read_mcp_resource`: Reads a specific resource from an MCP server.
+
+Guidelines:
+- Prefer MCP resources over web search when the information is available via MCP.
+- Use `list_mcp_resources` / `list_mcp_resource_templates` to discover what's available before reading.
+"#;
+
 /// Optional hint for Python command selection when `python` is not available but `python3` is.
 pub const PYTHON3_FALLBACK_PROMPT: &str = r#"
 

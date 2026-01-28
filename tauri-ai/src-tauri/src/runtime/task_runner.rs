@@ -28,7 +28,7 @@ use crate::models::{
     MessageStatus, MessageTurn,
 };
 use crate::prompts::{
-    PERSISTENT_PROCESS_PROMPT, PYTHON3_FALLBACK_PROMPT, WEB_SEARCH_TOOL_PROMPT,
+    MCP_RESOURCE_TOOL_PROMPT, PERSISTENT_PROCESS_PROMPT, PYTHON3_FALLBACK_PROMPT, WEB_SEARCH_TOOL_PROMPT,
     WORKSTUDIO_PROMPT_GUIDE,
 };
 use crate::skills::loader::{index_by_name as index_skills_by_name, load_skills as load_skill_files};
@@ -409,10 +409,91 @@ fn inject_web_search_tool_prompt(messages: &mut Vec<Message>, conversation_id: &
     );
 }
 
+fn inject_mcp_resource_tool_prompt(messages: &mut Vec<Message>, conversation_id: &str) {
+    let content = MCP_RESOURCE_TOOL_PROMPT.trim().to_string();
+    if content.is_empty() {
+        return;
+    }
+    let insert_at = messages
+        .iter()
+        .take_while(|m| m.role == MessageRole::System)
+        .count();
+    messages.insert(
+        insert_at,
+        Message {
+            id: uuid::Uuid::new_v4().to_string(),
+            conversation_id: conversation_id.to_string(),
+            role: MessageRole::System,
+            content,
+            content_parts: Vec::new(),
+            thinking: None,
+            meta: None,
+            created_at: chrono::Utc::now(),
+            status: MessageStatus::Success,
+            error_message: None,
+        },
+    );
+}
+
+fn render_skills_section(skills: &[SkillEntry]) -> Option<String> {
+    if skills.is_empty() {
+        return None;
+    }
+
+    // Align with Codex: always provide "Available skills" + "How to use skills" section,
+    // and only inject SKILL.md bodies when the user explicitly mentions a skill.
+    let mut lines: Vec<String> = Vec::new();
+    lines.push("## Skills".to_string());
+    lines.push("A skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and file path so you can open the source for full instructions when using a specific skill.".to_string());
+    lines.push("### Available skills".to_string());
+    for skill in skills {
+        let path_str = skill.meta.path.replace('\\', "/");
+        lines.push(format!(
+            "- {name}: {description} (file: {path_str})",
+            name = skill.meta.name,
+            description = skill.meta.description
+        ));
+    }
+    lines.push("### How to use skills".to_string());
+    lines.push("- Discovery: The list above is the skills available in this session (name + description + file path). Skill bodies live on disk at the listed paths.".to_string());
+    lines.push("- Trigger rules: If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a skill's description shown above, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.".to_string());
+    lines.push("- Missing/blocked: If a named skill isn't in the list or the path can't be read, say so briefly and continue with the best fallback.".to_string());
+    lines.push("- How to use a skill (progressive disclosure):".to_string());
+    lines.push("  1) After deciding to use a skill, open its `SKILL.md`. Read only enough to follow the workflow.".to_string());
+    lines.push("  2) If `SKILL.md` points to extra folders such as `references/`, load only the specific files needed for the request; don't bulk-load everything.".to_string());
+    lines.push("  3) If `scripts/` exist, prefer running or patching them instead of retyping large code blocks.".to_string());
+    lines.push("  4) If `assets/` or templates exist, reuse them instead of recreating from scratch.".to_string());
+    lines.push("- Coordination and sequencing:".to_string());
+    lines.push("  - If multiple skills apply, choose the minimal set that covers the request and state the order you'll use them.".to_string());
+    lines.push("  - Announce which skill(s) you're using and why (one short line). If you skip an obvious skill, say why.".to_string());
+    lines.push("- Context hygiene:".to_string());
+    lines.push("  - Keep context small: summarize long sections instead of pasting them; only load extra files when needed.".to_string());
+    lines.push("  - Avoid deep reference-chasing: prefer opening only files directly linked from `SKILL.md` unless you're blocked.".to_string());
+    lines.push("  - When variants exist (frameworks, providers, domains), pick only the relevant reference file(s) and note that choice.".to_string());
+    lines.push("- Safety and fallback: If a skill can't be applied cleanly (missing files, unclear instructions), state the issue, pick the next-best approach, and continue.".to_string());
+
+    Some(lines.join("\n"))
+}
+
+fn find_skill_mentions(text: &str, skills: &[SkillEntry]) -> Vec<SkillEntry> {
+    // Mirror Codex TUI: only consider "$skill-name" explicit mentions.
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut matches: Vec<SkillEntry> = Vec::new();
+    for skill in skills {
+        if seen.contains(&skill.meta.name) {
+            continue;
+        }
+        let needle = format!("${}", skill.meta.name);
+        if text.contains(&needle) {
+            seen.insert(skill.meta.name.clone());
+            matches.push(skill.clone());
+        }
+    }
+    matches
+}
+
 fn build_skill_prompt_block(skills: &[SkillEntry]) -> String {
     let mut out = String::new();
-    out.push_str("## Skills\n\n");
-    out.push_str("以下为已启用的技能指令（skills），请在本次任务中遵循。\n\n");
     for s in skills {
         out.push_str("<skill>\n");
         out.push_str("<name>");
@@ -425,7 +506,7 @@ fn build_skill_prompt_block(skills: &[SkillEntry]) -> String {
         if !s.contents.ends_with('\n') {
             out.push('\n');
         }
-        out.push_str("\n</skill>\n\n");
+        out.push_str("</skill>\n\n");
     }
     out
 }
@@ -2209,6 +2290,7 @@ async fn run_task_inner(
     let tools_enabled = matches!(runtime_agent_type, AgentType::Tool);
     let mut allow_persistent_pty = false;
     let mut enable_local_web_search_tool = false;
+    let mut enable_mcp_resource_tool_prompt = false;
 
     let (tool_orchestrator, tools, allowed_tool_names) = if !tools_enabled {
         (None, None, None)
@@ -2247,6 +2329,7 @@ async fn run_task_inner(
 
         // MCP tools：按 agent 绑定的 MCP Set 进行注入（工具名：mcp__{server}__{tool}）。
         let mut mcp_tool_names: Vec<String> = Vec::new();
+        let mut mcp_resource_tool_names: Vec<String> = Vec::new();
         if allow_mcp_exec {
             if let Some(set_name) = agent.mcp_set.as_deref().filter(|s| !s.trim().is_empty()) {
                 let server_map: HashMap<String, crate::models::McpServerConfig> = config
@@ -2257,6 +2340,8 @@ async fn run_task_inner(
                     .collect();
 
                 if let Some(mcp_set) = config.mcp.sets.iter().find(|s| s.name == set_name) {
+                    let mut effective_servers: HashMap<String, crate::models::McpServerConfig> =
+                        HashMap::new();
                     for set_server in &mcp_set.servers {
                         if !set_server.enabled {
                             continue;
@@ -2267,6 +2352,7 @@ async fn run_task_inner(
                         if !server_cfg.enabled {
                             continue;
                         }
+                        effective_servers.insert(set_server.server.clone(), server_cfg.clone());
 
                         let tools = match global_mcp_runtime()
                             .list_tools(&set_server.server, server_cfg)
@@ -2309,6 +2395,31 @@ async fn run_task_inner(
                                 },
                             ));
                         }
+                    }
+
+                    // Codex-like MCP resource helpers (list/read resources) for the effective MCP server set.
+                    if !effective_servers.is_empty() {
+                        let servers = Arc::new(effective_servers);
+                        registry.register(Arc::new(
+                            crate::runtime::tools::handlers::mcp_resource::ListMcpResourcesTool {
+                                servers: Arc::clone(&servers),
+                            },
+                        ));
+                        registry.register(Arc::new(
+                            crate::runtime::tools::handlers::mcp_resource::ListMcpResourceTemplatesTool {
+                                servers: Arc::clone(&servers),
+                            },
+                        ));
+                        registry.register(Arc::new(
+                            crate::runtime::tools::handlers::mcp_resource::ReadMcpResourceTool {
+                                servers,
+                            },
+                        ));
+
+                        mcp_resource_tool_names.push("list_mcp_resources".to_string());
+                        mcp_resource_tool_names.push("list_mcp_resource_templates".to_string());
+                        mcp_resource_tool_names.push("read_mcp_resource".to_string());
+                        enable_mcp_resource_tool_prompt = true;
                     }
                 }
             }
@@ -2373,9 +2484,10 @@ async fn run_task_inner(
         // 如果 agent 使用 allow_list toolset，需要把 MCP 工具名也显式加入 allow_list，
         // 否则 orchestrator 会把它们过滤掉（即使 registry 已注册）。
         if matches!(toolset.mode, super::tools::spec::ToolSetMode::AllowList)
-            && !mcp_tool_names.is_empty()
+            && (!mcp_tool_names.is_empty() || !mcp_resource_tool_names.is_empty())
         {
             toolset.tools.extend(mcp_tool_names);
+            toolset.tools.extend(mcp_resource_tool_names);
         }
 
         let orchestrator = ToolOrchestrator::new(Arc::new(registry), ToolOrchestratorConfig {
@@ -2451,7 +2563,32 @@ async fn run_task_inner(
         workstudio_skills_dir.as_deref(),
     );
     if !enabled_skills.is_empty() {
-        inject_skills_prompt(&mut runtime_messages, &input.conversation_id, enabled_skills);
+        if let Some(section) = render_skills_section(&enabled_skills) {
+            let insert_at = runtime_messages
+                .iter()
+                .take_while(|m| m.role == MessageRole::System)
+                .count();
+            runtime_messages.insert(
+                insert_at,
+                Message {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    conversation_id: input.conversation_id.to_string(),
+                    role: MessageRole::System,
+                    content: section,
+                    content_parts: Vec::new(),
+                    thinking: None,
+                    meta: None,
+                    created_at: chrono::Utc::now(),
+                    status: MessageStatus::Success,
+                    error_message: None,
+                },
+            );
+        }
+
+        let mentioned_skills = find_skill_mentions(&input.content, &enabled_skills);
+        if !mentioned_skills.is_empty() {
+            inject_skills_prompt(&mut runtime_messages, &input.conversation_id, mentioned_skills);
+        }
     }
 
     if allow_persistent_pty {
@@ -2459,6 +2596,9 @@ async fn run_task_inner(
     }
     if enable_local_web_search_tool {
         inject_web_search_tool_prompt(&mut runtime_messages, &input.conversation_id);
+    }
+    if enable_mcp_resource_tool_prompt {
+        inject_mcp_resource_tool_prompt(&mut runtime_messages, &input.conversation_id);
     }
 
     let mut turn_loop = TurnLoop {

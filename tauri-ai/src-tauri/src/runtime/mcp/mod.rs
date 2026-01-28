@@ -7,7 +7,22 @@ use futures::future::BoxFuture;
 use futures::FutureExt;
 use rmcp::ClientHandler;
 use rmcp::RoleClient;
-use rmcp::model::{CallToolRequestParam, ClientCapabilities, ClientInfo, Implementation, InitializeRequestParam, JsonObject, PaginatedRequestParam, Tool};
+use rmcp::model::{
+    CallToolRequestParam,
+    ClientCapabilities,
+    ClientInfo,
+    Implementation,
+    InitializeRequestParam,
+    JsonObject,
+    ListResourceTemplatesResult,
+    ListResourcesResult,
+    PaginatedRequestParam,
+    ReadResourceRequestParam,
+    ReadResourceResult,
+    Resource,
+    ResourceTemplate,
+    Tool,
+};
 use rmcp::service::{self, NotificationContext, RequestContext, RunningService, ServiceError};
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::child_process::TokioChildProcess;
@@ -96,6 +111,74 @@ impl McpRuntime {
             .map(Duration::from_millis)
             .or(Some(DEFAULT_TOOL_TIMEOUT));
         client.call_tool(tool_name, arguments, timeout).await
+    }
+
+    pub async fn list_resources(
+        &self,
+        server_name: &str,
+        cfg: &McpServerConfig,
+        cursor: Option<String>,
+    ) -> Result<ListResourcesResult, String> {
+        let client = self.ensure_client(server_name, cfg).await?;
+        let timeout = cfg
+            .startup_timeout_ms
+            .map(Duration::from_millis)
+            .or(Some(DEFAULT_STARTUP_TIMEOUT));
+        client.list_resources(cursor, timeout).await
+    }
+
+    pub async fn list_all_resources(
+        &self,
+        server_name: &str,
+        cfg: &McpServerConfig,
+    ) -> Result<Vec<Resource>, String> {
+        let client = self.ensure_client(server_name, cfg).await?;
+        let timeout = cfg
+            .startup_timeout_ms
+            .map(Duration::from_millis)
+            .or(Some(DEFAULT_STARTUP_TIMEOUT));
+        client.list_all_resources(timeout).await
+    }
+
+    pub async fn list_resource_templates(
+        &self,
+        server_name: &str,
+        cfg: &McpServerConfig,
+        cursor: Option<String>,
+    ) -> Result<ListResourceTemplatesResult, String> {
+        let client = self.ensure_client(server_name, cfg).await?;
+        let timeout = cfg
+            .startup_timeout_ms
+            .map(Duration::from_millis)
+            .or(Some(DEFAULT_STARTUP_TIMEOUT));
+        client.list_resource_templates(cursor, timeout).await
+    }
+
+    pub async fn list_all_resource_templates(
+        &self,
+        server_name: &str,
+        cfg: &McpServerConfig,
+    ) -> Result<Vec<ResourceTemplate>, String> {
+        let client = self.ensure_client(server_name, cfg).await?;
+        let timeout = cfg
+            .startup_timeout_ms
+            .map(Duration::from_millis)
+            .or(Some(DEFAULT_STARTUP_TIMEOUT));
+        client.list_all_resource_templates(timeout).await
+    }
+
+    pub async fn read_resource(
+        &self,
+        server_name: &str,
+        cfg: &McpServerConfig,
+        uri: &str,
+    ) -> Result<ReadResourceResult, String> {
+        let client = self.ensure_client(server_name, cfg).await?;
+        let timeout = cfg
+            .tool_timeout_ms
+            .map(Duration::from_millis)
+            .or(Some(DEFAULT_TOOL_TIMEOUT));
+        client.read_resource(uri, timeout).await
     }
 
     async fn ensure_client(
@@ -332,6 +415,81 @@ impl McpClient {
         let fut = service.list_tools(None::<PaginatedRequestParam>);
         let result = run_with_timeout(fut, timeout, "tools/list").await?;
         Ok(result.tools)
+    }
+
+    pub async fn list_resources(
+        &self,
+        cursor: Option<String>,
+        timeout: Option<Duration>,
+    ) -> Result<ListResourcesResult, String> {
+        self.ensure_ready(timeout).await?;
+        let service = self.service().await?;
+        let params = cursor.map(|cursor| PaginatedRequestParam {
+            cursor: Some(cursor),
+        });
+        let fut = service.list_resources(params);
+        run_with_timeout(fut, timeout, "resources/list").await
+    }
+
+    pub async fn list_all_resources(
+        &self,
+        timeout: Option<Duration>,
+    ) -> Result<Vec<Resource>, String> {
+        let mut all = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..100 {
+            let res = self.list_resources(cursor.clone(), timeout).await?;
+            all.extend(res.resources);
+            cursor = res.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        Ok(all)
+    }
+
+    pub async fn list_resource_templates(
+        &self,
+        cursor: Option<String>,
+        timeout: Option<Duration>,
+    ) -> Result<ListResourceTemplatesResult, String> {
+        self.ensure_ready(timeout).await?;
+        let service = self.service().await?;
+        let params = cursor.map(|cursor| PaginatedRequestParam {
+            cursor: Some(cursor),
+        });
+        let fut = service.list_resource_templates(params);
+        run_with_timeout(fut, timeout, "resources/templates/list").await
+    }
+
+    pub async fn list_all_resource_templates(
+        &self,
+        timeout: Option<Duration>,
+    ) -> Result<Vec<ResourceTemplate>, String> {
+        let mut all = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..100 {
+            let res = self.list_resource_templates(cursor.clone(), timeout).await?;
+            all.extend(res.resource_templates);
+            cursor = res.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        Ok(all)
+    }
+
+    pub async fn read_resource(
+        &self,
+        uri: &str,
+        timeout: Option<Duration>,
+    ) -> Result<ReadResourceResult, String> {
+        self.ensure_ready(timeout).await?;
+        let service = self.service().await?;
+        let fut = service.read_resource(ReadResourceRequestParam {
+            uri: uri.to_string(),
+        });
+        run_with_timeout(fut, timeout, "resources/read").await
     }
 
     pub async fn call_tool(

@@ -17,7 +17,7 @@ import { countTokens } from '../../utils/tokenizer';
 import { getApiProtocol } from '../../utils/apiUtils';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
-import type { TokenUsage, ContextUsageBreakdown, ContentPart, ThinkingMode, PtySessionInfo, Workstudio, Agent, SkillLoadOutcome } from '../../types';
+import type { TokenUsage, ContextUsageBreakdown, ContentPart, ThinkingMode, PtySessionInfo, Workstudio, Agent, SkillEntry, SkillLoadOutcome, SandboxPolicy, SecurityPolicyConfig } from '../../types';
 import { useToolSessionStore } from '../../stores/toolSessionStore';
 import { openOrFocusViewWindow } from '../../utils/viewWindow';
 import { ChevronDown } from 'lucide-react';
@@ -410,6 +410,22 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
 - 上下标：H<sub>2</sub>O、x<sup>2</sup>
 `;
 
+  // MCP resource helper prompt (same as MCP_RESOURCE_TOOL_PROMPT in backend)
+  const MCP_RESOURCE_TOOL_PROMPT = `
+
+## MCP (Model Context Protocol)
+
+If MCP tools are available in the current tool list, you can use them to fetch additional context:
+
+- \`list_mcp_resources\`: Lists resources provided by MCP servers.
+- \`list_mcp_resource_templates\`: Lists parameterized resource templates.
+- \`read_mcp_resource\`: Reads a specific resource from an MCP server.
+
+Guidelines:
+- Prefer MCP resources over web search when the information is available via MCP.
+- Use \`list_mcp_resources\` / \`list_mcp_resource_templates\` to discover what's available before reading.
+`;
+
   // Skills catalog (for context usage estimation & tooltip)
   const [skillOutcome, setSkillOutcome] = useState<SkillLoadOutcome | null>(null);
 
@@ -471,17 +487,26 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
 
     // Calculate format prompt tokens based on format type
     let formatPromptTokens = 0;
+    let formatPromptText = '';
     if (formatType === 'chat') {
+      formatPromptText = FORMAT_PROMPT_CHAT;
       formatPromptTokens = countTokens(FORMAT_PROMPT_CHAT);
     } else if (formatType === 'plain') {
-      formatPromptTokens = countTokens('\n\n请使用纯文本格式回复，不要使用 Markdown 或其他格式。');
+      formatPromptText = '\n\n请使用纯文本格式回复，不要使用 Markdown 或其他格式。';
+      formatPromptTokens = countTokens(formatPromptText);
     } else if (formatType === 'json') {
-      formatPromptTokens = countTokens('\n\n请以 JSON 格式返回结果。');
+      formatPromptText = '\n\n请以 JSON 格式返回结果。';
+      formatPromptTokens = countTokens(formatPromptText);
     }
     // 'none' type has no format prompt
 
-    // Skills tokens (only when agent binds a skill set)
-    let skillTokens = 0;
+    // Skills tokens (Codex-like):
+    // - Always inject the skills list/how-to section when a skill set is bound
+    // - Only inject SKILL.md bodies when the user explicitly mentions "$skill-name"
+    let skillsSectionText = '';
+    let skillsInjectedText = '';
+    let skillsTokens = 0;
+
     const skillSetName = agent?.skillSet;
     if (skillSetName && config?.skills?.sets?.length && skillOutcome?.skills?.length) {
       const set = config.skills.sets.find((s) => s.name === skillSetName);
@@ -489,23 +514,125 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
         const disabledGlobal = new Set(config.skills.disabledSkills ?? []);
         const disabledSet = new Set(set.disabledSkills ?? []);
         const enabledNames = (set.skills ?? []).filter((n) => !disabledGlobal.has(n) && !disabledSet.has(n));
-        const map = new Map(skillOutcome.skills.map((s) => [s.meta.name, s.contents]));
-        skillTokens = enabledNames.reduce((sum, n) => sum + countTokens(map.get(n) || ''), 0);
+        const byName = new Map(skillOutcome.skills.map((s) => [s.meta.name, s]));
+        const availableSkills = enabledNames.map((n) => byName.get(n)).filter(Boolean) as SkillEntry[];
+
+        if (availableSkills.length > 0) {
+          const lines: string[] = [];
+          lines.push('## Skills');
+          lines.push(
+            'A skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and file path so you can open the source for full instructions when using a specific skill.'
+          );
+          lines.push('### Available skills');
+          for (const skill of availableSkills) {
+            const pathStr = skill.meta.path.replace(/\\/g, '/');
+            lines.push(`- ${skill.meta.name}: ${skill.meta.description} (file: ${pathStr})`);
+          }
+          lines.push('### How to use skills');
+          lines.push(
+            '- Discovery: The list above is the skills available in this session (name + description + file path). Skill bodies live on disk at the listed paths.'
+          );
+          lines.push(
+            "- Trigger rules: If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a skill's description shown above, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned."
+          );
+          lines.push(
+            "- Missing/blocked: If a named skill isn't in the list or the path can't be read, say so briefly and continue with the best fallback."
+          );
+          lines.push('- How to use a skill (progressive disclosure):');
+          lines.push('  1) After deciding to use a skill, open its `SKILL.md`. Read only enough to follow the workflow.');
+          lines.push(
+            "  2) If `SKILL.md` points to extra folders such as `references/`, load only the specific files needed for the request; don't bulk-load everything."
+          );
+          lines.push('  3) If `scripts/` exist, prefer running or patching them instead of retyping large code blocks.');
+          lines.push('  4) If `assets/` or templates exist, reuse them instead of recreating from scratch.');
+          lines.push('- Coordination and sequencing:');
+          lines.push(
+            "  - If multiple skills apply, choose the minimal set that covers the request and state the order you'll use them."
+          );
+          lines.push(
+            "  - Announce which skill(s) you're using and why (one short line). If you skip an obvious skill, say why."
+          );
+          lines.push('- Context hygiene:');
+          lines.push('  - Keep context small: summarize long sections instead of pasting them; only load extra files when needed.');
+          lines.push("  - Avoid deep reference-chasing: prefer opening only files directly linked from `SKILL.md` unless you're blocked.");
+          lines.push('  - When variants exist (frameworks, providers, domains), pick only the relevant reference file(s) and note that choice.');
+          lines.push(
+            "- Safety and fallback: If a skill can't be applied cleanly (missing files, unclear instructions), state the issue, pick the next-best approach, and continue."
+          );
+          skillsSectionText = lines.join('\n');
+
+          const lastUserText = [...messages].reverse().find((m) => m.role === 'user')?.content || '';
+          const mentioned = availableSkills.filter((s) => lastUserText.includes(`$${s.meta.name}`));
+          if (mentioned.length > 0) {
+            skillsInjectedText = mentioned
+              .map((s) => {
+                const body = s.contents.endsWith('\n') ? s.contents : `${s.contents}\n`;
+                return `<skill>\n<name>${s.meta.name}</name>\n<path>${s.meta.path}</path>\n${body}</skill>\n\n`;
+              })
+              .join('');
+          }
+
+          skillsTokens = countTokens(skillsSectionText) + countTokens(skillsInjectedText);
+        }
       }
     }
 
-    // MCP tokens (rough estimate based on selected MCP set config)
+    // MCP prompt tokens (Codex-like MCP resource helpers)
+    const hasFullNetworkAccess = (policy: SandboxPolicy): boolean => {
+      switch (policy.type) {
+        case 'danger-full-access':
+          return true;
+        case 'external-sandbox':
+          return policy.networkAccess === 'enabled';
+        case 'read-only':
+          return false;
+        case 'workspace-write':
+          // Backend default is true; keep UI estimation aligned.
+          return policy.networkAccess ?? true;
+        default:
+          return false;
+      }
+    };
+
+    let mcpPromptText = '';
     let mcpTokens = 0;
+    const isToolRun = (session?.runMode ?? 'chat') !== 'chat';
     const mcpSetName = agent?.mcpSet;
-    if (mcpSetName && config?.mcp?.sets?.length) {
-      const set = config.mcp.sets.find((s) => s.name === mcpSetName);
-      if (set) {
-        mcpTokens = countTokens(JSON.stringify(set));
+    if (isToolRun && mcpSetName && config?.mcp?.sets?.length) {
+      const securityPolicies = config?.security?.policies ?? [];
+      const defaultPolicyName = config?.security?.defaultPolicy ?? securityPolicies[0]?.name ?? '';
+      const basePolicyName = agent?.securityPolicy ?? defaultPolicyName;
+      const basePolicy: SecurityPolicyConfig | undefined =
+        securityPolicies.find((p) => p.name === basePolicyName) ??
+        securityPolicies.find((p) => p.name === defaultPolicyName) ??
+        securityPolicies[0];
+
+      const sandboxPolicy: SandboxPolicy =
+        (session?.runMode ?? 'chat') === 'agent-full-access'
+          ? { type: 'danger-full-access' }
+          : agent?.sandboxPolicy ?? basePolicy?.sandboxPolicy ?? { type: 'workspace-write', networkAccess: true };
+
+      const allowMcpExec = hasFullNetworkAccess(sandboxPolicy);
+      if (allowMcpExec) {
+        const set = config.mcp.sets.find((s) => s.name === mcpSetName);
+        if (set) {
+          const serverMap = new Map(config.mcp.servers.map((e) => [e.name, e.config] as const));
+          const hasEffectiveServer = (set.servers ?? []).some((s) => {
+            if (!s.enabled) return false;
+            const serverCfg = serverMap.get(s.server);
+            return Boolean(serverCfg && serverCfg.enabled);
+          });
+
+          if (hasEffectiveServer) {
+            mcpPromptText = MCP_RESOURCE_TOOL_PROMPT.trim();
+            mcpTokens = countTokens(mcpPromptText);
+          }
+        }
       }
     }
 
     // Base context usage (system prompt + format prompt + skills + mcp)
-    const baseTokens = systemPromptTokens + formatPromptTokens + skillTokens + mcpTokens;
+    const baseTokens = systemPromptTokens + formatPromptTokens + skillsTokens + mcpTokens;
 
     // Calculate message tokens
     let messageTokens = 0;
@@ -529,10 +656,15 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
     return {
       systemPrompt: systemPromptTokens,
       formatPrompt: formatPromptTokens,
-      skills: skillTokens,
+      skills: skillsTokens,
       messages: messageTokens,
       tools: 0,  // Future: tool definitions
       mcp: mcpTokens,
+      systemPromptText: userSystemPrompt || undefined,
+      formatPromptText: formatPromptText || undefined,
+      skillsSectionText: skillsSectionText || undefined,
+      skillsInjectedText: skillsInjectedText || undefined,
+      mcpPromptText: mcpPromptText || undefined,
       total: totalContextTokens,
       limit: contextLength,
       percentage: Math.min(percentage, 100),

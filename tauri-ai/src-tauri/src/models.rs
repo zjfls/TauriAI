@@ -998,37 +998,8 @@ fn default_ansi_color_mode() -> String {
 }
 
 // ============================================================================
-// Tooling (permissions + toolsets)
+// Tooling (toolsets)
 // ============================================================================
-
-/// 工具权限开关（最小骨架，后续可演进为“按工具/按能力/按目录/按会话”的复杂策略）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ToolPermissionSettings {
-    /// 允许执行一次性 shell 命令（`shell_command`）
-    #[serde(default)]
-    pub shell_exec: bool,
-    /// 允许创建/操作 PTY 会话（`exec_command` / `write_stdin`）
-    #[serde(default)]
-    pub pty_exec: bool,
-    /// 允许写入工作区文件（`apply_patch`）
-    #[serde(default)]
-    pub file_write: bool,
-    /// 允许调用 MCP（外部工具服务器，mcp__*）。
-    #[serde(default)]
-    pub mcp_exec: bool,
-}
-
-impl Default for ToolPermissionSettings {
-    fn default() -> Self {
-        Self {
-            shell_exec: false,
-            pty_exec: false,
-            file_write: false,
-            mcp_exec: false,
-        }
-    }
-}
 
 /// 可复用的工具集合（不同 Agent 可绑定不同 toolset）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1052,15 +1023,10 @@ impl Default for ToolSetConfig {
     }
 }
 
-/// Tools 总配置：全局开关 + 权限 + toolsets。
+/// Tools 总配置：仅包含 toolsets（不提供全局系统级权限开关）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolsSettings {
-    /// 全局工具系统开关（默认开启以保持现有 ToolAgent 行为）
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    #[serde(default)]
-    pub permissions: ToolPermissionSettings,
     #[serde(default)]
     pub toolsets: Vec<ToolSetConfig>,
 }
@@ -1068,8 +1034,6 @@ pub struct ToolsSettings {
 impl Default for ToolsSettings {
     fn default() -> Self {
         Self {
-            enabled: true,
-            permissions: ToolPermissionSettings::default(),
             toolsets: Vec::new(),
         }
     }
@@ -1424,7 +1388,7 @@ impl SecuritySettings {
 pub struct AppConfig {
     pub appearance: AppearanceSettings,
     pub general: GeneralSettings,
-    /// Tooling settings (permissions + toolsets)
+    /// Tooling settings (toolsets)
     #[serde(default)]
     pub tools: ToolsSettings,
     /// MCP settings (servers + sets)

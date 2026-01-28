@@ -5,9 +5,10 @@
  * - Click: Opens detailed context breakdown modal
  */
 
-import React, { useState } from 'react';
-import { X, FileText, MessageSquare, Wrench, Plug, BookOpen, Sparkles } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { X, FileText, MessageSquare, Wrench, Plug, BookOpen, Sparkles, Copy } from 'lucide-react';
 import type { ContextUsageBreakdown } from '../../types';
+import { countTokens } from '../../utils/tokenizer';
 
 interface ContextUsageIndicatorProps {
   usage: ContextUsageBreakdown;
@@ -137,6 +138,46 @@ const DetailModal: React.FC<DetailModalProps> = ({ usage, isOpen, onClose }) => 
     { icon: <Plug size={14} />, label: 'MCP 上下文', tokens: usage.mcp || 0 },
   ].filter(item => item.tokens > 0);
 
+  const promptSections = useMemo(() => {
+    const sections: { key: string; label: string; text: string; tokens: number }[] = [];
+    if (usage.systemPromptText) {
+      sections.push({ key: 'system', label: '系统提示词（文本）', text: usage.systemPromptText, tokens: usage.systemPrompt });
+    }
+    if (usage.formatPromptText) {
+      sections.push({
+        key: 'format',
+        label: '格式提示词（文本）',
+        text: usage.formatPromptText,
+        tokens: usage.formatPrompt || countTokens(usage.formatPromptText),
+      });
+    }
+    if (usage.skillsSectionText) {
+      sections.push({
+        key: 'skills-section',
+        label: 'Skills 列表说明',
+        text: usage.skillsSectionText,
+        tokens: countTokens(usage.skillsSectionText),
+      });
+    }
+    if (usage.skillsInjectedText) {
+      sections.push({
+        key: 'skills-injected',
+        label: 'Skills 注入内容',
+        text: usage.skillsInjectedText,
+        tokens: countTokens(usage.skillsInjectedText),
+      });
+    }
+    if (usage.mcpPromptText) {
+      sections.push({
+        key: 'mcp',
+        label: 'MCP 提示词（资源工具）',
+        text: usage.mcpPromptText,
+        tokens: usage.mcp || countTokens(usage.mcpPromptText),
+      });
+    }
+    return sections;
+  }, [usage]);
+
   return (
     <>
       {/* Backdrop */}
@@ -145,7 +186,7 @@ const DetailModal: React.FC<DetailModalProps> = ({ usage, isOpen, onClose }) => 
         onClick={onClose}
       />
       {/* Modal */}
-      <div className="absolute bottom-full right-0 mb-2 z-50 w-72 rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-800">
+      <div className="absolute bottom-full right-0 mb-2 z-50 w-96 max-h-[70vh] overflow-auto rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-800">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3 dark:border-gray-700">
           <h3 className="font-medium text-gray-900 dark:text-gray-100">Context 详情</h3>
@@ -197,6 +238,46 @@ const DetailModal: React.FC<DetailModalProps> = ({ usage, isOpen, onClose }) => 
             ))}
           </div>
         </div>
+
+        {/* Prompt texts injected into context */}
+        {promptSections.length > 0 && (
+          <div className="px-4 pb-3">
+            <div className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2">
+              注入提示词（可展开查看）
+            </div>
+            <div className="space-y-2">
+              {promptSections.map((section) => (
+                <details
+                  key={section.key}
+                  className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-900/30"
+                >
+                  <summary className="cursor-pointer select-none px-3 py-2 text-sm text-gray-700 dark:text-gray-200 flex items-center justify-between">
+                    <span>{section.label}</span>
+                    <span className="text-xs text-gray-500 dark:text-gray-400">
+                      {formatTokens(section.tokens)} tokens
+                    </span>
+                  </summary>
+                  <div className="px-3 pb-3">
+                    <div className="flex justify-end">
+                      <button
+                        type="button"
+                        className="mb-2 inline-flex items-center gap-1 rounded px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
+                        onClick={() => navigator.clipboard.writeText(section.text)}
+                        title="复制文本"
+                      >
+                        <Copy size={14} />
+                        复制
+                      </button>
+                    </div>
+                    <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded bg-white p-2 text-xs text-gray-800 dark:bg-gray-800 dark:text-gray-100">
+                      {section.text}
+                    </pre>
+                  </div>
+                </details>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Footer hint */}
         <div className="px-4 py-2 bg-gray-50 dark:bg-gray-900/50 rounded-b-lg">
