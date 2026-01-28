@@ -227,6 +227,8 @@ impl FormatPromptType {
     }
 }
 
+const TIME_TOOL_GUIDE: &str = "\n\n## 时间与日期\n\n- 如果涉及到“现在/今天/明天/本周/截止时间/几分钟前”等时间相关的问题或需要基于当前时间执行动作，并且工具可用，请先调用 `get_time` 获取当前 UTC 时间（ISO8601），再进行回答或计算；不要凭空猜测当前时间。\n";
+
 /// Compose final system prompt from base prompt and format type
 pub fn compose_system_prompt(
     base_prompt: Option<&str>,
@@ -239,7 +241,15 @@ pub fn compose_system_prompt(
         return None;
     }
 
-    Some(format!("{}{}", base, format))
+    // Always include a small, tool-aware time guideline to reduce "time blindness".
+    let mut out = String::new();
+    if !base.is_empty() {
+        out.push_str(base);
+    }
+    out.push_str(TIME_TOOL_GUIDE);
+    out.push_str(format);
+
+    Some(out)
 }
 
 #[cfg(test)]
@@ -256,7 +266,9 @@ mod tests {
     #[test]
     fn test_compose_none_format() {
         let result = compose_system_prompt(Some("你是一个助手"), FormatPromptType::None);
-        assert_eq!(result, Some("你是一个助手".to_string()));
+        let s = result.unwrap();
+        assert!(s.contains("你是一个助手"));
+        assert!(s.contains("get_time"));
     }
 
     #[test]
