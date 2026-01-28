@@ -26,8 +26,8 @@ const MAX_TEXTAREA_HEIGHT = 200; // Maximum height in pixels (Requirement 4.1)
 const RUN_MODE_OPTIONS: { value: RunMode; label: string }[] = [
   { value: 'chat', label: 'Chat' },
   { value: 'agent', label: 'Agent' },
-  { value: 'agent-custom', label: 'Custom' },
   { value: 'agent-full-access', label: 'Agent Full Access' },
+  { value: 'agent-custom', label: 'Custom' },
 ];
 
 /**
