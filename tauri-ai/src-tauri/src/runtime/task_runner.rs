@@ -2071,8 +2071,18 @@ async fn run_task_inner(
         .into());
     }
 
+    // Determine if native web search should be enabled based on provider selection
+    // - "native" or None with model support => enable native web search
+    // - "tavily"/"google"/"brave" => disable native (handled by local tool)
+    let native_web_search_enabled = match input.web_search_provider.as_deref() {
+        Some("native") => Some(true),
+        Some("tavily") | Some("google") | Some("brave") => Some(false),
+        None => None, // Default: let model decide based on capabilities
+        _ => None,
+    };
+    
     let mut model_config =
-        build_model_config(provider, model, input.thinking, input.web_search_enabled);
+        build_model_config(provider, model, input.thinking, native_web_search_enabled);
     let debug_mode = input.debug_mode.unwrap_or(config.general.debug_mode);
     // Debug: 在日志输出原始 SSE（仅流式请求）
     model_config.debug_sse = debug_mode && config.general.debug_sse;

@@ -88,31 +88,34 @@ impl ToolHandler for WebSearchTool {
 }
 
 fn sandbox_allows_network(policy: &SandboxPolicy) -> bool {
-    matches!(
-        policy.network,
-        crate::models::NetworkAccess::Full | crate::models::NetworkAccess::Default
-    )
+    match policy {
+        SandboxPolicy::DangerFullAccess => true,
+        SandboxPolicy::ReadOnly => false,
+        SandboxPolicy::ExternalSandbox { network_access } => network_access.is_enabled(),
+        SandboxPolicy::WorkspaceWrite { network_access, .. } => *network_access,
+    }
 }
 
 fn emit_web_search_block(
     ctx: &mut ToolExecutionContext<'_>,
     call_id: &str,
     status: &str,
-    payload: Option<&serde_json::Value>,
+    action: Option<&serde_json::Value>,
 ) {
-    let block = RunEvent::Block {
-        block_id: call_id.to_string(),
+    ctx.emitter.emit(RunEvent::BlockDelta {
+        task_id: ctx.task_id.to_string(),
+        turn_id: ctx.turn_id.to_string(),
+        assistant_message_id: Some(ctx.assistant_message_id.to_string()),
+        block_id: format!("web_search:{call_id}"),
         block_type: "web_search".to_string(),
-        content: payload.map(|p| p.to_string()).unwrap_or_default(),
-        delta: None,
-        finish_reason: if status == "done" {
-            Some("stop".to_string())
-        } else {
-            None
-        },
-        usage: None,
-    };
-    let _ = ctx.emitter.send(block);
+        format: Some("json".to_string()),
+        delta: json!({
+            "callId": call_id,
+            "status": status,
+            "action": action
+        })
+        .to_string(),
+    });
 }
 
 async fn tavily_search(
@@ -122,38 +125,36 @@ async fn tavily_search(
 ) -> Result<serde_json::Value, ToolError> {
     let api_key = settings
         .tavily_api_key
-        .as_ref()
-        .ok_or_else(|| ToolError::invalid("Tavily API key not configured"))?;
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| ToolError::denied("未配置 Tavily API Key"))?;
 
-    let client = reqwest::Client::new();
-    let response = client
+    let body = json!({
+        "api_key": api_key,
+        "query": query,
+        "max_results": max_results,
+        "include_answer": false,
+        "include_raw_content": false
+    });
+
+    let resp = reqwest::Client::new()
         .post("https://api.tavily.com/search")
-        .json(&json!({
-            "api_key": api_key,
-            "query": query,
-            "max_results": max_results,
-            "include_answer": true,
-        }))
+        .json(&body)
         .send()
         .await
-        .map_err(|e| ToolError::execution(format!("Tavily API request failed: {e}")))?;
+        .map_err(|e| ToolError::new(format!("Tavily 请求失败: {e}")))?;
 
-    let status = response.status();
-    let body_text = response
+    let status = resp.status();
+    let text = resp
         .text()
         .await
-        .map_err(|e| ToolError::execution(format!("Failed to read Tavily response: {e}")))?;
-
+        .map_err(|e| ToolError::new(format!("读取 Tavily 响应失败: {e}")))?;
     if !status.is_success() {
-        return Err(ToolError::execution(format!(
-            "Tavily API error (status {status}): {body_text}"
+        return Err(ToolError::new(format!(
+            "Tavily 返回错误（{status}）: {text}"
         )));
     }
-
-    let result: serde_json::Value = serde_json::from_str(&body_text)
-        .map_err(|e| ToolError::execution(format!("Failed to parse Tavily response: {e}")))?;
-
-    Ok(result)
+    serde_json::from_str(&text).map_err(|e| ToolError::new(format!("解析 Tavily 响应失败: {e}")))
 }
 
 async fn brave_search(
@@ -163,38 +164,35 @@ async fn brave_search(
 ) -> Result<serde_json::Value, ToolError> {
     let api_key = settings
         .brave_api_key
-        .as_ref()
-        .ok_or_else(|| ToolError::invalid("Brave API key not configured"))?;
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| ToolError::denied("未配置 Brave Search API Key"))?;
 
-    let client = reqwest::Client::new();
-    let response = client
-        .get("https://api.search.brave.com/res/v1/web/search")
+    let url = format!(
+        "https://api.search.brave.com/res/v1/web/search?q={}&count={}",
+        urlencoding::encode(query),
+        max_results
+    );
+
+    let resp = reqwest::Client::new()
+        .get(url)
+        .header("Accept", "application/json")
         .header("X-Subscription-Token", api_key)
-        .query(&[
-            ("q", query),
-            ("count", &max_results.to_string()),
-            ("offset", "0"),
-        ])
         .send()
         .await
-        .map_err(|e| ToolError::execution(format!("Brave API request failed: {e}")))?;
+        .map_err(|e| ToolError::new(format!("Brave 请求失败: {e}")))?;
 
-    let status = response.status();
-    let body_text = response
+    let status = resp.status();
+    let text = resp
         .text()
         .await
-        .map_err(|e| ToolError::execution(format!("Failed to read Brave response: {e}")))?;
-
+        .map_err(|e| ToolError::new(format!("读取 Brave 响应失败: {e}")))?;
     if !status.is_success() {
-        return Err(ToolError::execution(format!(
-            "Brave API error (status {status}): {body_text}"
+        return Err(ToolError::new(format!(
+            "Brave 返回错误（{status}）: {text}"
         )));
     }
-
-    let result: serde_json::Value = serde_json::from_str(&body_text)
-        .map_err(|e| ToolError::execution(format!("Failed to parse Brave response: {e}")))?;
-
-    Ok(result)
+    serde_json::from_str(&text).map_err(|e| ToolError::new(format!("解析 Brave 响应失败: {e}")))
 }
 
 async fn google_search(
@@ -204,40 +202,38 @@ async fn google_search(
 ) -> Result<serde_json::Value, ToolError> {
     let api_key = settings
         .google_api_key
-        .as_ref()
-        .ok_or_else(|| ToolError::invalid("Google API key not configured"))?;
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| ToolError::denied("未配置 Google API Key"))?;
     let cx = settings
         .google_cx
-        .as_ref()
-        .ok_or_else(|| ToolError::invalid("Google CX not configured"))?;
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| ToolError::denied("未配置 Google CX（Custom Search Engine）"))?;
 
-    let client = reqwest::Client::new();
-    let response = client
-        .get("https://www.googleapis.com/customsearch/v1")
-        .query(&[
-            ("key", api_key.as_str()),
-            ("cx", cx.as_str()),
-            ("q", query),
-            ("num", &max_results.min(10).to_string()),
-        ])
+    let url = format!(
+        "https://customsearch.googleapis.com/customsearch/v1?key={}&cx={}&q={}&num={}",
+        urlencoding::encode(api_key),
+        urlencoding::encode(cx),
+        urlencoding::encode(query),
+        max_results
+    );
+
+    let resp = reqwest::Client::new()
+        .get(url)
         .send()
         .await
-        .map_err(|e| ToolError::execution(format!("Google API request failed: {e}")))?;
+        .map_err(|e| ToolError::new(format!("Google 请求失败: {e}")))?;
 
-    let status = response.status();
-    let body_text = response
+    let status = resp.status();
+    let text = resp
         .text()
         .await
-        .map_err(|e| ToolError::execution(format!("Failed to read Google response: {e}")))?;
-
+        .map_err(|e| ToolError::new(format!("读取 Google 响应失败: {e}")))?;
     if !status.is_success() {
-        return Err(ToolError::execution(format!(
-            "Google API error (status {status}): {body_text}"
+        return Err(ToolError::new(format!(
+            "Google 返回错误（{status}）: {text}"
         )));
     }
-
-    let result: serde_json::Value = serde_json::from_str(&body_text)
-        .map_err(|e| ToolError::execution(format!("Failed to parse Google response: {e}")))?;
-
-    Ok(result)
+    serde_json::from_str(&text).map_err(|e| ToolError::new(format!("解析 Google 响应失败: {e}")))
 }
