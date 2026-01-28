@@ -2193,7 +2193,10 @@ async fn run_task_inner(
     let tool_services = run_state.get_tool_services(&input.conversation_id).await;
     let approval_store = run_state.get_approval_store(&input.conversation_id).await;
 
-    let tools_enabled = config.tools.enabled;
+    // 工具系统是否启用：由本次输入的运行模式/AgentType 决定，而不是全局开关。
+    // - Chat：不暴露工具定义，也不执行工具调用
+    // - Agent：按 toolset + 安全策略暴露/执行
+    let tools_enabled = matches!(runtime_agent_type, AgentType::Tool);
     let mut allow_persistent_pty = false;
     let mut enable_local_web_search_tool = false;
 
@@ -2211,14 +2214,20 @@ async fn run_task_inner(
             None => super::tools::spec::ToolSet::allow_all(),
         };
 
-        // 权限策略：由 AppConfig 驱动（默认：只允许无权限工具；shell/pty/file_write/mcp 默认关闭）。
-        let permission_policy: Arc<dyn super::tools::permissions::ToolPermissionPolicy> =
-            Arc::new(super::tools::permissions::BasicToolPermissionPolicy {
-                allow_shell_exec: config.tools.permissions.shell_exec,
-                allow_pty_exec: config.tools.permissions.pty_exec,
-                allow_file_write: config.tools.permissions.file_write,
-                allow_mcp_exec: config.tools.permissions.mcp_exec,
-            });
+        // 权限策略：不再使用全局开关；改为由安全策略（sandbox_policy）决定是否暴露高危工具。
+        // 实际执行时仍会在工具层再次按 sandbox_policy 做强校验（例如 read-only 拒绝写入/PTY 等）。
+        let allow_shell_exec = true;
+        let allow_pty_exec = !matches!(sandbox_policy, crate::models::SandboxPolicy::ReadOnly);
+        let allow_file_write = !matches!(sandbox_policy, crate::models::SandboxPolicy::ReadOnly);
+        let allow_mcp_exec = sandbox_policy.has_full_network_access();
+        let permission_policy: Arc<dyn super::tools::permissions::ToolPermissionPolicy> = Arc::new(
+            super::tools::permissions::BasicToolPermissionPolicy {
+                allow_shell_exec,
+                allow_pty_exec,
+                allow_file_write,
+                allow_mcp_exec,
+            },
+        );
 
         allow_persistent_pty = toolset.persistance_shell_enhance;
 
@@ -2228,7 +2237,7 @@ async fn run_task_inner(
 
         // MCP tools：按 agent 绑定的 MCP Set 进行注入（工具名：mcp__{server}__{tool}）。
         let mut mcp_tool_names: Vec<String> = Vec::new();
-        if config.tools.permissions.mcp_exec {
+        if allow_mcp_exec {
             if let Some(set_name) = agent.mcp_set.as_deref().filter(|s| !s.trim().is_empty()) {
                 let server_map: HashMap<String, crate::models::McpServerConfig> = config
                     .mcp
@@ -2315,7 +2324,8 @@ async fn run_task_inner(
             }
         };
 
-        enable_local_web_search_tool = want_web_search && ws_cfg.enabled && has_key;
+        enable_local_web_search_tool =
+            want_web_search && ws_cfg.enabled && has_key && sandbox_policy.has_full_network_access();
 
         if enable_local_web_search_tool {
             registry.register(Arc::new(
