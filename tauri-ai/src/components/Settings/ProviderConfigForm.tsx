@@ -8,6 +8,7 @@ import { Plus, Trash2, ChevronDown, ChevronRight, Wifi, WifiOff, Loader2, Search
 import { useConfigStore } from '../../stores/configStore';
 import { testConnection } from '../../services/configService';
 import { ModelPickerModal } from './ModelPickerModal';
+import { SecretInput } from './SecretInput';
 import type { Provider, Model, ProviderType, ModelCapabilities } from '../../types';
 
 // Helper to infer capabilities from model name (mirrors backend logic)
@@ -502,8 +503,7 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
         </div>
         <div className="space-y-1">
           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">API Key</label>
-          <input
-            type="password"
+          <SecretInput
             value={provider.apiKey || ''}
             onChange={(e) => onFieldChange('apiKey', e.target.value)}
             disabled={!isEditing}
@@ -644,6 +644,20 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
                         />
                         <Wrench size={12} className="text-green-500" />
                         <span>工具调用</span>
+                      </label>
+                      <label className="flex items-center gap-1 text-xs">
+                        <input
+                          type="checkbox"
+                          checked={model.capabilities?.webSearch ?? false}
+                          onChange={(e) => onUpdateModel(index, {
+                            ...model,
+                            capabilities: { ...model.capabilities, webSearch: e.target.checked }
+                          })}
+                          disabled={!isEditing}
+                          className="rounded"
+                        />
+                        <Search size={12} className="text-orange-500" />
+                        <span>网络搜索</span>
                       </label>
                     </div>
                     {/* Advanced Settings */}

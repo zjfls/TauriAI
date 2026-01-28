@@ -184,8 +184,10 @@ mod tests {
                 models: vec![Model {
                     name: "gpt-4".to_string(),
                     temperature: 0.5,
+                    temperature_enabled: true,
                     max_tokens: Some(1000),
                     top_p: Some(0.9),
+                    top_p_enabled: true,
                     context_length: Some(8192),
                     capabilities: crate::models::ModelCapabilities::default(),
                     max_images: None,

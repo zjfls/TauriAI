@@ -303,7 +303,7 @@ mod tests {
             api_key: Some("test".to_string()),
             model: "test".to_string(),
             parameters: ModelParameters {
-                temperature: 0.0,
+                temperature: Some(0.0),
                 max_tokens: Some(32),
                 top_p: Some(1.0),
                 frequency_penalty: None,

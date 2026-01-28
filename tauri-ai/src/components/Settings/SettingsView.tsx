@@ -11,6 +11,7 @@ import { ToolsConfigForm } from './ToolsConfigForm';
 import { SecurityConfigForm } from './SecurityConfigForm';
 import { McpConfigForm } from './McpConfigForm';
 import { SkillsConfigForm } from './SkillsConfigForm';
+import { SecretInput } from './SecretInput';
 import { useConfigStore } from '../../stores/configStore';
 import { useUIStore } from '../../stores/uiStore';
 import type { AppConfig, Theme, AnsiColorMode, AnsiRenderMode, WebSearchToolSettings } from '../../types';
@@ -596,8 +597,7 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
                 </div>
                 {current.tavilyEnabled && (
                   <div className="space-y-2">
-                    <input
-                      type="password"
+                    <SecretInput
                       value={current.tavilyApiKey ?? ''}
                       onChange={(e) => set({ tavilyApiKey: e.target.value || undefined })}
                       placeholder="Tavily API Key"
@@ -620,8 +620,7 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
                 </div>
                 {current.braveEnabled && (
                   <div className="space-y-2">
-                    <input
-                      type="password"
+                    <SecretInput
                       value={current.braveApiKey ?? ''}
                       onChange={(e) => set({ braveApiKey: e.target.value || undefined })}
                       placeholder="Brave Search API Key"
@@ -644,8 +643,7 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
                 </div>
                 {current.googleEnabled && (
                   <div className="space-y-3">
-                    <input
-                      type="password"
+                    <SecretInput
                       value={current.googleApiKey ?? ''}
                       onChange={(e) => set({ googleApiKey: e.target.value || undefined })}
                       placeholder="Google API Key"
