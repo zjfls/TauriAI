@@ -708,6 +708,7 @@ export interface Conversation {
   title: string;
   agentName?: string;
   modelRef?: string;      // Model reference used in this conversation
+  systemPrompt?: string;  // Frozen merged system prompt (conversation-scoped)
   thinkingMode?: ThinkingMode; // Conversation-scoped thinking mode/level
   workstudioId?: string;  // Optional workstudio binding
   createdAt: string;

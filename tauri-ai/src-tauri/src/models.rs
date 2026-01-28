@@ -355,6 +355,9 @@ pub struct Conversation {
     /// Model reference (format: "provider_name/model_name")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_ref: Option<String>,
+    /// Frozen system prompt for this conversation (single merged prompt reused across turns).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
     /// Conversation-scoped runtime settings (persisted).
     ///
     /// 说明：
