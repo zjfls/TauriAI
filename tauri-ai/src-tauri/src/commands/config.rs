@@ -62,6 +62,7 @@ pub async fn test_connection(
         max_images: None,      // Not needed for connection test
         use_reasoning_effort: None, // Not needed for connection test
         debug_sse: false,
+        reinject_reasoning_content: false,
     };
 
     let client = get_client(&provider_type).map_err(|e| e.to_string())?;

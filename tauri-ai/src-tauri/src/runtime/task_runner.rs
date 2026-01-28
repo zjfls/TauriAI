@@ -2201,11 +2201,29 @@ async fn run_task_inner(
             .collect::<Vec<_>>()
     };
     let base_messages = build_request_messages(base_messages, &input.conversation_id, agent);
-    // DeepSeek 工具调用建议：新任务开始时不传历史 reasoning_content（thinking），仅在同一 Task 的多 Turn 内回传。
+    // 默认：新任务开始时不传历史 reasoning_content（thinking），避免跨任务污染与上下文爆炸（DeepSeek 等）。
+    // 但 Moonshot Kimi thinking 模型在启用 thinking 时要求把 `reasoning_content` 保留在上下文中。
+    // 这里提供 model 级开关：`reinject_reasoning_content=true` 时才保留历史 thinking。
+    let is_kimi_thinking = model_config.provider == "openai_compatible"
+        && model_config
+            .thinking_level
+            .as_deref()
+            .is_some_and(|v| v != "disabled")
+        && (model_config
+            .model
+            .to_ascii_lowercase()
+            .starts_with("kimi-")
+            || model_config
+                .api_base
+                .as_deref()
+                .unwrap_or("")
+                .to_ascii_lowercase()
+                .contains("moonshot"));
+    let keep_history_thinking = is_kimi_thinking && model_config.reinject_reasoning_content;
     let base_messages = base_messages
         .into_iter()
         .map(|mut m| {
-            if m.role == MessageRole::Assistant {
+            if m.role == MessageRole::Assistant && !keep_history_thinking {
                 m.thinking = None;
             }
             m

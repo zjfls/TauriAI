@@ -546,6 +546,10 @@ pub struct Model {
     /// - When false/None: use thinking parameter (enabled/disabled)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub use_reasoning_effort: Option<bool>,
+    /// Kimi thinking: whether to include historical `reasoning_content` in next requests.
+    /// Default false: do not send historical thinking content (but may still include empty placeholder for strict providers).
+    #[serde(default)]
+    pub reinject_reasoning_content: bool,
 }
 
 impl Default for Model {
@@ -562,6 +566,7 @@ impl Default for Model {
             max_images: None,
             thinking_budget_tokens: None,
             use_reasoning_effort: None,
+            reinject_reasoning_content: false,
         }
     }
 }
@@ -863,6 +868,9 @@ pub struct ModelConfig {
     /// Debug: log raw SSE lines from providers (streaming only)
     #[serde(default)]
     pub debug_sse: bool,
+    /// Kimi thinking: whether to include historical `reasoning_content` in messages.
+    #[serde(default)]
+    pub reinject_reasoning_content: bool,
 }
 
 /// A preset combining model config and system prompt (legacy)
@@ -1517,6 +1525,7 @@ impl AppConfig {
                 max_images: None,
                 thinking_budget_tokens: None,
                 use_reasoning_effort: None,
+                reinject_reasoning_content: false,
             });
 
             // Create agent from model's system prompt

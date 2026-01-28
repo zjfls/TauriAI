@@ -134,6 +134,7 @@ export interface Model {
   maxImages?: number;     // Maximum number of images allowed (default: 10, only for vision models)
   thinkingBudgetTokens?: number; // Anthropic extended thinking budget (>=1024 and < maxTokens)
   useReasoningEffort?: boolean; // Use reasoning_effort parameter for Chat Completions API (OpenAI GPT-5 series)
+  reinjectReasoningContent?: boolean; // Kimi thinking: include historical reasoning_content in request (default: false)
 }
 
 /**

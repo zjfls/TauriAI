@@ -789,6 +789,25 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
                                   </p>
                                 </div>
                               )}
+
+                              {/* Kimi thinking: reinject reasoning_content */}
+                              {provider.type === 'openai_compatible' && (model.capabilities?.thinking ?? false) && (
+                                <div className="pt-2 border-t border-gray-200 dark:border-gray-700">
+                                  <label className="flex items-center gap-2 text-xs">
+                                    <input
+                                      type="checkbox"
+                                      checked={model.reinjectReasoningContent ?? false}
+                                      onChange={(e) => onUpdateModel(index, { ...model, reinjectReasoningContent: e.target.checked })}
+                                      disabled={!isEditing}
+                                      className="rounded"
+                                    />
+                                    <span className="text-gray-700 dark:text-gray-300">回传历史 reasoning_content（Kimi）</span>
+                                  </label>
+                                  <p className="mt-1 text-xs text-gray-500">
+                                    默认关闭：仅发送空的 reasoning_content 占位（满足严格校验）。打开后：将历史 thinking 作为 reasoning_content 一并发送，提升 Kimi 多步推理/工具调用的连贯性。
+                                  </p>
+                                </div>
+                              )}
                             </div>
                         </div>
                       )}

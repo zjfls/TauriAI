@@ -211,6 +211,7 @@ pub async fn generate_title(
         max_images: None, // Not needed for title generation
         use_reasoning_effort: None, // Not needed for title generation
         debug_sse: false,
+        reinject_reasoning_content: false,
     };
 
     let client = get_client(&model_config.provider).map_err(|e| e.to_string())?;
@@ -317,6 +318,7 @@ mod tests {
             max_images: None,
             use_reasoning_effort: None,
             debug_sse: false,
+            reinject_reasoning_content: false,
         }
     }
 

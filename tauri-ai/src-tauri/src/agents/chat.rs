@@ -130,6 +130,7 @@ pub fn build_model_config(
         max_images: model.max_images,
         use_reasoning_effort: model.use_reasoning_effort,
         debug_sse: false,
+        reinject_reasoning_content: model.reinject_reasoning_content,
     }
 }
 

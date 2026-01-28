@@ -193,6 +193,7 @@ mod tests {
                     max_images: None,
                     thinking_budget_tokens: None,
                     use_reasoning_effort: None,
+                    reinject_reasoning_content: false,
                 }],
             }],
             agents: vec![Agent {

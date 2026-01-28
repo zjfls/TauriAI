@@ -33,6 +33,10 @@ struct OpenAiMessage {
     /// Tool calls for role=assistant messages (OpenAI: `tool_calls`)
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_calls: Option<Vec<OpenAiToolCall>>,
+    /// Thinking models (e.g., Kimi K2.5): reasoning content carried between turns.
+    /// NOTE: Some providers validate its presence when thinking is enabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_content: Option<String>,
     /// Content can be a string or an array of content parts for multimodal
     /// When tool calls are present, OpenAI allows content to be `null`.
     content: Option<OpenAiContent>,
@@ -281,6 +285,8 @@ fn convert_messages(
     system_prompt: Option<&str>,
     system_role: SystemRole,
     supports_vision: bool,
+    include_reasoning_content: bool,
+    reinject_reasoning_content: bool,
 ) -> Vec<OpenAiMessage> {
     let mut result = Vec::new();
 
@@ -295,6 +301,7 @@ fn convert_messages(
                 role: role.to_string(),
                 tool_call_id: None,
                 tool_calls: None,
+                reasoning_content: None,
                 content: Some(OpenAiContent::Text(prompt.to_string())),
             });
         }
@@ -386,11 +393,45 @@ fn convert_messages(
             role: role.to_string(),
             tool_call_id,
             tool_calls,
+            reasoning_content: if include_reasoning_content && matches!(msg.role, MessageRole::Assistant) {
+                Some(if reinject_reasoning_content {
+                    msg.thinking.clone().unwrap_or_default()
+                } else {
+                    String::new()
+                })
+            } else {
+                None
+            },
             content,
         });
     }
 
     result
+}
+
+fn is_kimi_provider(config: &ModelConfig) -> bool {
+    // Moonshot / Kimi are usually exposed as an OpenAI-compatible endpoint.
+    if config.provider != "openai_compatible" {
+        return false;
+    }
+    let model_lower = config.model.to_ascii_lowercase();
+    if model_lower.starts_with("kimi-") {
+        return true;
+    }
+    let Some(api_base) = config.api_base.as_ref() else {
+        return false;
+    };
+    let base_lower = api_base.to_ascii_lowercase();
+    base_lower.contains("moonshot") || base_lower.contains("platform.moonshot") || base_lower.contains("api.moonshot")
+}
+
+fn should_include_reasoning_content(config: &ModelConfig) -> bool {
+    // Kimi thinking mode: docs require keeping reasoning_content in context.
+    // Only apply when thinking is enabled (not disabled).
+    if !is_kimi_provider(config) {
+        return false;
+    }
+    matches!(config.thinking_level.as_deref(), Some(level) if level != "disabled")
 }
 
 // ============================================================================
@@ -431,6 +472,8 @@ impl OpenAiBaseClient {
             config.parameters.system_prompt.as_deref(),
             self.system_role,
             config.vision_enabled,
+            should_include_reasoning_content(config),
+            config.reinject_reasoning_content,
         );
 
         let tools = tools.and_then(|defs| {
@@ -558,6 +601,8 @@ impl OpenAiBaseClient {
             config.parameters.system_prompt.as_deref(),
             self.system_role,
             config.vision_enabled,
+            should_include_reasoning_content(config),
+            config.reinject_reasoning_content,
         );
 
         let tools = tools.and_then(|defs| {
@@ -1205,7 +1250,7 @@ mod tests {
             };
 
             // Convert to OpenAI format
-            let openai_messages = convert_messages(&[message], None, SystemRole::System, true);
+            let openai_messages = convert_messages(&[message], None, SystemRole::System, true, false, false);
 
             // Should have exactly one message (user message)
             prop_assert_eq!(openai_messages.len(), 1, "Should have exactly one OpenAI message");
@@ -1308,7 +1353,7 @@ mod tests {
             error_message: None,
         };
 
-        let openai_messages = convert_messages(&[message], None, SystemRole::System, true);
+        let openai_messages = convert_messages(&[message], None, SystemRole::System, true, false, false);
 
         assert_eq!(openai_messages.len(), 1);
         let content_parts = match &openai_messages[0].content {
@@ -1375,7 +1420,7 @@ mod tests {
             error_message: None,
         };
 
-        let openai_messages = convert_messages(&[message], None, SystemRole::System, true);
+        let openai_messages = convert_messages(&[message], None, SystemRole::System, true, false, false);
 
         let content_parts = match &openai_messages[0].content {
             Some(OpenAiContent::Parts(parts)) => parts,
@@ -1438,6 +1483,8 @@ mod tests {
             Some("You are a helpful assistant."),
             SystemRole::System,
             true,
+            false,
+            false,
         );
 
         // Should have 2 messages: system + user
@@ -1480,7 +1527,7 @@ mod tests {
             error_message: None,
         };
 
-        let openai_messages = convert_messages(&[message], None, SystemRole::System, true);
+        let openai_messages = convert_messages(&[message], None, SystemRole::System, true, false, false);
 
         let content_parts = match &openai_messages[0].content {
             Some(OpenAiContent::Parts(parts)) => parts,
