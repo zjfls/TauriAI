@@ -227,7 +227,7 @@ impl FormatPromptType {
     }
 }
 
-const TIME_TOOL_GUIDE: &str = "\n\n## 时间与日期\n\n- 如果涉及到“现在/今天/明天/本周/截止时间/几分钟前”等时间相关的问题或需要基于当前时间执行动作，并且工具可用，请先调用 `get_time` 获取当前 UTC 时间（ISO8601），再进行回答或计算；不要凭空猜测当前时间。\n";
+const TIME_TOOL_GUIDE: &str = "\n\n## 时间与日期\n\n- 如果涉及到“现在/今天/明天/本周/截止时间/几分钟前”等时间相关的问题或需要基于当前时间执行动作，并且工具可用，请先调用 `shell_command` 获取当前时间，再进行回答或计算；不要凭空猜测当前时间。\n- 优先输出 ISO8601：\n  - macOS/Linux: `date -u +\"%Y-%m-%dT%H:%M:%SZ\"`\n  - Windows PowerShell: `Get-Date -AsUTC -Format o`\n";
 
 /// Compose final system prompt from base prompt and format type
 pub fn compose_system_prompt(
@@ -268,7 +268,7 @@ mod tests {
         let result = compose_system_prompt(Some("你是一个助手"), FormatPromptType::None);
         let s = result.unwrap();
         assert!(s.contains("你是一个助手"));
-        assert!(s.contains("get_time"));
+        assert!(s.contains("shell_command"));
     }
 
     #[test]

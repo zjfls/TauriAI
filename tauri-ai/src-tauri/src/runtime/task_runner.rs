@@ -335,7 +335,7 @@ fn compute_system_prompt_cache_key(
     use std::fmt::Write as _;
 
     let mut h = Sha1::new();
-    h.update(b"v2\n");
+    h.update(b"v3\n");
     h.update(agent.name.as_bytes());
     h.update(b"\n");
     h.update(agent.system_prompt.as_bytes());
