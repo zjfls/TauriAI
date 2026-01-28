@@ -97,6 +97,7 @@ impl Database {
                 agent_name TEXT,
                 model_ref TEXT,
                 system_prompt TEXT,
+                system_prompt_cache_key TEXT,
                 thinking_mode TEXT,
                 workstudio_id TEXT,
                 created_at TEXT NOT NULL,
@@ -110,6 +111,7 @@ impl Database {
         let _ = conn.execute("ALTER TABLE conversations ADD COLUMN agent_name TEXT", []);
         let _ = conn.execute("ALTER TABLE conversations ADD COLUMN model_ref TEXT", []);
         let _ = conn.execute("ALTER TABLE conversations ADD COLUMN system_prompt TEXT", []);
+        let _ = conn.execute("ALTER TABLE conversations ADD COLUMN system_prompt_cache_key TEXT", []);
         let _ = conn.execute("ALTER TABLE conversations ADD COLUMN thinking_mode TEXT", []);
         let _ = conn.execute("ALTER TABLE conversations ADD COLUMN workstudio_id TEXT", []);
 
@@ -208,8 +210,8 @@ impl Database {
         let now_str = now.to_rfc3339();
 
         conn.execute(
-            "INSERT INTO conversations (id, title, model_id, agent_name, model_ref, system_prompt, thinking_mode, workstudio_id, created_at, updated_at)
-             VALUES (?1, ?2, NULL, NULL, NULL, NULL, NULL, NULL, ?3, ?4)",
+            "INSERT INTO conversations (id, title, model_id, agent_name, model_ref, system_prompt, system_prompt_cache_key, thinking_mode, workstudio_id, created_at, updated_at)
+             VALUES (?1, ?2, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?3, ?4)",
             params![id, title, now_str, now_str],
         )?;
 
@@ -219,6 +221,7 @@ impl Database {
             agent_name: None,
             model_ref: None,
             system_prompt: None,
+            system_prompt_cache_key: None,
             thinking_mode: None,
             workstudio_id: None,
             created_at: now,
@@ -234,7 +237,7 @@ impl Database {
             .map_err(|e| StorageError::Lock(e.to_string()))?;
 
         let mut stmt = conn.prepare(
-            "SELECT id, title, agent_name, model_ref, system_prompt, thinking_mode, workstudio_id, created_at, updated_at 
+            "SELECT id, title, agent_name, model_ref, system_prompt, system_prompt_cache_key, thinking_mode, workstudio_id, created_at, updated_at 
              FROM conversations 
              ORDER BY updated_at DESC",
         )?;
@@ -242,10 +245,11 @@ impl Database {
         let conversations = stmt
             .query_map([], |row| {
                 let system_prompt: Option<String> = row.get(4)?;
-                let thinking_mode_str: Option<String> = row.get(5)?;
-                let workstudio_id: Option<String> = row.get(6)?;
-                let created_at_str: String = row.get(7)?;
-                let updated_at_str: String = row.get(8)?;
+                let system_prompt_cache_key: Option<String> = row.get(5)?;
+                let thinking_mode_str: Option<String> = row.get(6)?;
+                let workstudio_id: Option<String> = row.get(7)?;
+                let created_at_str: String = row.get(8)?;
+                let updated_at_str: String = row.get(9)?;
 
                 let thinking_mode: Option<serde_json::Value> = thinking_mode_str
                     .as_deref()
@@ -257,6 +261,7 @@ impl Database {
                     agent_name: row.get(2)?,
                     model_ref: row.get(3)?,
                     system_prompt,
+                    system_prompt_cache_key,
                     thinking_mode,
                     workstudio_id,
                     created_at: DateTime::parse_from_rfc3339(&created_at_str)
@@ -280,7 +285,7 @@ impl Database {
             .map_err(|e| StorageError::Lock(e.to_string()))?;
 
         let mut stmt = conn.prepare(
-            "SELECT id, title, agent_name, model_ref, system_prompt, thinking_mode, workstudio_id, created_at, updated_at 
+            "SELECT id, title, agent_name, model_ref, system_prompt, system_prompt_cache_key, thinking_mode, workstudio_id, created_at, updated_at 
              FROM conversations 
              WHERE id = ?1",
         )?;
@@ -289,10 +294,11 @@ impl Database {
 
         if let Some(row) = rows.next()? {
             let system_prompt: Option<String> = row.get(4)?;
-            let thinking_mode_str: Option<String> = row.get(5)?;
-            let workstudio_id: Option<String> = row.get(6)?;
-            let created_at_str: String = row.get(7)?;
-            let updated_at_str: String = row.get(8)?;
+            let system_prompt_cache_key: Option<String> = row.get(5)?;
+            let thinking_mode_str: Option<String> = row.get(6)?;
+            let workstudio_id: Option<String> = row.get(7)?;
+            let created_at_str: String = row.get(8)?;
+            let updated_at_str: String = row.get(9)?;
 
             let thinking_mode: Option<serde_json::Value> = thinking_mode_str
                 .as_deref()
@@ -304,6 +310,7 @@ impl Database {
                 agent_name: row.get(2)?,
                 model_ref: row.get(3)?,
                 system_prompt,
+                system_prompt_cache_key,
                 thinking_mode,
                 workstudio_id,
                 created_at: DateTime::parse_from_rfc3339(&created_at_str)
@@ -323,6 +330,7 @@ impl Database {
         &self,
         id: &str,
         system_prompt: &str,
+        cache_key: Option<&str>,
     ) -> Result<(), StorageError> {
         let conn = self
             .conn
@@ -331,8 +339,8 @@ impl Database {
 
         let now = Utc::now().to_rfc3339();
         conn.execute(
-            "UPDATE conversations SET system_prompt = ?1, updated_at = ?2 WHERE id = ?3",
-            params![system_prompt, now, id],
+            "UPDATE conversations SET system_prompt = ?1, system_prompt_cache_key = ?2, updated_at = ?3 WHERE id = ?4",
+            params![system_prompt, cache_key, now, id],
         )?;
         Ok(())
     }

@@ -355,9 +355,16 @@ pub struct Conversation {
     /// Model reference (format: "provider_name/model_name")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_ref: Option<String>,
-    /// Frozen system prompt for this conversation (single merged prompt reused across turns).
+    /// Cached merged system prompt for this conversation.
+    ///
+    /// 说明：
+    /// - 这是“缓存”（cache），用于避免每次请求都重新组装多段 system prompt。
+    /// - 当相关配置/开关变化时会自动失效并重建，而不是“冻结”。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
+    /// Cache key for `system_prompt` (used to decide whether the cache is still valid).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_prompt_cache_key: Option<String>,
     /// Conversation-scoped runtime settings (persisted).
     ///
     /// 说明：

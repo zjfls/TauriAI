@@ -323,6 +323,64 @@ fn merge_system_messages_into_single_in_place(
     Some(merged)
 }
 
+fn compute_system_prompt_cache_key(
+    agent: &crate::models::Agent,
+    workstudio: Option<&crate::models::Workstudio>,
+    allow_persistent_pty: bool,
+    enable_local_web_search_tool: bool,
+    enable_mcp_resource_tool_prompt: bool,
+    enabled_skills: &[SkillEntry],
+    py: PythonAvailability,
+) -> String {
+    use std::fmt::Write as _;
+
+    let mut h = Sha1::new();
+    h.update(b"v1\n");
+    h.update(agent.name.as_bytes());
+    h.update(b"\n");
+    h.update(agent.system_prompt.as_bytes());
+    h.update(b"\n");
+    h.update(format!("{:?}", agent.format_type).as_bytes());
+    h.update(b"\n");
+
+    if let Some(ws) = workstudio {
+        h.update(b"ws\n");
+        h.update(ws.id.as_bytes());
+        h.update(b"\n");
+        h.update(ws.main_folder.as_bytes());
+        h.update(b"\n");
+        for f in &ws.folders {
+            h.update(f.as_bytes());
+            h.update(b"\n");
+        }
+    } else {
+        h.update(b"no-ws\n");
+    }
+
+    h.update(format!("pty:{allow_persistent_pty}\n").as_bytes());
+    h.update(format!("py:{}/{}\n", py.has_python, py.has_python3).as_bytes());
+    h.update(format!("local_web_search:{enable_local_web_search_tool}\n").as_bytes());
+    h.update(format!("mcp_resource_prompt:{enable_mcp_resource_tool_prompt}\n").as_bytes());
+
+    // Skills section only depends on metadata (not contents).
+    h.update(b"skills\n");
+    for s in enabled_skills {
+        h.update(s.meta.name.as_bytes());
+        h.update(b"\n");
+        h.update(s.meta.description.as_bytes());
+        h.update(b"\n");
+        h.update(s.meta.path.as_bytes());
+        h.update(b"\n");
+    }
+
+    let digest = h.finalize();
+    let mut out = String::with_capacity(digest.len() * 2);
+    for b in digest {
+        let _ = write!(&mut out, "{:02x}", b);
+    }
+    out
+}
+
 fn inject_persistent_process_prompt(messages: &mut Vec<Message>, conversation_id: &str) {
     let mut content = PERSISTENT_PROCESS_PROMPT.trim().to_string();
     if content.is_empty() {
@@ -585,6 +643,7 @@ fn select_enabled_skills(
     app_skills_dir: Option<&std::path::Path>,
     repo_skills_dir: Option<&std::path::Path>,
     workstudio_skills_dir: Option<&std::path::Path>,
+    include_contents: bool,
 ) -> Vec<SkillEntry> {
     let Some(set_name) = agent
         .skill_set
@@ -616,7 +675,12 @@ fn select_enabled_skills(
         return Vec::new();
     }
 
-    let outcome = load_skill_files(app_skills_dir, repo_skills_dir, workstudio_skills_dir, true);
+    let outcome = load_skill_files(
+        app_skills_dir,
+        repo_skills_dir,
+        workstudio_skills_dir,
+        include_contents,
+    );
     let map = index_skills_by_name(&outcome);
     allow
         .into_iter()
@@ -2308,41 +2372,29 @@ async fn run_task_inner(
             .filter(|m| m.status == MessageStatus::Success || m.id == user_message.id)
             .collect::<Vec<_>>()
     };
-    let frozen_system_prompt: Option<String> = {
+    let cached_system_prompt: Option<(String, String)> = {
         let db = db.lock().await;
         db.get_conversation(&input.conversation_id)
             .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?
-            .and_then(|c| c.system_prompt)
-            .and_then(|s| {
-                let trimmed = s.trim();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(s)
-                }
+            .and_then(|c| {
+                let prompt = c.system_prompt.and_then(|s| {
+                    let trimmed = s.trim();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(s)
+                    }
+                })?;
+                let key = c.system_prompt_cache_key.and_then(|s| {
+                    let trimmed = s.trim();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(s)
+                    }
+                })?;
+                Some((prompt, key))
             })
-    };
-
-    let base_messages = if let Some(frozen) = frozen_system_prompt.as_deref() {
-        let mut messages = base_messages;
-        messages.insert(
-            0,
-            Message {
-                id: uuid::Uuid::new_v4().to_string(),
-                conversation_id: input.conversation_id.to_string(),
-                role: MessageRole::System,
-                content: frozen.to_string(),
-                content_parts: Vec::new(),
-                thinking: None,
-                meta: None,
-                created_at: chrono::Utc::now(),
-                status: MessageStatus::Success,
-                error_message: None,
-            },
-        );
-        messages
-    } else {
-        build_request_messages(base_messages, &input.conversation_id, agent)
     };
     // 默认：新任务开始时不传历史 reasoning_content（thinking），避免跨任务污染与上下文爆炸（DeepSeek 等）。
     // 但 Moonshot Kimi thinking 模型在启用 thinking 时要求把 `reasoning_content` 保留在上下文中。
@@ -2684,54 +2736,92 @@ async fn run_task_inner(
         max_turns = max_turns.max(2);
     }
 
-    let mut runtime_messages = base_messages;
-    if frozen_system_prompt.is_none() {
+    // Skills: load (metadata only by default; full contents only when a skill is explicitly mentioned).
+    let app_skills_dir = config_manager
+        .config_path()
+        .parent()
+        .map(|p| p.join("skills"));
+    let repo_skills_dir = app
+        .path()
+        .resource_dir()
+        .ok()
+        .map(|p| p.join("skills"))
+        .filter(|p| p.is_dir())
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .map(|cwd| cwd.join("tauri-ai").join("skills"))
+                .filter(|p| p.is_dir())
+        })
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .map(|cwd| cwd.join("skills"))
+                .filter(|p| p.is_dir())
+        });
+    let workstudio_skills_dir = workstudio
+        .as_ref()
+        .map(|ws| std::path::PathBuf::from(&ws.main_folder).join("skills"))
+        .filter(|p| p.is_dir());
+
+    // Metadata only (no SKILL.md bodies) for the cached system prompt + mention detection.
+    let enabled_skills_meta = select_enabled_skills(
+        &config,
+        agent,
+        app_skills_dir.as_deref(),
+        repo_skills_dir.as_deref(),
+        workstudio_skills_dir.as_deref(),
+        false,
+    );
+
+    let py = python_availability();
+    let computed_cache_key = compute_system_prompt_cache_key(
+        agent,
+        workstudio.as_ref(),
+        allow_persistent_pty,
+        enable_local_web_search_tool,
+        enable_mcp_resource_tool_prompt,
+        &enabled_skills_meta,
+        py,
+    );
+
+    let cache_hit = cached_system_prompt
+        .as_ref()
+        .is_some_and(|(_, key)| key == &computed_cache_key);
+
+    let mut runtime_messages = if cache_hit {
+        let (cached_prompt, _) = cached_system_prompt.as_ref().expect("checked cache_hit");
+        let mut messages = base_messages;
+        messages.insert(
+            0,
+            Message {
+                id: uuid::Uuid::new_v4().to_string(),
+                conversation_id: input.conversation_id.to_string(),
+                role: MessageRole::System,
+                content: cached_prompt.clone(),
+                content_parts: Vec::new(),
+                thinking: None,
+                meta: None,
+                created_at: chrono::Utc::now(),
+                status: MessageStatus::Success,
+                error_message: None,
+            },
+        );
+        messages
+    } else {
+        let mut messages = build_request_messages(base_messages, &input.conversation_id, agent);
+
         if let Some(ws) = workstudio.as_ref() {
-            inject_workstudio_prompt(&mut runtime_messages, &input.conversation_id, ws);
+            inject_workstudio_prompt(&mut messages, &input.conversation_id, ws);
         }
 
-        // Skills: load + inject (only when agent binds a skill set).
-        let app_skills_dir = config_manager
-            .config_path()
-            .parent()
-            .map(|p| p.join("skills"));
-        let repo_skills_dir = app
-            .path()
-            .resource_dir()
-            .ok()
-            .map(|p| p.join("skills"))
-            .filter(|p| p.is_dir())
-            .or_else(|| {
-                std::env::current_dir()
-                    .ok()
-                    .map(|cwd| cwd.join("tauri-ai").join("skills"))
-                    .filter(|p| p.is_dir())
-            })
-            .or_else(|| {
-                std::env::current_dir()
-                    .ok()
-                    .map(|cwd| cwd.join("skills"))
-                    .filter(|p| p.is_dir())
-            });
-        let workstudio_skills_dir = workstudio
-            .as_ref()
-            .map(|ws| std::path::PathBuf::from(&ws.main_folder).join("skills"))
-            .filter(|p| p.is_dir());
-
-        let enabled_skills = select_enabled_skills(
-            &config,
-            agent,
-            app_skills_dir.as_deref(),
-            repo_skills_dir.as_deref(),
-            workstudio_skills_dir.as_deref(),
-        );
-        if !enabled_skills.is_empty() {
-            if let Some(section) = render_skills_section(&enabled_skills) {
-                let insert_at = runtime_messages
+        if !enabled_skills_meta.is_empty() {
+            if let Some(section) = render_skills_section(&enabled_skills_meta) {
+                let insert_at = messages
                     .iter()
                     .take_while(|m| m.role == MessageRole::System)
                     .count();
-                runtime_messages.insert(
+                messages.insert(
                     insert_at,
                     Message {
                         id: uuid::Uuid::new_v4().to_string(),
@@ -2747,31 +2837,62 @@ async fn run_task_inner(
                     },
                 );
             }
-
-            let mentioned_skills = find_skill_mentions(&input.content, &enabled_skills);
-            if !mentioned_skills.is_empty() {
-                inject_skills_prompt(&mut runtime_messages, &input.conversation_id, mentioned_skills);
-            }
         }
 
         if allow_persistent_pty {
-            inject_persistent_process_prompt(&mut runtime_messages, &input.conversation_id);
+            inject_persistent_process_prompt(&mut messages, &input.conversation_id);
         }
         if enable_local_web_search_tool {
-            inject_web_search_tool_prompt(&mut runtime_messages, &input.conversation_id);
+            inject_web_search_tool_prompt(&mut messages, &input.conversation_id);
         }
         if enable_mcp_resource_tool_prompt {
-            inject_mcp_resource_tool_prompt(&mut runtime_messages, &input.conversation_id);
+            inject_mcp_resource_tool_prompt(&mut messages, &input.conversation_id);
         }
 
-        if let Some(merged_prompt) = merge_system_messages_into_single_in_place(
-            &mut runtime_messages,
-            &input.conversation_id,
-        ) {
-            {
-                let db = db.lock().await;
-                db.update_conversation_system_prompt(&input.conversation_id, &merged_prompt)
-                    .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
+        if let Some(merged_prompt) =
+            merge_system_messages_into_single_in_place(&mut messages, &input.conversation_id)
+        {
+            let db = db.lock().await;
+            db.update_conversation_system_prompt(
+                &input.conversation_id,
+                &merged_prompt,
+                Some(computed_cache_key.as_str()),
+            )
+            .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
+        }
+
+        messages
+    };
+
+    // Per-message dynamic skill injection:
+    // - Do NOT cache this (depends on the current input).
+    // - Keep system prompt as a single message by appending the skill blocks.
+    if !enabled_skills_meta.is_empty() {
+        let mentioned = find_skill_mentions(&input.content, &enabled_skills_meta);
+        if !mentioned.is_empty() {
+            let mentioned_names: HashSet<String> =
+                mentioned.into_iter().map(|s| s.meta.name).collect();
+            let enabled_skills_full = select_enabled_skills(
+                &config,
+                agent,
+                app_skills_dir.as_deref(),
+                repo_skills_dir.as_deref(),
+                workstudio_skills_dir.as_deref(),
+                true,
+            );
+            let mentioned_full: Vec<SkillEntry> = enabled_skills_full
+                .into_iter()
+                .filter(|s| mentioned_names.contains(&s.meta.name))
+                .collect();
+            if !mentioned_full.is_empty() {
+                let block = build_skill_prompt_block(&mentioned_full);
+                if let Some(first) = runtime_messages.first_mut() {
+                    if first.role == MessageRole::System {
+                        first.content.push_str("\n\n");
+                        first.content.push_str(block.trim_end());
+                        first.content.push('\n');
+                    }
+                }
             }
         }
     }
