@@ -2311,10 +2311,11 @@ async fn run_task_inner(
     let requested_mode = input.run_mode.as_deref().unwrap_or("").trim();
     let runtime_agent_type = match requested_mode {
         "chat" => AgentType::Chat,
-        "agent" | "agent-full-access" => AgentType::Tool,
+        "agent" | "agent-custom" | "agent-full-access" => AgentType::Tool,
         _ => agent.agent_type,
     };
     let force_full_access = requested_mode == "agent-full-access";
+    let use_custom_security = requested_mode == "agent-custom";
 
     if !provider.enabled {
         return Err(AppErrorCode::AiServiceError(format!(
@@ -2462,17 +2463,32 @@ async fn run_task_inner(
 
     let base_security_policy = config.security.resolve_policy(agent.security_policy.as_deref());
 
-    let mut sandbox_policy = agent
-        .sandbox_policy
-        .clone()
-        .unwrap_or_else(|| base_security_policy.sandbox_policy.clone());
+    // RunMode semantics:
+    // - agent: use security policy only
+    // - agent-custom: use agent overrides (sandboxPolicy/approvalPolicy) on top of the security policy
+    let mut sandbox_policy = if use_custom_security {
+        agent.sandbox_policy
+            .clone()
+            .unwrap_or_else(|| base_security_policy.sandbox_policy.clone())
+    } else {
+        base_security_policy.sandbox_policy.clone()
+    };
     if force_full_access {
         sandbox_policy = crate::models::SandboxPolicy::DangerFullAccess;
     }
 
-    let approval_policy = agent
-        .approval_policy
-        .unwrap_or(base_security_policy.approval_policy);
+    let approval_policy = if use_custom_security {
+        agent.approval_policy
+            .unwrap_or(base_security_policy.approval_policy)
+    } else {
+        base_security_policy.approval_policy
+    };
+
+    let security_policy_name = if use_custom_security {
+        "custom".to_string()
+    } else {
+        base_security_policy.name.clone()
+    };
 
     // 3) 允许 stop/撤回 等并发操作中断当前 run
     let (abort_tx, mut abort_rx) = mpsc::channel::<()>(1);
@@ -2908,7 +2924,7 @@ async fn run_task_inner(
         workspace_roots,
         sandbox_policy,
         approval_policy,
-        security_policy_name: base_security_policy.name.clone(),
+        security_policy_name,
         trusted_commands: base_security_policy.trusted_commands.clone(),
         approval_store,
         run_state: run_state.clone(),

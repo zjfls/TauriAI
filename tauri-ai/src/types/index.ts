@@ -34,7 +34,7 @@ export type FormatPromptType = 'chat' | 'plain' | 'json' | 'none';
 export type AgentType = 'chat' | 'tool';
 
 // Run mode (input-level): chat / agent / agent full access
-export type RunMode = 'chat' | 'agent' | 'agent-full-access';
+export type RunMode = 'chat' | 'agent' | 'agent-custom' | 'agent-full-access';
 
 // ============================================================================
 // Security / Sandboxing

@@ -127,7 +127,7 @@ export const McpModal: React.FC<McpModalProps> = ({ isOpen, onClose, agentName }
               </p>
             )}
             <p className="mt-1 text-xs text-gray-500">
-              提示：MCP 工具是否暴露给模型取决于本次运行的安全策略是否允许网络访问，以及输入框选择的模式（Agent / Agent Full Access）。
+              提示：MCP 工具是否暴露给模型取决于本次运行的安全策略是否允许网络访问，以及输入框选择的模式（Agent / Custom / Agent Full Access）。
             </p>
           </div>
 
