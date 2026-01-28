@@ -518,13 +518,15 @@ pub struct Model {
     /// Model name, e.g., "deepseek-v3", unique within provider
     pub name: String,
     pub temperature: f32,
-    #[serde(default = "default_true", skip_serializing_if = "is_false")]
+    // 默认启用；仅在禁用时写入配置（需要持久化 false）
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub temperature_enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f32>,
-    #[serde(default = "default_true", skip_serializing_if = "is_false")]
+    // 默认启用；仅在禁用时写入配置（需要持久化 false）
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub top_p_enabled: bool,
     /// Maximum context length in tokens (e.g., 128000 for GPT-4o)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -592,8 +594,8 @@ fn default_true() -> bool {
     true
 }
 
-fn is_false(v: &bool) -> bool {
-    !*v
+fn is_true(v: &bool) -> bool {
+    *v
 }
 
 impl Default for Provider {
