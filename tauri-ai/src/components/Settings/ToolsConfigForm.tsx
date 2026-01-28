@@ -15,14 +15,11 @@ const AVAILABLE_TOOLS = [
   { name: 'list_dir', label: '列目录', description: '列出目录结构（带缩进）' },
   { name: 'rg', label: 'rg', description: '按 pattern 搜索文件（ripgrep）' },
   { name: 'web_search', label: '网络搜索', description: '调用本地网络搜索（Tavily/Google CSE/Brave）' },
-  { name: 'apply_patch', label: 'Apply Patch', description: '按补丁格式修改/创建文件', permission: 'fileWrite' },
-  { name: 'shell_command', label: 'Shell 命令', description: '一次性执行命令', permission: 'shellExec' },
-  { name: 'exec_command', label: 'PTY 启动命令', description: '创建交互式会话', permission: 'ptyExec' },
-  { name: 'write_stdin', label: 'PTY 写入输入', description: '向交互式会话写入 stdin', permission: 'ptyExec' },
+  { name: 'apply_patch', label: 'Apply Patch', description: '按补丁格式修改/创建文件' },
+  { name: 'shell_command', label: 'Shell 命令', description: '一次性执行命令' },
+  { name: 'exec_command', label: 'PTY 启动命令', description: '创建交互式会话' },
+  { name: 'write_stdin', label: 'PTY 写入输入', description: '向交互式会话写入 stdin' },
 ] as const;
-
-type ToolPermissionKey = 'shellExec' | 'ptyExec' | 'fileWrite' | 'mcpExec';
-
 const toggleInList = (list: string[], value: string) =>
   list.includes(value) ? list.filter((x) => x !== value) : [...list, value];
 
@@ -58,23 +55,6 @@ export const ToolsConfigForm: React.FC = () => {
 
   const save = (updatedConfig: AppConfig) => {
     saveConfig(updatedConfig);
-  };
-
-  const handleEnabledChange = (enabled: boolean) => {
-    save({
-      ...config,
-      tools: { ...config.tools, enabled },
-    });
-  };
-
-  const handlePermissionChange = (key: ToolPermissionKey, value: boolean) => {
-    save({
-      ...config,
-      tools: {
-        ...config.tools,
-        permissions: { ...config.tools.permissions, [key]: value },
-      },
-    });
   };
 
   const handleSelectToolset = (name: string) => {
@@ -256,110 +236,8 @@ export const ToolsConfigForm: React.FC = () => {
       {/* Right Panel */}
       <div className="flex-1 overflow-auto">
         <div className="max-w-2xl space-y-6">
-          {/* Global tool settings */}
-          <div className="space-y-4">
-            <h2 className="text-lg font-semibold text-gray-800 dark:text-white">工具设置</h2>
-
-            <div className="flex items-center justify-between">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">启用工具系统</label>
-                <p className="text-xs text-gray-500">关闭后，Tool 智能体不会向模型发送工具定义，也不会执行工具调用。</p>
-              </div>
-              <button
-                onClick={() => handleEnabledChange(!config.tools.enabled)}
-                className={`relative w-11 h-6 rounded-full transition-colors ${
-                  config.tools.enabled ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'
-                }`}
-              >
-                <span
-                  className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
-                    config.tools.enabled ? 'translate-x-5' : ''
-                  }`}
-                />
-              </button>
-            </div>
-
-            <div className="pt-3 border-t border-gray-200 dark:border-gray-700 space-y-3">
-              <div className="flex items-center justify-between">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">允许执行 Shell 命令</label>
-                  <p className="text-xs text-gray-500">开启后才会暴露 `shell_command`。</p>
-                </div>
-                <button
-                  onClick={() => handlePermissionChange('shellExec', !config.tools.permissions.shellExec)}
-                  className={`relative w-11 h-6 rounded-full transition-colors ${
-                    config.tools.permissions.shellExec ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'
-                  }`}
-                >
-                  <span
-                    className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
-                      config.tools.permissions.shellExec ? 'translate-x-5' : ''
-                    }`}
-                  />
-                </button>
-              </div>
-
-              <div className="flex items-center justify-between">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">允许 PTY 交互执行</label>
-                  <p className="text-xs text-gray-500">开启后才会暴露 `exec_command` / `write_stdin`。</p>
-                </div>
-                <button
-                  onClick={() => handlePermissionChange('ptyExec', !config.tools.permissions.ptyExec)}
-                  className={`relative w-11 h-6 rounded-full transition-colors ${
-                    config.tools.permissions.ptyExec ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'
-                  }`}
-                >
-                  <span
-                    className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
-                      config.tools.permissions.ptyExec ? 'translate-x-5' : ''
-                    }`}
-                  />
-                </button>
-              </div>
-
-              <div className="flex items-center justify-between">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">允许文件写入（apply_patch）</label>
-                  <p className="text-xs text-gray-500">开启后才会暴露 `apply_patch`（用于修改/创建文件）。</p>
-                </div>
-                <button
-                  onClick={() => handlePermissionChange('fileWrite', !config.tools.permissions.fileWrite)}
-                  className={`relative w-11 h-6 rounded-full transition-colors ${
-                    config.tools.permissions.fileWrite ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'
-                  }`}
-                >
-                  <span
-                    className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
-                      config.tools.permissions.fileWrite ? 'translate-x-5' : ''
-                    }`}
-                  />
-                </button>
-              </div>
-
-              <div className="flex items-center justify-between">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">允许 MCP 工具调用</label>
-                  <p className="text-xs text-gray-500">开启后才会暴露 `mcp__*`（由 MCP Set 决定哪些工具对模型可见）。</p>
-                </div>
-                <button
-                  onClick={() => handlePermissionChange('mcpExec', !config.tools.permissions.mcpExec)}
-                  className={`relative w-11 h-6 rounded-full transition-colors ${
-                    config.tools.permissions.mcpExec ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'
-                  }`}
-                >
-                  <span
-                    className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
-                      config.tools.permissions.mcpExec ? 'translate-x-5' : ''
-                    }`}
-                  />
-                </button>
-              </div>
-            </div>
-          </div>
-
           {/* Toolset editor */}
-          <div className="pt-3 border-t border-gray-200 dark:border-gray-700">
+          <div>
             {!currentToolset ? (
               <div className="py-10 text-center text-gray-500 dark:text-gray-400">
                 请选择一个 toolset，或点击左侧“添加 toolset”
@@ -476,9 +354,6 @@ export const ToolsConfigForm: React.FC = () => {
                   <div className="space-y-2 rounded-lg border border-gray-200 dark:border-gray-700 p-3 bg-white dark:bg-gray-800">
                     {AVAILABLE_TOOLS.map((tool) => {
                       const checked = currentToolset.tools.includes(tool.name);
-                      const permission = (tool as { permission?: ToolPermissionKey }).permission;
-                      const permissionEnabled =
-                        !permission || (config.tools.permissions as Record<ToolPermissionKey, boolean>)[permission];
 
                       return (
                         <label key={tool.name} className="flex items-start gap-3">
@@ -495,11 +370,6 @@ export const ToolsConfigForm: React.FC = () => {
                           <div className="flex-1">
                             <div className="flex items-center gap-2">
                               <span className="text-sm font-mono text-gray-800 dark:text-gray-100">{tool.name}</span>
-                              {!permissionEnabled && (
-                                <span className="text-xs text-orange-600 bg-orange-50 dark:bg-orange-900/30 dark:text-orange-300 px-2 py-0.5 rounded">
-                                  需要开启权限
-                                </span>
-                              )}
                             </div>
                             <div className="text-xs text-gray-500">
                               {tool.label} · {tool.description}
@@ -510,7 +380,7 @@ export const ToolsConfigForm: React.FC = () => {
                     })}
                   </div>
                   <p className="text-xs text-gray-500">
-                    提示：工具是否真正“可用”，还取决于上面的权限开关，以及当前智能体是否为 Tool 类型。
+                    提示：工具是否真正“可用”，取决于 toolset、当前智能体类型，以及安全策略（read-only 会拒绝写入/PTY 等）。
                   </p>
                 </div>
               </div>
