@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import { FileText, Copy } from 'lucide-react';
 import { useDocumentStore } from '../../stores/documentStore';
+import MarkdownRenderer from '../Chat/MarkdownRenderer';
 
 export const DocumentView: React.FC = () => {
   const documents = useDocumentStore((s) => s.documents);
@@ -66,9 +67,23 @@ export const DocumentView: React.FC = () => {
 
       {/* Content */}
       <div className="flex-1 overflow-auto p-4">
-        <pre className="whitespace-pre-wrap break-words rounded-lg border border-gray-200 bg-white p-4 text-xs leading-relaxed text-gray-800 shadow-sm dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100">
-          {activeDoc.content}
-        </pre>
+        {(() => {
+          const path = (activeDoc.path ?? '').toLowerCase();
+          const renderMarkdown =
+            path.endsWith('.md') || path.endsWith('.markdown') || path.endsWith('.tauri.richtxt');
+          if (renderMarkdown) {
+            return (
+              <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-800">
+                <MarkdownRenderer content={activeDoc.content} />
+              </div>
+            );
+          }
+          return (
+            <pre className="whitespace-pre-wrap break-words rounded-lg border border-gray-200 bg-white p-4 text-xs leading-relaxed text-gray-800 shadow-sm dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100">
+              {activeDoc.content}
+            </pre>
+          );
+        })()}
       </div>
     </div>
   );

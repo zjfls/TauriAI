@@ -252,6 +252,7 @@ export interface PendingTextFile {
  * Supported text file extensions
  */
 export const SUPPORTED_TEXT_EXTENSIONS = [
+  '.tauri.richtxt',
   '.txt', '.md', '.json', '.yaml', '.yml', '.xml', '.csv', '.log',
   '.ini', '.toml', '.html', '.css', '.js', '.ts', '.py', '.rs',
   '.go', '.java', '.c', '.cpp', '.h', '.sh', '.bat', '.sql'

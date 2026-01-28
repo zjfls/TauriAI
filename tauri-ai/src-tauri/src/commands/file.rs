@@ -14,6 +14,7 @@ const MAX_TEXT_BYTES: u64 = 1 * 1024 * 1024; // 1MB
 
 // Keep in sync with `tauri-ai/src/types/index.ts` and `InputArea.tsx`
 const SUPPORTED_TEXT_EXTENSIONS: &[&str] = &[
+    ".tauri.richtxt",
     ".txt", ".md", ".json", ".yaml", ".yml", ".xml", ".csv", ".log", ".ini", ".toml", ".html",
     ".css", ".js", ".ts", ".py", ".rs", ".go", ".java", ".c", ".cpp", ".h", ".sh", ".bat", ".sql",
 ];
