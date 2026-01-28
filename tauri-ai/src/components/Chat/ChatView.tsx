@@ -513,7 +513,13 @@ Guidelines:
       if (set && (set.enabled ?? true)) {
         const disabledGlobal = new Set(config.skills.disabledSkills ?? []);
         const disabledSet = new Set(set.disabledSkills ?? []);
-        const enabledNames = (set.skills ?? []).filter((n) => !disabledGlobal.has(n) && !disabledSet.has(n));
+        const setSkills = set.skills ?? [];
+        const enabledNames =
+          setSkills.length === 0 && set.name === '标准skill集'
+            ? skillOutcome.skills
+                .map((s) => s.meta.name)
+                .filter((n) => !disabledGlobal.has(n) && !disabledSet.has(n))
+            : setSkills.filter((n) => !disabledGlobal.has(n) && !disabledSet.has(n));
         const byName = new Map(skillOutcome.skills.map((s) => [s.meta.name, s]));
         const availableSkills = enabledNames.map((n) => byName.get(n)).filter(Boolean) as SkillEntry[];
 

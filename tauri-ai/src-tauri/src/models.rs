@@ -1478,7 +1478,25 @@ impl Default for AppConfig {
 
 impl AppConfig {
     pub fn normalize(&mut self) -> bool {
-        self.security.normalize()
+        let mut changed = false;
+        if self.security.normalize() {
+            changed = true;
+        }
+
+        // Best-effort defaults for existing configs: infer missing model context lengths.
+        for provider in &mut self.providers {
+            for model in &mut provider.models {
+                if model.context_length.is_some() {
+                    continue;
+                }
+                if let Some(v) = infer_context_length(&model.name) {
+                    model.context_length = Some(v);
+                    changed = true;
+                }
+            }
+        }
+
+        changed
     }
 
     /// Check if config needs migration from legacy format
@@ -1615,6 +1633,20 @@ impl AppConfig {
         let model = provider.models.iter().find(|m| m.name == model_name)?;
         Some((provider, model, agent))
     }
+}
+
+fn infer_context_length(model_name: &str) -> Option<u32> {
+    let name = model_name.trim().to_ascii_lowercase();
+    if name.is_empty() {
+        return None;
+    }
+
+    // GLM series
+    if name.contains("glm-4.7") {
+        return Some(256_000);
+    }
+
+    None
 }
 
 #[cfg(test)]

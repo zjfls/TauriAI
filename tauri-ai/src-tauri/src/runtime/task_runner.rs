@@ -671,9 +671,6 @@ fn select_enabled_skills(
         .map(|s| s.as_str())
         .filter(|name| !disabled_global.contains(name) && !disabled_set.contains(name))
         .collect();
-    if allow.is_empty() {
-        return Vec::new();
-    }
 
     let outcome = load_skill_files(
         app_skills_dir,
@@ -681,6 +678,25 @@ fn select_enabled_skills(
         workstudio_skills_dir,
         include_contents,
     );
+
+    // Special-case: "标准skill集" can omit explicit allow-list and defaults to "all discovered skills",
+    // subject to global/set-level disabled lists.
+    let is_standard_set = set.name == "标准skill集";
+    if allow.is_empty() && is_standard_set {
+        return outcome
+            .skills
+            .into_iter()
+            .filter(|s| {
+                !disabled_global.contains(s.meta.name.as_str())
+                    && !disabled_set.contains(s.meta.name.as_str())
+            })
+            .collect();
+    }
+
+    if allow.is_empty() {
+        return Vec::new();
+    }
+
     let map = index_skills_by_name(&outcome);
     allow
         .into_iter()

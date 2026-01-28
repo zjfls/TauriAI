@@ -518,11 +518,22 @@ const AgentForm: React.FC<AgentFormProps> = ({
             <p className="text-xs text-gray-500">
               绑定后：运行时会把启用的 skills 作为系统指令注入提示词。
             </p>
-            {agent.skillSet && selectedSkillSet && (selectedSkillSet.skills?.length ?? 0) === 0 && (
-              <p className="text-xs text-yellow-700 dark:text-yellow-300">
-                提示：该 Skill Set 当前未选择任何技能，因此不会注入到对话上下文，也不会在 Context 统计里显示。
-              </p>
-            )}
+            {agent.skillSet &&
+              selectedSkillSet &&
+              (selectedSkillSet.skills?.length ?? 0) === 0 &&
+              selectedSkillSet.name !== '标准skill集' && (
+                <p className="text-xs text-yellow-700 dark:text-yellow-300">
+                  提示：该 Skill Set 当前未选择任何技能，因此不会注入到对话上下文，也不会在 Context 统计里显示。
+                </p>
+              )}
+            {agent.skillSet &&
+              selectedSkillSet &&
+              (selectedSkillSet.skills?.length ?? 0) === 0 &&
+              selectedSkillSet.name === '标准skill集' && (
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  提示：标准skill集未显式选择技能时，会默认启用全部已发现 skills（仍受全局/Set 内禁用影响），并计入 Context 统计。
+                </p>
+              )}
           </div>
         </div>
 

@@ -36,6 +36,8 @@ const inferCapabilities = (modelName: string): ModelCapabilities => {
 // Helper to infer context length from model name
 const inferContextLength = (modelName: string): number | undefined => {
   const nameLower = modelName.toLowerCase();
+  // GLM series
+  if (nameLower.includes('glm-4.7')) return 256000;
   // GPT-4 series
   if (nameLower.includes('gpt-4o') || nameLower.includes('gpt-4-turbo')) return 128000;
   if (nameLower.includes('gpt-4-32k')) return 32768;
