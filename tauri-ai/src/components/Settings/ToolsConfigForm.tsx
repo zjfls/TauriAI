@@ -1,6 +1,6 @@
 /**
  * ToolsConfigForm Component
- * Configure tool system (permissions + toolsets)
+ * Configure tool system (toolsets)
  */
 
 import React, { useEffect, useMemo, useState } from 'react';
@@ -14,20 +14,31 @@ const AVAILABLE_TOOLS = [
   { name: 'read_file', label: '读文件', description: '读取本地文件（带行号）' },
   { name: 'list_dir', label: '列目录', description: '列出目录结构（带缩进）' },
   { name: 'rg', label: 'rg', description: '按 pattern 搜索文件（ripgrep）' },
-  { name: 'web_search', label: '网络搜索', description: '调用本地网络搜索（Tavily/Google CSE/Brave）' },
+  { name: 'web_search', label: '网络搜索', description: '调用本地网络搜索（Tavily / Google CSE / Brave）' },
   { name: 'apply_patch', label: 'Apply Patch', description: '按补丁格式修改/创建文件' },
   { name: 'shell_command', label: 'Shell 命令', description: '一次性执行命令' },
   { name: 'exec_command', label: 'PTY 启动命令', description: '创建交互式会话' },
   { name: 'write_stdin', label: 'PTY 写入输入', description: '向交互式会话写入 stdin' },
 ] as const;
+
 const toggleInList = (list: string[], value: string) =>
   list.includes(value) ? list.filter((x) => x !== value) : [...list, value];
 
+const nextUniqueToolsetName = (existing: Set<string>, baseName: string) => {
+  const cleanedBase = baseName.trim() || 'toolset';
+  let candidate = `${cleanedBase}_copy`;
+  let i = 2;
+  while (existing.has(candidate)) {
+    candidate = `${cleanedBase}_copy${i}`;
+    i += 1;
+  }
+  return candidate;
+};
+
 export const ToolsConfigForm: React.FC = () => {
-  const { config, saveConfig } = useConfigStore();
+  const { config, saveConfigDebounced } = useConfigStore();
   const [selectedToolsetName, setSelectedToolsetName] = useState<string | null>(null);
-  const [editingToolset, setEditingToolset] = useState<ToolSetConfig | null>(null);
-  const [isCreating, setIsCreating] = useState(false);
+  const [toolsetNameDraft, setToolsetNameDraft] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
 
   const toolsets = config?.tools?.toolsets ?? [];
@@ -39,11 +50,18 @@ export const ToolsConfigForm: React.FC = () => {
   }, [toolsets, searchQuery]);
 
   useEffect(() => {
-    if (isCreating) return;
-    if (filteredToolsets.length === 0) return;
-    if (selectedToolsetName) return;
-    setSelectedToolsetName(filteredToolsets[0].name);
-  }, [filteredToolsets, selectedToolsetName, isCreating]);
+    if (!config) return;
+    if (toolsets.length === 0) {
+      setSelectedToolsetName(null);
+      return;
+    }
+    if (selectedToolsetName && toolsets.some((t) => t.name === selectedToolsetName)) return;
+    setSelectedToolsetName(toolsets[0].name);
+  }, [config, toolsets, selectedToolsetName]);
+
+  useEffect(() => {
+    setToolsetNameDraft(selectedToolsetName ?? '');
+  }, [selectedToolsetName]);
 
   if (!config) {
     return (
@@ -53,139 +71,91 @@ export const ToolsConfigForm: React.FC = () => {
     );
   }
 
-  const save = (updatedConfig: AppConfig) => {
-    saveConfig(updatedConfig);
+  const save = (updatedConfig: AppConfig) => saveConfigDebounced(updatedConfig);
+
+  const currentToolset = toolsets.find((t) => t.name === selectedToolsetName) ?? null;
+
+  const updateToolset = (name: string, updater: (t: ToolSetConfig) => ToolSetConfig) => {
+    const target = toolsets.find((t) => t.name === name);
+    if (!target) return;
+    const nextToolsets = toolsets.map((t) => (t.name === name ? updater(t) : t));
+    save({ ...config, tools: { ...config.tools, toolsets: nextToolsets } });
   };
 
-  const handleSelectToolset = (name: string) => {
-    setSelectedToolsetName(name);
-    setEditingToolset(null);
-    setIsCreating(false);
-  };
-
-  const handleCreateToolset = () => {
-    setIsCreating(true);
-    setSelectedToolsetName(null);
-    setEditingToolset({
-      name: `toolset_${Date.now()}`,
-      tools: [],
-      persistanceShellEnhance: false,
-    });
-  };
-
-  const handleEditToolset = () => {
+  const commitRename = () => {
     if (!selectedToolsetName) return;
-    const toolset = toolsets.find((t) => t.name === selectedToolsetName);
-    if (!toolset) return;
-    setEditingToolset({ ...toolset, tools: [...toolset.tools] });
-    setIsCreating(false);
-  };
+    const nextName = toolsetNameDraft.trim();
+    if (!nextName) {
+      setToolsetNameDraft(selectedToolsetName);
+      return;
+    }
+    if (nextName === selectedToolsetName) return;
 
-  const handleCancelEdit = () => {
-    setEditingToolset(null);
-    setIsCreating(false);
-  };
-
-  const handleSaveToolset = () => {
-    if (!editingToolset) return;
-    const name = editingToolset.name.trim();
-    if (!name) return;
-
-    const originalName = isCreating ? null : selectedToolsetName;
-    const nameChanged = originalName && originalName !== name;
-
-    const nameConflicts = toolsets.some((t) => t.name === name && t.name !== originalName);
+    const nameConflicts = toolsets.some((t) => t.name === nextName);
     if (nameConflicts) {
       alert('Toolset 名称已存在，请换一个名称');
+      setToolsetNameDraft(selectedToolsetName);
       return;
     }
 
-    const normalizedTools = Array.from(new Set(editingToolset.tools));
-    const persistanceShellEnhance = Boolean(editingToolset.persistanceShellEnhance);
+    const nextToolsets = toolsets.map((t) =>
+      t.name === selectedToolsetName ? { ...t, name: nextName } : t
+    );
+    const nextAgents = config.agents.map((a) =>
+      a.toolset === selectedToolsetName ? { ...a, toolset: nextName } : a
+    );
 
-    const nextToolsets = (() => {
-      if (isCreating) {
-        return [...toolsets, { name, tools: normalizedTools, persistanceShellEnhance }];
-      }
-      return toolsets.map((t) =>
-        t.name === originalName
-          ? { ...t, name, tools: normalizedTools, persistanceShellEnhance }
-          : t
-      );
-    })();
+    save({ ...config, tools: { ...config.tools, toolsets: nextToolsets }, agents: nextAgents });
+    setSelectedToolsetName(nextName);
+  };
 
-    const nextAgents = nameChanged
-      ? config.agents.map((a) => (a.toolset === originalName ? { ...a, toolset: name } : a))
-      : config.agents;
+  const handleCreateToolset = () => {
+    const existing = new Set(toolsets.map((t) => t.name));
+    const base = `toolset_${Date.now()}`;
+    let name = base;
+    let i = 2;
+    while (existing.has(name)) {
+      name = `${base}_${i}`;
+      i += 1;
+    }
 
-    save({
-      ...config,
-      tools: { ...config.tools, toolsets: nextToolsets },
-      agents: nextAgents,
-    });
-
-    setEditingToolset(null);
-    setIsCreating(false);
+    const created: ToolSetConfig = { name, tools: [], persistanceShellEnhance: false };
+    save({ ...config, tools: { ...config.tools, toolsets: [...toolsets, created] } });
     setSelectedToolsetName(name);
+  };
+
+  const handleDuplicateToolset = () => {
+    if (!selectedToolsetName) return;
+    const toolset = toolsets.find((t) => t.name === selectedToolsetName);
+    if (!toolset) return;
+
+    const existing = new Set(toolsets.map((t) => t.name));
+    const duplicated: ToolSetConfig = {
+      ...toolset,
+      name: nextUniqueToolsetName(existing, toolset.name),
+      tools: [...toolset.tools],
+      persistanceShellEnhance: Boolean(toolset.persistanceShellEnhance),
+    };
+
+    save({ ...config, tools: { ...config.tools, toolsets: [...toolsets, duplicated] } });
+    setSelectedToolsetName(duplicated.name);
   };
 
   const handleDeleteToolset = () => {
     if (!selectedToolsetName) return;
-    if (!confirm(`确定要删除 toolset「${selectedToolsetName}」吗？相关智能体会自动取消绑定。`)) return;
+    if (
+      !confirm(`确定要删除 toolset「${selectedToolsetName}」吗？相关智能体会自动取消绑定。`)
+    )
+      return;
 
     const nextToolsets = toolsets.filter((t) => t.name !== selectedToolsetName);
     const nextAgents = config.agents.map((a) =>
       a.toolset === selectedToolsetName ? { ...a, toolset: undefined } : a
     );
 
-    save({
-      ...config,
-      tools: { ...config.tools, toolsets: nextToolsets },
-      agents: nextAgents,
-    });
-
-    setEditingToolset(null);
-    setIsCreating(false);
+    save({ ...config, tools: { ...config.tools, toolsets: nextToolsets }, agents: nextAgents });
     setSelectedToolsetName(nextToolsets[0]?.name ?? null);
   };
-
-  const nextUniqueToolsetName = (baseName: string) => {
-    const existing = new Set(toolsets.map((t) => t.name));
-    const cleanedBase = baseName.trim() || 'toolset';
-    let candidate = `${cleanedBase}_copy`;
-    let i = 2;
-    while (existing.has(candidate)) {
-      candidate = `${cleanedBase}_copy${i}`;
-      i += 1;
-    }
-    return candidate;
-  };
-
-  const handleDuplicateToolset = () => {
-    if (!selectedToolsetName) return;
-    if (isEditing) return;
-    const toolset = toolsets.find((t) => t.name === selectedToolsetName);
-    if (!toolset) return;
-
-    const duplicated: ToolSetConfig = {
-      ...toolset,
-      name: nextUniqueToolsetName(toolset.name),
-      tools: [...toolset.tools],
-      persistanceShellEnhance: Boolean(toolset.persistanceShellEnhance),
-    };
-
-    save({
-      ...config,
-      tools: { ...config.tools, toolsets: [...toolsets, duplicated] },
-    });
-
-    setSelectedToolsetName(duplicated.name);
-    setEditingToolset(null);
-    setIsCreating(false);
-  };
-
-  const currentToolset = editingToolset ?? toolsets.find((t) => t.name === selectedToolsetName) ?? null;
-  const isEditing = Boolean(editingToolset);
 
   return (
     <div className="flex gap-6 h-full">
@@ -208,9 +178,9 @@ export const ToolsConfigForm: React.FC = () => {
           {filteredToolsets.map((toolset) => (
             <div
               key={toolset.name}
-              onClick={() => handleSelectToolset(toolset.name)}
+              onClick={() => setSelectedToolsetName(toolset.name)}
               className={`flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer transition-colors ${
-                selectedToolsetName === toolset.name && !isCreating
+                selectedToolsetName === toolset.name
                   ? 'bg-blue-100 dark:bg-blue-900/50'
                   : 'hover:bg-gray-100 dark:hover:bg-gray-700'
               }`}
@@ -219,9 +189,6 @@ export const ToolsConfigForm: React.FC = () => {
               <span className="text-xs text-gray-500">{toolset.tools.length}</span>
             </div>
           ))}
-          {isCreating && (
-            <div className="px-3 py-2 rounded-lg bg-blue-100 dark:bg-blue-900/50 text-sm">新建 toolset</div>
-          )}
         </div>
 
         <button
@@ -236,156 +203,150 @@ export const ToolsConfigForm: React.FC = () => {
       {/* Right Panel */}
       <div className="flex-1 overflow-auto">
         <div className="max-w-2xl space-y-6">
-          {/* Toolset editor */}
-          <div>
-            {!currentToolset ? (
-              <div className="py-10 text-center text-gray-500 dark:text-gray-400">
-                请选择一个 toolset，或点击左侧“添加 toolset”
+          {!currentToolset ? (
+            <div className="py-10 text-center text-gray-500 dark:text-gray-400">
+              请选择一个 toolset，或点击左侧“添加 toolset”。
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <h3 className="text-base font-semibold text-gray-800 dark:text-white">Toolset</h3>
+                  <span className="text-xs text-gray-500">{currentToolset.tools.length} 个工具</span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <span className="px-2 text-xs text-gray-500 dark:text-gray-400">自动保存</span>
+                  <button
+                    onClick={handleDuplicateToolset}
+                    className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg flex items-center gap-1"
+                    title="复制 toolset"
+                  >
+                    <Copy size={14} />
+                    复制
+                  </button>
+                  <button
+                    onClick={handleDeleteToolset}
+                    className="px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg flex items-center gap-1"
+                  >
+                    <Trash2 size={14} />
+                    删除
+                  </button>
+                </div>
               </div>
-            ) : (
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-base font-semibold text-gray-800 dark:text-white">Toolset</h3>
-                    {!isEditing && (
-                      <span className="text-xs text-gray-500">
-                        {currentToolset.tools.length} 个工具
-                      </span>
-                    )}
-                  </div>
 
-                  <div className="flex items-center gap-2">
-                    {isEditing ? (
-                      <>
-                        <button
-                          onClick={handleCancelEdit}
-                          className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg"
-                        >
-                          取消
-                        </button>
-                        <button
-                          onClick={handleSaveToolset}
-                          className="px-3 py-1.5 text-sm bg-blue-600 text-white hover:bg-blue-700 rounded-lg"
-                        >
-                          保存
-                        </button>
-                      </>
-                    ) : (
-                      <>
-                        <button
-                          onClick={handleDuplicateToolset}
-                          className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg flex items-center gap-1"
-                          title="复制 toolset"
-                        >
-                          <Copy size={14} />
-                          复制
-                        </button>
-                        <button
-                          onClick={handleEditToolset}
-                          className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg"
-                        >
-                          编辑
-                        </button>
-                        <button
-                          onClick={handleDeleteToolset}
-                          className="px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg flex items-center gap-1"
-                        >
-                          <Trash2 size={14} />
-                          删除
-                        </button>
-                      </>
-                    )}
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1">
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">名称</label>
-                    <input
-                      type="text"
-                      value={currentToolset.name}
-                      onChange={(e) => setEditingToolset({ ...(currentToolset as ToolSetConfig), name: e.target.value })}
-                      disabled={!isEditing}
-                      className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">工具数量</label>
-                    <div className="px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 text-sm text-gray-600 dark:text-gray-300">
-                      {currentToolset.tools.length}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                        持久进程
-                      </label>
-                      <p className="text-xs text-gray-500">
-                        允许跨任务保留 PTY 会话，并在聊天页显示“持久进程”面板（仅当 toolset 开启时才会影响模型侧工具定义）。
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      disabled={!isEditing}
-                      onClick={() => {
-                        setEditingToolset({
-                          ...(currentToolset as ToolSetConfig),
-                          persistanceShellEnhance: !Boolean(currentToolset.persistanceShellEnhance),
-                        });
-                      }}
-                      className={`relative w-11 h-6 rounded-full transition-colors ${
-                        Boolean(currentToolset.persistanceShellEnhance)
-                          ? 'bg-blue-600'
-                          : 'bg-gray-300 dark:bg-gray-600'
-                      } disabled:opacity-60 disabled:cursor-not-allowed`}
-                      title={Boolean(currentToolset.persistanceShellEnhance) ? '已开启' : '已关闭'}
-                    >
-                      <span
-                        className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
-                          Boolean(currentToolset.persistanceShellEnhance) ? 'translate-x-5' : ''
-                        }`}
-                      />
-                    </button>
-                  </div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">包含工具</label>
-                  <div className="space-y-2 rounded-lg border border-gray-200 dark:border-gray-700 p-3 bg-white dark:bg-gray-800">
-                    {AVAILABLE_TOOLS.map((tool) => {
-                      const checked = currentToolset.tools.includes(tool.name);
-
-                      return (
-                        <label key={tool.name} className="flex items-start gap-3">
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={() => {
-                              const nextTools = toggleInList(currentToolset.tools, tool.name);
-                              setEditingToolset({ ...(currentToolset as ToolSetConfig), tools: nextTools });
-                            }}
-                            disabled={!isEditing}
-                            className="mt-1"
-                          />
-                          <div className="flex-1">
-                            <div className="flex items-center gap-2">
-                              <span className="text-sm font-mono text-gray-800 dark:text-gray-100">{tool.name}</span>
-                            </div>
-                            <div className="text-xs text-gray-500">
-                              {tool.label} · {tool.description}
-                            </div>
-                          </div>
-                        </label>
-                      );
-                    })}
-                  </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    名称
+                  </label>
+                  <input
+                    type="text"
+                    value={toolsetNameDraft}
+                    onChange={(e) => setToolsetNameDraft(e.target.value)}
+                    onBlur={commitRename}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        commitRename();
+                        (e.target as HTMLInputElement).blur();
+                      }
+                      if (e.key === 'Escape') {
+                        e.preventDefault();
+                        setToolsetNameDraft(selectedToolsetName ?? '');
+                        (e.target as HTMLInputElement).blur();
+                      }
+                    }}
+                    className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700"
+                  />
                   <p className="text-xs text-gray-500">
-                    提示：工具是否真正“可用”，取决于 toolset、当前智能体类型，以及安全策略（read-only 会拒绝写入/PTY 等）。
+                    提示：回车/失焦应用重命名（会同步更新绑定此 toolset 的智能体）
                   </p>
                 </div>
+                <div className="space-y-1">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    工具数量
+                  </label>
+                  <div className="px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 text-sm text-gray-600 dark:text-gray-300">
+                    {currentToolset.tools.length}
+                  </div>
+                </div>
               </div>
-            )}
-          </div>
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                      持久进程
+                    </label>
+                    <p className="text-xs text-gray-500">
+                      允许跨任务保留 PTY 会话，并在聊天页显示“持久进程”面板（仅当 toolset
+                      显式开启时才会影响模型侧工具定义）。
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      updateToolset(currentToolset.name, (t) => ({
+                        ...t,
+                        persistanceShellEnhance: !Boolean(t.persistanceShellEnhance),
+                      }));
+                    }}
+                    className={`relative w-11 h-6 rounded-full transition-colors ${
+                      Boolean(currentToolset.persistanceShellEnhance)
+                        ? 'bg-blue-600'
+                        : 'bg-gray-300 dark:bg-gray-600'
+                    }`}
+                    title={Boolean(currentToolset.persistanceShellEnhance) ? '已开启' : '已关闭'}
+                  >
+                    <span
+                      className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
+                        Boolean(currentToolset.persistanceShellEnhance) ? 'translate-x-5' : ''
+                      }`}
+                    />
+                  </button>
+                </div>
+
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  包含工具
+                </label>
+                <div className="space-y-2 rounded-lg border border-gray-200 dark:border-gray-700 p-3 bg-white dark:bg-gray-800">
+                  {AVAILABLE_TOOLS.map((tool) => {
+                    const checked = currentToolset.tools.includes(tool.name);
+                    return (
+                      <label key={tool.name} className="flex items-start gap-3">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => {
+                            const nextTools = toggleInList(currentToolset.tools, tool.name);
+                            updateToolset(currentToolset.name, (t) => ({
+                              ...t,
+                              tools: Array.from(new Set(nextTools)),
+                            }));
+                          }}
+                          className="mt-1"
+                        />
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-mono text-gray-800 dark:text-gray-100">
+                              {tool.name}
+                            </span>
+                          </div>
+                          <div className="text-xs text-gray-500">
+                            {tool.label} · {tool.description}
+                          </div>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+                <p className="text-xs text-gray-500">
+                  提示：工具是否真正“可用”，还取决于当前智能体类型与安全策略（read-only 会拒绝写入/PTY 等）。
+                </p>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

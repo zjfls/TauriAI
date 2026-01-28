@@ -5,7 +5,7 @@
 
 import React, { useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Plus, Trash2, RefreshCw, Save } from 'lucide-react';
+import { Plus, Trash2, RefreshCw } from 'lucide-react';
 import { useConfigStore } from '../../stores/configStore';
 import type {
   AppConfig,
@@ -55,7 +55,7 @@ const splitLines = (text: string) =>
     .filter(Boolean);
 
 export const McpConfigForm: React.FC = () => {
-  const { config, saveConfig } = useConfigStore();
+  const { config, saveConfigDebounced, flushConfigSaves } = useConfigStore();
   const [activeTab, setActiveTab] = useState<'servers' | 'sets' | 'diag'>('servers');
   const [testingServer, setTestingServer] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<McpTestResult | null>(null);
@@ -75,7 +75,7 @@ export const McpConfigForm: React.FC = () => {
     );
   }
 
-  const save = (updated: AppConfig) => saveConfig(updated);
+  const save = (updated: AppConfig) => saveConfigDebounced(updated);
 
   const updateMcp = (next: AppConfig['mcp']) => {
     save({ ...config, mcp: next });
@@ -120,6 +120,7 @@ export const McpConfigForm: React.FC = () => {
     setTestingServer(name);
     setTestResult(null);
     try {
+      await flushConfigSaves();
       const res = await invoke<McpTestResult>('test_mcp_server', { serverName: name });
       setTestResult(res);
     } catch (e) {
@@ -133,6 +134,7 @@ export const McpConfigForm: React.FC = () => {
     setToolPreviewServer(name);
     setToolPreview(null);
     try {
+      await flushConfigSaves();
       const tools = await invoke<McpToolInfo[]>('list_mcp_server_tools', { serverName: name });
       setToolPreview(tools);
     } catch (e) {
@@ -632,16 +634,8 @@ export const McpConfigForm: React.FC = () => {
       )}
 
       <div className="pt-2 border-t border-gray-200 dark:border-gray-700">
-        <button
-          onClick={() => saveConfig(config)}
-          className="px-3 py-2 text-sm bg-blue-600 text-white hover:bg-blue-700 rounded-lg flex items-center gap-2"
-          title="保存当前配置"
-        >
-          <Save size={16} />
-          保存配置
-        </button>
-        <p className="mt-2 text-xs text-gray-500">
-          提示：测试连接/拉取工具会读取后端当前保存的配置；如果你刚编辑了配置，建议先点“保存配置”。
+        <p className="text-xs text-gray-500">
+          提示：配置改动会自动保存；“测试连接 / 拉取工具”会在执行前自动同步保存到后端。
         </p>
       </div>
     </div>

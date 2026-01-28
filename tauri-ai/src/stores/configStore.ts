@@ -16,6 +16,8 @@ interface ConfigState {
   // Actions
   loadConfig: () => Promise<void>;
   saveConfig: (config: AppConfig) => Promise<void>;
+  saveConfigDebounced: (config: AppConfig, delayMs?: number) => void;
+  flushConfigSaves: () => Promise<void>;
   
   // Provider actions
   addProvider: (provider: Provider) => void;
@@ -47,6 +49,18 @@ interface ConfigState {
   getModelOptions: () => { label: string; value: string }[];
 }
 
+const DEFAULT_CONFIG_SAVE_DEBOUNCE_MS = 400;
+
+let debouncedSaveTimer: ReturnType<typeof setTimeout> | null = null;
+let saveQueue: Promise<void> = Promise.resolve();
+
+const enqueueConfigSave = (config: AppConfig): Promise<void> => {
+  // Serialize config writes to ensure the latest config is not overwritten by an earlier request finishing later.
+  const task = saveQueue.then(() => invoke<void>('save_app_config', { config }));
+  saveQueue = task.catch(() => undefined);
+  return task;
+};
+
 export const useConfigStore = create<ConfigState>((set, get) => ({
   config: null,
   isLoading: false,
@@ -70,12 +84,47 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
   saveConfig: async (config: AppConfig) => {
     set({ isLoading: true, error: null });
     try {
-      await invoke('save_app_config', { config });
+      if (debouncedSaveTimer) {
+        clearTimeout(debouncedSaveTimer);
+        debouncedSaveTimer = null;
+      }
+      await enqueueConfigSave(config);
       set({ config, isLoading: false });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       set({ error: message, isLoading: false });
     }
+  },
+
+  saveConfigDebounced: (config: AppConfig, delayMs = DEFAULT_CONFIG_SAVE_DEBOUNCE_MS) => {
+    // Update UI immediately, persist shortly after (debounced).
+    set({ config });
+
+    if (debouncedSaveTimer) {
+      clearTimeout(debouncedSaveTimer);
+    }
+
+    debouncedSaveTimer = setTimeout(() => {
+      debouncedSaveTimer = null;
+      const latest = get().config;
+      if (!latest) return;
+      enqueueConfigSave(latest).catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        set({ error: message });
+      });
+    }, delayMs);
+  },
+
+  flushConfigSaves: async () => {
+    if (debouncedSaveTimer) {
+      clearTimeout(debouncedSaveTimer);
+      debouncedSaveTimer = null;
+      const latest = get().config;
+      if (latest) {
+        await enqueueConfigSave(latest);
+      }
+    }
+    await saveQueue;
   },
 
   // Provider actions

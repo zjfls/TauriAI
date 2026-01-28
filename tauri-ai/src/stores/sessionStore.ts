@@ -499,6 +499,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     try {
       const debugMode = useConfigStore.getState().config?.general?.debugMode ?? false;
+      // Ensure any debounced config edits are persisted before the backend reads config for this run.
+      // (e.g. user edits agent/provider settings and immediately sends a message)
+      await useConfigStore.getState().flushConfigSaves?.();
       await invoke('run_task', {
         conversationId: session.conversationId,
         messageId: userMessage.id,

@@ -82,10 +82,8 @@ const defaultProvider: Provider = {
 };
 
 export const ProviderConfigForm: React.FC = () => {
-  const { config, addProvider, updateProvider, deleteProvider, toggleProvider } = useConfigStore();
+  const { config, saveConfigDebounced } = useConfigStore();
   const [selectedProviderName, setSelectedProviderName] = useState<string | null>(null);
-  const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
-  const [isCreating, setIsCreating] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedModels, setExpandedModels] = useState<Set<string>>(new Set());
   const [expandedAdvanced, setExpandedAdvanced] = useState<Set<string>>(new Set());
@@ -108,46 +106,38 @@ export const ProviderConfigForm: React.FC = () => {
 
   const handleSelectProvider = (name: string) => {
     setSelectedProviderName(name);
-    setEditingProvider(null);
-    setIsCreating(false);
     setTestStatus('idle');
   };
 
   const handleCreateNew = () => {
-    setIsCreating(true);
-    setEditingProvider({ ...defaultProvider, name: `provider_${Date.now()}` });
-    setSelectedProviderName(null);
-  };
+    if (!config) return;
+    const existing = new Set(providers.map((p) => p.name));
+    const name = (() => {
+      const base = `provider_${Date.now()}`;
+      if (!existing.has(base)) return base;
+      let i = 2;
+      while (existing.has(`${base}_${i}`)) i += 1;
+      return `${base}_${i}`;
+    })();
 
-  const handleEdit = () => {
-    const provider = providers.find(p => p.name === selectedProviderName);
-    if (provider) {
-      setEditingProvider({ ...provider });
-    }
-  };
+    const created: Provider = {
+      ...defaultProvider,
+      name,
+      displayName: name,
+    };
 
-  const handleSave = () => {
-    if (!editingProvider || !editingProvider.displayName.trim()) return;
-    if (isCreating) {
-      addProvider(editingProvider);
-      setSelectedProviderName(editingProvider.name);
-    } else {
-      updateProvider(editingProvider);
-    }
-    setEditingProvider(null);
-    setIsCreating(false);
-  };
-
-  const handleCancel = () => {
-    setEditingProvider(null);
-    setIsCreating(false);
+    saveConfigDebounced({ ...config, providers: [...providers, created] });
+    setSelectedProviderName(created.name);
+    setTestStatus('idle');
   };
 
   const handleDelete = () => {
     if (!selectedProviderName) return;
     if (confirm('确定要删除这个提供商吗？')) {
-      deleteProvider(selectedProviderName);
-      setSelectedProviderName(providers.find(p => p.name !== selectedProviderName)?.name || null);
+      if (!config) return;
+      const nextProviders = providers.filter((p) => p.name !== selectedProviderName);
+      saveConfigDebounced({ ...config, providers: nextProviders });
+      setSelectedProviderName(nextProviders[0]?.name ?? null);
     }
   };
 
@@ -164,9 +154,9 @@ export const ProviderConfigForm: React.FC = () => {
   };
 
   const handleDuplicate = () => {
-    if (editingProvider) return;
     const provider = providers.find((p) => p.name === selectedProviderName);
     if (!provider) return;
+    if (!config) return;
 
     const duplicated: Provider = {
       ...provider,
@@ -175,15 +165,15 @@ export const ProviderConfigForm: React.FC = () => {
       models: provider.models.map((m) => ({ ...m, capabilities: { ...m.capabilities } })),
     };
 
-    addProvider(duplicated);
+    saveConfigDebounced({ ...config, providers: [...providers, duplicated] });
     setSelectedProviderName(duplicated.name);
-    setEditingProvider(null);
-    setIsCreating(false);
     setTestStatus('idle');
   };
 
   const handleToggleEnabled = (name: string, enabled: boolean) => {
-    toggleProvider(name, enabled);
+    if (!config) return;
+    const nextProviders = providers.map((p) => (p.name === name ? { ...p, enabled } : p));
+    saveConfigDebounced({ ...config, providers: nextProviders });
   };
 
   const toggleModelExpand = (modelName: string) => {
@@ -207,29 +197,40 @@ export const ProviderConfigForm: React.FC = () => {
   };
 
   const handleAddModel = () => {
-    if (!editingProvider) return;
+    if (!config) return;
+    if (!selectedProviderName) return;
     const newModel = { ...defaultModel, name: `model_${Date.now()}`, capabilities: { ...defaultCapabilities } };
-    setEditingProvider({
-      ...editingProvider,
-      models: [...editingProvider.models, newModel],
-    });
+    const nextProviders = providers.map((p) =>
+      p.name === selectedProviderName ? { ...p, models: [...p.models, newModel] } : p
+    );
+    saveConfigDebounced({ ...config, providers: nextProviders });
   };
 
   const handleUpdateModel = (index: number, model: Model) => {
-    if (!editingProvider) return;
-    const models = [...editingProvider.models];
-    models[index] = model;
-    setEditingProvider({ ...editingProvider, models });
+    if (!config) return;
+    if (!selectedProviderName) return;
+    const nextProviders = providers.map((p) => {
+      if (p.name !== selectedProviderName) return p;
+      const models = [...p.models];
+      models[index] = model;
+      return { ...p, models };
+    });
+    saveConfigDebounced({ ...config, providers: nextProviders });
   };
 
   const handleDeleteModel = (index: number) => {
-    if (!editingProvider) return;
-    const models = editingProvider.models.filter((_, i) => i !== index);
-    setEditingProvider({ ...editingProvider, models });
+    if (!config) return;
+    if (!selectedProviderName) return;
+    const nextProviders = providers.map((p) =>
+      p.name === selectedProviderName
+        ? { ...p, models: p.models.filter((_, i) => i !== index) }
+        : p
+    );
+    saveConfigDebounced({ ...config, providers: nextProviders });
   };
 
   const handleTestConnection = async () => {
-    const provider = editingProvider || providers.find(p => p.name === selectedProviderName);
+    const provider = providers.find(p => p.name === selectedProviderName);
     if (!provider) return;
     if (!testModelName) {
       setTestStatus('error');
@@ -257,8 +258,10 @@ export const ProviderConfigForm: React.FC = () => {
   };
 
   const handleAddModelsFromPicker = (modelNames: string[]) => {
-    if (!editingProvider) return;
-    const existingNames = new Set(editingProvider.models.map(m => m.name));
+    if (!config) return;
+    const provider = providers.find((p) => p.name === selectedProviderName);
+    if (!provider) return;
+    const existingNames = new Set(provider.models.map(m => m.name));
     const newModels: Model[] = modelNames
       .filter(name => !existingNames.has(name))
       .map(name => ({
@@ -270,15 +273,15 @@ export const ProviderConfigForm: React.FC = () => {
         capabilities: inferCapabilities(name),
       }));
     if (newModels.length > 0) {
-      setEditingProvider({
-        ...editingProvider,
-        models: [...editingProvider.models, ...newModels],
-      });
+      const nextProviders = providers.map((p) =>
+        p.name === provider.name ? { ...p, models: [...p.models, ...newModels] } : p
+      );
+      saveConfigDebounced({ ...config, providers: nextProviders });
     }
     setShowModelPicker(false);
   };
 
-  const currentProvider = editingProvider || providers.find(p => p.name === selectedProviderName);
+  const currentProvider = providers.find(p => p.name === selectedProviderName);
 
   return (
     <div className="flex gap-6 h-full">
@@ -302,7 +305,7 @@ export const ProviderConfigForm: React.FC = () => {
             <div
               key={provider.name}
               onClick={() => handleSelectProvider(provider.name)}
-              className={`flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer transition-colors ${selectedProviderName === provider.name && !isCreating
+              className={`flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer transition-colors ${selectedProviderName === provider.name
                   ? 'bg-blue-100 dark:bg-blue-900/50'
                   : 'hover:bg-gray-100 dark:hover:bg-gray-700'
                 }`}
@@ -325,11 +328,6 @@ export const ProviderConfigForm: React.FC = () => {
               </button>
             </div>
           ))}
-          {isCreating && (
-            <div className="px-3 py-2 rounded-lg bg-blue-100 dark:bg-blue-900/50 text-sm">
-              新建提供商
-            </div>
-          )}
         </div>
 
         <button
@@ -346,18 +344,22 @@ export const ProviderConfigForm: React.FC = () => {
         {currentProvider ? (
           <ProviderForm
             provider={currentProvider}
-            isEditing={!!editingProvider}
+            isEditing={true}
             expandedModels={expandedModels}
             expandedAdvanced={expandedAdvanced}
             testStatus={testStatus}
             testMessage={testMessage}
             testModelName={testModelName}
-            onEdit={handleEdit}
             onDuplicate={handleDuplicate}
-            onSave={handleSave}
-            onCancel={handleCancel}
             onDelete={handleDelete}
-            onFieldChange={(field, value) => editingProvider && setEditingProvider({ ...editingProvider, [field]: value })}
+            onFieldChange={(field, value) => {
+              if (!config) return;
+              if (!selectedProviderName) return;
+              const nextProviders = providers.map((p) =>
+                p.name === selectedProviderName ? { ...p, [field]: value } : p
+              );
+              saveConfigDebounced({ ...config, providers: nextProviders });
+            }}
             onToggleModelExpand={toggleModelExpand}
             onToggleAdvancedExpand={toggleAdvancedExpand}
             onAddModel={handleAddModel}
@@ -375,9 +377,9 @@ export const ProviderConfigForm: React.FC = () => {
       </div>
 
       {/* Model Picker Modal */}
-      {showModelPicker && editingProvider && (
+      {showModelPicker && currentProvider && (
         <ModelPickerModal
-          provider={editingProvider}
+          provider={currentProvider}
           onClose={() => setShowModelPicker(false)}
           onAddModels={handleAddModelsFromPicker}
         />
@@ -394,10 +396,7 @@ interface ProviderFormProps {
   testStatus: 'idle' | 'testing' | 'success' | 'error';
   testMessage: string;
   testModelName: string;
-  onEdit: () => void;
   onDuplicate: () => void;
-  onSave: () => void;
-  onCancel: () => void;
   onDelete: () => void;
   onFieldChange: (field: keyof Provider, value: any) => void;
   onToggleModelExpand: (modelName: string) => void;
@@ -418,10 +417,7 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
   testStatus,
   testMessage,
   testModelName,
-  onEdit,
   onDuplicate,
-  onSave,
-  onCancel,
   onDelete,
   onFieldChange,
   onToggleModelExpand,
@@ -449,25 +445,21 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
           {provider.displayName || '提供商配置'}
         </h2>
         <div className="flex items-center gap-2">
-          {isEditing ? (
-            <>
-              <button onClick={onCancel} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">取消</button>
-              <button onClick={onSave} className="px-3 py-1.5 text-sm bg-blue-600 text-white hover:bg-blue-700 rounded-lg">保存</button>
-            </>
-          ) : (
-            <>
-              <button
-                onClick={onDuplicate}
-                className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg flex items-center gap-1"
-                title="复制提供商"
-              >
-                <Copy size={14} />
-                复制
-              </button>
-              <button onClick={onEdit} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">编辑</button>
-              <button onClick={onDelete} className="px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg">删除</button>
-            </>
-          )}
+          <span className="px-2 text-xs text-gray-500 dark:text-gray-400">自动保存</span>
+          <button
+            onClick={onDuplicate}
+            className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg flex items-center gap-1"
+            title="复制提供商"
+          >
+            <Copy size={14} />
+            复制
+          </button>
+          <button
+            onClick={onDelete}
+            className="px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg"
+          >
+            删除
+          </button>
         </div>
       </div>
 

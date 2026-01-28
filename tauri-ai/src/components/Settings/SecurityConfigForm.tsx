@@ -10,17 +10,15 @@ import type { AppConfig, AskForApproval, NetworkAccess, SandboxPolicy, SecurityP
 
 const Toggle: React.FC<{
   checked: boolean;
-  disabled?: boolean;
   onChange: (next: boolean) => void;
   title?: string;
-}> = ({ checked, disabled, onChange, title }) => (
+}> = ({ checked, onChange, title }) => (
   <button
     type="button"
-    disabled={disabled}
     onClick={() => onChange(!checked)}
     className={`relative h-6 w-11 rounded-full transition-colors ${
       checked ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'
-    } ${disabled ? 'cursor-not-allowed opacity-60' : ''}`}
+    }`}
     title={title}
   >
     <span
@@ -75,15 +73,11 @@ const defaultSandboxPolicyForType = (type: SandboxPolicy['type']): SandboxPolicy
         type: 'workspace-write',
         writableRoots: [],
         networkAccess: true,
+        excludeTmpdirEnvVar: false,
+        excludeSlashTmp: false,
       };
   }
 };
-
-const parseRoots = (text: string) =>
-  text
-    .split(/\r?\n/g)
-    .map((l) => l.trim())
-    .filter(Boolean);
 
 const nextUniqueName = (existing: Set<string>, base: string) => {
   const cleaned = base.trim() || 'policy';
@@ -93,12 +87,22 @@ const nextUniqueName = (existing: Set<string>, base: string) => {
   return `${cleaned}_${i}`;
 };
 
+const parseLines = (text: string) =>
+  text
+    .split(/\r?\n/g)
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+const uniq = <T,>(items: T[]) => Array.from(new Set(items));
+
 export const SecurityConfigForm: React.FC = () => {
-  const { config, saveConfig } = useConfigStore();
+  const { config, saveConfigDebounced } = useConfigStore();
+
   const [selectedPolicyName, setSelectedPolicyName] = useState<string | null>(null);
-  const [editingPolicy, setEditingPolicy] = useState<SecurityPolicyConfig | null>(null);
-  const [isCreating, setIsCreating] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [policyNameDraft, setPolicyNameDraft] = useState('');
+  const [newWritableRootsDraft, setNewWritableRootsDraft] = useState('');
+
   const [trustToolDraft, setTrustToolDraft] = useState('shell_command');
   const [trustCommandDraft, setTrustCommandDraft] = useState('');
 
@@ -112,16 +116,21 @@ export const SecurityConfigForm: React.FC = () => {
   }, [policies, searchQuery]);
 
   useEffect(() => {
-    if (isCreating) return;
-    if (filteredPolicies.length === 0) return;
-    if (selectedPolicyName) return;
-    setSelectedPolicyName(filteredPolicies[0].name);
-  }, [filteredPolicies, selectedPolicyName, isCreating]);
+    if (!config) return;
+    if (policies.length === 0) {
+      setSelectedPolicyName(null);
+      return;
+    }
+    if (selectedPolicyName && policies.some((p) => p.name === selectedPolicyName)) return;
+    setSelectedPolicyName(policies[0].name);
+  }, [config, policies, selectedPolicyName]);
 
   useEffect(() => {
+    setPolicyNameDraft(selectedPolicyName ?? '');
+    setNewWritableRootsDraft('');
     setTrustToolDraft('shell_command');
     setTrustCommandDraft('');
-  }, [selectedPolicyName, isCreating, editingPolicy]);
+  }, [selectedPolicyName]);
 
   if (!config) {
     return (
@@ -131,202 +140,153 @@ export const SecurityConfigForm: React.FC = () => {
     );
   }
 
-  const isEditing = Boolean(editingPolicy);
-  const currentPolicy =
-    editingPolicy ?? policies.find((p) => p.name === selectedPolicyName) ?? null;
+  const save = (updated: AppConfig) => saveConfigDebounced(updated);
 
-  const save = (updated: AppConfig) => {
-    saveConfig(updated);
+  const updateSecurity = (
+    nextPolicies: SecurityPolicyConfig[],
+    nextDefaultPolicy: string,
+    nextAgents = config.agents
+  ) => {
+    save({
+      ...config,
+      security: { policies: nextPolicies, defaultPolicy: nextDefaultPolicy },
+      agents: nextAgents,
+    });
   };
 
-  const ensureSecurityShape = (cfg: AppConfig): AppConfig => {
-    const nextPolicies = cfg.security?.policies?.length ? cfg.security.policies : policies;
-    const nextDefault =
-      cfg.security?.defaultPolicy || defaultPolicyName || nextPolicies[0]?.name || 'default';
-    return {
-      ...cfg,
-      security: {
-        policies: nextPolicies,
-        defaultPolicy: nextDefault,
-      },
-    };
+  const currentPolicy = policies.find((p) => p.name === selectedPolicyName) ?? null;
+  const isDefault = Boolean(currentPolicy && currentPolicy.name === defaultPolicyName);
+
+  const updateCurrentPolicy = (updater: (p: SecurityPolicyConfig) => SecurityPolicyConfig) => {
+    if (!currentPolicy) return;
+    const nextPolicies = policies.map((p) => (p.name === currentPolicy.name ? updater(p) : p));
+    updateSecurity(nextPolicies, defaultPolicyName);
+  };
+
+  const commitRename = () => {
+    if (!currentPolicy) return;
+    const nextName = policyNameDraft.trim();
+    if (!nextName) {
+      setPolicyNameDraft(currentPolicy.name);
+      return;
+    }
+    if (nextName === currentPolicy.name) return;
+
+    const nameConflicts = policies.some((p) => p.name === nextName);
+    if (nameConflicts) {
+      alert('策略名称已存在，请换一个名称');
+      setPolicyNameDraft(currentPolicy.name);
+      return;
+    }
+
+    const nextPolicies = policies.map((p) => (p.name === currentPolicy.name ? { ...p, name: nextName } : p));
+    const nextDefaultPolicy = defaultPolicyName === currentPolicy.name ? nextName : defaultPolicyName;
+    const nextAgents = config.agents.map((a) =>
+      a.securityPolicy === currentPolicy.name ? { ...a, securityPolicy: nextName } : a
+    );
+    updateSecurity(nextPolicies, nextDefaultPolicy, nextAgents);
+    setSelectedPolicyName(nextName);
   };
 
   const handleCreate = () => {
     const existing = new Set(policies.map((p) => p.name));
     const name = nextUniqueName(existing, `policy_${Date.now()}`);
-    setIsCreating(true);
-    setSelectedPolicyName(null);
-    setEditingPolicy({
+    const created: SecurityPolicyConfig = {
       name,
       sandboxPolicy: defaultSandboxPolicyForType('workspace-write'),
       approvalPolicy: 'on-request',
       trustedCommands: [],
-    });
-  };
-
-  const handleEdit = () => {
-    if (!selectedPolicyName) return;
-    const policy = policies.find((p) => p.name === selectedPolicyName);
-    if (!policy) return;
-    setEditingPolicy({
-      ...policy,
-      sandboxPolicy: { ...policy.sandboxPolicy },
-      trustedCommands: [...(policy.trustedCommands ?? [])],
-    });
-    setIsCreating(false);
-  };
-
-  const handleCancel = () => {
-    setEditingPolicy(null);
-    setIsCreating(false);
-  };
-
-  const handleSave = () => {
-    if (!editingPolicy) return;
-    const name = editingPolicy.name.trim();
-    if (!name) return;
-
-    const originalName = isCreating ? null : selectedPolicyName;
-    const nameChanged = Boolean(originalName && originalName !== name);
-    const nameConflicts = policies.some((p) => p.name === name && p.name !== originalName);
-    if (nameConflicts) {
-      alert('策略名称已存在，请换一个名称');
-      return;
-    }
-
-    const nextPolicies = (() => {
-      if (isCreating) {
-        return [...policies, { ...editingPolicy, name }];
-      }
-      return policies.map((p) => (p.name === originalName ? { ...editingPolicy, name } : p));
-    })();
-
-    const nextDefaultPolicy = (() => {
-      if (defaultPolicyName === originalName && nameChanged) return name;
-      if (!defaultPolicyName) return nextPolicies[0]?.name ?? name;
-      return defaultPolicyName;
-    })();
-
-    const nextAgents = nameChanged
-      ? config.agents.map((a) =>
-          a.securityPolicy === originalName ? { ...a, securityPolicy: name } : a
-        )
-      : config.agents;
-
-    save(
-      ensureSecurityShape({
-        ...config,
-        security: { policies: nextPolicies, defaultPolicy: nextDefaultPolicy },
-        agents: nextAgents,
-      })
-    );
-
-    setEditingPolicy(null);
-    setIsCreating(false);
+    };
+    const nextPolicies = [...policies, created];
+    const nextDefaultPolicy = defaultPolicyName || name;
+    updateSecurity(nextPolicies, nextDefaultPolicy);
     setSelectedPolicyName(name);
   };
 
+  const handleDuplicate = () => {
+    if (!currentPolicy) return;
+    const existing = new Set(policies.map((p) => p.name));
+    const nextName = nextUniqueName(existing, `${currentPolicy.name}_copy`);
+    const duplicated: SecurityPolicyConfig = {
+      ...currentPolicy,
+      name: nextName,
+      sandboxPolicy: { ...currentPolicy.sandboxPolicy },
+      trustedCommands: [...(currentPolicy.trustedCommands ?? [])],
+    };
+    updateSecurity([...policies, duplicated], defaultPolicyName);
+    setSelectedPolicyName(nextName);
+  };
+
   const handleDelete = () => {
-    if (!selectedPolicyName) return;
+    if (!currentPolicy) return;
     if (policies.length <= 1) {
       alert('至少需要保留一个安全策略');
       return;
     }
-    if (!confirm(`确定要删除安全策略「${selectedPolicyName}」吗？相关智能体会自动回退到默认策略。`))
+    if (!confirm(`确定要删除安全策略「${currentPolicy.name}」吗？相关智能体会自动回退到默认策略。`))
       return;
 
-    const nextPolicies = policies.filter((p) => p.name !== selectedPolicyName);
+    const nextPolicies = policies.filter((p) => p.name !== currentPolicy.name);
     const nextDefaultPolicy =
-      defaultPolicyName === selectedPolicyName ? nextPolicies[0]?.name ?? '' : defaultPolicyName;
+      defaultPolicyName === currentPolicy.name ? nextPolicies[0]?.name ?? '' : defaultPolicyName;
     const nextAgents = config.agents.map((a) =>
-      a.securityPolicy === selectedPolicyName ? { ...a, securityPolicy: undefined } : a
+      a.securityPolicy === currentPolicy.name ? { ...a, securityPolicy: undefined } : a
     );
-
-    save(
-      ensureSecurityShape({
-        ...config,
-        security: { policies: nextPolicies, defaultPolicy: nextDefaultPolicy },
-        agents: nextAgents,
-      })
-    );
-
-    setEditingPolicy(null);
-    setIsCreating(false);
+    updateSecurity(nextPolicies, nextDefaultPolicy, nextAgents);
     setSelectedPolicyName(nextPolicies[0]?.name ?? null);
   };
 
   const handleSetDefault = () => {
-    if (!selectedPolicyName) return;
-    save(
-      ensureSecurityShape({
-        ...config,
-        security: { policies, defaultPolicy: selectedPolicyName },
-      })
-    );
-  };
-
-  const handleDuplicate = () => {
-    if (!selectedPolicyName) return;
-    if (isEditing) return;
-    const policy = policies.find((p) => p.name === selectedPolicyName);
-    if (!policy) return;
-
-    const existing = new Set(policies.map((p) => p.name));
-    const nextName = nextUniqueName(existing, `${policy.name}_copy`);
-    const duplicated: SecurityPolicyConfig = {
-      ...policy,
-      name: nextName,
-      sandboxPolicy: { ...policy.sandboxPolicy },
-      trustedCommands: [...(policy.trustedCommands ?? [])],
-    };
-
-    save(
-      ensureSecurityShape({
-        ...config,
-        security: { policies: [...policies, duplicated], defaultPolicy: defaultPolicyName },
-      })
-    );
-
-    setSelectedPolicyName(nextName);
-    setEditingPolicy(null);
-    setIsCreating(false);
-  };
-
-  const onFieldChange = <K extends keyof SecurityPolicyConfig>(field: K, value: SecurityPolicyConfig[K]) => {
-    if (!isEditing || !editingPolicy) return;
-    setEditingPolicy({ ...editingPolicy, [field]: value });
-  };
-
-  const onSandboxTypeChange = (type: SandboxPolicy['type']) => {
-    if (!isEditing || !editingPolicy) return;
-    const next = defaultSandboxPolicyForType(type);
-    onFieldChange('sandboxPolicy', next);
+    if (!currentPolicy) return;
+    updateSecurity(policies, currentPolicy.name);
   };
 
   const addTrustedCommand = () => {
-    if (!isEditing || !editingPolicy) return;
+    if (!currentPolicy) return;
     const tool = trustToolDraft.trim();
     const command = trustCommandDraft.trim();
     if (!tool || !command) return;
-
-    const existing = editingPolicy.trustedCommands ?? [];
+    const existing = currentPolicy.trustedCommands ?? [];
     const already = existing.some((t) => t.tool === tool && t.command === command);
     if (already) {
       setTrustCommandDraft('');
       return;
     }
-    onFieldChange('trustedCommands', [...existing, { tool, command }]);
+    updateCurrentPolicy((p) => ({ ...p, trustedCommands: [...existing, { tool, command }] }));
     setTrustCommandDraft('');
   };
 
   const removeTrustedCommand = (index: number) => {
-    if (!isEditing || !editingPolicy) return;
-    const existing = editingPolicy.trustedCommands ?? [];
-    onFieldChange(
-      'trustedCommands',
-      existing.filter((_, i) => i !== index)
-    );
+    if (!currentPolicy) return;
+    const existing = currentPolicy.trustedCommands ?? [];
+    updateCurrentPolicy((p) => ({
+      ...p,
+      trustedCommands: existing.filter((_, i) => i !== index),
+    }));
+  };
+
+  const addWritableRoots = () => {
+    if (!currentPolicy) return;
+    const sp = currentPolicy.sandboxPolicy;
+    if (sp.type !== 'workspace-write') return;
+    const added = parseLines(newWritableRootsDraft);
+    if (added.length === 0) return;
+    const next = uniq([...(sp.writableRoots ?? []), ...added]);
+    updateCurrentPolicy((p) => ({
+      ...p,
+      sandboxPolicy: { ...sp, writableRoots: next },
+    }));
+    setNewWritableRootsDraft('');
+  };
+
+  const removeWritableRoot = (root: string) => {
+    if (!currentPolicy) return;
+    const sp = currentPolicy.sandboxPolicy;
+    if (sp.type !== 'workspace-write') return;
+    updateCurrentPolicy((p) => ({
+      ...p,
+      sandboxPolicy: { ...sp, writableRoots: (sp.writableRoots ?? []).filter((r) => r !== root) },
+    }));
   };
 
   return (
@@ -350,15 +310,12 @@ export const SecurityConfigForm: React.FC = () => {
           {filteredPolicies.map((p) => (
             <div
               key={p.name}
-              onClick={() => {
-                if (isEditing) return;
-                setSelectedPolicyName(p.name);
-              }}
+              onClick={() => setSelectedPolicyName(p.name)}
               className={`flex cursor-pointer items-center justify-between rounded-lg px-3 py-2 transition-colors ${
-                selectedPolicyName === p.name && !isCreating
+                selectedPolicyName === p.name
                   ? 'bg-blue-100 dark:bg-blue-900/50'
                   : 'hover:bg-gray-100 dark:hover:bg-gray-700'
-              } ${isEditing ? 'opacity-60 cursor-not-allowed' : ''}`}
+              }`}
               title={`${policySummary(p.sandboxPolicy)} / ${approvalSummary(p.approvalPolicy)}`}
             >
               <span className="truncate text-sm">{p.name}</span>
@@ -369,11 +326,6 @@ export const SecurityConfigForm: React.FC = () => {
               )}
             </div>
           ))}
-          {isCreating && (
-            <div className="rounded-lg bg-blue-100 px-3 py-2 text-sm dark:bg-blue-900/50">
-              新建策略
-            </div>
-          )}
         </div>
 
         <button
@@ -392,70 +344,44 @@ export const SecurityConfigForm: React.FC = () => {
             {policies.length === 0 ? '请先添加一个安全策略' : '请选择一个安全策略'}
           </div>
         ) : (
-          <div className="max-w-2xl space-y-6">
+          <div className="max-w-2xl space-y-4">
             {/* Header */}
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <h2 className="text-lg font-semibold text-gray-800 dark:text-white">
-                  {currentPolicy.name || '安全策略'}
-                </h2>
-                {currentPolicy.name === defaultPolicyName && (
+                <h3 className="text-base font-semibold text-gray-800 dark:text-white">安全策略</h3>
+                {isDefault && (
                   <span className="rounded bg-yellow-100 px-2 py-0.5 text-xs text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400">
                     默认
                   </span>
                 )}
               </div>
               <div className="flex items-center gap-2">
-                {isEditing ? (
-                  <>
-                    <button
-                      onClick={handleCancel}
-                      className="rounded-lg px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700"
-                    >
-                      取消
-                    </button>
-                    <button
-                      onClick={handleSave}
-                      className="rounded-lg bg-blue-600 px-3 py-1.5 text-sm text-white hover:bg-blue-700"
-                    >
-                      保存
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    {currentPolicy.name !== defaultPolicyName && (
-                      <button
-                        onClick={handleSetDefault}
-                        className="rounded-lg px-3 py-1.5 text-sm text-yellow-600 hover:bg-yellow-50 dark:hover:bg-yellow-900/30"
-                      >
-                        设为默认
-                      </button>
-                    )}
-                    <button
-                      onClick={handleDuplicate}
-                      className="flex items-center gap-1 rounded-lg px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700"
-                      title="复制策略"
-                    >
-                      <Copy size={14} />
-                      复制
-                    </button>
-                    <button
-                      onClick={handleEdit}
-                      className="rounded-lg px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700"
-                    >
-                      编辑
-                    </button>
-                    <button
-                      onClick={handleDelete}
-                      className="rounded-lg px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30"
-                    >
-                      <span className="inline-flex items-center gap-1">
-                        <Trash2 size={14} />
-                        删除
-                      </span>
-                    </button>
-                  </>
+                <span className="px-2 text-xs text-gray-500 dark:text-gray-400">自动保存</span>
+                {!isDefault && (
+                  <button
+                    onClick={handleSetDefault}
+                    className="rounded-lg px-3 py-1.5 text-sm text-yellow-600 hover:bg-yellow-50 dark:hover:bg-yellow-900/30"
+                  >
+                    设为默认
+                  </button>
                 )}
+                <button
+                  onClick={handleDuplicate}
+                  className="flex items-center gap-1 rounded-lg px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700"
+                  title="复制策略"
+                >
+                  <Copy size={14} />
+                  复制
+                </button>
+                <button
+                  onClick={handleDelete}
+                  className="rounded-lg px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30"
+                >
+                  <span className="inline-flex items-center gap-1">
+                    <Trash2 size={14} />
+                    删除
+                  </span>
+                </button>
               </div>
             </div>
 
@@ -467,11 +393,24 @@ export const SecurityConfigForm: React.FC = () => {
                 </label>
                 <input
                   type="text"
-                  value={currentPolicy.name}
-                  onChange={(e) => onFieldChange('name', e.target.value)}
-                  disabled={!isEditing}
-                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 dark:border-gray-600 dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800"
+                  value={policyNameDraft}
+                  onChange={(e) => setPolicyNameDraft(e.target.value)}
+                  onBlur={commitRename}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      commitRename();
+                      (e.target as HTMLInputElement).blur();
+                    }
+                    if (e.key === 'Escape') {
+                      e.preventDefault();
+                      setPolicyNameDraft(currentPolicy.name);
+                      (e.target as HTMLInputElement).blur();
+                    }
+                  }}
+                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 dark:border-gray-600 dark:bg-gray-700"
                 />
+                <p className="text-xs text-gray-500">提示：回车/失焦应用重命名（会同步更新绑定此策略的智能体）</p>
               </div>
 
               <div className="space-y-1">
@@ -480,9 +419,10 @@ export const SecurityConfigForm: React.FC = () => {
                 </label>
                 <select
                   value={currentPolicy.approvalPolicy}
-                  onChange={(e) => onFieldChange('approvalPolicy', e.target.value as AskForApproval)}
-                  disabled={!isEditing}
-                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 dark:border-gray-600 dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800"
+                  onChange={(e) =>
+                    updateCurrentPolicy((p) => ({ ...p, approvalPolicy: e.target.value as AskForApproval }))
+                  }
+                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 dark:border-gray-600 dark:bg-gray-700"
                 >
                   <option value="untrusted">Untrusted</option>
                   <option value="on-failure">On Failure</option>
@@ -498,9 +438,11 @@ export const SecurityConfigForm: React.FC = () => {
                 </label>
                 <select
                   value={currentPolicy.sandboxPolicy.type}
-                  onChange={(e) => onSandboxTypeChange(e.target.value as SandboxPolicy['type'])}
-                  disabled={!isEditing}
-                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 dark:border-gray-600 dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800"
+                  onChange={(e) => {
+                    const type = e.target.value as SandboxPolicy['type'];
+                    updateCurrentPolicy((p) => ({ ...p, sandboxPolicy: defaultSandboxPolicyForType(type) }));
+                  }}
+                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 dark:border-gray-600 dark:bg-gray-700"
                 >
                   <option value="read-only">Read Only（只读）</option>
                   <option value="workspace-write">Workspace Write（工作区可写）</option>
@@ -526,13 +468,12 @@ export const SecurityConfigForm: React.FC = () => {
                   <select
                     value={(currentPolicy.sandboxPolicy.networkAccess ?? 'restricted') as NetworkAccess}
                     onChange={(e) =>
-                      onFieldChange('sandboxPolicy', {
-                        type: 'external-sandbox',
-                        networkAccess: e.target.value as NetworkAccess,
-                      })
+                      updateCurrentPolicy((p) => ({
+                        ...p,
+                        sandboxPolicy: { type: 'external-sandbox', networkAccess: e.target.value as NetworkAccess },
+                      }))
                     }
-                    disabled={!isEditing}
-                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 dark:border-gray-600 dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800"
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 dark:border-gray-600 dark:bg-gray-700"
                   >
                     <option value="restricted">Restricted（受限）</option>
                     <option value="enabled">Enabled（允许）</option>
@@ -547,47 +488,113 @@ export const SecurityConfigForm: React.FC = () => {
                       <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
                         允许网络访问
                       </label>
-                      <p className="text-xs text-gray-500">默认开启（策略层标记）。</p>
+                      <p className="text-xs text-gray-500">默认开启</p>
                     </div>
                     <Toggle
-                      checked={Boolean(currentPolicy.sandboxPolicy.networkAccess)}
-                      disabled={!isEditing}
+                      checked={currentPolicy.sandboxPolicy.networkAccess ?? true}
                       onChange={(next) => {
                         const sp = currentPolicy.sandboxPolicy;
                         if (sp.type !== 'workspace-write') return;
-                        onFieldChange('sandboxPolicy', {
-                          type: 'workspace-write',
-                          writableRoots: sp.writableRoots,
-                          networkAccess: next,
-                          excludeTmpdirEnvVar: sp.excludeTmpdirEnvVar,
-                          excludeSlashTmp: sp.excludeSlashTmp,
-                        });
+                        updateCurrentPolicy((p) => ({
+                          ...p,
+                          sandboxPolicy: { ...sp, networkAccess: next },
+                        }));
                       }}
+                      title={(currentPolicy.sandboxPolicy.networkAccess ?? true) ? '已开启' : '已关闭'}
                     />
                   </div>
 
-                  <div className="space-y-1">
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                      额外可写目录（每行一个）
-                    </label>
-                    <textarea
-                      rows={4}
-                      value={(currentPolicy.sandboxPolicy.writableRoots ?? []).join('\n')}
-                      onChange={(e) => {
-                        const sp = currentPolicy.sandboxPolicy;
-                        if (sp.type !== 'workspace-write') return;
-                        onFieldChange('sandboxPolicy', {
-                          type: 'workspace-write',
-                          writableRoots: parseRoots(e.target.value),
-                          networkAccess: sp.networkAccess,
-                          excludeTmpdirEnvVar: sp.excludeTmpdirEnvVar,
-                          excludeSlashTmp: sp.excludeSlashTmp,
-                        });
-                      }}
-                      disabled={!isEditing}
-                      className="w-full resize-none rounded-lg border border-gray-300 bg-white px-3 py-2 font-mono text-sm dark:border-gray-600 dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800"
-                      placeholder="例如：D:\\work\\extra\n/opt/data"
-                    />
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-900/30">
+                      <div>
+                        <div className="text-sm font-medium text-gray-700 dark:text-gray-200">不注入 TMPDIR 环境变量</div>
+                        <div className="text-xs text-gray-500">excludeTmpdirEnvVar</div>
+                      </div>
+                      <Toggle
+                        checked={Boolean(currentPolicy.sandboxPolicy.excludeTmpdirEnvVar)}
+                        onChange={(next) => {
+                          const sp = currentPolicy.sandboxPolicy;
+                          if (sp.type !== 'workspace-write') return;
+                          updateCurrentPolicy((p) => ({
+                            ...p,
+                            sandboxPolicy: { ...sp, excludeTmpdirEnvVar: next },
+                          }));
+                        }}
+                        title={currentPolicy.sandboxPolicy.excludeTmpdirEnvVar ? '已开启' : '已关闭'}
+                      />
+                    </div>
+
+                    <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-900/30">
+                      <div>
+                        <div className="text-sm font-medium text-gray-700 dark:text-gray-200">不包含 /tmp</div>
+                        <div className="text-xs text-gray-500">excludeSlashTmp</div>
+                      </div>
+                      <Toggle
+                        checked={Boolean(currentPolicy.sandboxPolicy.excludeSlashTmp)}
+                        onChange={(next) => {
+                          const sp = currentPolicy.sandboxPolicy;
+                          if (sp.type !== 'workspace-write') return;
+                          updateCurrentPolicy((p) => ({
+                            ...p,
+                            sandboxPolicy: { ...sp, excludeSlashTmp: next },
+                          }));
+                        }}
+                        title={currentPolicy.sandboxPolicy.excludeSlashTmp ? '已开启' : '已关闭'}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                        额外可写目录
+                      </label>
+                      <span className="text-xs text-gray-500">
+                        {(currentPolicy.sandboxPolicy.writableRoots ?? []).length}
+                      </span>
+                    </div>
+
+                    {(currentPolicy.sandboxPolicy.writableRoots ?? []).length === 0 ? (
+                      <p className="text-xs text-gray-500">暂无额外目录</p>
+                    ) : (
+                      <div className="flex flex-wrap gap-2">
+                        {(currentPolicy.sandboxPolicy.writableRoots ?? []).map((root) => (
+                          <span
+                            key={root}
+                            className="inline-flex items-center gap-2 rounded-full border border-gray-200 bg-gray-50 px-3 py-1 text-xs text-gray-700 dark:border-gray-700 dark:bg-gray-900/30 dark:text-gray-200"
+                            title={root}
+                          >
+                            <span className="max-w-[240px] truncate font-mono">{root}</span>
+                            <button
+                              type="button"
+                              onClick={() => removeWritableRoot(root)}
+                              className="rounded-full px-1 text-gray-500 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-800 dark:text-gray-400"
+                              title="移除"
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="flex gap-2">
+                      <textarea
+                        value={newWritableRootsDraft}
+                        onChange={(e) => setNewWritableRootsDraft(e.target.value)}
+                        className="flex-1 resize-none rounded-lg border border-gray-300 bg-white px-3 py-2 font-mono text-sm dark:border-gray-600 dark:bg-gray-700"
+                        placeholder={'例如：D:\\\\work\\\\extra\\n/opt/data'}
+                        rows={2}
+                      />
+                      <button
+                        type="button"
+                        onClick={addWritableRoots}
+                        disabled={parseLines(newWritableRootsDraft).length === 0}
+                        className="rounded-lg bg-blue-600 px-3 py-2 text-sm text-white disabled:cursor-not-allowed disabled:opacity-60 hover:bg-blue-700"
+                      >
+                        添加
+                      </button>
+                    </div>
                     <p className="text-xs text-gray-500">
                       Workstudio 主目录与附加目录无需填写，已自动视为可写根目录。
                     </p>
@@ -600,9 +607,7 @@ export const SecurityConfigForm: React.FC = () => {
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
                     信任命令（Trust）
                   </label>
-                  <span className="text-xs text-gray-500">
-                    {(currentPolicy.trustedCommands ?? []).length}
-                  </span>
+                  <span className="text-xs text-gray-500">{(currentPolicy.trustedCommands ?? []).length}</span>
                 </div>
 
                 {(currentPolicy.trustedCommands ?? []).length === 0 ? (
@@ -615,61 +620,55 @@ export const SecurityConfigForm: React.FC = () => {
                         className="flex items-start justify-between gap-3 rounded border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-900"
                       >
                         <div className="min-w-0 flex-1">
-                          <div className="font-mono text-xs text-gray-700 dark:text-gray-200">
-                            {t.tool}
-                          </div>
+                          <div className="font-mono text-xs text-gray-700 dark:text-gray-200">{t.tool}</div>
                           <div className="mt-0.5 break-words font-mono text-xs text-gray-600 dark:text-gray-300">
                             {t.command}
                           </div>
                         </div>
-                        {isEditing ? (
-                          <button
-                            type="button"
-                            onClick={() => removeTrustedCommand(idx)}
-                            className="rounded border border-gray-200 bg-white px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
-                            title="移除"
-                          >
-                            <Trash2 size={14} />
-                          </button>
-                        ) : null}
+                        <button
+                          type="button"
+                          onClick={() => removeTrustedCommand(idx)}
+                          className="rounded border border-gray-200 bg-white px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+                          title="移除"
+                        >
+                          <Trash2 size={14} />
+                        </button>
                       </div>
                     ))}
                   </div>
                 )}
 
-                {isEditing ? (
-                  <div className="flex flex-col gap-2 pt-2">
-                    <div className="flex gap-2">
-                      <select
-                        value={trustToolDraft}
-                        onChange={(e) => setTrustToolDraft(e.target.value)}
-                        className="w-44 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-700"
-                      >
-                        <option value="shell_command">shell_command</option>
-                        <option value="exec_command">exec_command</option>
-                        <option value="exec_command_persistent">exec_command_persistent</option>
-                      </select>
-                      <input
-                        type="text"
-                        value={trustCommandDraft}
-                        onChange={(e) => setTrustCommandDraft(e.target.value)}
-                        placeholder="例如：git status"
-                        className="flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 font-mono text-sm dark:border-gray-600 dark:bg-gray-700"
-                      />
-                      <button
-                        type="button"
-                        onClick={addTrustedCommand}
-                        disabled={!trustCommandDraft.trim()}
-                        className="rounded-lg bg-blue-600 px-3 py-2 text-sm text-white disabled:cursor-not-allowed disabled:opacity-60 hover:bg-blue-700"
-                      >
-                        添加
-                      </button>
-                    </div>
-                    <p className="text-xs text-gray-500">
-                      提示：在 Untrusted 模式下，命中的命令会自动通过审批（无需弹窗）。
-                    </p>
+                <div className="flex flex-col gap-2 pt-2">
+                  <div className="flex gap-2">
+                    <select
+                      value={trustToolDraft}
+                      onChange={(e) => setTrustToolDraft(e.target.value)}
+                      className="w-52 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-700"
+                    >
+                      <option value="shell_command">shell_command</option>
+                      <option value="exec_command">exec_command</option>
+                      <option value="exec_command_persistent">exec_command_persistent</option>
+                    </select>
+                    <input
+                      type="text"
+                      value={trustCommandDraft}
+                      onChange={(e) => setTrustCommandDraft(e.target.value)}
+                      placeholder="例如：git status"
+                      className="flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 font-mono text-sm dark:border-gray-600 dark:bg-gray-700"
+                    />
+                    <button
+                      type="button"
+                      onClick={addTrustedCommand}
+                      disabled={!trustCommandDraft.trim()}
+                      className="rounded-lg bg-blue-600 px-3 py-2 text-sm text-white disabled:cursor-not-allowed disabled:opacity-60 hover:bg-blue-700"
+                    >
+                      添加
+                    </button>
                   </div>
-                ) : null}
+                  <p className="text-xs text-gray-500">
+                    提示：在 Untrusted 模式下，命中信任列表的命令会自动通过审批（无需弹窗）。
+                  </p>
+                </div>
               </div>
             </div>
           </div>

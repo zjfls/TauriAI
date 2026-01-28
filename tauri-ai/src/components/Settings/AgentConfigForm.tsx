@@ -23,10 +23,8 @@ const defaultAgent: Agent = {
 };
 
 export const AgentConfigForm: React.FC = () => {
-  const { config, addAgent, updateAgent, deleteAgent, setDefaultAgent, getModelOptions } = useConfigStore();
+  const { config, getModelOptions, saveConfigDebounced } = useConfigStore();
   const [selectedAgentName, setSelectedAgentName] = useState<string | null>(null);
-  const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
-  const [isCreating, setIsCreating] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
   const agents = config?.agents || [];
@@ -49,45 +47,40 @@ export const AgentConfigForm: React.FC = () => {
 
   const handleSelectAgent = (name: string) => {
     setSelectedAgentName(name);
-    setEditingAgent(null);
-    setIsCreating(false);
   };
 
   const handleCreateNew = () => {
-    setIsCreating(true);
-    setEditingAgent({ ...defaultAgent, name: `agent_${Date.now()}` });
-    setSelectedAgentName(null);
-  };
+    if (!config) return;
+    const existing = new Set(agents.map((a) => a.name));
+    const name = (() => {
+      const base = `agent_${Date.now()}`;
+      if (!existing.has(base)) return base;
+      let i = 2;
+      while (existing.has(`${base}_${i}`)) i += 1;
+      return `${base}_${i}`;
+    })();
 
-  const handleEdit = () => {
-    const agent = agents.find(a => a.name === selectedAgentName);
-    if (agent) {
-      setEditingAgent({ ...agent });
-    }
-  };
+    const created: Agent = {
+      ...defaultAgent,
+      name,
+      displayName: name,
+    };
 
-  const handleSave = () => {
-    if (!editingAgent || !editingAgent.displayName.trim()) return;
-    if (isCreating) {
-      addAgent(editingAgent);
-      setSelectedAgentName(editingAgent.name);
-    } else {
-      updateAgent(editingAgent);
-    }
-    setEditingAgent(null);
-    setIsCreating(false);
-  };
-
-  const handleCancel = () => {
-    setEditingAgent(null);
-    setIsCreating(false);
+    saveConfigDebounced({ ...config, agents: [...agents, created], defaultAgent: config.defaultAgent || name });
+    setSelectedAgentName(created.name);
   };
 
   const handleDelete = () => {
     if (!selectedAgentName) return;
     if (confirm('确定要删除这个智能体吗？')) {
-      deleteAgent(selectedAgentName);
-      setSelectedAgentName(agents.find(a => a.name !== selectedAgentName)?.name || null);
+      if (!config) return;
+      const nextAgents = agents.filter((a) => a.name !== selectedAgentName);
+      const nextDefault =
+        config.defaultAgent === selectedAgentName
+          ? nextAgents[0]?.name ?? ''
+          : config.defaultAgent;
+      saveConfigDebounced({ ...config, agents: nextAgents, defaultAgent: nextDefault });
+      setSelectedAgentName(nextAgents[0]?.name ?? null);
     }
   };
 
@@ -104,9 +97,9 @@ export const AgentConfigForm: React.FC = () => {
   };
 
   const handleDuplicate = () => {
-    if (editingAgent) return;
     const agent = agents.find((a) => a.name === selectedAgentName);
     if (!agent) return;
+    if (!config) return;
 
     const duplicated: Agent = {
       ...agent,
@@ -114,19 +107,18 @@ export const AgentConfigForm: React.FC = () => {
       displayName: agent.displayName ? `${agent.displayName}（复制）` : `${agent.name}（复制）`,
     };
 
-    addAgent(duplicated);
+    saveConfigDebounced({ ...config, agents: [...agents, duplicated] });
     setSelectedAgentName(duplicated.name);
-    setEditingAgent(null);
-    setIsCreating(false);
   };
 
   const handleSetDefault = () => {
     if (selectedAgentName) {
-      setDefaultAgent(selectedAgentName);
+      if (!config) return;
+      saveConfigDebounced({ ...config, defaultAgent: selectedAgentName });
     }
   };
 
-  const currentAgent = editingAgent || agents.find(a => a.name === selectedAgentName);
+  const currentAgent = agents.find(a => a.name === selectedAgentName);
 
   return (
     <div className="flex gap-6 h-full">
@@ -150,7 +142,7 @@ export const AgentConfigForm: React.FC = () => {
             <div
               key={agent.name}
               onClick={() => handleSelectAgent(agent.name)}
-              className={`flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer transition-colors ${selectedAgentName === agent.name && !isCreating
+              className={`flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer transition-colors ${selectedAgentName === agent.name
                   ? 'bg-blue-100 dark:bg-blue-900/50'
                   : 'hover:bg-gray-100 dark:hover:bg-gray-700'
                 }`}
@@ -163,7 +155,11 @@ export const AgentConfigForm: React.FC = () => {
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation();
-                    updateAgent({ ...agent, enabled: !(agent.enabled ?? true) });
+                    if (!config) return;
+                    const nextAgents = agents.map((a) =>
+                      a.name === agent.name ? { ...a, enabled: !(a.enabled ?? true) } : a
+                    );
+                    saveConfigDebounced({ ...config, agents: nextAgents });
                   }}
                   className={`relative w-10 h-5 rounded-full transition-colors ${(agent.enabled ?? true)
                       ? 'bg-blue-600'
@@ -181,11 +177,6 @@ export const AgentConfigForm: React.FC = () => {
               </div>
             </div>
           ))}
-          {isCreating && (
-            <div className="px-3 py-2 rounded-lg bg-blue-100 dark:bg-blue-900/50 text-sm">
-              新建智能体
-            </div>
-          )}
         </div>
 
         <button
@@ -202,7 +193,7 @@ export const AgentConfigForm: React.FC = () => {
         {currentAgent ? (
           <AgentForm
             agent={currentAgent}
-            isEditing={!!editingAgent}
+            isEditing={true}
             isDefault={currentAgent.name === defaultAgentName}
             modelOptions={modelOptions}
             toolsetOptions={toolsetOptions}
@@ -210,15 +201,17 @@ export const AgentConfigForm: React.FC = () => {
             skillSetOptions={skillSetOptions}
             securityPolicies={config?.security?.policies ?? []}
             defaultSecurityPolicyName={config?.security?.defaultPolicy ?? ''}
-            onEdit={handleEdit}
             onDuplicate={handleDuplicate}
-            onSave={handleSave}
-            onCancel={handleCancel}
             onDelete={handleDelete}
             onSetDefault={handleSetDefault}
-            onFieldChange={(field, value) =>
-              setEditingAgent((prev) => (prev ? { ...prev, [field]: value } : prev))
-            }
+            onFieldChange={(field, value) => {
+              if (!config) return;
+              if (!selectedAgentName) return;
+              const nextAgents = agents.map((a) =>
+                a.name === selectedAgentName ? { ...a, [field]: value } : a
+              );
+              saveConfigDebounced({ ...config, agents: nextAgents });
+            }}
           />
         ) : (
           <div className="flex items-center justify-center h-64 text-gray-500">
@@ -240,10 +233,7 @@ interface AgentFormProps {
   skillSetOptions: { label: string; value: string }[];
   securityPolicies: SecurityPolicyConfig[];
   defaultSecurityPolicyName: string;
-  onEdit: () => void;
   onDuplicate: () => void;
-  onSave: () => void;
-  onCancel: () => void;
   onDelete: () => void;
   onSetDefault: () => void;
   onFieldChange: (field: keyof Agent, value: any) => void;
@@ -259,10 +249,7 @@ const AgentForm: React.FC<AgentFormProps> = ({
   skillSetOptions,
   securityPolicies,
   defaultSecurityPolicyName,
-  onEdit,
   onDuplicate,
-  onSave,
-  onCancel,
   onDelete,
   onSetDefault,
   onFieldChange,
@@ -379,30 +366,29 @@ const AgentForm: React.FC<AgentFormProps> = ({
           )}
         </div>
         <div className="flex items-center gap-2">
-          {isEditing ? (
-            <>
-              <button onClick={onCancel} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">取消</button>
-              <button onClick={onSave} className="px-3 py-1.5 text-sm bg-blue-600 text-white hover:bg-blue-700 rounded-lg">保存</button>
-            </>
-          ) : (
-            <>
-              {!isDefault && (
-                <button onClick={onSetDefault} className="px-3 py-1.5 text-sm text-yellow-600 hover:bg-yellow-50 dark:hover:bg-yellow-900/30 rounded-lg">
-                  设为默认
-                </button>
-              )}
-              <button
-                onClick={onDuplicate}
-                className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg flex items-center gap-1"
-                title="复制智能体"
-              >
-                <Copy size={14} />
-                复制
-              </button>
-              <button onClick={onEdit} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">编辑</button>
-              <button onClick={onDelete} className="px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg">删除</button>
-            </>
+          <span className="px-2 text-xs text-gray-500 dark:text-gray-400">自动保存</span>
+          {!isDefault && (
+            <button
+              onClick={onSetDefault}
+              className="px-3 py-1.5 text-sm text-yellow-600 hover:bg-yellow-50 dark:hover:bg-yellow-900/30 rounded-lg"
+            >
+              设为默认
+            </button>
           )}
+          <button
+            onClick={onDuplicate}
+            className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg flex items-center gap-1"
+            title="复制智能体"
+          >
+            <Copy size={14} />
+            复制
+          </button>
+          <button
+            onClick={onDelete}
+            className="px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg"
+          >
+            删除
+          </button>
         </div>
       </div>
 
