@@ -129,53 +129,126 @@ const DetailModal: React.FC<DetailModalProps> = ({ usage, isOpen, onClose }) => 
 
   const color = getUsageColor(usage.percentage);
 
-  const items = [
-    { icon: <FileText size={14} />, label: '系统提示词', tokens: usage.systemPrompt },
-    { icon: <BookOpen size={14} />, label: '格式提示词', tokens: usage.formatPrompt || 0 },
-    { icon: <Sparkles size={14} />, label: 'Skills', tokens: usage.skills || 0 },
-    { icon: <MessageSquare size={14} />, label: '对话消息', tokens: usage.messages },
-    { icon: <Wrench size={14} />, label: '工具定义', tokens: usage.tools || 0 },
-    { icon: <Plug size={14} />, label: 'MCP 上下文', tokens: usage.mcp || 0 },
-  ].filter(item => item.tokens > 0);
+  const breakdownItems = useMemo(() => {
+    const limit = usage.limit || 0;
+    const pct = (tokens: number) => (limit > 0 ? (tokens / limit) * 100 : 0);
 
-  const promptSections = useMemo(() => {
-    const sections: { key: string; label: string; text: string; tokens: number }[] = [];
-    if (usage.systemPromptText) {
-      sections.push({ key: 'system', label: '系统提示词（文本）', text: usage.systemPromptText, tokens: usage.systemPrompt });
-    }
-    if (usage.formatPromptText) {
-      sections.push({
-        key: 'format',
-        label: '格式提示词（文本）',
-        text: usage.formatPromptText,
-        tokens: usage.formatPrompt || countTokens(usage.formatPromptText),
-      });
-    }
+    type Detail = { key: string; label: string; text: string; tokens: number; percent: number };
+    type Item = {
+      key: string;
+      icon: React.ReactNode;
+      label: string;
+      tokens: number;
+      percent: number;
+      details?: Detail[];
+    };
+
+    const items: Item[] = [];
+
+    const systemTokens = usage.systemPrompt;
+    items.push({
+      key: 'system',
+      icon: <FileText size={14} />,
+      label: '系统提示词',
+      tokens: systemTokens,
+      percent: pct(systemTokens),
+      details: usage.systemPromptText
+        ? [
+            {
+              key: 'system-text',
+              label: '系统提示词（文本）',
+              text: usage.systemPromptText,
+              tokens: systemTokens,
+              percent: pct(systemTokens),
+            },
+          ]
+        : undefined,
+    });
+
+    const formatPromptTokens = usage.formatPrompt || 0;
+    items.push({
+      key: 'format',
+      icon: <BookOpen size={14} />,
+      label: '格式提示词',
+      tokens: formatPromptTokens,
+      percent: pct(formatPromptTokens),
+      details: usage.formatPromptText
+        ? (() => {
+            const t = formatPromptTokens || countTokens(usage.formatPromptText);
+            return [
+              {
+                key: 'format-text',
+                label: '格式提示词（文本）',
+                text: usage.formatPromptText,
+                tokens: t,
+                percent: pct(t),
+              },
+            ];
+          })()
+        : undefined,
+    });
+
+    const skillsTokens = usage.skills || 0;
+    const skillsDetails: Detail[] = [];
     if (usage.skillsSectionText) {
-      sections.push({
-        key: 'skills-section',
-        label: 'Skills 列表说明',
-        text: usage.skillsSectionText,
-        tokens: countTokens(usage.skillsSectionText),
-      });
+      const t = countTokens(usage.skillsSectionText);
+      skillsDetails.push({ key: 'skills-section', label: 'Skills 列表说明', text: usage.skillsSectionText, tokens: t, percent: pct(t) });
     }
     if (usage.skillsInjectedText) {
-      sections.push({
-        key: 'skills-injected',
-        label: 'Skills 注入内容',
-        text: usage.skillsInjectedText,
-        tokens: countTokens(usage.skillsInjectedText),
-      });
+      const t = countTokens(usage.skillsInjectedText);
+      skillsDetails.push({ key: 'skills-injected', label: 'Skills 注入内容', text: usage.skillsInjectedText, tokens: t, percent: pct(t) });
     }
-    if (usage.mcpPromptText) {
-      sections.push({
-        key: 'mcp',
-        label: 'MCP 提示词（资源工具）',
-        text: usage.mcpPromptText,
-        tokens: usage.mcp || countTokens(usage.mcpPromptText),
-      });
-    }
-    return sections;
+    items.push({
+      key: 'skills',
+      icon: <Sparkles size={14} />,
+      label: 'Skills',
+      tokens: skillsTokens,
+      percent: pct(skillsTokens),
+      details: skillsDetails.length ? skillsDetails : undefined,
+    });
+
+    const messagesTokens = usage.messages;
+    items.push({
+      key: 'messages',
+      icon: <MessageSquare size={14} />,
+      label: '对话消息',
+      tokens: messagesTokens,
+      percent: pct(messagesTokens),
+    });
+
+    const toolsTokens = usage.tools || 0;
+    items.push({
+      key: 'tools',
+      icon: <Wrench size={14} />,
+      label: '工具定义',
+      tokens: toolsTokens,
+      percent: pct(toolsTokens),
+    });
+
+    const mcpTokens = usage.mcp || 0;
+    items.push({
+      key: 'mcp',
+      icon: <Plug size={14} />,
+      label: 'MCP 上下文',
+      tokens: mcpTokens,
+      percent: pct(mcpTokens),
+      details: usage.mcpPromptText
+        ? (() => {
+            const t = mcpTokens || countTokens(usage.mcpPromptText);
+            return [
+              {
+                key: 'mcp-text',
+                label: 'MCP 提示词（资源工具）',
+                text: usage.mcpPromptText,
+                tokens: t,
+                percent: pct(t),
+              },
+            ];
+          })()
+        : undefined,
+    });
+
+    return items.filter((item) => item.tokens > 0 || (item.details && item.details.length > 0));
   }, [usage]);
 
   return (
@@ -225,59 +298,79 @@ const DetailModal: React.FC<DetailModalProps> = ({ usage, isOpen, onClose }) => 
             使用明细
           </div>
           <div className="space-y-2">
-            {items.map((item, index) => (
-              <div key={index} className="flex items-center justify-between">
-                <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400">
-                  {item.icon}
-                  <span>{item.label}</span>
-                </div>
-                <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                  {formatTokens(item.tokens)}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Prompt texts injected into context */}
-        {promptSections.length > 0 && (
-          <div className="px-4 pb-3">
-            <div className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2">
-              注入提示词（可展开查看）
-            </div>
-            <div className="space-y-2">
-              {promptSections.map((section) => (
-                <details
-                  key={section.key}
-                  className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-900/30"
-                >
-                  <summary className="cursor-pointer select-none px-3 py-2 text-sm text-gray-700 dark:text-gray-200 flex items-center justify-between">
-                    <span>{section.label}</span>
-                    <span className="text-xs text-gray-500 dark:text-gray-400">
-                      {formatTokens(section.tokens)} tokens
-                    </span>
-                  </summary>
-                  <div className="px-3 pb-3">
-                    <div className="flex justify-end">
-                      <button
-                        type="button"
-                        className="mb-2 inline-flex items-center gap-1 rounded px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
-                        onClick={() => navigator.clipboard.writeText(section.text)}
-                        title="复制文本"
-                      >
-                        <Copy size={14} />
-                        复制
-                      </button>
+            {breakdownItems.map((item) => {
+              const header = (
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-200">
+                    {item.icon}
+                    <span>{item.label}</span>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                      {formatTokens(item.tokens)}
                     </div>
-                    <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded bg-white p-2 text-xs text-gray-800 dark:bg-gray-800 dark:text-gray-100">
-                      {section.text}
-                    </pre>
+                    <div className="text-xs text-gray-500 dark:text-gray-400">
+                      {item.percent.toFixed(1)}%
+                    </div>
+                  </div>
+                </div>
+              );
+
+              if (!item.details?.length) {
+                return (
+                  <div
+                    key={item.key}
+                    className="rounded-lg border border-gray-200 bg-gray-50/60 px-3 py-2 dark:border-gray-700 dark:bg-gray-900/30"
+                  >
+                    {header}
+                  </div>
+                );
+              }
+
+              return (
+                <details
+                  key={item.key}
+                  className="rounded-lg border border-gray-200 bg-gray-50/60 dark:border-gray-700 dark:bg-gray-900/30"
+                >
+                  <summary className="list-none cursor-pointer select-none px-3 py-2">
+                    {header}
+                  </summary>
+                  <div className="px-3 pb-3 space-y-2">
+                    {item.details.map((detail) => (
+                      <div
+                        key={detail.key}
+                        className="rounded-lg border border-gray-200 bg-white p-2 dark:border-gray-700 dark:bg-gray-800"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="text-xs font-medium text-gray-700 dark:text-gray-200">
+                            {detail.label}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <div className="text-xs text-gray-500 dark:text-gray-400">
+                              {formatTokens(detail.tokens)} ({detail.percent.toFixed(1)}%)
+                            </div>
+                            <button
+                              type="button"
+                              className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700"
+                              onClick={() => navigator.clipboard.writeText(detail.text)}
+                              title="复制文本"
+                            >
+                              <Copy size={14} />
+                              复制
+                            </button>
+                          </div>
+                        </div>
+                        <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-gray-50 p-2 text-xs text-gray-800 dark:bg-gray-900/40 dark:text-gray-100">
+                          {detail.text}
+                        </pre>
+                      </div>
+                    ))}
                   </div>
                 </details>
-              ))}
-            </div>
+              );
+            })}
           </div>
-        )}
+        </div>
 
         {/* Footer hint */}
         <div className="px-4 py-2 bg-gray-50 dark:bg-gray-900/50 rounded-b-lg">
