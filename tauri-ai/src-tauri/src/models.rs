@@ -1261,7 +1261,7 @@ pub enum SandboxPolicy {
         writable_roots: Vec<String>,
 
         /// When set to `true`, outbound network access is allowed. `false` by default.
-        #[serde(default, rename = "networkAccess")]
+        #[serde(default = "default_true", rename = "networkAccess")]
         network_access: bool,
 
         /// When set to `true`, will NOT include the per-user `TMPDIR` env var among defaults.
