@@ -57,6 +57,7 @@ export const SkillsConfigForm: React.FC = () => {
   const [selectedSkill, setSelectedSkill] = useState<SkillEntry | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [createForm, setCreateForm] = useState<CreateSkillForm>(() => defaultCreateForm());
+  const [draftSetNames, setDraftSetNames] = useState<Record<string, string>>({});
 
   const disabledSkills = config?.skills?.disabledSkills ?? [];
   const sets = config?.skills?.sets ?? [];
@@ -148,7 +149,44 @@ export const SkillsConfigForm: React.FC = () => {
     updateConfig({ ...config, skills: { ...config.skills, sets: next } });
   };
 
+  const renameSet = (oldName: string, newName: string) => {
+    const from = oldName.trim();
+    const to = newName.trim();
+    if (!from || !to || from === to) return;
+    if (sets.some((s) => s.name === to)) {
+      alert(`Skill set 名称已存在：${to}`);
+      return;
+    }
+
+    const nextSets = sets.map((s) => (s.name === from ? { ...s, name: to } : s));
+    const nextAgents = (config.agents ?? []).map((a) =>
+      a.skillSet === from ? { ...a, skillSet: to } : a
+    );
+    updateConfig({
+      ...config,
+      skills: { ...config.skills, sets: nextSets },
+      agents: nextAgents,
+    });
+  };
+
+  const commitDraftSetName = (setName: string) => {
+    const draft = (draftSetNames[setName] ?? setName).trim();
+    setDraftSetNames((prev) => {
+      const next = { ...prev };
+      delete next[setName];
+      return next;
+    });
+    if (!draft || draft === setName) return;
+    renameSet(setName, draft);
+  };
+
   const deleteSet = (name: string) => {
+    setDraftSetNames((prev) => {
+      if (!prev[name]) return prev;
+      const next = { ...prev };
+      delete next[name];
+      return next;
+    });
     updateConfig({
       ...config,
       skills: { ...config.skills, sets: sets.filter((s) => s.name !== name) },
@@ -361,6 +399,7 @@ export const SkillsConfigForm: React.FC = () => {
             <div className="space-y-3">
               {sets.map((set) => {
                 const enabled = set.enabled ?? true;
+                const draftName = draftSetNames[set.name] ?? set.name;
                 return (
                   <div
                     key={set.name}
@@ -369,8 +408,27 @@ export const SkillsConfigForm: React.FC = () => {
                     <div className="flex items-center justify-between gap-2">
                       <div className="min-w-0">
                         <input
-                          value={set.name}
-                          onChange={(e) => upsertSet({ ...set, name: e.target.value })}
+                          value={draftName}
+                          onChange={(e) =>
+                            setDraftSetNames((prev) => ({
+                              ...prev,
+                              [set.name]: e.target.value,
+                            }))
+                          }
+                          onBlur={() => commitDraftSetName(set.name)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.currentTarget.blur();
+                            }
+                            if (e.key === 'Escape') {
+                              setDraftSetNames((prev) => {
+                                const next = { ...prev };
+                                delete next[set.name];
+                                return next;
+                              });
+                              e.currentTarget.blur();
+                            }
+                          }}
                           className="w-64 rounded-lg border border-gray-200 bg-white px-2 py-1 text-sm text-gray-800 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
                         />
                         <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">
@@ -379,6 +437,15 @@ export const SkillsConfigForm: React.FC = () => {
                       </div>
 
                       <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => commitDraftSetName(set.name)}
+                          disabled={draftName.trim() === set.name}
+                          className="rounded-lg border border-gray-200 bg-white px-2 py-1 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-40 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-200 dark:hover:bg-gray-800"
+                          title="保存名称"
+                        >
+                          <Save size={16} />
+                        </button>
                         <button
                           type="button"
                           onClick={() => upsertSet({ ...set, enabled: !enabled })}
