@@ -197,7 +197,7 @@ pub async fn generate_title(
         api_key: provider.api_key.clone(),
         model: model.name.clone(),
         parameters: ModelParameters {
-            temperature: model.temperature,
+            temperature: Some(model.temperature),
             max_tokens: model.max_tokens,
             top_p: model.top_p,
             frequency_penalty: None,

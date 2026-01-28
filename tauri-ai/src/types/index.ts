@@ -124,8 +124,10 @@ export interface ModelCapabilities {
 export interface Model {
   name: string;           // Model name, e.g., "deepseek-v3"
   temperature: number;
+  temperatureEnabled?: boolean; // When false, omit temperature from request
   maxTokens?: number;
   topP?: number;
+  topPEnabled?: boolean; // When false, omit top_p from request
   contextLength?: number; // Maximum context length in tokens (e.g., 128000 for GPT-4o)
   capabilities: ModelCapabilities;
   // Advanced settings

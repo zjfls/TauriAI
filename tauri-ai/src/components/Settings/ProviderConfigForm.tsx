@@ -66,8 +66,10 @@ const defaultCapabilities: ModelCapabilities = {
 const defaultModel: Model = {
   name: '',
   temperature: 0.7,
+  temperatureEnabled: true,
   maxTokens: 4096,
   topP: 1,
+  topPEnabled: true,
   capabilities: defaultCapabilities,
 };
 
@@ -562,18 +564,15 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
                           className="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100"
                         />
                       </div>
-                      <div>
-                        <label className="block text-xs text-gray-500">Temperature: {model.temperature}</label>
-                        <input
-                          type="range"
-                          min="0"
-                          max="2"
-                          step="0.1"
-                          value={model.temperature}
-                          onChange={(e) => onUpdateModel(index, { ...model, temperature: parseFloat(e.target.value) })}
-                          disabled={!isEditing}
-                          className="w-full"
-                        />
+                      <div className="flex items-end justify-end">
+                        <button
+                          type="button"
+                          onClick={() => onToggleAdvancedExpand(model.name)}
+                          className="inline-flex items-center gap-1 rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                        >
+                          {expandedAdvanced.has(model.name) ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                          <span>高级</span>
+                        </button>
                       </div>
                       <div>
                         <label className="block text-xs text-gray-500">Max Tokens</label>
@@ -662,20 +661,82 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
                       </label>
                     </div>
                     {/* Advanced Settings */}
-                    {(model.capabilities?.vision ||
-                      (provider.type === 'anthropic' && (model.capabilities?.thinking ?? false)) ||
-                      ((provider.type === 'openai' || provider.type === 'openai_compatible') && (model.capabilities?.thinking ?? false))) && (
+                    {expandedAdvanced.has(model.name) && (
                         <div className="pt-2 border-t border-gray-200 dark:border-gray-700">
-                          <button
-                            onClick={() => onToggleAdvancedExpand(String(index))}
-                            className="flex items-center gap-1 text-xs text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
-                          >
-                            {expandedAdvanced.has(String(index)) ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                            <span>高级设置</span>
-                          </button>
-                          {expandedAdvanced.has(String(index)) && (
-                            <div className="mt-2 space-y-3">
-                              <div className="grid grid-cols-4 gap-3">
+                          <div className="mt-2 space-y-3">
+                            <div className="grid grid-cols-4 gap-3">
+                              <div className="col-span-2 space-y-1">
+                                <label className="flex items-center justify-between text-xs text-gray-600 dark:text-gray-300">
+                                  <span>Temperature</span>
+                                  <label className="flex items-center gap-2">
+                                    <span className="text-gray-500 dark:text-gray-400">
+                                      {model.temperature.toFixed(2)}
+                                    </span>
+                                    <input
+                                      type="checkbox"
+                                      checked={model.temperatureEnabled !== false}
+                                      onChange={(e) =>
+                                        onUpdateModel(index, { ...model, temperatureEnabled: e.target.checked })
+                                      }
+                                      disabled={!isEditing}
+                                      className="rounded"
+                                    />
+                                  </label>
+                                </label>
+                                <input
+                                  type="range"
+                                  min="0"
+                                  max="2"
+                                  step="0.1"
+                                  value={model.temperature}
+                                  onChange={(e) =>
+                                    onUpdateModel(index, { ...model, temperature: parseFloat(e.target.value) })
+                                  }
+                                  disabled={!isEditing || model.temperatureEnabled === false}
+                                  className="w-full"
+                                />
+                                <p className="text-[11px] text-gray-500">关闭后，实际请求不会发送 temperature</p>
+                              </div>
+
+                              <div className="col-span-2 space-y-1">
+                                <label className="flex items-center justify-between text-xs text-gray-600 dark:text-gray-300">
+                                  <span>Top P</span>
+                                  <label className="flex items-center gap-2">
+                                    <span className="text-gray-500 dark:text-gray-400">
+                                      {(model.topP ?? 1).toFixed(2)}
+                                    </span>
+                                      <input
+                                        type="checkbox"
+                                        checked={model.topPEnabled !== false}
+                                        onChange={(e) =>
+                                          onUpdateModel(index, {
+                                            ...model,
+                                            topPEnabled: e.target.checked,
+                                            topP: e.target.checked ? (model.topP ?? 1) : model.topP,
+                                          })
+                                        }
+                                        disabled={!isEditing}
+                                        className="rounded"
+                                      />
+                                  </label>
+                                </label>
+                                <input
+                                  type="range"
+                                  min="0"
+                                  max="1"
+                                  step="0.05"
+                                  value={model.topP ?? 1}
+                                  onChange={(e) =>
+                                    onUpdateModel(index, { ...model, topP: parseFloat(e.target.value) })
+                                  }
+                                  disabled={!isEditing || model.topPEnabled === false}
+                                  className="w-full"
+                                />
+                                <p className="text-[11px] text-gray-500">关闭后，实际请求不会发送 top_p</p>
+                              </div>
+                            </div>
+
+                            <div className="grid grid-cols-4 gap-3">
                                 {model.capabilities?.vision && (
                                   <div>
                                     <label className="block text-xs text-gray-500">最大图片数</label>
@@ -729,11 +790,9 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
                                 </div>
                               )}
                             </div>
-                          )}
                         </div>
-                      )}
-                  </div>
-                )}
+                    </div>
+                  )}
               </div>
             ))
           )}

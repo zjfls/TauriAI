@@ -88,9 +88,13 @@ pub fn build_model_config(
         api_key: provider.api_key.clone(),
         model: model.name.clone(),
         parameters: ModelParameters {
-            temperature: model.temperature,
+            temperature: if model.temperature_enabled {
+                Some(model.temperature)
+            } else {
+                None
+            },
             max_tokens: model.max_tokens,
-            top_p: model.top_p,
+            top_p: if model.top_p_enabled { model.top_p } else { None },
             frequency_penalty: None,
             presence_penalty: None,
             system_prompt: None,

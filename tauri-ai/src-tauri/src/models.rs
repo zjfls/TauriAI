@@ -518,10 +518,14 @@ pub struct Model {
     /// Model name, e.g., "deepseek-v3", unique within provider
     pub name: String,
     pub temperature: f32,
+    #[serde(default = "default_true", skip_serializing_if = "is_false")]
+    pub temperature_enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f32>,
+    #[serde(default = "default_true", skip_serializing_if = "is_false")]
+    pub top_p_enabled: bool,
     /// Maximum context length in tokens (e.g., 128000 for GPT-4o)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_length: Option<u32>,
@@ -547,8 +551,10 @@ impl Default for Model {
         Self {
             name: String::new(),
             temperature: 0.7,
+            temperature_enabled: true,
             max_tokens: None,
             top_p: None,
+            top_p_enabled: true,
             context_length: None,
             capabilities: ModelCapabilities::default(),
             max_images: None,
@@ -584,6 +590,10 @@ pub struct Provider {
 
 fn default_true() -> bool {
     true
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 impl Default for Provider {
@@ -787,7 +797,8 @@ impl Default for SkillsSettings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelParameters {
-    pub temperature: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -803,7 +814,7 @@ pub struct ModelParameters {
 impl Default for ModelParameters {
     fn default() -> Self {
         Self {
-            temperature: 0.7,
+            temperature: Some(0.7),
             max_tokens: None,
             top_p: None,
             frequency_penalty: None,
@@ -1494,9 +1505,11 @@ impl AppConfig {
             // Add model to provider
             provider.models.push(Model {
                 name: model_config.model.clone(),
-                temperature: model_config.parameters.temperature,
+                temperature: model_config.parameters.temperature.unwrap_or(0.7),
+                temperature_enabled: model_config.parameters.temperature.is_some(),
                 max_tokens: model_config.parameters.max_tokens,
                 top_p: model_config.parameters.top_p,
+                top_p_enabled: model_config.parameters.top_p.is_some(),
                 context_length: None,
                 capabilities: ModelCapabilities::default(),
                 max_images: None,

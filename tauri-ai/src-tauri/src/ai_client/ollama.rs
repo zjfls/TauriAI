@@ -132,7 +132,7 @@ impl AiClient for OllamaClient {
             convert_messages(&messages, config.parameters.system_prompt.as_deref());
 
         let options = OllamaOptions {
-            temperature: Some(config.parameters.temperature),
+            temperature: config.parameters.temperature,
             num_predict: config.parameters.max_tokens,
             top_p: config.parameters.top_p,
         };
@@ -185,7 +185,7 @@ impl AiClient for OllamaClient {
             convert_messages(&messages, config.parameters.system_prompt.as_deref());
 
         let options = OllamaOptions {
-            temperature: Some(config.parameters.temperature),
+            temperature: config.parameters.temperature,
             num_predict: config.parameters.max_tokens,
             top_p: config.parameters.top_p,
         };

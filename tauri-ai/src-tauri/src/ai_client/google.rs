@@ -510,7 +510,7 @@ impl AiClient for GoogleClient {
         });
 
         let generation_config = Some(GenerationConfig {
-            temperature: Some(config.parameters.temperature),
+            temperature: config.parameters.temperature,
             top_p: config.parameters.top_p,
             max_output_tokens: config.parameters.max_tokens,
             thinking_config,
@@ -663,7 +663,7 @@ impl AiClient for GoogleClient {
         });
 
         let generation_config = Some(GenerationConfig {
-            temperature: Some(config.parameters.temperature),
+            temperature: config.parameters.temperature,
             top_p: config.parameters.top_p,
             max_output_tokens: config.parameters.max_tokens,
             thinking_config,
