@@ -2757,24 +2757,67 @@ async fn run_task_inner(
         .config_path()
         .parent()
         .map(|p| p.join("skills"));
-    let repo_skills_dir = app
-        .path()
-        .resource_dir()
-        .ok()
-        .map(|p| p.join("skills"))
-        .filter(|p| p.is_dir())
-        .or_else(|| {
-            std::env::current_dir()
-                .ok()
-                .map(|cwd| cwd.join("tauri-ai").join("skills"))
-                .filter(|p| p.is_dir())
-        })
-        .or_else(|| {
-            std::env::current_dir()
-                .ok()
-                .map(|cwd| cwd.join("skills"))
-                .filter(|p| p.is_dir())
-        });
+    let repo_skills_dir = {
+        // Prefer bundled resources: `resources/skills/` -> `<resource_dir>/skills`
+        let from_resources = app
+            .path()
+            .resource_dir()
+            .ok()
+            .map(|p| p.join("skills"))
+            .filter(|p| p.is_dir());
+        if from_resources.is_some() {
+            from_resources
+        } else {
+            // Dev fallback: prefer build-time manifest dir (stable even if runtime cwd changes).
+            let from_manifest = option_env!("CARGO_MANIFEST_DIR").and_then(|manifest_dir| {
+                let manifest = std::path::PathBuf::from(manifest_dir);
+                if let Some(parent) = manifest.parent() {
+                    let p = parent.join("skills");
+                    if p.is_dir() {
+                        return Some(p);
+                    }
+                }
+                if let Some(grand) = manifest.parent().and_then(|p| p.parent()) {
+                    let p = grand.join("tauri-ai").join("skills");
+                    if p.is_dir() {
+                        return Some(p);
+                    }
+                    let p2 = grand.join("skills");
+                    if p2.is_dir() {
+                        return Some(p2);
+                    }
+                }
+                None
+            });
+            if from_manifest.is_some() {
+                from_manifest
+            } else {
+                // Fallbacks: search from executable directory and current working directory (and their ancestors).
+                let try_from_ancestors = |base: &std::path::Path| -> Option<std::path::PathBuf> {
+                    for dir in base.ancestors().take(8) {
+                        let p = dir.join("tauri-ai").join("skills");
+                        if p.is_dir() {
+                            return Some(p);
+                        }
+                        let p2 = dir.join("skills");
+                        if p2.is_dir() {
+                            return Some(p2);
+                        }
+                    }
+                    None
+                };
+
+                let from_exe = std::env::current_exe()
+                    .ok()
+                    .and_then(|exe| exe.parent().and_then(try_from_ancestors));
+                if from_exe.is_some() {
+                    from_exe
+                } else {
+                    std::env::current_dir().ok().and_then(|cwd| try_from_ancestors(&cwd))
+                }
+            }
+        }
+    };
     let workstudio_skills_dir = workstudio
         .as_ref()
         .map(|ws| std::path::PathBuf::from(&ws.main_folder).join("skills"))

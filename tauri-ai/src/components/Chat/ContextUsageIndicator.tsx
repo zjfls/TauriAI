@@ -100,16 +100,19 @@ interface TooltipContentProps {
 }
 
 const TooltipContent: React.FC<TooltipContentProps> = ({ usage }) => {
-  const color = getUsageColor(usage.percentage);
+  const limitKnown = usage.limit > 0;
+  const color = limitKnown
+    ? getUsageColor(usage.percentage)
+    : { stroke: '#9ca3af', text: 'text-gray-500', bg: 'bg-gray-400' };
   
   return (
     <div className="min-w-[180px] p-2 text-xs">
       <div className="font-medium mb-1">Context 使用量</div>
       <div className={`text-lg font-bold ${color.text}`}>
-        {usage.percentage.toFixed(1)}%
+        {limitKnown ? `${usage.percentage.toFixed(1)}%` : '—'}
       </div>
       <div className="text-gray-500 dark:text-gray-400 mt-1">
-        {formatTokens(usage.total)} / {formatTokens(usage.limit)} tokens
+        {formatTokens(usage.total)} / {limitKnown ? formatTokens(usage.limit) : '未知'} tokens
       </div>
     </div>
   );
@@ -127,7 +130,10 @@ interface DetailModalProps {
 const DetailModal: React.FC<DetailModalProps> = ({ usage, isOpen, onClose }) => {
   if (!isOpen) return null;
 
-  const color = getUsageColor(usage.percentage);
+  const limitKnown = usage.limit > 0;
+  const color = limitKnown
+    ? getUsageColor(usage.percentage)
+    : { stroke: '#9ca3af', text: 'text-gray-500', bg: 'bg-gray-400' };
 
   const breakdownItems = useMemo(() => {
     const limit = usage.limit || 0;
@@ -248,7 +254,9 @@ const DetailModal: React.FC<DetailModalProps> = ({ usage, isOpen, onClose }) => 
         : undefined,
     });
 
-    return items.filter((item) => item.tokens > 0 || (item.details && item.details.length > 0));
+    return items.filter(
+      (item) => item.key === 'skills' || item.tokens > 0 || (item.details && item.details.length > 0)
+    );
   }, [usage]);
 
   return (
@@ -276,19 +284,19 @@ const DetailModal: React.FC<DetailModalProps> = ({ usage, isOpen, onClose }) => 
           <div className="flex items-center justify-between mb-2">
             <span className="text-sm text-gray-600 dark:text-gray-400">总使用量</span>
             <span className={`text-lg font-bold ${color.text}`}>
-              {usage.percentage.toFixed(1)}%
+              {limitKnown ? `${usage.percentage.toFixed(1)}%` : '—'}
             </span>
           </div>
           {/* Progress bar */}
           <div className="h-2 w-full rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
             <div
               className={`h-full rounded-full transition-all duration-300 ${color.bg}`}
-              style={{ width: `${Math.min(usage.percentage, 100)}%` }}
+              style={{ width: `${limitKnown ? Math.min(usage.percentage, 100) : 0}%` }}
             />
           </div>
           <div className="flex justify-between mt-1 text-xs text-gray-500 dark:text-gray-400">
             <span>{formatTokens(usage.total)} tokens</span>
-            <span>{formatTokens(usage.limit)} 上限</span>
+            <span>{limitKnown ? `${formatTokens(usage.limit)} 上限` : '上限未知'}</span>
           </div>
         </div>
 
@@ -389,6 +397,7 @@ export const ContextUsageIndicator: React.FC<ContextUsageIndicatorProps> = ({
 }) => {
   const [showTooltip, setShowTooltip] = useState(false);
   const [showModal, setShowModal] = useState(false);
+  const limitKnown = usage.limit > 0;
 
   return (
     <div className="relative">
@@ -406,7 +415,7 @@ export const ContextUsageIndicator: React.FC<ContextUsageIndicatorProps> = ({
         title="Context 使用量"
         aria-label="查看 Context 使用量"
       >
-        <CircularProgress percentage={usage.percentage} size={18} strokeWidth={2.5} />
+        <CircularProgress percentage={limitKnown ? usage.percentage : 0} size={18} strokeWidth={2.5} />
       </button>
 
       {/* Tooltip on hover */}

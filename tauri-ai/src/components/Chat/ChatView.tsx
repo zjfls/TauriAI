@@ -474,11 +474,11 @@ Guidelines:
 
   // Calculate context usage breakdown
   const contextUsage = useMemo((): ContextUsageBreakdown | null => {
-    const contextLength = currentModel?.contextLength;
-    if (!contextLength) return null;
+    if (!session) return null;
+    const contextLength = currentModel?.contextLength ?? 0;
 
     // Get system prompt and format type from session's agent
-    const agent = session ? getAgent(session.agentName) : null;
+    const agent = getAgent(session.agentName);
     const userSystemPrompt = agent?.systemPrompt || '';
     const formatType = agent?.formatType || 'chat';
 
@@ -651,7 +651,7 @@ Guidelines:
       totalContextTokens = baseTokens + messageTokens;
     }
 
-    const percentage = (totalContextTokens / contextLength) * 100;
+    const percentage = contextLength > 0 ? (totalContextTokens / contextLength) * 100 : 0;
 
     return {
       systemPrompt: systemPromptTokens,

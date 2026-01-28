@@ -23,15 +23,53 @@ fn repo_skills_dir_from_app(app: &tauri::AppHandle) -> Option<PathBuf> {
             return Some(p);
         }
     }
-    // Dev fallback: repo `tauri-ai/skills` relative to current working directory.
-    if let Ok(cwd) = std::env::current_dir() {
-        let p = cwd.join("tauri-ai").join("skills");
-        if p.is_dir() {
-            return Some(p);
+    // Dev fallback: prefer build-time manifest dir (stable even if runtime cwd changes).
+    if let Some(manifest_dir) = option_env!("CARGO_MANIFEST_DIR") {
+        let manifest = PathBuf::from(manifest_dir);
+        if let Some(parent) = manifest.parent() {
+            let p = parent.join("skills");
+            if p.is_dir() {
+                return Some(p);
+            }
         }
-        let p2 = cwd.join("skills");
-        if p2.is_dir() {
-            return Some(p2);
+        if let Some(grand) = manifest.parent().and_then(|p| p.parent()) {
+            let p = grand.join("tauri-ai").join("skills");
+            if p.is_dir() {
+                return Some(p);
+            }
+            let p2 = grand.join("skills");
+            if p2.is_dir() {
+                return Some(p2);
+            }
+        }
+    }
+
+    // Fallbacks: search from executable directory and current working directory (and their ancestors).
+    let try_from_ancestors = |base: &Path| -> Option<PathBuf> {
+        for dir in base.ancestors().take(8) {
+            let p = dir.join("tauri-ai").join("skills");
+            if p.is_dir() {
+                return Some(p);
+            }
+            let p2 = dir.join("skills");
+            if p2.is_dir() {
+                return Some(p2);
+            }
+        }
+        None
+    };
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            if let Some(found) = try_from_ancestors(parent) {
+                return Some(found);
+            }
+        }
+    }
+
+    if let Ok(cwd) = std::env::current_dir() {
+        if let Some(found) = try_from_ancestors(&cwd) {
+            return Some(found);
         }
     }
     None
