@@ -943,10 +943,19 @@ impl Default for WebSearchProvider {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WebSearchToolSettings {
+    /// Legacy field for backward compatibility (master switch)
     #[serde(default)]
     pub enabled: bool,
+    /// Legacy field for backward compatibility (selected provider)
     #[serde(default)]
     pub provider: WebSearchProvider,
+    /// Per-provider enabled flags
+    #[serde(default)]
+    pub tavily_enabled: bool,
+    #[serde(default)]
+    pub google_enabled: bool,
+    #[serde(default)]
+    pub brave_enabled: bool,
     /// Minimum interval between requests (rate limit), ms
     #[serde(skip_serializing_if = "Option::is_none")]
     pub min_interval_ms: Option<u64>,
@@ -967,6 +976,9 @@ impl Default for WebSearchToolSettings {
         Self {
             enabled: false,
             provider: WebSearchProvider::default(),
+            tavily_enabled: false,
+            google_enabled: false,
+            brave_enabled: false,
             min_interval_ms: Some(1200),
             tavily_api_key: None,
             brave_api_key: None,

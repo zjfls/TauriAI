@@ -57,7 +57,7 @@ pub struct RunTaskInput {
     pub model_ref: Option<String>,
     pub run_mode: Option<String>,
     pub thinking: Option<serde_json::Value>,
-    pub web_search_enabled: Option<bool>,
+    pub web_search_provider: Option<String>,
     pub debug_mode: Option<bool>,
 }
 
@@ -2305,32 +2305,54 @@ async fn run_task_inner(
         }
 
         // Local web search tool:
-        // - User explicitly enabled web_search for this run
-        // - And local tool is enabled + has API key configured
-        let want_web_search = input.web_search_enabled.unwrap_or(false);
+        // - User explicitly selected a web_search provider for this run
+        // - And the selected provider is enabled + has API key configured
         let ws_cfg = &config.general.web_search_tool;
-        let has_key = match ws_cfg.provider {
-            crate::models::WebSearchProvider::Tavily => ws_cfg
-                .tavily_api_key
-                .as_ref()
-                .is_some_and(|k| !k.trim().is_empty()),
-            crate::models::WebSearchProvider::Brave => ws_cfg
-                .brave_api_key
-                .as_ref()
-                .is_some_and(|k| !k.trim().is_empty()),
-            crate::models::WebSearchProvider::Google => {
-                ws_cfg.google_api_key.as_ref().is_some_and(|k| !k.trim().is_empty())
-                    && ws_cfg.google_cx.as_ref().is_some_and(|k| !k.trim().is_empty())
+        
+        // Parse the selected provider from input (if any)
+        let selected_provider = input.web_search_provider.as_ref().and_then(|p| {
+            match p.as_str() {
+                "tavily" => Some(crate::models::WebSearchProvider::Tavily),
+                "google" => Some(crate::models::WebSearchProvider::Google),
+                "brave" => Some(crate::models::WebSearchProvider::Brave),
+                _ => None,
             }
+        });
+        
+        // Check if the selected provider is enabled and has API key
+        let (provider_enabled, has_key) = if let Some(provider) = selected_provider {
+            let enabled = match provider {
+                crate::models::WebSearchProvider::Tavily => ws_cfg.tavily_enabled,
+                crate::models::WebSearchProvider::Brave => ws_cfg.brave_enabled,
+                crate::models::WebSearchProvider::Google => ws_cfg.google_enabled,
+            };
+            let has_key = match provider {
+                crate::models::WebSearchProvider::Tavily => ws_cfg
+                    .tavily_api_key
+                    .as_ref()
+                    .is_some_and(|k| !k.trim().is_empty()),
+                crate::models::WebSearchProvider::Brave => ws_cfg
+                    .brave_api_key
+                    .as_ref()
+                    .is_some_and(|k| !k.trim().is_empty()),
+                crate::models::WebSearchProvider::Google => {
+                    ws_cfg.google_api_key.as_ref().is_some_and(|k| !k.trim().is_empty())
+                        && ws_cfg.google_cx.as_ref().is_some_and(|k| !k.trim().is_empty())
+                }
+            };
+            (enabled, has_key)
+        } else {
+            (false, false)
         };
 
         enable_local_web_search_tool =
-            want_web_search && ws_cfg.enabled && has_key && sandbox_policy.has_full_network_access();
+            selected_provider.is_some() && provider_enabled && has_key && sandbox_policy.has_full_network_access();
 
         if enable_local_web_search_tool {
             registry.register(Arc::new(
                 crate::runtime::tools::handlers::web_search::WebSearchTool {
                     settings: ws_cfg.clone(),
+                    provider_override: selected_provider,
                 },
             ));
             if matches!(toolset.mode, super::tools::spec::ToolSetMode::AllowList) {

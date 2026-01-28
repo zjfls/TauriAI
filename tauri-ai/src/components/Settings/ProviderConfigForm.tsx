@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { Plus, Trash2, ChevronDown, ChevronRight, Wifi, WifiOff, Loader2, Search, Download, Brain, Eye, Wrench, Copy } from 'lucide-react';
+import { Plus, Trash2, ChevronDown, ChevronRight, Wifi, WifiOff, Loader2, Search, Download, Brain, Eye, Wrench, Copy, Globe } from 'lucide-react';
 import { useConfigStore } from '../../stores/configStore';
 import { testConnection } from '../../services/configService';
 import { ModelPickerModal } from './ModelPickerModal';
@@ -539,13 +539,13 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
             <div className="px-4 py-3 text-sm text-gray-500">暂无模型</div>
           ) : (
             provider.models.map((model, index) => (
-              <div key={model.name} className="px-4 py-2">
+              <div key={index} className="px-4 py-2">
                 <div
                   className="flex items-center justify-between cursor-pointer"
-                  onClick={() => onToggleModelExpand(model.name)}
+                  onClick={() => onToggleModelExpand(String(index))}
                 >
                   <div className="flex items-center gap-2">
-                    {expandedModels.has(model.name) ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                    {expandedModels.has(String(index)) ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
                     <span className="text-sm font-medium">{model.name}</span>
                   </div>
                   {isEditing && (
@@ -557,7 +557,7 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
                     </button>
                   )}
                 </div>
-                {expandedModels.has(model.name) && (
+                {expandedModels.has(String(index)) && (
                   <div className="mt-2 pl-6 space-y-3">
                     <div className="grid grid-cols-4 gap-3">
                       <div>
@@ -654,6 +654,20 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
                         <Wrench size={12} className="text-green-500" />
                         <span>工具调用</span>
                       </label>
+                      <label className="flex items-center gap-1 text-xs">
+                        <input
+                          type="checkbox"
+                          checked={model.capabilities?.webSearch ?? false}
+                          onChange={(e) => onUpdateModel(index, {
+                            ...model,
+                            capabilities: { ...model.capabilities, webSearch: e.target.checked }
+                          })}
+                          disabled={!isEditing}
+                          className="rounded"
+                        />
+                        <Globe size={12} className="text-orange-500" />
+                        <span>网络搜索</span>
+                      </label>
                     </div>
                     {/* Advanced Settings */}
                     {(model.capabilities?.vision ||
@@ -661,13 +675,13 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
                       ((provider.type === 'openai' || provider.type === 'openai_compatible') && (model.capabilities?.thinking ?? false))) && (
                         <div className="pt-2 border-t border-gray-200 dark:border-gray-700">
                           <button
-                            onClick={() => onToggleAdvancedExpand(model.name)}
+                            onClick={() => onToggleAdvancedExpand(String(index))}
                             className="flex items-center gap-1 text-xs text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
                           >
-                            {expandedAdvanced.has(model.name) ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                            {expandedAdvanced.has(String(index)) ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                             <span>高级设置</span>
                           </button>
-                          {expandedAdvanced.has(model.name) && (
+                          {expandedAdvanced.has(String(index)) && (
                             <div className="mt-2 space-y-3">
                               <div className="grid grid-cols-4 gap-3">
                                 {model.capabilities?.vision && (

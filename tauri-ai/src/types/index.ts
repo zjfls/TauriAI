@@ -762,13 +762,17 @@ export interface GeneralSettings {
 export type WebSearchProvider = 'tavily' | 'google' | 'brave';
 
 export interface WebSearchToolSettings {
-  enabled: boolean;
-  provider: WebSearchProvider;
-  minIntervalMs?: number;
+  // 各提供商独立启用开关
+  tavilyEnabled?: boolean;
+  googleEnabled?: boolean;
+  braveEnabled?: boolean;
+  // API Keys
   tavilyApiKey?: string;
   braveApiKey?: string;
   googleApiKey?: string;
   googleCx?: string; // Google Custom Search CX
+  // 通用设置
+  minIntervalMs?: number;
   maxResults?: number;
 }
 
@@ -962,7 +966,7 @@ export interface AgentSession {
   // Per-session settings
   runMode?: RunMode;                  // Input run mode: chat/agent/agent-full-access
   thinkingMode?: ThinkingMode;        // Current thinking mode/level for this session
-  webSearchEnabled?: boolean;         // Whether web search is enabled for this session
+  webSearchProvider?: 'native' | 'tavily' | 'google' | 'brave' | null;  // Selected web search provider for this session
   draftContent?: string;              // Unsent input text for this session
 
   // Session state
@@ -996,7 +1000,7 @@ export interface PersistedSession {
   apiType: ApiProtocolType | null;  // Persisted API type lock
   runMode?: RunMode;                // Persisted run mode selection
   thinkingMode?: ThinkingMode;      // Persisted thinking mode/level
-  webSearchEnabled?: boolean;       // Persisted web search state
+  webSearchProvider?: 'native' | 'tavily' | 'google' | 'brave' | null;  // Persisted web search provider selection
   draftContent?: string;            // Persisted unsent input text
   createdAt: string;
   lastActiveAt: string;

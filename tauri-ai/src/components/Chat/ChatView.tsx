@@ -21,6 +21,7 @@ import type { TokenUsage, ContextUsageBreakdown, ContentPart, ThinkingMode, PtyS
 import { useToolSessionStore } from '../../stores/toolSessionStore';
 import { openOrFocusViewWindow } from '../../utils/viewWindow';
 import { ChevronDown } from 'lucide-react';
+import type { WebSearchProvider } from './WebSearchToggle';
 
 interface ChatViewProps {
   sessionId: string | null;
@@ -122,47 +123,46 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
     return currentModel?.capabilities?.vision ?? false;
   }, [currentModel]);
 
-  // Web search mode:
-  // - native: model/provider built-in web_search
-  // - tool: hidden local web_search tool (Tavily/Google/Brave)
-  const webSearchMode = useMemo(() => {
-    const native = currentModel?.capabilities?.webSearch ?? false;
-    if (native) return 'native' as const;
-
+  // Available web search providers
+  const availableWebSearchProviders = useMemo((): WebSearchProvider[] => {
+    const providers: WebSearchProvider[] = [];
+    
+    // Check for native model web search
+    if (currentModel?.capabilities?.webSearch) {
+      providers.push('native');
+    }
+    
+    // Check for local tool providers
     const ws = config?.general?.webSearchTool;
-    if (!ws?.enabled) return 'none' as const;
-
-    const hasKey =
-      ws.provider === 'tavily'
-        ? Boolean(ws.tavilyApiKey?.trim())
-        : ws.provider === 'brave'
-          ? Boolean(ws.braveApiKey?.trim())
-          : Boolean(ws.googleApiKey?.trim()) && Boolean(ws.googleCx?.trim());
-
-    return hasKey ? ('tool' as const) : ('none' as const);
+    if (ws?.tavilyEnabled && ws.tavilyApiKey?.trim()) {
+      providers.push('tavily');
+    }
+    if (ws?.braveEnabled && ws.braveApiKey?.trim()) {
+      providers.push('brave');
+    }
+    if (ws?.googleEnabled && ws.googleApiKey?.trim() && ws.googleCx?.trim()) {
+      providers.push('google');
+    }
+    
+    return providers;
   }, [currentModel, config]);
 
-  const supportsWebSearch = useMemo(() => webSearchMode !== 'none', [webSearchMode]);
-
-  const webSearchToggleMode = useMemo(() => {
-    if (webSearchMode === 'native') return 'native' as const;
-    if (webSearchMode === 'tool') return 'tool' as const;
-    return undefined;
-  }, [webSearchMode]);
+  const supportsWebSearch = useMemo(() => availableWebSearchProviders.length > 0, [availableWebSearchProviders]);
 
   const webSearchDetails = useMemo(() => {
-    if (webSearchMode === 'native') return '使用模型内置 web_search 能力';
-    if (webSearchMode !== 'tool') {
-      const ws = config?.general?.webSearchTool;
-      if (!ws?.enabled) return '未启用本地搜索工具（设置→通用）';
-      return '本地搜索工具缺少 API Key（设置→通用）';
+    if (availableWebSearchProviders.length === 0) {
+      return '未配置搜索提供方（设置→通用）';
     }
     const ws = config?.general?.webSearchTool;
-    const providerLabel =
-      ws?.provider === 'tavily' ? 'Tavily' : ws?.provider === 'brave' ? 'Brave Search' : 'Google CSE';
     const interval = ws?.minIntervalMs ?? 1200;
-    return `提供方：${providerLabel}｜最小间隔：${interval}ms`;
-  }, [webSearchMode, config]);
+    const labels: Record<WebSearchProvider, string> = {
+      native: '模型内置',
+      tavily: 'Tavily',
+      brave: 'Brave',
+      google: 'Google',
+    };
+    return `可用提供方：${availableWebSearchProviders.map(p => labels[p]).join('、')}｜最小间隔：${interval}ms`;
+  }, [availableWebSearchProviders, config]);
 
   const persistanceShellEnhance = useMemo(() => {
     if (!session) return false;
@@ -765,12 +765,12 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
           setSessionModel(sessionId, modelRef).catch(console.error);
         }}
         supportsWebSearch={supportsWebSearch}
-        webSearchEnabled={session?.webSearchEnabled ?? (webSearchMode === 'native')}
-        onWebSearchToggle={(enabled) => {
+        availableProviders={availableWebSearchProviders}
+        selectedProvider={session?.webSearchProvider ?? null}
+        onProviderSelect={(provider) => {
           if (!sessionId) return;
-          useSessionStore.getState().setSessionWebSearchEnabled(sessionId, enabled);
+          useSessionStore.getState().setSessionWebSearchProvider(sessionId, provider);
         }}
-        webSearchToggleMode={webSearchToggleMode}
         webSearchDetails={webSearchDetails}
       />
       {persistanceShellEnhance && conversationId && (

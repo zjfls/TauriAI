@@ -81,7 +81,7 @@ export interface SessionState {
   // Per-session settings
   setSessionRunMode: (sessionId: string, runMode: RunMode) => void;
   setSessionThinkingMode: (sessionId: string, thinkingMode: ThinkingMode) => void;
-  setSessionWebSearchEnabled: (sessionId: string, enabled: boolean) => void;
+  setSessionWebSearchProvider: (sessionId: string, provider: 'native' | 'tavily' | 'google' | 'brave' | null) => void;
   setSessionDraftContent: (sessionId: string, draftContent: string) => void;
 
   // Title generation
@@ -508,7 +508,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         modelRef: session.modelRef,
         runMode: session.runMode,
         thinking,  // 直接传递 thinking，可以是 boolean 或 string
-        webSearchEnabled: session.webSearchEnabled,  // 传递 web search 状态
+        webSearchProvider: session.webSearchProvider,  // 传递 web search provider
         debugMode,
       });
     } catch (err) {
@@ -1144,9 +1144,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   /**
-   * Update per-session web search enabled state
+   * Update per-session web search provider selection
    */
-  setSessionWebSearchEnabled: (sessionId: string, enabled: boolean) => {
+  setSessionWebSearchProvider: (sessionId: string, provider: 'native' | 'tavily' | 'google' | 'brave' | null) => {
     set((state) => {
       const newSessions = new Map(state.sessions);
       const session = newSessions.get(sessionId);
@@ -1154,7 +1154,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
       newSessions.set(sessionId, {
         ...session,
-        webSearchEnabled: enabled,
+        webSearchProvider: provider,
         lastActiveAt: new Date().toISOString(),
       });
 
@@ -1254,7 +1254,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       apiType: session.apiType,
       runMode: session.runMode,
       thinkingMode: session.thinkingMode,
-      webSearchEnabled: session.webSearchEnabled,
+      webSearchProvider: session.webSearchProvider,
       draftContent: session.draftContent,
       createdAt: session.createdAt,
       lastActiveAt: session.lastActiveAt,
@@ -1344,7 +1344,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           apiType: apiProtocol,
           runMode,
           thinkingMode: coerceThinkingModeForProtocol(persisted.thinkingMode, apiProtocol, providerType),
-          webSearchEnabled: persisted.webSearchEnabled,
+          webSearchProvider: persisted.webSearchProvider,
           draftContent: persisted.draftContent ?? '',
           messages,
           streamingBlocks: null,

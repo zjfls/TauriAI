@@ -13,7 +13,7 @@ import { McpConfigForm } from './McpConfigForm';
 import { SkillsConfigForm } from './SkillsConfigForm';
 import { useConfigStore } from '../../stores/configStore';
 import { useUIStore } from '../../stores/uiStore';
-import type { AppConfig, Theme, AnsiColorMode, AnsiRenderMode, WebSearchToolSettings, WebSearchProvider } from '../../types';
+import type { AppConfig, Theme, AnsiColorMode, AnsiRenderMode, WebSearchToolSettings } from '../../types';
 
 type SettingsTab = 'providers' | 'agents' | 'tools' | 'mcp' | 'skills' | 'security' | 'appearance' | 'general';
 
@@ -551,8 +551,6 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
       >
         {(() => {
           const current: WebSearchToolSettings = webSearchTool ?? {
-            enabled: false,
-            provider: 'tavily',
             minIntervalMs: 1200,
             maxResults: 5,
           };
@@ -561,45 +559,10 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
             onWebSearchToolChange({ ...current, ...next });
           };
 
-          const providerOptions: { value: WebSearchProvider; label: string }[] = [
-            { value: 'tavily', label: 'Tavily' },
-            { value: 'google', label: 'Google CSE' },
-            { value: 'brave', label: 'Brave Search' },
-          ];
-
           return (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">启用本地搜索工具</label>
-                  <p className="text-xs text-gray-500">
-                    开启后：会对模型暴露本地工具 <span className="font-mono">web_search</span>（仍受沙箱网络策略与 API Key 配置限制）。
-                  </p>
-                </div>
-                <button
-                  onClick={() => set({ enabled: !current.enabled })}
-                  className={`relative w-11 h-6 rounded-full transition-colors ${current.enabled ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'}`}
-                >
-                  <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${current.enabled ? 'translate-x-5' : ''}`} />
-                </button>
-              </div>
-
+            <div className="space-y-6">
+              {/* 通用设置 */}
               <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Provider</label>
-                  <select
-                    value={current.provider}
-                    onChange={(e) => set({ provider: e.target.value as WebSearchProvider })}
-                    className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700"
-                  >
-                    {providerOptions.map((o) => (
-                      <option key={o.value} value={o.value}>
-                        {o.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
                 <div className="space-y-2">
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">速率限制（最小间隔 ms）</label>
                   <input
@@ -609,9 +572,6 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
                     className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700"
                   />
                 </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">最大返回条数</label>
                   <input
@@ -621,64 +581,86 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
                     className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700"
                   />
                 </div>
-                <div className="space-y-2">
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">提示</label>
-                  <p className="text-xs text-gray-500">
-                    输入窗口的“搜索”图标悬停会展示当前使用的是“模型内置”还是“本地工具”，以及配置状态。
-                  </p>
-                </div>
               </div>
 
-              {current.provider === 'tavily' && (
-                <div className="space-y-2">
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Tavily API Key</label>
-                  <input
-                    type="password"
-                    value={current.tavilyApiKey ?? ''}
-                    onChange={(e) => set({ tavilyApiKey: e.target.value || undefined })}
-                    placeholder="tavily api key"
-                    className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700"
-                  />
+              {/* Tavily */}
+              <div className="space-y-3 border border-gray-200 dark:border-gray-700 rounded-lg p-4">
+                <div className="flex items-center justify-between">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Tavily</label>
+                  <button
+                    onClick={() => set({ tavilyEnabled: !current.tavilyEnabled })}
+                    className={`relative w-11 h-6 rounded-full transition-colors ${current.tavilyEnabled ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'}`}
+                  >
+                    <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${current.tavilyEnabled ? 'translate-x-5' : ''}`} />
+                  </button>
                 </div>
-              )}
-
-              {current.provider === 'brave' && (
-                <div className="space-y-2">
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Brave Search API Key</label>
-                  <input
-                    type="password"
-                    value={current.braveApiKey ?? ''}
-                    onChange={(e) => set({ braveApiKey: e.target.value || undefined })}
-                    placeholder="brave api key"
-                    className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700"
-                  />
-                </div>
-              )}
-
-              {current.provider === 'google' && (
-                <div className="space-y-4">
+                {current.tavilyEnabled && (
                   <div className="space-y-2">
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Google API Key</label>
+                    <input
+                      type="password"
+                      value={current.tavilyApiKey ?? ''}
+                      onChange={(e) => set({ tavilyApiKey: e.target.value || undefined })}
+                      placeholder="Tavily API Key"
+                      className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700"
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* Brave Search */}
+              <div className="space-y-3 border border-gray-200 dark:border-gray-700 rounded-lg p-4">
+                <div className="flex items-center justify-between">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Brave Search</label>
+                  <button
+                    onClick={() => set({ braveEnabled: !current.braveEnabled })}
+                    className={`relative w-11 h-6 rounded-full transition-colors ${current.braveEnabled ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'}`}
+                  >
+                    <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${current.braveEnabled ? 'translate-x-5' : ''}`} />
+                  </button>
+                </div>
+                {current.braveEnabled && (
+                  <div className="space-y-2">
+                    <input
+                      type="password"
+                      value={current.braveApiKey ?? ''}
+                      onChange={(e) => set({ braveApiKey: e.target.value || undefined })}
+                      placeholder="Brave Search API Key"
+                      className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700"
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* Google CSE */}
+              <div className="space-y-3 border border-gray-200 dark:border-gray-700 rounded-lg p-4">
+                <div className="flex items-center justify-between">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Google CSE</label>
+                  <button
+                    onClick={() => set({ googleEnabled: !current.googleEnabled })}
+                    className={`relative w-11 h-6 rounded-full transition-colors ${current.googleEnabled ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'}`}
+                  >
+                    <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${current.googleEnabled ? 'translate-x-5' : ''}`} />
+                  </button>
+                </div>
+                {current.googleEnabled && (
+                  <div className="space-y-3">
                     <input
                       type="password"
                       value={current.googleApiKey ?? ''}
                       onChange={(e) => set({ googleApiKey: e.target.value || undefined })}
-                      placeholder="google api key"
+                      placeholder="Google API Key"
                       className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700"
                     />
-                  </div>
-                  <div className="space-y-2">
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Google CX</label>
                     <input
                       value={current.googleCx ?? ''}
                       onChange={(e) => set({ googleCx: e.target.value || undefined })}
-                      placeholder="custom search engine cx"
+                      placeholder="Custom Search Engine CX"
                       className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700"
                     />
                     <p className="text-xs text-gray-500">使用 Google Custom Search JSON API，需要同时配置 Key 与 CX。</p>
                   </div>
-                </div>
-              )}
+                )}
+              </div>
             </div>
           );
         })()}

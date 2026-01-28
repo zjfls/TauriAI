@@ -10,7 +10,7 @@ import { ContextUsageIndicator } from './ContextUsageIndicator';
 import { McpModal } from './McpModal';
 import { AttachmentPreview } from './AttachmentPreview';
 import { ThinkingSelector } from './ThinkingSelector';
-import { WebSearchToggle } from './WebSearchToggle';
+import { WebSearchToggle, type WebSearchProvider } from './WebSearchToggle';
 import { isSupportedTextFile, readTextFile, validateFileCount } from '../../utils/textFileUtils';
 import { isValidPdfFile, validatePdfSize, processPdfFile, MAX_PDF_SIZE } from '../../utils/pdfUtils';
 import type { ContextUsageBreakdown, Agent, ContentPart, PendingImage, PendingTextFile, PendingPdf, ApiProtocolType, ThinkingMode, ProviderType, RunMode } from '../../types';
@@ -186,9 +186,10 @@ interface InputAreaProps {
   onModelSelect?: (modelRef: string) => void;
   // Web search
   supportsWebSearch?: boolean;  // Whether current model supports web search
-  webSearchEnabled?: boolean;   // Whether web search is enabled
-  onWebSearchToggle?: (enabled: boolean) => void;  // Callback when web search is toggled
-  webSearchToggleMode?: 'native' | 'tool';
+  availableProviders?: WebSearchProvider[];  // Available search providers
+  selectedProvider?: WebSearchProvider | null;  // Currently selected provider
+  onProviderSelect?: (provider: WebSearchProvider | null) => void;  // Callback when provider is selected
+
   webSearchDetails?: string;
   // PDF debug mode
   pdfDebugMode?: boolean;  // Whether to enable PDF debug mode controls
@@ -686,9 +687,10 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   currentModelRef = '',
   onModelSelect,
   supportsWebSearch = false,
-  webSearchEnabled = false,
-  onWebSearchToggle,
-  webSearchToggleMode,
+  availableProviders,
+  selectedProvider,
+  onProviderSelect,
+
   webSearchDetails,
   pdfDebugMode = false,
 }, ref) => {
@@ -1799,18 +1801,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
       {hasFeatureToggles && (
         <div className="mb-2 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            {/* Run mode selector (menu) */}
-            {onRunModeChange && (
-              <CompactSelector
-                icon={<span className="text-[10px] text-gray-500 dark:text-gray-400">模式</span>}
-                options={RUN_MODE_OPTIONS}
-                currentValue={runMode}
-                onSelect={(value) => onRunModeChange(value as RunMode)}
-                disabled={isGenerating}
-                placeholder="模式"
-              />
-            )}
-            {/* Agent selector */}
+            {/* Agent selector - 放在最左边 */}
             {agents.length > 0 && currentAgentName && (
               onAgentSelect ? (
                 <CompactSelector
@@ -1824,19 +1815,30 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
               ) : (
                 <div
                   className={[
-                    'flex items-center gap-1.5 px-3 py-1.5 rounded-lg border',
+                    'flex items-center gap-1.5 px-2 py-1 rounded-lg border',
                     'bg-gray-50 dark:bg-gray-900 border-gray-200 dark:border-gray-700',
                     'text-gray-700 dark:text-gray-200',
                   ].join(' ')}
                   title={currentAgent?.type ? `${currentAgent.displayName} (${currentAgent.type})` : (currentAgent?.displayName || currentAgentName)}
                 >
                   <Bot size={12} className="text-gray-500 dark:text-gray-400" />
-                  <span className="text-sm font-medium max-w-40 truncate">
+                  <span className="text-xs font-medium max-w-32 truncate">
                     {currentAgent?.displayName || currentAgentName}
                     {currentAgent?.type ? ` (${currentAgent.type})` : ''}
                   </span>
                 </div>
               )
+            )}
+            {/* Run mode selector (menu) */}
+            {onRunModeChange && (
+              <CompactSelector
+                icon={<span className="text-[10px] text-gray-500 dark:text-gray-400">模式</span>}
+                options={RUN_MODE_OPTIONS}
+                currentValue={runMode}
+                onSelect={(value) => onRunModeChange(value as RunMode)}
+                disabled={isGenerating}
+                placeholder="模式"
+              />
             )}
             {/* Model selector */}
             {modelOptions.length > 0 && onModelSelect && (
@@ -1850,7 +1852,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
               />
             )}
             {/* Divider if both selectors and toggles exist */}
-            {(agents.length > 0 || modelOptions.length > 0) && supportsThinking && (
+            {(agents.length > 0 || modelOptions.length > 0) && (supportsThinking || supportsWebSearch) && (
               <div className="h-4 w-px bg-gray-300 dark:bg-gray-600 mx-1" />
             )}
             {/* Thinking selector - adaptive based on API protocol */}
@@ -1865,12 +1867,13 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
               />
             )}
             {/* Web search toggle */}
-            {supportsWebSearch && onWebSearchToggle && (
+            {supportsWebSearch && (
               <WebSearchToggle
-                enabled={webSearchEnabled}
-                onToggle={() => onWebSearchToggle(!webSearchEnabled)}
+                providers={availableProviders}
+                selected={selectedProvider}
+                onSelect={onProviderSelect}
                 disabled={isGenerating}
-                mode={webSearchToggleMode}
+
                 details={webSearchDetails}
               />
             )}

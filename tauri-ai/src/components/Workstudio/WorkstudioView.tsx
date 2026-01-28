@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
-import { openUrl } from '@tauri-apps/plugin-opener';
+import { openPath, revealItemInDir } from '@tauri-apps/plugin-opener';
 import Editor, { type OnMount } from '@monaco-editor/react';
 import { Terminal } from 'xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -189,13 +189,6 @@ const basename = (p: string) => {
   const normalized = p.replace(/\\/g, '/');
   const segments = normalized.split('/').filter(Boolean);
   return segments.length === 0 ? p : segments[segments.length - 1];
-};
-
-const dirname = (p: string) => {
-  const normalized = p.replace(/\\/g, '/').replace(/\/+$/, '');
-  const idx = normalized.lastIndexOf('/');
-  if (idx <= 0) return normalized;
-  return normalized.slice(0, idx);
 };
 
 const decodeBase64ToUtf8 = (base64: string) => {
@@ -1432,7 +1425,7 @@ export const WorkstudioView: React.FC = () => {
                             <button
                               type="button"
                               className="rounded border border-gray-200 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
-                              onClick={() => void openUrl(groupActive.path)}
+                              onClick={() => void openPath(groupActive.path)}
                               title="在系统默认应用中打开"
                             >
                               在系统中打开
@@ -1608,7 +1601,7 @@ export const WorkstudioView: React.FC = () => {
                 className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
                 onClick={() => {
                   setContextMenu(null);
-                  void openUrl(ws.mainFolder);
+                  void revealItemInDir(ws.mainFolder);
                 }}
               >
                 在系统中打开主工作区
@@ -1630,7 +1623,7 @@ export const WorkstudioView: React.FC = () => {
                 onClick={() => {
                   const folder = contextMenu.folder;
                   setContextMenu(null);
-                  void openUrl(folder);
+                  void revealItemInDir(folder);
                 }}
               >
                 在系统中打开
@@ -1749,23 +1742,12 @@ export const WorkstudioView: React.FC = () => {
               type="button"
               className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
               onClick={() => {
-                const folder = dirname(tabMenu.path);
+                const p = tabMenu.path;
                 setTabMenu(null);
-                void openUrl(folder);
+                void revealItemInDir(p);
               }}
             >
               在系统中打开所在文件夹
-            </button>
-            <button
-              type="button"
-              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
-              onClick={() => {
-                const p = tabMenu.path;
-                setTabMenu(null);
-                void openUrl(p);
-              }}
-            >
-              在系统中打开文件
             </button>
             <button
               type="button"

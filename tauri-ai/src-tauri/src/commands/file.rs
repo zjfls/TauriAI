@@ -173,14 +173,6 @@ pub async fn list_local_directory(path: String) -> Result<Vec<LocalDirEntry>, St
         let name = entry.file_name().to_string_lossy().to_string();
         let is_dir = file_type.is_dir();
 
-        if !is_dir {
-            // Only include files that we can open as text with current allow-list.
-            let mime = infer_mime_from_filename(&name);
-            if mime != Some("text/plain") {
-                continue;
-            }
-        }
-
         out.push(LocalDirEntry {
             name,
             path: entry.path().to_string_lossy().to_string(),
