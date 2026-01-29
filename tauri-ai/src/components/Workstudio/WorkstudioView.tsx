@@ -215,6 +215,7 @@ const fileKindFor = (path: string, mime: string): OpenFile['kind'] => {
     lower.endsWith('.markdown') ||
     lower.endsWith('.rs') ||
     lower.endsWith('.toml') ||
+    lower.endsWith('.lock') ||
     lower.endsWith('.yaml') ||
     lower.endsWith('.yml') ||
     lower.endsWith('.css') ||
