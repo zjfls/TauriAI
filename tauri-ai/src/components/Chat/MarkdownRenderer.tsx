@@ -13,6 +13,8 @@ import { Copy, Check } from 'lucide-react';
 import { MathBlock } from './MathBlock';
 import 'katex/dist/katex.min.css';
 import type { Workstudio } from '../../types';
+import type { ParsedFileReference } from '../../utils/fileReference';
+import { parseFileReferenceToken } from '../../utils/fileReference';
 
 // Initialize mermaid with math support
 mermaid.initialize({
@@ -53,52 +55,10 @@ function hashCode(str: string): string {
   return hash.toString(36);
 }
 
-type ParsedFileReference = {
-  filePath: string;
-  line: number;
-  column?: number;
-};
-
 const isTauriRuntime = (): boolean => {
   if (typeof window === 'undefined') return false;
   const w = window as any;
   return Boolean(w.__TAURI_INTERNALS__ || w.__TAURI__);
-};
-
-const parseFileReferenceToken = (token: string): ParsedFileReference | null => {
-  const raw = token.trim();
-  if (!raw) return null;
-  if (raw.length > 800) return null;
-  if (/[\r\n\t]/.test(raw)) return null;
-  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(raw)) return null;
-
-  const stripDiffPrefix = (p: string) => {
-    if (p.startsWith('a/') || p.startsWith('b/')) return p.slice(2);
-    if (p.startsWith('a\\') || p.startsWith('b\\')) return p.slice(2);
-    return p;
-  };
-
-  const hashMatch = raw.match(/^(.*)#L(\d+)(?:C(\d+))?$/);
-  if (hashMatch) {
-    const filePath = stripDiffPrefix(hashMatch[1] ?? '').trim();
-    const line = Number(hashMatch[2]);
-    const column = hashMatch[3] ? Number(hashMatch[3]) : undefined;
-    if (!filePath || !Number.isFinite(line) || line <= 0) return null;
-    if (typeof column === 'number' && (!Number.isFinite(column) || column <= 0)) return null;
-    return { filePath, line, column };
-  }
-
-  const colonMatch = raw.match(/^(.*):(\d+)(?::(\d+))?$/);
-  if (colonMatch) {
-    const filePath = stripDiffPrefix(colonMatch[1] ?? '').trim();
-    const line = Number(colonMatch[2]);
-    const column = colonMatch[3] ? Number(colonMatch[3]) : undefined;
-    if (!filePath || !Number.isFinite(line) || line <= 0) return null;
-    if (typeof column === 'number' && (!Number.isFinite(column) || column <= 0)) return null;
-    return { filePath, line, column };
-  }
-
-  return null;
 };
 
 // ============================================================================
