@@ -1850,36 +1850,29 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
     }
 
     if (workspaceMentions.length > 0) {
+      // Codex-style: only send file references; do NOT inline file contents.
+      // Prevents huge files from blowing up the context window.
       const errors: string[] = [];
       const rootsByKey = new Map(workspaceRoots.map((r) => [r.key, r]));
 
       for (const m of workspaceMentions) {
         const parsed = parseWorkspaceUri(m.uri);
-        if (!parsed) continue;
-        const root = rootsByKey.get(parsed.rootKey);
-        if (!root) continue;
-        const absPath = joinPath(root.absPath, parsed.relPath);
-
-        try {
-          const payload = await invoke<{ filename: string; mime: string; base64: string; size: number }>(
-            'read_local_file_base64',
-            { path: absPath }
-          );
-          if (payload.mime !== 'text/plain') {
-            errors.push(`${payload.filename}: 仅支持引用文本文件`);
-            continue;
-          }
-          const bytes = base64ToUint8Array(payload.base64);
-          const text = new TextDecoder('utf-8').decode(bytes);
-          contentParts ??= [];
-          contentParts.push({
-            type: 'text_file' as const,
-            filename: payload.filename,
-            content: text,
-          });
-        } catch {
-          errors.push(`${basename(absPath)}: 读取失败`);
+        if (!parsed) {
+          errors.push(`${m.label}: URI 解析失败`);
+          continue;
         }
+        const root = rootsByKey.get(parsed.rootKey);
+        if (!root) {
+          errors.push(`${m.label}: workspace root 不存在`);
+          continue;
+        }
+        const absPath = joinPath(root.absPath, parsed.relPath);
+        contentParts ??= [];
+        contentParts.push({
+          type: 'file_ref' as const,
+          path: absPath,
+          label: m.label,
+        });
       }
 
       if (errors.length > 0) {

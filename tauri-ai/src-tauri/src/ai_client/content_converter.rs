@@ -51,6 +51,16 @@ pub fn content_part_to_blocks(part: &ContentPart, include_images: bool) -> Vec<C
             }]
         }
 
+        ContentPart::FileRef { path, label } => {
+            let shown = label.as_deref().unwrap_or(path);
+            vec![ContentBlock::Text {
+                text: format!(
+                    "引用文件：{}\n路径：{}\n（未附带文件内容；如需查看请使用 read_file/rg/list_dir 等工具）",
+                    shown, path
+                ),
+            }]
+        }
+
         ContentPart::PdfDocument {
             filename, pages, ..
         } => pdf_to_blocks(filename, pages, include_images),

@@ -239,6 +239,19 @@ export interface TextFileContentPart {
 }
 
 /**
+ * File reference content part (do NOT inline file contents)
+ *
+ * Used for "@ mention" style references to workspace files. The model can decide
+ * whether to read the file via tools (e.g. read_file/rg/list_dir) to avoid
+ * blowing up the context window for large files.
+ */
+export interface FileRefContentPart {
+  type: 'file_ref';
+  path: string;      // Absolute path (backend/tool-friendly)
+  label?: string;    // UI label (usually basename)
+}
+
+/**
  * Pending text file for attachment (before sending)
  */
 export interface PendingTextFile {
@@ -352,7 +365,12 @@ export const MAX_PDF_COUNT = 3;
 /**
  * A single part of message content (text, image, text file, or PDF document)
  */
-export type ContentPart = TextContentPart | ImageContentPart | TextFileContentPart | PdfDocumentContentPart;
+export type ContentPart =
+  | TextContentPart
+  | ImageContentPart
+  | TextFileContentPart
+  | PdfDocumentContentPart
+  | FileRefContentPart;
 
 // ============================================================================
 // Message & Conversation

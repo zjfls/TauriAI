@@ -5,7 +5,7 @@
  */
 
 import React, { useState } from 'react';
-import { User, Bot, Bug, AlertCircle, RefreshCw, ZoomIn } from 'lucide-react';
+import { User, Bot, Bug, AlertCircle, RefreshCw, ZoomIn, File as FileIcon } from 'lucide-react';
 import type { Message, Action, ContentPart } from '../../types';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { MessageToolbar } from './MessageToolbar';
@@ -101,6 +101,18 @@ const ContentPartsRenderer: React.FC<ContentPartsRendererProps> = ({
               >
                 <ZoomIn size={16} />
               </button>
+            </div>
+          );
+        }
+        if (part.type === 'file_ref') {
+          return (
+            <div
+              key={index}
+              className="my-1 inline-flex max-w-full items-center gap-2 rounded-md bg-blue-50 px-2 py-1 text-xs text-blue-700 dark:bg-blue-900/30 dark:text-blue-200"
+              title={part.path}
+            >
+              <FileIcon size={14} className="shrink-0 opacity-80" />
+              <span className="truncate">{part.label || part.path}</span>
             </div>
           );
         }

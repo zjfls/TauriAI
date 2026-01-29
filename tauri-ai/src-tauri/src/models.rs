@@ -74,6 +74,12 @@ pub enum ContentPart {
     },
     /// Text file content
     TextFile { filename: String, content: String },
+    /// File reference (path only; contents are NOT inlined)
+    FileRef {
+        path: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+    },
     /// PDF document (multimodal: text + images)
     PdfDocument {
         filename: String,
@@ -112,6 +118,14 @@ impl ContentPart {
         Self::TextFile {
             filename: filename.into(),
             content: content.into(),
+        }
+    }
+
+    /// Create a file reference content part (do NOT inline file contents)
+    pub fn file_ref(path: impl Into<String>, label: Option<String>) -> Self {
+        Self::FileRef {
+            path: path.into(),
+            label,
         }
     }
 
