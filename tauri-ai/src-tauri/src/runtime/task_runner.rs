@@ -28,23 +28,25 @@ use crate::models::{
     MessageStatus, MessageTurn,
 };
 use crate::prompts::{
-    MCP_RESOURCE_TOOL_PROMPT, PERSISTENT_PROCESS_PROMPT, PYTHON3_FALLBACK_PROMPT, WEB_SEARCH_TOOL_PROMPT,
-    WORKSTUDIO_PROMPT_GUIDE,
+    MCP_RESOURCE_TOOL_PROMPT, PERSISTENT_PROCESS_PROMPT, PYTHON3_FALLBACK_PROMPT,
+    WEB_SEARCH_TOOL_PROMPT, WORKSTUDIO_PROMPT_GUIDE,
 };
-use crate::skills::loader::{index_by_name as index_skills_by_name, load_skills as load_skill_files};
-use crate::skills::SkillEntry;
 use crate::runtime::events::RunEvent;
 use crate::runtime::mcp::global_mcp_runtime;
 use crate::runtime::types::{TaskKind, TurnPhase, TurnStatus};
+use crate::skills::loader::{
+    index_by_name as index_skills_by_name, load_skills as load_skill_files,
+};
+use crate::skills::SkillEntry;
 use crate::storage::Database;
 
-use super::emitter::RunEmitter;
 use super::approvals::ApprovalDecision;
+use super::emitter::RunEmitter;
 use super::run_state::RunState;
+use super::tools::registry::{register_builtin_handlers, ToolRegistry};
 use super::tools::{
     tool_specs_to_definitions, ToolOrchestrator, ToolOrchestratorConfig, ToolServices,
 };
-use super::tools::registry::{register_builtin_handlers, ToolRegistry};
 use sha1::{Digest, Sha1};
 
 /// 前端一次 invoke 对应的输入（Task Request）
@@ -161,7 +163,8 @@ const MCP_TOOL_NAME_DELIMITER: &str = "__";
 const MAX_TOOL_NAME_LENGTH: usize = 64;
 
 fn qualify_mcp_tool_name(server_name: &str, tool_name: &str) -> String {
-    let mut qualified = format!("mcp{MCP_TOOL_NAME_DELIMITER}{server_name}{MCP_TOOL_NAME_DELIMITER}{tool_name}");
+    let mut qualified =
+        format!("mcp{MCP_TOOL_NAME_DELIMITER}{server_name}{MCP_TOOL_NAME_DELIMITER}{tool_name}");
     if qualified.len() <= MAX_TOOL_NAME_LENGTH {
         return qualified;
     }
@@ -175,7 +178,11 @@ fn qualify_mcp_tool_name(server_name: &str, tool_name: &str) -> String {
     format!("{qualified}{sha1_str}")
 }
 
-fn build_assistant_context_content(content: String, thinking: &str, reinject_thinking: bool) -> String {
+fn build_assistant_context_content(
+    content: String,
+    thinking: &str,
+    reinject_thinking: bool,
+) -> String {
     if !reinject_thinking || thinking.trim().is_empty() {
         return content;
     }
@@ -568,7 +575,10 @@ fn render_skills_section(skills: &[SkillEntry]) -> Option<String> {
     lines.push("  1) After deciding to use a skill, open its `SKILL.md`. Read only enough to follow the workflow.".to_string());
     lines.push("  2) If `SKILL.md` points to extra folders such as `references/`, load only the specific files needed for the request; don't bulk-load everything.".to_string());
     lines.push("  3) If `scripts/` exist, prefer running or patching them instead of retyping large code blocks.".to_string());
-    lines.push("  4) If `assets/` or templates exist, reuse them instead of recreating from scratch.".to_string());
+    lines.push(
+        "  4) If `assets/` or templates exist, reuse them instead of recreating from scratch."
+            .to_string(),
+    );
     lines.push("- Coordination and sequencing:".to_string());
     lines.push("  - If multiple skills apply, choose the minimal set that covers the request and state the order you'll use them.".to_string());
     lines.push("  - Announce which skill(s) you're using and why (one short line). If you skip an obvious skill, say why.".to_string());
@@ -617,7 +627,11 @@ fn build_skill_prompt_block(skills: &[SkillEntry]) -> String {
     out
 }
 
-fn inject_skills_prompt(messages: &mut Vec<Message>, conversation_id: &str, skills: Vec<SkillEntry>) {
+fn inject_skills_prompt(
+    messages: &mut Vec<Message>,
+    conversation_id: &str,
+    skills: Vec<SkillEntry>,
+) {
     if skills.is_empty() {
         return;
     }
@@ -666,10 +680,13 @@ fn select_enabled_skills(
         return Vec::new();
     }
 
-    let disabled_global: HashSet<&str> =
-        config.skills.disabled_skills.iter().map(|s| s.as_str()).collect();
-    let disabled_set: HashSet<&str> =
-        set.disabled_skills.iter().map(|s| s.as_str()).collect();
+    let disabled_global: HashSet<&str> = config
+        .skills
+        .disabled_skills
+        .iter()
+        .map(|s| s.as_str())
+        .collect();
+    let disabled_set: HashSet<&str> = set.disabled_skills.iter().map(|s| s.as_str()).collect();
 
     let allow: Vec<&str> = set
         .skills
@@ -712,7 +729,10 @@ fn select_enabled_skills(
 
 impl<'a> TurnLoop<'a> {
     fn is_safe_readonly_tool(tool_name: &str) -> bool {
-        matches!(tool_name, "echo" | "get_time" | "read_file" | "list_dir" | "rg")
+        matches!(
+            tool_name,
+            "echo" | "get_time" | "read_file" | "list_dir" | "rg"
+        )
     }
 
     fn is_exec_tool(tool_name: &str) -> bool {
@@ -784,15 +804,19 @@ impl<'a> TurnLoop<'a> {
                 crate::models::SandboxPolicy::DangerFullAccess => {
                     crate::models::SandboxPolicy::DangerFullAccess
                 }
-                crate::models::SandboxPolicy::ReadOnly => crate::models::SandboxPolicy::WorkspaceWrite {
-                    writable_roots: Vec::new(),
-                    network_access: true,
-                    exclude_tmpdir_env_var: false,
-                    exclude_slash_tmp: false,
-                },
-                crate::models::SandboxPolicy::ExternalSandbox { .. } => crate::models::SandboxPolicy::ExternalSandbox {
-                    network_access: crate::models::NetworkAccess::Enabled,
-                },
+                crate::models::SandboxPolicy::ReadOnly => {
+                    crate::models::SandboxPolicy::WorkspaceWrite {
+                        writable_roots: Vec::new(),
+                        network_access: true,
+                        exclude_tmpdir_env_var: false,
+                        exclude_slash_tmp: false,
+                    }
+                }
+                crate::models::SandboxPolicy::ExternalSandbox { .. } => {
+                    crate::models::SandboxPolicy::ExternalSandbox {
+                        network_access: crate::models::NetworkAccess::Enabled,
+                    }
+                }
                 crate::models::SandboxPolicy::WorkspaceWrite {
                     writable_roots,
                     exclude_tmpdir_env_var,
@@ -868,7 +892,10 @@ impl<'a> TurnLoop<'a> {
                 // Read-only sandbox still needs approval to lift restrictions.
                 // Workspace-write allows `apply_patch` without prompting (Codex-like).
                 if Self::is_write_tool(tool_name)
-                    && matches!(self.sandbox_policy, crate::models::SandboxPolicy::WorkspaceWrite { .. })
+                    && matches!(
+                        self.sandbox_policy,
+                        crate::models::SandboxPolicy::WorkspaceWrite { .. }
+                    )
                 {
                     return false;
                 }
@@ -890,7 +917,11 @@ impl<'a> TurnLoop<'a> {
     ) -> (bool, ApprovalDecision, Option<crate::models::SandboxPolicy>) {
         let tool_name = call.name.as_str();
 
-        if self.allowed_tool_names.as_ref().is_some_and(|s| !s.contains(tool_name)) {
+        if self
+            .allowed_tool_names
+            .as_ref()
+            .is_some_and(|s| !s.contains(tool_name))
+        {
             return (false, ApprovalDecision::Approved, None);
         }
 
@@ -919,7 +950,11 @@ impl<'a> TurnLoop<'a> {
 
         if !needs_prompt {
             // Policy allows running without asking; keep the current sandbox policy.
-            return (false, ApprovalDecision::Approved, Some(self.sandbox_policy.clone()));
+            return (
+                false,
+                ApprovalDecision::Approved,
+                Some(self.sandbox_policy.clone()),
+            );
         }
 
         let approval_key = Self::approval_cache_key(call);
@@ -1216,8 +1251,11 @@ impl<'a> TurnLoop<'a> {
                     if let Some(error) = max_turns_error {
                         let mut reply_content = content.clone();
                         if reply_content.trim().is_empty() {
-                            reply_content =
-                                build_fallback_reply_markdown("任务失败", &error, turn_debug_info.as_ref());
+                            reply_content = build_fallback_reply_markdown(
+                                "任务失败",
+                                &error,
+                                turn_debug_info.as_ref(),
+                            );
                             self.emitter.emit(RunEvent::BlockDelta {
                                 task_id: self.task_id.clone(),
                                 turn_id: turn_id.clone(),
@@ -1362,17 +1400,12 @@ impl<'a> TurnLoop<'a> {
                         // 1) Policy-based approval (AskForApproval)
                         let (asked, decision, sandbox_override) = self
                             .request_tool_approval(
-                                abort_rx,
-                                &turn_id,
-                                turn_index,
-                                call,
-                                None,
-                                false,
-                                false,
+                                abort_rx, &turn_id, turn_index, call, None, false, false,
                             )
                             .await;
                         if asked {
-                            approval_record = Some((Self::decision_status(decision).to_string(), None));
+                            approval_record =
+                                Some((Self::decision_status(decision).to_string(), None));
                         }
 
                         match decision {
@@ -1470,9 +1503,8 @@ impl<'a> TurnLoop<'a> {
                         // 2) OnFailure: if denied by sandbox, ask to retry with escalation.
                         if matches!(self.approval_policy, AskForApproval::OnFailure) {
                             if let Err(e) = &exec {
-                                let web_search_needs_network =
-                                    call.name == "web_search"
-                                        && !sandbox_policy_for_call.has_full_network_access();
+                                let web_search_needs_network = call.name == "web_search"
+                                    && !sandbox_policy_for_call.has_full_network_access();
                                 if e.kind == super::tools::registry::ToolErrorKind::Denied
                                     && (!sandbox_policy_for_call.has_full_disk_write_access()
                                         || web_search_needs_network)
@@ -1600,8 +1632,8 @@ impl<'a> TurnLoop<'a> {
                                                         conversation_id: &self.conversation_id,
                                                         task_id: &self.task_id,
                                                         turn_id: &turn_id,
-                                                        assistant_message_id:
-                                                            &self.assistant_message_id,
+                                                        assistant_message_id: &self
+                                                            .assistant_message_id,
                                                         default_workdir: self
                                                             .default_workdir
                                                             .clone(),
@@ -1612,9 +1644,7 @@ impl<'a> TurnLoop<'a> {
                                                             .clone(),
                                                         emitter: self.emitter,
                                                         abort_rx,
-                                                        services: self
-                                                            .tool_services
-                                                            .as_ref(),
+                                                        services: self.tool_services.as_ref(),
                                                     };
                                                 let orchestrator = self
                                                     .tool_orchestrator
@@ -1648,7 +1678,9 @@ impl<'a> TurnLoop<'a> {
                                     self.emitter.emit(RunEvent::BlockDelta {
                                         task_id: self.task_id.clone(),
                                         turn_id: turn_id.clone(),
-                                        assistant_message_id: Some(self.assistant_message_id.clone()),
+                                        assistant_message_id: Some(
+                                            self.assistant_message_id.clone(),
+                                        ),
                                         block_id: format!("tool_result:{}", call.id),
                                         block_type: "tool_result".to_string(),
                                         format: Some("plain".to_string()),
@@ -1709,7 +1741,9 @@ impl<'a> TurnLoop<'a> {
                             .unwrap_or_else(|| "工具执行已中止".to_string());
                         let reply_content = build_fallback_reply_markdown(
                             "任务已中止",
-                            &format!("工具执行被中止：{reason}\n\n你可以点击“重试”或重新发送消息继续。"),
+                            &format!(
+                                "工具执行被中止：{reason}\n\n你可以点击“重试”或重新发送消息继续。"
+                            ),
                             turn_debug_info.as_ref(),
                         );
 
@@ -2495,7 +2529,7 @@ async fn run_task_inner(
         None => None, // Default: let model decide based on capabilities
         _ => None,
     };
-    
+
     let mut model_config =
         build_model_config(provider, model, input.thinking, native_web_search_enabled);
     let debug_mode = input.debug_mode.unwrap_or(config.general.debug_mode);
@@ -2566,10 +2600,7 @@ async fn run_task_inner(
             .thinking_level
             .as_deref()
             .is_some_and(|v| v != "disabled")
-        && (model_config
-            .model
-            .to_ascii_lowercase()
-            .starts_with("kimi-")
+        && (model_config.model.to_ascii_lowercase().starts_with("kimi-")
             || model_config
                 .api_base
                 .as_deref()
@@ -2592,15 +2623,17 @@ async fn run_task_inner(
             | crate::models::ProviderType::OpenaiCompatible
             | crate::models::ProviderType::OpenaiResponses
             | crate::models::ProviderType::Anthropic
-            | crate::models::ProviderType::Google => expand_persisted_blocks_for_model_input(base_messages),
+            | crate::models::ProviderType::Google => {
+                expand_persisted_blocks_for_model_input(base_messages)
+            }
             _ => append_tool_trace_for_model_input(base_messages),
         },
         _ => append_tool_trace_for_model_input(base_messages),
     };
 
     // 2.5) Workstudio: tool agents can bind a working directory (main folder).
-    let workspace_enabled = matches!(runtime_agent_type, AgentType::Tool)
-        && agent.workspace_support.unwrap_or(true);
+    let workspace_enabled =
+        matches!(runtime_agent_type, AgentType::Tool) && agent.workspace_support.unwrap_or(true);
     let (workstudio, default_workdir) = if workspace_enabled {
         let ws = {
             let db = db.lock().await;
@@ -2617,18 +2650,25 @@ async fn run_task_inner(
         .map(|ws| {
             let mut roots = Vec::new();
             roots.push(std::path::PathBuf::from(ws.main_folder.clone()));
-            roots.extend(ws.folders.iter().map(|p| std::path::PathBuf::from(p.clone())));
+            roots.extend(
+                ws.folders
+                    .iter()
+                    .map(|p| std::path::PathBuf::from(p.clone())),
+            );
             roots
         })
         .unwrap_or_default();
 
-    let base_security_policy = config.security.resolve_policy(agent.security_policy.as_deref());
+    let base_security_policy = config
+        .security
+        .resolve_policy(agent.security_policy.as_deref());
 
     // RunMode semantics:
     // - agent: use security policy only
     // - agent-custom: use agent overrides (sandboxPolicy/approvalPolicy) on top of the security policy
     let mut sandbox_policy = if use_custom_security {
-        agent.sandbox_policy
+        agent
+            .sandbox_policy
             .clone()
             .unwrap_or_else(|| base_security_policy.sandbox_policy.clone())
     } else {
@@ -2639,7 +2679,8 @@ async fn run_task_inner(
     }
 
     let approval_policy = if use_custom_security {
-        agent.approval_policy
+        agent
+            .approval_policy
             .unwrap_or(base_security_policy.approval_policy)
     } else {
         base_security_policy.approval_policy
@@ -2702,14 +2743,13 @@ async fn run_task_inner(
         let allow_pty_exec = !matches!(sandbox_policy, crate::models::SandboxPolicy::ReadOnly);
         let allow_file_write = !matches!(sandbox_policy, crate::models::SandboxPolicy::ReadOnly);
         let allow_mcp_exec = sandbox_policy.has_full_network_access();
-        let permission_policy: Arc<dyn super::tools::permissions::ToolPermissionPolicy> = Arc::new(
-            super::tools::permissions::BasicToolPermissionPolicy {
+        let permission_policy: Arc<dyn super::tools::permissions::ToolPermissionPolicy> =
+            Arc::new(super::tools::permissions::BasicToolPermissionPolicy {
                 allow_shell_exec,
                 allow_pty_exec,
                 allow_file_write,
                 allow_mcp_exec,
-            },
-        );
+            });
 
         allow_persistent_pty = toolset.persistance_shell_enhance;
 
@@ -2761,13 +2801,19 @@ async fn run_task_inner(
                         let mut tools = tools;
                         // Apply MCP Set per-server tool filters on top of server config filters.
                         if !set_server.enabled_tools.is_empty() {
-                            let allow: std::collections::HashSet<&str> =
-                                set_server.enabled_tools.iter().map(|s| s.as_str()).collect();
+                            let allow: std::collections::HashSet<&str> = set_server
+                                .enabled_tools
+                                .iter()
+                                .map(|s| s.as_str())
+                                .collect();
                             tools.retain(|t| allow.contains(t.name.as_ref()));
                         }
                         if !set_server.disabled_tools.is_empty() {
-                            let deny: std::collections::HashSet<&str> =
-                                set_server.disabled_tools.iter().map(|s| s.as_str()).collect();
+                            let deny: std::collections::HashSet<&str> = set_server
+                                .disabled_tools
+                                .iter()
+                                .map(|s| s.as_str())
+                                .collect();
                             tools.retain(|t| !deny.contains(t.name.as_ref()));
                         }
 
@@ -2819,17 +2865,18 @@ async fn run_task_inner(
         // - User explicitly selected a web_search provider for this run
         // - And the selected provider is enabled + has API key configured
         let ws_cfg = &config.general.web_search_tool;
-        
+
         // Parse the selected provider from input (if any)
-        let selected_provider = input.web_search_provider.as_ref().and_then(|p| {
-            match p.as_str() {
+        let selected_provider = input
+            .web_search_provider
+            .as_ref()
+            .and_then(|p| match p.as_str() {
                 "tavily" => Some(crate::models::WebSearchProvider::Tavily),
                 "google" => Some(crate::models::WebSearchProvider::Google),
                 "brave" => Some(crate::models::WebSearchProvider::Brave),
                 _ => None,
-            }
-        });
-        
+            });
+
         // Check if the selected provider is enabled and has API key
         let (provider_enabled, has_key) = if let Some(provider) = selected_provider {
             let enabled = match provider {
@@ -2847,8 +2894,14 @@ async fn run_task_inner(
                     .as_ref()
                     .is_some_and(|k| !k.trim().is_empty()),
                 crate::models::WebSearchProvider::Google => {
-                    ws_cfg.google_api_key.as_ref().is_some_and(|k| !k.trim().is_empty())
-                        && ws_cfg.google_cx.as_ref().is_some_and(|k| !k.trim().is_empty())
+                    ws_cfg
+                        .google_api_key
+                        .as_ref()
+                        .is_some_and(|k| !k.trim().is_empty())
+                        && ws_cfg
+                            .google_cx
+                            .as_ref()
+                            .is_some_and(|k| !k.trim().is_empty())
                 }
             };
             (enabled, has_key)
@@ -2881,10 +2934,13 @@ async fn run_task_inner(
             toolset.tools.extend(mcp_resource_tool_names);
         }
 
-        let orchestrator = ToolOrchestrator::new(Arc::new(registry), ToolOrchestratorConfig {
-            toolset,
-            permission_policy,
-        });
+        let orchestrator = ToolOrchestrator::new(
+            Arc::new(registry),
+            ToolOrchestratorConfig {
+                toolset,
+                permission_policy,
+            },
+        );
 
         let specs = orchestrator.tool_specs_for_model();
         let allowed_tool_names: HashSet<String> = specs.iter().map(|s| s.name.clone()).collect();
@@ -2974,7 +3030,9 @@ async fn run_task_inner(
                 if from_exe.is_some() {
                     from_exe
                 } else {
-                    std::env::current_dir().ok().and_then(|cwd| try_from_ancestors(&cwd))
+                    std::env::current_dir()
+                        .ok()
+                        .and_then(|cwd| try_from_ancestors(&cwd))
                 }
             }
         }
@@ -3185,7 +3243,11 @@ async fn run_task_inner(
                     },
                     meta: Some(MessageMeta {
                         model: Some(model_config.model.clone()),
-                        blocks: if blocks.is_empty() { None } else { Some(blocks) },
+                        blocks: if blocks.is_empty() {
+                            None
+                        } else {
+                            Some(blocks)
+                        },
                         turns: if turns.is_empty() { None } else { Some(turns) },
                         ..Default::default()
                     }),
@@ -3239,7 +3301,11 @@ async fn run_task_inner(
                     },
                     meta: Some(MessageMeta {
                         model: Some(model_config.model.clone()),
-                        blocks: if blocks.is_empty() { None } else { Some(blocks) },
+                        blocks: if blocks.is_empty() {
+                            None
+                        } else {
+                            Some(blocks)
+                        },
                         turns: if turns.is_empty() { None } else { Some(turns) },
                         ..Default::default()
                     }),
@@ -3300,7 +3366,11 @@ async fn run_task_inner(
                     },
                     meta: Some(MessageMeta {
                         model: Some(model_config.model.clone()),
-                        blocks: if blocks.is_empty() { None } else { Some(blocks) },
+                        blocks: if blocks.is_empty() {
+                            None
+                        } else {
+                            Some(blocks)
+                        },
                         turns: if turns.is_empty() { None } else { Some(turns) },
                         ..Default::default()
                     }),
@@ -3339,137 +3409,417 @@ async fn cleanup_abort_sender(run_state: &RunState, conversation_id: &str) {
     senders.remove(conversation_id);
 }
 
+trait TurnEventEmitter: Send {
+    fn emit(&mut self, event: RunEvent);
+}
+
+impl TurnEventEmitter for RunEmitter {
+    fn emit(&mut self, event: RunEvent) {
+        RunEmitter::emit(self, event);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn stream_one_turn(
     client: Arc<dyn crate::ai_client::AiClient>,
     model_config: crate::models::ModelConfig,
     tools: Option<Vec<ToolDefinition>>,
     messages: Vec<Message>,
-    emitter: &mut RunEmitter,
+    emitter: &mut dyn TurnEventEmitter,
     task_id: &str,
     turn_id: &str,
     assistant_message_id: &str,
     output_format: Option<String>,
     abort_rx: &mut mpsc::Receiver<()>,
 ) -> TurnStreamResult {
-    let (token_tx, mut token_rx) = mpsc::channel::<StreamEvent>(100);
+    // Turn 级重试（避免 transient 网络/限流导致整个 Task 直接失败）
+    // - 只在“本轮尚未向前端输出任何增量”时才自动重试，避免重复输出/状态错乱
+    // - 每轮最多重试固定次数（可后续做成可配置项）
+    const MAX_ATTEMPTS: u32 = 3;
+    const BASE_DELAY_MS: u64 = 100;
+    const MAX_DELAY_MS: u64 = 2_000;
 
-    let mut full_content = String::new();
-    let mut full_thinking = String::new();
-    let mut debug_info: Option<DebugInfoData> = None;
-    let mut usage: Option<TokenUsage> = None;
-    let mut last_error: Option<String> = None;
-    let mut tool_calls: Option<Vec<ToolCall>> = None;
+    fn status_from_debug(di: Option<&DebugInfoData>) -> Option<u16> {
+        di.and_then(|d| d.response.as_ref()).map(|r| r.status)
+    }
 
-    let messages = sanitize_messages_for_model_input(messages);
-    let stream_handle = tokio::spawn(async move {
-        client
-            .chat_stream(messages, &model_config, tools, token_tx)
-            .await
-    });
+    fn is_retryable_status(status: u16) -> bool {
+        status == 408 || status == 429 || (500..600).contains(&status)
+    }
 
-    loop {
-        tokio::select! {
-            _ = abort_rx.recv() => {
-                stream_handle.abort();
-                return TurnStreamResult::Aborted { content: full_content, thinking: full_thinking };
+    fn retry_after_ms(di: Option<&DebugInfoData>) -> Option<u64> {
+        let headers = di.and_then(|d| d.response.as_ref()).map(|r| &r.headers)?;
+        let val = headers
+            .iter()
+            .find(|(k, _)| k.to_ascii_lowercase() == "retry-after")
+            .map(|(_, v)| v.as_str())?;
+
+        // RFC allows either delta-seconds or HTTP date;这里只处理 delta-seconds（足够覆盖常见 429）
+        let trimmed = val.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        if let Ok(seconds) = trimmed.parse::<f64>() {
+            if seconds.is_finite() && seconds >= 0.0 {
+                return Some((seconds * 1000.0) as u64);
             }
-            event = token_rx.recv() => {
-                match event {
-                    Some(StreamEvent::Token(token)) => {
-                        full_content.push_str(&token);
-                        emitter.emit(RunEvent::BlockDelta {
-                            task_id: task_id.to_string(),
-                            turn_id: turn_id.to_string(),
-                            assistant_message_id: Some(assistant_message_id.to_string()),
-                            block_id: "assistant_text".to_string(),
-                            block_type: "text".to_string(),
-                            format: output_format.clone(),
-                            delta: token,
-                        });
-                    }
-                    Some(StreamEvent::Thinking(token)) => {
-                        full_thinking.push_str(&token);
-                        emitter.emit(RunEvent::BlockDelta {
-                            task_id: task_id.to_string(),
-                            turn_id: turn_id.to_string(),
-                            assistant_message_id: Some(assistant_message_id.to_string()),
-                            block_id: "assistant_thinking".to_string(),
-                            block_type: "thinking".to_string(),
-                            format: Some("plain".to_string()),
-                            delta: token,
-                        });
-                    }
-                    Some(StreamEvent::WebSearch { id, status, action }) => {
-                        emitter.emit(RunEvent::BlockDelta {
-                            task_id: task_id.to_string(),
-                            turn_id: turn_id.to_string(),
-                            assistant_message_id: Some(assistant_message_id.to_string()),
-                            block_id: format!("web_search:{}", id),
-                            block_type: "web_search".to_string(),
-                            format: Some("json".to_string()),
-                            delta: serde_json::json!({
-                                "id": id,
-                                "status": status,
-                                "action": action,
-                            })
-                            .to_string(),
-                        });
-                    }
-                    Some(StreamEvent::ToolCalls(calls)) => {
-                        tool_calls = Some(calls);
-                        // Tool call turn：不要立刻 break，继续等 DoneWithDebug（如果有的话）以便拿到 debug/usage
-                    }
-                    Some(StreamEvent::Done(content)) => { full_content = content; break; }
-                    Some(StreamEvent::DoneWithThinking { content, thinking }) => {
-                        full_content = content;
-                        full_thinking = thinking;
-                        break;
-                    }
-                    Some(StreamEvent::DoneWithDebug { content, thinking, debug_info: di, usage: u }) => {
-                        full_content = content;
-                        if let Some(t) = thinking { full_thinking = t; }
-                        debug_info = di;
-                        usage = u;
-                        break;
-                    }
-                    Some(StreamEvent::Error(error)) => {
-                        last_error = Some(error);
-                        // 不立刻 break：等待可能带 debug/usage 的 DoneWithDebug
-                    }
-                    None => break,
-                }
-            }
+        }
+        None
+    }
+
+    fn is_retryable_error(err: &crate::ai_client::AiError, di: Option<&DebugInfoData>) -> bool {
+        use crate::ai_client::AiError;
+        match err {
+            AiError::ConnectionError(_) | AiError::StreamError(_) | AiError::RateLimited(_) => true,
+            AiError::RequestFailed(_) => status_from_debug(di).is_some_and(is_retryable_status),
+            AiError::AuthenticationFailed(_) | AiError::InvalidResponse(_) => false,
         }
     }
 
-    // 确保任务退出（忽略具体错误）
-    let _ = stream_handle.await;
+    let messages = sanitize_messages_for_model_input(messages);
 
-    if let Some(calls) = tool_calls {
-        return TurnStreamResult::ToolCalls {
+    for attempt in 1..=MAX_ATTEMPTS {
+        let (token_tx, mut token_rx) = mpsc::channel::<StreamEvent>(100);
+
+        let mut full_content = String::new();
+        let mut full_thinking = String::new();
+        let mut debug_info: Option<DebugInfoData> = None;
+        let mut usage: Option<TokenUsage> = None;
+        let mut last_error: Option<String> = None;
+        let mut tool_calls: Option<Vec<ToolCall>> = None;
+        let mut emitted_any_delta = false;
+
+        let client = client.clone();
+        let model_config = model_config.clone();
+        let tools = tools.clone();
+        let attempt_messages = messages.clone();
+
+        let stream_handle = tokio::spawn(async move {
+            client
+                .chat_stream(attempt_messages, &model_config, tools, token_tx)
+                .await
+        });
+
+        loop {
+            tokio::select! {
+                _ = abort_rx.recv() => {
+                    stream_handle.abort();
+                    return TurnStreamResult::Aborted { content: full_content, thinking: full_thinking };
+                }
+                event = token_rx.recv() => {
+                    match event {
+                        Some(StreamEvent::Token(token)) => {
+                            emitted_any_delta = true;
+                            full_content.push_str(&token);
+                            emitter.emit(RunEvent::BlockDelta {
+                                task_id: task_id.to_string(),
+                                turn_id: turn_id.to_string(),
+                                assistant_message_id: Some(assistant_message_id.to_string()),
+                                block_id: "assistant_text".to_string(),
+                                block_type: "text".to_string(),
+                                format: output_format.clone(),
+                                delta: token,
+                            });
+                        }
+                        Some(StreamEvent::Thinking(token)) => {
+                            emitted_any_delta = true;
+                            full_thinking.push_str(&token);
+                            emitter.emit(RunEvent::BlockDelta {
+                                task_id: task_id.to_string(),
+                                turn_id: turn_id.to_string(),
+                                assistant_message_id: Some(assistant_message_id.to_string()),
+                                block_id: "assistant_thinking".to_string(),
+                                block_type: "thinking".to_string(),
+                                format: Some("plain".to_string()),
+                                delta: token,
+                            });
+                        }
+                        Some(StreamEvent::WebSearch { id, status, action }) => {
+                            emitted_any_delta = true;
+                            emitter.emit(RunEvent::BlockDelta {
+                                task_id: task_id.to_string(),
+                                turn_id: turn_id.to_string(),
+                                assistant_message_id: Some(assistant_message_id.to_string()),
+                                block_id: format!("web_search:{}", id),
+                                block_type: "web_search".to_string(),
+                                format: Some("json".to_string()),
+                                delta: serde_json::json!({
+                                    "id": id,
+                                    "status": status,
+                                    "action": action,
+                                })
+                                .to_string(),
+                            });
+                        }
+                        Some(StreamEvent::ToolCalls(calls)) => {
+                            emitted_any_delta = true;
+                            tool_calls = Some(calls);
+                            // Tool call turn：不要立刻 break，继续等 DoneWithDebug（如果有的话）以便拿到 debug/usage
+                        }
+                        Some(StreamEvent::Done(content)) => { full_content = content; break; }
+                        Some(StreamEvent::DoneWithThinking { content, thinking }) => {
+                            full_content = content;
+                            full_thinking = thinking;
+                            break;
+                        }
+                        Some(StreamEvent::DoneWithDebug { content, thinking, debug_info: di, usage: u }) => {
+                            full_content = content;
+                            if let Some(t) = thinking { full_thinking = t; }
+                            debug_info = di;
+                            usage = u;
+                            break;
+                        }
+                        Some(StreamEvent::Error(error)) => {
+                            last_error = Some(error);
+                            // 不立刻 break：等待可能带 debug/usage 的 DoneWithDebug
+                        }
+                        None => break,
+                    }
+                }
+            }
+        }
+
+        // 确保任务退出，并把“没有通过 StreamEvent::Error 上报的错误”补齐（否则会被误判为成功结束）
+        let stream_result: Result<(), crate::ai_client::AiError> = match stream_handle.await {
+            Ok(v) => v,
+            Err(e) => Err(crate::ai_client::AiError::StreamError(e.to_string())),
+        };
+
+        if let Some(calls) = tool_calls {
+            return TurnStreamResult::ToolCalls {
+                content: full_content,
+                thinking: full_thinking,
+                tool_calls: calls,
+                debug_info,
+                usage,
+            };
+        }
+
+        if let Err(stream_err) = stream_result {
+            if last_error.is_none() {
+                last_error = Some(stream_err.to_string());
+            }
+
+            let can_retry = attempt < MAX_ATTEMPTS
+                && !emitted_any_delta
+                && is_retryable_error(&stream_err, debug_info.as_ref());
+
+            if can_retry {
+                let shift = attempt.saturating_sub(1).min(30);
+                let exp = 1u64 << shift;
+                let mut delay_ms = BASE_DELAY_MS.saturating_mul(exp);
+                if let Some(hint) = retry_after_ms(debug_info.as_ref()) {
+                    delay_ms = delay_ms.max(hint);
+                }
+                delay_ms = delay_ms.min(MAX_DELAY_MS);
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                continue;
+            }
+        }
+
+        if let Some(error) = last_error {
+            return TurnStreamResult::Error {
+                content: full_content,
+                thinking: full_thinking,
+                error,
+                debug_info,
+                usage,
+            };
+        }
+
+        return TurnStreamResult::Final {
             content: full_content,
             thinking: full_thinking,
-            tool_calls: calls,
             debug_info,
             usage,
         };
     }
 
-    if let Some(error) = last_error {
-        return TurnStreamResult::Error {
-            content: full_content,
-            thinking: full_thinking,
-            error,
-            debug_info,
-            usage,
-        };
+    // 理论不可达（for loop 已 return）；兜底返回错误避免编译器误判。
+    TurnStreamResult::Error {
+        content: String::new(),
+        thinking: String::new(),
+        error: "Turn stream failed after retries".to_string(),
+        debug_info: None,
+        usage: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use async_trait::async_trait;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct NoopEmitter;
+
+    impl TurnEventEmitter for NoopEmitter {
+        fn emit(&mut self, _event: RunEvent) {}
     }
 
-    TurnStreamResult::Final {
-        content: full_content,
-        thinking: full_thinking,
-        debug_info,
-        usage,
+    struct AlwaysFailClient;
+
+    #[async_trait]
+    impl crate::ai_client::AiClient for AlwaysFailClient {
+        async fn chat(
+            &self,
+            _messages: Vec<crate::models::Message>,
+            _config: &crate::models::ModelConfig,
+            _tools: Option<Vec<crate::ai_client::ToolDefinition>>,
+        ) -> Result<String, crate::ai_client::AiError> {
+            Err(crate::ai_client::AiError::ConnectionError(
+                "boom".to_string(),
+            ))
+        }
+
+        async fn chat_stream(
+            &self,
+            _messages: Vec<crate::models::Message>,
+            _config: &crate::models::ModelConfig,
+            _tools: Option<Vec<crate::ai_client::ToolDefinition>>,
+            _token_sender: mpsc::Sender<crate::ai_client::StreamEvent>,
+        ) -> Result<(), crate::ai_client::AiError> {
+            // 故意不发送任何 StreamEvent，直接返回错误。
+            // 修复前：stream_one_turn 会把这种情况当作“成功完成但内容为空”（因为忽略了 JoinHandle 里的 Err）。
+            Err(crate::ai_client::AiError::ConnectionError(
+                "boom".to_string(),
+            ))
+        }
+    }
+
+    struct FlakyClient {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl crate::ai_client::AiClient for FlakyClient {
+        async fn chat(
+            &self,
+            _messages: Vec<crate::models::Message>,
+            _config: &crate::models::ModelConfig,
+            _tools: Option<Vec<crate::ai_client::ToolDefinition>>,
+        ) -> Result<String, crate::ai_client::AiError> {
+            Ok("ok".to_string())
+        }
+
+        async fn chat_stream(
+            &self,
+            _messages: Vec<crate::models::Message>,
+            _config: &crate::models::ModelConfig,
+            _tools: Option<Vec<crate::ai_client::ToolDefinition>>,
+            token_sender: mpsc::Sender<crate::ai_client::StreamEvent>,
+        ) -> Result<(), crate::ai_client::AiError> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                // 第一次：模拟连接错误（不发事件）
+                return Err(crate::ai_client::AiError::ConnectionError(
+                    "boom".to_string(),
+                ));
+            }
+            // 第二次：返回完整内容
+            let _ = token_sender
+                .send(crate::ai_client::StreamEvent::Done("hello".to_string()))
+                .await;
+            Ok(())
+        }
+    }
+
+    fn test_model_config() -> crate::models::ModelConfig {
+        crate::models::ModelConfig {
+            id: "test".to_string(),
+            name: "test".to_string(),
+            provider: "openai".to_string(),
+            api_base: Some("http://127.0.0.1:0".to_string()),
+            api_key: Some("test".to_string()),
+            model: "test".to_string(),
+            parameters: crate::models::ModelParameters::default(),
+            thinking_level: None,
+            thinking_budget_tokens: None,
+            vision_enabled: false,
+            web_search_enabled: false,
+            max_images: None,
+            use_reasoning_effort: None,
+            debug_sse: false,
+            reinject_reasoning_content: false,
+        }
+    }
+
+    fn test_user_message() -> crate::models::Message {
+        crate::models::Message {
+            id: "m1".to_string(),
+            conversation_id: "c1".to_string(),
+            role: crate::models::MessageRole::User,
+            content: "hi".to_string(),
+            content_parts: vec![],
+            thinking: None,
+            meta: None,
+            created_at: chrono::Utc::now(),
+            status: crate::models::MessageStatus::Success,
+            error_message: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_one_turn_should_surface_client_error_even_without_events() {
+        let client: Arc<dyn crate::ai_client::AiClient> = Arc::new(AlwaysFailClient);
+        let mut emitter = NoopEmitter;
+        let (abort_tx, mut abort_rx) = mpsc::channel(1);
+        let _keep_abort = abort_tx;
+
+        let result = stream_one_turn(
+            client,
+            test_model_config(),
+            None,
+            vec![test_user_message()],
+            &mut emitter,
+            "task",
+            "turn",
+            "assistant",
+            None,
+            &mut abort_rx,
+        )
+        .await;
+
+        match result {
+            TurnStreamResult::Error { error, .. } => {
+                assert!(
+                    error.contains("Connection error"),
+                    "unexpected error: {error}"
+                );
+            }
+            other => panic!("expected TurnStreamResult::Error, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_one_turn_should_retry_connection_error_before_any_output() {
+        let client: Arc<dyn crate::ai_client::AiClient> = Arc::new(FlakyClient {
+            calls: AtomicUsize::new(0),
+        });
+        let mut emitter = NoopEmitter;
+        let (abort_tx, mut abort_rx) = mpsc::channel(1);
+        let _keep_abort = abort_tx;
+
+        let result = stream_one_turn(
+            client,
+            test_model_config(),
+            None,
+            vec![test_user_message()],
+            &mut emitter,
+            "task",
+            "turn",
+            "assistant",
+            None,
+            &mut abort_rx,
+        )
+        .await;
+
+        match result {
+            TurnStreamResult::Final { content, .. } => {
+                assert_eq!(content, "hello");
+            }
+            other => panic!("expected TurnStreamResult::Final, got: {other:?}"),
+        }
     }
 }
