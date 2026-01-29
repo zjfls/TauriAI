@@ -493,9 +493,49 @@ export const WorkstudioView: React.FC = () => {
           window.requestAnimationFrame(jump);
         });
       })
-      .catch((error) => {
-        console.error('open file from link failed:', error);
-        setOpenFromLinkError(typeof error === 'string' ? error : (error as any)?.message ?? '打开文件失败');
+      .catch(async (error) => {
+        // Fallback: if the model only output a basename (e.g. `events.rs:96`),
+        // try searching within the workstudio roots and open the best match.
+        try {
+          if (!ws?.id || isAbs) throw error;
+
+          const needle = filePath.replace(/[\\/]+/g, '/');
+          const basenameOnly = needle.split('/').pop() ?? needle;
+          const candidates = await invoke<string[]>('workstudio_find_files', {
+            args: { workstudioId: ws.id, query: basenameOnly, limit: 50 },
+          });
+
+          const pickBest = () => {
+            if (!Array.isArray(candidates) || candidates.length === 0) return null;
+            if (needle.includes('/')) {
+              const tail = `/${needle}`.toLowerCase();
+              const exactTail = candidates.find((p) => p.replace(/[\\/]+/g, '/').toLowerCase().endsWith(tail));
+              if (exactTail) return exactTail;
+            }
+            const byBase = candidates.find((p) => {
+              const base = p.replace(/[\\/]+/g, '/').split('/').pop() ?? '';
+              return base.toLowerCase() === basenameOnly.toLowerCase();
+            });
+            return byBase ?? candidates[0] ?? null;
+          };
+
+          const best = pickBest();
+          if (!best) throw error;
+
+          await openFileAtPath(best);
+          window.requestAnimationFrame(() => {
+            jump();
+            window.requestAnimationFrame(jump);
+          });
+          return;
+        } catch (fallbackError) {
+          console.error('open file from link failed:', fallbackError);
+          setOpenFromLinkError(
+            typeof fallbackError === 'string'
+              ? fallbackError
+              : (fallbackError as any)?.message ?? '打开文件失败'
+          );
+        }
       });
   }, [filePath, line, column, ws?.mainFolder, openFileAtPath, focusedGroupId]);
 
@@ -1201,7 +1241,6 @@ export const WorkstudioView: React.FC = () => {
                 if (entry.isDir) {
                   return renderDirNode(entry.path, depth + 1);
                 }
-                const isOpen = openFiles.some((f) => f.path === entry.path);
                 const isActive = activeFilePathInFocusedGroup === entry.path;
                 return (
                   <button
@@ -1213,9 +1252,7 @@ export const WorkstudioView: React.FC = () => {
                       'flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-xs',
                       isActive
                         ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
-                        : isOpen
-                          ? 'text-blue-700 hover:bg-gray-100 dark:text-blue-200 dark:hover:bg-gray-800'
-                          : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800',
+                        : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800',
                     ].join(' ')}
                     style={{ paddingLeft: 8 + (depth + 1) * 14 }}
                     title={entry.path}

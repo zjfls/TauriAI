@@ -643,6 +643,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
   - `路径:行` 或 `路径:行:列`（1-based）
   - `路径#L行` 或 `路径#L行C列`（1-based）
 - 允许相对路径或绝对路径（Windows 示例：`C:\repo\project\main.rs:12:5`）
+- 优先使用相对主工作区根目录的相对路径（包含子目录），避免只写文件名（例如避免 `events.rs:96`）
 - 不要使用 `file://` / `vscode://` 等 URI；请直接输出可解析的文件路径
 - 不要输出“范围行号”（例如 `:10-20`）；需要定位时给出起始行即可
   */
