@@ -604,8 +604,10 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
     }
   }, [conversationId, isGenerating, refreshToolSessions, persistanceShellEnhance]);
 
-  // Format prompt content (same as CHAT_FORMAT_PROMPT in backend)
-  const FORMAT_PROMPT_CHAT = `
+  // Format prompt fallback: 真正的格式提示词以 `src-tauri/src/prompts.rs` 为准。
+  // 这里不再复制完整内容，避免前后端漂移；非 Tauri 环境下仅用于 UI 估算/展示的兜底。
+  const FORMAT_PROMPT_CHAT = '';
+  /*
 
 ## 输出格式规范
 
@@ -643,7 +645,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
 - 允许相对路径或绝对路径（Windows 示例：`C:\repo\project\main.rs:12:5`）
 - 不要使用 `file://` / `vscode://` 等 URI；请直接输出可解析的文件路径
 - 不要输出“范围行号”（例如 `:10-20`）；需要定位时给出起始行即可
-`;
+  */
 
   // MCP resource helper prompt (same as MCP_RESOURCE_TOOL_PROMPT in backend)
   const MCP_RESOURCE_TOOL_PROMPT = `
