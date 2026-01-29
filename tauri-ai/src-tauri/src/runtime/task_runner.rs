@@ -1214,6 +1214,31 @@ impl<'a> TurnLoop<'a> {
                     });
 
                     if let Some(error) = max_turns_error {
+                        let mut reply_content = content.clone();
+                        if reply_content.trim().is_empty() {
+                            reply_content =
+                                build_fallback_reply_markdown("任务失败", &error, turn_debug_info.as_ref());
+                            self.emitter.emit(RunEvent::BlockDelta {
+                                task_id: self.task_id.clone(),
+                                turn_id: turn_id.clone(),
+                                assistant_message_id: Some(self.assistant_message_id.clone()),
+                                block_id: "assistant_text".to_string(),
+                                block_type: "text".to_string(),
+                                format: self.output_format.clone(),
+                                delta: reply_content.clone(),
+                            });
+                            blocks.push(MessageBlock::Text {
+                                id: format!("{turn_id}:assistant_text"),
+                                turn_id: Some(turn_id.clone()),
+                                turn_index: Some(turn_index),
+                                format: self
+                                    .output_format
+                                    .clone()
+                                    .unwrap_or_else(|| "markdown".to_string()),
+                                text: reply_content.clone(),
+                            });
+                        }
+
                         self.emitter.emit(RunEvent::BlockDelta {
                             task_id: self.task_id.clone(),
                             turn_id: turn_id.clone(),
@@ -1254,7 +1279,7 @@ impl<'a> TurnLoop<'a> {
                             turn_id,
                             error,
                             debug_info: turn_debug_info,
-                            content,
+                            content: reply_content,
                             thinking,
                             blocks,
                             turns,
@@ -1679,6 +1704,35 @@ impl<'a> TurnLoop<'a> {
                     }
 
                     if aborted_in_tools.is_some() {
+                        let reason = aborted_in_tools
+                            .clone()
+                            .unwrap_or_else(|| "工具执行已中止".to_string());
+                        let reply_content = build_fallback_reply_markdown(
+                            "任务已中止",
+                            &format!("工具执行被中止：{reason}\n\n你可以点击“重试”或重新发送消息继续。"),
+                            turn_debug_info.as_ref(),
+                        );
+
+                        self.emitter.emit(RunEvent::BlockDelta {
+                            task_id: self.task_id.clone(),
+                            turn_id: turn_id.clone(),
+                            assistant_message_id: Some(self.assistant_message_id.clone()),
+                            block_id: "assistant_text".to_string(),
+                            block_type: "text".to_string(),
+                            format: self.output_format.clone(),
+                            delta: reply_content.clone(),
+                        });
+                        blocks.push(MessageBlock::Text {
+                            id: format!("{turn_id}:assistant_text"),
+                            turn_id: Some(turn_id.clone()),
+                            turn_index: Some(turn_index),
+                            format: self
+                                .output_format
+                                .clone()
+                                .unwrap_or_else(|| "markdown".to_string()),
+                            text: reply_content.clone(),
+                        });
+
                         self.emitter.emit(RunEvent::TurnPhaseFinished {
                             task_id: self.task_id.clone(),
                             turn_id: turn_id.clone(),
@@ -1704,7 +1758,7 @@ impl<'a> TurnLoop<'a> {
                         });
                         return TaskOutcome::Aborted {
                             last_turn_id: turn_id,
-                            content: String::new(),
+                            content: reply_content,
                             thinking: String::new(),
                             blocks,
                             turns,
@@ -1746,6 +1800,12 @@ impl<'a> TurnLoop<'a> {
                     debug_info,
                     usage,
                 } => {
+                    let reply_content = if content.trim().is_empty() {
+                        build_fallback_reply_markdown("任务失败", &error, debug_info.as_ref())
+                    } else {
+                        content.clone()
+                    };
+
                     self.emitter.emit(RunEvent::TurnPhaseFinished {
                         task_id: self.task_id.clone(),
                         turn_id: turn_id.clone(),
@@ -1780,6 +1840,27 @@ impl<'a> TurnLoop<'a> {
                                 .clone()
                                 .unwrap_or_else(|| "markdown".to_string()),
                             text: content.clone(),
+                        });
+                    }
+                    if content.trim().is_empty() {
+                        self.emitter.emit(RunEvent::BlockDelta {
+                            task_id: self.task_id.clone(),
+                            turn_id: turn_id.clone(),
+                            assistant_message_id: Some(self.assistant_message_id.clone()),
+                            block_id: "assistant_text".to_string(),
+                            block_type: "text".to_string(),
+                            format: self.output_format.clone(),
+                            delta: reply_content.clone(),
+                        });
+                        blocks.push(MessageBlock::Text {
+                            id: format!("{turn_id}:assistant_text"),
+                            turn_id: Some(turn_id.clone()),
+                            turn_index: Some(turn_index),
+                            format: self
+                                .output_format
+                                .clone()
+                                .unwrap_or_else(|| "markdown".to_string()),
+                            text: reply_content.clone(),
                         });
                     }
 
@@ -1822,7 +1903,7 @@ impl<'a> TurnLoop<'a> {
                         turn_id,
                         error,
                         debug_info: turn_debug_info,
-                        content,
+                        content: reply_content,
                         thinking,
                         blocks,
                         turns,
@@ -1844,6 +1925,38 @@ impl<'a> TurnLoop<'a> {
                         usage: None,
                         model: Some(self.model_config.model.clone()),
                     });
+                    let reply_content = if content.trim().is_empty() && thinking.trim().is_empty() {
+                        build_fallback_reply_markdown(
+                            "任务已中止",
+                            "运行已被用户或系统中止。\n\n你可以点击“重试”或重新发送消息继续。",
+                            None,
+                        )
+                    } else {
+                        content.clone()
+                    };
+
+                    if content.trim().is_empty() && thinking.trim().is_empty() {
+                        self.emitter.emit(RunEvent::BlockDelta {
+                            task_id: self.task_id.clone(),
+                            turn_id: turn_id.clone(),
+                            assistant_message_id: Some(self.assistant_message_id.clone()),
+                            block_id: "assistant_text".to_string(),
+                            block_type: "text".to_string(),
+                            format: self.output_format.clone(),
+                            delta: reply_content.clone(),
+                        });
+                        blocks.push(MessageBlock::Text {
+                            id: format!("{turn_id}:assistant_text"),
+                            turn_id: Some(turn_id.clone()),
+                            turn_index: Some(turn_index),
+                            format: self
+                                .output_format
+                                .clone()
+                                .unwrap_or_else(|| "markdown".to_string()),
+                            text: reply_content.clone(),
+                        });
+                    }
+
                     if !thinking.trim().is_empty() {
                         blocks.push(MessageBlock::Thinking {
                             id: format!("{turn_id}:assistant_thinking"),
@@ -1874,7 +1987,7 @@ impl<'a> TurnLoop<'a> {
                     });
                     return TaskOutcome::Aborted {
                         last_turn_id: turn_id,
-                        content,
+                        content: reply_content,
                         thinking,
                         blocks,
                         turns,
@@ -2274,6 +2387,32 @@ fn redact_debug_info_for_store(debug_info: &DebugInfoData) -> DebugInfoData {
             body: resp.body.clone(),
         }),
     }
+}
+
+fn format_debug_info_for_reply(debug_info: &DebugInfoData) -> String {
+    let redacted = redact_debug_info_for_store(debug_info);
+    serde_json::to_string_pretty(&redacted).unwrap_or_else(|_| "{}".to_string())
+}
+
+fn build_fallback_reply_markdown(
+    title: &str,
+    message: &str,
+    debug_info: Option<&DebugInfoData>,
+) -> String {
+    let mut out = String::new();
+    out.push_str("### ");
+    out.push_str(title);
+    out.push_str("\n\n");
+    out.push_str(message.trim());
+    out.push('\n');
+
+    if let Some(di) = debug_info {
+        out.push_str("\n<details><summary>Debug（请求/响应，已脱敏）</summary>\n\n```json\n");
+        out.push_str(&format_debug_info_for_reply(di));
+        out.push_str("\n```\n\n</details>\n");
+    }
+
+    out
 }
 
 fn sanitize_messages_for_model_input(mut messages: Vec<Message>) -> Vec<Message> {
