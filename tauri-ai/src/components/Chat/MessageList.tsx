@@ -18,6 +18,7 @@ interface MessageListProps {
   isGenerating: boolean;
   onAction: (action: Action) => void;
   onAbortTool?: (callId: string) => void;
+  onRetryTurn?: (assistantMessageId: string, turnId: string) => void;
   /** 拖拽文件到聊天窗口时转发给输入框 */
   onDropFiles?: (files: FileList | File[]) => void;
   /** 拖拽纯文本/链接到聊天窗口时转发给输入框 */
@@ -35,6 +36,7 @@ export const MessageList: React.FC<MessageListProps> = ({
   isGenerating: _isGenerating,
   onAction,
   onAbortTool,
+  onRetryTurn,
   onDropFiles,
   onDropText,
 }) => {
@@ -175,7 +177,7 @@ export const MessageList: React.FC<MessageListProps> = ({
 
       {/* Message list */}
       {messages.map((message) => (
-        <MessageItem key={message.id} message={message} onAction={onAction} onAbortTool={onAbortTool} />
+        <MessageItem key={message.id} message={message} onAction={onAction} onAbortTool={onAbortTool} onRetryTurn={onRetryTurn} />
       ))}
 
        {/* Streaming message */}

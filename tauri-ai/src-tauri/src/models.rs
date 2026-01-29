@@ -558,6 +558,11 @@ pub struct Model {
     /// Model capabilities (auto-inferred if not set)
     #[serde(default)]
     pub capabilities: ModelCapabilities,
+    /// Turn-level automatic retry attempts.
+    /// - When unset: default to 3 (runtime default).
+    /// - When `general.manualTurnRetry=true`: automatic retries are disabled regardless of this value.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_attempts: Option<u32>,
     /// Maximum number of images allowed (default: 10, only for vision models)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_images: Option<u32>,
@@ -587,6 +592,7 @@ impl Default for Model {
             top_p_enabled: true,
             context_length: None,
             capabilities: ModelCapabilities::default(),
+            retry_attempts: None,
             max_images: None,
             thinking_budget_tokens: None,
             use_reasoning_effort: None,
@@ -889,6 +895,9 @@ pub struct ModelConfig {
     /// Whether to use reasoning_effort parameter (for OpenAI GPT-5 series)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub use_reasoning_effort: Option<bool>,
+    /// Turn-level automatic retry attempts (default: 3 when unset).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_attempts: Option<u32>,
     /// Debug: log raw SSE lines from providers (streaming only)
     #[serde(default)]
     pub debug_sse: bool,
@@ -932,6 +941,9 @@ impl Default for AppearanceSettings {
 pub struct GeneralSettings {
     pub language: String,
     pub auto_start: bool,
+    /// When enabled, disable automatic turn retries (use manual retry buttons instead).
+    #[serde(default)]
+    pub manual_turn_retry: bool,
     /// Enable debug mode to show raw HTTP messages
     #[serde(default)]
     pub debug_mode: bool,
@@ -960,6 +972,7 @@ impl Default for GeneralSettings {
         Self {
             language: "zh-CN".to_string(),
             auto_start: false,
+            manual_turn_retry: false,
             debug_mode: false,
             debug_sse: false,
             show_usage: true,
@@ -1555,20 +1568,21 @@ impl AppConfig {
             });
 
             // Add model to provider
-            provider.models.push(Model {
-                name: model_config.model.clone(),
-                temperature: model_config.parameters.temperature.unwrap_or(0.7),
-                temperature_enabled: model_config.parameters.temperature.is_some(),
-                max_tokens: model_config.parameters.max_tokens,
-                top_p: model_config.parameters.top_p,
-                top_p_enabled: model_config.parameters.top_p.is_some(),
-                context_length: None,
-                capabilities: ModelCapabilities::default(),
-                max_images: None,
-                thinking_budget_tokens: None,
-                use_reasoning_effort: None,
-                reinject_reasoning_content: false,
-            });
+	            provider.models.push(Model {
+	                name: model_config.model.clone(),
+	                temperature: model_config.parameters.temperature.unwrap_or(0.7),
+	                temperature_enabled: model_config.parameters.temperature.is_some(),
+	                max_tokens: model_config.parameters.max_tokens,
+	                top_p: model_config.parameters.top_p,
+	                top_p_enabled: model_config.parameters.top_p.is_some(),
+	                context_length: None,
+	                capabilities: ModelCapabilities::default(),
+	                retry_attempts: None,
+	                max_images: None,
+	                thinking_budget_tokens: None,
+	                use_reasoning_effort: None,
+	                reinject_reasoning_content: false,
+	            });
 
             // Create agent from model's system prompt
             let agent_name = format!("agent_{}", model_config.id);

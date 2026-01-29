@@ -34,27 +34,29 @@ const isSystemWorkstudioPath = (p: string) => normalizePath(p).includes('/.tauri
 
 export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
   // Get session from SessionStore
-  const {
-    session,
-    sendMessage,
-    abortGeneration,
-    setSessionModel,
-    undoToMessage,
-    setSessionRunMode,
-    setSessionThinkingMode,
-    setSessionDraftContent,
-  } = useSessionStore(
-    useShallow((state) => ({
-      session: sessionId ? state.sessions.get(sessionId) : undefined,
-      sendMessage: state.sendMessage,
-      abortGeneration: state.abortGeneration,
-      setSessionModel: state.setSessionModel,
-      undoToMessage: state.undoToMessage,
-      setSessionRunMode: state.setSessionRunMode,
-      setSessionThinkingMode: state.setSessionThinkingMode,
-      setSessionDraftContent: state.setSessionDraftContent,
-    }))
-  );
+	  const {
+	    session,
+	    sendMessage,
+	    abortGeneration,
+	    retryTurn,
+	    setSessionModel,
+	    undoToMessage,
+	    setSessionRunMode,
+	    setSessionThinkingMode,
+	    setSessionDraftContent,
+	  } = useSessionStore(
+	    useShallow((state) => ({
+	      session: sessionId ? state.sessions.get(sessionId) : undefined,
+	      sendMessage: state.sendMessage,
+	      abortGeneration: state.abortGeneration,
+	      retryTurn: state.retryTurn,
+	      setSessionModel: state.setSessionModel,
+	      undoToMessage: state.undoToMessage,
+	      setSessionRunMode: state.setSessionRunMode,
+	      setSessionThinkingMode: state.setSessionThinkingMode,
+	      setSessionDraftContent: state.setSessionDraftContent,
+	    }))
+	  );
   const [showToolSessions, setShowToolSessions] = useState(false);
 
   const inputRef = useRef<InputAreaHandle>(null);
@@ -1019,13 +1021,21 @@ Guidelines:
     }
   };
 
-  const handleAbortTool = useCallback(
-    (_callId: string) => {
-      if (!sessionId) return;
-      abortGeneration(sessionId).catch(console.error);
-    },
-    [abortGeneration, sessionId]
-  );
+	  const handleAbortTool = useCallback(
+	    (_callId: string) => {
+	      if (!sessionId) return;
+	      abortGeneration(sessionId).catch(console.error);
+	    },
+	    [abortGeneration, sessionId]
+	  );
+
+	  const handleRetryTurn = useCallback(
+	    (assistantMessageId: string, turnId: string) => {
+	      if (!sessionId) return;
+	      retryTurn(sessionId, assistantMessageId, turnId).catch(console.error);
+	    },
+	    [retryTurn, sessionId]
+	  );
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -1129,16 +1139,17 @@ Guidelines:
           </button>
         </div>
       )}
-      <MessageList
-        messages={messages}
-        streamingBlocks={streamingBlocks}
-        streamingTurns={streamingTurns}
-        isGenerating={isGenerating}
-        onAction={handleAction}
-        onAbortTool={handleAbortTool}
-        onDropFiles={handleDropFilesToInput}
-        onDropText={handleDropTextToInput}
-      />
+	      <MessageList
+	        messages={messages}
+	        streamingBlocks={streamingBlocks}
+	        streamingTurns={streamingTurns}
+	        isGenerating={isGenerating}
+	        onAction={handleAction}
+	        onAbortTool={handleAbortTool}
+	        onRetryTurn={handleRetryTurn}
+	        onDropFiles={handleDropFilesToInput}
+	        onDropText={handleDropTextToInput}
+	      />
       {/* Conversation total token usage */}
       {showUsage && totalUsage && (
         <div className="flex justify-center px-4 py-1 text-xs text-gray-500 dark:text-gray-400 border-t border-gray-100 dark:border-gray-800 flex-shrink-0">

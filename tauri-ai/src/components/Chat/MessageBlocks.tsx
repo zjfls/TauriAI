@@ -9,7 +9,7 @@
  */
 
 import React, { useMemo, useState } from 'react';
-import { AlertTriangle, Brain, Bug, ChevronDown, ChevronRight, Search, Wrench } from 'lucide-react';
+import { AlertTriangle, Brain, Bug, ChevronDown, ChevronRight, RefreshCw, Search, Wrench } from 'lucide-react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import type { MessageBlock, MessageTurn } from '../../types';
 import { MarkdownRenderer } from './MarkdownRenderer';
@@ -883,7 +883,9 @@ export const MessageBlocks: React.FC<{
   isStreaming?: boolean;
   turns?: MessageTurn[];
   onAbortTool?: (callId: string) => void;
-}> = ({ blocks, conversationId, isStreaming, turns, onAbortTool }) => {
+  assistantMessageId?: string;
+  onRetryTurn?: (assistantMessageId: string, turnId: string) => void;
+}> = ({ blocks, conversationId, isStreaming, turns, onAbortTool, assistantMessageId, onRetryTurn }) => {
   if (!blocks || blocks.length === 0) return null;
 
   const { config } = useConfigStore();
@@ -1104,11 +1106,11 @@ export const MessageBlocks: React.FC<{
             : '开启调试模式后可查看该轮请求/响应';
         const isCollapsed = Boolean(g.turnId && collapsedTurns.has(g.turnId));
 
-        return (
-          <div key={`${g.key}:${idx}`}>
-            {showTurnHeader && g.turnId ? (
-              <div className="mb-1 flex items-center justify-between">
-                <div className="flex items-center gap-2">
+	        return (
+	          <div key={`${g.key}:${idx}`}>
+	            {showTurnHeader && g.turnId ? (
+	              <div className="mb-1 flex items-center justify-between">
+	                <div className="flex items-center gap-2">
                   <div
                     className="select-text text-[10px] font-mono text-gray-400 dark:text-gray-500"
                     title={g.turnId}
@@ -1130,24 +1132,38 @@ export const MessageBlocks: React.FC<{
                   >
                     {isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
                     <span>{isCollapsed ? '展开' : '收起'}</span>
-                  </button>
-                </div>
+	                  </button>
+	                </div>
+	
+	                <div className="flex items-center gap-2">
+	                  {!isStreaming && assistantMessageId && onRetryTurn ? (
+	                    <button
+	                      type="button"
+	                      onClick={() => onRetryTurn(assistantMessageId, g.turnId!)}
+	                      className="flex items-center gap-1 rounded bg-gray-50 px-2 py-0.5 text-[10px] font-medium text-gray-600 hover:bg-gray-100 dark:bg-gray-900/40 dark:text-gray-300 dark:hover:bg-gray-800"
+	                      title="重试该轮（重放该轮之前的上下文）"
+	                    >
+	                      <RefreshCw size={12} />
+	                      <span>重试</span>
+	                    </button>
+	                  ) : null}
 
-                <button
-                  type="button"
-                  onClick={() => canOpenDebug && setActiveDebugTurn(turnMeta || null)}
-                  disabled={debugButtonDisabled}
-                  className={`flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-medium transition-colors ${canOpenDebug
-                    ? 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
-                    : 'cursor-not-allowed bg-gray-50 text-gray-300 dark:bg-gray-900/40 dark:text-gray-700'
-                    }`}
-                  title={debugTitle}
-                >
-                  <Bug size={12} />
-                  <span>Debug</span>
-                </button>
-              </div>
-            ) : null}
+	                  <button
+	                    type="button"
+	                    onClick={() => canOpenDebug && setActiveDebugTurn(turnMeta || null)}
+	                    disabled={debugButtonDisabled}
+	                    className={`flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-medium transition-colors ${canOpenDebug
+	                      ? 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
+	                      : 'cursor-not-allowed bg-gray-50 text-gray-300 dark:bg-gray-900/40 dark:text-gray-700'
+	                      }`}
+	                    title={debugTitle}
+	                  >
+	                    <Bug size={12} />
+	                    <span>Debug</span>
+	                  </button>
+	                </div>
+	              </div>
+	            ) : null}
 
             {isCollapsed ? null : (
               g.blocks.map((block, blockIdx) => {

@@ -15,7 +15,7 @@ mod workstudio_terminal;
 mod workstudio_state;
 mod prompts;
 
-pub use run::{abort_run, run_task};
+pub use run::{abort_run, retry_turn, run_task};
 pub use run::respond_approval;
 pub use config::{fetch_provider_models, get_app_config, save_app_config, test_connection};
 pub use conversation::{

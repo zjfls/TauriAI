@@ -131,6 +131,7 @@ export interface Model {
   contextLength?: number; // Maximum context length in tokens (e.g., 128000 for GPT-4o)
   capabilities: ModelCapabilities;
   // Advanced settings
+  retryAttempts?: number; // Turn-level automatic retry attempts (default: 3)
   maxImages?: number;     // Maximum number of images allowed (default: 10, only for vision models)
   thinkingBudgetTokens?: number; // Anthropic extended thinking budget (>=1024 and < maxTokens)
   useReasoningEffort?: boolean; // Use reasoning_effort parameter for Chat Completions API (OpenAI GPT-5 series)
@@ -790,6 +791,7 @@ export interface GeneralSettings {
   ansiRenderMode?: AnsiRenderMode; // How to render ANSI sequences (color/strip/raw)
   ansiColorMode?: AnsiColorMode;   // ANSI 16-color palette selection
   webSearchTool?: WebSearchToolSettings; // Local web search tool settings
+  manualTurnRetry?: boolean; // When true: disable automatic turn retries, use manual retry button instead
 }
 
 export type WebSearchProvider = 'tavily' | 'google' | 'brave';

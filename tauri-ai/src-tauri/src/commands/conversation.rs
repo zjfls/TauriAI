@@ -208,11 +208,12 @@ pub async fn generate_title(
         thinking_budget_tokens: None,
         vision_enabled: false, // Don't need vision for title generation
         web_search_enabled: false, // Don't enable web search for title generation
-        max_images: None, // Not needed for title generation
-        use_reasoning_effort: None, // Not needed for title generation
-        debug_sse: false,
-        reinject_reasoning_content: false,
-    };
+	        max_images: None, // Not needed for title generation
+	        use_reasoning_effort: None, // Not needed for title generation
+	        retry_attempts: None,
+	        debug_sse: false,
+	        reinject_reasoning_content: false,
+	    };
 
     let client = get_client(&model_config.provider).map_err(|e| e.to_string())?;
     let content = messages
@@ -295,8 +296,8 @@ mod tests {
         }
     }
 
-    fn dummy_model_config() -> ModelConfig {
-        ModelConfig {
+	    fn dummy_model_config() -> ModelConfig {
+	        ModelConfig {
             id: "test/test".to_string(),
             name: "test".to_string(),
             provider: "openai_compatible".to_string(),
@@ -315,12 +316,13 @@ mod tests {
             thinking_budget_tokens: None,
             vision_enabled: false,
             web_search_enabled: false,
-            max_images: None,
-            use_reasoning_effort: None,
-            debug_sse: false,
-            reinject_reasoning_content: false,
-        }
-    }
+	            max_images: None,
+	            use_reasoning_effort: None,
+	            retry_attempts: None,
+	            debug_sse: false,
+	            reinject_reasoning_content: false,
+	        }
+	    }
 
     #[tokio::test]
     async fn collect_streamed_chat_prefers_final_content() {

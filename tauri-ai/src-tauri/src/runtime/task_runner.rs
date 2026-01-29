@@ -61,6 +61,9 @@ pub struct RunTaskInput {
     pub thinking: Option<serde_json::Value>,
     pub web_search_provider: Option<String>,
     pub debug_mode: Option<bool>,
+    // Internal-only overrides (not exposed as Tauri command params)
+    pub base_messages_override: Option<Vec<Message>>,
+    pub start_turn_index: Option<u32>,
 }
 
 #[derive(Debug)]
@@ -153,9 +156,13 @@ struct TurnLoop<'a> {
     assistant_message_id: String,
     output_format: Option<String>,
     max_turns: u32,
+    /// First logical turn index (default: 1). Used by manual turn retry.
+    start_turn_index: u32,
     /// 是否把 thinking 回灌到“同一 Task 的下一轮上下文”（由 Agent 配置控制）。
     reinject_thinking: bool,
     debug_mode: bool,
+    /// Turn-level automatic retry attempts (effective value after applying manualTurnRetry).
+    turn_retry_attempts: u32,
     emitter: &'a mut RunEmitter,
 }
 
@@ -1044,7 +1051,8 @@ impl<'a> TurnLoop<'a> {
         let mut blocks: Vec<MessageBlock> = Vec::new();
         let mut turns: Vec<MessageTurn> = Vec::new();
 
-        for turn_index in 1..=self.max_turns {
+        for step in 0..self.max_turns {
+            let turn_index = self.start_turn_index.saturating_add(step);
             let turn_id = uuid::Uuid::new_v4().to_string();
 
             self.emitter.emit(RunEvent::TurnStarted {
@@ -1071,6 +1079,7 @@ impl<'a> TurnLoop<'a> {
                 &self.assistant_message_id,
                 self.output_format.clone(),
                 abort_rx,
+                self.turn_retry_attempts,
             )
             .await;
 
@@ -1165,7 +1174,8 @@ impl<'a> TurnLoop<'a> {
                         turn_debug_info.as_ref().map(redact_debug_info_for_store);
 
                     // 防止无限循环：达到 max_turns 后仍然在请求工具调用
-                    let max_turns_error = if turn_index >= self.max_turns {
+                    let is_last_turn = step.saturating_add(1) >= self.max_turns;
+                    let max_turns_error = if is_last_turn {
                         Some(format!(
                             "超过最大 Turn 数({})，仍然需要工具调用",
                             self.max_turns
@@ -2477,9 +2487,228 @@ pub async fn run_task(
     result
 }
 
+pub async fn retry_turn(
+    app: AppHandle,
+    conversation_id: String,
+    assistant_message_id: String,
+    turn_id: String,
+    agent_name: Option<String>,
+    model_ref: Option<String>,
+    run_mode: Option<String>,
+    thinking: Option<serde_json::Value>,
+    web_search_provider: Option<String>,
+    debug_mode: Option<bool>,
+    db: Arc<Mutex<Database>>,
+    config_manager: Arc<ConfigManager>,
+    run_state: Arc<RunState>,
+) -> Result<(), SerializableError> {
+    let cleanup_conversation_id = conversation_id.clone();
+
+    let (content, base_messages_override, start_turn_index) = {
+        let db = db.lock().await;
+        let messages = db
+            .get_messages(&conversation_id, 2_000, None)
+            .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
+
+        let assistant_pos = messages
+            .iter()
+            .position(|m| m.id == assistant_message_id)
+            .ok_or_else(|| {
+                AppErrorCode::UnknownError(format!(
+                    "未找到 assistant message: {}",
+                    assistant_message_id
+                ))
+            })?;
+        let assistant_msg = &messages[assistant_pos];
+        if assistant_msg.role != MessageRole::Assistant {
+            return Err(AppErrorCode::UnknownError(format!(
+                "message {} 不是 assistant",
+                assistant_message_id
+            ))
+            .into());
+        }
+
+        let user_pos = (0..assistant_pos)
+            .rev()
+            .find(|&i| messages[i].role == MessageRole::User)
+            .ok_or_else(|| {
+                AppErrorCode::UnknownError(format!(
+                    "assistant message {} 之前未找到 user 消息",
+                    assistant_message_id
+                ))
+            })?;
+        let user_msg = &messages[user_pos];
+
+        let meta = assistant_msg.meta.as_ref().ok_or_else(|| {
+            AppErrorCode::UnknownError(format!(
+                "assistant message {} 缺少 meta（无法定位 turn）",
+                assistant_message_id
+            ))
+        })?;
+
+        let target_turn_index: u32 = meta
+            .turns
+            .as_ref()
+            .and_then(|turns| turns.iter().find(|t| t.turn_id == turn_id))
+            .map(|t| t.turn_index)
+            .or_else(|| {
+                meta.blocks.as_ref().and_then(|blocks| {
+                    blocks.iter().find_map(|b| match b {
+                        MessageBlock::Text {
+                            turn_id: Some(id),
+                            turn_index: Some(i),
+                            ..
+                        }
+                        | MessageBlock::Thinking {
+                            turn_id: Some(id),
+                            turn_index: Some(i),
+                            ..
+                        }
+                        | MessageBlock::ToolCall {
+                            turn_id: Some(id),
+                            turn_index: Some(i),
+                            ..
+                        }
+                        | MessageBlock::ToolResult {
+                            turn_id: Some(id),
+                            turn_index: Some(i),
+                            ..
+                        }
+                        | MessageBlock::Approval {
+                            turn_id: Some(id),
+                            turn_index: Some(i),
+                            ..
+                        }
+                        | MessageBlock::Error {
+                            turn_id: Some(id),
+                            turn_index: Some(i),
+                            ..
+                        }
+                        | MessageBlock::WebSearch {
+                            turn_id: Some(id),
+                            turn_index: Some(i),
+                            ..
+                        }
+                        | MessageBlock::Unknown {
+                            turn_id: Some(id),
+                            turn_index: Some(i),
+                            ..
+                        } if id == &turn_id => Some(*i),
+                        _ => None,
+                    })
+                })
+            })
+            .ok_or_else(|| {
+                AppErrorCode::UnknownError(format!(
+                    "assistant message {} 内未找到 turn: {}",
+                    assistant_message_id, turn_id
+                ))
+            })?;
+
+        let mut base_messages = messages
+            .iter()
+            .take(user_pos.saturating_add(1))
+            .cloned()
+            .filter(|m| m.status == MessageStatus::Success || m.id == user_msg.id)
+            .collect::<Vec<_>>();
+
+        if target_turn_index > 1 {
+            if let Some(blocks) = meta.blocks.as_ref() {
+                let mut idx_by_turn_id: HashMap<String, u32> = HashMap::new();
+                if let Some(turns) = meta.turns.as_ref() {
+                    for t in turns {
+                        idx_by_turn_id.insert(t.turn_id.clone(), t.turn_index);
+                    }
+                }
+
+                let filtered_blocks: Vec<MessageBlock> = blocks
+                    .iter()
+                    .cloned()
+                    .filter(|b| {
+                        let (tid, idx) = match b {
+                            MessageBlock::Text { turn_id, turn_index, .. }
+                            | MessageBlock::Thinking { turn_id, turn_index, .. }
+                            | MessageBlock::ToolCall { turn_id, turn_index, .. }
+                            | MessageBlock::ToolResult { turn_id, turn_index, .. }
+                            | MessageBlock::Approval { turn_id, turn_index, .. }
+                            | MessageBlock::Error { turn_id, turn_index, .. }
+                            | MessageBlock::WebSearch { turn_id, turn_index, .. }
+                            | MessageBlock::Unknown { turn_id, turn_index, .. } => {
+                                (turn_id.as_ref(), *turn_index)
+                            }
+                        };
+
+                        let Some(tid) = tid else {
+                            return false;
+                        };
+                        let resolved = idx_by_turn_id.get(tid).copied().or(idx);
+                        resolved.is_some_and(|i| i < target_turn_index)
+                    })
+                    .collect();
+
+                let filtered_turns = meta.turns.as_ref().map(|turns| {
+                    turns
+                        .iter()
+                        .cloned()
+                        .filter(|t| t.turn_index < target_turn_index)
+                        .collect::<Vec<_>>()
+                });
+
+                if !filtered_blocks.is_empty() {
+                    base_messages.push(Message {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        conversation_id: conversation_id.clone(),
+                        role: MessageRole::Assistant,
+                        content: String::new(),
+                        content_parts: Vec::new(),
+                        thinking: None,
+                        meta: Some(MessageMeta {
+                            model: meta.model.clone(),
+                            blocks: Some(filtered_blocks),
+                            turns: filtered_turns,
+                            ..Default::default()
+                        }),
+                        created_at: assistant_msg.created_at,
+                        status: MessageStatus::Success,
+                        error_message: None,
+                    });
+                }
+            }
+        }
+
+        (user_msg.content.clone(), base_messages, target_turn_index)
+    };
+
+    let result = run_task_inner(
+        app,
+        RunTaskInput {
+            conversation_id,
+            message_id: None,
+            content,
+            content_parts: None,
+            agent_name,
+            model_ref,
+            run_mode,
+            thinking,
+            web_search_provider,
+            debug_mode,
+            base_messages_override: Some(base_messages_override),
+            start_turn_index: Some(start_turn_index),
+        },
+        db,
+        config_manager,
+        run_state.clone(),
+    )
+    .await;
+
+    run_state.finish_run(&cleanup_conversation_id).await;
+    cleanup_abort_sender(&run_state, &cleanup_conversation_id).await;
+    result
+}
+
 async fn run_task_inner(
     app: AppHandle,
-    input: RunTaskInput,
+    mut input: RunTaskInput,
     db: Arc<Mutex<Database>>,
     config_manager: Arc<ConfigManager>,
     run_state: Arc<RunState>,
@@ -2538,36 +2767,48 @@ async fn run_task_inner(
     let client = get_client(&model_config.provider)
         .map_err(|e| AppErrorCode::AiServiceError(e.to_string()))?;
 
-    // 1) 落库用户消息（Pending）
-    let user_message = Message {
-        id: input
-            .message_id
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
-        conversation_id: input.conversation_id.clone(),
-        role: MessageRole::User,
-        content: input.content.clone(),
-        content_parts: input.content_parts.unwrap_or_default(),
-        thinking: None,
-        meta: None,
-        created_at: chrono::Utc::now(),
-        status: MessageStatus::Pending,
-        error_message: None,
-    };
-    {
-        let db = db.lock().await;
-        db.add_message(&input.conversation_id, &user_message)
-            .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
-    }
+    let start_turn_index = input.start_turn_index.unwrap_or(1).max(1);
 
-    // 2) 历史消息作为“基础上下文”（只取 Success + 本次 Pending 用户消息）
-    let base_messages = {
-        let db = db.lock().await;
-        db.get_messages(&input.conversation_id, 100, None)
-            .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?
-            .into_iter()
-            .filter(|m| m.status == MessageStatus::Success || m.id == user_message.id)
-            .collect::<Vec<_>>()
-    };
+    // 1) 生成用户消息 + 构建基础上下文
+    // - 正常 run_task：落库用户消息（Pending），并取 Success + 本次用户消息作为 base_messages
+    // - retry_turn：直接使用预构建 base_messages（不新增用户消息）
+    let (user_message_id_for_status_update, base_messages) =
+        if let Some(prebuilt) = input.base_messages_override.take() {
+            (None, prebuilt)
+        } else {
+            // 落库用户消息（Pending）
+            let user_message = Message {
+                id: input
+                    .message_id
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                conversation_id: input.conversation_id.clone(),
+                role: MessageRole::User,
+                content: input.content.clone(),
+                content_parts: input.content_parts.take().unwrap_or_default(),
+                thinking: None,
+                meta: None,
+                created_at: chrono::Utc::now(),
+                status: MessageStatus::Pending,
+                error_message: None,
+            };
+            {
+                let db = db.lock().await;
+                db.add_message(&input.conversation_id, &user_message)
+                    .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
+            }
+
+            // 历史消息作为“基础上下文”（只取 Success + 本次 Pending 用户消息）
+            let base_messages = {
+                let db = db.lock().await;
+                db.get_messages(&input.conversation_id, 100, None)
+                    .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?
+                    .into_iter()
+                    .filter(|m| m.status == MessageStatus::Success || m.id == user_message.id)
+                    .collect::<Vec<_>>()
+            };
+
+            (Some(user_message.id), base_messages)
+        };
     let cached_system_prompt: Option<(String, String)> = {
         let db = db.lock().await;
         db.get_conversation(&input.conversation_id)
@@ -3196,8 +3437,17 @@ async fn run_task_inner(
         assistant_message_id: assistant_message_id.clone(),
         output_format: output_format.clone(),
         max_turns,
+        start_turn_index,
         reinject_thinking: agent.reinject_thinking,
         debug_mode,
+        turn_retry_attempts: {
+            let configured = model_config.retry_attempts.unwrap_or(3).clamp(1, 10);
+            if config.general.manual_turn_retry {
+                1
+            } else {
+                configured
+            }
+        },
         emitter: &mut emitter,
     };
 
@@ -3218,11 +3468,10 @@ async fn run_task_inner(
         } => {
             {
                 let db = db.lock().await;
-                let _ = db.update_message_status(
-                    &user_message.id,
-                    MessageStatus::Failed,
-                    Some(error.clone()),
-                );
+                if let Some(id) = user_message_id_for_status_update.as_deref() {
+                    let _ =
+                        db.update_message_status(id, MessageStatus::Failed, Some(error.clone()));
+                }
             }
 
             if !content.is_empty()
@@ -3280,7 +3529,9 @@ async fn run_task_inner(
         } => {
             {
                 let db = db.lock().await;
-                let _ = db.update_message_status(&user_message.id, MessageStatus::Success, None);
+                if let Some(id) = user_message_id_for_status_update.as_deref() {
+                    let _ = db.update_message_status(id, MessageStatus::Success, None);
+                }
             }
 
             if !content.is_empty()
@@ -3345,7 +3596,9 @@ async fn run_task_inner(
         } => {
             {
                 let db = db.lock().await;
-                let _ = db.update_message_status(&user_message.id, MessageStatus::Success, None);
+                if let Some(id) = user_message_id_for_status_update.as_deref() {
+                    let _ = db.update_message_status(id, MessageStatus::Success, None);
+                }
             }
 
             if !content.is_empty()
@@ -3431,11 +3684,12 @@ async fn stream_one_turn(
     assistant_message_id: &str,
     output_format: Option<String>,
     abort_rx: &mut mpsc::Receiver<()>,
+    max_attempts: u32,
 ) -> TurnStreamResult {
     // Turn 级重试（避免 transient 网络/限流导致整个 Task 直接失败）
     // - 只在“本轮尚未向前端输出任何增量”时才自动重试，避免重复输出/状态错乱
-    // - 每轮最多重试固定次数（可后续做成可配置项）
-    const MAX_ATTEMPTS: u32 = 3;
+    // - 最大尝试次数由配置决定（至少 1）
+    let max_attempts = max_attempts.max(1);
     const BASE_DELAY_MS: u64 = 100;
     const MAX_DELAY_MS: u64 = 2_000;
 
@@ -3478,7 +3732,7 @@ async fn stream_one_turn(
 
     let messages = sanitize_messages_for_model_input(messages);
 
-    for attempt in 1..=MAX_ATTEMPTS {
+    for attempt in 1..=max_attempts {
         let (token_tx, mut token_rx) = mpsc::channel::<StreamEvent>(100);
 
         let mut full_content = String::new();
@@ -3600,7 +3854,7 @@ async fn stream_one_turn(
                 last_error = Some(stream_err.to_string());
             }
 
-            let can_retry = attempt < MAX_ATTEMPTS
+            let can_retry = attempt < max_attempts
                 && !emitted_any_delta
                 && is_retryable_error(&stream_err, debug_info.as_ref());
 
@@ -3725,25 +3979,26 @@ mod tests {
         }
     }
 
-    fn test_model_config() -> crate::models::ModelConfig {
-        crate::models::ModelConfig {
-            id: "test".to_string(),
-            name: "test".to_string(),
-            provider: "openai".to_string(),
-            api_base: Some("http://127.0.0.1:0".to_string()),
-            api_key: Some("test".to_string()),
-            model: "test".to_string(),
-            parameters: crate::models::ModelParameters::default(),
-            thinking_level: None,
-            thinking_budget_tokens: None,
-            vision_enabled: false,
-            web_search_enabled: false,
-            max_images: None,
-            use_reasoning_effort: None,
-            debug_sse: false,
-            reinject_reasoning_content: false,
-        }
-    }
+	    fn test_model_config() -> crate::models::ModelConfig {
+	        crate::models::ModelConfig {
+	            id: "test".to_string(),
+	            name: "test".to_string(),
+	            provider: "openai".to_string(),
+	            api_base: Some("http://127.0.0.1:0".to_string()),
+	            api_key: Some("test".to_string()),
+	            model: "test".to_string(),
+	            parameters: crate::models::ModelParameters::default(),
+	            thinking_level: None,
+	            thinking_budget_tokens: None,
+	            vision_enabled: false,
+	            web_search_enabled: false,
+	            max_images: None,
+	            use_reasoning_effort: None,
+	            retry_attempts: None,
+	            debug_sse: false,
+	            reinject_reasoning_content: false,
+	        }
+	    }
 
     fn test_user_message() -> crate::models::Message {
         crate::models::Message {
@@ -3767,19 +4022,20 @@ mod tests {
         let (abort_tx, mut abort_rx) = mpsc::channel(1);
         let _keep_abort = abort_tx;
 
-        let result = stream_one_turn(
-            client,
-            test_model_config(),
-            None,
-            vec![test_user_message()],
-            &mut emitter,
-            "task",
-            "turn",
-            "assistant",
-            None,
-            &mut abort_rx,
-        )
-        .await;
+	        let result = stream_one_turn(
+	            client,
+	            test_model_config(),
+	            None,
+	            vec![test_user_message()],
+	            &mut emitter,
+	            "task",
+	            "turn",
+	            "assistant",
+	            None,
+	            &mut abort_rx,
+	            3,
+	        )
+	        .await;
 
         match result {
             TurnStreamResult::Error { error, .. } => {
@@ -3801,19 +4057,20 @@ mod tests {
         let (abort_tx, mut abort_rx) = mpsc::channel(1);
         let _keep_abort = abort_tx;
 
-        let result = stream_one_turn(
-            client,
-            test_model_config(),
-            None,
-            vec![test_user_message()],
-            &mut emitter,
-            "task",
-            "turn",
-            "assistant",
-            None,
-            &mut abort_rx,
-        )
-        .await;
+	        let result = stream_one_turn(
+	            client,
+	            test_model_config(),
+	            None,
+	            vec![test_user_message()],
+	            &mut emitter,
+	            "task",
+	            "turn",
+	            "assistant",
+	            None,
+	            &mut abort_rx,
+	            3,
+	        )
+	        .await;
 
         match result {
             TurnStreamResult::Final { content, .. } => {

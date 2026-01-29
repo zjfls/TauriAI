@@ -153,6 +153,15 @@ export const SettingsView: React.FC = () => {
     saveConfig(updatedConfig);
   };
 
+  const handleManualTurnRetryChange = (manualTurnRetry: boolean) => {
+    if (!config) return;
+    const updatedConfig: AppConfig = {
+      ...config,
+      general: { ...config.general, manualTurnRetry },
+    };
+    saveConfig(updatedConfig);
+  };
+
   const handleOpenDevtoolsOnStartChange = (openDevtoolsOnStart: boolean) => {
     if (!config) return;
     const updatedConfig: AppConfig = {
@@ -202,11 +211,12 @@ export const SettingsView: React.FC = () => {
             onAlwaysOnTopChange={handleAlwaysOnTopChange}
           />
         );
-      case 'general':
+          case 'general':
         return (
           <GeneralSettings
             language={config.general.language}
             autoStart={config.general.autoStart}
+            manualTurnRetry={config.general.manualTurnRetry ?? false}
             debugMode={config.general.debugMode ?? false}
             debugSse={config.general.debugSse ?? false}
             openDevtoolsOnStart={config.general.openDevtoolsOnStart ?? false}
@@ -217,6 +227,7 @@ export const SettingsView: React.FC = () => {
             webSearchTool={config.general.webSearchTool}
             onLanguageChange={handleLanguageChange}
             onAutoStartChange={handleAutoStartChange}
+            onManualTurnRetryChange={handleManualTurnRetryChange}
             onDebugModeChange={handleDebugModeChange}
             onDebugSseChange={handleDebugSseChange}
             onOpenDevtoolsOnStartChange={handleOpenDevtoolsOnStartChange}
@@ -314,6 +325,7 @@ const AppearanceSettings: React.FC<AppearanceSettingsProps> = ({
 interface GeneralSettingsProps {
   language: string;
   autoStart: boolean;
+  manualTurnRetry: boolean;
   debugMode: boolean;
   debugSse: boolean;
   openDevtoolsOnStart: boolean;
@@ -324,6 +336,7 @@ interface GeneralSettingsProps {
   webSearchTool?: WebSearchToolSettings;
   onLanguageChange: (language: string) => void;
   onAutoStartChange: (value: boolean) => void;
+  onManualTurnRetryChange: (value: boolean) => void;
   onDebugModeChange: (value: boolean) => void;
   onDebugSseChange: (value: boolean) => void;
   onOpenDevtoolsOnStartChange: (value: boolean) => void;
@@ -337,6 +350,7 @@ interface GeneralSettingsProps {
 const GeneralSettings: React.FC<GeneralSettingsProps> = ({
   language,
   autoStart,
+  manualTurnRetry,
   debugMode,
   debugSse,
   openDevtoolsOnStart,
@@ -347,6 +361,7 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
   webSearchTool,
   onLanguageChange,
   onAutoStartChange,
+  onManualTurnRetryChange,
   onDebugModeChange,
   onDebugSseChange,
   onOpenDevtoolsOnStartChange,
@@ -439,6 +454,19 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
             className={`relative w-11 h-6 rounded-full transition-colors ${autoStart ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'}`}
           >
             <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${autoStart ? 'translate-x-5' : ''}`} />
+          </button>
+        </div>
+
+        <div className="flex items-center justify-between">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">手动重试</label>
+            <p className="text-xs text-gray-500">开启后：Turn 级错误不自动重试，需手动点击每轮旁的“重试”</p>
+          </div>
+          <button
+            onClick={() => onManualTurnRetryChange(!manualTurnRetry)}
+            className={`relative w-11 h-6 rounded-full transition-colors ${manualTurnRetry ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'}`}
+          >
+            <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${manualTurnRetry ? 'translate-x-5' : ''}`} />
           </button>
         </div>
       </SettingsSection>

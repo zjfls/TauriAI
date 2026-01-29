@@ -737,14 +737,38 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
                                 />
                                 <p className="text-[11px] text-gray-500">关闭后，实际请求不会发送 top_p</p>
                               </div>
-                            </div>
+	                            </div>
+	
+	                            <div className="grid grid-cols-4 gap-3">
+	                                <div>
+	                                  <label className="block text-xs text-gray-500">重试次数</label>
+	                                  <input
+	                                    type="number"
+	                                    min="1"
+	                                    max="10"
+	                                    value={model.retryAttempts ?? ''}
+	                                    onChange={(e) => {
+	                                      const raw = e.target.value;
+	                                      const next = raw ? Number.parseInt(raw, 10) : undefined;
+	                                      const normalized =
+	                                        typeof next === 'number' && Number.isFinite(next) && next >= 1 ? next : undefined;
+	                                      onUpdateModel(index, {
+	                                        ...model,
+	                                        retryAttempts: normalized,
+	                                      });
+	                                    }}
+	                                    disabled={!isEditing}
+	                                    placeholder="3"
+	                                    className="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100"
+	                                  />
+	                                  <span className="text-xs text-gray-400">默认: 3</span>
+	                                </div>
 
-                            <div className="grid grid-cols-4 gap-3">
-                                {model.capabilities?.vision && (
-                                  <div>
-                                    <label className="block text-xs text-gray-500">最大图片数</label>
-                                    <input
-                                      type="number"
+	                                {model.capabilities?.vision && (
+	                                  <div>
+	                                    <label className="block text-xs text-gray-500">最大图片数</label>
+	                                    <input
+	                                      type="number"
                                       min="1"
                                       max="100"
                                       value={model.maxImages ?? 10}

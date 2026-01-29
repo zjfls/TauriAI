@@ -31,6 +31,7 @@ use commands::{
     workstudio_terminal_close, workstudio_terminal_create, workstudio_terminal_read,
     workstudio_terminal_read_base64,
     workstudio_terminal_write,
+    retry_turn,
 };
 use runtime::RunState;
 use config::ConfigManager;
@@ -207,6 +208,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // Runtime commands
             run_task,
+            retry_turn,
             abort_run,
             respond_approval,
             list_pty_sessions,

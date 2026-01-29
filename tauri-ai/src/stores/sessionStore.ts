@@ -64,6 +64,7 @@ export interface SessionState {
   sendMessage: (sessionId: string, content: string, thinking?: boolean | string, images?: ContentPart[]) => Promise<void>;
   abortGeneration: (sessionId: string) => Promise<void>;
   retry: (sessionId: string, messageId: string) => Promise<void>;
+  retryTurn: (sessionId: string, assistantMessageId: string, turnId: string) => Promise<void>;
   undoToMessage: (sessionId: string, messageId: string) => void;
 
   // Streaming updates (internal use)
@@ -597,6 +598,63 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
       // Then resend
       await get().sendMessage(sessionId, promptToResend);
+    }
+  },
+
+  /**
+   * Retry a specific internal turn (replay context before that turn)
+   */
+  retryTurn: async (sessionId: string, assistantMessageId: string, turnId: string) => {
+    // Wait for any pending undo operations to complete first
+    await pendingUndoOperation;
+
+    const session = get().sessions.get(sessionId);
+    if (!session?.conversationId) return;
+
+    if (session.isGenerating) {
+      await get().abortGeneration(sessionId);
+    }
+
+    discardNextFinalizeByConversationId.delete(session.conversationId);
+    clearTurnIndexesForSession(sessionId);
+
+    set((state) => {
+      const newSessions = new Map(state.sessions);
+      const currentSession = newSessions.get(sessionId);
+      if (currentSession) {
+        newSessions.set(sessionId, {
+          ...currentSession,
+          isGenerating: true,
+          streamingBlocks: [],
+          streamingTurns: new Map(),
+          error: null,
+          lastActiveAt: new Date().toISOString(),
+        });
+      }
+      return { sessions: newSessions };
+    });
+
+    try {
+      const debugMode = useConfigStore.getState().config?.general?.debugMode ?? false;
+      await useConfigStore.getState().flushConfigSaves?.();
+
+      const thinkingMode = session.thinkingMode;
+      const thinkingParam: boolean | string | undefined =
+        thinkingMode === undefined ? undefined : thinkingMode === null ? false : thinkingMode;
+
+      await invoke('retry_turn', {
+        conversationId: session.conversationId,
+        assistantMessageId,
+        turnId,
+        agentName: session.agentName,
+        modelRef: session.modelRef,
+        runMode: session.runMode,
+        thinking: thinkingParam,
+        webSearchProvider: session.webSearchProvider,
+        debugMode,
+      });
+    } catch (err) {
+      get().handleError(sessionId, (err as any).message || String(err));
     }
   },
 

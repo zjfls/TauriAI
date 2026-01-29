@@ -182,6 +182,7 @@ interface MessageItemProps {
   isStreaming?: boolean;
   onAction: (action: Action) => void;
   onAbortTool?: (callId: string) => void;
+  onRetryTurn?: (assistantMessageId: string, turnId: string) => void;
 }
 
 export const MessageItem: React.FC<MessageItemProps> = ({
@@ -189,6 +190,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
   isStreaming = false,
   onAction,
   onAbortTool,
+  onRetryTurn,
 }) => {
   const [isHovered, setIsHovered] = useState(false);
   const [showDebugModal, setShowDebugModal] = useState(false);
@@ -320,6 +322,8 @@ export const MessageItem: React.FC<MessageItemProps> = ({
               conversationId={message.conversationId}
               turns={message.turns}
               onAbortTool={onAbortTool}
+              assistantMessageId={message.id}
+              onRetryTurn={onRetryTurn}
             />
 
             {/* Fallback for multimodal output (future) */}

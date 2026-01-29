@@ -12,7 +12,7 @@ use crate::config::ConfigManager;
 use crate::errors::SerializableError;
 use crate::models::ContentPart;
 use crate::runtime::approvals::ApprovalDecision;
-use crate::runtime::task_runner::{run_task as run_task_impl, RunTaskInput};
+use crate::runtime::task_runner::{retry_turn as retry_turn_impl, run_task as run_task_impl, RunTaskInput};
 use crate::runtime::RunState;
 use crate::storage::Database;
 
@@ -46,7 +46,43 @@ pub async fn run_task(
             thinking,
             web_search_provider,
             debug_mode,
+            base_messages_override: None,
+            start_turn_index: None,
         },
+        db.inner().clone(),
+        config_manager.inner().clone(),
+        run_state.inner().clone(),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn retry_turn(
+    app: AppHandle,
+    conversation_id: String,
+    assistant_message_id: String,
+    turn_id: String,
+    agent_name: Option<String>,
+    model_ref: Option<String>,
+    run_mode: Option<String>,
+    thinking: Option<serde_json::Value>,
+    web_search_provider: Option<String>,
+    debug_mode: Option<bool>,
+    db: tauri::State<'_, Arc<Mutex<Database>>>,
+    config_manager: tauri::State<'_, Arc<ConfigManager>>,
+    run_state: tauri::State<'_, Arc<RunState>>,
+) -> Result<(), SerializableError> {
+    retry_turn_impl(
+        app,
+        conversation_id,
+        assistant_message_id,
+        turn_id,
+        agent_name,
+        model_ref,
+        run_mode,
+        thinking,
+        web_search_provider,
+        debug_mode,
         db.inner().clone(),
         config_manager.inner().clone(),
         run_state.inner().clone(),
