@@ -267,12 +267,12 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
     return getAgent(session.agentName) ?? null;
   }, [session, getAgent]);
 
-  // Determine if export should be shown based on agent type
+  // Determine if export should be shown based on format type (richtext)
   const canExportChat = useMemo(() => {
     if (!session) return false;
     const agent = getAgent(session.agentName);
-    // Only 'chat' type agents support export
-    return agent?.type === 'chat' || agent?.type === undefined;
+    // Only 'chat' format (richtext) supports export
+    return agent?.formatType === 'chat';
   }, [session, getAgent]);
 
   // Export chat to .tauri.richtxt
