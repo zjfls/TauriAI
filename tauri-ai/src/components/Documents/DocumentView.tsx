@@ -1,11 +1,17 @@
 import React, { useMemo } from 'react';
 import { FileText, Copy } from 'lucide-react';
 import { useDocumentStore } from '../../stores/documentStore';
+import { useSessionStore } from '../../stores/sessionStore';
 import MarkdownRenderer from '../Chat/MarkdownRenderer';
 
 export const DocumentView: React.FC = () => {
   const documents = useDocumentStore((s) => s.documents);
   const activeDocumentId = useDocumentStore((s) => s.activeDocumentId);
+  const activeWorkstudioId = useSessionStore((s) => {
+    const sid = s.activeSessionId;
+    if (!sid) return null;
+    return s.sessions.get(sid)?.workstudioId ?? null;
+  });
 
   const activeDoc = useMemo(() => {
     if (!activeDocumentId) return null;
@@ -74,7 +80,7 @@ export const DocumentView: React.FC = () => {
           if (renderMarkdown) {
             return (
               <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-800">
-                <MarkdownRenderer content={activeDoc.content} />
+                <MarkdownRenderer content={activeDoc.content} workstudioId={activeWorkstudioId} />
               </div>
             );
           }

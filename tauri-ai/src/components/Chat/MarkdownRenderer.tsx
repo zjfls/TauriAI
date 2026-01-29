@@ -68,6 +68,7 @@ const isTauriRuntime = (): boolean => {
 interface MarkdownRendererProps {
   content: string;
   conversationId?: string | null;
+  workstudioId?: string | null;
 }
 
 interface CodeBlockProps {
@@ -395,9 +396,8 @@ function restoreContent(content: string, blocks: Map<string, string>): string {
 // Main MarkdownRenderer Component
 // ============================================================================
 
-export const MarkdownRenderer = React.memo(function MarkdownRenderer({ content, conversationId }: MarkdownRendererProps) {
+export const MarkdownRenderer = React.memo(function MarkdownRenderer({ content, conversationId, workstudioId }: MarkdownRendererProps) {
   const openFileReference = useCallback(async (ref: ParsedFileReference) => {
-    if (!conversationId) return;
     if (!isTauriRuntime()) return;
 
     try {
@@ -406,19 +406,39 @@ export const MarkdownRenderer = React.memo(function MarkdownRenderer({ content, 
         import('../../utils/viewWindow'),
       ]);
 
-      const ws = await invoke<Workstudio>('ensure_workstudio_for_conversation', { conversationId });
+      let resolvedWorkstudioId: string | null = workstudioId ?? null;
+      let ws: Workstudio | null = null;
 
-      await openOrFocusViewWindow('workstudio', `Workstudio: ${ws.mainFolder}`, {
-        workstudioId: ws.id,
+      if (!resolvedWorkstudioId && conversationId) {
+        ws = await invoke<Workstudio>('ensure_workstudio_for_conversation', { conversationId });
+        resolvedWorkstudioId = ws.id;
+      }
+
+      if (!resolvedWorkstudioId) {
+        console.warn('openFileReference skipped: missing workstudio context');
+        return;
+      }
+
+      if (!ws) {
+        try {
+          ws = await invoke<Workstudio | null>('get_workstudio', { workstudioId: resolvedWorkstudioId });
+        } catch {
+          // ignore
+        }
+      }
+
+      const title = ws ? `Workstudio: ${ws.mainFolder}` : 'Workstudio';
+      await openOrFocusViewWindow('workstudio', title, {
+        workstudioId: resolvedWorkstudioId,
         filePath: ref.filePath,
         line: ref.line,
         column: ref.column,
-        label: `view-workstudio-${ws.id}`,
+        label: `view-workstudio-${resolvedWorkstudioId}`,
       });
     } catch (error) {
       console.warn('openFileReference failed:', error);
     }
-  }, [conversationId]);
+  }, [conversationId, workstudioId]);
 
   // Process content: protect LaTeX & Mermaid -> sanitize -> restore
   const processed = useMemo(() => {
@@ -459,18 +479,28 @@ export const MarkdownRenderer = React.memo(function MarkdownRenderer({ content, 
         return <CodeBlock language={language} code={codeStr} />;
       }
 
-      const fileRef = inline ? parseFileReferenceToken(codeStr) : null;
-      if (inline && fileRef && conversationId && isTauriRuntime()) {
-        const title = fileRef.column
-          ? `打开 ${fileRef.filePath}:${fileRef.line}:${fileRef.column}`
-          : `打开 ${fileRef.filePath}:${fileRef.line}`;
+      const fileRef = parseFileReferenceToken(codeStr);
+      if (fileRef) {
+        const tauri = isTauriRuntime();
+        const canOpen = tauri && Boolean(conversationId || workstudioId);
+        const title = !tauri
+          ? '仅桌面端可用'
+          : !canOpen
+            ? '缺少工作区上下文（先打开一个对话/工作区）'
+            : fileRef.column
+              ? `打开 ${fileRef.filePath}:${fileRef.line}:${fileRef.column}`
+              : `打开 ${fileRef.filePath}:${fileRef.line}`;
 
         return (
           <button
             type="button"
-            className="rounded bg-blue-50 px-1.5 py-0.5 text-sm font-mono text-blue-700 hover:underline dark:bg-blue-900/30 dark:text-blue-200"
+            disabled={!canOpen}
+            className="rounded bg-blue-50 px-1.5 py-0.5 text-sm font-mono text-blue-700 hover:underline disabled:cursor-not-allowed disabled:opacity-60 dark:bg-blue-900/30 dark:text-blue-200"
             title={title}
-            onClick={() => void openFileReference(fileRef)}
+            onClick={() => {
+              if (!canOpen) return;
+              void openFileReference(fileRef);
+            }}
           >
             {codeStr}
           </button>
