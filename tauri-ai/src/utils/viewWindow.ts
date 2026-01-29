@@ -129,6 +129,23 @@ export const openOrFocusViewWindow = async (
     try {
       const existing = await WebviewWindow.getByLabel(label);
       if (existing) {
+        // Workstudio: focus existing window and send it an "open file" event.
+        if (
+          view === 'workstudio' &&
+          opts?.filePath
+        ) {
+          try {
+            await existing.emit('workstudio:open_file', {
+              filePath: opts.filePath,
+              line: opts.line ?? null,
+              column: opts.column ?? null,
+              endLine: opts.endLine ?? null,
+              endColumn: opts.endColumn ?? null,
+            });
+          } catch {
+            // ignore; best-effort
+          }
+        }
         await existing.setFocus();
         return existing;
       }

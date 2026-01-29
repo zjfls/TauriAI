@@ -254,6 +254,8 @@ export const WorkstudioView: React.FC = () => {
   const editorByGroupRef = useRef(
     new Map<string, import('monaco-editor').editor.IStandaloneCodeEditor>()
   );
+  const openFilesRef = useRef<OpenFile[]>([]);
+  const openingPathsRef = useRef<Set<string>>(new Set());
   const filePaletteInputRef = useRef<HTMLInputElement | null>(null);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [terminalSessionId, setTerminalSessionId] = useState<number | null>(null);
@@ -270,6 +272,9 @@ export const WorkstudioView: React.FC = () => {
   const [loadingDirs, setLoadingDirs] = useState<Record<string, boolean>>({});
 
   const [openFiles, setOpenFiles] = useState<OpenFile[]>([]);
+  useEffect(() => {
+    openFilesRef.current = openFiles;
+  }, [openFiles]);
   const [groups, setGroups] = useState<EditorGroup[]>(() => [
     { id: 'g-0', openFileIds: [], activeFileId: null, weight: 1 },
   ]);
@@ -408,7 +413,7 @@ export const WorkstudioView: React.FC = () => {
 
   const openFileAtPath = useCallback(
     async (path: string) => {
-      const existing = openFiles.find((f) => f.path === path);
+      const existing = openFilesRef.current.find((f) => f.path === path);
       if (existing) {
         setGroups((prev) =>
           prev.map((g) => {
@@ -421,6 +426,10 @@ export const WorkstudioView: React.FC = () => {
         );
         return;
       }
+
+      if (openingPathsRef.current.has(path)) return;
+      openingPathsRef.current.add(path);
+      try {
       const file = await invoke<{ filename: string; mime: string; base64: string; size: number }>(
         'read_local_file_base64',
         { path }
@@ -441,53 +450,75 @@ export const WorkstudioView: React.FC = () => {
         dataUrl: kind === 'image' ? `data:${file.mime};base64,${file.base64}` : undefined,
         base64: file.base64,
       };
-      setOpenFiles((prev) => [...prev, next]);
+      setOpenFiles((prev) => (prev.some((f) => f.path === path) ? prev : [...prev, next]));
       setGroups((prev) =>
         prev.map((g) => {
           if (g.id !== focusedGroupId) return g;
-          return { ...g, openFileIds: [...g.openFileIds, id], activeFileId: id };
+          const openFileIds = g.openFileIds.includes(id) ? g.openFileIds : [...g.openFileIds, id];
+          return { ...g, openFileIds, activeFileId: id };
         })
       );
+      } finally {
+        openingPathsRef.current.delete(path);
+      }
     },
-    [openFiles, focusedGroupId]
+    [focusedGroupId]
   );
+
+  type LinkTarget = {
+    filePath: string;
+    line?: number | null;
+    column?: number | null;
+    endLine?: number | null;
+    endColumn?: number | null;
+  };
 
   const openedFromUrlRef = useRef(false);
   const [openFromLinkError, setOpenFromLinkError] = useState<string | null>(null);
-  useEffect(() => {
-    if (!filePath || openedFromUrlRef.current) return;
 
-    const isAbs = /^[A-Za-z]:[\\/]/.test(filePath) || filePath.startsWith('/') || filePath.startsWith('\\');
-    // If it's a relative path, wait until we have ws.mainFolder to resolve it.
+  const openLinkTarget = useCallback(async (target: LinkTarget) => {
+    const targetPath = target.filePath;
+    if (!targetPath) return;
+
+    const isAbs = /^[A-Za-z]:[\\/]/.test(targetPath) || targetPath.startsWith('/') || targetPath.startsWith('\\');
     if (!isAbs && !ws?.mainFolder) return;
-    openedFromUrlRef.current = true;
 
     const resolved = !isAbs && ws?.mainFolder
       ? (() => {
           const sep = ws.mainFolder.includes('\\') ? '\\' : '/';
           const a = ws.mainFolder.replace(/[\\/]+$/, '');
-          const b = filePath.replace(/^[\\/]+/, '');
+          const b = targetPath.replace(/^[\\/]+/, '');
           return b ? `${a}${sep}${b}` : a;
         })()
-      : filePath;
+      : targetPath;
 
-    const applyJumpOrSelection = () => {
-      if (!line) return;
+    const applySelection = () => {
+      const rawLine = typeof target.line === 'number' ? target.line : null;
+      if (!rawLine) return;
       const editor = editorByGroupRef.current.get(focusedGroupId);
       if (!editor) return;
       const model = editor.getModel();
-      const startLineNumber = Math.max(1, line);
-      const startColumn = Math.max(1, typeof column === 'number' ? column : 1);
-      const rawEndLine = typeof endLine === 'number' ? endLine : null;
-      const rawEndColumn = typeof endColumn === 'number' ? endColumn : null;
+
+      const startLineNumber = Math.max(1, rawLine);
+      let startColumn = Math.max(1, typeof target.column === 'number' ? target.column : 1);
+      const rawEndLine = typeof target.endLine === 'number' ? target.endLine : null;
+      const rawEndColumn = typeof target.endColumn === 'number' ? target.endColumn : null;
 
       const endLineNumber = Math.max(1, rawEndLine ?? startLineNumber);
-      const endColumnNumber =
+      let endColumnNumber =
         typeof rawEndColumn === 'number'
           ? Math.max(1, rawEndColumn)
           : model
             ? model.getLineMaxColumn(endLineNumber)
             : startColumn;
+
+      // Single-point jump: highlight to end-of-line (more visible than just caret).
+      if (rawEndLine === null && rawEndColumn === null && model) {
+        endColumnNumber = model.getLineMaxColumn(startLineNumber);
+        if (endColumnNumber <= startColumn) {
+          startColumn = Math.max(1, endColumnNumber - 1);
+        }
+      }
 
       const normalize = () => {
         if (endLineNumber < startLineNumber) {
@@ -516,79 +547,96 @@ export const WorkstudioView: React.FC = () => {
 
       const sel = normalize();
       try {
-        if (rawEndLine !== null || rawEndColumn !== null) {
-          editor.setSelection(sel);
-          editor.revealRangeInCenter(sel);
-        } else {
-          editor.setPosition({ lineNumber: startLineNumber, column: startColumn });
-          editor.revealLineInCenter(startLineNumber);
-        }
+        editor.setSelection(sel);
+        editor.revealRangeInCenter(sel);
         editor.focus();
       } catch {
         // ignore
       }
     };
 
-    setOpenFromLinkError(null);
     const applyLater = () => {
-      let attempts = 16;
+      let attempts = 20;
       const tick = () => {
-        applyJumpOrSelection();
+        applySelection();
         attempts -= 1;
         if (attempts <= 0) return;
         window.setTimeout(tick, 50);
       };
-      window.requestAnimationFrame(() => {
-        tick();
-      });
+      window.requestAnimationFrame(() => tick());
     };
 
-    void openFileAtPath(resolved)
-      .then(() => {
-        applyLater();
-      })
-      .catch(async (error) => {
-        // Fallback: if the model only output a basename (e.g. `events.rs:96`),
-        // try searching within the workstudio roots and open the best match.
-        try {
-          if (!ws?.id || isAbs) throw error;
+    setOpenFromLinkError(null);
+    try {
+      await openFileAtPath(resolved);
+      applyLater();
+      return;
+    } catch (error) {
+      try {
+        if (!ws?.id || isAbs) throw error;
 
-          const needle = filePath.replace(/[\\/]+/g, '/');
-          const basenameOnly = needle.split('/').pop() ?? needle;
-          const candidates = await invoke<string[]>('workstudio_find_files', {
-            args: { workstudioId: ws.id, query: basenameOnly, limit: 50 },
+        const needle = targetPath.replace(/[\\/]+/g, '/');
+        const basenameOnly = needle.split('/').pop() ?? needle;
+        const candidates = await invoke<string[]>('workstudio_find_files', {
+          args: { workstudioId: ws.id, query: basenameOnly, limit: 50 },
+        });
+
+        const pickBest = () => {
+          if (!Array.isArray(candidates) || candidates.length === 0) return null;
+          if (needle.includes('/')) {
+            const tail = `/${needle}`.toLowerCase();
+            const exactTail = candidates.find((p) => p.replace(/[\\/]+/g, '/').toLowerCase().endsWith(tail));
+            if (exactTail) return exactTail;
+          }
+          const byBase = candidates.find((p) => {
+            const base = p.replace(/[\\/]+/g, '/').split('/').pop() ?? '';
+            return base.toLowerCase() === basenameOnly.toLowerCase();
           });
+          return byBase ?? candidates[0] ?? null;
+        };
 
-          const pickBest = () => {
-            if (!Array.isArray(candidates) || candidates.length === 0) return null;
-            if (needle.includes('/')) {
-              const tail = `/${needle}`.toLowerCase();
-              const exactTail = candidates.find((p) => p.replace(/[\\/]+/g, '/').toLowerCase().endsWith(tail));
-              if (exactTail) return exactTail;
-            }
-            const byBase = candidates.find((p) => {
-              const base = p.replace(/[\\/]+/g, '/').split('/').pop() ?? '';
-              return base.toLowerCase() === basenameOnly.toLowerCase();
-            });
-            return byBase ?? candidates[0] ?? null;
-          };
+        const best = pickBest();
+        if (!best) throw error;
 
-          const best = pickBest();
-          if (!best) throw error;
+        await openFileAtPath(best);
+        applyLater();
+        return;
+      } catch (fallbackError) {
+        console.error('open file from link failed:', fallbackError);
+        setOpenFromLinkError(
+          typeof fallbackError === 'string'
+            ? fallbackError
+            : (fallbackError as any)?.message ?? '打开文件失败'
+        );
+      }
+    }
+  }, [focusedGroupId, openFileAtPath, ws?.id, ws?.mainFolder]);
 
-          await openFileAtPath(best);
-          applyLater();
-          return;
-        } catch (fallbackError) {
-          console.error('open file from link failed:', fallbackError);
-          setOpenFromLinkError(
-            typeof fallbackError === 'string'
-              ? fallbackError
-              : (fallbackError as any)?.message ?? '打开文件失败'
-          );
-        }
-      });
-  }, [filePath, line, column, endLine, endColumn, ws?.mainFolder, openFileAtPath, focusedGroupId]);
+  useEffect(() => {
+    if (!filePath || openedFromUrlRef.current) return;
+
+    const isAbs = /^[A-Za-z]:[\\/]/.test(filePath) || filePath.startsWith('/') || filePath.startsWith('\\');
+    // If it's a relative path, wait until we have ws.mainFolder to resolve it.
+    if (!isAbs && !ws?.mainFolder) return;
+    openedFromUrlRef.current = true;
+    void openLinkTarget({ filePath, line, column, endLine, endColumn });
+  }, [filePath, line, column, endLine, endColumn, ws?.mainFolder, openLinkTarget]);
+
+  useEffect(() => {
+    let unlisten: null | (() => void) = null;
+    void listen('workstudio:open_file', (event) => {
+      const payload = (event as any).payload as LinkTarget | null | undefined;
+      if (!payload?.filePath) return;
+      void openLinkTarget(payload);
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => {});
+    return () => {
+      unlisten?.();
+    };
+  }, [openLinkTarget]);
 
   const closeFileInGroup = useCallback((groupId: string, fileId: string) => {
     setGroups((prev) => {
