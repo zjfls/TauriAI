@@ -946,6 +946,7 @@ Guidelines:
           useSessionStore.getState().setSessionWebSearchProvider(sessionId, provider);
         }}
         webSearchDetails={webSearchDetails}
+        workstudio={workstudio ?? null}
       />
       {persistanceShellEnhance && conversationId && (
         <ToolSessionsPanel

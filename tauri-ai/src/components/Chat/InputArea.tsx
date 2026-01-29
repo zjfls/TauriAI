@@ -5,7 +5,7 @@
  */
 
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Send, Square, Bot, Cpu, ChevronDown, Check, ImagePlus, Paperclip, FileText, Plug } from 'lucide-react';
+import { Send, Square, Bot, Cpu, ChevronDown, Check, ImagePlus, Paperclip, FileText, Plug, X, File as FileIcon } from 'lucide-react';
 import { ContextUsageIndicator } from './ContextUsageIndicator';
 import { McpModal } from './McpModal';
 import { AttachmentPreview } from './AttachmentPreview';
@@ -13,7 +13,7 @@ import { ThinkingSelector } from './ThinkingSelector';
 import { WebSearchToggle, type WebSearchProvider } from './WebSearchToggle';
 import { isSupportedTextFile, readTextFile, validateFileCount } from '../../utils/textFileUtils';
 import { isValidPdfFile, validatePdfSize, processPdfFile, MAX_PDF_SIZE } from '../../utils/pdfUtils';
-import type { ContextUsageBreakdown, Agent, ContentPart, PendingImage, PendingTextFile, PendingPdf, ApiProtocolType, ThinkingMode, ProviderType, RunMode } from '../../types';
+import type { ContextUsageBreakdown, Agent, ContentPart, PendingImage, PendingTextFile, PendingPdf, ApiProtocolType, ThinkingMode, ProviderType, RunMode, Workstudio } from '../../types';
 import { SUPPORTED_TEXT_EXTENSIONS, MAX_PDF_COUNT, MAX_TEXT_FILES } from '../../types';
 import { FILE_ERROR_MESSAGES } from '../../utils/textFileUtils';
 import { invoke, isTauri } from '@tauri-apps/api/core';
@@ -101,6 +101,94 @@ function normalizeDroppedPdfFile(file: File): File | null {
 function getFilenameFromPath(path: string): string {
   const trimmed = path.replace(/[\\/]+$/, '');
   return trimmed.split(/[\\/]/).pop() || trimmed;
+}
+
+function normalizePathForCompare(p: string): string {
+  return p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+function basename(p: string): string {
+  const normalized = p.replace(/\\/g, '/');
+  const segments = normalized.split('/').filter(Boolean);
+  return segments.length === 0 ? p : segments[segments.length - 1];
+}
+
+function fnv1a32Hex(input: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = (hash + ((hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24))) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
+}
+
+type WorkspaceRoot = { key: string; name: string; absPath: string };
+
+function buildWorkspaceRoots(workstudio?: Workstudio | null): WorkspaceRoot[] {
+  if (!workstudio) return [];
+  const roots = [workstudio.mainFolder, ...(workstudio.folders ?? [])].filter((p) => p && p.trim().length > 0);
+  const unique = Array.from(new Set(roots));
+  return unique.map((absPath) => {
+    const name = basename(absPath);
+    const hash = fnv1a32Hex(normalizePathForCompare(absPath)).slice(0, 6);
+    return { key: `${name}~${hash}`, name, absPath };
+  });
+}
+
+function absPathToWorkspaceUri(absPath: string, roots: WorkspaceRoot[]): string | null {
+  const absN = normalizePathForCompare(absPath);
+  let best: WorkspaceRoot | null = null;
+  for (const r of roots) {
+    const rootN = normalizePathForCompare(r.absPath);
+    if (absN === rootN || absN.startsWith(rootN + '/')) {
+      if (!best || rootN.length > normalizePathForCompare(best.absPath).length) {
+        best = r;
+      }
+    }
+  }
+  if (!best) return null;
+  const rootN = normalizePathForCompare(best.absPath);
+  const rel = absN === rootN ? '' : absN.slice(rootN.length + 1);
+  const encodedRel = rel
+    .split('/')
+    .filter((s) => s.length > 0)
+    .map((s) => encodeURIComponent(s))
+    .join('/');
+  return `workspace://${encodeURIComponent(best.key)}/${encodedRel}`;
+}
+
+function parseWorkspaceUri(uri: string): { rootKey: string; relPath: string } | null {
+  if (!uri.startsWith('workspace://')) return null;
+  const rest = uri.slice('workspace://'.length);
+  const idx = rest.indexOf('/');
+  const rootKeyEnc = idx >= 0 ? rest.slice(0, idx) : rest;
+  const relEnc = idx >= 0 ? rest.slice(idx + 1) : '';
+  const rootKey = decodeURIComponent(rootKeyEnc);
+  const relPath = relEnc
+    .split('/')
+    .filter((s) => s.length > 0)
+    .map((s) => decodeURIComponent(s))
+    .join('/');
+  return { rootKey, relPath };
+}
+
+function joinPath(rootAbs: string, rel: string): string {
+  const sep = rootAbs.includes('\\') ? '\\' : '/';
+  const a = rootAbs.replace(/[\\/]+$/, '');
+  const b = rel.replace(/^[\\/]+/, '');
+  return b ? `${a}${sep}${b}` : a;
+}
+
+function findActiveAtQuery(text: string, cursor: number): { start: number; query: string } | null {
+  if (cursor < 0 || cursor > text.length) return null;
+  const before = text.slice(0, cursor);
+  const lastAt = before.lastIndexOf('@');
+  if (lastAt < 0) return null;
+  const prev = lastAt === 0 ? '' : before[lastAt - 1];
+  if (prev && !/\s/.test(prev)) return null;
+  const query = before.slice(lastAt + 1);
+  if (/\s/.test(query)) return null;
+  return { start: lastAt, query };
 }
 
 function base64ToUint8Array(base64: string): Uint8Array {
@@ -194,6 +282,8 @@ interface InputAreaProps {
   webSearchDetails?: string;
   // PDF debug mode
   pdfDebugMode?: boolean;  // Whether to enable PDF debug mode controls
+  // Workstudio (for @ mention file chips)
+  workstudio?: Workstudio | null;
 }
 
 /**
@@ -696,10 +786,12 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
 
   webSearchDetails,
   pdfDebugMode = false,
+  workstudio,
 }, ref) => {
   const [contentDraft, setContentDraft] = useState('');
 
   const content = controlledValue ?? contentDraft;
+  const workspaceRoots = useMemo(() => buildWorkspaceRoots(workstudio), [workstudio]);
 
   const handleContentChange = useCallback(
     (value: string) => {
@@ -737,6 +829,12 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   const [pendingPdfs, setPendingPdfs] = useState<PendingPdf[]>([]);
   const [fileError, setFileError] = useState<string | null>(null);
   const [pdfError, setPdfError] = useState<string | null>(null);
+  type WorkspaceMentionChip = { id: string; uri: string; label: string };
+  const [workspaceMentions, setWorkspaceMentions] = useState<WorkspaceMentionChip[]>([]);
+  const [atQuery, setAtQuery] = useState<{ start: number; query: string } | null>(null);
+  const [atResults, setAtResults] = useState<{ uri: string; absPath: string; label: string }[]>([]);
+  const [atIndex, setAtIndex] = useState(0);
+  const atTimerRef = useRef<number | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textFileInputRef = useRef<HTMLInputElement>(null);
@@ -1698,19 +1796,24 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
    * Requirements 3.1, 3.2, 3.3, 3.4: Text file content formatting and sending
    * Requirements 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7: PDF content formatting and sending
    */
-  const handleSend = useCallback(() => {
+  const handleSend = useCallback(async () => {
     // Requirement 4.6: Don't send empty/whitespace-only input (unless there are attachments)
-    const hasAttachments = pendingImages.length > 0 || pendingTextFiles.length > 0 || pendingPdfs.length > 0;
+    const hasAttachments =
+      pendingImages.length > 0 ||
+      pendingTextFiles.length > 0 ||
+      pendingPdfs.length > 0 ||
+      workspaceMentions.length > 0;
     if ((isWhitespaceOnly(content) && !hasAttachments) || disabled || isGenerating) {
       return;
     }
 
     const trimmedContent = content.trim();
+    let nextFileError: string | null = null;
 
     // Build content parts for images, text files, and PDFs
     let contentParts: ContentPart[] | undefined;
 
-    if (pendingImages.length > 0 || pendingTextFiles.length > 0 || pendingPdfs.length > 0) {
+    if (pendingImages.length > 0 || pendingTextFiles.length > 0 || pendingPdfs.length > 0 || workspaceMentions.length > 0) {
       contentParts = [];
 
       // Add image content parts
@@ -1728,7 +1831,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
         contentParts.push({
           type: 'text_file' as const,
           filename: file.filename,
-          content: file.content,  // Send raw content, not formatted
+          content: file.content, // Send raw content, not formatted
         });
       }
 
@@ -1744,6 +1847,44 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
       }
     }
 
+    if (workspaceMentions.length > 0) {
+      const errors: string[] = [];
+      const rootsByKey = new Map(workspaceRoots.map((r) => [r.key, r]));
+
+      for (const m of workspaceMentions) {
+        const parsed = parseWorkspaceUri(m.uri);
+        if (!parsed) continue;
+        const root = rootsByKey.get(parsed.rootKey);
+        if (!root) continue;
+        const absPath = joinPath(root.absPath, parsed.relPath);
+
+        try {
+          const payload = await invoke<{ filename: string; mime: string; base64: string; size: number }>(
+            'read_local_file_base64',
+            { path: absPath }
+          );
+          if (payload.mime !== 'text/plain') {
+            errors.push(`${payload.filename}: 仅支持引用文本文件`);
+            continue;
+          }
+          const bytes = base64ToUint8Array(payload.base64);
+          const text = new TextDecoder('utf-8').decode(bytes);
+          contentParts ??= [];
+          contentParts.push({
+            type: 'text_file' as const,
+            filename: payload.filename,
+            content: text,
+          });
+        } catch {
+          errors.push(`${basename(absPath)}: 读取失败`);
+        }
+      }
+
+      if (errors.length > 0) {
+        nextFileError = errors.slice(0, 3).join('；') + (errors.length > 3 ? '…' : '');
+      }
+    }
+
     onSend(trimmedContent, supportsThinking ? thinkingMode : undefined, contentParts);
     handleContentChange('');
     setPendingImages([]);
@@ -1751,7 +1892,11 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
     setPendingTextFiles([]);
     // Clear pending PDFs after sending
     setPendingPdfs([]);
-    setFileError(null);
+    setWorkspaceMentions([]);
+    setAtQuery(null);
+    setAtResults([]);
+    setAtIndex(0);
+    setFileError(nextFileError);
     setPdfError(null);
 
     // Reset textarea height after clearing
@@ -1761,7 +1906,20 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
 
     // Refocus textarea after sending
     textareaRef.current?.focus();
-  }, [content, pendingImages, pendingTextFiles, pendingPdfs, disabled, isGenerating, onSend, supportsThinking, thinkingMode, handleContentChange]);
+  }, [
+    content,
+    pendingImages,
+    pendingTextFiles,
+    pendingPdfs,
+    workspaceMentions,
+    workspaceRoots,
+    disabled,
+    isGenerating,
+    onSend,
+    supportsThinking,
+    thinkingMode,
+    handleContentChange,
+  ]);
 
   /**
    * Handle keyboard events in textarea
@@ -1777,17 +1935,68 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
    */
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      if (e.key === 'Enter') {
-        if (e.shiftKey) {
-          // Requirement 4.3: Shift+Enter inserts newline (default behavior)
+      if (atQuery && atResults.length > 0) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          setAtIndex((v) => Math.min(v + 1, atResults.length - 1));
           return;
         }
-        // Requirement 4.2: Enter sends message
+        if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          setAtIndex((v) => Math.max(v - 1, 0));
+          return;
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          setAtQuery(null);
+          setAtResults([]);
+          setAtIndex(0);
+          return;
+        }
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          const chosen = atResults[atIndex];
+          if (chosen) {
+            const el = textareaRef.current;
+            const cursor = el?.selectionStart ?? content.length;
+            const nextContent = content.slice(0, atQuery.start) + content.slice(cursor);
+            handleContentChange(nextContent);
+            setAtQuery(null);
+            setAtResults([]);
+            setAtIndex(0);
+            setWorkspaceMentions((prev) => {
+              if (prev.some((m) => m.uri === chosen.uri)) return prev;
+              return [...prev, { id: crypto.randomUUID(), uri: chosen.uri, label: chosen.label }];
+            });
+          }
+          return;
+        }
+      }
+
+      if (e.key === 'Backspace' && workspaceMentions.length > 0) {
+        const el = textareaRef.current;
+        if (el && el.selectionStart === 0 && el.selectionEnd === 0) {
+          e.preventDefault();
+          setWorkspaceMentions((prev) => prev.slice(0, -1));
+          return;
+        }
+      }
+
+      if (e.key === 'Enter') {
+        if (e.shiftKey) return;
         e.preventDefault();
-        handleSend();
+        void handleSend();
       }
     },
-    [handleSend]
+    [
+      atQuery,
+      atResults,
+      atIndex,
+      content,
+      handleContentChange,
+      handleSend,
+      workspaceMentions.length,
+    ]
   );
 
   /**
@@ -1801,9 +2010,49 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   const handleChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
       handleContentChange(e.target.value);
+      const cursor = e.target.selectionStart ?? e.target.value.length;
+      setAtQuery(findActiveAtQuery(e.target.value, cursor));
     },
     [handleContentChange]
   );
+
+  useEffect(() => {
+    if (!workstudio?.id) return;
+    if (!atQuery) return;
+
+    const query = atQuery.query.trim();
+    if (!query) {
+      setAtResults([]);
+      setAtIndex(0);
+      return;
+    }
+
+    if (atTimerRef.current) window.clearTimeout(atTimerRef.current);
+    atTimerRef.current = window.setTimeout(() => {
+      void invoke<string[]>('workstudio_find_files', {
+        args: { workstudioId: workstudio.id, query, limit: 50 },
+      })
+        .then((paths) => {
+          const results = paths
+            .map((absPath) => {
+              const uri = absPathToWorkspaceUri(absPath, workspaceRoots);
+              if (!uri) return null;
+              return { uri, absPath, label: basename(absPath) };
+            })
+            .filter((v): v is { uri: string; absPath: string; label: string } => Boolean(v));
+          setAtResults(results);
+          setAtIndex(0);
+        })
+        .catch(() => {
+          setAtResults([]);
+          setAtIndex(0);
+        });
+    }, 120);
+
+    return () => {
+      if (atTimerRef.current) window.clearTimeout(atTimerRef.current);
+    };
+  }, [atQuery, workstudio?.id, workspaceRoots]);
 
   /**
    * Handle abort button click
@@ -1815,7 +2064,8 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   }, [onAbort]);
 
   // Requirement 4.6: Disable send button for empty/whitespace input (unless there are attachments)
-  const hasAttachments = pendingImages.length > 0 || pendingTextFiles.length > 0 || pendingPdfs.length > 0;
+  const hasAttachments =
+    pendingImages.length > 0 || pendingTextFiles.length > 0 || pendingPdfs.length > 0 || workspaceMentions.length > 0;
   const isSendDisabled = disabled || (isWhitespaceOnly(content) && !hasAttachments);
 
   const currentAgent = useMemo(() => {
@@ -2046,19 +2296,93 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
 
       {/* Input row */}
       <div className="flex items-end gap-2">
-        <textarea
-          ref={textareaRef}
-          value={content}
-          onChange={handleChange}
-          onKeyDown={handleKeyDown}
-          onPaste={handlePaste}
-          placeholder={supportsVision ? "输入消息，或粘贴/拖拽图片、文本文件和 PDF..." : "输入消息，或粘贴/拖拽文本文件和 PDF..."}
-          disabled={disabled || isGenerating}
-          rows={1}
-          aria-label="消息输入框"
-          className="flex-1 resize-none rounded-lg border border-gray-300 bg-gray-50 px-4 py-2 text-gray-900 placeholder-gray-500 transition-colors focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 dark:placeholder-gray-400 dark:focus:border-blue-400"
-          style={{ minHeight: `${MIN_TEXTAREA_HEIGHT}px` }}
-        />
+        <div className="relative flex-1">
+          {workstudio?.id && atQuery && atResults.length > 0 && (
+            <div className="absolute bottom-full mb-2 w-full rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-800">
+              <div className="max-h-56 overflow-auto py-1 text-sm">
+                {atResults.map((r, idx) => (
+                  <button
+                    key={r.uri}
+                    type="button"
+                    className={[
+                      'flex w-full items-center gap-2 px-3 py-2 text-left',
+                      idx === atIndex
+                        ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
+                        : 'hover:bg-gray-50 dark:hover:bg-gray-700',
+                    ].join(' ')}
+                    onMouseDown={(ev) => ev.preventDefault()}
+                    onClick={() => {
+                      const el = textareaRef.current;
+                      const cursor = el?.selectionStart ?? content.length;
+                      const nextContent = content.slice(0, atQuery.start) + content.slice(cursor);
+                      handleContentChange(nextContent);
+                      setAtQuery(null);
+                      setAtResults([]);
+                      setAtIndex(0);
+                      setWorkspaceMentions((prev) => {
+                        if (prev.some((m) => m.uri === r.uri)) return prev;
+                        return [...prev, { id: crypto.randomUUID(), uri: r.uri, label: r.label }];
+                      });
+                      window.setTimeout(() => textareaRef.current?.focus(), 0);
+                    }}
+                  >
+                    <FileIcon size={14} className="text-gray-500 dark:text-gray-400" />
+                    <span className="truncate">{r.label}</span>
+                    <span className="ml-auto truncate text-xs text-gray-500 dark:text-gray-400">
+                      {(() => {
+                        const parsed = parseWorkspaceUri(r.uri);
+                        if (!parsed) return '';
+                        const rootName = parsed.rootKey.split('~')[0];
+                        return `${rootName}/${parsed.relPath}`;
+                      })()}
+                    </span>
+                  </button>
+                ))}
+              </div>
+              <div className="border-t border-gray-200 px-3 py-2 text-[11px] text-gray-500 dark:border-gray-700 dark:text-gray-400">
+                输入 <span className="font-mono">@</span> 搜索工作区文件，回车插入，Esc 关闭
+              </div>
+            </div>
+          )}
+
+          <div className="rounded-lg border border-gray-300 bg-gray-50 px-2 py-2 text-gray-900 placeholder-gray-500 transition-colors focus-within:border-blue-500 focus-within:outline-none focus-within:ring-1 focus-within:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 dark:placeholder-gray-400 dark:focus-within:border-blue-400">
+            {workspaceMentions.length > 0 && (
+              <div className="mb-1 flex flex-wrap gap-1">
+                {workspaceMentions.map((m) => (
+                  <span
+                    key={m.id}
+                    className="inline-flex items-center gap-1 rounded-md bg-blue-50 px-2 py-1 text-xs text-blue-700 dark:bg-blue-900/30 dark:text-blue-200"
+                    title={m.uri}
+                  >
+                    <span className="truncate max-w-56">{m.label}</span>
+                    <button
+                      type="button"
+                      className="rounded hover:bg-blue-100 dark:hover:bg-blue-900/60"
+                      onClick={() => setWorkspaceMentions((prev) => prev.filter((x) => x.id !== m.id))}
+                      aria-label="移除引用"
+                    >
+                      <X size={12} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+
+            <textarea
+              ref={textareaRef}
+              value={content}
+              onChange={handleChange}
+              onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
+              placeholder={supportsVision ? "输入消息，或粘贴/拖拽图片、文本文件和 PDF..." : "输入消息，或粘贴/拖拽文本文件和 PDF..."}
+              disabled={disabled || isGenerating}
+              rows={1}
+              aria-label="消息输入框"
+              className="w-full resize-none bg-transparent px-2 py-0 text-gray-900 placeholder-gray-500 focus:outline-none dark:text-gray-100 dark:placeholder-gray-400 disabled:cursor-not-allowed disabled:opacity-50"
+              style={{ minHeight: `${MIN_TEXTAREA_HEIGHT}px` }}
+            />
+          </div>
+        </div>
         {isGenerating ? (
           // Requirement 4.5: Show loading indicator when generating
           <button
