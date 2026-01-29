@@ -185,7 +185,9 @@ function findActiveAtQuery(text: string, cursor: number): { start: number; query
   const lastAt = before.lastIndexOf('@');
   if (lastAt < 0) return null;
   const prev = lastAt === 0 ? '' : before[lastAt - 1];
-  if (prev && !/\s/.test(prev)) return null;
+  // 允许在任意“分隔符”后触发，例如：空白、中文标点、括号等；
+  // 但避免 email/标识符场景（如 a@b）触发。
+  if (prev && /[A-Za-z0-9_]/.test(prev)) return null;
   const query = before.slice(lastAt + 1);
   if (/\s/.test(query)) return null;
   return { start: lastAt, query };
@@ -2018,6 +2020,13 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
     [handleContentChange]
   );
 
+  const handleSelectionChange = useCallback(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    const cursor = el.selectionStart ?? content.length;
+    setAtQuery(findActiveAtQuery(content, cursor));
+  }, [content]);
+
   useEffect(() => {
     if (!workstudio?.id) return;
     if (!atQuery) return;
@@ -2383,6 +2392,8 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
               value={content}
               onChange={handleChange}
               onKeyDown={handleKeyDown}
+              onClick={handleSelectionChange}
+              onSelect={handleSelectionChange}
               onPaste={handlePaste}
               placeholder={supportsVision ? "输入消息，或粘贴/拖拽图片、文本文件和 PDF..." : "输入消息，或粘贴/拖拽文本文件和 PDF..."}
               disabled={disabled || isGenerating}

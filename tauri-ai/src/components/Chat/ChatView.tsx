@@ -268,10 +268,6 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
   }, [session, getAgent]);
 
   useEffect(() => {
-    if (!workspaceEnabled) {
-      setWorkstudio(null);
-      return;
-    }
     const wsId = session?.workstudioId;
     const convId = session?.conversationId;
     if (!convId) return;
@@ -299,7 +295,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
     return () => {
       cancelled = true;
     };
-  }, [workspaceEnabled, session?.workstudioId, session?.conversationId]);
+  }, [session?.workstudioId, session?.conversationId]);
 
   useEffect(() => {
     if (!workstudioMenuOpen) return;
