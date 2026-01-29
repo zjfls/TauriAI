@@ -9,7 +9,7 @@ import rehypeKatex from 'rehype-katex';
 import rehypeRaw from 'rehype-raw';
 import DOMPurify from 'dompurify';
 import mermaid from 'mermaid';
-import { Copy, Check } from 'lucide-react';
+import { Copy, Check, FileCode2 } from 'lucide-react';
 import { MathBlock } from './MathBlock';
 import 'katex/dist/katex.min.css';
 import type { Workstudio } from '../../types';
@@ -433,6 +433,8 @@ export const MarkdownRenderer = React.memo(function MarkdownRenderer({ content, 
         filePath: ref.filePath,
         line: ref.line,
         column: ref.column,
+        endLine: ref.endLine,
+        endColumn: ref.endColumn,
         label: `view-workstudio-${resolvedWorkstudioId}`,
       });
     } catch (error) {
@@ -491,18 +493,35 @@ export const MarkdownRenderer = React.memo(function MarkdownRenderer({ content, 
               ? `打开 ${fileRef.filePath}:${fileRef.line}:${fileRef.column}`
               : `打开 ${fileRef.filePath}:${fileRef.line}`;
 
+        const baseName = (() => {
+          const normalized = fileRef.filePath.replace(/[\\/]+/g, '/');
+          return normalized.split('/').pop() || fileRef.filePath;
+        })();
+
+        const lineLabel = (() => {
+          const start = fileRef.column ? `${fileRef.line}:${fileRef.column}` : `${fileRef.line}`;
+          if (typeof fileRef.endLine === 'number') {
+            const end = fileRef.endColumn ? `${fileRef.endLine}:${fileRef.endColumn}` : `${fileRef.endLine}`;
+            return `line ${start}-${end}`;
+          }
+          return `line ${start}`;
+        })();
+
         return (
           <button
             type="button"
             disabled={!canOpen}
-            className="rounded bg-blue-50 px-1.5 py-0.5 text-sm font-mono text-blue-700 hover:underline disabled:cursor-not-allowed disabled:opacity-60 dark:bg-blue-900/30 dark:text-blue-200"
+            aria-label={codeStr}
+            className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-2 py-0.5 text-sm font-mono text-blue-700 hover:underline disabled:cursor-not-allowed disabled:opacity-60 dark:bg-blue-900/30 dark:text-blue-200"
             title={title}
             onClick={() => {
               if (!canOpen) return;
               void openFileReference(fileRef);
             }}
           >
-            {codeStr}
+            <FileCode2 size={14} className="shrink-0 opacity-80" />
+            <span className="truncate">{baseName}</span>
+            <span className="shrink-0 opacity-70">({lineLabel})</span>
           </button>
         );
       }

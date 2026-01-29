@@ -12,19 +12,34 @@ describe('parseFileReferenceToken', () => {
     expect(parseFileReferenceToken('a/foo.rs#L9C2')).toEqual({ filePath: 'foo.rs', line: 9, column: 2 });
   });
 
-  it('tolerates colon ranges (drops end)', () => {
-    expect(parseFileReferenceToken('events.rs:96-125')).toEqual({ filePath: 'events.rs', line: 96 });
-    expect(parseFileReferenceToken('events.rs:96:3-125:9')).toEqual({ filePath: 'events.rs', line: 96, column: 3 });
+  it('parses colon ranges', () => {
+    expect(parseFileReferenceToken('events.rs:96-125')).toEqual({ filePath: 'events.rs', line: 96, endLine: 125 });
+    expect(parseFileReferenceToken('events.rs:96:3-125:9')).toEqual({
+      filePath: 'events.rs',
+      line: 96,
+      column: 3,
+      endLine: 125,
+      endColumn: 9,
+    });
   });
 
-  it('tolerates hash ranges (drops end)', () => {
-    expect(parseFileReferenceToken('events.rs#L96-L125')).toEqual({ filePath: 'events.rs', line: 96 });
-    expect(parseFileReferenceToken('events.rs#L96C3-L125C9')).toEqual({ filePath: 'events.rs', line: 96, column: 3 });
+  it('parses hash ranges', () => {
+    expect(parseFileReferenceToken('events.rs#L96-L125')).toEqual({ filePath: 'events.rs', line: 96, endLine: 125 });
+    expect(parseFileReferenceToken('events.rs#L96C3-L125C9')).toEqual({
+      filePath: 'events.rs',
+      line: 96,
+      column: 3,
+      endLine: 125,
+      endColumn: 9,
+    });
   });
 
   it('accepts Windows paths and avoids URL lookalikes', () => {
-    expect(parseFileReferenceToken('C:\\repo\\main.rs:12-20')).toEqual({ filePath: 'C:\\repo\\main.rs', line: 12 });
+    expect(parseFileReferenceToken('C:\\repo\\main.rs:12-20')).toEqual({
+      filePath: 'C:\\repo\\main.rs',
+      line: 12,
+      endLine: 20,
+    });
     expect(parseFileReferenceToken('https://example.com/a.ts:1')).toBeNull();
   });
 });
-

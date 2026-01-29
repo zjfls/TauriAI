@@ -249,7 +249,7 @@ const isSubpath = (child: string, parent: string) => {
 };
 
 export const WorkstudioView: React.FC = () => {
-  const { workstudioId, filePath, line, column } = getViewWindowParams();
+  const { workstudioId, filePath, line, column, endLine, endColumn } = getViewWindowParams();
   const editorByGroupRef = useRef(
     new Map<string, import('monaco-editor').editor.IStandaloneCodeEditor>()
   );
@@ -470,15 +470,58 @@ export const WorkstudioView: React.FC = () => {
         })()
       : filePath;
 
-    const jump = () => {
+    const applyJumpOrSelection = () => {
       if (!line) return;
       const editor = editorByGroupRef.current.get(focusedGroupId);
       if (!editor) return;
-      const lineNumber = Math.max(1, line);
-      const colNumber = Math.max(1, typeof column === 'number' ? column : 1);
+      const model = editor.getModel();
+      const startLineNumber = Math.max(1, line);
+      const startColumn = Math.max(1, typeof column === 'number' ? column : 1);
+      const rawEndLine = typeof endLine === 'number' ? endLine : null;
+      const rawEndColumn = typeof endColumn === 'number' ? endColumn : null;
+
+      const endLineNumber = Math.max(1, rawEndLine ?? startLineNumber);
+      const endColumnNumber =
+        typeof rawEndColumn === 'number'
+          ? Math.max(1, rawEndColumn)
+          : model
+            ? model.getLineMaxColumn(endLineNumber)
+            : startColumn;
+
+      const normalize = () => {
+        if (endLineNumber < startLineNumber) {
+          return {
+            startLineNumber: endLineNumber,
+            startColumn: endColumnNumber,
+            endLineNumber: startLineNumber,
+            endColumn: startColumn,
+          };
+        }
+        if (endLineNumber === startLineNumber && endColumnNumber < startColumn) {
+          return {
+            startLineNumber,
+            startColumn: endColumnNumber,
+            endLineNumber,
+            endColumn: startColumn,
+          };
+        }
+        return {
+          startLineNumber,
+          startColumn,
+          endLineNumber,
+          endColumn: endColumnNumber,
+        };
+      };
+
+      const sel = normalize();
       try {
-        editor.setPosition({ lineNumber, column: colNumber });
-        editor.revealLineInCenter(lineNumber);
+        if (rawEndLine !== null || rawEndColumn !== null) {
+          editor.setSelection(sel);
+          editor.revealRangeInCenter(sel);
+        } else {
+          editor.setPosition({ lineNumber: startLineNumber, column: startColumn });
+          editor.revealLineInCenter(startLineNumber);
+        }
         editor.focus();
       } catch {
         // ignore
@@ -486,12 +529,22 @@ export const WorkstudioView: React.FC = () => {
     };
 
     setOpenFromLinkError(null);
+    const applyLater = () => {
+      let attempts = 16;
+      const tick = () => {
+        applyJumpOrSelection();
+        attempts -= 1;
+        if (attempts <= 0) return;
+        window.setTimeout(tick, 50);
+      };
+      window.requestAnimationFrame(() => {
+        tick();
+      });
+    };
+
     void openFileAtPath(resolved)
       .then(() => {
-        window.requestAnimationFrame(() => {
-          jump();
-          window.requestAnimationFrame(jump);
-        });
+        applyLater();
       })
       .catch(async (error) => {
         // Fallback: if the model only output a basename (e.g. `events.rs:96`),
@@ -523,10 +576,7 @@ export const WorkstudioView: React.FC = () => {
           if (!best) throw error;
 
           await openFileAtPath(best);
-          window.requestAnimationFrame(() => {
-            jump();
-            window.requestAnimationFrame(jump);
-          });
+          applyLater();
           return;
         } catch (fallbackError) {
           console.error('open file from link failed:', fallbackError);
@@ -537,7 +587,7 @@ export const WorkstudioView: React.FC = () => {
           );
         }
       });
-  }, [filePath, line, column, ws?.mainFolder, openFileAtPath, focusedGroupId]);
+  }, [filePath, line, column, endLine, endColumn, ws?.mainFolder, openFileAtPath, focusedGroupId]);
 
   const closeFileInGroup = useCallback((groupId: string, fileId: string) => {
     setGroups((prev) => {

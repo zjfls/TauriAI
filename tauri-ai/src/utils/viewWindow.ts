@@ -10,6 +10,8 @@ export interface ViewWindowParams {
   filePath?: string | null;
   line?: number | null;
   column?: number | null;
+  endLine?: number | null;
+  endColumn?: number | null;
 }
 
 export const getViewWindowParams = (): ViewWindowParams => {
@@ -23,6 +25,8 @@ export const getViewWindowParams = (): ViewWindowParams => {
       filePath: null,
       line: null,
       column: null,
+      endLine: null,
+      endColumn: null,
     };
   }
   const params = new URLSearchParams(window.location.search);
@@ -34,8 +38,12 @@ export const getViewWindowParams = (): ViewWindowParams => {
   const filePath = params.get('filePath');
   const lineRaw = params.get('line');
   const columnRaw = params.get('column');
+  const endLineRaw = params.get('endLine');
+  const endColumnRaw = params.get('endColumn');
   const line = lineRaw ? Number(lineRaw) : null;
   const column = columnRaw ? Number(columnRaw) : null;
+  const endLine = endLineRaw ? Number(endLineRaw) : null;
+  const endColumn = endColumnRaw ? Number(endColumnRaw) : null;
   return {
     view,
     standalone,
@@ -45,6 +53,8 @@ export const getViewWindowParams = (): ViewWindowParams => {
     filePath,
     line: Number.isFinite(line) ? line : null,
     column: Number.isFinite(column) ? column : null,
+    endLine: Number.isFinite(endLine) ? endLine : null,
+    endColumn: Number.isFinite(endColumn) ? endColumn : null,
   };
 };
 
@@ -58,6 +68,8 @@ export const openViewWindow = (
     filePath?: string;
     line?: number;
     column?: number;
+    endLine?: number;
+    endColumn?: number;
   }
 ) => {
   const label = `view-${view}-${Date.now()}`;
@@ -82,6 +94,12 @@ export const openViewWindow = (
   if (typeof opts?.column === 'number') {
     params.set('column', String(opts.column));
   }
+  if (typeof opts?.endLine === 'number') {
+    params.set('endLine', String(opts.endLine));
+  }
+  if (typeof opts?.endColumn === 'number') {
+    params.set('endColumn', String(opts.endColumn));
+  }
   const url = `/?${params.toString()}`;
   return new WebviewWindow(label, {
     title,
@@ -101,6 +119,8 @@ export const openOrFocusViewWindow = async (
     filePath?: string;
     line?: number;
     column?: number;
+    endLine?: number;
+    endColumn?: number;
     label?: string;
   }
 ) => {
@@ -137,6 +157,12 @@ export const openOrFocusViewWindow = async (
   }
   if (typeof opts?.column === 'number') {
     params.set('column', String(opts.column));
+  }
+  if (typeof opts?.endLine === 'number') {
+    params.set('endLine', String(opts.endLine));
+  }
+  if (typeof opts?.endColumn === 'number') {
+    params.set('endColumn', String(opts.endColumn));
   }
   const url = `/?${params.toString()}`;
 
