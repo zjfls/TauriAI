@@ -439,6 +439,7 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
     { value: 'openai_compatible', label: 'OpenAI Compatible', description: 'DeepSeek, 硅基流动等' },
     { value: 'openai_responses', label: 'OpenAI Responses', description: '推理模型 (o1, o3, gpt-4.1)' },
     { value: 'anthropic', label: 'Anthropic', description: 'Claude 系列' },
+    { value: 'google', label: 'Google', description: 'Gemini' },
     { value: 'ollama', label: 'Ollama', description: '本地模型' },
   ];
 
