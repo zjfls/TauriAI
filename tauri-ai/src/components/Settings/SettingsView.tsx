@@ -3,10 +3,9 @@
  * Tabbed interface for application settings
  */
 
-import React, { useMemo, useState } from 'react';
+import React, { useState } from 'react';
 import { Server, Bot, Palette, Sliders, Wrench, Shield, Plug, Sparkles, ChevronDown } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/core';
-import { save as saveDialog } from '@tauri-apps/plugin-dialog';
+
 import { ProviderConfigForm } from './ProviderConfigForm';
 import { AgentConfigForm } from './AgentConfigForm';
 import { ToolsConfigForm } from './ToolsConfigForm';
@@ -15,7 +14,6 @@ import { McpConfigForm } from './McpConfigForm';
 import { SkillsConfigForm } from './SkillsConfigForm';
 import { SecretInput } from './SecretInput';
 import { useConfigStore } from '../../stores/configStore';
-import { useSessionStore } from '../../stores/sessionStore';
 import { useUIStore } from '../../stores/uiStore';
 import type {
   AppConfig,
@@ -23,9 +21,6 @@ import type {
   AnsiColorMode,
   AnsiRenderMode,
   WebSearchToolSettings,
-  AgentSession,
-  Message,
-  MessageBlock,
 } from '../../types';
 
 type SettingsTab = 'providers' | 'agents' | 'tools' | 'mcp' | 'skills' | 'security' | 'appearance' | 'general';
@@ -383,180 +378,11 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
     general: true,
     debug: true,
     display: true,
-    export: true,
     webSearch: true,
   });
 
   const toggleSection = (key: keyof typeof sections) => {
     setSections((prev) => ({ ...prev, [key]: !prev[key] }));
-  };
-
-  const { activeSessionId, sessionsMap } = useSessionStore((s) => ({
-    activeSessionId: s.activeSessionId,
-    sessionsMap: s.sessions,
-  }));
-
-  const activeSession = useMemo<AgentSession | null>(() => {
-    if (!activeSessionId) return null;
-    return sessionsMap.get(activeSessionId) ?? null;
-  }, [activeSessionId, sessionsMap]);
-
-  const [exporting, setExporting] = useState(false);
-  const exportError = useMemo(() => {
-    if (!activeSession) return '当前没有活跃对话';
-    if (!activeSession.conversationId) return '当前对话未绑定 conversationId';
-    if (!activeSession.messages?.length) return '当前对话暂无消息';
-    return null;
-  }, [activeSession]);
-
-  const buildRichTxtMarkdown = (session: AgentSession): string => {
-    const lines: string[] = [];
-    const exportedAt = new Date().toISOString();
-    const title = session.title?.trim() || '对话导出';
-
-    const roleLabel = (role: Message['role']) => {
-      if (role === 'user') return '用户';
-      if (role === 'assistant') return '助手';
-      if (role === 'system') return '系统';
-      if (role === 'error') return '错误';
-      return String(role);
-    };
-
-    const renderBlock = (block: MessageBlock) => {
-      switch (block.type) {
-        case 'text': {
-          const format = (block.format || 'markdown').toString().toLowerCase();
-          if (format === 'json') {
-            lines.push('```json');
-            lines.push(block.text ?? '');
-            lines.push('```');
-            return;
-          }
-          if (format === 'plain') {
-            lines.push('```text');
-            lines.push(block.text ?? '');
-            lines.push('```');
-            return;
-          }
-          lines.push(block.text ?? '');
-          return;
-        }
-        case 'thinking': {
-          lines.push('<details><summary>思考</summary>');
-          lines.push('');
-          lines.push('```text');
-          lines.push(block.text ?? '');
-          lines.push('```');
-          lines.push('');
-          lines.push('</details>');
-          return;
-        }
-        case 'tool_call': {
-          lines.push(`**工具调用**：\`${block.name}\``);
-          lines.push('```json');
-          lines.push(block.arguments ?? '');
-          lines.push('```');
-          return;
-        }
-        case 'tool_result': {
-          lines.push(`**工具结果**：\`${block.callId}\``);
-          lines.push('```text');
-          lines.push(block.text ?? '');
-          lines.push('```');
-          return;
-        }
-        case 'approval': {
-          lines.push(`**审批**：\`${block.toolName}\`（${block.status}）`);
-          lines.push('```json');
-          lines.push(
-            JSON.stringify(
-              {
-                requestId: block.requestId,
-                callId: block.callId,
-                toolName: block.toolName,
-                status: block.status,
-                escalated: block.escalated,
-                reason: block.reason,
-              },
-              null,
-              2
-            )
-          );
-          lines.push('```');
-          return;
-        }
-        case 'error': {
-          lines.push('**错误**');
-          lines.push('```text');
-          lines.push(block.text ?? '');
-          lines.push('```');
-          return;
-        }
-        case 'web_search': {
-          lines.push(`**WebSearch**：\`${block.status}\``);
-          lines.push('```json');
-          lines.push(JSON.stringify(block.action ?? null, null, 2));
-          lines.push('```');
-          return;
-        }
-        case 'unknown': {
-          lines.push('**未知块**');
-          lines.push('```json');
-          lines.push(JSON.stringify(block.data ?? null, null, 2));
-          lines.push('```');
-          return;
-        }
-        default: {
-          lines.push('**未知块**');
-          lines.push('```json');
-          lines.push(JSON.stringify(block as never, null, 2));
-          lines.push('```');
-        }
-      }
-    };
-
-    lines.push(`<!-- tauri.richtxt v1 | exportedAt=${exportedAt} | conversationId=${session.conversationId ?? ''} -->`);
-    lines.push('');
-    lines.push(`# ${title}`);
-    lines.push('');
-    lines.push(`- 导出时间：\`${exportedAt}\``);
-    lines.push(`- 智能体：\`${session.agentName}\``);
-    if (session.modelRef) lines.push(`- 模型：\`${session.modelRef}\``);
-    if (session.conversationId) lines.push(`- Conversation ID：\`${session.conversationId}\``);
-    lines.push('');
-    lines.push('---');
-    lines.push('');
-
-    for (const msg of session.messages) {
-      const when = msg.createdAt ? ` · ${msg.createdAt}` : '';
-      lines.push(`## ${roleLabel(msg.role)}${when}`);
-      lines.push('');
-
-      const blocks = msg.blocks ?? [];
-      if (blocks.length > 0) {
-        for (const b of blocks) {
-          renderBlock(b);
-          lines.push('');
-        }
-      } else {
-        if (msg.thinking?.trim()) {
-          lines.push('<details><summary>思考</summary>');
-          lines.push('');
-          lines.push('```text');
-          lines.push(msg.thinking);
-          lines.push('```');
-          lines.push('');
-          lines.push('</details>');
-          lines.push('');
-        }
-        if (msg.content?.trim()) {
-          lines.push(msg.content);
-          lines.push('');
-        }
-      }
-    }
-
-    return lines.join('\n').trim() + '\n';
   };
 
   const SettingsSection: React.FC<{
@@ -723,62 +549,6 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
           >
             <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${showUsage ? 'translate-x-5' : ''}`} />
           </button>
-        </div>
-      </SettingsSection>
-
-      <SettingsSection
-        title="导出"
-        open={sections.export}
-        onToggle={() => toggleSection('export')}
-      >
-        <div className="space-y-2">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-              导出当前对话为 `.tauri.richtxt`
-            </label>
-            <p className="text-xs text-gray-500">
-              `.tauri.richtxt` 是一种基于 Markdown 的富文本导出格式，可用于承载 ChatView 的输出并在文档视图中渲染。
-            </p>
-          </div>
-
-          <button
-            type="button"
-            disabled={exporting || Boolean(exportError)}
-            onClick={async () => {
-              if (!activeSession || !activeSession.conversationId) return;
-              try {
-                setExporting(true);
-                const suggested = `${(activeSession.title || 'chat').replace(/[\\\\/:*?\"<>|]/g, '_')}.tauri.richtxt`;
-                const picked = await saveDialog({
-                  title: '导出 .tauri.richtxt',
-                  defaultPath: suggested,
-                });
-                if (!picked) return;
-                const path = picked.toLowerCase().endsWith('.tauri.richtxt') ? picked : `${picked}.tauri.richtxt`;
-                const content = buildRichTxtMarkdown(activeSession);
-                await invoke('write_local_text_file', { path, content });
-              } catch (e) {
-                alert(String(e));
-              } finally {
-                setExporting(false);
-              }
-            }}
-            className={[
-              'inline-flex items-center justify-center rounded-lg px-3 py-2 text-sm font-medium transition-colors',
-              exportError
-                ? 'bg-gray-200 text-gray-500 dark:bg-gray-700 dark:text-gray-400 cursor-not-allowed'
-                : 'bg-blue-600 text-white hover:bg-blue-700',
-            ].join(' ')}
-            title={exportError ?? '选择保存位置并导出'}
-          >
-            {exporting ? '导出中...' : '创建 .tauri.richtxt'}
-          </button>
-
-          {exportError && (
-            <div className="text-xs text-gray-500 dark:text-gray-400">
-              {exportError}
-            </div>
-          )}
         </div>
       </SettingsSection>
 

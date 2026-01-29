@@ -109,6 +109,38 @@ function App() {
   }, [viewOverride]);
 
   /**
+   * Menu: File -> New .tauri.richtxt
+   * Create a new empty .tauri.richtxt document
+   */
+  useEffect(() => {
+    if (viewOverride === 'workstudio') return;
+
+    let unlisten: null | (() => void) = null;
+
+    void listen('menu:new_richtxt', () => {
+      // Create a new untitled .tauri.richtxt document
+      useDocumentStore.getState().openDocument({
+        title: 'Untitled.tauri.richtxt',
+        path: undefined,
+        kind: 'text',
+        content: '<!-- tauri.richtxt v1 -->\n\n# 新建文档\n\n',
+      });
+
+      useUIStore.getState().setActiveView('document');
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => {
+        // In non-Tauri environments, the listener may not be available.
+      });
+
+    return () => {
+      unlisten?.();
+    };
+  }, [viewOverride]);
+
+  /**
    * Standalone document window: open a local file if provided via query param.
    */
   useEffect(() => {

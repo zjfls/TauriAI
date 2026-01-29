@@ -78,6 +78,14 @@ pub fn run() {
                 Some("CmdOrCtrl+O"),
             )?;
 
+            let new_richtxt = MenuItem::with_id(
+                app,
+                "new_richtxt",
+                "新建 .tauri.richtxt",
+                true,
+                Some("CmdOrCtrl+N"),
+            )?;
+
             let separator = PredefinedMenuItem::separator(app)?;
             let test_window = MenuItem::with_id(
                 app,
@@ -102,9 +110,9 @@ pub fn run() {
             }
 
             if let Some(file) = file_submenu {
-                file.insert_items(&[&open_file, &test_window, &separator], 0)?;
+                file.insert_items(&[&new_richtxt, &open_file, &test_window, &separator], 0)?;
             } else {
-                let file = Submenu::with_items(app, "File", true, &[&open_file, &test_window])?;
+                let file = Submenu::with_items(app, "File", true, &[&new_richtxt, &open_file, &test_window])?;
                 // On macOS, index 0 is the app menu. Insert after it.
                 let pos = if cfg!(target_os = "macos") { 1 } else { 0 };
                 menu.insert(&file, pos)?;
@@ -114,6 +122,19 @@ pub fn run() {
         })
         .on_menu_event(|app, event| {
             match event.id().as_ref() {
+                "new_richtxt" => {
+                    // Send event to create a new .tauri.richtxt file
+                    let focused = app
+                        .webview_windows()
+                        .into_values()
+                        .find(|w| w.is_focused().unwrap_or(false));
+
+                    if let Some(window) = focused.or_else(|| app.get_webview_window("main")) {
+                        let _ = window.emit("menu:new_richtxt", ());
+                    } else {
+                        let _ = app.emit("menu:new_richtxt", ());
+                    }
+                }
                 "open_file" => {
                     // Send the event only to the focused window (fall back to main).
                     let focused = app
