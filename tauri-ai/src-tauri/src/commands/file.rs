@@ -16,7 +16,9 @@ const MAX_TEXT_BYTES: u64 = 1 * 1024 * 1024; // 1MB
 const SUPPORTED_TEXT_EXTENSIONS: &[&str] = &[
     ".tauri.richtxt",
     ".txt", ".md", ".json", ".yaml", ".yml", ".xml", ".csv", ".log", ".ini", ".toml", ".html",
-    ".css", ".js", ".ts", ".py", ".rs", ".go", ".java", ".c", ".cpp", ".h", ".sh", ".bat", ".sql",
+    ".css", ".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs", ".mts", ".cts",
+    ".py", ".rs", ".go", ".java", ".c", ".cpp", ".h", ".sh", ".bat", ".sql",
+    ".scss", ".sass", ".less",
     ".lock",
 ];
 

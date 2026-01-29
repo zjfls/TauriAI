@@ -210,6 +210,10 @@ const fileKindFor = (path: string, mime: string): OpenFile['kind'] => {
     lower.endsWith('.tsx') ||
     lower.endsWith('.js') ||
     lower.endsWith('.jsx') ||
+    lower.endsWith('.mjs') ||
+    lower.endsWith('.cjs') ||
+    lower.endsWith('.mts') ||
+    lower.endsWith('.cts') ||
     lower.endsWith('.json') ||
     lower.endsWith('.md') ||
     lower.endsWith('.markdown') ||
@@ -219,6 +223,9 @@ const fileKindFor = (path: string, mime: string): OpenFile['kind'] => {
     lower.endsWith('.yaml') ||
     lower.endsWith('.yml') ||
     lower.endsWith('.css') ||
+    lower.endsWith('.scss') ||
+    lower.endsWith('.sass') ||
+    lower.endsWith('.less') ||
     lower.endsWith('.html') ||
     lower.endsWith('.htm') ||
     lower.endsWith('.txt') ||
@@ -285,7 +292,7 @@ export const WorkstudioView: React.FC = () => {
     | null
   >(null);
   const [tabMenu, setTabMenu] = useState<
-    | { visible: true; x: number; y: number; path: string }
+    | { visible: true; x: number; y: number; groupId: string; fileId: string; path: string }
     | null
   >(null);
 
@@ -314,6 +321,19 @@ export const WorkstudioView: React.FC = () => {
     if (!activeId) return null;
     return openFiles.find((f) => f.id === activeId)?.path ?? null;
   }, [focusedGroup?.activeFileId, openFiles]);
+
+  useEffect(() => {
+    const hasDup = groups.some((g) => new Set(g.openFileIds).size !== g.openFileIds.length);
+    if (!hasDup) return;
+    setGroups((prev) =>
+      prev.map((g) => {
+        const nextIds = Array.from(new Set(g.openFileIds));
+        const nextActive = g.activeFileId && nextIds.includes(g.activeFileId) ? g.activeFileId : nextIds[0] ?? null;
+        if (nextIds.length === g.openFileIds.length && nextActive === g.activeFileId) return g;
+        return { ...g, openFileIds: nextIds, activeFileId: nextActive };
+      })
+    );
+  }, [groups]);
 
   // Monaco 编辑器在 flex 布局变化（拆分/关闭组/拖拽/分屏比例调整）时偶发不会自动重算尺寸，
   // 导致右侧出现“白色死区”。这里在布局相关状态变化后，强制触发一次 layout。
@@ -1177,7 +1197,7 @@ export const WorkstudioView: React.FC = () => {
         if (groupsFromState.length) {
           const nextGroups: EditorGroup[] = groupsFromState
             .map((g, idx) => {
-              const openIds = (g.openFiles ?? []).filter((p) => files.some((f) => f.id === p));
+              const openIds = Array.from(new Set((g.openFiles ?? []).filter((p) => files.some((f) => f.id === p))));
               const active = g.activeFile && openIds.includes(g.activeFile) ? g.activeFile : openIds[0] ?? null;
               const weight = typeof g.weight === 'number' && Number.isFinite(g.weight) ? g.weight : 1;
               return { id: `g-${idx}`, openFileIds: openIds, activeFileId: active, weight };
@@ -1227,9 +1247,9 @@ export const WorkstudioView: React.FC = () => {
     if (saveStateTimerRef.current) window.clearTimeout(saveStateTimerRef.current);
     saveStateTimerRef.current = window.setTimeout(() => {
       const state: WorkstudioUiState = {
-        openFiles: openFiles.map((f) => f.path),
+        openFiles: Array.from(new Set(openFiles.map((f) => f.path))),
         groups: groups.map((g) => ({
-          openFiles: g.openFileIds,
+          openFiles: Array.from(new Set(g.openFileIds)),
           activeFile: g.activeFileId ?? undefined,
           weight: g.weight,
         })),
@@ -1511,7 +1531,7 @@ export const WorkstudioView: React.FC = () => {
                                   onContextMenu={(e) => {
                                     e.preventDefault();
                                     e.stopPropagation();
-                                    setTabMenu({ visible: true, x: e.clientX, y: e.clientY, path: file.path });
+                                    setTabMenu({ visible: true, x: e.clientX, y: e.clientY, groupId: group.id, fileId: file.id, path: file.path });
                                   }}
                                 />
                               );
@@ -1935,6 +1955,57 @@ export const WorkstudioView: React.FC = () => {
             {tabMenu.path}
           </div>
           <div className="py-1 text-sm">
+            <button
+              type="button"
+              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+              onClick={() => {
+                const menu = tabMenu;
+                setTabMenu(null);
+                const g = groups.find((x) => x.id === menu.groupId);
+                if (!g) return;
+                for (const fid of g.openFileIds) {
+                  if (fid === menu.fileId) continue;
+                  closeFileInGroup(menu.groupId, fid);
+                }
+              }}
+            >
+              关闭其他
+            </button>
+            <button
+              type="button"
+              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+              onClick={() => {
+                const menu = tabMenu;
+                setTabMenu(null);
+                const g = groups.find((x) => x.id === menu.groupId);
+                if (!g) return;
+                const idx = g.openFileIds.indexOf(menu.fileId);
+                if (idx <= 0) return;
+                for (const fid of g.openFileIds.slice(0, idx)) {
+                  closeFileInGroup(menu.groupId, fid);
+                }
+              }}
+            >
+              关闭左侧
+            </button>
+            <button
+              type="button"
+              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+              onClick={() => {
+                const menu = tabMenu;
+                setTabMenu(null);
+                const g = groups.find((x) => x.id === menu.groupId);
+                if (!g) return;
+                const idx = g.openFileIds.indexOf(menu.fileId);
+                if (idx < 0 || idx >= g.openFileIds.length - 1) return;
+                for (const fid of g.openFileIds.slice(idx + 1)) {
+                  closeFileInGroup(menu.groupId, fid);
+                }
+              }}
+            >
+              关闭右侧
+            </button>
+            <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
             <button
               type="button"
               className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"

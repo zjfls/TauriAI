@@ -267,8 +267,11 @@ export interface PendingTextFile {
 export const SUPPORTED_TEXT_EXTENSIONS = [
   '.tauri.richtxt',
   '.txt', '.md', '.json', '.yaml', '.yml', '.xml', '.csv', '.log',
-  '.ini', '.toml', '.html', '.css', '.js', '.ts', '.py', '.rs', '.lock',
-  '.go', '.java', '.c', '.cpp', '.h', '.sh', '.bat', '.sql'
+  '.ini', '.toml', '.html', '.css',
+  '.js', '.ts', '.jsx', '.tsx', '.mjs', '.cjs', '.mts', '.cts',
+  '.py', '.rs', '.go', '.java', '.c', '.cpp', '.h', '.sh', '.bat', '.sql',
+  '.scss', '.sass', '.less',
+  '.lock'
 ] as const;
 
 /**
