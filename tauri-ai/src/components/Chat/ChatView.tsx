@@ -725,10 +725,32 @@ Guidelines:
       case 'undo':
         if (sessionId && action.payload) {
           try {
-            const { messageId, content } = JSON.parse(action.payload);
+            const parsed = JSON.parse(action.payload) as { messageId?: string; content?: string };
+            const messageId = parsed.messageId;
+            if (!messageId) return;
+
+            const targetIndex = messages.findIndex((m) => m.id === messageId);
+            const resolvedUserMessage =
+              targetIndex >= 0
+                ? (() => {
+                    const m = messages[targetIndex];
+                    if (m.role === 'user') return m;
+                    for (let i = targetIndex - 1; i >= 0; i--) {
+                      if (messages[i].role === 'user') return messages[i];
+                    }
+                    return undefined;
+                  })()
+                : undefined;
+
+            const contentToRestore = resolvedUserMessage?.content ?? parsed.content ?? '';
+            const partsToRestore =
+              resolvedUserMessage?.contentParts?.filter((p) => p.type !== 'text') ?? [];
+
             undoToMessage(sessionId, messageId);
-            if (content && inputRef.current) {
-              inputRef.current.setValue(content);
+
+            if (inputRef.current) {
+              inputRef.current.setValue(contentToRestore);
+              inputRef.current.setContentParts(partsToRestore);
               inputRef.current.focus();
             }
           } catch (e) {

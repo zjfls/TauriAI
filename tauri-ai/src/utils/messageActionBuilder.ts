@@ -47,8 +47,8 @@ export function buildMessageActions(message: Message): Action[] {
                 label: '撤回',
                 icon: 'Undo2',
                 action_type: 'undo',
-                // Payload contains messageId and content for undo operation
-                payload: JSON.stringify({ messageId: message.id, content: message.content })
+                // Payload contains messageId for undo operation (content/attachments resolved from store at click time)
+                payload: JSON.stringify({ messageId: message.id })
             });
         }
     }
