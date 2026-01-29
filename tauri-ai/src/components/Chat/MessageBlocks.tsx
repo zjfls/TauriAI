@@ -1045,7 +1045,7 @@ export const MessageBlocks: React.FC<{
           </pre>
         );
       }
-      return <MarkdownRenderer content={block.text} />;
+      return <MarkdownRenderer content={block.text} conversationId={conversationId} />;
     }
 
     if (block.type === 'tool_call') {

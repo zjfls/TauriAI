@@ -64,6 +64,15 @@ x^2
 - 键盘按键：<kbd>Ctrl</kbd>
 - 高亮文本：<mark>重点</mark>
 - 上下标：H<sub>2</sub>O、x<sup>2</sup>
+
+### 文件引用（可点击跳转）
+- 引用文件时请使用行内代码包裹：`path/to/file.ts`、`src/app.ts:42`、`b/server/index.js#L10`
+- 可接受格式：
+  - `路径:行` 或 `路径:行:列`（1-based）
+  - `路径#L行` 或 `路径#L行C列`（1-based）
+- 允许相对路径或绝对路径（Windows 示例：`C:\repo\project\main.rs:12:5`）
+- 不要使用 `file://` / `vscode://` 等 URI；请直接输出可解析的文件路径
+- 不要输出“范围行号”（例如 `:10-20`）；需要定位时给出起始行即可
 "#;
 
 /// Tool usage prompt when "持久进程" enhancement is enabled for a toolset.

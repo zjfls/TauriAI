@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
@@ -12,6 +12,7 @@ import mermaid from 'mermaid';
 import { Copy, Check } from 'lucide-react';
 import { MathBlock } from './MathBlock';
 import 'katex/dist/katex.min.css';
+import type { Workstudio } from '../../types';
 
 // Initialize mermaid with math support
 mermaid.initialize({
@@ -52,12 +53,61 @@ function hashCode(str: string): string {
   return hash.toString(36);
 }
 
+type ParsedFileReference = {
+  filePath: string;
+  line: number;
+  column?: number;
+};
+
+const isTauriRuntime = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  const w = window as any;
+  return Boolean(w.__TAURI_INTERNALS__ || w.__TAURI__);
+};
+
+const parseFileReferenceToken = (token: string): ParsedFileReference | null => {
+  const raw = token.trim();
+  if (!raw) return null;
+  if (raw.length > 800) return null;
+  if (/[\r\n\t]/.test(raw)) return null;
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(raw)) return null;
+
+  const stripDiffPrefix = (p: string) => {
+    if (p.startsWith('a/') || p.startsWith('b/')) return p.slice(2);
+    if (p.startsWith('a\\') || p.startsWith('b\\')) return p.slice(2);
+    return p;
+  };
+
+  const hashMatch = raw.match(/^(.*)#L(\d+)(?:C(\d+))?$/);
+  if (hashMatch) {
+    const filePath = stripDiffPrefix(hashMatch[1] ?? '').trim();
+    const line = Number(hashMatch[2]);
+    const column = hashMatch[3] ? Number(hashMatch[3]) : undefined;
+    if (!filePath || !Number.isFinite(line) || line <= 0) return null;
+    if (typeof column === 'number' && (!Number.isFinite(column) || column <= 0)) return null;
+    return { filePath, line, column };
+  }
+
+  const colonMatch = raw.match(/^(.*):(\d+)(?::(\d+))?$/);
+  if (colonMatch) {
+    const filePath = stripDiffPrefix(colonMatch[1] ?? '').trim();
+    const line = Number(colonMatch[2]);
+    const column = colonMatch[3] ? Number(colonMatch[3]) : undefined;
+    if (!filePath || !Number.isFinite(line) || line <= 0) return null;
+    if (typeof column === 'number' && (!Number.isFinite(column) || column <= 0)) return null;
+    return { filePath, line, column };
+  }
+
+  return null;
+};
+
 // ============================================================================
 // Components
 // ============================================================================
 
 interface MarkdownRendererProps {
   content: string;
+  conversationId?: string | null;
 }
 
 interface CodeBlockProps {
@@ -385,7 +435,31 @@ function restoreContent(content: string, blocks: Map<string, string>): string {
 // Main MarkdownRenderer Component
 // ============================================================================
 
-export const MarkdownRenderer = React.memo(function MarkdownRenderer({ content }: MarkdownRendererProps) {
+export const MarkdownRenderer = React.memo(function MarkdownRenderer({ content, conversationId }: MarkdownRendererProps) {
+  const openFileReference = useCallback(async (ref: ParsedFileReference) => {
+    if (!conversationId) return;
+    if (!isTauriRuntime()) return;
+
+    try {
+      const [{ invoke }, { openOrFocusViewWindow }] = await Promise.all([
+        import('@tauri-apps/api/core'),
+        import('../../utils/viewWindow'),
+      ]);
+
+      const ws = await invoke<Workstudio>('ensure_workstudio_for_conversation', { conversationId });
+
+      await openOrFocusViewWindow('workstudio', `Workstudio: ${ws.mainFolder}`, {
+        workstudioId: ws.id,
+        filePath: ref.filePath,
+        line: ref.line,
+        column: ref.column,
+        label: `view-workstudio-${ws.id}`,
+      });
+    } catch (error) {
+      console.warn('openFileReference failed:', error);
+    }
+  }, [conversationId]);
+
   // Process content: protect LaTeX & Mermaid -> sanitize -> restore
   const processed = useMemo(() => {
     // Step 1: Protect LaTeX and Mermaid content from DOMPurify (also normalizes delimiters)
@@ -408,7 +482,7 @@ export const MarkdownRenderer = React.memo(function MarkdownRenderer({ content }
 
   // Memoize components object to prevent recreation on each render
   const components = useMemo(() => ({
-    code({ className, children, ...props }: any) {
+    code({ inline, className, children, ...props }: any) {
       const match = /language-(\w+)/.exec(className || '');
       const language = match?.[1] || '';
       const codeStr = String(children).replace(/\n$/, '');
@@ -423,6 +497,24 @@ export const MarkdownRenderer = React.memo(function MarkdownRenderer({ content }
 
       if (match || codeStr.includes('\n')) {
         return <CodeBlock language={language} code={codeStr} />;
+      }
+
+      const fileRef = inline ? parseFileReferenceToken(codeStr) : null;
+      if (inline && fileRef && conversationId && isTauriRuntime()) {
+        const title = fileRef.column
+          ? `打开 ${fileRef.filePath}:${fileRef.line}:${fileRef.column}`
+          : `打开 ${fileRef.filePath}:${fileRef.line}`;
+
+        return (
+          <button
+            type="button"
+            className="rounded bg-blue-50 px-1.5 py-0.5 text-sm font-mono text-blue-700 hover:underline dark:bg-blue-900/30 dark:text-blue-200"
+            title={title}
+            onClick={() => void openFileReference(fileRef)}
+          >
+            {codeStr}
+          </button>
+        );
       }
 
       return (
@@ -486,7 +578,7 @@ export const MarkdownRenderer = React.memo(function MarkdownRenderer({ content }
         {children}
       </td>
     ),
-  }), []);
+  }), [conversationId, openFileReference]);
 
   // KaTeX options: don't throw on error, show red text for errors
   const katexOptions = useMemo(() => ({

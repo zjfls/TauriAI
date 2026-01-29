@@ -24,7 +24,7 @@ export const ErrorBubble: React.FC<ErrorBubbleProps> = ({ message, onAction }) =
                     </div>
                     <div className="flex-1 min-w-0">
                         <div className="prose prose-red prose-sm dark:prose-invert max-w-none text-red-800 dark:text-red-200">
-                            <MarkdownRenderer content={message.content} />
+                            <MarkdownRenderer content={message.content} conversationId={message.conversationId} />
                         </div>
 
                         {/* Toolbar Area */}

@@ -103,12 +103,14 @@ interface ContentPartsRendererProps {
   contentParts: ContentPart[];
   textContent: string;
   isUser: boolean;
+  conversationId?: string | null;
 }
 
 const ContentPartsRenderer: React.FC<ContentPartsRendererProps> = ({
   contentParts,
   textContent,
   isUser,
+  conversationId,
 }) => {
   const [previewImage, setPreviewImage] = useState<string | null>(null);
 
@@ -117,7 +119,7 @@ const ContentPartsRenderer: React.FC<ContentPartsRendererProps> = ({
     if (isUser) {
       return <p className="whitespace-pre-wrap">{renderUserTextWithPathChips(textContent)}</p>;
     }
-    return <MarkdownRenderer content={textContent} />;
+    return <MarkdownRenderer content={textContent} conversationId={conversationId} />;
   }
 
   return (
@@ -131,7 +133,7 @@ const ContentPartsRenderer: React.FC<ContentPartsRendererProps> = ({
               </p>
             );
           }
-          return <MarkdownRenderer key={index} content={part.text} />;
+          return <MarkdownRenderer key={index} content={part.text} conversationId={conversationId} />;
         }
         if (part.type === 'image') {
           return (
@@ -327,6 +329,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
                   contentParts={message.contentParts || []}
                   textContent={message.content}
                   isUser={false}
+                  conversationId={message.conversationId}
                 />
               </div>
             )}
@@ -338,6 +341,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
               contentParts={message.contentParts || []}
               textContent={message.content}
               isUser={isUser}
+              conversationId={message.conversationId}
             />
           </div>
         )}

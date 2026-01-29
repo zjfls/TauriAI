@@ -7,11 +7,23 @@ export interface ViewWindowParams {
   conversationId?: string | null;
   documentPath?: string | null;
   workstudioId?: string | null;
+  filePath?: string | null;
+  line?: number | null;
+  column?: number | null;
 }
 
 export const getViewWindowParams = (): ViewWindowParams => {
   if (typeof window === 'undefined') {
-    return { view: null, standalone: false, conversationId: null, documentPath: null, workstudioId: null };
+    return {
+      view: null,
+      standalone: false,
+      conversationId: null,
+      documentPath: null,
+      workstudioId: null,
+      filePath: null,
+      line: null,
+      column: null,
+    };
   }
   const params = new URLSearchParams(window.location.search);
   const view = params.get('view') as ActiveView | null;
@@ -19,7 +31,21 @@ export const getViewWindowParams = (): ViewWindowParams => {
   const conversationId = params.get('conversationId');
   const documentPath = params.get('documentPath');
   const workstudioId = params.get('workstudioId');
-  return { view, standalone, conversationId, documentPath, workstudioId };
+  const filePath = params.get('filePath');
+  const lineRaw = params.get('line');
+  const columnRaw = params.get('column');
+  const line = lineRaw ? Number(lineRaw) : null;
+  const column = columnRaw ? Number(columnRaw) : null;
+  return {
+    view,
+    standalone,
+    conversationId,
+    documentPath,
+    workstudioId,
+    filePath,
+    line: Number.isFinite(line) ? line : null,
+    column: Number.isFinite(column) ? column : null,
+  };
 };
 
 export const openViewWindow = (
@@ -29,6 +55,9 @@ export const openViewWindow = (
     conversationId?: string;
     documentPath?: string;
     workstudioId?: string;
+    filePath?: string;
+    line?: number;
+    column?: number;
   }
 ) => {
   const label = `view-${view}-${Date.now()}`;
@@ -43,6 +72,15 @@ export const openViewWindow = (
   }
   if (opts?.workstudioId) {
     params.set('workstudioId', opts.workstudioId);
+  }
+  if (opts?.filePath) {
+    params.set('filePath', opts.filePath);
+  }
+  if (typeof opts?.line === 'number') {
+    params.set('line', String(opts.line));
+  }
+  if (typeof opts?.column === 'number') {
+    params.set('column', String(opts.column));
   }
   const url = `/?${params.toString()}`;
   return new WebviewWindow(label, {
@@ -60,6 +98,9 @@ export const openOrFocusViewWindow = async (
     conversationId?: string;
     documentPath?: string;
     workstudioId?: string;
+    filePath?: string;
+    line?: number;
+    column?: number;
     label?: string;
   }
 ) => {
@@ -87,6 +128,15 @@ export const openOrFocusViewWindow = async (
   }
   if (opts?.workstudioId) {
     params.set('workstudioId', opts.workstudioId);
+  }
+  if (opts?.filePath) {
+    params.set('filePath', opts.filePath);
+  }
+  if (typeof opts?.line === 'number') {
+    params.set('line', String(opts.line));
+  }
+  if (typeof opts?.column === 'number') {
+    params.set('column', String(opts.column));
   }
   const url = `/?${params.toString()}`;
 

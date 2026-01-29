@@ -249,7 +249,7 @@ const isSubpath = (child: string, parent: string) => {
 };
 
 export const WorkstudioView: React.FC = () => {
-  const { workstudioId } = getViewWindowParams();
+  const { workstudioId, filePath, line, column } = getViewWindowParams();
   const editorByGroupRef = useRef(
     new Map<string, import('monaco-editor').editor.IStandaloneCodeEditor>()
   );
@@ -445,6 +445,44 @@ export const WorkstudioView: React.FC = () => {
     },
     [openFiles, focusedGroupId]
   );
+
+  const openedFromUrlRef = useRef(false);
+  useEffect(() => {
+    if (!filePath || openedFromUrlRef.current) return;
+    openedFromUrlRef.current = true;
+
+    const isAbs = /^[A-Za-z]:[\\/]/.test(filePath) || filePath.startsWith('/') || filePath.startsWith('\\');
+    const resolved = !isAbs && ws?.mainFolder
+      ? (() => {
+          const sep = ws.mainFolder.includes('\\') ? '\\' : '/';
+          const a = ws.mainFolder.replace(/[\\/]+$/, '');
+          const b = filePath.replace(/^[\\/]+/, '');
+          return b ? `${a}${sep}${b}` : a;
+        })()
+      : filePath;
+
+    const jump = () => {
+      if (!line) return;
+      const editor = editorByGroupRef.current.get(focusedGroupId);
+      if (!editor) return;
+      const lineNumber = Math.max(1, line);
+      const colNumber = Math.max(1, typeof column === 'number' ? column : 1);
+      try {
+        editor.setPosition({ lineNumber, column: colNumber });
+        editor.revealLineInCenter(lineNumber);
+        editor.focus();
+      } catch {
+        // ignore
+      }
+    };
+
+    void openFileAtPath(resolved).then(() => {
+      window.requestAnimationFrame(() => {
+        jump();
+        window.requestAnimationFrame(jump);
+      });
+    });
+  }, [filePath, line, column, ws?.mainFolder, openFileAtPath, focusedGroupId]);
 
   const closeFileInGroup = useCallback((groupId: string, fileId: string) => {
     setGroups((prev) => {
