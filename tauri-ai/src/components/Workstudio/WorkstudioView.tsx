@@ -198,7 +198,52 @@ const decodeBase64ToUtf8 = (base64: string) => {
 
 const decodeBase64ToBytes = (base64: string) => Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
 
-const normalizePath = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '');
+const normalizeFsPath = (input: string) => {
+  const trimmed = input.trim();
+  if (!trimmed) return trimmed;
+
+  let path = trimmed.replace(/\\/g, '/');
+
+  let isUnc = false;
+  let isAbs = false;
+  let drive = '';
+
+  if (/^[A-Za-z]:/.test(path)) {
+    drive = path.slice(0, 2);
+    path = path.slice(2);
+    if (path.startsWith('/')) {
+      isAbs = true;
+      path = path.slice(1);
+    }
+  } else if (path.startsWith('//')) {
+    isUnc = true;
+    isAbs = true;
+    path = path.slice(2);
+  } else if (path.startsWith('/')) {
+    isAbs = true;
+    path = path.slice(1);
+  }
+
+  const parts = path.split('/').filter(Boolean);
+  const stack: string[] = [];
+  for (const part of parts) {
+    if (part === '.' || part === '') continue;
+    if (part === '..') {
+      if (stack.length > 0 && stack[stack.length - 1] !== '..') {
+        stack.pop();
+      } else if (!isAbs) {
+        stack.push('..');
+      }
+      continue;
+    }
+    stack.push(part);
+  }
+
+  const body = stack.join('/');
+  if (isUnc) return body ? `//${body}` : '//';
+  if (drive) return `${drive}${isAbs ? '/' : ''}${body}`.replace(/\/+$/, '');
+  return `${isAbs ? '/' : ''}${body}`.replace(/\/+$/, '') || (isAbs ? '/' : '');
+};
 
 const fileKindFor = (path: string, mime: string): OpenFile['kind'] => {
   const lower = path.toLowerCase();
@@ -249,8 +294,8 @@ const bytesToHexPreview = (bytes: Uint8Array, max: number) => {
 };
 
 const isSubpath = (child: string, parent: string) => {
-  const c = normalizePath(child);
-  const p = normalizePath(parent);
+  const c = normalizeFsPath(child);
+  const p = normalizeFsPath(parent);
   if (!c || !p) return false;
   if (c === p) return false;
   return c.startsWith(`${p}/`);
@@ -285,6 +330,10 @@ export const WorkstudioView: React.FC = () => {
   const [groups, setGroups] = useState<EditorGroup[]>(() => [
     { id: 'g-0', openFileIds: [], activeFileId: null, weight: 1 },
   ]);
+  const groupsRef = useRef<EditorGroup[]>(groups);
+  useEffect(() => {
+    groupsRef.current = groups;
+  }, [groups]);
   const [focusedGroupId, setFocusedGroupId] = useState<string>('g-0');
   const [contextMenu, setContextMenu] = useState<
     | { visible: true; x: number; y: number; kind: 'root'; folder: string }
@@ -369,12 +418,12 @@ export const WorkstudioView: React.FC = () => {
     const out: string[] = [];
     const seen = new Set<string>();
     for (const f of ws.folders) {
-      const nf = normalizePath(f);
+      const nf = normalizeFsPath(f);
       if (!nf || seen.has(nf)) continue;
       seen.add(nf);
       out.push(f);
     }
-    const isSystem = (p: string) => normalizePath(p).includes('/.tauri-ai/workstudios/');
+    const isSystem = (p: string) => normalizeFsPath(p).includes('/.tauri-ai/workstudios/');
     const hasUserRoot = out.some((f) => !isSystem(f));
     const pruned = hasUserRoot ? out.filter((f) => !isSystem(f)) : out;
     // Hide roots nested under the main folder (redundant).
@@ -432,8 +481,11 @@ export const WorkstudioView: React.FC = () => {
   );
 
   const openFileAtPath = useCallback(
-    async (path: string) => {
-      const existing = openFilesRef.current.find((f) => f.path === path);
+    async (path: string): Promise<string | null> => {
+      const normalizedPath = normalizeFsPath(path);
+      if (!normalizedPath) return null;
+
+      const existing = openFilesRef.current.find((f) => f.id === normalizedPath);
       if (existing) {
         setGroups((prev) =>
           prev.map((g) => {
@@ -444,23 +496,23 @@ export const WorkstudioView: React.FC = () => {
             return { ...g, openFileIds: nextIds, activeFileId: existing.id };
           })
         );
-        return;
+        return existing.id;
       }
 
-      if (openingPathsRef.current.has(path)) return;
-      openingPathsRef.current.add(path);
+      if (openingPathsRef.current.has(normalizedPath)) return normalizedPath;
+      openingPathsRef.current.add(normalizedPath);
       try {
       const file = await invoke<{ filename: string; mime: string; base64: string; size: number }>(
         'read_local_file_base64',
-        { path }
+        { path: normalizedPath }
       );
-      const id = path;
-      const kind = fileKindFor(path, file.mime);
+      const id = normalizedPath;
+      const kind = fileKindFor(normalizedPath, file.mime);
       const content = kind === 'text' ? decodeBase64ToUtf8(file.base64) : undefined;
       const next: OpenFile = {
         id,
         title: file.filename,
-        path,
+        path: normalizedPath,
         kind,
         mime: file.mime,
         size: file.size,
@@ -470,7 +522,7 @@ export const WorkstudioView: React.FC = () => {
         dataUrl: kind === 'image' ? `data:${file.mime};base64,${file.base64}` : undefined,
         base64: file.base64,
       };
-      setOpenFiles((prev) => (prev.some((f) => f.path === path) ? prev : [...prev, next]));
+      setOpenFiles((prev) => (prev.some((f) => f.id === id) ? prev : [...prev, next]));
       setGroups((prev) =>
         prev.map((g) => {
           if (g.id !== focusedGroupId) return g;
@@ -478,8 +530,9 @@ export const WorkstudioView: React.FC = () => {
           return { ...g, openFileIds, activeFileId: id };
         })
       );
+      return id;
       } finally {
-        openingPathsRef.current.delete(path);
+        openingPathsRef.current.delete(normalizedPath);
       }
     },
     [focusedGroupId]
@@ -493,92 +546,140 @@ export const WorkstudioView: React.FC = () => {
     endColumn?: number | null;
   };
 
+  const openLinkSeqRef = useRef(0);
   const openedFromUrlRef = useRef(false);
   const [openFromLinkError, setOpenFromLinkError] = useState<string | null>(null);
 
   const openLinkTarget = useCallback(async (target: LinkTarget) => {
+    const seq = openLinkSeqRef.current + 1;
+    openLinkSeqRef.current = seq;
+    const groupId = focusedGroupId;
+
     const targetPath = target.filePath;
     if (!targetPath) return;
 
-    const isAbs = /^[A-Za-z]:[\\/]/.test(targetPath) || targetPath.startsWith('/') || targetPath.startsWith('\\');
+    const normalizedTargetPath = normalizeFsPath(targetPath);
+    const isAbs =
+      /^[A-Za-z]:\//.test(normalizedTargetPath) ||
+      normalizedTargetPath.startsWith('/') ||
+      normalizedTargetPath.startsWith('//');
     if (!isAbs && !ws?.mainFolder) return;
 
-    const resolved = !isAbs && ws?.mainFolder
-      ? (() => {
-          const sep = ws.mainFolder.includes('\\') ? '\\' : '/';
-          const a = ws.mainFolder.replace(/[\\/]+$/, '');
-          const b = targetPath.replace(/^[\\/]+/, '');
-          return b ? `${a}${sep}${b}` : a;
-        })()
-      : targetPath;
+    const resolved = (() => {
+      if (isAbs) return normalizedTargetPath;
+      const base = normalizeFsPath(ws?.mainFolder ?? '');
+      if (!base) return null;
 
-    const applySelection = () => {
-      const rawLine = typeof target.line === 'number' ? target.line : null;
-      if (!rawLine) return;
-      const editor = editorByGroupRef.current.get(focusedGroupId);
-      if (!editor) return;
-      const model = editor.getModel();
+      let rel = targetPath.replace(/[\\/]+/g, '/');
+      rel = rel.replace(/^\.\/+/, '').replace(/^\/+/, '');
+      if (rel.startsWith('a/') || rel.startsWith('b/')) rel = rel.slice(2);
 
-      const startLineNumber = Math.max(1, rawLine);
-      let startColumn = Math.max(1, typeof target.column === 'number' ? target.column : 1);
-      const rawEndLine = typeof target.endLine === 'number' ? target.endLine : null;
-      const rawEndColumn = typeof target.endColumn === 'number' ? target.endColumn : null;
-
-      const endLineNumber = Math.max(1, rawEndLine ?? startLineNumber);
-      let endColumnNumber =
-        typeof rawEndColumn === 'number'
-          ? Math.max(1, rawEndColumn)
-          : model
-            ? model.getLineMaxColumn(endLineNumber)
-            : startColumn;
-
-      // Single-point jump: highlight to end-of-line (more visible than just caret).
-      if (rawEndLine === null && rawEndColumn === null && model) {
-        endColumnNumber = model.getLineMaxColumn(startLineNumber);
-        if (endColumnNumber <= startColumn) {
-          startColumn = Math.max(1, endColumnNumber - 1);
-        }
+      const wsBaseName = basename(base);
+      if (wsBaseName && rel.toLowerCase().startsWith(`${wsBaseName.toLowerCase()}/`)) {
+        rel = rel.slice(wsBaseName.length + 1);
       }
 
-      const normalize = () => {
-        if (endLineNumber < startLineNumber) {
-          return {
-            startLineNumber: endLineNumber,
-            startColumn: endColumnNumber,
+      return normalizeFsPath(`${base}/${rel}`);
+    })();
+    if (!resolved) return;
+
+    const applySelection = (openedFileId: string | null): boolean => {
+      if (openLinkSeqRef.current !== seq) return true;
+
+      const rawLine = typeof target.line === 'number' ? target.line : null;
+      if (!rawLine) return true;
+
+      const editor = editorByGroupRef.current.get(groupId);
+      if (!editor) return false;
+      const model = editor.getModel();
+      if (!model) return false;
+
+      if (openedFileId) {
+        const group = groupsRef.current.find((g) => g.id === groupId) ?? null;
+        if (!group || group.activeFileId !== openedFileId) return false;
+        const file = openFilesRef.current.find((f) => f.id === openedFileId) ?? null;
+        if (!file) return false;
+        if (file.kind !== 'text') return true;
+      }
+
+      try {
+        const lineCount = model.getLineCount();
+        if (lineCount <= 0) return false;
+
+        const clampLine = (n: number) => Math.min(Math.max(1, n), lineCount);
+        const clampCol = (lineNumber: number, col: number) => {
+          const max = model.getLineMaxColumn(lineNumber);
+          return Math.min(Math.max(1, col), max);
+        };
+
+        const rawEndLine = typeof target.endLine === 'number' ? target.endLine : null;
+        const rawEndColumn = typeof target.endColumn === 'number' ? target.endColumn : null;
+
+        const startLineNumber = clampLine(rawLine);
+        const startColumn = clampCol(
+          startLineNumber,
+          typeof target.column === 'number' ? target.column : 1
+        );
+
+        // Single-point jump: VSCode-like behavior (caret only).
+        if (rawEndLine === null && rawEndColumn === null) {
+          editor.setSelection({
+            startLineNumber,
+            startColumn,
             endLineNumber: startLineNumber,
             endColumn: startColumn,
-          };
+          });
+          editor.revealPositionInCenter({ lineNumber: startLineNumber, column: startColumn });
+          editor.focus();
+          return true;
         }
-        if (endLineNumber === startLineNumber && endColumnNumber < startColumn) {
+
+        const endLineNumber = clampLine(rawEndLine ?? startLineNumber);
+        const endColumn = clampCol(
+          endLineNumber,
+          typeof rawEndColumn === 'number' ? rawEndColumn : model.getLineMaxColumn(endLineNumber)
+        );
+
+        const sel = (() => {
+          if (endLineNumber < startLineNumber) {
+            return {
+              startLineNumber: endLineNumber,
+              startColumn: endColumn,
+              endLineNumber: startLineNumber,
+              endColumn: startColumn,
+            };
+          }
+          if (endLineNumber === startLineNumber && endColumn < startColumn) {
+            return {
+              startLineNumber,
+              startColumn: endColumn,
+              endLineNumber,
+              endColumn: startColumn,
+            };
+          }
           return {
             startLineNumber,
-            startColumn: endColumnNumber,
+            startColumn,
             endLineNumber,
-            endColumn: startColumn,
+            endColumn,
           };
-        }
-        return {
-          startLineNumber,
-          startColumn,
-          endLineNumber,
-          endColumn: endColumnNumber,
-        };
-      };
+        })();
 
-      const sel = normalize();
-      try {
         editor.setSelection(sel);
         editor.revealRangeInCenter(sel);
         editor.focus();
+        return true;
       } catch {
-        // ignore
+        return false;
       }
     };
 
-    const applyLater = () => {
-      let attempts = 20;
+    const applyLater = (openedFileId: string | null) => {
+      let attempts = 40;
       const tick = () => {
-        applySelection();
+        if (openLinkSeqRef.current !== seq) return;
+        const done = applySelection(openedFileId);
+        if (done) return;
         attempts -= 1;
         if (attempts <= 0) return;
         window.setTimeout(tick, 50);
@@ -588,8 +689,8 @@ export const WorkstudioView: React.FC = () => {
 
     setOpenFromLinkError(null);
     try {
-      await openFileAtPath(resolved);
-      applyLater();
+      const openedId = await openFileAtPath(resolved);
+      applyLater(openedId);
       return;
     } catch (error) {
       try {
@@ -618,8 +719,8 @@ export const WorkstudioView: React.FC = () => {
         const best = pickBest();
         if (!best) throw error;
 
-        await openFileAtPath(best);
-        applyLater();
+        const openedId = await openFileAtPath(best);
+        applyLater(openedId);
         return;
       } catch (fallbackError) {
         console.error('open file from link failed:', fallbackError);
@@ -635,7 +736,8 @@ export const WorkstudioView: React.FC = () => {
   useEffect(() => {
     if (!filePath || openedFromUrlRef.current) return;
 
-    const isAbs = /^[A-Za-z]:[\\/]/.test(filePath) || filePath.startsWith('/') || filePath.startsWith('\\');
+    const normalized = normalizeFsPath(filePath);
+    const isAbs = /^[A-Za-z]:\//.test(normalized) || normalized.startsWith('/') || normalized.startsWith('//');
     // If it's a relative path, wait until we have ws.mainFolder to resolve it.
     if (!isAbs && !ws?.mainFolder) return;
     openedFromUrlRef.current = true;
@@ -1146,11 +1248,15 @@ export const WorkstudioView: React.FC = () => {
         if (cancelled) return;
         if (!state) return;
 
-        const legacyPaths = Array.isArray(state.openFiles) ? state.openFiles : [];
+        const legacyPaths = Array.isArray(state.openFiles)
+          ? state.openFiles.map((p) => normalizeFsPath(String(p))).filter((p) => Boolean(p))
+          : [];
         const groupsFromState = Array.isArray(state.groups) ? state.groups : [];
-        const paths = groupsFromState.length
-          ? Array.from(new Set(groupsFromState.flatMap((g) => g.openFiles ?? [])))
-          : legacyPaths;
+        const groupPaths = groupsFromState
+          .flatMap((g) => (Array.isArray(g.openFiles) ? g.openFiles : []))
+          .map((p) => normalizeFsPath(String(p)))
+          .filter((p) => Boolean(p));
+        const paths = groupsFromState.length ? Array.from(new Set(groupPaths)) : legacyPaths;
         if (paths.length === 0) return;
 
         const results = await Promise.all(
@@ -1160,13 +1266,14 @@ export const WorkstudioView: React.FC = () => {
                 'read_local_file_base64',
                 { path }
               );
-              const id = path;
-              const kind = fileKindFor(path, file.mime);
+              const normalizedPath = normalizeFsPath(path);
+              const id = normalizedPath;
+              const kind = fileKindFor(normalizedPath, file.mime);
               const content = kind === 'text' ? decodeBase64ToUtf8(file.base64) : undefined;
               const next: OpenFile = {
                 id,
                 title: file.filename,
-                path,
+                path: normalizedPath,
                 kind,
                 mime: file.mime,
                 size: file.size,
@@ -1187,18 +1294,26 @@ export const WorkstudioView: React.FC = () => {
         if (files.length === 0) return;
 
         setOpenFiles((prev) => {
-          const byPath = new Map(prev.map((f) => [f.path, f] as const));
+          const byId = new Map(prev.map((f) => [f.id, f] as const));
           for (const f of files) {
-            if (!byPath.has(f.path)) byPath.set(f.path, f);
+            if (!byId.has(f.id)) byId.set(f.id, f);
           }
-          return Array.from(byPath.values());
+          return Array.from(byId.values());
         });
 
         if (groupsFromState.length) {
           const nextGroups: EditorGroup[] = groupsFromState
             .map((g, idx) => {
-              const openIds = Array.from(new Set((g.openFiles ?? []).filter((p) => files.some((f) => f.id === p))));
-              const active = g.activeFile && openIds.includes(g.activeFile) ? g.activeFile : openIds[0] ?? null;
+              const openIds = Array.from(
+                new Set(
+                  (Array.isArray(g.openFiles) ? g.openFiles : [])
+                    .map((p) => normalizeFsPath(String(p)))
+                    .filter((p) => Boolean(p))
+                    .filter((p) => files.some((f) => f.id === p))
+                )
+              );
+              const activeFromState = typeof g.activeFile === 'string' ? normalizeFsPath(g.activeFile) : null;
+              const active = activeFromState && openIds.includes(activeFromState) ? activeFromState : openIds[0] ?? null;
               const weight = typeof g.weight === 'number' && Number.isFinite(g.weight) ? g.weight : 1;
               return { id: `g-${idx}`, openFileIds: openIds, activeFileId: active, weight };
             })
@@ -1209,22 +1324,25 @@ export const WorkstudioView: React.FC = () => {
             const idx = typeof state.focusedGroupIndex === 'number' ? state.focusedGroupIndex : 0;
             setFocusedGroupId(nextGroups[Math.min(Math.max(0, idx), nextGroups.length - 1)]!.id);
           } else {
-            setGroups([{ id: 'g-0', openFileIds: files.map((f) => f.id), activeFileId: files[0].id, weight: 1 }]);
-            setFocusedGroupId('g-0');
-          }
-        } else if (state.splitOpen && (state.activeRightFile || state.activeLeftFile)) {
-          const openIds = files.map((f) => f.id);
-          const leftActive = state.activeLeftFile && openIds.includes(state.activeLeftFile) ? state.activeLeftFile : openIds[0] ?? null;
-          const rightActive = state.activeRightFile && openIds.includes(state.activeRightFile) ? state.activeRightFile : openIds[0] ?? null;
-          setGroups([
-            { id: 'g-0', openFileIds: openIds, activeFileId: leftActive, weight: 1 },
-            { id: 'g-1', openFileIds: openIds, activeFileId: rightActive, weight: 1 },
-          ]);
-          setFocusedGroupId('g-0');
-        } else {
-          setGroups([{ id: 'g-0', openFileIds: files.map((f) => f.id), activeFileId: state.activeLeftFile ?? files[0].id, weight: 1 }]);
+          setGroups([{ id: 'g-0', openFileIds: files.map((f) => f.id), activeFileId: files[0].id, weight: 1 }]);
           setFocusedGroupId('g-0');
         }
+      } else if (state.splitOpen && (state.activeRightFile || state.activeLeftFile)) {
+        const openIds = files.map((f) => f.id);
+        const leftFromState = typeof state.activeLeftFile === 'string' ? normalizeFsPath(state.activeLeftFile) : null;
+        const rightFromState = typeof state.activeRightFile === 'string' ? normalizeFsPath(state.activeRightFile) : null;
+        const leftActive = leftFromState && openIds.includes(leftFromState) ? leftFromState : openIds[0] ?? null;
+        const rightActive = rightFromState && openIds.includes(rightFromState) ? rightFromState : openIds[0] ?? null;
+        setGroups([
+          { id: 'g-0', openFileIds: openIds, activeFileId: leftActive, weight: 1 },
+          { id: 'g-1', openFileIds: openIds, activeFileId: rightActive, weight: 1 },
+        ]);
+        setFocusedGroupId('g-0');
+      } else {
+        const leftFromState = typeof state.activeLeftFile === 'string' ? normalizeFsPath(state.activeLeftFile) : null;
+        setGroups([{ id: 'g-0', openFileIds: files.map((f) => f.id), activeFileId: leftFromState ?? files[0].id, weight: 1 }]);
+        setFocusedGroupId('g-0');
+      }
 
         if (Array.isArray(state.expandedDirs) && state.expandedDirs.length) {
           const nextExpanded = new Set(state.expandedDirs);
@@ -1360,7 +1478,7 @@ export const WorkstudioView: React.FC = () => {
                 if (entry.isDir) {
                   return renderDirNode(entry.path, depth + 1);
                 }
-                const isActive = activeFilePathInFocusedGroup === entry.path;
+                const isActive = activeFilePathInFocusedGroup === normalizeFsPath(entry.path);
                 return (
                   <button
                     key={entry.path}
