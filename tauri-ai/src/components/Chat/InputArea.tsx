@@ -1935,13 +1935,15 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
    */
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      if (atQuery && atResults.length > 0) {
+      if (workstudio?.id && atQuery) {
         if (e.key === 'ArrowDown') {
+          if (atResults.length === 0) return;
           e.preventDefault();
           setAtIndex((v) => Math.min(v + 1, atResults.length - 1));
           return;
         }
         if (e.key === 'ArrowUp') {
+          if (atResults.length === 0) return;
           e.preventDefault();
           setAtIndex((v) => Math.max(v - 1, 0));
           return;
@@ -1955,20 +1957,19 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
         }
         if (e.key === 'Enter' && !e.shiftKey) {
           e.preventDefault();
-          const chosen = atResults[atIndex];
-          if (chosen) {
-            const el = textareaRef.current;
-            const cursor = el?.selectionStart ?? content.length;
-            const nextContent = content.slice(0, atQuery.start) + content.slice(cursor);
-            handleContentChange(nextContent);
-            setAtQuery(null);
-            setAtResults([]);
-            setAtIndex(0);
-            setWorkspaceMentions((prev) => {
-              if (prev.some((m) => m.uri === chosen.uri)) return prev;
-              return [...prev, { id: crypto.randomUUID(), uri: chosen.uri, label: chosen.label }];
-            });
-          }
+          const chosen = atResults.length > 0 ? atResults[atIndex] : undefined;
+          if (!chosen) return;
+          const el = textareaRef.current;
+          const cursor = el?.selectionStart ?? content.length;
+          const nextContent = content.slice(0, atQuery.start) + content.slice(cursor);
+          handleContentChange(nextContent);
+          setAtQuery(null);
+          setAtResults([]);
+          setAtIndex(0);
+          setWorkspaceMentions((prev) => {
+            if (prev.some((m) => m.uri === chosen.uri)) return prev;
+            return [...prev, { id: crypto.randomUUID(), uri: chosen.uri, label: chosen.label }];
+          });
           return;
         }
       }
@@ -1989,6 +1990,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
       }
     },
     [
+      workstudio?.id,
       atQuery,
       atResults,
       atIndex,
@@ -2297,47 +2299,55 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
       {/* Input row */}
       <div className="flex items-end gap-2">
         <div className="relative flex-1">
-          {workstudio?.id && atQuery && atResults.length > 0 && (
+          {workstudio?.id && atQuery && (
             <div className="absolute bottom-full mb-2 w-full rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-800">
               <div className="max-h-56 overflow-auto py-1 text-sm">
-                {atResults.map((r, idx) => (
-                  <button
-                    key={r.uri}
-                    type="button"
-                    className={[
-                      'flex w-full items-center gap-2 px-3 py-2 text-left',
-                      idx === atIndex
-                        ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
-                        : 'hover:bg-gray-50 dark:hover:bg-gray-700',
-                    ].join(' ')}
-                    onMouseDown={(ev) => ev.preventDefault()}
-                    onClick={() => {
-                      const el = textareaRef.current;
-                      const cursor = el?.selectionStart ?? content.length;
-                      const nextContent = content.slice(0, atQuery.start) + content.slice(cursor);
-                      handleContentChange(nextContent);
-                      setAtQuery(null);
-                      setAtResults([]);
-                      setAtIndex(0);
-                      setWorkspaceMentions((prev) => {
-                        if (prev.some((m) => m.uri === r.uri)) return prev;
-                        return [...prev, { id: crypto.randomUUID(), uri: r.uri, label: r.label }];
-                      });
-                      window.setTimeout(() => textareaRef.current?.focus(), 0);
-                    }}
-                  >
-                    <FileIcon size={14} className="text-gray-500 dark:text-gray-400" />
-                    <span className="truncate">{r.label}</span>
-                    <span className="ml-auto truncate text-xs text-gray-500 dark:text-gray-400">
-                      {(() => {
-                        const parsed = parseWorkspaceUri(r.uri);
-                        if (!parsed) return '';
-                        const rootName = parsed.rootKey.split('~')[0];
-                        return `${rootName}/${parsed.relPath}`;
-                      })()}
-                    </span>
-                  </button>
-                ))}
+                {atResults.length === 0 ? (
+                  <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">
+                    {atQuery.query.trim()
+                      ? '未找到匹配文件'
+                      : '继续输入文件名以搜索（例如 @README 或 @src/app）'}
+                  </div>
+                ) : (
+                  atResults.map((r, idx) => (
+                    <button
+                      key={r.uri}
+                      type="button"
+                      className={[
+                        'flex w-full items-center gap-2 px-3 py-2 text-left',
+                        idx === atIndex
+                          ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
+                          : 'hover:bg-gray-50 dark:hover:bg-gray-700',
+                      ].join(' ')}
+                      onMouseDown={(ev) => ev.preventDefault()}
+                      onClick={() => {
+                        const el = textareaRef.current;
+                        const cursor = el?.selectionStart ?? content.length;
+                        const nextContent = content.slice(0, atQuery.start) + content.slice(cursor);
+                        handleContentChange(nextContent);
+                        setAtQuery(null);
+                        setAtResults([]);
+                        setAtIndex(0);
+                        setWorkspaceMentions((prev) => {
+                          if (prev.some((m) => m.uri === r.uri)) return prev;
+                          return [...prev, { id: crypto.randomUUID(), uri: r.uri, label: r.label }];
+                        });
+                        window.setTimeout(() => textareaRef.current?.focus(), 0);
+                      }}
+                    >
+                      <FileIcon size={14} className="text-gray-500 dark:text-gray-400" />
+                      <span className="truncate">{r.label}</span>
+                      <span className="ml-auto truncate text-xs text-gray-500 dark:text-gray-400">
+                        {(() => {
+                          const parsed = parseWorkspaceUri(r.uri);
+                          if (!parsed) return '';
+                          const rootName = parsed.rootKey.split('~')[0];
+                          return `${rootName}/${parsed.relPath}`;
+                        })()}
+                      </span>
+                    </button>
+                  ))
+                )}
               </div>
               <div className="border-t border-gray-200 px-3 py-2 text-[11px] text-gray-500 dark:border-gray-700 dark:text-gray-400">
                 输入 <span className="font-mono">@</span> 搜索工作区文件，回车插入，Esc 关闭
