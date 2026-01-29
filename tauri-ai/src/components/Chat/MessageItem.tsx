@@ -16,9 +16,57 @@ import { getAssistantMessageBlocks } from '../../utils/messageBlocks';
 import { MessageBlocks } from './MessageBlocks';
 
 const WIDE_VISUAL_FENCE_RE = /```(?:mermaid|plot|mafs|json\\s+mafs)\\b/i;
+const AT_PATH_RE = /@(\"[^\"]+\"|[^\s]+)/g;
 
 function hasWideVisualFence(text: string): boolean {
   return WIDE_VISUAL_FENCE_RE.test(text);
+}
+
+function basenameFromPath(path: string): string {
+  const normalized = path.replace(/\\/g, '/');
+  const parts = normalized.split('/').filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1] : path;
+}
+
+function renderUserTextWithPathChips(text: string): React.ReactNode {
+  if (!text) return text;
+
+  const nodes: React.ReactNode[] = [];
+  let last = 0;
+  AT_PATH_RE.lastIndex = 0;
+
+  let match: RegExpExecArray | null;
+  while ((match = AT_PATH_RE.exec(text))) {
+    const start = match.index;
+    const prev = start === 0 ? '' : text[start - 1];
+    // Avoid matching emails/identifiers like "a@b"
+    if (prev && /[A-Za-z0-9_]/.test(prev)) continue;
+
+    const raw = match[0];
+    const end = start + raw.length;
+    if (start > last) nodes.push(<span key={`t-${last}`}>{text.slice(last, start)}</span>);
+
+    let path = match[1];
+    if (path.startsWith('"') && path.endsWith('"') && path.length >= 2) {
+      path = path.slice(1, -1);
+    }
+    const label = basenameFromPath(path);
+    nodes.push(
+      <span
+        key={`p-${start}`}
+        className="inline-flex items-center gap-1 rounded-md bg-blue-50 px-2 py-0.5 text-xs text-blue-700 dark:bg-blue-900/30 dark:text-blue-200 align-baseline"
+        title={path}
+      >
+        <FileIcon size={14} className="shrink-0 opacity-80" />
+        <span className="truncate max-w-56">{label}</span>
+      </span>
+    );
+
+    last = end;
+  }
+
+  if (last < text.length) nodes.push(<span key={`t-${last}`}>{text.slice(last)}</span>);
+  return <>{nodes}</>;
 }
 
 /**
@@ -67,7 +115,7 @@ const ContentPartsRenderer: React.FC<ContentPartsRendererProps> = ({
   // If no content parts, just render text
   if (!contentParts || contentParts.length === 0) {
     if (isUser) {
-      return <p className="whitespace-pre-wrap">{textContent}</p>;
+      return <p className="whitespace-pre-wrap">{renderUserTextWithPathChips(textContent)}</p>;
     }
     return <MarkdownRenderer content={textContent} />;
   }
@@ -79,7 +127,7 @@ const ContentPartsRenderer: React.FC<ContentPartsRendererProps> = ({
           if (isUser) {
             return (
               <p key={index} className="whitespace-pre-wrap">
-                {part.text}
+                {renderUserTextWithPathChips(part.text)}
               </p>
             );
           }

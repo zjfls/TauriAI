@@ -5,7 +5,7 @@
  */
 
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Send, Square, Bot, Cpu, ChevronDown, Check, ImagePlus, Paperclip, FileText, Plug, X, File as FileIcon } from 'lucide-react';
+import { Send, Square, Bot, Cpu, ChevronDown, Check, ImagePlus, Paperclip, FileText, Plug, File as FileIcon } from 'lucide-react';
 import { ContextUsageIndicator } from './ContextUsageIndicator';
 import { McpModal } from './McpModal';
 import { AttachmentPreview } from './AttachmentPreview';
@@ -172,11 +172,43 @@ function parseWorkspaceUri(uri: string): { rootKey: string; relPath: string } | 
   return { rootKey, relPath };
 }
 
-function joinPath(rootAbs: string, rel: string): string {
-  const sep = rootAbs.includes('\\') ? '\\' : '/';
-  const a = rootAbs.replace(/[\\/]+$/, '');
-  const b = rel.replace(/^[\\/]+/, '');
-  return b ? `${a}${sep}${b}` : a;
+const WORKSPACE_MENTION_TOKEN_RE = /@\{ref:([0-9a-fA-F-]{36})\}/g;
+
+function hasWorkspaceMentionTokens(text: string): boolean {
+  if (!text) return false;
+  WORKSPACE_MENTION_TOKEN_RE.lastIndex = 0;
+  return WORKSPACE_MENTION_TOKEN_RE.test(text);
+}
+
+function quoteIfNeededForAtPath(path: string): string {
+  return /\s/.test(path) && !path.includes('"') ? `"${path}"` : path;
+}
+
+function expandWorkspaceMentionTokens(text: string, mentions: { id: string; absPath: string }[]): string {
+  if (!text) return text;
+  const byId = new Map(mentions.map((m) => [m.id, m.absPath]));
+  return text.replace(WORKSPACE_MENTION_TOKEN_RE, (_m, id: string) => {
+    const abs = byId.get(id);
+    if (!abs) return '';
+    return `@${quoteIfNeededForAtPath(abs)}`;
+  });
+}
+
+function findWorkspaceMentionTokenAt(
+  text: string,
+  index: number
+): { start: number; end: number; id: string } | null {
+  if (index < 0 || index > text.length) return null;
+  WORKSPACE_MENTION_TOKEN_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = WORKSPACE_MENTION_TOKEN_RE.exec(text))) {
+    const start = match.index;
+    const end = start + match[0].length;
+    if (index >= start && index < end) {
+      return { start, end, id: match[1] };
+    }
+  }
+  return null;
 }
 
 function findActiveAtQuery(text: string, cursor: number): { start: number; query: string } | null {
@@ -189,6 +221,8 @@ function findActiveAtQuery(text: string, cursor: number): { start: number; query
   // 但避免 email/标识符场景（如 a@b）触发。
   if (prev && /[A-Za-z0-9_]/.test(prev)) return null;
   const query = before.slice(lastAt + 1);
+  // Ignore our internal workspace mention tokens: "@{ref:<uuid>}"
+  if (query.startsWith('{ref:')) return null;
   if (/\s/.test(query)) return null;
   return { start: lastAt, query };
 }
@@ -831,13 +865,14 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   const [pendingPdfs, setPendingPdfs] = useState<PendingPdf[]>([]);
   const [fileError, setFileError] = useState<string | null>(null);
   const [pdfError, setPdfError] = useState<string | null>(null);
-  type WorkspaceMentionChip = { id: string; uri: string; label: string };
+  type WorkspaceMentionChip = { id: string; absPath: string; label: string };
   const [workspaceMentions, setWorkspaceMentions] = useState<WorkspaceMentionChip[]>([]);
   const [atQuery, setAtQuery] = useState<{ start: number; query: string } | null>(null);
   const [atResults, setAtResults] = useState<{ uri: string; absPath: string; label: string }[]>([]);
   const [atIndex, setAtIndex] = useState(0);
   const atTimerRef = useRef<number | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const textareaOverlayRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textFileInputRef = useRef<HTMLInputElement>(null);
   const pdfFileInputRef = useRef<HTMLInputElement>(null);
@@ -1804,18 +1839,19 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
       pendingImages.length > 0 ||
       pendingTextFiles.length > 0 ||
       pendingPdfs.length > 0 ||
-      workspaceMentions.length > 0;
+      hasWorkspaceMentionTokens(content);
     if ((isWhitespaceOnly(content) && !hasAttachments) || disabled || isGenerating) {
       return;
     }
 
-    const trimmedContent = content.trim();
+    const expandedContent = expandWorkspaceMentionTokens(content, workspaceMentions);
+    const trimmedContent = expandedContent.trim();
     let nextFileError: string | null = null;
 
     // Build content parts for images, text files, and PDFs
     let contentParts: ContentPart[] | undefined;
 
-    if (pendingImages.length > 0 || pendingTextFiles.length > 0 || pendingPdfs.length > 0 || workspaceMentions.length > 0) {
+    if (pendingImages.length > 0 || pendingTextFiles.length > 0 || pendingPdfs.length > 0) {
       contentParts = [];
 
       // Add image content parts
@@ -1846,37 +1882,6 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
           totalPages: pdf.totalPages,
           metadata: pdf.metadata,
         });
-      }
-    }
-
-    if (workspaceMentions.length > 0) {
-      // Codex-style: only send file references; do NOT inline file contents.
-      // Prevents huge files from blowing up the context window.
-      const errors: string[] = [];
-      const rootsByKey = new Map(workspaceRoots.map((r) => [r.key, r]));
-
-      for (const m of workspaceMentions) {
-        const parsed = parseWorkspaceUri(m.uri);
-        if (!parsed) {
-          errors.push(`${m.label}: URI 解析失败`);
-          continue;
-        }
-        const root = rootsByKey.get(parsed.rootKey);
-        if (!root) {
-          errors.push(`${m.label}: workspace root 不存在`);
-          continue;
-        }
-        const absPath = joinPath(root.absPath, parsed.relPath);
-        contentParts ??= [];
-        contentParts.push({
-          type: 'file_ref' as const,
-          path: absPath,
-          label: m.label,
-        });
-      }
-
-      if (errors.length > 0) {
-        nextFileError = errors.slice(0, 3).join('；') + (errors.length > 3 ? '…' : '');
       }
     }
 
@@ -1956,25 +1961,54 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
           if (!chosen) return;
           const el = textareaRef.current;
           const cursor = el?.selectionStart ?? content.length;
-          const nextContent = content.slice(0, atQuery.start) + content.slice(cursor);
+          const refId = crypto.randomUUID();
+          const token = `@{ref:${refId}}`;
+          const nextContent = content.slice(0, atQuery.start) + token + ' ' + content.slice(cursor);
           handleContentChange(nextContent);
           setAtQuery(null);
           setAtResults([]);
           setAtIndex(0);
           setWorkspaceMentions((prev) => {
-            if (prev.some((m) => m.uri === chosen.uri)) return prev;
-            return [...prev, { id: crypto.randomUUID(), uri: chosen.uri, label: chosen.label }];
+            if (prev.some((m) => m.absPath === chosen.absPath)) return prev;
+            return [...prev, { id: refId, absPath: chosen.absPath, label: chosen.label }];
           });
+          window.setTimeout(() => {
+            const el2 = textareaRef.current;
+            if (!el2) return;
+            el2.focus();
+            const pos = atQuery.start + token.length + 1;
+            try {
+              el2.setSelectionRange(pos, pos);
+            } catch {
+              // ignore
+            }
+          }, 0);
           return;
         }
       }
 
-      if (e.key === 'Backspace' && workspaceMentions.length > 0) {
+      if (e.key === 'Backspace' || e.key === 'Delete') {
         const el = textareaRef.current;
-        if (el && el.selectionStart === 0 && el.selectionEnd === 0) {
-          e.preventDefault();
-          setWorkspaceMentions((prev) => prev.slice(0, -1));
-          return;
+        if (el && el.selectionStart === el.selectionEnd) {
+          const cursor = el.selectionStart ?? content.length;
+          const probeIndex = e.key === 'Backspace' ? cursor - 1 : cursor;
+          const hit = findWorkspaceMentionTokenAt(content, probeIndex);
+          if (hit) {
+            e.preventDefault();
+            const next = content.slice(0, hit.start) + content.slice(hit.end);
+            handleContentChange(next);
+            setWorkspaceMentions((prev) => prev.filter((m) => m.id !== hit.id));
+            window.setTimeout(() => {
+              const el2 = textareaRef.current;
+              if (!el2) return;
+              try {
+                el2.setSelectionRange(hit.start, hit.start);
+              } catch {
+                // ignore
+              }
+            }, 0);
+            return;
+          }
         }
       }
 
@@ -1992,7 +2026,6 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
       content,
       handleContentChange,
       handleSend,
-      workspaceMentions.length,
     ]
   );
 
@@ -2019,6 +2052,59 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
     const cursor = el.selectionStart ?? content.length;
     setAtQuery(findActiveAtQuery(content, cursor));
   }, [content]);
+
+  const workspaceMentionsById = useMemo(() => {
+    return new Map(workspaceMentions.map((m) => [m.id, m]));
+  }, [workspaceMentions]);
+
+  const textareaOverlayNodes = useMemo(() => {
+    const text = content ?? '';
+    if (!text) return null;
+
+    const nodes: React.ReactNode[] = [];
+    let last = 0;
+    WORKSPACE_MENTION_TOKEN_RE.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = WORKSPACE_MENTION_TOKEN_RE.exec(text))) {
+      const start = match.index;
+      const end = start + match[0].length;
+      if (start > last) {
+        nodes.push(<span key={`t-${last}`}>{text.slice(last, start)}</span>);
+      }
+      const id = match[1];
+      const mention = workspaceMentionsById.get(id);
+      if (mention) {
+        nodes.push(
+          <span
+            key={`m-${id}-${start}`}
+            className="inline-flex items-center gap-1 rounded-md bg-blue-50 px-2 py-0.5 text-xs text-blue-700 dark:bg-blue-900/30 dark:text-blue-200 align-baseline"
+            title={mention.absPath}
+          >
+            {mention.label}
+          </span>
+        );
+      } else {
+        nodes.push(
+          <span key={`m-missing-${id}-${start}`} className="text-gray-400">
+            {match[0]}
+          </span>
+        );
+      }
+      last = end;
+    }
+    if (last < text.length) {
+      nodes.push(<span key={`t-${last}`}>{text.slice(last)}</span>);
+    }
+    return nodes;
+  }, [content, workspaceMentionsById]);
+
+  const handleTextareaScroll = useCallback(() => {
+    const el = textareaRef.current;
+    const overlay = textareaOverlayRef.current;
+    if (!el || !overlay) return;
+    overlay.scrollTop = el.scrollTop;
+    overlay.scrollLeft = el.scrollLeft;
+  }, []);
 
   useEffect(() => {
     if (!workstudio?.id) return;
@@ -2069,7 +2155,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
 
   // Requirement 4.6: Disable send button for empty/whitespace input (unless there are attachments)
   const hasAttachments =
-    pendingImages.length > 0 || pendingTextFiles.length > 0 || pendingPdfs.length > 0 || workspaceMentions.length > 0;
+    pendingImages.length > 0 || pendingTextFiles.length > 0 || pendingPdfs.length > 0 || hasWorkspaceMentionTokens(content);
   const isSendDisabled = disabled || (isWhitespaceOnly(content) && !hasAttachments);
 
   const currentAgent = useMemo(() => {
@@ -2325,16 +2411,28 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
                       onClick={() => {
                         const el = textareaRef.current;
                         const cursor = el?.selectionStart ?? content.length;
-                        const nextContent = content.slice(0, atQuery.start) + content.slice(cursor);
+                        const refId = crypto.randomUUID();
+                        const token = `@{ref:${refId}}`;
+                        const nextContent = content.slice(0, atQuery.start) + token + ' ' + content.slice(cursor);
                         handleContentChange(nextContent);
                         setAtQuery(null);
                         setAtResults([]);
                         setAtIndex(0);
                         setWorkspaceMentions((prev) => {
-                          if (prev.some((m) => m.uri === r.uri)) return prev;
-                          return [...prev, { id: crypto.randomUUID(), uri: r.uri, label: r.label }];
+                          if (prev.some((m) => m.absPath === r.absPath)) return prev;
+                          return [...prev, { id: refId, absPath: r.absPath, label: r.label }];
                         });
-                        window.setTimeout(() => textareaRef.current?.focus(), 0);
+                        window.setTimeout(() => {
+                          const el2 = textareaRef.current;
+                          if (!el2) return;
+                          el2.focus();
+                          const pos = atQuery.start + token.length + 1;
+                          try {
+                            el2.setSelectionRange(pos, pos);
+                          } catch {
+                            // ignore
+                          }
+                        }, 0);
                       }}
                     >
                       <FileIcon size={14} className="text-gray-500 dark:text-gray-400" />
@@ -2358,43 +2456,33 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
           )}
 
           <div className="rounded-lg border border-gray-300 bg-gray-50 px-2 py-2 text-gray-900 placeholder-gray-500 transition-colors focus-within:border-blue-500 focus-within:outline-none focus-within:ring-1 focus-within:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 dark:placeholder-gray-400 dark:focus-within:border-blue-400">
-            {workspaceMentions.length > 0 && (
-              <div className="mb-1 flex flex-wrap gap-1">
-                {workspaceMentions.map((m) => (
-                  <span
-                    key={m.id}
-                    className="inline-flex items-center gap-1 rounded-md bg-blue-50 px-2 py-1 text-xs text-blue-700 dark:bg-blue-900/30 dark:text-blue-200"
-                    title={m.uri}
-                  >
-                    <span className="truncate max-w-56">{m.label}</span>
-                    <button
-                      type="button"
-                      className="rounded hover:bg-blue-100 dark:hover:bg-blue-900/60"
-                      onClick={() => setWorkspaceMentions((prev) => prev.filter((x) => x.id !== m.id))}
-                      aria-label="移除引用"
-                    >
-                      <X size={12} />
-                    </button>
-                  </span>
-                ))}
+            <div className="relative">
+              <div
+                ref={textareaOverlayRef}
+                aria-hidden="true"
+                className="absolute inset-0 z-0 w-full resize-none overflow-auto bg-transparent px-2 py-0 text-gray-900 placeholder-gray-500 focus:outline-none dark:text-gray-100 dark:placeholder-gray-400 pointer-events-none whitespace-pre-wrap break-words"
+                style={{ minHeight: `${MIN_TEXTAREA_HEIGHT}px` }}
+              >
+                {textareaOverlayNodes}
               </div>
-            )}
 
-            <textarea
-              ref={textareaRef}
-              value={content}
-              onChange={handleChange}
-              onKeyDown={handleKeyDown}
-              onClick={handleSelectionChange}
-              onSelect={handleSelectionChange}
-              onPaste={handlePaste}
-              placeholder={supportsVision ? "输入消息，或粘贴/拖拽图片、文本文件和 PDF..." : "输入消息，或粘贴/拖拽文本文件和 PDF..."}
-              disabled={disabled || isGenerating}
-              rows={1}
-              aria-label="消息输入框"
-              className="w-full resize-none bg-transparent px-2 py-0 text-gray-900 placeholder-gray-500 focus:outline-none dark:text-gray-100 dark:placeholder-gray-400 disabled:cursor-not-allowed disabled:opacity-50"
-              style={{ minHeight: `${MIN_TEXTAREA_HEIGHT}px` }}
-            />
+              <textarea
+                ref={textareaRef}
+                value={content}
+                onChange={handleChange}
+                onKeyDown={handleKeyDown}
+                onClick={handleSelectionChange}
+                onSelect={handleSelectionChange}
+                onScroll={handleTextareaScroll}
+                onPaste={handlePaste}
+                placeholder={supportsVision ? "输入消息，或粘贴/拖拽图片、文本文件和 PDF..." : "输入消息，或粘贴/拖拽文本文件和 PDF..."}
+                disabled={disabled || isGenerating}
+                rows={1}
+                aria-label="消息输入框"
+                className="relative z-10 w-full resize-none bg-transparent px-2 py-0 text-transparent caret-gray-900 placeholder-gray-500 focus:outline-none dark:caret-gray-100 dark:placeholder-gray-400 disabled:cursor-not-allowed disabled:opacity-50"
+                style={{ minHeight: `${MIN_TEXTAREA_HEIGHT}px` }}
+              />
+            </div>
           </div>
         </div>
         {isGenerating ? (
