@@ -624,6 +624,8 @@ export interface InputAreaHandle {
   addFiles: (files: FileList | File[]) => void;
   /** 从外部（例如聊天窗口 drop）把纯文本插入到输入框光标处 */
   insertText: (text: string) => void;
+  /** 从外部（例如撤回）恢复待发送的多模态内容 */
+  setContentParts: (parts?: ContentPart[]) => void;
 }
 
 /**
@@ -1604,6 +1606,52 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
     },
     insertText: (text: string) => {
       insertTextAtCursor(text);
+    },
+    setContentParts: (parts?: ContentPart[]) => {
+      const nextImages: PendingImage[] = [];
+      const nextTextFiles: PendingTextFile[] = [];
+      const nextPdfs: PendingPdf[] = [];
+
+      const items = parts ?? [];
+      for (let idx = 0; idx < items.length; idx++) {
+        const part = items[idx];
+        if (part.type === 'image') {
+          nextImages.push({ id: `undo_image_${idx}`, url: part.url });
+          continue;
+        }
+        if (part.type === 'text_file') {
+          const size =
+            typeof TextEncoder !== 'undefined'
+              ? new TextEncoder().encode(part.content).length
+              : part.content.length;
+          nextTextFiles.push({
+            id: `undo_text_${idx}`,
+            filename: part.filename,
+            content: part.content,
+            size,
+          });
+          continue;
+        }
+        if (part.type === 'pdf_document') {
+          nextPdfs.push({
+            id: `undo_pdf_${idx}`,
+            filename: part.filename,
+            size: 0,
+            pages: part.pages,
+            totalPages: part.totalPages,
+            metadata: part.metadata,
+            processingProgress: 100,
+            includeImages: true,
+            includeText: true,
+          });
+        }
+      }
+
+      setPendingImages(nextImages);
+      setPendingTextFiles(nextTextFiles);
+      setPendingPdfs(nextPdfs);
+      setFileError(null);
+      setPdfError(null);
     },
   }));
 
