@@ -6,7 +6,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/shallow';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useSessionStore } from '../../stores/sessionStore';
 import { useConfigStore } from '../../stores/configStore';
@@ -84,6 +84,39 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
       getModelOptions: state.getModelOptions,
     }))
   );
+
+  const agentForSession = useMemo(() => {
+    return session ? getAgent(session.agentName) ?? null : null;
+  }, [session, getAgent]);
+
+  const activeFormatType = (agentForSession?.formatType || 'chat') as 'chat' | 'plain' | 'json' | 'none';
+  const [formatPromptTextFromBackend, setFormatPromptTextFromBackend] = useState<string>('');
+  useEffect(() => {
+    let cancelled = false;
+
+    const run = async () => {
+      if (activeFormatType === 'none') {
+        setFormatPromptTextFromBackend('');
+        return;
+      }
+      if (!isTauri()) {
+        setFormatPromptTextFromBackend('');
+        return;
+      }
+
+      try {
+        const res = await invoke<string | null>('get_format_prompt', { formatType: activeFormatType });
+        if (!cancelled) setFormatPromptTextFromBackend(res ?? '');
+      } catch {
+        if (!cancelled) setFormatPromptTextFromBackend('');
+      }
+    };
+
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeFormatType]);
 
   // Get current model's context length based on session's model or agent's default
   const currentModel = useMemo(() => {
@@ -690,7 +723,10 @@ Guidelines:
     // Calculate format prompt tokens based on format type
     let formatPromptTokens = 0;
     let formatPromptText = '';
-    if (formatType === 'chat') {
+    if (formatType !== 'none' && formatPromptTextFromBackend) {
+      formatPromptText = formatPromptTextFromBackend;
+      formatPromptTokens = countTokens(formatPromptTextFromBackend);
+    } else if (formatType === 'chat') {
       formatPromptText = FORMAT_PROMPT_CHAT;
       formatPromptTokens = countTokens(FORMAT_PROMPT_CHAT);
     } else if (formatType === 'plain') {
@@ -877,7 +913,7 @@ Guidelines:
       limit: contextLength,
       percentage: Math.min(percentage, 100),
     };
-  }, [currentModel, messages, session, getAgent, config, skillOutcome, workstudio?.mainFolder]);
+  }, [currentModel, messages, session, getAgent, config, skillOutcome, workstudio?.mainFolder, formatPromptTextFromBackend]);
 
   // 消息加载由 setCurrentConversation 负责，这里不再调用 loadMessages
   // 这样创建新对话时不会触发 loadMessages，避免竞态条件

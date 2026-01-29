@@ -13,6 +13,7 @@ mod skills;
 mod workstudio;
 mod workstudio_terminal;
 mod workstudio_state;
+mod prompts;
 
 pub use run::{abort_run, run_task};
 pub use run::respond_approval;
@@ -28,6 +29,7 @@ pub use mcp::{
     set_agent_mcp_set, test_mcp_server, upsert_mcp_server, upsert_mcp_set,
 };
 pub use skills::{create_skill, list_skills};
+pub use prompts::get_format_prompt;
 pub use workstudio::{
     add_workstudio_folder, create_workstudio, ensure_workstudio_for_conversation, get_workstudio,
     remove_workstudio_folder, set_workstudio_main_folder, workstudio_find_files,
