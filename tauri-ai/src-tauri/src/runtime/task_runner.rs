@@ -335,13 +335,19 @@ fn compute_system_prompt_cache_key(
     use std::fmt::Write as _;
 
     let mut h = Sha1::new();
-    h.update(b"v3\n");
+    // NOTE: Cache key must include any prompt text that can affect the actual HTTP request.
+    // Bump this version whenever the cache inputs change.
+    h.update(b"v4\n");
     h.update(agent.name.as_bytes());
     h.update(b"\n");
     h.update(agent.system_prompt.as_bytes());
     h.update(b"\n");
     h.update(format!("{:?}", agent.format_type).as_bytes());
     h.update(b"\n");
+    if let Some(format_prompt) = crate::prompts::compose_system_prompt(None, agent.format_type) {
+        h.update(format_prompt.as_bytes());
+        h.update(b"\n");
+    }
 
     if let Some(ws) = workstudio {
         h.update(b"ws\n");
