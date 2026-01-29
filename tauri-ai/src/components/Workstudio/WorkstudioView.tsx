@@ -303,6 +303,11 @@ export const WorkstudioView: React.FC = () => {
     () => groups.find((g) => g.id === focusedGroupId) ?? groups[0],
     [groups, focusedGroupId]
   );
+  const activeFilePathInFocusedGroup = useMemo(() => {
+    const activeId = focusedGroup?.activeFileId ?? null;
+    if (!activeId) return null;
+    return openFiles.find((f) => f.id === activeId)?.path ?? null;
+  }, [focusedGroup?.activeFileId, openFiles]);
 
   // Monaco 编辑器在 flex 布局变化（拆分/关闭组/拖拽/分屏比例调整）时偶发不会自动重算尺寸，
   // 导致右侧出现“白色死区”。这里在布局相关状态变化后，强制触发一次 layout。
@@ -447,11 +452,15 @@ export const WorkstudioView: React.FC = () => {
   );
 
   const openedFromUrlRef = useRef(false);
+  const [openFromLinkError, setOpenFromLinkError] = useState<string | null>(null);
   useEffect(() => {
     if (!filePath || openedFromUrlRef.current) return;
-    openedFromUrlRef.current = true;
 
     const isAbs = /^[A-Za-z]:[\\/]/.test(filePath) || filePath.startsWith('/') || filePath.startsWith('\\');
+    // If it's a relative path, wait until we have ws.mainFolder to resolve it.
+    if (!isAbs && !ws?.mainFolder) return;
+    openedFromUrlRef.current = true;
+
     const resolved = !isAbs && ws?.mainFolder
       ? (() => {
           const sep = ws.mainFolder.includes('\\') ? '\\' : '/';
@@ -476,12 +485,18 @@ export const WorkstudioView: React.FC = () => {
       }
     };
 
-    void openFileAtPath(resolved).then(() => {
-      window.requestAnimationFrame(() => {
-        jump();
-        window.requestAnimationFrame(jump);
+    setOpenFromLinkError(null);
+    void openFileAtPath(resolved)
+      .then(() => {
+        window.requestAnimationFrame(() => {
+          jump();
+          window.requestAnimationFrame(jump);
+        });
+      })
+      .catch((error) => {
+        console.error('open file from link failed:', error);
+        setOpenFromLinkError(typeof error === 'string' ? error : (error as any)?.message ?? '打开文件失败');
       });
-    });
   }, [filePath, line, column, ws?.mainFolder, openFileAtPath, focusedGroupId]);
 
   const closeFileInGroup = useCallback((groupId: string, fileId: string) => {
@@ -1186,7 +1201,8 @@ export const WorkstudioView: React.FC = () => {
                 if (entry.isDir) {
                   return renderDirNode(entry.path, depth + 1);
                 }
-                const isActive = openFiles.some((f) => f.path === entry.path);
+                const isOpen = openFiles.some((f) => f.path === entry.path);
+                const isActive = activeFilePathInFocusedGroup === entry.path;
                 return (
                   <button
                     key={entry.path}
@@ -1197,7 +1213,9 @@ export const WorkstudioView: React.FC = () => {
                       'flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-xs',
                       isActive
                         ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
-                        : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800',
+                        : isOpen
+                          ? 'text-blue-700 hover:bg-gray-100 dark:text-blue-200 dark:hover:bg-gray-800'
+                          : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800',
                     ].join(' ')}
                     style={{ paddingLeft: 8 + (depth + 1) * 14 }}
                     title={entry.path}
@@ -1297,6 +1315,11 @@ export const WorkstudioView: React.FC = () => {
               </button>
             </div>
           </div>
+          {openFromLinkError && (
+            <div className="border-b border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-200">
+              打开链接文件失败：{openFromLinkError}
+            </div>
+          )}
 
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
             <div ref={groupRowRef} className="flex min-h-0 flex-1 flex-row overflow-hidden">
