@@ -81,7 +81,9 @@ fn build_shell_invocation(command: &str, login: bool) -> (String, Vec<String>) {
     #[cfg(windows)]
     {
         let _ = login;
-        ("cmd.exe".to_string(), vec!["/C".to_string(), command.to_string()])
+        // 在 Windows 上先设置 UTF-8 代码页 (65001)，再执行命令
+        let utf8_command = format!("chcp 65001 >nul 2>&1 && {}", command);
+        ("cmd.exe".to_string(), vec!["/C".to_string(), utf8_command])
     }
     #[cfg(not(windows))]
     {
