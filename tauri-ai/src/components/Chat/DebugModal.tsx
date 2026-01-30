@@ -549,6 +549,7 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                     : status === 'aborted'
                       ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300'
                       : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300';
+                const statusTitle = status === 'success' ? '成功' : status === 'failed' ? '失败' : '中止';
 
                 return (
                   <button
@@ -562,7 +563,10 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                     title={t.model ? `model: ${t.model}` : undefined}
                   >
                     <span>Turn {t.turnIndex}</span>
-                    <span className={`rounded px-2 py-0.5 ${statusClass}`}>{status}</span>
+                    <span className={`inline-flex items-center gap-1 rounded px-2 py-0.5 ${statusClass}`} title={statusTitle}>
+                      {status === 'success' ? <Check size={12} /> : status === 'failed' ? <X size={12} /> : null}
+                      {status === 'aborted' ? <span>aborted</span> : null}
+                    </span>
                   </button>
                 );
               })}

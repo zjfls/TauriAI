@@ -11,6 +11,11 @@ import { MessageBlocks } from './MessageBlocks';
 import { Bot, ArrowDown } from 'lucide-react';
 import { isTauri } from '@tauri-apps/api/core';
 import { markChatOpenProfile } from '../../utils/chatOpenProfile';
+import {
+  consumeConversationScrollToBottomOnce,
+  getConversationViewState,
+  setConversationViewState,
+} from '../../utils/conversationViewState';
 
 interface MessageListProps {
   /** 用于区分不同会话，切换时重置内部窗口/滚动状态 */
@@ -38,14 +43,6 @@ const DEFAULT_VISIBLE_MESSAGES = DEFAULT_VISIBLE_TURNS * 2;
 const LOAD_MORE_PAGE_SIZE = 40;
 const LOAD_MORE_SCROLL_THRESHOLD = 80;
 
-type ConversationViewState = {
-  startIndex: number;
-  visibleCount: number;
-  scrollTop: number;
-  isAtBottom: boolean;
-  userScrolledAway: boolean;
-};
-
 type PendingRestore = { mode: 'bottom' | 'scrollTop'; scrollTop: number } | null;
 
 const MessageListInner: React.FC<MessageListProps> = ({
@@ -65,8 +62,6 @@ const MessageListInner: React.FC<MessageListProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  // Persist per-conversation scroll/window state so switching sessions restores position.
-  const perConversationStateRef = useRef<Map<string, ConversationViewState>>(new Map());
   const pendingRestoreRef = useRef<PendingRestore>(null);
   const lastUserAutoScrollRef = useRef<{ conversationKey: string; lastMessageId: string | null } | null>(null);
 
@@ -85,7 +80,8 @@ const MessageListInner: React.FC<MessageListProps> = ({
     loadMoreInFlightRef.current = false;
     pendingScrollAdjustRef.current = null;
 
-    const saved = perConversationStateRef.current.get(conversationKey);
+    const forceToBottom = consumeConversationScrollToBottomOnce(conversationKey);
+    const saved = forceToBottom ? undefined : getConversationViewState(conversationKey);
     if (saved) {
       const clampedStartIndex = Math.max(0, Math.min(messages.length, saved.startIndex));
       const nextVisibleCount = Math.min(
@@ -104,6 +100,16 @@ const MessageListInner: React.FC<MessageListProps> = ({
     setUserScrolledAway(false);
     pendingRestoreRef.current = { mode: 'bottom', scrollTop: 0 };
   }, [conversationKey, messages.length]);
+
+  // Handle “scroll to bottom” requests even when conversationKey doesn't change (e.g. clicking the same conversation in history).
+  useLayoutEffect(() => {
+    const hit = consumeConversationScrollToBottomOnce(conversationKey);
+    if (!hit) return;
+    setVisibleCount(DEFAULT_VISIBLE_MESSAGES);
+    setIsAtBottom(true);
+    setUserScrolledAway(false);
+    pendingRestoreRef.current = { mode: 'bottom', scrollTop: 0 };
+  });
 
   const startIndex = useMemo(() => Math.max(0, messages.length - visibleCount), [messages.length, visibleCount]);
 
@@ -195,7 +201,7 @@ const MessageListInner: React.FC<MessageListProps> = ({
 
     // 向上滚动接近顶部时自动加载更早的消息
     if (container) {
-      perConversationStateRef.current.set(conversationKey, {
+      setConversationViewState(conversationKey, {
         startIndex,
         visibleCount,
         scrollTop: container.scrollTop,
@@ -213,7 +219,7 @@ const MessageListInner: React.FC<MessageListProps> = ({
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
-    perConversationStateRef.current.set(conversationKey, {
+    setConversationViewState(conversationKey, {
       startIndex,
       visibleCount,
       scrollTop: container.scrollTop,
@@ -233,7 +239,7 @@ const MessageListInner: React.FC<MessageListProps> = ({
 
       const container = containerRef.current;
       if (container) {
-        perConversationStateRef.current.set(conversationKey, {
+        setConversationViewState(conversationKey, {
           startIndex,
           visibleCount,
           scrollTop: container.scrollTop,
@@ -244,6 +250,21 @@ const MessageListInner: React.FC<MessageListProps> = ({
     },
     [conversationKey, startIndex, visibleCount]
   );
+
+  // Ensure last view state is captured on unmount (e.g., switching to settings view).
+  useEffect(() => {
+    return () => {
+      const container = containerRef.current;
+      if (!container) return;
+      setConversationViewState(conversationKey, {
+        startIndex,
+        visibleCount,
+        scrollTop: container.scrollTop,
+        isAtBottom,
+        userScrolledAway,
+      });
+    };
+  }, [conversationKey, isAtBottom, startIndex, userScrolledAway, visibleCount]);
 
   // Auto-scroll only if user hasn't manually scrolled away
   useEffect(() => {
@@ -382,6 +403,7 @@ const MessageListInner: React.FC<MessageListProps> = ({
               blocks={streamingBlocks}
               conversationId={conversationId ?? messages[0]?.conversationId}
               isStreaming
+              isUserBrowsing={userScrolledAway}
               turns={streamingTurns}
               onAbortTool={onAbortTool}
             />

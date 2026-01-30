@@ -39,6 +39,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
 	    session,
 	    sendMessage,
 	    abortGeneration,
+	    retry: retryMessage,
 	    retryTurn,
 	    setSessionModel,
 	    undoToMessage,
@@ -50,6 +51,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
 	      session: sessionId ? state.sessions.get(sessionId) : undefined,
 	      sendMessage: state.sendMessage,
 	      abortGeneration: state.abortGeneration,
+	      retry: state.retry,
 	      retryTurn: state.retryTurn,
 	      setSessionModel: state.setSessionModel,
 	      undoToMessage: state.undoToMessage,
@@ -1134,17 +1136,15 @@ Guidelines:
         }
         break;
       case 'retry':
-        // For standard retry, we might need a message ID if payload is not enough context.
-        // But here we rely on the component triggering it to pass context?
-        // Wait, MessageToolbar triggers onAction(action).
-        // Action payload doesn't necessarily have messageId.
-        // We need to pass messageId TO the MessageToolbar or handle it in MessageItem wrapper.
-        // Let's assume for MVP 'retry' action is context-aware via payload or we need to pass messageId.
-        // Actually, the Store 'retry' takes `messageId`.
-        // We need to know WHICH message triggered the action.
-        // MessageItem knows the message. It passes `onAction`.
-        // It should probably augment the action or we pass `(action, message)`?
-        // Let's update `onAction` signature in MessageList/MessageItem to `(action, message)`.
+        if (!sessionId) return;
+        try {
+          const parsed = action.payload ? (JSON.parse(action.payload) as { messageId?: string }) : {};
+          const messageId = parsed.messageId;
+          if (!messageId) return;
+          await retryMessage(sessionId, messageId);
+        } catch (e) {
+          console.error('Failed to process retry action', e);
+        }
         break;
       case 'undo':
         if (sessionId && action.payload) {

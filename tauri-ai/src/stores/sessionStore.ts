@@ -11,6 +11,7 @@ import type { AgentSession, Message, DebugInfo, TokenUsage, PersistedSession, Pe
 import { getApiProtocol, getDefaultThinkingMode, getProviderType } from '../utils/apiUtils';
 import { hydrateMessagesFromBackend } from '../utils/hydrateMessages';
 import { markChatOpenProfile, setChatOpenProfileTarget } from '../utils/chatOpenProfile';
+import { requestConversationScrollToBottomOnce } from '../utils/conversationViewState';
 import { useConfigStore } from './configStore';
 import { useWorkspaceTabStore } from './workspaceTabStore';
 
@@ -562,44 +563,28 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (!session) return;
 
     const { messages } = session;
-    const index = messages.findIndex(m => m.id === messageId);
-    if (index === -1) return;
+    const assistantIndex = messages.findIndex((m) => m.id === messageId);
+    if (assistantIndex === -1) return;
 
-    const targetMsg = messages[index];
-    let promptToResend = '';
-    let newMessages = messages;
-
-    if (targetMsg.role === 'assistant' || targetMsg.role === 'error') {
-      // Search backwards for the user message
-      for (let i = index - 1; i >= 0; i--) {
-        if (messages[i].role === 'user') {
-          promptToResend = messages[i].content;
-          newMessages = messages.slice(0, index);
-          break;
-        }
+    // 语义对齐 Codex：重试 assistant 回复时，先回滚“该轮 user+assistant”（删除该 user 消息起的全部后续），再重新发送该 user 输入。
+    // 这样避免“重复插入相同 user 消息/后端上下文不一致”的问题。
+    let userMsg: Message | undefined;
+    for (let i = assistantIndex - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') {
+        userMsg = messages[i];
+        break;
       }
-    } else if (targetMsg.role === 'user') {
-      promptToResend = targetMsg.content;
-      newMessages = messages.slice(0, index);
     }
+    if (!userMsg) return;
 
-    if (promptToResend) {
-      // Update messages first
-      set((state) => {
-        const newSessions = new Map(state.sessions);
-        const currentSession = newSessions.get(sessionId);
-        if (currentSession) {
-          newSessions.set(sessionId, {
-            ...currentSession,
-            messages: newMessages,
-          });
-        }
-        return { sessions: newSessions };
-      });
+    const partsToResend = userMsg.contentParts?.filter((p) => p.type !== 'text') ?? [];
 
-      // Then resend
-      await get().sendMessage(sessionId, promptToResend);
-    }
+    const thinkingMode = session.thinkingMode;
+    const thinkingParam: boolean | string | undefined =
+      thinkingMode === undefined ? undefined : thinkingMode === null ? false : thinkingMode;
+
+    get().undoToMessage(sessionId, userMsg.id);
+    await get().sendMessage(sessionId, userMsg.content, thinkingParam, partsToResend);
   },
 
   /**
@@ -1442,6 +1427,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   */
   openHistoricalConversation: async (conversationId: string) => {
     markChatOpenProfile('sessionStore:openHistoricalConversation:enter', { conversationId });
+    requestConversationScrollToBottomOnce(conversationId);
     const { sessions } = get();
 
     // Check if already open

@@ -21,10 +21,19 @@
 interface ThinkingBlockProps {
   text: string;
   isStreaming?: boolean;
+  defaultExpanded?: boolean;
+  autoCollapseEnabled?: boolean;
+  autoCollapseSeq?: number;
 }
 
-const ThinkingBlock: React.FC<ThinkingBlockProps> = ({ text, isStreaming }) => {
-  const [isExpanded, setIsExpanded] = useState(Boolean(isStreaming));
+const ThinkingBlock: React.FC<ThinkingBlockProps> = ({ text, isStreaming, defaultExpanded, autoCollapseEnabled, autoCollapseSeq }) => {
+  const resolvedDefaultExpanded = defaultExpanded ?? Boolean(isStreaming);
+  const [isExpanded, setIsExpanded] = useState(Boolean(resolvedDefaultExpanded));
+
+  useEffect(() => {
+    if (!autoCollapseEnabled) return;
+    setIsExpanded(Boolean(resolvedDefaultExpanded));
+  }, [autoCollapseSeq]);
 
   if (!text) return null;
 
@@ -81,12 +90,28 @@ const UnknownBlock: React.FC<{ data: unknown }> = ({ data }) => {
   );
 };
 
-const ToolCallBlock: React.FC<{ name: string; args: string; isStreaming?: boolean }> = ({
+const ToolCallBlock: React.FC<{
+  name: string;
+  args: string;
+  isStreaming?: boolean;
+  defaultExpanded?: boolean;
+  autoCollapseEnabled?: boolean;
+  autoCollapseSeq?: number;
+}> = ({
   name,
   args,
   isStreaming,
+  defaultExpanded,
+  autoCollapseEnabled,
+  autoCollapseSeq,
 }) => {
-  const [isExpanded, setIsExpanded] = useState(Boolean(isStreaming));
+  const resolvedDefaultExpanded = defaultExpanded ?? Boolean(isStreaming);
+  const [isExpanded, setIsExpanded] = useState(Boolean(resolvedDefaultExpanded));
+
+  useEffect(() => {
+    if (!autoCollapseEnabled) return;
+    setIsExpanded(Boolean(resolvedDefaultExpanded));
+  }, [autoCollapseSeq]);
 
   // 收起状态下不做 JSON 解析/格式化，避免长对话里大量 tool block 造成卡顿
   const parsedArgs = useMemo(() => {
@@ -153,10 +178,19 @@ const ApprovalBlock: React.FC<{
   conversationId?: string;
   block: Extract<MessageBlock, { type: 'approval' }>;
   isStreaming?: boolean;
-}> = ({ conversationId, block, isStreaming }) => {
-  const [isExpanded, setIsExpanded] = useState(Boolean(isStreaming || block.status === 'pending'));
+  defaultExpanded?: boolean;
+  autoCollapseEnabled?: boolean;
+  autoCollapseSeq?: number;
+}> = ({ conversationId, block, isStreaming, defaultExpanded, autoCollapseEnabled, autoCollapseSeq }) => {
+  const resolvedDefaultExpanded = defaultExpanded ?? Boolean(isStreaming || block.status === 'pending');
+  const [isExpanded, setIsExpanded] = useState(Boolean(resolvedDefaultExpanded));
   const [isSubmitting, setIsSubmitting] = useState(false);
   const { config, saveConfig } = useConfigStore();
+
+  useEffect(() => {
+    if (!autoCollapseEnabled) return;
+    setIsExpanded(Boolean(resolvedDefaultExpanded));
+  }, [autoCollapseSeq]);
 
   // 收起状态下不做 JSON 解析/格式化（审批块里可能包含超大 apply_patch / 命令参数）
   const parsedArgs = useMemo(() => {
@@ -415,6 +449,9 @@ const ToolRunBlock: React.FC<{
   onAbortTool?: (callId: string) => void;
   ansiRenderMode?: AnsiRenderMode;
   ansiColorMode?: AnsiColorMode;
+  defaultExpanded?: boolean;
+  autoCollapseEnabled?: boolean;
+  autoCollapseSeq?: number;
 }> = ({
   name,
   args,
@@ -424,9 +461,18 @@ const ToolRunBlock: React.FC<{
   onAbortTool,
   ansiRenderMode,
   ansiColorMode,
+  defaultExpanded,
+  autoCollapseEnabled,
+  autoCollapseSeq,
 }) => {
-  const [isExpanded, setIsExpanded] = useState(Boolean(isStreaming));
+  const resolvedDefaultExpanded = defaultExpanded ?? Boolean(isStreaming);
+  const [isExpanded, setIsExpanded] = useState(Boolean(resolvedDefaultExpanded));
   const canAbort = Boolean(onAbortTool && callId && isStreaming);
+
+  useEffect(() => {
+    if (!autoCollapseEnabled) return;
+    setIsExpanded(Boolean(resolvedDefaultExpanded));
+  }, [autoCollapseSeq]);
 
   // 收起状态下不做 JSON 解析/格式化（尤其是 apply_patch / 大文件内容会卡）
   const parsedArgs = useMemo(() => {
@@ -528,10 +574,19 @@ const ToolResultBlock: React.FC<{
   onAbortTool?: (callId: string) => void;
   ansiRenderMode?: AnsiRenderMode;
   ansiColorMode?: AnsiColorMode;
-}> = ({ text, callId, isStreaming, onAbortTool, ansiRenderMode, ansiColorMode }) => {
+  defaultExpanded?: boolean;
+  autoCollapseEnabled?: boolean;
+  autoCollapseSeq?: number;
+}> = ({ text, callId, isStreaming, onAbortTool, ansiRenderMode, ansiColorMode, defaultExpanded, autoCollapseEnabled, autoCollapseSeq }) => {
   if (!text) return null;
   const canAbort = Boolean(onAbortTool && callId && isStreaming);
-  const [isExpanded, setIsExpanded] = useState(Boolean(isStreaming));
+  const resolvedDefaultExpanded = defaultExpanded ?? Boolean(isStreaming);
+  const [isExpanded, setIsExpanded] = useState(Boolean(resolvedDefaultExpanded));
+
+  useEffect(() => {
+    if (!autoCollapseEnabled) return;
+    setIsExpanded(Boolean(resolvedDefaultExpanded));
+  }, [autoCollapseSeq]);
 
   return (
     <div className="mb-2 rounded-lg border border-green-200 bg-white px-3 py-2 text-sm text-gray-800 dark:border-green-800 dark:bg-gray-900/40 dark:text-gray-100">
@@ -588,12 +643,28 @@ const ErrorBlock: React.FC<{
   );
 };
 
-const WebSearchBlock: React.FC<{ status: string; action?: unknown; isStreaming?: boolean }> = ({
+const WebSearchBlock: React.FC<{
+  status: string;
+  action?: unknown;
+  isStreaming?: boolean;
+  defaultExpanded?: boolean;
+  autoCollapseEnabled?: boolean;
+  autoCollapseSeq?: number;
+}> = ({
   status,
   action,
   isStreaming,
+  defaultExpanded,
+  autoCollapseEnabled,
+  autoCollapseSeq,
 }) => {
-  const [isExpanded, setIsExpanded] = useState(Boolean(isStreaming));
+  const resolvedDefaultExpanded = defaultExpanded ?? Boolean(isStreaming);
+  const [isExpanded, setIsExpanded] = useState(Boolean(resolvedDefaultExpanded));
+
+  useEffect(() => {
+    if (!autoCollapseEnabled) return;
+    setIsExpanded(Boolean(resolvedDefaultExpanded));
+  }, [autoCollapseSeq]);
 
   const info = useMemo(() => {
     if (!isExpanded) return null;
@@ -920,11 +991,12 @@ export const MessageBlocks: React.FC<{
   blocks: MessageBlock[];
   conversationId?: string;
   isStreaming?: boolean;
+  isUserBrowsing?: boolean;
   turns?: MessageTurn[];
   onAbortTool?: (callId: string) => void;
   assistantMessageId?: string;
   onRetryTurn?: (assistantMessageId: string, turnId: string) => void;
-}> = ({ blocks, conversationId, isStreaming, turns, onAbortTool, assistantMessageId, onRetryTurn }) => {
+}> = ({ blocks, conversationId, isStreaming, isUserBrowsing, turns, onAbortTool, assistantMessageId, onRetryTurn }) => {
   if (!blocks || blocks.length === 0) return null;
 
   const { config } = useConfigStore();
@@ -951,8 +1023,6 @@ export const MessageBlocks: React.FC<{
   }, [blocks]);
 
   const [collapsedTurns, setCollapsedTurns] = useState<Set<string>>(() => computeDefaultCollapsedTurns());
-  const seenTurnIdsRef = useRef<Set<string>>(new Set());
-  const initializedRef = useRef(false);
 
   const turnMetaById = useMemo(() => {
     const map = new Map<string, MessageTurn>();
@@ -978,32 +1048,26 @@ export const MessageBlocks: React.FC<{
     return last;
   }, [blocks]);
 
-  // 当流式/重试导致出现“新 turn”时，自动收起旧 turn，只保留最新一轮展开。
+  const latestBlockId = useMemo(() => (blocks.length > 0 ? blocks[blocks.length - 1].id : null), [blocks]);
+  const autoCollapseEnabled = Boolean(isStreaming) && !Boolean(isUserBrowsing);
+  const lastLatestBlockIdRef = useRef<string | null>(null);
+  const [autoCollapseSeq, setAutoCollapseSeq] = useState(0);
+
   useEffect(() => {
-    if (!showTurnHeader) return;
+    if (!latestBlockId) return;
 
-    const current = new Set<string>(distinctTurnIds);
-    const prev = seenTurnIdsRef.current;
-
-    if (!initializedRef.current) {
-      seenTurnIdsRef.current = current;
-      initializedRef.current = true;
+    // 仅在流式且用户在“跟随输出”的状态下做自动收起；避免浏览历史时布局突变。
+    if (!autoCollapseEnabled) {
+      lastLatestBlockIdRef.current = latestBlockId;
       return;
     }
 
-    let hasNew = false;
-    for (const id of current) {
-      if (!prev.has(id)) {
-        hasNew = true;
-        break;
-      }
+    const prev = lastLatestBlockIdRef.current;
+    lastLatestBlockIdRef.current = latestBlockId;
+    if (prev && prev !== latestBlockId) {
+      setAutoCollapseSeq((n) => n + 1);
     }
-
-    seenTurnIdsRef.current = current;
-    if (!hasNew) return;
-
-    setCollapsedTurns(computeDefaultCollapsedTurns());
-  }, [computeDefaultCollapsedTurns, distinctTurnIds, showTurnHeader]);
+  }, [autoCollapseEnabled, latestBlockId]);
 
   const groups = useMemo(() => {
     const map = new Map<
@@ -1124,8 +1188,18 @@ export const MessageBlocks: React.FC<{
   }, [blocks, turnMetaById]);
 
   const renderBlock = (block: MessageBlock, opts?: { deferHeavy?: boolean }) => {
+    const isLatest = Boolean(latestBlockId && block.id === latestBlockId);
+
     if (block.type === 'thinking') {
-      return <ThinkingBlock text={block.text} isStreaming={isStreaming} />;
+      return (
+        <ThinkingBlock
+          text={block.text}
+          isStreaming={isStreaming}
+          defaultExpanded={autoCollapseEnabled ? isLatest : Boolean(isStreaming)}
+          autoCollapseEnabled={autoCollapseEnabled}
+          autoCollapseSeq={autoCollapseSeq}
+        />
+      );
     }
 
     if (block.type === 'status') {
@@ -1150,12 +1224,30 @@ export const MessageBlocks: React.FC<{
 
     if (block.type === 'tool_call') {
       return (
-        <ToolCallBlock name={block.name} args={block.arguments} isStreaming={isStreaming} />
+        <ToolCallBlock
+          name={block.name}
+          args={block.arguments}
+          isStreaming={isStreaming}
+          defaultExpanded={autoCollapseEnabled ? isLatest : Boolean(isStreaming)}
+          autoCollapseEnabled={autoCollapseEnabled}
+          autoCollapseSeq={autoCollapseSeq}
+        />
       );
     }
 
     if (block.type === 'approval') {
-      return <ApprovalBlock conversationId={conversationId} block={block} isStreaming={isStreaming} />;
+      const isPending = block.status === 'pending';
+      const resolvedDefaultExpanded = isPending || (autoCollapseEnabled ? isLatest : Boolean(isStreaming));
+      return (
+        <ApprovalBlock
+          conversationId={conversationId}
+          block={block}
+          isStreaming={isStreaming}
+          defaultExpanded={resolvedDefaultExpanded}
+          autoCollapseEnabled={autoCollapseEnabled}
+          autoCollapseSeq={autoCollapseSeq}
+        />
+      );
     }
 
     if (block.type === 'tool_result') {
@@ -1167,6 +1259,9 @@ export const MessageBlocks: React.FC<{
           onAbortTool={onAbortTool}
           ansiRenderMode={ansiRenderMode}
           ansiColorMode={ansiColorMode}
+          defaultExpanded={autoCollapseEnabled ? isLatest : Boolean(isStreaming)}
+          autoCollapseEnabled={autoCollapseEnabled}
+          autoCollapseSeq={autoCollapseSeq}
         />
       );
     }
@@ -1182,7 +1277,16 @@ export const MessageBlocks: React.FC<{
     }
 
     if (block.type === 'web_search') {
-      return <WebSearchBlock status={block.status} action={block.action} isStreaming={isStreaming} />;
+      return (
+        <WebSearchBlock
+          status={block.status}
+          action={block.action}
+          isStreaming={isStreaming}
+          defaultExpanded={autoCollapseEnabled ? isLatest : Boolean(isStreaming)}
+          autoCollapseEnabled={autoCollapseEnabled}
+          autoCollapseSeq={autoCollapseSeq}
+        />
+      );
     }
 
     return <UnknownBlock data={block.data} />;
@@ -1272,6 +1376,9 @@ export const MessageBlocks: React.FC<{
                 if (block.type === 'tool_call') {
                   const next = g.blocks[blockIdx + 1];
                   if (next && next.type === 'tool_result' && next.callId === block.callId) {
+                    const isLatestToolRun = Boolean(
+                      latestBlockId && (block.id === latestBlockId || next.id === latestBlockId)
+                    );
                     return (
                       <ToolRunBlock
                         key={`${block.id}:${next.id}`}
@@ -1283,6 +1390,9 @@ export const MessageBlocks: React.FC<{
                         onAbortTool={onAbortTool}
                         ansiRenderMode={ansiRenderMode}
                         ansiColorMode={ansiColorMode}
+                        defaultExpanded={autoCollapseEnabled ? isLatestToolRun : Boolean(isStreaming)}
+                        autoCollapseEnabled={autoCollapseEnabled}
+                        autoCollapseSeq={autoCollapseSeq}
                       />
                     );
                   }

@@ -5,7 +5,7 @@ export function buildMessageActions(message: Message): Action[] {
 
     // 1. Inherit backend injected actions
     if (message.actions) {
-        actions.push(...message.actions);
+        actions.push(...message.actions.map((a) => ({ ...a })));
     }
 
     // 2. Add Frontend Default Actions based on Role
@@ -21,12 +21,17 @@ export function buildMessageActions(message: Message): Action[] {
             });
         }
 
-        if (!actions.find(a => a.action_type === 'retry')) {
+        const existingRetry = actions.find(a => a.action_type === 'retry');
+        const retryPayload = JSON.stringify({ messageId: message.id });
+        if (existingRetry) {
+            if (!existingRetry.payload) existingRetry.payload = retryPayload;
+        } else {
             actions.push({
                 id: 'retry_default',
                 label: '重试',
                 icon: 'RotateCcw',
-                action_type: 'retry'
+                action_type: 'retry',
+                payload: retryPayload,
             });
         }
     } else if (message.role === 'user') {
