@@ -1107,6 +1107,7 @@ impl AiClient for OpenAiClient {
         config: &ModelConfig,
         tools: Option<Vec<ToolDefinition>>,
         token_sender: mpsc::Sender<StreamEvent>,
+        _options: super::StreamOptions,
     ) -> Result<(), AiError> {
         self.base
             .chat_stream_impl(messages, config, tools, token_sender)
@@ -1155,6 +1156,7 @@ impl AiClient for OpenAiCompatibleClient {
         config: &ModelConfig,
         tools: Option<Vec<ToolDefinition>>,
         token_sender: mpsc::Sender<StreamEvent>,
+        _options: super::StreamOptions,
     ) -> Result<(), AiError> {
         self.base
             .chat_stream_impl(messages, config, tools, token_sender)

@@ -23,7 +23,11 @@ async fn collect_streamed_chat(
     let handle = tokio::spawn({
         let client = client.clone();
         let config = config.clone();
-        async move { client.chat_stream(messages, &config, None, tx).await }
+        async move {
+            client
+                .chat_stream(messages, &config, None, tx, crate::ai_client::StreamOptions::default())
+                .await
+        }
     });
 
     let mut content_buf = String::new();
@@ -54,6 +58,7 @@ async fn collect_streamed_chat(
                 break;
             }
             StreamEvent::Error(err) => return Err(err),
+            StreamEvent::TurnState(_) => {}
             // Title generation should not involve tools.
             StreamEvent::ToolCalls(_) | StreamEvent::WebSearch { .. } => {
                 return Err("Title generation received unexpected tool output".to_string());
@@ -101,11 +106,63 @@ pub async fn get_messages(
     conversation_id: String,
     limit: Option<usize>,
     before_id: Option<String>,
+    include_debug_info: Option<bool>,
     db: tauri::State<'_, Arc<Mutex<Database>>>,
 ) -> Result<Vec<Message>, String> {
     let db = db.lock().await;
-    db.get_messages(&conversation_id, limit.unwrap_or(50), before_id.as_deref())
-        .map_err(|e| e.to_string())
+    let mut messages = db
+        .get_messages(&conversation_id, limit.unwrap_or(50), before_id.as_deref())
+        .map_err(|e| e.to_string())?;
+
+    // Default: do NOT inline persisted DebugInfo in message list responses.
+    // It can be large and slows down session initialization; fetch it lazily on demand.
+    let include_debug_info = include_debug_info.unwrap_or(false);
+    if !include_debug_info {
+        for msg in &mut messages {
+            if let Some(meta) = msg.meta.as_mut() {
+                if let Some(turns) = meta.turns.as_mut() {
+                    for t in turns {
+                        if t.debug_info.is_some() {
+                            t.has_debug_info = Some(true);
+                            t.debug_info = None;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(messages)
+}
+
+/// Fetch persisted debug info for a specific turn (lazy-loading).
+///
+/// NOTE:
+/// - `get_messages` strips debug info by default for performance.
+/// - This command allows the frontend to load it on demand when the user clicks "Debug".
+#[tauri::command]
+pub async fn get_turn_debug_info(
+    conversation_id: String,
+    message_id: String,
+    turn_id: String,
+    db: tauri::State<'_, Arc<Mutex<Database>>>,
+) -> Result<Option<crate::ai_client::DebugInfoData>, String> {
+    let db = db.lock().await;
+    let msg = db
+        .get_message(&conversation_id, &message_id)
+        .map_err(|e| e.to_string())?;
+
+    let Some(meta) = msg.meta else {
+        return Ok(None);
+    };
+    let Some(turns) = meta.turns else {
+        return Ok(None);
+    };
+
+    Ok(turns
+        .into_iter()
+        .find(|t| t.turn_id == turn_id)
+        .and_then(|t| t.debug_info))
 }
 
 #[tauri::command]
@@ -189,28 +246,29 @@ pub async fn generate_title(
         .and_then(|a| config.resolve_agent(&a.name))
         .ok_or("No agent configured")?;
 
-    let model_config = ModelConfig {
-        id: format!("{}/{}", provider.name, model.name),
-        name: model.name.clone(),
-        provider: provider.provider_type.to_client_str().to_string(),
-        api_base: Some(provider.api_base.clone()),
-        api_key: provider.api_key.clone(),
-        model: model.name.clone(),
-        parameters: ModelParameters {
-            temperature: Some(model.temperature),
-            max_tokens: model.max_tokens,
-            top_p: model.top_p,
-            frequency_penalty: None,
-            presence_penalty: None,
-            system_prompt: None,
-        },
-        thinking_level: None, // Don't use thinking for title generation
-        thinking_budget_tokens: None,
-        vision_enabled: false, // Don't need vision for title generation
-        web_search_enabled: false, // Don't enable web search for title generation
+	    let model_config = ModelConfig {
+	        id: format!("{}/{}", provider.name, model.name),
+	        name: model.name.clone(),
+	        provider: provider.provider_type.to_client_str().to_string(),
+	        api_base: Some(provider.api_base.clone()),
+	        api_key: provider.api_key.clone(),
+	        model: model.name.clone(),
+	        parameters: ModelParameters {
+	            temperature: Some(model.temperature),
+	            max_tokens: model.max_tokens,
+	            top_p: model.top_p,
+	            frequency_penalty: None,
+	            presence_penalty: None,
+	            system_prompt: None,
+	        },
+	        thinking_level: None, // Don't use thinking for title generation
+	        thinking_budget_tokens: None,
+	        vision_enabled: false, // Don't need vision for title generation
+	        web_search_enabled: false, // Don't enable web search for title generation
 	        max_images: None, // Not needed for title generation
 	        use_reasoning_effort: None, // Not needed for title generation
 	        retry_attempts: None,
+	        resume_partial_output: false,
 	        debug_sse: false,
 	        reinject_reasoning_content: false,
 	    };
@@ -285,6 +343,7 @@ mod tests {
             _config: &ModelConfig,
             _tools: Option<Vec<crate::ai_client::ToolDefinition>>,
             token_sender: mpsc::Sender<crate::ai_client::StreamEvent>,
+            _options: crate::ai_client::StreamOptions,
         ) -> Result<(), crate::ai_client::AiError> {
             for ev in self.events.clone() {
                 token_sender
@@ -319,6 +378,7 @@ mod tests {
 	            max_images: None,
 	            use_reasoning_effort: None,
 	            retry_attempts: None,
+	            resume_partial_output: false,
 	            debug_sse: false,
 	            reinject_reasoning_content: false,
 	        }

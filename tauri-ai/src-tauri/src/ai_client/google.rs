@@ -628,6 +628,7 @@ impl AiClient for GoogleClient {
         config: &ModelConfig,
         tools: Option<Vec<ToolDefinition>>,
         token_sender: mpsc::Sender<StreamEvent>,
+        _options: super::StreamOptions,
     ) -> Result<(), AiError> {
         let api_base = config
             .api_base

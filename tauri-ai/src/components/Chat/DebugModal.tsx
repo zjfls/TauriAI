@@ -7,6 +7,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { X, ChevronDown, ChevronRight, Copy, Check } from 'lucide-react';
 import type { DebugInfo, MessageBlock, MessageTurn, AnsiColorMode, AnsiRenderMode } from '../../types';
 import { useConfigStore } from '../../stores/configStore';
+import { getTurnDebugInfo } from '../../services/conversationService';
 import { AnsiText } from './AnsiText';
 
 interface DebugModalProps {
@@ -17,6 +18,8 @@ interface DebugModalProps {
   blocks?: MessageBlock[] | null;
   initialTurnId?: string | null;
   messageRole: 'user' | 'assistant' | 'error';
+  conversationId?: string;
+  messageId?: string;
 }
 
 interface CollapsibleSectionProps {
@@ -331,6 +334,8 @@ export const DebugModal: React.FC<DebugModalProps> = ({
   blocks,
   initialTurnId,
   messageRole,
+  conversationId,
+  messageId,
 }) => {
   const { config } = useConfigStore();
   const ansiRenderMode = config?.general?.ansiRenderMode;
@@ -340,6 +345,12 @@ export const DebugModal: React.FC<DebugModalProps> = ({
     () => (turns ?? []).slice().sort((a, b) => a.turnIndex - b.turnIndex),
     [turns]
   );
+  const [loadedTurnDebugInfo, setLoadedTurnDebugInfo] = useState<Record<string, DebugInfo | null>>(
+    {}
+  );
+  const [loadingTurnId, setLoadingTurnId] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadErrorTurnId, setLoadErrorTurnId] = useState<string | null>(null);
   const [activeTurnId, setActiveTurnId] = useState<string | null>(
     sortedTurns.length > 0
       ? (initialTurnId && sortedTurns.some((t) => t.turnId === initialTurnId)
@@ -359,7 +370,51 @@ export const DebugModal: React.FC<DebugModalProps> = ({
   const activeTurn = activeTurnId
     ? sortedTurns.find((t) => t.turnId === activeTurnId) ?? null
     : null;
-  const effectiveDebugInfo = activeTurn?.debugInfo ?? debugInfo;
+  const loadedForActive = activeTurnId ? loadedTurnDebugInfo[activeTurnId] : undefined;
+  const effectiveDebugInfo =
+    loadedForActive !== undefined ? loadedForActive : activeTurn?.debugInfo ?? debugInfo;
+  const isLoadingDebug = Boolean(activeTurnId && loadingTurnId === activeTurnId);
+
+  // Lazy-load per-turn debug info when needed (history initialization strips it by default).
+  useEffect(() => {
+    if (!isOpen) return;
+    if (!conversationId || !messageId) return;
+    if (!activeTurnId) return;
+
+    const turn = sortedTurns.find((t) => t.turnId === activeTurnId);
+    if (!turn) return;
+    if (!turn.hasDebugInfo) return;
+
+    // Already have it (inline or previously loaded)
+    if (turn.debugInfo) return;
+    if (Object.prototype.hasOwnProperty.call(loadedTurnDebugInfo, activeTurnId)) return;
+
+    let cancelled = false;
+    setLoadingTurnId(activeTurnId);
+    setLoadError(null);
+    setLoadErrorTurnId(null);
+
+    getTurnDebugInfo(conversationId, messageId, activeTurnId)
+      .then((di) => {
+        if (cancelled) return;
+        setLoadedTurnDebugInfo((prev) => ({ ...prev, [activeTurnId]: di }));
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        const msg = err instanceof Error ? err.message : String(err);
+        setLoadError(msg);
+        setLoadErrorTurnId(activeTurnId);
+        setLoadedTurnDebugInfo((prev) => ({ ...prev, [activeTurnId]: null }));
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setLoadingTurnId((prev) => (prev === activeTurnId ? null : prev));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, conversationId, messageId, activeTurnId, sortedTurns, loadedTurnDebugInfo]);
   const effectiveBlocks = useMemo(() => {
     const allBlocks = blocks ?? [];
     if (allBlocks.length === 0) return [];
@@ -514,6 +569,17 @@ export const DebugModal: React.FC<DebugModalProps> = ({
             </div>
           )}
 
+          {isLoadingDebug && (
+            <div className="mb-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-300">
+              正在加载调试信息…
+            </div>
+          )}
+          {!isLoadingDebug && loadError && loadErrorTurnId === activeTurnId && (
+            <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300">
+              加载调试信息失败：{loadError}
+            </div>
+          )}
+
           <div className="overflow-auto max-h-[calc(80vh-80px-72px)] space-y-4 pr-1">
           {thinkingText && (
             <CollapsibleSection title="思考过程" defaultExpanded={false}>
@@ -617,7 +683,13 @@ export const DebugModal: React.FC<DebugModalProps> = ({
           {!effectiveDebugInfo ? (
             <div className="text-center py-8 text-gray-500 dark:text-gray-400">
               <p>暂无调试信息</p>
-              <p className="text-sm mt-2">请确保已开启调试模式并重新发送消息</p>
+              <p className="text-sm mt-2">
+                {isLoadingDebug
+                  ? '请稍候…'
+                  : activeTurn?.hasDebugInfo
+                    ? '该轮已标记存在调试信息，但当前未能加载。'
+                    : '请确保在发送消息前开启调试模式。'}
+              </p>
             </div>
           ) : (
             <>

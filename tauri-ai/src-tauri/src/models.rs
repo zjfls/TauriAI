@@ -276,6 +276,12 @@ pub struct MessageTurn {
     pub turn_index: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<crate::runtime::types::TurnStatus>,
+    /// Whether this turn has persisted debug info available.
+    ///
+    /// - Used for lazy-loading debug info in the frontend (do not inline by default).
+    /// - This field is optional to keep stored history compact; it's derived from `debug_info`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub has_debug_info: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub debug_info: Option<crate::ai_client::DebugInfoData>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -563,6 +569,10 @@ pub struct Model {
     /// - When `general.manualTurnRetry=true`: automatic retries are disabled regardless of this value.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_attempts: Option<u32>,
+    /// Whether to allow reconnecting and resuming when a stream breaks after partial output.
+    /// Default false to avoid duplicated output on providers that don't support resume.
+    #[serde(default)]
+    pub resume_partial_output: bool,
     /// Maximum number of images allowed (default: 10, only for vision models)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_images: Option<u32>,
@@ -593,6 +603,7 @@ impl Default for Model {
             context_length: None,
             capabilities: ModelCapabilities::default(),
             retry_attempts: None,
+            resume_partial_output: false,
             max_images: None,
             thinking_budget_tokens: None,
             use_reasoning_effort: None,
@@ -898,6 +909,10 @@ pub struct ModelConfig {
     /// Turn-level automatic retry attempts (default: 3 when unset).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_attempts: Option<u32>,
+    /// Whether to allow reconnecting and resuming when a stream breaks after partial output.
+    /// Default false to avoid duplicated output on providers that don't support resume.
+    #[serde(default)]
+    pub resume_partial_output: bool,
     /// Debug: log raw SSE lines from providers (streaming only)
     #[serde(default)]
     pub debug_sse: bool,
@@ -1578,6 +1593,7 @@ impl AppConfig {
 	                context_length: None,
 	                capabilities: ModelCapabilities::default(),
 	                retry_attempts: None,
+	                resume_partial_output: model_config.resume_partial_output,
 	                max_images: None,
 	                thinking_budget_tokens: None,
 	                use_reasoning_effort: None,

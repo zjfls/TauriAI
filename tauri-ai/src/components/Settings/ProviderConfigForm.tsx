@@ -764,7 +764,25 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
 	                                  <span className="text-xs text-gray-400">默认: 3</span>
 	                                </div>
 
-	                                {model.capabilities?.vision && (
+                                <div className="col-span-3">
+                                  <label className="flex items-center gap-2 text-xs">
+                                    <input
+                                      type="checkbox"
+                                      checked={model.resumePartialOutput ?? false}
+                                      onChange={(e) =>
+                                        onUpdateModel(index, { ...model, resumePartialOutput: e.target.checked })
+                                      }
+                                      disabled={!isEditing}
+                                      className="rounded"
+                                    />
+                                    <span className="text-gray-700 dark:text-gray-300">断流后继续（实验）</span>
+                                  </label>
+                                  <p className="mt-1 text-[11px] text-gray-500">
+                                    默认关闭：仅当服务端支持并提供 TurnState 时才能重连续传；开启后允许在已输出部分内容后自动重连继续。
+                                  </p>
+                                </div>
+
+                                {model.capabilities?.vision && (
 	                                  <div>
 	                                    <label className="block text-xs text-gray-500">最大图片数</label>
 	                                    <input

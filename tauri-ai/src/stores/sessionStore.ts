@@ -10,6 +10,7 @@ import { listen } from '@tauri-apps/api/event';
 import type { AgentSession, Message, DebugInfo, TokenUsage, PersistedSession, PersistedSessionState, ContentPart, ThinkingMode, ApiProtocolType, RunEventPayload, MessageBlock, ProviderType, MessageTurn, Workstudio, RunMode } from '../types';
 import { getApiProtocol, getDefaultThinkingMode, getProviderType } from '../utils/apiUtils';
 import { hydrateMessagesFromBackend } from '../utils/hydrateMessages';
+import { markChatOpenProfile, setChatOpenProfileTarget } from '../utils/chatOpenProfile';
 import { useConfigStore } from './configStore';
 import { useWorkspaceTabStore } from './workspaceTabStore';
 
@@ -1436,16 +1437,26 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   /**
-   * Open a historical conversation in a new session
-   * Requirements: 8.1, 8.2, 8.3, 8.4
-   */
+  * Open a historical conversation in a new session
+  * Requirements: 8.1, 8.2, 8.3, 8.4
+  */
   openHistoricalConversation: async (conversationId: string) => {
+    markChatOpenProfile('sessionStore:openHistoricalConversation:enter', { conversationId });
     const { sessions } = get();
 
     // Check if already open
     for (const session of sessions.values()) {
       if (session.conversationId === conversationId) {
+        setChatOpenProfileTarget({ conversationId, sessionId: session.id });
+        markChatOpenProfile('sessionStore:openHistoricalConversation:already_open', {
+          conversationId,
+          meta: { sessionId: session.id },
+        });
         get().switchSession(session.id);
+        markChatOpenProfile('sessionStore:switchSession(done)', {
+          conversationId,
+          meta: { sessionId: session.id },
+        });
         return session.id;
       }
     }
@@ -1484,28 +1495,45 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     let resolvedWorkstudioId: string | null = conversation?.workstudioId ?? null;
     if (workspaceEnabled) {
       try {
+        markChatOpenProfile('sessionStore:ensure_workstudio_for_conversation:start', {
+          conversationId,
+        });
         const ws = await invoke<Workstudio>('ensure_workstudio_for_conversation', { conversationId });
         resolvedWorkstudioId = ws.id;
+        markChatOpenProfile('sessionStore:ensure_workstudio_for_conversation:done', {
+          conversationId,
+          meta: { workstudioId: ws.id },
+        });
       } catch (error) {
         console.warn('ensure_workstudio_for_conversation failed:', error);
+        markChatOpenProfile('sessionStore:ensure_workstudio_for_conversation:failed', {
+          conversationId,
+        });
       }
     }
 
     // Load messages
     let messages: Message[] = [];
     try {
+      markChatOpenProfile('sessionStore:get_messages:start', { conversationId, meta: { limit: 100 } });
       messages = hydrateMessagesFromBackend(
         await invoke<Message[]>('get_messages', {
           conversationId,
           limit: 100,
         })
       );
+      markChatOpenProfile('sessionStore:get_messages:done', {
+        conversationId,
+        meta: { count: messages.length },
+      });
     } catch (error) {
       console.error('Failed to load messages:', error);
+      markChatOpenProfile('sessionStore:get_messages:failed', { conversationId });
     }
 
     const now = new Date().toISOString();
     const sessionId = crypto.randomUUID();
+    setChatOpenProfileTarget({ conversationId, sessionId });
 
     // Sync metadata to DB if missing in conversation (Lazy migration)
     if (!conversation?.agentName || !conversation?.modelRef) {
@@ -1535,6 +1563,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       lastActiveAt: now,
     };
 
+    markChatOpenProfile('sessionStore:setState(start)', { conversationId, meta: { sessionId } });
     set((state) => {
       const newSessions = new Map(state.sessions);
       newSessions.set(sessionId, session);
@@ -1543,11 +1572,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         activeSessionId: sessionId,
       };
     });
+    markChatOpenProfile('sessionStore:setState(done)', { conversationId, meta: { sessionId } });
 
     useWorkspaceTabStore.getState().upsertChatTab(sessionId);
+    markChatOpenProfile('sessionStore:upsertChatTab', { conversationId, meta: { sessionId } });
 
     // Save state
     get().saveSessionState();
+    markChatOpenProfile('sessionStore:saveSessionState', { conversationId, meta: { sessionId } });
 
     return sessionId;
   },
@@ -1667,13 +1699,16 @@ const flushPendingStreamChunks = () => {
       ): MessageBlock[] => {
         const idx = blocks.findIndex((b) => b.id === blockId);
 
-        const createBlock = (): MessageBlock => {
-          if (blockType === 'thinking') {
-            return { id: blockId, type: 'thinking', turnId, turnIndex, text: delta };
-          }
-          if (blockType === 'text') {
-            return { id: blockId, type: 'text', format: format || 'markdown', turnId, turnIndex, text: delta };
-          }
+          const createBlock = (): MessageBlock => {
+            if (blockType === 'thinking') {
+              return { id: blockId, type: 'thinking', turnId, turnIndex, text: delta };
+            }
+            if (blockType === 'status') {
+              return { id: blockId, type: 'status', turnId, turnIndex, text: delta };
+            }
+            if (blockType === 'text') {
+              return { id: blockId, type: 'text', format: format || 'markdown', turnId, turnIndex, text: delta };
+            }
           if (blockType === 'tool_result') {
             return {
               id: blockId,
@@ -1740,13 +1775,16 @@ const flushPendingStreamChunks = () => {
         }
 
         const current = blocks[idx];
-        const next: MessageBlock = (() => {
-          if (current.type === 'thinking' && blockType === 'thinking') {
-            return { ...current, turnIndex: current.turnIndex ?? turnIndex, text: current.text + delta };
-          }
-          if (current.type === 'text' && blockType === 'text') {
-            return { ...current, turnIndex: current.turnIndex ?? turnIndex, text: current.text + delta, format: current.format || format || 'markdown' };
-          }
+          const next: MessageBlock = (() => {
+            if (current.type === 'thinking' && blockType === 'thinking') {
+              return { ...current, turnIndex: current.turnIndex ?? turnIndex, text: current.text + delta };
+            }
+            if (current.type === 'status' && blockType === 'status') {
+              return { ...current, turnIndex: current.turnIndex ?? turnIndex, text: current.text + delta };
+            }
+            if (current.type === 'text' && blockType === 'text') {
+              return { ...current, turnIndex: current.turnIndex ?? turnIndex, text: current.text + delta, format: current.format || format || 'markdown' };
+            }
           if (current.type === 'tool_result' && blockType === 'tool_result') {
             return { ...current, turnIndex: current.turnIndex ?? turnIndex, text: current.text + delta };
           }
@@ -1767,7 +1805,7 @@ const flushPendingStreamChunks = () => {
           }
           if (current.type === 'unknown') {
             // If we now recognize the blockType, upgrade it to a typed block; otherwise append text.
-            if (blockType === 'text' || blockType === 'thinking' || blockType === 'tool_call' || blockType === 'tool_result' || blockType === 'web_search' || blockType === 'error' || blockType === 'approval') {
+            if (blockType === 'text' || blockType === 'thinking' || blockType === 'status' || blockType === 'tool_call' || blockType === 'tool_result' || blockType === 'web_search' || blockType === 'error' || blockType === 'approval') {
               return createBlock();
             }
 

@@ -197,7 +197,9 @@ export const MessageItem: React.FC<MessageItemProps> = ({
   const { config } = useConfigStore();
   const debugMode = config?.general?.debugMode ?? false;
   const showUsage = config?.general?.showUsage ?? true;
-  const hasDebugInfo = Boolean(message.debugInfo) || Boolean(message.turns?.some((t) => t.debugInfo));
+  const hasDebugInfo =
+    Boolean(message.debugInfo) ||
+    Boolean(message.turns?.some((t) => t.debugInfo || t.hasDebugInfo));
 
   const isUser = message.role === 'user';
   const isAssistant = message.role === 'assistant';
@@ -258,14 +260,18 @@ export const MessageItem: React.FC<MessageItemProps> = ({
         </div>
 
         {/* Debug Modal */}
-        <DebugModal
-          isOpen={showDebugModal}
-          onClose={() => setShowDebugModal(false)}
-          debugInfo={message.debugInfo || null}
-          turns={message.turns || null}
-          blocks={message.blocks || null}
-          messageRole="error"
-        />
+        {showDebugModal && (
+          <DebugModal
+            isOpen
+            onClose={() => setShowDebugModal(false)}
+            debugInfo={message.debugInfo || null}
+            turns={message.turns || null}
+            blocks={message.blocks || null}
+            messageRole="error"
+            conversationId={message.conversationId}
+            messageId={message.id}
+          />
+        )}
       </div>
     );
   }
@@ -387,14 +393,18 @@ export const MessageItem: React.FC<MessageItemProps> = ({
       </div>
 
       {/* Debug Modal */}
-      <DebugModal
-        isOpen={showDebugModal}
-        onClose={() => setShowDebugModal(false)}
-        debugInfo={message.debugInfo || null}
-        turns={message.turns || null}
-        blocks={isAssistant ? assistantBlocks : message.blocks || null}
-        messageRole={isUser ? 'user' : 'assistant'}
-      />
+      {showDebugModal && (
+        <DebugModal
+          isOpen
+          onClose={() => setShowDebugModal(false)}
+          debugInfo={message.debugInfo || null}
+          turns={message.turns || null}
+          blocks={isAssistant ? assistantBlocks : message.blocks || null}
+          messageRole={isUser ? 'user' : 'assistant'}
+          conversationId={message.conversationId}
+          messageId={message.id}
+        />
+      )}
     </div>
   );
 };

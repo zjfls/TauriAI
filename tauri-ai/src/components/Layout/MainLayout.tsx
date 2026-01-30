@@ -10,6 +10,7 @@ import { useUIStore } from '../../stores/uiStore';
 import { useConfigStore } from '../../stores/configStore';
 import { useSessionStore } from '../../stores/sessionStore';
 import { openViewWindow } from '../../utils/viewWindow';
+import { markChatOpenProfile, startChatOpenProfile } from '../../utils/chatOpenProfile';
 
 interface MainLayoutProps {
   children: React.ReactNode;
@@ -32,8 +33,20 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
 
   // Handle session tab click - switch to session
   const handleTabClick = (sessionId: string) => {
+    const target = sessions.find((s) => s.id === sessionId);
+    const profileId = startChatOpenProfile({
+      source: 'workspace_tabs:switch_session',
+      sessionId,
+      conversationId: target?.conversationId ?? undefined,
+      meta: {
+        title: target?.title,
+        messageCount: target?.messages?.length ?? 0,
+      },
+    });
+    markChatOpenProfile('workspace_tabs:switchSession', { profileId, sessionId });
     switchSession(sessionId);
     setActiveView('chat');
+    markChatOpenProfile('workspace_tabs:setActiveView(chat)', { profileId, sessionId });
   };
 
   // Handle session tab close

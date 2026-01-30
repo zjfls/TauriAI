@@ -4,7 +4,7 @@
  * Requirements: 2.3, 3.5
  */
 
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Message, MessageBlock, Action, MessageTurn } from '../../types';
 import { MessageItem } from './MessageItem';
 import { MessageBlocks } from './MessageBlocks';
@@ -12,6 +12,8 @@ import { Bot, ArrowDown } from 'lucide-react';
 import { isTauri } from '@tauri-apps/api/core';
 
 interface MessageListProps {
+  /** 用于区分不同会话，切换时重置内部窗口/滚动状态 */
+  conversationId?: string | null;
   messages: Message[];
   streamingBlocks: MessageBlock[] | null;
   streamingTurns?: MessageTurn[];
@@ -29,7 +31,24 @@ interface MessageListProps {
 const SCROLL_THRESHOLD = 50;
 const WIDE_VISUAL_FENCE_RE = /```(?:mermaid|plot|mafs|json\\s+mafs)\\b/i;
 
+// 长对话在切换会话/渲染时会明显卡顿：默认只渲染最后 N 条，向上按需加载
+const DEFAULT_VISIBLE_TURNS = 3;
+const DEFAULT_VISIBLE_MESSAGES = DEFAULT_VISIBLE_TURNS * 2;
+const LOAD_MORE_PAGE_SIZE = 40;
+const LOAD_MORE_SCROLL_THRESHOLD = 80;
+
+type ConversationViewState = {
+  startIndex: number;
+  visibleCount: number;
+  scrollTop: number;
+  isAtBottom: boolean;
+  userScrolledAway: boolean;
+};
+
+type PendingRestore = { mode: 'bottom' | 'scrollTop'; scrollTop: number } | null;
+
 export const MessageList: React.FC<MessageListProps> = ({
+  conversationId,
   messages,
   streamingBlocks,
   streamingTurns,
@@ -45,10 +64,99 @@ export const MessageList: React.FC<MessageListProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
+  // Persist per-conversation scroll/window state so switching sessions restores position.
+  const perConversationStateRef = useRef<Map<string, ConversationViewState>>(new Map());
+  const pendingRestoreRef = useRef<PendingRestore>(null);
+  const lastUserAutoScrollRef = useRef<{ conversationKey: string; lastMessageId: string | null } | null>(null);
+
   // Track if user is at bottom (should auto-scroll)
   const [isAtBottom, setIsAtBottom] = useState(true);
   // Track if user manually scrolled away
   const [userScrolledAway, setUserScrolledAway] = useState(false);
+
+  // Windowed rendering for long histories
+  const [visibleCount, setVisibleCount] = useState(DEFAULT_VISIBLE_MESSAGES);
+  const loadMoreInFlightRef = useRef(false);
+  const pendingScrollAdjustRef = useRef<{ prevScrollHeight: number; prevScrollTop: number } | null>(null);
+  const conversationKey = conversationId ?? messages[0]?.conversationId ?? '';
+
+  useLayoutEffect(() => {
+    loadMoreInFlightRef.current = false;
+    pendingScrollAdjustRef.current = null;
+
+    const saved = perConversationStateRef.current.get(conversationKey);
+    if (saved) {
+      const clampedStartIndex = Math.max(0, Math.min(messages.length, saved.startIndex));
+      const nextVisibleCount = Math.min(
+        messages.length,
+        Math.max(DEFAULT_VISIBLE_MESSAGES, messages.length - clampedStartIndex)
+      );
+      setVisibleCount(nextVisibleCount);
+      setIsAtBottom(saved.isAtBottom);
+      setUserScrolledAway(saved.userScrolledAway);
+      pendingRestoreRef.current = { mode: saved.isAtBottom ? 'bottom' : 'scrollTop', scrollTop: saved.scrollTop };
+      return;
+    }
+
+    setVisibleCount(DEFAULT_VISIBLE_MESSAGES);
+    setIsAtBottom(true);
+    setUserScrolledAway(false);
+    pendingRestoreRef.current = { mode: 'bottom', scrollTop: 0 };
+  }, [conversationKey, messages.length]);
+
+  const startIndex = useMemo(() => Math.max(0, messages.length - visibleCount), [messages.length, visibleCount]);
+  const visibleMessages = useMemo(
+    () => (startIndex > 0 ? messages.slice(startIndex) : messages),
+    [messages, startIndex]
+  );
+
+  useLayoutEffect(() => {
+    const pending = pendingRestoreRef.current;
+    const container = containerRef.current;
+    if (!pending || !container) return;
+
+    if (pending.mode === 'bottom') {
+      bottomRef.current?.scrollIntoView({ behavior: 'instant' });
+    } else {
+      container.scrollTop = pending.scrollTop;
+    }
+
+    pendingRestoreRef.current = null;
+  }, [conversationKey, visibleCount]);
+
+  const loadMore = useCallback(() => {
+    if (startIndex === 0) return;
+    if (loadMoreInFlightRef.current) return;
+    loadMoreInFlightRef.current = true;
+
+    const container = containerRef.current;
+    if (container) {
+      pendingScrollAdjustRef.current = {
+        prevScrollHeight: container.scrollHeight,
+        prevScrollTop: container.scrollTop,
+      };
+    } else {
+      pendingScrollAdjustRef.current = null;
+    }
+
+    setVisibleCount((current) => Math.min(messages.length, current + LOAD_MORE_PAGE_SIZE));
+  }, [messages.length, startIndex]);
+
+  useLayoutEffect(() => {
+    const pending = pendingScrollAdjustRef.current;
+    const container = containerRef.current;
+
+    if (!pending || !container) {
+      pendingScrollAdjustRef.current = null;
+      loadMoreInFlightRef.current = false;
+      return;
+    }
+
+    const newScrollHeight = container.scrollHeight;
+    container.scrollTop = newScrollHeight - pending.prevScrollHeight + pending.prevScrollTop;
+    pendingScrollAdjustRef.current = null;
+    loadMoreInFlightRef.current = false;
+  }, [visibleCount]);
 
   // Check if scroll position is at bottom
   const checkIfAtBottom = useCallback(() => {
@@ -61,28 +169,72 @@ export const MessageList: React.FC<MessageListProps> = ({
 
   // Handle scroll events
   const handleScroll = useCallback(() => {
+    const container = containerRef.current;
     const atBottom = checkIfAtBottom();
     setIsAtBottom(atBottom);
 
     // If user scrolls away from bottom during streaming, mark as manually scrolled
-    if (!atBottom && streamingBlocks !== null) {
-      setUserScrolledAway(true);
-    }
+    let nextUserScrolledAway = userScrolledAway;
+    if (!atBottom && streamingBlocks !== null) nextUserScrolledAway = true;
 
     // If user scrolls back to bottom, reset the flag
-    if (atBottom) {
-      setUserScrolledAway(false);
+    if (atBottom) nextUserScrolledAway = false;
+
+    if (nextUserScrolledAway !== userScrolledAway) {
+      setUserScrolledAway(nextUserScrolledAway);
     }
-  }, [checkIfAtBottom, streamingBlocks]);
+
+    // 向上滚动接近顶部时自动加载更早的消息
+    if (container) {
+      perConversationStateRef.current.set(conversationKey, {
+        startIndex,
+        visibleCount,
+        scrollTop: container.scrollTop,
+        isAtBottom: atBottom,
+        userScrolledAway: nextUserScrolledAway,
+      });
+    }
+
+    if (container && container.scrollTop < LOAD_MORE_SCROLL_THRESHOLD && startIndex > 0) {
+      loadMore();
+    }
+  }, [checkIfAtBottom, conversationKey, loadMore, startIndex, streamingBlocks, userScrolledAway, visibleCount]);
+
+  // Keep latest view state in memory (for tab/session switching).
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    perConversationStateRef.current.set(conversationKey, {
+      startIndex,
+      visibleCount,
+      scrollTop: container.scrollTop,
+      isAtBottom,
+      userScrolledAway,
+    });
+  }, [conversationKey, isAtBottom, startIndex, userScrolledAway, visibleCount]);
 
   // Scroll to bottom function
-  const scrollToBottom = useCallback((smooth = true) => {
-    bottomRef.current?.scrollIntoView({
-      behavior: smooth ? 'smooth' : 'instant',
-    });
-    setUserScrolledAway(false);
-    setIsAtBottom(true);
-  }, []);
+  const scrollToBottom = useCallback(
+    (smooth = true) => {
+      bottomRef.current?.scrollIntoView({
+        behavior: smooth ? 'smooth' : 'instant',
+      });
+      setUserScrolledAway(false);
+      setIsAtBottom(true);
+
+      const container = containerRef.current;
+      if (container) {
+        perConversationStateRef.current.set(conversationKey, {
+          startIndex,
+          visibleCount,
+          scrollTop: container.scrollTop,
+          isAtBottom: true,
+          userScrolledAway: false,
+        });
+      }
+    },
+    [conversationKey, startIndex, visibleCount]
+  );
 
   // Auto-scroll only if user hasn't manually scrolled away
   useEffect(() => {
@@ -101,10 +253,21 @@ export const MessageList: React.FC<MessageListProps> = ({
   // Scroll to bottom when new user message is sent
   useEffect(() => {
     const lastMessage = messages[messages.length - 1];
-    if (lastMessage?.role === 'user') {
+    const lastMessageId = lastMessage?.id ?? null;
+    const prev = lastUserAutoScrollRef.current;
+
+    // Switching conversations should NOT trigger auto-scroll.
+    if (!prev || prev.conversationKey !== conversationKey) {
+      lastUserAutoScrollRef.current = { conversationKey, lastMessageId };
+      return;
+    }
+
+    if (lastMessage?.role === 'user' && lastMessageId && prev.lastMessageId !== lastMessageId) {
       scrollToBottom(false);
     }
-  }, [messages.length, scrollToBottom]);
+
+    lastUserAutoScrollRef.current = { conversationKey, lastMessageId };
+  }, [conversationKey, messages.length, scrollToBottom]);
 
   const extractFilesFromDataTransfer = useCallback((dataTransfer: DataTransfer): File[] => {
     if (dataTransfer.files && dataTransfer.files.length > 0) {
@@ -175,8 +338,22 @@ export const MessageList: React.FC<MessageListProps> = ({
         </div>
       )}
 
+      {/* Load more */}
+      {startIndex > 0 && (
+        <div className="flex justify-center pb-3">
+          <button
+            type="button"
+            onClick={loadMore}
+            className="rounded-full border border-gray-200 bg-white px-3 py-1 text-xs text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
+            title="加载更早消息"
+          >
+            加载更早消息（剩余 {startIndex} 条）
+          </button>
+        </div>
+      )}
+
       {/* Message list */}
-      {messages.map((message) => (
+      {visibleMessages.map((message) => (
         <MessageItem key={message.id} message={message} onAction={onAction} onAbortTool={onAbortTool} onRetryTurn={onRetryTurn} />
       ))}
 
@@ -194,7 +371,7 @@ export const MessageList: React.FC<MessageListProps> = ({
           >
             <MessageBlocks
               blocks={streamingBlocks}
-              conversationId={messages[0]?.conversationId}
+              conversationId={conversationId ?? messages[0]?.conversationId}
               isStreaming
               turns={streamingTurns}
               onAbortTool={onAbortTool}

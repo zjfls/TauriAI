@@ -1139,6 +1139,7 @@ impl<'a> TurnLoop<'a> {
                         turn_id: turn_id.clone(),
                         turn_index,
                         status: Some(TurnStatus::Success),
+                        has_debug_info: None,
                         debug_info: persisted_debug_info,
                         usage: usage.clone(),
                         model: Some(self.model_config.model.clone()),
@@ -1318,6 +1319,7 @@ impl<'a> TurnLoop<'a> {
                             turn_id: turn_id.clone(),
                             turn_index,
                             status: Some(TurnStatus::Failed),
+                            has_debug_info: None,
                             debug_info: persisted_debug_info.clone(),
                             usage: persisted_usage,
                             model: Some(self.model_config.model.clone()),
@@ -1796,6 +1798,7 @@ impl<'a> TurnLoop<'a> {
                             turn_id: turn_id.clone(),
                             turn_index,
                             status: Some(TurnStatus::Aborted),
+                            has_debug_info: None,
                             debug_info: persisted_debug_info.clone(),
                             usage: persisted_usage,
                             model: Some(self.model_config.model.clone()),
@@ -1831,6 +1834,7 @@ impl<'a> TurnLoop<'a> {
                         turn_id: turn_id.clone(),
                         turn_index,
                         status: Some(TurnStatus::Success),
+                        has_debug_info: None,
                         debug_info: persisted_debug_info.clone(),
                         usage: persisted_usage,
                         model: Some(self.model_config.model.clone()),
@@ -1939,6 +1943,7 @@ impl<'a> TurnLoop<'a> {
                         turn_id: turn_id.clone(),
                         turn_index,
                         status: Some(TurnStatus::Failed),
+                        has_debug_info: None,
                         debug_info: persisted_debug_info,
                         usage: persisted_usage,
                         model: Some(self.model_config.model.clone()),
@@ -2025,6 +2030,7 @@ impl<'a> TurnLoop<'a> {
                         turn_id: turn_id.clone(),
                         turn_index,
                         status: Some(TurnStatus::Aborted),
+                        has_debug_info: None,
                         debug_info: None,
                         usage: None,
                         model: Some(self.model_config.model.clone()),
@@ -2158,11 +2164,13 @@ fn expand_persisted_blocks_for_model_input(messages: Vec<Message>) -> Vec<Messag
             turn_id: Option<String>,
             turn_index: Option<u32>,
             text_parts: Vec<String>,
+            thinking_parts: Vec<String>,
             tool_calls: Vec<ToolCall>,
             tool_results: Vec<(String, String)>,
         }
 
         let out_start_len = out.len();
+        let fallback_thinking = msg.thinking.clone().filter(|t| !t.trim().is_empty());
         let mut bundles: Vec<TurnBundle> = Vec::new();
         let mut idx_by_key: HashMap<String, usize> = HashMap::new();
 
@@ -2204,6 +2212,17 @@ fn expand_persisted_blocks_for_model_input(messages: Vec<Message>) -> Vec<Messag
                         bundles[idx].text_parts.push(text.clone());
                     }
                 }
+                MessageBlock::Thinking {
+                    text,
+                    turn_id,
+                    turn_index,
+                    ..
+                } => {
+                    let idx = get_bundle_index(&mut bundles, &mut idx_by_key, turn_id, turn_index);
+                    if !text.trim().is_empty() {
+                        bundles[idx].thinking_parts.push(text.clone());
+                    }
+                }
                 MessageBlock::ToolCall {
                     call_id,
                     name,
@@ -2235,6 +2254,12 @@ fn expand_persisted_blocks_for_model_input(messages: Vec<Message>) -> Vec<Messag
             }
         }
 
+        if let Some(thinking) = fallback_thinking {
+            if !bundles.is_empty() && bundles.iter().all(|b| b.thinking_parts.is_empty()) {
+                bundles[0].thinking_parts.push(thinking);
+            }
+        }
+
         // Preserve turn order by turn_index if available; otherwise keep insertion order.
         bundles.sort_by(|a, b| match (a.turn_index, b.turn_index) {
             (Some(x), Some(y)) => x.cmp(&y),
@@ -2246,9 +2271,20 @@ fn expand_persisted_blocks_for_model_input(messages: Vec<Message>) -> Vec<Messag
         for bundle in bundles {
             let content = bundle.text_parts.join("\n\n");
             let has_tool_calls = !bundle.tool_calls.is_empty();
+            let thinking = if bundle.thinking_parts.is_empty() {
+                None
+            } else {
+                let joined = bundle.thinking_parts.join("");
+                if joined.trim().is_empty() {
+                    None
+                } else {
+                    Some(joined)
+                }
+            };
+            let has_thinking = thinking.is_some();
 
-            // Skip empty turns unless they contain tool calls (tool-only turns are valid).
-            if content.trim().is_empty() && !has_tool_calls {
+            // Skip empty turns unless they contain tool calls or thinking (thinking-only turns are valid for Kimi reasoning_content).
+            if content.trim().is_empty() && !has_tool_calls && !has_thinking {
                 continue;
             }
 
@@ -2258,7 +2294,7 @@ fn expand_persisted_blocks_for_model_input(messages: Vec<Message>) -> Vec<Messag
                 role: MessageRole::Assistant,
                 content,
                 content_parts: Vec::new(),
-                thinking: None,
+                thinking,
                 meta: if has_tool_calls {
                     Some(MessageMeta {
                         tool_calls: Some(bundle.tool_calls),
@@ -2854,6 +2890,11 @@ async fn run_task_inner(
         .map(|mut m| {
             if m.role == MessageRole::Assistant && !keep_history_thinking {
                 m.thinking = None;
+                if let Some(meta) = m.meta.as_mut() {
+                    if let Some(blocks) = meta.blocks.as_mut() {
+                        blocks.retain(|b| !matches!(b, MessageBlock::Thinking { .. }));
+                    }
+                }
             }
             m
         })
@@ -3691,7 +3732,7 @@ async fn stream_one_turn(
     // - 最大尝试次数由配置决定（至少 1）
     let max_attempts = max_attempts.max(1);
     const BASE_DELAY_MS: u64 = 100;
-    const MAX_DELAY_MS: u64 = 2_000;
+    const MAX_DELAY_MS: u64 = 30_000;
 
     fn status_from_debug(di: Option<&DebugInfoData>) -> Option<u16> {
         di.and_then(|d| d.response.as_ref()).map(|r| r.status)
@@ -3721,6 +3762,64 @@ async fn stream_one_turn(
         None
     }
 
+    fn retry_after_ms_from_message(message: &str) -> Option<u64> {
+        // 尽量对齐 Codex：不少网关会把 retry_after 放在错误文案里（而不是 header）。
+        // 示例：
+        // - "Please try again in 20s."
+        // - "try again in 500ms"
+        // - "retry after 2 minutes"
+        let lower = message.to_ascii_lowercase();
+        let markers = ["try again in", "please try again in", "retry after"];
+
+        let idx = markers
+            .iter()
+            .filter_map(|m| lower.find(m).map(|i| (i, *m)))
+            .min_by_key(|(i, _)| *i)
+            .map(|(i, m)| i + m.len())?;
+
+        let mut s = lower[idx..].trim_start();
+        if s.is_empty() {
+            return None;
+        }
+
+        let mut num_end = 0usize;
+        for (i, ch) in s.char_indices() {
+            if ch.is_ascii_digit() || ch == '.' {
+                num_end = i + ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        if num_end == 0 {
+            return None;
+        }
+
+        let value = s[..num_end].parse::<f64>().ok()?;
+        if !value.is_finite() || value < 0.0 {
+            return None;
+        }
+        s = s[num_end..].trim_start();
+
+        let unit = s
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .trim_matches(|c: char| !c.is_ascii_alphabetic());
+
+        let ms = match unit {
+            "ms" | "msec" | "msecs" | "millisecond" | "milliseconds" => value,
+            "s" | "sec" | "secs" | "second" | "seconds" => value * 1000.0,
+            "m" | "min" | "mins" | "minute" | "minutes" => value * 60_000.0,
+            _ => value * 1000.0, // 默认按秒
+        };
+
+        if ms.is_finite() && ms >= 0.0 {
+            Some(ms as u64)
+        } else {
+            None
+        }
+    }
+
     fn is_retryable_error(err: &crate::ai_client::AiError, di: Option<&DebugInfoData>) -> bool {
         use crate::ai_client::AiError;
         match err {
@@ -3732,25 +3831,48 @@ async fn stream_one_turn(
 
     let messages = sanitize_messages_for_model_input(messages);
 
+    let resume_enabled = model_config.resume_partial_output;
+    let mut full_content = String::new();
+    let mut full_thinking = String::new();
+    let mut debug_info: Option<DebugInfoData> = None;
+    let mut usage: Option<TokenUsage> = None;
+    let mut last_error: Option<String> = None;
+    let mut tool_calls: Option<Vec<ToolCall>> = None;
+    let mut emitted_any_delta = false;
+    let mut turn_state: Option<String> = None;
+
     for attempt in 1..=max_attempts {
         let (token_tx, mut token_rx) = mpsc::channel::<StreamEvent>(100);
 
-        let mut full_content = String::new();
-        let mut full_thinking = String::new();
-        let mut debug_info: Option<DebugInfoData> = None;
-        let mut usage: Option<TokenUsage> = None;
-        let mut last_error: Option<String> = None;
-        let mut tool_calls: Option<Vec<ToolCall>> = None;
-        let mut emitted_any_delta = false;
+        // 请求级重试：本轮尚未产生任何增量输出，可以安全清空本地缓冲。
+        // 流式重连：保留已输出内容，只清理本轮临时信息。
+        if !emitted_any_delta {
+            full_content.clear();
+            full_thinking.clear();
+            debug_info = None;
+            usage = None;
+            last_error = None;
+            tool_calls = None;
+            turn_state = None;
+        } else {
+            debug_info = None;
+            usage = None;
+            last_error = None;
+            tool_calls = None;
+        }
 
         let client = client.clone();
         let model_config = model_config.clone();
         let tools = tools.clone();
         let attempt_messages = messages.clone();
 
+        let options = crate::ai_client::StreamOptions {
+            resume_state: if resume_enabled { turn_state.clone() } else { None },
+        };
+
         let stream_handle = tokio::spawn(async move {
             client
-                .chat_stream(attempt_messages, &model_config, tools, token_tx)
+                .chat_stream(attempt_messages, &model_config, tools, token_tx, options)
                 .await
         });
 
@@ -3805,20 +3927,43 @@ async fn stream_one_turn(
                                 .to_string(),
                             });
                         }
+                        Some(StreamEvent::TurnState(state)) => {
+                            let trimmed = state.trim();
+                            if !trimmed.is_empty() {
+                                turn_state = Some(trimmed.to_string());
+                            }
+                        }
                         Some(StreamEvent::ToolCalls(calls)) => {
                             emitted_any_delta = true;
                             tool_calls = Some(calls);
                             // Tool call turn：不要立刻 break，继续等 DoneWithDebug（如果有的话）以便拿到 debug/usage
                         }
-                        Some(StreamEvent::Done(content)) => { full_content = content; break; }
+                        Some(StreamEvent::Done(content)) => {
+                            if !emitted_any_delta && !content.is_empty() {
+                                full_content = content;
+                            }
+                            break;
+                        }
                         Some(StreamEvent::DoneWithThinking { content, thinking }) => {
-                            full_content = content;
-                            full_thinking = thinking;
+                            if !emitted_any_delta && !content.is_empty() {
+                                full_content = content;
+                            }
+                            if full_thinking.is_empty() && !thinking.is_empty() {
+                                full_thinking = thinking;
+                            }
                             break;
                         }
                         Some(StreamEvent::DoneWithDebug { content, thinking, debug_info: di, usage: u }) => {
-                            full_content = content;
-                            if let Some(t) = thinking { full_thinking = t; }
+                            if !emitted_any_delta && !content.is_empty() {
+                                full_content = content;
+                            }
+                            if full_thinking.is_empty() {
+                                if let Some(t) = thinking {
+                                    if !t.is_empty() {
+                                        full_thinking = t;
+                                    }
+                                }
+                            }
                             debug_info = di;
                             usage = u;
                             break;
@@ -3839,7 +3984,7 @@ async fn stream_one_turn(
             Err(e) => Err(crate::ai_client::AiError::StreamError(e.to_string())),
         };
 
-        if let Some(calls) = tool_calls {
+        if let Some(calls) = tool_calls.take() {
             return TurnStreamResult::ToolCalls {
                 content: full_content,
                 thinking: full_thinking,
@@ -3854,9 +3999,10 @@ async fn stream_one_turn(
                 last_error = Some(stream_err.to_string());
             }
 
+            let reconnecting = emitted_any_delta;
             let can_retry = attempt < max_attempts
-                && !emitted_any_delta
-                && is_retryable_error(&stream_err, debug_info.as_ref());
+                && is_retryable_error(&stream_err, debug_info.as_ref())
+                && (!emitted_any_delta || (resume_enabled && turn_state.is_some()));
 
             if can_retry {
                 let shift = attempt.saturating_sub(1).min(30);
@@ -3865,7 +4011,25 @@ async fn stream_one_turn(
                 if let Some(hint) = retry_after_ms(debug_info.as_ref()) {
                     delay_ms = delay_ms.max(hint);
                 }
+                if let Some(hint) = last_error.as_deref().and_then(retry_after_ms_from_message) {
+                    delay_ms = delay_ms.max(hint);
+                }
                 delay_ms = delay_ms.min(MAX_DELAY_MS);
+
+                // 对齐 Codex：提供类似 “Reconnecting... x/y” 的可见提示（同时保留现有 Debug 逻辑）
+                let prefix = if reconnecting { "重连中" } else { "重试中" };
+                emitter.emit(RunEvent::BlockDelta {
+                    task_id: task_id.to_string(),
+                    turn_id: turn_id.to_string(),
+                    assistant_message_id: Some(assistant_message_id.to_string()),
+                    block_id: format!("assistant_status:{}", attempt + 1),
+                    block_type: "status".to_string(),
+                    format: Some("plain".to_string()),
+                    delta: format!("{prefix}... {}/{max_attempts}（等待 {delay_ms}ms）\n", attempt + 1),
+                });
+
+                // 避免把“上一轮错误”带到最终返回
+                last_error = None;
                 tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
                 continue;
             }
@@ -3933,6 +4097,7 @@ mod tests {
             _config: &crate::models::ModelConfig,
             _tools: Option<Vec<crate::ai_client::ToolDefinition>>,
             _token_sender: mpsc::Sender<crate::ai_client::StreamEvent>,
+            _options: crate::ai_client::StreamOptions,
         ) -> Result<(), crate::ai_client::AiError> {
             // 故意不发送任何 StreamEvent，直接返回错误。
             // 修复前：stream_one_turn 会把这种情况当作“成功完成但内容为空”（因为忽略了 JoinHandle 里的 Err）。
@@ -3963,6 +4128,7 @@ mod tests {
             _config: &crate::models::ModelConfig,
             _tools: Option<Vec<crate::ai_client::ToolDefinition>>,
             token_sender: mpsc::Sender<crate::ai_client::StreamEvent>,
+            _options: crate::ai_client::StreamOptions,
         ) -> Result<(), crate::ai_client::AiError> {
             let n = self.calls.fetch_add(1, Ordering::SeqCst);
             if n == 0 {
@@ -3995,6 +4161,7 @@ mod tests {
 	            max_images: None,
 	            use_reasoning_effort: None,
 	            retry_attempts: None,
+	            resume_partial_output: false,
 	            debug_sse: false,
 	            reinject_reasoning_content: false,
 	        }
@@ -4077,6 +4244,121 @@ mod tests {
                 assert_eq!(content, "hello");
             }
             other => panic!("expected TurnStreamResult::Final, got: {other:?}"),
+        }
+    }
+
+    struct ResumeAfterPartialClient {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl crate::ai_client::AiClient for ResumeAfterPartialClient {
+        async fn chat(
+            &self,
+            _messages: Vec<crate::models::Message>,
+            _config: &crate::models::ModelConfig,
+            _tools: Option<Vec<crate::ai_client::ToolDefinition>>,
+        ) -> Result<String, crate::ai_client::AiError> {
+            Ok("ok".to_string())
+        }
+
+        async fn chat_stream(
+            &self,
+            _messages: Vec<crate::models::Message>,
+            _config: &crate::models::ModelConfig,
+            _tools: Option<Vec<crate::ai_client::ToolDefinition>>,
+            token_sender: mpsc::Sender<crate::ai_client::StreamEvent>,
+            options: crate::ai_client::StreamOptions,
+        ) -> Result<(), crate::ai_client::AiError> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                let _ = token_sender
+                    .send(crate::ai_client::StreamEvent::TurnState(
+                        "state1".to_string(),
+                    ))
+                    .await;
+                let _ = token_sender
+                    .send(crate::ai_client::StreamEvent::Token("he".to_string()))
+                    .await;
+                return Err(crate::ai_client::AiError::ConnectionError(
+                    "boom".to_string(),
+                ));
+            }
+
+            assert_eq!(options.resume_state.as_deref(), Some("state1"));
+            let _ = token_sender
+                .send(crate::ai_client::StreamEvent::Token("llo".to_string()))
+                .await;
+            let _ = token_sender
+                .send(crate::ai_client::StreamEvent::Done("hello".to_string()))
+                .await;
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_one_turn_can_resume_after_partial_output_when_enabled() {
+        let client: Arc<dyn crate::ai_client::AiClient> = Arc::new(ResumeAfterPartialClient {
+            calls: AtomicUsize::new(0),
+        });
+        let mut emitter = NoopEmitter;
+        let (abort_tx, mut abort_rx) = mpsc::channel(1);
+        let _keep_abort = abort_tx;
+
+        let mut config = test_model_config();
+        config.resume_partial_output = true;
+
+        let result = stream_one_turn(
+            client,
+            config,
+            None,
+            vec![test_user_message()],
+            &mut emitter,
+            "task",
+            "turn",
+            "assistant",
+            None,
+            &mut abort_rx,
+            2,
+        )
+        .await;
+
+        match result {
+            TurnStreamResult::Final { content, .. } => assert_eq!(content, "hello"),
+            other => panic!("expected TurnStreamResult::Final, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_one_turn_should_not_resume_after_partial_output_when_disabled() {
+        let client: Arc<dyn crate::ai_client::AiClient> = Arc::new(ResumeAfterPartialClient {
+            calls: AtomicUsize::new(0),
+        });
+        let mut emitter = NoopEmitter;
+        let (abort_tx, mut abort_rx) = mpsc::channel(1);
+        let _keep_abort = abort_tx;
+
+        let mut config = test_model_config();
+        config.resume_partial_output = false;
+
+        let result = stream_one_turn(
+            client,
+            config,
+            None,
+            vec![test_user_message()],
+            &mut emitter,
+            "task",
+            "turn",
+            "assistant",
+            None,
+            &mut abort_rx,
+            2,
+        )
+        .await;
+
+        match result {
+            TurnStreamResult::Error { content, .. } => assert_eq!(content, "he"),
+            other => panic!("expected TurnStreamResult::Error, got: {other:?}"),
         }
     }
 }

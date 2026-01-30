@@ -13,13 +13,14 @@ import { useConfigStore } from '../../stores/configStore';
 import { MessageList } from './MessageList';
 import { InputArea, type InputAreaHandle } from './InputArea';
 import { ToolSessionsPanel } from './ToolSessionsPanel';
-import { countTokens } from '../../utils/tokenizer';
+import { estimateTokens, estimateTokensForTexts } from '../../utils/tokenizer';
 import { getApiProtocol } from '../../utils/apiUtils';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
-import type { TokenUsage, ContextUsageBreakdown, ContentPart, ThinkingMode, PtySessionInfo, Workstudio, Agent, SkillEntry, SkillLoadOutcome, SandboxPolicy, SecurityPolicyConfig, Message, MessageBlock } from '../../types';
+import type { TokenUsage, ContextUsageBreakdown, ContextMessageGroups, ContentPart, ThinkingMode, PtySessionInfo, Workstudio, Agent, SkillEntry, SkillLoadOutcome, SandboxPolicy, SecurityPolicyConfig, Message, MessageBlock } from '../../types';
 import { useToolSessionStore } from '../../stores/toolSessionStore';
 import { openOrFocusViewWindow } from '../../utils/viewWindow';
+import { endChatOpenProfile, getActiveChatOpenProfile, markChatOpenProfile } from '../../utils/chatOpenProfile';
 import { ChevronDown } from 'lucide-react';
 import type { WebSearchProvider } from './WebSearchToggle';
 
@@ -60,6 +61,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
   const [showToolSessions, setShowToolSessions] = useState(false);
 
   const inputRef = useRef<InputAreaHandle>(null);
+  const chatOpenProfileScheduledRef = useRef<string | null>(null);
 
   // 允许把文件/文本拖拽到聊天窗口（消息列表）时，直接追加到输入框里
   const handleDropFilesToInput = useCallback((files: FileList | File[]) => {
@@ -77,6 +79,46 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
   const streamingTurns = session?.streamingTurns ? Array.from(session.streamingTurns.values()) : undefined;
   const isGenerating = session?.isGenerating ?? false;
   const conversationId = session?.conversationId ?? '';
+
+  // ---------------------------------------------------------------------------
+  // Debug performance: profile "click -> ChatView ready"
+  // - Enabled by default in DEV, or via localStorage key: `tauri-ai:debug:profile_chat_open=1`
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    if (!sessionId) return;
+    if (!conversationId) return;
+
+    const profile = getActiveChatOpenProfile();
+    if (!profile || profile.ended) return;
+
+    const matches =
+      (profile.sessionId ? profile.sessionId === sessionId : false) ||
+      (!profile.sessionId && profile.conversationId ? profile.conversationId === conversationId : false);
+    if (!matches) return;
+
+    if (chatOpenProfileScheduledRef.current === profile.id) return;
+    chatOpenProfileScheduledRef.current = profile.id;
+
+    markChatOpenProfile('chatView:rendered(useEffect)', {
+      profileId: profile.id,
+      sessionId,
+      conversationId,
+      meta: { messageCount: messages.length, isGenerating, hasStreamingBlocks: Boolean(streamingBlocks) },
+    });
+
+    requestAnimationFrame(() => {
+      markChatOpenProfile('chatView:raf1', { profileId: profile.id, sessionId, conversationId });
+      requestAnimationFrame(() => {
+        markChatOpenProfile('chatView:raf2', { profileId: profile.id, sessionId, conversationId });
+        endChatOpenProfile('chatView:painted', {
+          profileId: profile.id,
+          sessionId,
+          conversationId,
+          meta: { messageCount: messages.length },
+        });
+      });
+    });
+  }, [sessionId, conversationId]);
 
   const { config, getProvider, getAgent, getModelOptions } = useConfigStore(
     useShallow((state) => ({
@@ -157,6 +199,42 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
   const supportsVision = useMemo(() => {
     return currentModel?.capabilities?.vision ?? false;
   }, [currentModel]);
+
+  const contextMessageGroups: ContextMessageGroups = useMemo(() => {
+    const MESSAGE_LIMIT = 100; // keep in sync with backend run_task base_messages limit
+
+    const isFailed = (m: Message): boolean => (m.status ?? 'success') === 'failed';
+    const eligible = messages.filter((m) => !isFailed(m));
+    const trimmedCount = Math.max(0, eligible.length - MESSAGE_LIMIT);
+
+    const modelRef = session?.modelRef || agentForSession?.modelRef || '';
+    const [providerName, modelName] = modelRef.split('/');
+    const provider = providerName ? getProvider(providerName) : undefined;
+
+    const thinkingEnabled = (() => {
+      if (!supportsThinking) return false;
+      const tm = session?.thinkingMode;
+      // 与后端 build_model_config 对齐：thinking 未显式设置时，默认启用（medium/true）
+      if (tm === undefined) return true;
+      if (typeof tm === 'boolean') return tm;
+      return tm !== null;
+    })();
+
+    const includeThinking =
+      Boolean(currentModel?.reinjectReasoningContent) &&
+      thinkingEnabled &&
+      currentProviderType === 'openai_compatible' &&
+      ((modelName || '').toLowerCase().startsWith('kimi-') ||
+        (provider?.apiBase || '').toLowerCase().includes('moonshot'));
+
+    return {
+      used: eligible.slice(-MESSAGE_LIMIT),
+      trimmed: trimmedCount > 0 ? eligible.slice(0, trimmedCount) : [],
+      failed: messages.filter(isFailed),
+      messageLimit: MESSAGE_LIMIT,
+      includeThinking,
+    };
+  }, [agentForSession?.modelRef, currentModel?.reinjectReasoningContent, currentProviderType, getProvider, messages, session?.modelRef, session?.thinkingMode, supportsThinking]);
 
   // Available web search providers
   const availableWebSearchProviders = useMemo((): WebSearchProvider[] => {
@@ -685,7 +763,8 @@ Guidelines:
         const res = await invoke<[any, SkillLoadOutcome]>('list_skills', {
           args: {
             workstudioMainFolder: workstudio?.mainFolder || undefined,
-            includeContents: true,
+            // 只需要元信息用于“技能列表/如何使用”提示与统计；加载全部 SKILL.md 内容会导致切换会话时明显卡顿
+            includeContents: false,
           },
         });
         if (cancelled) return;
@@ -712,8 +791,8 @@ Guidelines:
     };
   }, [session, getAgent, workstudio?.mainFolder]);
 
-  // Calculate context usage breakdown
-  const contextUsage = useMemo((): ContextUsageBreakdown | null => {
+  // Calculate context usage breakdown (async compute; avoid blocking initial render)
+  const computeContextUsage = useCallback((): ContextUsageBreakdown | null => {
     if (!session) return null;
     const contextLength = currentModel?.contextLength ?? 0;
 
@@ -723,23 +802,23 @@ Guidelines:
     const formatType = agent?.formatType || 'chat';
 
     // Calculate system prompt tokens (user's custom prompt) using accurate tokenizer
-    const systemPromptTokens = countTokens(userSystemPrompt);
+    const systemPromptTokens = estimateTokens(userSystemPrompt);
 
     // Calculate format prompt tokens based on format type
     let formatPromptTokens = 0;
     let formatPromptText = '';
     if (formatType !== 'none' && formatPromptTextFromBackend) {
       formatPromptText = formatPromptTextFromBackend;
-      formatPromptTokens = countTokens(formatPromptTextFromBackend);
+      formatPromptTokens = estimateTokens(formatPromptTextFromBackend);
     } else if (formatType === 'chat') {
       formatPromptText = FORMAT_PROMPT_CHAT;
-      formatPromptTokens = countTokens(FORMAT_PROMPT_CHAT);
+      formatPromptTokens = estimateTokens(FORMAT_PROMPT_CHAT);
     } else if (formatType === 'plain') {
       formatPromptText = '\n\n请使用纯文本格式回复，不要使用 Markdown 或其他格式。';
-      formatPromptTokens = countTokens(formatPromptText);
+      formatPromptTokens = estimateTokens(formatPromptText);
     } else if (formatType === 'json') {
       formatPromptText = '\n\n请以 JSON 格式返回结果。';
-      formatPromptTokens = countTokens(formatPromptText);
+      formatPromptTokens = estimateTokens(formatPromptText);
     }
     // 'none' type has no format prompt
 
@@ -768,49 +847,56 @@ Guidelines:
 
         if (availableSkills.length > 0) {
           const lines: string[] = [];
-          lines.push('## Skills');
+          lines.push('## 技能（Skills）');
           lines.push(
-            'A skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and file path so you can open the source for full instructions when using a specific skill.'
+            'Skill 是一组“可复用的本地指令”，存放在 `SKILL.md` 文件中。下面是本次会话可用的技能列表；每条包含名称、描述与文件路径，便于你打开查看完整说明。'
           );
-          lines.push('### Available skills');
+          lines.push('### 可用技能');
           for (const skill of availableSkills) {
             const pathStr = skill.meta.path.replace(/\\/g, '/');
-            lines.push(`- ${skill.meta.name}: ${skill.meta.description} (file: ${pathStr})`);
+            lines.push(`- ${skill.meta.name}：${skill.meta.description}（文件：${pathStr}）`);
           }
-          lines.push('### How to use skills');
+          lines.push('### 使用规则');
           lines.push(
-            '- Discovery: The list above is the skills available in this session (name + description + file path). Skill bodies live on disk at the listed paths.'
+            '- 发现：以上列表是本次会话可用的技能（名称 + 描述 + 文件路径）。技能正文存放在对应路径下。'
           );
           lines.push(
-            "- Trigger rules: If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a skill's description shown above, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned."
+            '- 触发规则：如果用户点名某个技能（用 `$SkillName` 或直接写技能名），或任务明显匹配上方技能描述，则本轮必须使用该技能；多次提及则同时使用；除非再次被提及，否则不要跨轮沿用技能。'
           );
           lines.push(
-            "- Missing/blocked: If a named skill isn't in the list or the path can't be read, say so briefly and continue with the best fallback."
+            '- 缺失/不可读：如果被点名的技能不在列表里或其路径无法读取，请简短说明，并用最佳替代方案继续。'
           );
-          lines.push('- How to use a skill (progressive disclosure):');
-          lines.push('  1) After deciding to use a skill, open its `SKILL.md`. Read only enough to follow the workflow.');
+          lines.push('- 如何使用技能（渐进式展开）：');
+          lines.push('  1) 决定要用某个技能后，先打开它的 `SKILL.md`，只阅读到足以执行流程为止。');
           lines.push(
-            "  2) If `SKILL.md` points to extra folders such as `references/`, load only the specific files needed for the request; don't bulk-load everything."
+            '  2) 如果 `SKILL.md` 指向了额外目录（如 `references/`），只加载本次请求需要的具体文件，不要一次性全部加载。'
           );
-          lines.push('  3) If `scripts/` exist, prefer running or patching them instead of retyping large code blocks.');
-          lines.push('  4) If `assets/` or templates exist, reuse them instead of recreating from scratch.');
-          lines.push('- Coordination and sequencing:');
+          lines.push('  3) 如果有 `scripts/`，优先运行或修改脚本，而不是在聊天里手敲大段代码。');
+          lines.push('  4) 如果有 `assets/` 或模板，优先复用，不要从零重造。');
+          lines.push('- 协调与顺序：');
           lines.push(
-            "  - If multiple skills apply, choose the minimal set that covers the request and state the order you'll use them."
+            '  - 如果多个技能都适用，选择能覆盖需求的最小集合，并说明使用顺序。'
           );
           lines.push(
-            "  - Announce which skill(s) you're using and why (one short line). If you skip an obvious skill, say why."
+            '  - 简短说明你使用了哪些技能以及原因（一句话即可）；如果跳过了明显的技能，也要说明原因。'
           );
-          lines.push('- Context hygiene:');
-          lines.push('  - Keep context small: summarize long sections instead of pasting them; only load extra files when needed.');
-          lines.push("  - Avoid deep reference-chasing: prefer opening only files directly linked from `SKILL.md` unless you're blocked.");
-          lines.push('  - When variants exist (frameworks, providers, domains), pick only the relevant reference file(s) and note that choice.');
+          lines.push('- 上下文卫生：');
+          lines.push('  - 控制上下文体积：长内容尽量总结；只在需要时加载额外文件。');
+          lines.push('  - 避免深度追引用：优先只打开 `SKILL.md` 直接链接的文件，除非遇到阻塞。');
+          lines.push('  - 如存在多种变体（框架/提供商/领域），只选择最相关的参考文件，并说明选择理由。');
           lines.push(
-            "- Safety and fallback: If a skill can't be applied cleanly (missing files, unclear instructions), state the issue, pick the next-best approach, and continue."
+            '- 安全与兜底：如果某个技能无法干净应用（缺文件/指令不清等），说明问题，选用次优方案继续推进。'
           );
           skillsSectionText = lines.join('\n');
 
-          const lastUserText = [...messages].reverse().find((m) => m.role === 'user')?.content || '';
+          let lastUserText = '';
+          for (let i = messages.length - 1; i >= 0; i--) {
+            const m = messages[i];
+            if (m?.role === 'user') {
+              lastUserText = m.content || '';
+              break;
+            }
+          }
           const mentioned = availableSkills.filter((s) => lastUserText.includes(`$${s.meta.name}`));
           if (mentioned.length > 0) {
             skillsInjectedText = mentioned
@@ -821,7 +907,7 @@ Guidelines:
               .join('');
           }
 
-          skillsTokens = countTokens(skillsSectionText) + countTokens(skillsInjectedText);
+          skillsTokens = estimateTokens(skillsSectionText) + estimateTokens(skillsInjectedText);
         }
       }
     }
@@ -874,7 +960,7 @@ Guidelines:
 
           if (hasEffectiveServer) {
             mcpPromptText = MCP_RESOURCE_TOOL_PROMPT.trim();
-            mcpTokens = countTokens(mcpPromptText);
+            mcpTokens = estimateTokens(mcpPromptText);
           }
         }
       }
@@ -887,16 +973,31 @@ Guidelines:
     let messageTokens = 0;
     let totalContextTokens = baseTokens;
 
-    // Find the last message with usage data
-    const lastMessageWithUsage = [...messages].reverse().find(m => m.usage);
+    // Find the last message with usage data (avoid copying/reversing large arrays)
+    let lastMessageWithUsage: Message | null = null;
+    for (let i = messages.length - 1; i >= 0 && i >= messages.length - 80; i--) {
+      const m = messages[i];
+      if (m?.usage) {
+        lastMessageWithUsage = m;
+        break;
+      }
+    }
     if (lastMessageWithUsage?.usage) {
       // promptTokens from API includes everything sent to the model
       totalContextTokens = lastMessageWithUsage.usage.promptTokens;
       // Message tokens = total - base prompts (approximate)
       messageTokens = Math.max(0, totalContextTokens - baseTokens);
     } else {
-      // No usage data yet, estimate from message content using accurate tokenizer
-      messageTokens = messages.reduce((sum, m) => sum + countTokens(m.content), 0);
+      // No usage data yet, estimate from messages that will actually be included in the next request.
+      const used = contextMessageGroups.used;
+      const contentTexts = used.map((m) => m.content).filter(Boolean);
+      messageTokens = estimateTokensForTexts(contentTexts);
+      if (contextMessageGroups.includeThinking) {
+        const thinkingTexts = used
+          .map((m) => m.thinking)
+          .filter((t): t is string => Boolean(t && t.trim()));
+        messageTokens += estimateTokensForTexts(thinkingTexts);
+      }
       totalContextTokens = baseTokens + messageTokens;
     }
 
@@ -907,6 +1008,7 @@ Guidelines:
       formatPrompt: formatPromptTokens,
       skills: skillsTokens,
       messages: messageTokens,
+      messageGroups: contextMessageGroups,
       tools: 0,  // Future: tool definitions
       mcp: mcpTokens,
       systemPromptText: userSystemPrompt || undefined,
@@ -918,10 +1020,50 @@ Guidelines:
       limit: contextLength,
       percentage: Math.min(percentage, 100),
     };
-  }, [currentModel, messages, session, getAgent, config, skillOutcome, workstudio?.mainFolder, formatPromptTextFromBackend]);
+  }, [currentModel, messages, session, getAgent, config, skillOutcome, workstudio?.mainFolder, formatPromptTextFromBackend, contextMessageGroups]);
 
   // 消息加载由 setCurrentConversation 负责，这里不再调用 loadMessages
   // 这样创建新对话时不会触发 loadMessages，避免竞态条件
+
+  const [contextUsage, setContextUsage] = useState<ContextUsageBreakdown | null>(null);
+  const contextUsageCalcIdRef = useRef(0);
+
+  // Avoid briefly showing stale usage when switching sessions.
+  useEffect(() => {
+    setContextUsage(null);
+  }, [sessionId]);
+
+  // Compute usage off the render path to prevent blocking initial paint.
+  useEffect(() => {
+    contextUsageCalcIdRef.current += 1;
+    const calcId = contextUsageCalcIdRef.current;
+
+    const run = () => {
+      if (contextUsageCalcIdRef.current !== calcId) return;
+      const next = computeContextUsage();
+      if (contextUsageCalcIdRef.current !== calcId) return;
+      setContextUsage(next);
+    };
+
+    const w = globalThis as any;
+    const requestIdleCallback: ((cb: () => void, opts?: { timeout?: number }) => number) | undefined =
+      typeof w.requestIdleCallback === 'function' ? w.requestIdleCallback.bind(w) : undefined;
+    const cancelIdleCallback: ((id: number) => void) | undefined =
+      typeof w.cancelIdleCallback === 'function' ? w.cancelIdleCallback.bind(w) : undefined;
+
+    let handle: number | ReturnType<typeof setTimeout> | null = null;
+    if (requestIdleCallback) {
+      handle = requestIdleCallback(run, { timeout: 400 });
+    } else {
+      handle = window.setTimeout(run, 0);
+    }
+
+    return () => {
+      if (handle === null) return;
+      if (requestIdleCallback && cancelIdleCallback) cancelIdleCallback(handle as number);
+      else clearTimeout(handle);
+    };
+  }, [computeContextUsage]);
 
   // Note: Stream listener is set up in sessionStore to route events by conversationId
 
@@ -1140,6 +1282,7 @@ Guidelines:
         </div>
       )}
 	      <MessageList
+	        conversationId={conversationId}
 	        messages={messages}
 	        streamingBlocks={streamingBlocks}
 	        streamingTurns={streamingTurns}

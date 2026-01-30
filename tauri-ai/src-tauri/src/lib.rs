@@ -17,7 +17,7 @@ use tokio::sync::Mutex;
 
 use commands::{
     abort_run, create_conversation, delete_conversation, delete_messages_from,
-    fetch_provider_models, generate_title, get_app_config, get_conversations, get_messages,
+    fetch_provider_models, generate_title, get_app_config, get_conversations, get_messages, get_turn_debug_info,
     list_local_directory, read_local_file_base64, respond_approval, run_task, save_app_config, test_connection,
     delete_mcp_server, delete_mcp_set, list_mcp_server_tools, list_mcp_servers, list_mcp_sets,
     set_agent_mcp_set, test_mcp_server, upsert_mcp_server, upsert_mcp_set,
@@ -233,6 +233,7 @@ pub fn run() {
             // Conversation commands
             get_conversations,
             get_messages,
+            get_turn_debug_info,
             create_conversation,
             delete_conversation,
             delete_messages_from,

@@ -191,6 +191,7 @@ mod tests {
 	                    context_length: Some(8192),
 	                    capabilities: crate::models::ModelCapabilities::default(),
 	                    retry_attempts: None,
+	                    resume_partial_output: false,
 	                    max_images: None,
 	                    thinking_budget_tokens: None,
 	                    use_reasoning_effort: None,

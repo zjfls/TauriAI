@@ -1127,6 +1127,36 @@ impl Database {
         Ok(messages)
     }
 
+    /// Get a single message by id within a conversation.
+    pub fn get_message(
+        &self,
+        conversation_id: &str,
+        message_id: &str,
+    ) -> Result<Message, StorageError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Lock(e.to_string()))?;
+
+        let mut stmt = conn.prepare(
+            "SELECT id, conversation_id, role, content, thinking, content_parts, meta, created_at, status, error_message
+             FROM messages
+             WHERE conversation_id = ?1 AND id = ?2
+             LIMIT 1",
+        )?;
+
+        let msg = stmt
+            .query_row(params![conversation_id, message_id], |row| self.row_to_message(row))
+            .optional()?;
+
+        msg.ok_or_else(|| {
+            StorageError::NotFound(format!(
+                "Message {} not found in conversation {}",
+                message_id, conversation_id
+            ))
+        })
+    }
+
     /// Helper function to convert a database row to a Message
     fn row_to_message(&self, row: &rusqlite::Row) -> Result<Message, rusqlite::Error> {
         let role_str: String = row.get(2)?;

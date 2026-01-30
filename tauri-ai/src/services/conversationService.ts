@@ -5,7 +5,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
-import type { Conversation, Message } from '../types';
+import type { Conversation, DebugInfo, Message } from '../types';
 import { hydrateMessagesFromBackend } from '../utils/hydrateMessages';
 
 /**
@@ -38,6 +38,21 @@ export async function getMessages(
     beforeId,
   });
   return hydrateMessagesFromBackend(messages);
+}
+
+/**
+ * Lazy-load persisted debug info for a specific turn.
+ */
+export async function getTurnDebugInfo(
+  conversationId: string,
+  messageId: string,
+  turnId: string
+): Promise<DebugInfo | null> {
+  return invoke<DebugInfo | null>('get_turn_debug_info', {
+    conversationId,
+    messageId,
+    turnId,
+  });
 }
 
 /**

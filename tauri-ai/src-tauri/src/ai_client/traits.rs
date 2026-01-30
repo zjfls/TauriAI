@@ -5,6 +5,14 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::mpsc;
 
+/// Streaming options (runtime-only; not persisted).
+#[derive(Debug, Clone, Default)]
+pub struct StreamOptions {
+    /// Provider-specific resume token/state used for stream reconnection.
+    /// When set, the client may attach it to the next request (e.g. `x-codex-turn-state`).
+    pub resume_state: Option<String>,
+}
+
 /// Tool definition (function-calling compatible)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -79,6 +87,9 @@ pub enum StreamEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         action: Option<serde_json::Value>,
     },
+    /// Provider-specific stream resume state (if supported).
+    /// Runtime uses it to reconnect without re-emitting already-streamed deltas.
+    TurnState(String),
     /// An error occurred during streaming
     Error(String),
 }
@@ -144,5 +155,6 @@ pub trait AiClient: Send + Sync {
         config: &crate::models::ModelConfig,
         tools: Option<Vec<ToolDefinition>>,
         token_sender: mpsc::Sender<StreamEvent>,
+        options: StreamOptions,
     ) -> Result<(), AiError>;
 }

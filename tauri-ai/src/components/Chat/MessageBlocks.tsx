@@ -52,6 +52,17 @@ const ThinkingBlock: React.FC<ThinkingBlockProps> = ({ text, isStreaming }) => {
   );
 };
 
+const StatusBlock: React.FC<{ text: string; isStreaming?: boolean }> = ({ text, isStreaming }) => {
+  if (!text) return null;
+
+  return (
+    <div className="mb-2 flex items-start gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-200">
+      <RefreshCw size={14} className={`mt-0.5 shrink-0 ${isStreaming ? 'animate-spin' : ''}`} />
+      <div className="whitespace-pre-wrap">{text}</div>
+    </div>
+  );
+};
+
 const UnknownBlock: React.FC<{ data: unknown }> = ({ data }) => {
   const text = useMemo(() => {
     if (typeof data === 'string') return data;
@@ -77,27 +88,37 @@ const ToolCallBlock: React.FC<{ name: string; args: string; isStreaming?: boolea
 }) => {
   const [isExpanded, setIsExpanded] = useState(Boolean(isStreaming));
 
-  const prettyArgs = useMemo(() => {
-    if (!args) return '';
+  // 收起状态下不做 JSON 解析/格式化，避免长对话里大量 tool block 造成卡顿
+  const parsedArgs = useMemo(() => {
+    if (!isExpanded) return null;
+    if (!args) return null;
+    // 过大的 JSON 解析/pretty print 会明显卡顿；展开时也优先直接展示原文
+    if (args.length > 200_000) return null;
     try {
-      return JSON.stringify(JSON.parse(args), null, 2);
+      return JSON.parse(args) as unknown;
+    } catch {
+      return null;
+    }
+  }, [args, isExpanded]);
+
+  const prettyArgs = useMemo(() => {
+    if (!isExpanded) return '';
+    if (!args) return '';
+    if (!parsedArgs) return args;
+    try {
+      return JSON.stringify(parsedArgs, null, 2);
     } catch {
       return args;
     }
-  }, [args]);
+  }, [args, isExpanded, parsedArgs]);
 
   const summary = useMemo(() => {
-    if (!args) return '';
-    try {
-      const v = JSON.parse(args);
-      if (!v || typeof v !== 'object') return '';
-      if (name === 'exec_command' && typeof (v as any).cmd === 'string') return (v as any).cmd;
-      if (name === 'shell_command' && typeof (v as any).command === 'string') return (v as any).command;
-      return '';
-    } catch {
-      return '';
-    }
-  }, [args, name]);
+    if (!isExpanded) return '';
+    if (!parsedArgs || typeof parsedArgs !== 'object') return '';
+    if (name === 'exec_command' && typeof (parsedArgs as any).cmd === 'string') return (parsedArgs as any).cmd;
+    if (name === 'shell_command' && typeof (parsedArgs as any).command === 'string') return (parsedArgs as any).command;
+    return '';
+  }, [isExpanded, name, parsedArgs]);
 
   return (
     <div className="mb-2 rounded-lg border border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-900/30">
@@ -137,50 +158,58 @@ const ApprovalBlock: React.FC<{
   const [isSubmitting, setIsSubmitting] = useState(false);
   const { config, saveConfig } = useConfigStore();
 
-  const prettyArgs = useMemo(() => {
-    if (!block.arguments) return '';
+  // 收起状态下不做 JSON 解析/格式化（审批块里可能包含超大 apply_patch / 命令参数）
+  const parsedArgs = useMemo(() => {
+    if (!isExpanded) return null;
+    const raw = block.arguments;
+    if (!raw) return null;
+    if (raw.length > 200_000) return null;
     try {
-      return JSON.stringify(JSON.parse(block.arguments), null, 2);
-    } catch {
-      return block.arguments;
-    }
-  }, [block.arguments]);
-
-  const summary = useMemo(() => {
-    if (!block.arguments) return '';
-    try {
-      const v = JSON.parse(block.arguments);
-      if (!v || typeof v !== 'object') return '';
-      if (block.toolName === 'exec_command' && typeof (v as any).cmd === 'string') return (v as any).cmd;
-      if (block.toolName === 'shell_command' && typeof (v as any).command === 'string') return (v as any).command;
-      if (block.toolName === 'apply_patch' && typeof (v as any).input === 'string') return 'apply_patch';
-      return '';
-    } catch {
-      return '';
-    }
-  }, [block.arguments, block.toolName]);
-
-  const trustCandidate = useMemo(() => {
-    if (!block.arguments) return null;
-    try {
-      const v = JSON.parse(block.arguments);
-      if (!v || typeof v !== 'object') return null;
-
-      const tool = block.toolName;
-      const raw =
-        tool === 'shell_command' && typeof (v as any).command === 'string'
-          ? (v as any).command
-          : (tool === 'exec_command' || tool === 'exec_command_persistent') && typeof (v as any).cmd === 'string'
-            ? (v as any).cmd
-            : null;
-
-      const command = typeof raw === 'string' ? raw.trim() : '';
-      if (!command) return null;
-      return { tool, command };
+      return JSON.parse(raw) as unknown;
     } catch {
       return null;
     }
-  }, [block.arguments, block.toolName]);
+  }, [block.arguments, isExpanded]);
+
+  const prettyArgs = useMemo(() => {
+    if (!isExpanded) return '';
+    const raw = block.arguments;
+    if (!raw) return '';
+    if (!parsedArgs) return raw;
+    try {
+      return JSON.stringify(parsedArgs, null, 2);
+    } catch {
+      return raw;
+    }
+  }, [block.arguments, isExpanded, parsedArgs]);
+
+  const summary = useMemo(() => {
+    if (!isExpanded) return '';
+    if (!parsedArgs || typeof parsedArgs !== 'object') return '';
+    if (block.toolName === 'exec_command' && typeof (parsedArgs as any).cmd === 'string') return (parsedArgs as any).cmd;
+    if (block.toolName === 'shell_command' && typeof (parsedArgs as any).command === 'string') return (parsedArgs as any).command;
+    if (block.toolName === 'apply_patch' && typeof (parsedArgs as any).input === 'string') return 'apply_patch';
+    return '';
+  }, [block.toolName, isExpanded, parsedArgs]);
+
+  const trustCandidate = useMemo(() => {
+    if (!isExpanded) return null;
+    if (block.status !== 'pending') return null;
+    if (!parsedArgs || typeof parsedArgs !== 'object') return null;
+
+    const tool = block.toolName;
+    const raw =
+      tool === 'shell_command' && typeof (parsedArgs as any).command === 'string'
+        ? (parsedArgs as any).command
+        : (tool === 'exec_command' || tool === 'exec_command_persistent') &&
+            typeof (parsedArgs as any).cmd === 'string'
+          ? (parsedArgs as any).cmd
+          : null;
+
+    const command = typeof raw === 'string' ? raw.trim() : '';
+    if (!command) return null;
+    return { tool, command };
+  }, [block.status, block.toolName, isExpanded, parsedArgs]);
 
   const statusText = useMemo(() => {
     switch (block.status) {
@@ -399,27 +428,36 @@ const ToolRunBlock: React.FC<{
   const [isExpanded, setIsExpanded] = useState(Boolean(isStreaming));
   const canAbort = Boolean(onAbortTool && callId && isStreaming);
 
-  const prettyArgs = useMemo(() => {
-    if (!args) return '';
+  // 收起状态下不做 JSON 解析/格式化（尤其是 apply_patch / 大文件内容会卡）
+  const parsedArgs = useMemo(() => {
+    if (!isExpanded) return null;
+    if (!args) return null;
+    if (args.length > 200_000) return null;
     try {
-      return JSON.stringify(JSON.parse(args), null, 2);
+      return JSON.parse(args) as unknown;
+    } catch {
+      return null;
+    }
+  }, [args, isExpanded]);
+
+  const prettyArgs = useMemo(() => {
+    if (!isExpanded) return '';
+    if (!args) return '';
+    if (!parsedArgs) return args;
+    try {
+      return JSON.stringify(parsedArgs, null, 2);
     } catch {
       return args;
     }
-  }, [args]);
+  }, [args, isExpanded, parsedArgs]);
 
   const summary = useMemo(() => {
-    if (!args) return '';
-    try {
-      const v = JSON.parse(args);
-      if (!v || typeof v !== 'object') return '';
-      if (name === 'exec_command' && typeof (v as any).cmd === 'string') return (v as any).cmd;
-      if (name === 'shell_command' && typeof (v as any).command === 'string') return (v as any).command;
-      return '';
-    } catch {
-      return '';
-    }
-  }, [args, name]);
+    if (!isExpanded) return '';
+    if (!parsedArgs || typeof parsedArgs !== 'object') return '';
+    if (name === 'exec_command' && typeof (parsedArgs as any).cmd === 'string') return (parsedArgs as any).cmd;
+    if (name === 'shell_command' && typeof (parsedArgs as any).command === 'string') return (parsedArgs as any).command;
+    return '';
+  }, [isExpanded, name, parsedArgs]);
 
   return (
     <div className="mb-2 rounded-lg border border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-900/30">
@@ -558,6 +596,7 @@ const WebSearchBlock: React.FC<{ status: string; action?: unknown; isStreaming?:
   const [isExpanded, setIsExpanded] = useState(Boolean(isStreaming));
 
   const info = useMemo(() => {
+    if (!isExpanded) return null;
     if (!action) return null;
 
     const safeParse = (value: string) => {
@@ -743,7 +782,7 @@ const WebSearchBlock: React.FC<{ status: string; action?: unknown; isStreaming?:
       hasCoreDetails,
       hasDetails,
     };
-  }, [action]);
+  }, [action, isExpanded]);
 
   const queryItems =
     info && info.normalizedType === 'search'
@@ -1035,6 +1074,10 @@ export const MessageBlocks: React.FC<{
       return <ThinkingBlock text={block.text} isStreaming={isStreaming} />;
     }
 
+    if (block.type === 'status') {
+      return <StatusBlock text={block.text} isStreaming={isStreaming} />;
+    }
+
     if (block.type === 'text') {
       const format = (block.format || 'markdown').toString();
       if (format === 'plain') {
@@ -1097,13 +1140,16 @@ export const MessageBlocks: React.FC<{
         const turnIndex = turnMeta?.turnIndex ?? g.turnIndex ?? idx + 1;
         const debugInfo = turnMeta?.debugInfo;
         // debugMode 只影响“采集”，不影响“查看历史里已经存在的 debug 数据”。
-        const canOpenDebug = Boolean(debugInfo);
-        const debugButtonDisabled = !debugInfo;
+        const hasPersistedDebug = Boolean(debugInfo) || Boolean(turnMeta?.hasDebugInfo);
+        const canOpenDebug = hasPersistedDebug;
+        const debugButtonDisabled = !hasPersistedDebug;
         const debugTitle = debugInfo
           ? '查看该轮请求/响应'
-          : debugMode
-            ? '该轮暂无调试数据'
-            : '开启调试模式后可查看该轮请求/响应';
+          : turnMeta?.hasDebugInfo
+            ? '点击加载该轮调试信息'
+            : debugMode
+              ? '该轮暂无调试数据'
+              : '开启调试模式后可采集调试信息';
         const isCollapsed = Boolean(g.turnId && collapsedTurns.has(g.turnId));
 
 	        return (
@@ -1200,14 +1246,19 @@ export const MessageBlocks: React.FC<{
         );
       })}
 
-      <DebugModal
-        isOpen={!!activeDebugTurn}
-        onClose={() => setActiveDebugTurn(null)}
-        debugInfo={activeDebugTurn?.debugInfo || null}
-        blocks={blocks}
-        initialTurnId={activeDebugTurn?.turnId || null}
-        messageRole="assistant"
-      />
+      {activeDebugTurn && (
+        <DebugModal
+          isOpen
+          onClose={() => setActiveDebugTurn(null)}
+          debugInfo={activeDebugTurn.debugInfo || null}
+          turns={turns || null}
+          blocks={blocks}
+          initialTurnId={activeDebugTurn.turnId || null}
+          messageRole="assistant"
+          conversationId={conversationId}
+          messageId={assistantMessageId}
+        />
+      )}
     </>
   );
 };

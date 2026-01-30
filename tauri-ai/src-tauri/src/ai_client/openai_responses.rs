@@ -653,6 +653,7 @@ impl AiClient for OpenAiResponsesClient {
         config: &ModelConfig,
         tools: Option<Vec<ToolDefinition>>,
         token_sender: mpsc::Sender<StreamEvent>,
+        options: super::StreamOptions,
     ) -> Result<(), AiError> {
         let api_base = config
             .api_base
@@ -739,12 +740,18 @@ impl AiClient for OpenAiResponsesClient {
             body: serde_json::to_value(&request).unwrap_or(serde_json::Value::Null),
         };
 
-        let response = self
+        let mut req = self
             .client
             .post(&url)
             .header("Authorization", format!("Bearer {api_key}"))
             .header("Content-Type", "application/json")
-            .json(&request)
+            .json(&request);
+        if let Some(state) = options.resume_state.as_deref() {
+            // Codex-style stream resume (only effective if upstream supports it).
+            req = req.header("x-codex-turn-state", state);
+        }
+
+        let response = req
             .send()
             .await
             .map_err(|e| AiError::ConnectionError(e.to_string()))?;
@@ -756,6 +763,21 @@ impl AiClient for OpenAiResponsesClient {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
             .collect();
+
+        if let Some(state) = response_headers
+            .iter()
+            .find(|(k, _)| k.to_ascii_lowercase() == "x-codex-turn-state")
+            .and_then(|(_, v)| {
+                let trimmed = v.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            })
+        {
+            let _ = token_sender.send(StreamEvent::TurnState(state)).await;
+        }
 
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();

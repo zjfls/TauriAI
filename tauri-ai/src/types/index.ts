@@ -132,6 +132,7 @@ export interface Model {
   capabilities: ModelCapabilities;
   // Advanced settings
   retryAttempts?: number; // Turn-level automatic retry attempts (default: 3)
+  resumePartialOutput?: boolean; // Allow reconnecting after partial output (default: false)
   maxImages?: number;     // Maximum number of images allowed (default: 10, only for vision models)
   thinkingBudgetTokens?: number; // Anthropic extended thinking budget (>=1024 and < maxTokens)
   useReasoningEffort?: boolean; // Use reasoning_effort parameter for Chat Completions API (OpenAI GPT-5 series)
@@ -148,6 +149,8 @@ export interface ContextUsageBreakdown {
   tools?: number;           // Tool definitions tokens (future)
   mcp?: number;             // MCP context tokens (future)
   skills?: number;          // Skills prompt tokens (from SKILL.md)
+  /** 仅用于 UI 详情展示：本次将计入上下文的消息分组（与后端裁剪规则对齐） */
+  messageGroups?: ContextMessageGroups;
   // Optional preview texts for the context detail modal
   systemPromptText?: string;
   formatPromptText?: string;
@@ -157,6 +160,22 @@ export interface ContextUsageBreakdown {
   total: number;            // Total used tokens
   limit: number;            // Model's context limit
   percentage: number;       // Usage percentage (0-100)
+}
+
+/**
+ * 对话消息（用于 context 统计/展示）分组。
+ * - used: 实际会计入下一次请求的消息（按后端规则裁剪/过滤后的结果）
+ * - trimmed: 因超过消息数量上限而被裁剪掉的更早消息
+ * - failed: 失败消息（通常不会计入下一次请求）
+ */
+export interface ContextMessageGroups {
+  used: Message[];
+  trimmed: Message[];
+  failed: Message[];
+  /** 后端参与构建上下文时的消息数量上限（当前实现为最近 N 条） */
+  messageLimit: number;
+  /** 是否会把历史 thinking/reasoning 计入下一次请求（如 Kimi reasoning_content） */
+  includeThinking: boolean;
 }
 
 /**
@@ -402,6 +421,11 @@ export interface ThinkingMessageBlock extends BaseMessageBlock {
   text: string;
 }
 
+export interface StatusMessageBlock extends BaseMessageBlock {
+  type: 'status';
+  text: string;
+}
+
 export interface ToolCallMessageBlock extends BaseMessageBlock {
   type: 'tool_call';
   callId: string;
@@ -464,6 +488,7 @@ export interface UnknownMessageBlock extends BaseMessageBlock {
 export type MessageBlock =
   | TextMessageBlock
   | ThinkingMessageBlock
+  | StatusMessageBlock
   | ToolCallMessageBlock
   | ToolResultMessageBlock
   | ApprovalMessageBlock
@@ -529,6 +554,10 @@ export interface MessageTurn {
   turnId: string;
   turnIndex: number;
   status?: TurnStatus;
+  /**
+   * Whether this turn has persisted debug info available (lazy-loaded on demand).
+   */
+  hasDebugInfo?: boolean;
   debugInfo?: DebugInfo;
   usage?: TokenUsage;
   model?: string;
@@ -559,6 +588,7 @@ export type TurnPhase = 'think' | 'act' | 'observe';
 export type RunBlockType =
   | 'text'
   | 'thinking'
+  | 'status'
   // Future block types (reserved)
   | 'tool_call'
   | 'tool_result'

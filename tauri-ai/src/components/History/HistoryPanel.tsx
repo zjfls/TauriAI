@@ -11,6 +11,7 @@ import { useSessionStore } from '../../stores/sessionStore';
 import { useConfigStore } from '../../stores/configStore';
 import { useUIStore } from '../../stores/uiStore';
 import type { Conversation } from '../../types';
+import { markChatOpenProfile, setChatOpenProfileTarget, startChatOpenProfile } from '../../utils/chatOpenProfile';
 
 /**
  * Format date for display
@@ -336,8 +337,17 @@ export const HistoryPanel: React.FC = () => {
       setSelectedIds(new Set());
       setLastSelectedIndex(index);
       try {
-        await openHistoricalConversation(conversation.id);
+        const profileId = startChatOpenProfile({
+          source: 'history_panel:open_conversation',
+          conversationId: conversation.id,
+          meta: { title: conversation.title, index },
+        });
+        markChatOpenProfile('history_panel:openHistoricalConversation:start', { profileId, conversationId: conversation.id });
+        const sessionId = await openHistoricalConversation(conversation.id);
+        setChatOpenProfileTarget({ sessionId }, profileId ?? undefined);
+        markChatOpenProfile('history_panel:openHistoricalConversation:done', { profileId, conversationId: conversation.id, meta: { sessionId } });
         setActiveView('chat');
+        markChatOpenProfile('history_panel:setActiveView(chat)', { profileId, conversationId: conversation.id });
       } catch (error) {
         console.error('Failed to open historical conversation:', error);
       }
