@@ -4,6 +4,8 @@ export type ConversationViewState = {
   scrollTop: number;
   isAtBottom: boolean;
   userScrolledAway: boolean;
+  anchorMessageId?: string;
+  anchorViewportTop?: number;
 };
 
 const viewStateByConversationKey = new Map<string, ConversationViewState>();
@@ -35,4 +37,3 @@ export const consumeConversationScrollToBottomOnce = (conversationKey: string): 
   if (hit) forceScrollToBottomOnceKeys.delete(conversationKey);
   return hit;
 };
-

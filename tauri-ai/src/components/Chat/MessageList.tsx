@@ -15,6 +15,7 @@ import {
   consumeConversationScrollToBottomOnce,
   getConversationViewState,
   setConversationViewState,
+  type ConversationViewState,
 } from '../../utils/conversationViewState';
 
 interface MessageListProps {
@@ -43,7 +44,11 @@ const DEFAULT_VISIBLE_MESSAGES = DEFAULT_VISIBLE_TURNS * 2;
 const LOAD_MORE_PAGE_SIZE = 40;
 const LOAD_MORE_SCROLL_THRESHOLD = 80;
 
-type PendingRestore = { mode: 'bottom' | 'scrollTop'; scrollTop: number } | null;
+type PendingRestore =
+  | { mode: 'bottom' }
+  | { mode: 'scrollTop'; scrollTop: number }
+  | { mode: 'anchor'; messageId: string; viewportTop: number; fallbackScrollTop: number }
+  | null;
 
 const MessageListInner: React.FC<MessageListProps> = ({
   conversationId,
@@ -63,7 +68,9 @@ const MessageListInner: React.FC<MessageListProps> = ({
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const pendingRestoreRef = useRef<PendingRestore>(null);
+  const restoreCalibrationRef = useRef<{ cancel: () => void } | null>(null);
   const lastUserAutoScrollRef = useRef<{ conversationKey: string; lastMessageId: string | null } | null>(null);
+  const lastGoodViewStateRef = useRef<{ conversationKey: string; state: ConversationViewState } | null>(null);
 
   // Track if user is at bottom (should auto-scroll)
   const [isAtBottom, setIsAtBottom] = useState(true);
@@ -75,6 +82,141 @@ const MessageListInner: React.FC<MessageListProps> = ({
   const loadMoreInFlightRef = useRef(false);
   const pendingScrollAdjustRef = useRef<{ prevScrollHeight: number; prevScrollTop: number } | null>(null);
   const conversationKey = conversationId ?? messages[0]?.conversationId ?? '';
+
+  const isContainerUsableForPersist = useCallback((container: HTMLDivElement): boolean => {
+    if (!container.isConnected) return false;
+    if (container.getClientRects().length === 0) return false;
+    const rect = container.getBoundingClientRect();
+    if (rect.height < 16 || rect.width < 16) return false;
+    return true;
+  }, []);
+
+  const findMessageElement = useCallback((messageId: string): HTMLElement | null => {
+    const container = containerRef.current;
+    if (!container) return null;
+    const nodes = container.querySelectorAll<HTMLElement>('[data-message-id]');
+    for (const el of Array.from(nodes)) {
+      if (el.dataset.messageId === messageId) return el;
+    }
+    return null;
+  }, []);
+
+  const getAnchorSnapshot = useCallback((): { messageId: string; viewportTop: number } | null => {
+    const container = containerRef.current;
+    if (!container) return null;
+    const containerTop = container.getBoundingClientRect().top;
+    const nodes = container.querySelectorAll<HTMLElement>('[data-message-id]');
+    for (const el of Array.from(nodes)) {
+      const rect = el.getBoundingClientRect();
+      if (rect.bottom > containerTop + 1) {
+        const messageId = el.dataset.messageId;
+        if (messageId) {
+          return { messageId, viewportTop: rect.top - containerTop };
+        }
+      }
+    }
+    return null;
+  }, []);
+
+  const commitViewState = useCallback(
+    (container: HTMLDivElement, next: { isAtBottom: boolean; userScrolledAway: boolean }) => {
+      if (!conversationKey) return;
+      if (!isContainerUsableForPersist(container)) return;
+      if (container.scrollHeight <= container.clientHeight + 1) return;
+
+      const normalizedUserScrolledAway = next.isAtBottom ? false : next.userScrolledAway;
+      const anchor = next.isAtBottom ? null : getAnchorSnapshot();
+      const nextStartIndex = Math.max(0, messages.length - visibleCount);
+      const state: ConversationViewState = {
+        startIndex: nextStartIndex,
+        visibleCount,
+        scrollTop: container.scrollTop,
+        isAtBottom: next.isAtBottom,
+        userScrolledAway: normalizedUserScrolledAway,
+        anchorMessageId: anchor?.messageId,
+        anchorViewportTop: anchor?.viewportTop,
+      };
+
+      lastGoodViewStateRef.current = { conversationKey, state };
+      setConversationViewState(conversationKey, state);
+    },
+    [conversationKey, getAnchorSnapshot, isContainerUsableForPersist, messages.length, visibleCount]
+  );
+
+  const cancelRestoreCalibration = useCallback(() => {
+    restoreCalibrationRef.current?.cancel();
+    restoreCalibrationRef.current = null;
+  }, []);
+
+  const startRestoreCalibration = useCallback(
+    (messageId: string, viewportTop: number) => {
+      const container = containerRef.current;
+      if (!container) return;
+
+      cancelRestoreCalibration();
+
+      let stopped = false;
+      let rafId: number | null = null;
+      let stableFrames = 0;
+      let lastScrollHeight = container.scrollHeight;
+      const startMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      const maxDurationMs = 1200;
+      const stableRequiredFrames = 8;
+
+      const stop = () => {
+        if (stopped) return;
+        stopped = true;
+        if (rafId !== null) cancelAnimationFrame(rafId);
+        container.removeEventListener('wheel', onUserIntent);
+        container.removeEventListener('touchstart', onUserIntent);
+        container.removeEventListener('pointerdown', onUserIntent);
+        window.removeEventListener('keydown', onUserIntent, true);
+      };
+
+      const onUserIntent = () => stop();
+
+      container.addEventListener('wheel', onUserIntent, { passive: true });
+      container.addEventListener('touchstart', onUserIntent, { passive: true });
+      container.addEventListener('pointerdown', onUserIntent);
+      window.addEventListener('keydown', onUserIntent, true);
+
+      const tick = () => {
+        if (stopped) return;
+
+        const anchorEl = findMessageElement(messageId);
+        if (!anchorEl) {
+          stop();
+          return;
+        }
+
+        const containerTop = container.getBoundingClientRect().top;
+        const currentTop = anchorEl.getBoundingClientRect().top - containerTop;
+        const delta = currentTop - viewportTop;
+        if (Math.abs(delta) > 0.5) {
+          container.scrollTop += delta;
+        }
+
+        const scrollHeight = container.scrollHeight;
+        const heightStable = Math.abs(scrollHeight - lastScrollHeight) < 1;
+        lastScrollHeight = scrollHeight;
+
+        const deltaStable = Math.abs(delta) <= 0.5;
+        stableFrames = deltaStable && heightStable ? stableFrames + 1 : 0;
+
+        const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        if (stableFrames >= stableRequiredFrames || nowMs - startMs >= maxDurationMs) {
+          stop();
+          return;
+        }
+
+        rafId = requestAnimationFrame(tick);
+      };
+
+      rafId = requestAnimationFrame(tick);
+      restoreCalibrationRef.current = { cancel: stop };
+    },
+    [cancelRestoreCalibration, findMessageElement]
+  );
 
   useLayoutEffect(() => {
     loadMoreInFlightRef.current = false;
@@ -91,14 +233,25 @@ const MessageListInner: React.FC<MessageListProps> = ({
       setVisibleCount(nextVisibleCount);
       setIsAtBottom(saved.isAtBottom);
       setUserScrolledAway(saved.userScrolledAway);
-      pendingRestoreRef.current = { mode: saved.isAtBottom ? 'bottom' : 'scrollTop', scrollTop: saved.scrollTop };
+      if (saved.isAtBottom) {
+        pendingRestoreRef.current = { mode: 'bottom' };
+      } else if (saved.anchorMessageId && typeof saved.anchorViewportTop === 'number') {
+        pendingRestoreRef.current = {
+          mode: 'anchor',
+          messageId: saved.anchorMessageId,
+          viewportTop: saved.anchorViewportTop,
+          fallbackScrollTop: saved.scrollTop,
+        };
+      } else {
+        pendingRestoreRef.current = { mode: 'scrollTop', scrollTop: saved.scrollTop };
+      }
       return;
     }
 
     setVisibleCount(DEFAULT_VISIBLE_MESSAGES);
     setIsAtBottom(true);
     setUserScrolledAway(false);
-    pendingRestoreRef.current = { mode: 'bottom', scrollTop: 0 };
+    pendingRestoreRef.current = { mode: 'bottom' };
   }, [conversationKey, messages.length]);
 
   // Handle “scroll to bottom” requests even when conversationKey doesn't change (e.g. clicking the same conversation in history).
@@ -108,7 +261,7 @@ const MessageListInner: React.FC<MessageListProps> = ({
     setVisibleCount(DEFAULT_VISIBLE_MESSAGES);
     setIsAtBottom(true);
     setUserScrolledAway(false);
-    pendingRestoreRef.current = { mode: 'bottom', scrollTop: 0 };
+    pendingRestoreRef.current = { mode: 'bottom' };
   });
 
   const startIndex = useMemo(() => Math.max(0, messages.length - visibleCount), [messages.length, visibleCount]);
@@ -130,14 +283,28 @@ const MessageListInner: React.FC<MessageListProps> = ({
     const container = containerRef.current;
     if (!pending || !container) return;
 
+    cancelRestoreCalibration();
+
     if (pending.mode === 'bottom') {
       bottomRef.current?.scrollIntoView({ behavior: 'instant' });
-    } else {
+    } else if (pending.mode === 'scrollTop') {
       container.scrollTop = pending.scrollTop;
+    } else {
+      const anchorEl = findMessageElement(pending.messageId);
+      if (anchorEl) {
+        const containerTop = container.getBoundingClientRect().top;
+        const currentTop = anchorEl.getBoundingClientRect().top - containerTop;
+        container.scrollTop += currentTop - pending.viewportTop;
+        startRestoreCalibration(pending.messageId, pending.viewportTop);
+      } else {
+        container.scrollTop = pending.fallbackScrollTop;
+      }
     }
 
     pendingRestoreRef.current = null;
-  }, [conversationKey, visibleCount]);
+  }, [cancelRestoreCalibration, conversationKey, findMessageElement, startRestoreCalibration, visibleCount]);
+
+  useEffect(() => cancelRestoreCalibration, [cancelRestoreCalibration]);
 
   const loadMore = useCallback(() => {
     if (startIndex === 0) return;
@@ -185,7 +352,12 @@ const MessageListInner: React.FC<MessageListProps> = ({
   // Handle scroll events
   const handleScroll = useCallback(() => {
     const container = containerRef.current;
-    const atBottom = checkIfAtBottom();
+    if (!container) return;
+    if (!isContainerUsableForPersist(container)) return;
+
+    // Avoid overwriting saved scroll state when the container is being torn down / has no overflow.
+    const hasOverflow = container.scrollHeight > container.clientHeight + 1;
+    const atBottom = hasOverflow ? checkIfAtBottom() : true;
     setIsAtBottom(atBottom);
 
     // If user scrolls away from bottom during streaming, mark as manually scrolled
@@ -200,33 +372,21 @@ const MessageListInner: React.FC<MessageListProps> = ({
     }
 
     // 向上滚动接近顶部时自动加载更早的消息
-    if (container) {
-      setConversationViewState(conversationKey, {
-        startIndex,
-        visibleCount,
-        scrollTop: container.scrollTop,
-        isAtBottom: atBottom,
-        userScrolledAway: nextUserScrolledAway,
-      });
+    if (hasOverflow) {
+      commitViewState(container, { isAtBottom: atBottom, userScrolledAway: nextUserScrolledAway });
     }
 
-    if (container && container.scrollTop < LOAD_MORE_SCROLL_THRESHOLD && startIndex > 0) {
+    if (container.scrollTop < LOAD_MORE_SCROLL_THRESHOLD && startIndex > 0) {
       loadMore();
     }
-  }, [checkIfAtBottom, conversationKey, loadMore, startIndex, streamingBlocks, userScrolledAway, visibleCount]);
+  }, [checkIfAtBottom, commitViewState, isContainerUsableForPersist, loadMore, startIndex, streamingBlocks, userScrolledAway]);
 
   // Keep latest view state in memory (for tab/session switching).
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
-    setConversationViewState(conversationKey, {
-      startIndex,
-      visibleCount,
-      scrollTop: container.scrollTop,
-      isAtBottom,
-      userScrolledAway,
-    });
-  }, [conversationKey, isAtBottom, startIndex, userScrolledAway, visibleCount]);
+    commitViewState(container, { isAtBottom, userScrolledAway });
+  }, [commitViewState, isAtBottom, userScrolledAway]);
 
   // Scroll to bottom function
   const scrollToBottom = useCallback(
@@ -239,32 +399,22 @@ const MessageListInner: React.FC<MessageListProps> = ({
 
       const container = containerRef.current;
       if (container) {
-        setConversationViewState(conversationKey, {
-          startIndex,
-          visibleCount,
-          scrollTop: container.scrollTop,
-          isAtBottom: true,
-          userScrolledAway: false,
-        });
+        commitViewState(container, { isAtBottom: true, userScrolledAway: false });
       }
     },
-    [conversationKey, startIndex, visibleCount]
+    [commitViewState]
   );
 
-  // Ensure last view state is captured on unmount (e.g., switching to settings view).
+  // Note: avoid persisting on unmount by reading `container.scrollTop`, because the DOM might
+  // already be detached/relayouted (can incorrectly report 0 and overwrite the last good state).
+  // Still, ensure we never lose the last known-good state due to teardown-induced scroll events.
   useEffect(() => {
     return () => {
-      const container = containerRef.current;
-      if (!container) return;
-      setConversationViewState(conversationKey, {
-        startIndex,
-        visibleCount,
-        scrollTop: container.scrollTop,
-        isAtBottom,
-        userScrolledAway,
-      });
+      const last = lastGoodViewStateRef.current;
+      if (!last) return;
+      setConversationViewState(last.conversationKey, last.state);
     };
-  }, [conversationKey, isAtBottom, startIndex, userScrolledAway, visibleCount]);
+  }, []);
 
   // Auto-scroll only if user hasn't manually scrolled away
   useEffect(() => {
