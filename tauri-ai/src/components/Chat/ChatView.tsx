@@ -1030,18 +1030,51 @@ Guidelines:
 
   // Avoid briefly showing stale usage when switching sessions.
   useEffect(() => {
+    markChatOpenProfile('chatView:contextUsage:reset', {
+      sessionId: sessionId ?? undefined,
+      conversationId: conversationId || undefined,
+      meta: { hadPrev: Boolean(contextUsage) },
+    });
     setContextUsage(null);
-  }, [sessionId]);
+  }, [conversationId, sessionId]);
 
   // Compute usage off the render path to prevent blocking initial paint.
   useEffect(() => {
     contextUsageCalcIdRef.current += 1;
     const calcId = contextUsageCalcIdRef.current;
 
+    markChatOpenProfile('chatView:contextUsage:scheduled', {
+      sessionId: sessionId ?? undefined,
+      conversationId: conversationId || undefined,
+      meta: { messageCount: messages.length },
+    });
+
     const run = () => {
       if (contextUsageCalcIdRef.current !== calcId) return;
+
+      const startedAt =
+        typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
+      markChatOpenProfile('chatView:contextUsage:compute:start', {
+        sessionId: sessionId ?? undefined,
+        conversationId: conversationId || undefined,
+        meta: { messageCount: messages.length },
+      });
+
       const next = computeContextUsage();
       if (contextUsageCalcIdRef.current !== calcId) return;
+
+      const endedAt =
+        typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
+      markChatOpenProfile('chatView:contextUsage:compute:done', {
+        sessionId: sessionId ?? undefined,
+        conversationId: conversationId || undefined,
+        meta: {
+          durationMs: Number((endedAt - startedAt).toFixed(1)),
+          totalTokens: next?.total ?? 0,
+          percentage: next?.percentage ?? 0,
+        },
+      });
+
       setContextUsage(next);
     };
 
@@ -1093,7 +1126,7 @@ Guidelines:
     await abortGeneration(sessionId);
   };
 
-  const handleAction = async (action: import('../../types').Action) => {
+  const handleAction = useCallback(async (action: import('../../types').Action) => {
     switch (action.action_type) {
       case 'copy':
         if (action.payload) {
@@ -1161,7 +1194,7 @@ Guidelines:
         }
         break;
     }
-  };
+  }, [messages, openUrl, sessionId, undoToMessage]);
 
 	  const handleAbortTool = useCallback(
 	    (_callId: string) => {
@@ -1171,13 +1204,32 @@ Guidelines:
 	    [abortGeneration, sessionId]
 	  );
 
-	  const handleRetryTurn = useCallback(
-	    (assistantMessageId: string, turnId: string) => {
-	      if (!sessionId) return;
-	      retryTurn(sessionId, assistantMessageId, turnId).catch(console.error);
-	    },
-	    [retryTurn, sessionId]
-	  );
+  const handleRetryTurn = useCallback(
+    (assistantMessageId: string, turnId: string) => {
+      if (!sessionId) return;
+      retryTurn(sessionId, assistantMessageId, turnId).catch(console.error);
+    },
+    [retryTurn, sessionId]
+  );
+
+  const handleMessageListProfiler = useCallback(
+    (
+      _id: string,
+      phase: 'mount' | 'update' | 'nested-update',
+      actualDuration: number,
+      baseDuration: number
+    ) => {
+      markChatOpenProfile(`profiler:MessageList:${phase}`, {
+        sessionId: sessionId ?? undefined,
+        conversationId: conversationId || undefined,
+        meta: {
+          actualMs: Number(actualDuration.toFixed(1)),
+          baseMs: Number(baseDuration.toFixed(1)),
+        },
+      });
+    },
+    [conversationId, sessionId]
+  );
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -1281,18 +1333,20 @@ Guidelines:
           </button>
         </div>
       )}
-	      <MessageList
-	        conversationId={conversationId}
-	        messages={messages}
-	        streamingBlocks={streamingBlocks}
-	        streamingTurns={streamingTurns}
-	        isGenerating={isGenerating}
-	        onAction={handleAction}
-	        onAbortTool={handleAbortTool}
-	        onRetryTurn={handleRetryTurn}
-	        onDropFiles={handleDropFilesToInput}
-	        onDropText={handleDropTextToInput}
-	      />
+	      <React.Profiler id="MessageList" onRender={handleMessageListProfiler}>
+	        <MessageList
+	          conversationId={conversationId}
+	          messages={messages}
+	          streamingBlocks={streamingBlocks}
+	          streamingTurns={streamingTurns}
+	          isGenerating={isGenerating}
+	          onAction={handleAction}
+	          onAbortTool={handleAbortTool}
+	          onRetryTurn={handleRetryTurn}
+	          onDropFiles={handleDropFilesToInput}
+	          onDropText={handleDropTextToInput}
+	        />
+	      </React.Profiler>
       {/* Conversation total token usage */}
       {showUsage && totalUsage && (
         <div className="flex justify-center px-4 py-1 text-xs text-gray-500 dark:text-gray-400 border-t border-gray-100 dark:border-gray-800 flex-shrink-0">

@@ -43,10 +43,10 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
         messageCount: target?.messages?.length ?? 0,
       },
     });
-    markChatOpenProfile('workspace_tabs:switchSession', { profileId, sessionId });
+    markChatOpenProfile('workspace_tabs:switchSession', { profileId: profileId || undefined, sessionId });
     switchSession(sessionId);
     setActiveView('chat');
-    markChatOpenProfile('workspace_tabs:setActiveView(chat)', { profileId, sessionId });
+    markChatOpenProfile('workspace_tabs:setActiveView(chat)', { profileId: profileId || undefined, sessionId });
   };
 
   // Handle session tab close

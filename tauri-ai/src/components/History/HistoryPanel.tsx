@@ -342,12 +342,12 @@ export const HistoryPanel: React.FC = () => {
           conversationId: conversation.id,
           meta: { title: conversation.title, index },
         });
-        markChatOpenProfile('history_panel:openHistoricalConversation:start', { profileId, conversationId: conversation.id });
+        markChatOpenProfile('history_panel:openHistoricalConversation:start', { profileId: profileId || undefined, conversationId: conversation.id });
         const sessionId = await openHistoricalConversation(conversation.id);
         setChatOpenProfileTarget({ sessionId }, profileId ?? undefined);
-        markChatOpenProfile('history_panel:openHistoricalConversation:done', { profileId, conversationId: conversation.id, meta: { sessionId } });
+        markChatOpenProfile('history_panel:openHistoricalConversation:done', { profileId: profileId || undefined, conversationId: conversation.id, meta: { sessionId } });
         setActiveView('chat');
-        markChatOpenProfile('history_panel:setActiveView(chat)', { profileId, conversationId: conversation.id });
+        markChatOpenProfile('history_panel:setActiveView(chat)', { profileId: profileId || undefined, conversationId: conversation.id });
       } catch (error) {
         console.error('Failed to open historical conversation:', error);
       }

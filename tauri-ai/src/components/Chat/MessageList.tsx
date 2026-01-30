@@ -10,6 +10,7 @@ import { MessageItem } from './MessageItem';
 import { MessageBlocks } from './MessageBlocks';
 import { Bot, ArrowDown } from 'lucide-react';
 import { isTauri } from '@tauri-apps/api/core';
+import { markChatOpenProfile } from '../../utils/chatOpenProfile';
 
 interface MessageListProps {
   /** 用于区分不同会话，切换时重置内部窗口/滚动状态 */
@@ -47,7 +48,7 @@ type ConversationViewState = {
 
 type PendingRestore = { mode: 'bottom' | 'scrollTop'; scrollTop: number } | null;
 
-export const MessageList: React.FC<MessageListProps> = ({
+const MessageListInner: React.FC<MessageListProps> = ({
   conversationId,
   messages,
   streamingBlocks,
@@ -105,6 +106,14 @@ export const MessageList: React.FC<MessageListProps> = ({
   }, [conversationKey, messages.length]);
 
   const startIndex = useMemo(() => Math.max(0, messages.length - visibleCount), [messages.length, visibleCount]);
+
+  // Debug profiling: measure when the message list is actually committed for a given conversation.
+  useEffect(() => {
+    markChatOpenProfile('messageList:rendered(useEffect)', {
+      conversationId: conversationKey || undefined,
+      meta: { totalMessages: messages.length, startIndex, visibleCount },
+    });
+  }, [conversationKey, messages.length, startIndex, visibleCount]);
   const visibleMessages = useMemo(
     () => (startIndex > 0 ? messages.slice(startIndex) : messages),
     [messages, startIndex]
@@ -398,5 +407,11 @@ export const MessageList: React.FC<MessageListProps> = ({
     </div>
   );
 };
+
+// Avoid re-rendering the full message list when ChatView updates unrelated state
+// (e.g. context usage estimation, settings panel toggles).
+// Message list is heavy due to Markdown parsing / syntax highlighting.
+export const MessageList = React.memo(MessageListInner);
+MessageList.displayName = 'MessageList';
 
 export default MessageList;
