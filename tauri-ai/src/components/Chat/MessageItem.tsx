@@ -7,7 +7,7 @@
 import React, { useState } from 'react';
 import { User, Bot, Bug, AlertCircle, RefreshCw, ZoomIn, File as FileIcon } from 'lucide-react';
 import type { Message, Action, ContentPart } from '../../types';
-import { MarkdownRenderer } from './MarkdownRenderer';
+import { DeferredMarkdown } from './DeferredMarkdown';
 import { MessageToolbar } from './MessageToolbar';
 import { buildMessageActions } from '../../utils/messageActionBuilder';
 import { DebugModal } from './DebugModal';
@@ -119,7 +119,7 @@ const ContentPartsRenderer: React.FC<ContentPartsRendererProps> = ({
     if (isUser) {
       return <p className="whitespace-pre-wrap">{renderUserTextWithPathChips(textContent)}</p>;
     }
-    return <MarkdownRenderer content={textContent} conversationId={conversationId} />;
+    return <DeferredMarkdown content={textContent} conversationId={conversationId} minDelayMs={220} />;
   }
 
   return (
@@ -133,7 +133,7 @@ const ContentPartsRenderer: React.FC<ContentPartsRendererProps> = ({
               </p>
             );
           }
-          return <MarkdownRenderer key={index} content={part.text} conversationId={conversationId} />;
+          return <DeferredMarkdown key={index} content={part.text} conversationId={conversationId} minDelayMs={220} />;
         }
         if (part.type === 'image') {
           return (

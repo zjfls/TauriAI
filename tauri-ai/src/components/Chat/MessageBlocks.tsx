@@ -8,15 +8,15 @@
  *   2) 在这里补上对应 block 的渲染组件
  */
 
-import React, { useMemo, useState } from 'react';
-import { AlertTriangle, Brain, Bug, ChevronDown, ChevronRight, RefreshCw, Search, Wrench } from 'lucide-react';
-import { invoke, isTauri } from '@tauri-apps/api/core';
-import type { MessageBlock, MessageTurn } from '../../types';
-import { MarkdownRenderer } from './MarkdownRenderer';
-import { AnsiText } from './AnsiText';
-import { useConfigStore } from '../../stores/configStore';
-import { DebugModal } from './DebugModal';
-import type { AnsiColorMode, AnsiRenderMode } from '../../types';
+ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+ import { AlertTriangle, Brain, Bug, ChevronDown, ChevronRight, RefreshCw, Search, Wrench } from 'lucide-react';
+ import { invoke, isTauri } from '@tauri-apps/api/core';
+ import type { MessageBlock, MessageTurn } from '../../types';
+ import { DeferredMarkdown } from './DeferredMarkdown';
+ import { AnsiText } from './AnsiText';
+ import { useConfigStore } from '../../stores/configStore';
+ import { DebugModal } from './DebugModal';
+ import type { AnsiColorMode, AnsiRenderMode } from '../../types';
 
 interface ThinkingBlockProps {
   text: string;
@@ -932,7 +932,27 @@ export const MessageBlocks: React.FC<{
   const ansiRenderMode = config?.general?.ansiRenderMode;
   const ansiColorMode = config?.general?.ansiColorMode;
   const [activeDebugTurn, setActiveDebugTurn] = useState<MessageTurn | null>(null);
-  const [collapsedTurns, setCollapsedTurns] = useState<Set<string>>(new Set());
+
+  const computeDefaultCollapsedTurns = useCallback((): Set<string> => {
+    // 默认只展开“最新一轮”，其余 turn 全部收起（避免切换会话时渲染爆炸）
+    const all = new Set<string>();
+    let lastTurnId: string | null = null;
+    for (const b of blocks) {
+      if (!b.turnId) continue;
+      all.add(b.turnId);
+      lastTurnId = b.turnId;
+    }
+    if (!lastTurnId) return new Set();
+    const collapsed = new Set<string>();
+    for (const id of all) {
+      if (id !== lastTurnId) collapsed.add(id);
+    }
+    return collapsed;
+  }, [blocks]);
+
+  const [collapsedTurns, setCollapsedTurns] = useState<Set<string>>(() => computeDefaultCollapsedTurns());
+  const seenTurnIdsRef = useRef<Set<string>>(new Set());
+  const initializedRef = useRef(false);
 
   const turnMetaById = useMemo(() => {
     const map = new Map<string, MessageTurn>();
@@ -950,6 +970,40 @@ export const MessageBlocks: React.FC<{
     return set;
   }, [blocks]);
   const showTurnHeader = distinctTurnIds.size > 0;
+  const latestTurnId = useMemo(() => {
+    let last: string | null = null;
+    for (const b of blocks) {
+      if (b.turnId) last = b.turnId;
+    }
+    return last;
+  }, [blocks]);
+
+  // 当流式/重试导致出现“新 turn”时，自动收起旧 turn，只保留最新一轮展开。
+  useEffect(() => {
+    if (!showTurnHeader) return;
+
+    const current = new Set<string>(distinctTurnIds);
+    const prev = seenTurnIdsRef.current;
+
+    if (!initializedRef.current) {
+      seenTurnIdsRef.current = current;
+      initializedRef.current = true;
+      return;
+    }
+
+    let hasNew = false;
+    for (const id of current) {
+      if (!prev.has(id)) {
+        hasNew = true;
+        break;
+      }
+    }
+
+    seenTurnIdsRef.current = current;
+    if (!hasNew) return;
+
+    setCollapsedTurns(computeDefaultCollapsedTurns());
+  }, [computeDefaultCollapsedTurns, distinctTurnIds, showTurnHeader]);
 
   const groups = useMemo(() => {
     const map = new Map<
@@ -1069,7 +1123,7 @@ export const MessageBlocks: React.FC<{
     });
   }, [blocks, turnMetaById]);
 
-  const renderBlock = (block: MessageBlock) => {
+  const renderBlock = (block: MessageBlock, opts?: { deferHeavy?: boolean }) => {
     if (block.type === 'thinking') {
       return <ThinkingBlock text={block.text} isStreaming={isStreaming} />;
     }
@@ -1090,7 +1144,8 @@ export const MessageBlocks: React.FC<{
           </pre>
         );
       }
-      return <MarkdownRenderer content={block.text} conversationId={conversationId} />;
+      const deferHeavy = Boolean(opts?.deferHeavy) && !isStreaming;
+      return <DeferredMarkdown content={block.text} conversationId={conversationId} immediate={!deferHeavy} minDelayMs={deferHeavy ? 220 : 0} />;
     }
 
     if (block.type === 'tool_call') {
@@ -1151,6 +1206,7 @@ export const MessageBlocks: React.FC<{
               ? '该轮暂无调试数据'
               : '开启调试模式后可采集调试信息';
         const isCollapsed = Boolean(g.turnId && collapsedTurns.has(g.turnId));
+        const deferHeavyForGroup = !isCollapsed && !isStreaming && (g.turnId ? g.turnId === latestTurnId : true);
 
 	        return (
 	          <div key={`${g.key}:${idx}`}>
@@ -1239,7 +1295,7 @@ export const MessageBlocks: React.FC<{
                   }
                 }
 
-                return <React.Fragment key={block.id}>{renderBlock(block)}</React.Fragment>;
+                return <React.Fragment key={block.id}>{renderBlock(block, { deferHeavy: deferHeavyForGroup })}</React.Fragment>;
               })
             )}
           </div>
