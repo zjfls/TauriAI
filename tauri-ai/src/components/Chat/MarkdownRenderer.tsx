@@ -151,6 +151,20 @@ function extractMermaidFileReferenceToken(hrefRaw: string): string | null {
   return null;
 }
 
+function sanitizeMermaidSvg(svg: string): string {
+  // Mermaid 在 securityLevel=loose 时可能生成内联事件处理器或不安全的 href；
+  // 这里做最小清洗，避免 WebView 默认行为（例如 window.open / 导航）抢走点击。
+  // 注意：这不是通用 SVG sanitizer，仅用于本项目 Mermaid 输出的“安全减损”。
+  let out = svg;
+  out = out.replace(/\son\w+\s*=\s*"[^"]*"/gi, '');
+  out = out.replace(/\son\w+\s*=\s*'[^']*'/gi, '');
+
+  // Strip javascript:/data: links
+  out = out.replace(/\s(href|xlink:href)\s*=\s*"(?:(?:javascript|data):[^"]*)"/gi, '');
+  out = out.replace(/\s(href|xlink:href)\s*=\s*'(?:(?:javascript|data):[^']*)'/gi, '');
+  return out;
+}
+
 const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferenceToken }: MermaidBlockProps) {
   const [svg, setSvg] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -201,8 +215,9 @@ const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferen
 
         if (cancelled) return;
 
-        mermaidCache.set(cacheKey, renderedSvg);
-        setSvg(renderedSvg);
+        const cleaned = sanitizeMermaidSvg(renderedSvg);
+        mermaidCache.set(cacheKey, cleaned);
+        setSvg(cleaned);
         setError('');
       } catch (err) {
         if (cancelled) return;
@@ -238,7 +253,7 @@ const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferen
     );
   }
 
-  const handleSvgClick = (e: React.MouseEvent) => {
+  const handleSvgClickCapture = (e: React.SyntheticEvent) => {
     const el = e.target as Element | null;
     if (!el) return;
     const anchor = el.closest?.('a[href], a[xlink\\:href]') as SVGElement | null;
@@ -257,6 +272,7 @@ const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferen
     const handled = tryOpenFileReferenceToken(token);
     if (!handled) return;
 
+    // IMPORTANT: 用 capture 阶段拦截，避免 Mermaid 生成的 target/onclick 先于外层 onClick 执行。
     e.preventDefault();
     e.stopPropagation();
   };
@@ -265,8 +281,8 @@ const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferen
     <>
       <div
         className="my-2 w-full overflow-x-auto rounded-lg bg-gray-100 dark:bg-gray-700/50 p-4 cursor-zoom-in flex justify-center [&_svg]:max-w-none"
+        onClickCapture={handleSvgClickCapture}
         onClick={(e) => {
-          handleSvgClick(e);
           // 如果点的是链接，就不进入全屏（否则“链接不可用”）。
           if (e.defaultPrevented) return;
           setIsFullscreen(true);
@@ -320,7 +336,7 @@ const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferen
           >
             <div
               style={{ transform: `scale(${scale})`, transformOrigin: 'top left', marginBottom: `${(scale - 1) * 100}%` }}
-              onClick={handleSvgClick}
+              onClickCapture={handleSvgClickCapture}
               dangerouslySetInnerHTML={{ __html: svg }}
             />
           </div>
