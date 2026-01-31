@@ -59,11 +59,36 @@ const ChatViewContainerInner: React.FC = () => {
       setDeferredRevealSessionId((cur) => (cur === activeSessionId ? null : cur));
     });
 
+    // 兜底：极端情况下 rAF 可能被暂停/丢失（例如窗口切到后台），避免 UI 永久停留在占位层。
+    const timeoutId = window.setTimeout(() => {
+      if (cancelled) return;
+      if (revealSeqRef.current !== seq) return;
+      setDeferredRevealSessionId((cur) => (cur === activeSessionId ? null : cur));
+    }, 500);
+
     return () => {
       cancel();
       cancelAnimationFrame(rafId);
+      clearTimeout(timeoutId);
     };
   }, [activeSessionId, deferredRevealSessionId]);
+
+  // 兜底：窗口从后台切回时，确保不会停留在占位/隐藏态（重大可用性问题）。
+  useEffect(() => {
+    const maybeReveal = () => {
+      if (!activeSessionId) return;
+      if (typeof document !== 'undefined' && document.visibilityState && document.visibilityState !== 'visible') return;
+      setDeferredRevealSessionId((cur) => (cur === activeSessionId ? null : cur));
+    };
+
+    document.addEventListener('visibilitychange', maybeReveal);
+    window.addEventListener('focus', maybeReveal);
+
+    return () => {
+      document.removeEventListener('visibilitychange', maybeReveal);
+      window.removeEventListener('focus', maybeReveal);
+    };
+  }, [activeSessionId]);
 
   // 切换会话时，如果焦点仍在已隐藏的会话层里，主动 blur，避免键盘输入落到不可见输入框。
   useEffect(() => {
@@ -169,7 +194,7 @@ const ChatViewContainerInner: React.FC = () => {
           className={`absolute inset-0 ${sessionId === activeSessionId ? '' : 'invisible pointer-events-none'}`}
           aria-hidden={sessionId !== activeSessionId}
         >
-          <div className={sessionId === deferredRevealSessionId ? 'invisible' : ''}>
+          <div className={`h-full w-full ${sessionId === deferredRevealSessionId ? 'invisible' : ''}`}>
             <MemoChatView sessionId={sessionId} />
           </div>
           {sessionId === deferredRevealSessionId ? (
