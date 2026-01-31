@@ -396,7 +396,7 @@ function restoreContent(content: string, blocks: Map<string, string>): string {
 // Main MarkdownRenderer Component
 // ============================================================================
 
-export const MarkdownRenderer = React.memo(function MarkdownRenderer({ content, conversationId, workstudioId }: MarkdownRendererProps) {
+export const MarkdownRenderer = React.memo(function MarkdownRendererImpl({ content, conversationId, workstudioId }: MarkdownRendererProps) {
   const openFileReference = useCallback(async (ref: ParsedFileReference) => {
     if (!isTauriRuntime()) return;
 
@@ -463,7 +463,7 @@ export const MarkdownRenderer = React.memo(function MarkdownRenderer({ content, 
   }, [content]);
 
   // Memoize components object to prevent recreation on each render
-  const components = useMemo(() => ({
+	  const components = useMemo(() => ({
     code({ inline, className, children, ...props }: any) {
       const match = /language-(\w+)/.exec(className || '');
       const language = match?.[1] || '';
@@ -554,14 +554,37 @@ export const MarkdownRenderer = React.memo(function MarkdownRenderer({ content, 
         {children}
       </mark>
     ),
-    details: ({ children, ...props }: any) => (
-      <details
-        className="my-2 rounded-lg border border-gray-200 dark:border-gray-700"
-        {...props}
-      >
-        {children}
-      </details>
-    ),
+    details: ({ children, ...props }: any) => {
+      const parts = React.Children.toArray(children);
+      const summaryParts = parts.filter(
+        (p) => React.isValidElement(p) && (p.type as any) === 'summary'
+      );
+      const bodyParts = parts.filter((p) => !summaryParts.includes(p as any));
+      const bodyText = bodyParts.filter((p) => typeof p === 'string').join('');
+      const bodyNodes = bodyParts.filter((p) => typeof p !== 'string');
+      const hasBodyMarkdown = bodyText.trim().length > 0;
+
+      return (
+        <details
+          className="my-2 rounded-lg border border-gray-200 dark:border-gray-700"
+          {...props}
+        >
+          {summaryParts}
+          {(hasBodyMarkdown || bodyNodes.length > 0) && (
+            <div className="px-4 py-3">
+              {hasBodyMarkdown && (
+                <MarkdownRenderer
+                  content={bodyText}
+                  conversationId={conversationId}
+                  workstudioId={workstudioId}
+                />
+              )}
+              {bodyNodes.length > 0 && <div className={hasBodyMarkdown ? 'mt-2' : ''}>{bodyNodes}</div>}
+            </div>
+          )}
+        </details>
+      );
+    },
     summary: ({ children, ...props }: any) => (
       <summary
         className="cursor-pointer rounded-t-lg bg-gray-100 px-4 py-2 font-medium dark:bg-gray-800"

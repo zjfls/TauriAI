@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef } from 'react';
 import { useShallow } from 'zustand/shallow';
 import { ChatView } from '../components/Chat/ChatView';
 import { useSessionStore } from '../stores/sessionStore';
+import { endChatOpenProfile, getActiveChatOpenProfile, markChatOpenProfile } from '../utils/chatOpenProfile';
 
 const MemoChatView = React.memo(ChatView);
 MemoChatView.displayName = 'MemoChatView';
@@ -17,6 +18,7 @@ const ChatViewContainerInner: React.FC = () => {
   });
   const switchSession = useSessionStore((state) => state.switchSession);
   const layerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const profileScheduledRef = useRef<string | null>(null);
 
   // 容错：恢复状态异常时（sessions 有值但 activeSessionId 为空），自动选择第一个会话。
   useEffect(() => {
@@ -38,6 +40,42 @@ const ChatViewContainerInner: React.FC = () => {
         break;
       }
     }
+  }, [activeSessionId]);
+
+  // Debug profiling: keep-alive 模式下 ChatView 不会随切换重新渲染，因此在容器层补齐“切换到可见并完成绘制”的时点。
+  useEffect(() => {
+    if (!activeSessionId) return;
+
+    const profile = getActiveChatOpenProfile();
+    if (!profile || profile.ended) return;
+
+    const activeSession = useSessionStore.getState().sessions.get(activeSessionId);
+    const conversationId = activeSession?.conversationId ?? undefined;
+
+    const matches =
+      (profile.sessionId ? profile.sessionId === activeSessionId : false) ||
+      (conversationId && profile.conversationId ? profile.conversationId === conversationId : false);
+    if (!matches) return;
+
+    if (profileScheduledRef.current === profile.id) return;
+    profileScheduledRef.current = profile.id;
+
+    markChatOpenProfile('chatViewContainer:active_changed', {
+      profileId: profile.id,
+      sessionId: activeSessionId,
+      conversationId,
+      meta: { keepAlive: true },
+    });
+
+    requestAnimationFrame(() => {
+      markChatOpenProfile('chatViewContainer:raf1', { profileId: profile.id, sessionId: activeSessionId, conversationId });
+      requestAnimationFrame(() => {
+        markChatOpenProfile('chatViewContainer:raf2', { profileId: profile.id, sessionId: activeSessionId, conversationId });
+        requestAnimationFrame(() => {
+          endChatOpenProfile('chatViewContainer:painted', { profileId: profile.id, sessionId: activeSessionId, conversationId });
+        });
+      });
+    });
   }, [activeSessionId]);
 
   const setLayerRef = useCallback(
