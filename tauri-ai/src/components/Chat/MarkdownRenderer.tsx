@@ -124,9 +124,34 @@ const CodeBlock = React.memo(function CodeBlock({ language, code }: CodeBlockPro
 
 interface MermaidBlockProps {
   code: string;
+  tryOpenFileReferenceToken?: (token: string) => boolean;
 }
 
-const MermaidBlock = React.memo(function MermaidBlock({ code }: MermaidBlockProps) {
+function extractMermaidFileReferenceToken(hrefRaw: string): string | null {
+  const href = hrefRaw.trim();
+  if (!href) return null;
+
+  // 支持 `click X "tauri-ai://open-file?ref=<encoded-token>"`，其中 token 格式与行内 code 一致：
+  // 例如：`src/app.ts:42`、`events.rs#L10C2`、`a/foo.rs#L9-L12` 等。
+  try {
+    const url = new URL(href);
+    if (url.protocol === 'tauri-ai:' && url.hostname === 'open-file') {
+      const ref = url.searchParams.get('ref');
+      return ref ? ref.trim() : null;
+    }
+  } catch {
+    // ignore: 不是合法 URL（可能是相对路径/我们自己的 token）
+  }
+
+  // 也允许直接把 token 当 href：`click X "src/app.ts:42"`（不含 scheme）
+  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(href)) {
+    return href;
+  }
+
+  return null;
+}
+
+const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferenceToken }: MermaidBlockProps) {
   const [svg, setSvg] = useState<string>('');
   const [error, setError] = useState<string>('');
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -213,11 +238,39 @@ const MermaidBlock = React.memo(function MermaidBlock({ code }: MermaidBlockProp
     );
   }
 
+  const handleSvgClick = (e: React.MouseEvent) => {
+    const el = e.target as Element | null;
+    if (!el) return;
+    const anchor = el.closest?.('a[href], a[xlink\\:href]') as SVGElement | null;
+    if (!anchor) return;
+
+    const hrefRaw =
+      anchor.getAttribute('href') ??
+      anchor.getAttribute('xlink:href') ??
+      anchor.getAttributeNS('http://www.w3.org/1999/xlink', 'href') ??
+      '';
+
+    const token = extractMermaidFileReferenceToken(hrefRaw);
+    if (!token) return;
+    if (!tryOpenFileReferenceToken) return;
+
+    const handled = tryOpenFileReferenceToken(token);
+    if (!handled) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
   return (
     <>
       <div
         className="my-2 w-full overflow-x-auto rounded-lg bg-gray-100 dark:bg-gray-700/50 p-4 cursor-zoom-in flex justify-center [&_svg]:max-w-none"
-        onClick={() => setIsFullscreen(true)}
+        onClick={(e) => {
+          handleSvgClick(e);
+          // 如果点的是链接，就不进入全屏（否则“链接不可用”）。
+          if (e.defaultPrevented) return;
+          setIsFullscreen(true);
+        }}
         title="点击放大查看"
         dangerouslySetInnerHTML={{ __html: svg }}
       />
@@ -267,6 +320,7 @@ const MermaidBlock = React.memo(function MermaidBlock({ code }: MermaidBlockProp
           >
             <div
               style={{ transform: `scale(${scale})`, transformOrigin: 'top left', marginBottom: `${(scale - 1) * 100}%` }}
+              onClick={handleSvgClick}
               dangerouslySetInnerHTML={{ __html: svg }}
             />
           </div>
@@ -442,6 +496,16 @@ export const MarkdownRenderer = React.memo(function MarkdownRendererImpl({ conte
     }
   }, [conversationId, workstudioId]);
 
+  const tryOpenFileReferenceToken = useCallback(
+    (token: string): boolean => {
+      const ref = parseFileReferenceToken(token);
+      if (!ref) return false;
+      void openFileReference(ref);
+      return true;
+    },
+    [openFileReference]
+  );
+
   // Process content: protect LaTeX & Mermaid -> sanitize -> restore
   const processed = useMemo(() => {
     // Step 1: Protect LaTeX and Mermaid content from DOMPurify (also normalizes delimiters)
@@ -470,7 +534,7 @@ export const MarkdownRenderer = React.memo(function MarkdownRendererImpl({ conte
       const codeStr = String(children).replace(/\n$/, '');
 
       if (language === 'mermaid') {
-        return <MermaidBlock code={codeStr} />;
+        return <MermaidBlock code={codeStr} tryOpenFileReferenceToken={tryOpenFileReferenceToken} />;
       }
 
       if (language === 'plot' || language === 'mafs' || (language === 'json' && className?.includes('mafs'))) {
@@ -610,7 +674,7 @@ export const MarkdownRenderer = React.memo(function MarkdownRendererImpl({ conte
         {children}
       </td>
     ),
-  }), [conversationId, openFileReference]);
+  }), [conversationId, openFileReference, tryOpenFileReferenceToken, workstudioId]);
 
   // KaTeX options: don't throw on error, show red text for errors
   const katexOptions = useMemo(() => ({
