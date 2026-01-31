@@ -61,9 +61,10 @@ function App() {
    */
   useEffect(() => {
     // Workstudio 窗口需要把“打开文件”路由到自己的编辑器，而不是切换到全局 DocumentView。
-    // 因此在 workstudio standalone 窗口里跳过这里的监听（由 WorkstudioView 自己处理）。
-    if (viewOverride === 'workstudio') return;
+    // 因此在 workstudio 视图（含 standalone 窗口）里跳过这里的监听（由 WorkstudioView 自己处理）。
+    if ((viewOverride || activeView) === 'workstudio') return;
 
+    let disposed = false;
     let unlisten: null | (() => void) = null;
 
     void listen('menu:open_file', async () => {
@@ -99,6 +100,10 @@ function App() {
       }
     })
       .then((fn) => {
+        if (disposed) {
+          fn();
+          return;
+        }
         unlisten = fn;
       })
       .catch(() => {
@@ -106,17 +111,19 @@ function App() {
       });
 
     return () => {
+      disposed = true;
       unlisten?.();
     };
-  }, [viewOverride]);
+  }, [viewOverride, activeView]);
 
   /**
    * Menu: File -> New .tauri.richtxt
    * Create a new empty .tauri.richtxt document
    */
   useEffect(() => {
-    if (viewOverride === 'workstudio') return;
+    if ((viewOverride || activeView) === 'workstudio') return;
 
+    let disposed = false;
     let unlisten: null | (() => void) = null;
 
     void listen('menu:new_richtxt', () => {
@@ -142,6 +149,10 @@ function App() {
       useUIStore.getState().setActiveView('document');
     })
       .then((fn) => {
+        if (disposed) {
+          fn();
+          return;
+        }
         unlisten = fn;
       })
       .catch(() => {
@@ -149,9 +160,10 @@ function App() {
       });
 
     return () => {
+      disposed = true;
       unlisten?.();
     };
-  }, [viewOverride]);
+  }, [viewOverride, activeView]);
 
   /**
    * Standalone document window: open a local file if provided via query param.

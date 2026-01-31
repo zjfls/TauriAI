@@ -1533,6 +1533,7 @@ export const WorkstudioView: React.FC = () => {
   }, [contextMenu, tabMenu]);
 
   useEffect(() => {
+    let disposed = false;
     let unlisten: (() => void) | null = null;
     void listen('menu:open_file', async () => {
       try {
@@ -1542,16 +1543,22 @@ export const WorkstudioView: React.FC = () => {
       }
     })
       .then((fn) => {
+        if (disposed) {
+          fn();
+          return;
+        }
         unlisten = fn;
       })
       .catch(() => {});
 
     return () => {
+      disposed = true;
       unlisten?.();
     };
   }, [openFileFromDialog]);
 
   useEffect(() => {
+    let disposed = false;
     let unlisten: (() => void) | null = null;
     void listen('menu:new_richtxt', () => {
       try {
@@ -1561,11 +1568,16 @@ export const WorkstudioView: React.FC = () => {
       }
     })
       .then((fn) => {
+        if (disposed) {
+          fn();
+          return;
+        }
         unlisten = fn;
       })
       .catch(() => {});
 
     return () => {
+      disposed = true;
       unlisten?.();
     };
   }, [createUntitledRichTxt]);
