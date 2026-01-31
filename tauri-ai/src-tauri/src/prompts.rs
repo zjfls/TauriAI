@@ -77,7 +77,27 @@ x^2
 - 如果你只知道文件名：先用工具在工作区内搜索定位到唯一文件，再输出完整相对路径后引用
 - 不要使用 `file://` / `vscode://` 等 URI；不要对路径做 URL 编码；请直接输出可解析的文件路径
 - 支持“范围行号”用于选中（例如 `:10-20` / `#L10-L20`）；只需定位时优先给出起始行即可
-- Mermaid 图里需要“点击节点打开 Workstudio 代码位置”时：不要把 `` `path:line` `` 写在节点文本里当作链接（它只是普通文字，不会自动可点）；必须用 Mermaid 的 `click` 指令把“节点 ID -> 文件引用 token”绑定起来，例如：`click A "server/src/http/server.ts:21" "打开文件"`。若觉得节点里显示整段路径很丑（常见下划线/拥挤），建议节点标签只写简短名称，把文件路径放到 `click` 的 tooltip（第三个参数）里，既清爽又可跳转。
+- Mermaid 图里要“点击节点打开 Workstudio 的代码位置”时，必须额外写 `click` 绑定：节点文本里的 `` `path:line` `` 只是展示文字，不会自动变成可点击跳转；`click` 的 href 支持直接写文件 token（如 `"server/src/http/server.ts:21"`），也支持 `"tauri-ai://open-file?ref=<URL编码后的token>"`（当路径包含空格/特殊字符时更稳）。美观上建议：节点标签只写简短职责名，把完整路径放到 `click` 的 tooltip（第三个参数）里；必要时用 `classDef/class` 给不同层染色，避免整段路径下划线导致拥挤。
+  - Few-shot（错误：不可点击）
+  ```mermaid
+  flowchart TD
+    R["HTTP Request<br/>`server/src/http/server.ts:21`"]
+  ```
+  - Few-shot（正确：可点击跳转）
+  ```mermaid
+  flowchart TD
+    R[HTTP Request]
+    click R "server/src/http/server.ts:21" "server/src/http/server.ts:21"
+  ```
+  - Few-shot（更好看：短标签 + tooltip + 配色）
+  ```mermaid
+  flowchart TD
+    classDef api fill:#e8f3ff,stroke:#3b82f6,color:#1e3a8a;
+    classDef mw  fill:#ecfdf3,stroke:#22c55e,color:#064e3b;
+    R[HTTP Request]:::api --> MW[Auth Middleware]:::mw
+    click R  "server/src/http/server.ts:21" "server/src/http/server.ts:21"
+    click MW "server/src/middleware/auth.ts:42" "server/src/middleware/auth.ts:42"
+  ```
 "#;
 
 /// Tool usage prompt when "持久进程" enhancement is enabled for a toolset.
