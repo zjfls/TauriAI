@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useLayoutEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useShallow } from 'zustand/shallow';
 import { ChatView } from '../components/Chat/ChatView';
 import { useSessionStore } from '../stores/sessionStore';
@@ -19,6 +19,8 @@ const ChatViewContainerInner: React.FC = () => {
   const switchSession = useSessionStore((state) => state.switchSession);
   const layerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const profileScheduledRef = useRef<string | null>(null);
+  const [deferredRevealSessionId, setDeferredRevealSessionId] = useState<string | null>(null);
+  const revealSeqRef = useRef(0);
 
   // 容错：恢复状态异常时（sessions 有值但 activeSessionId 为空），自动选择第一个会话。
   useEffect(() => {
@@ -27,6 +29,41 @@ const ChatViewContainerInner: React.FC = () => {
     if (!firstId) return;
     switchSession(firstId);
   }, [activeSessionId, sessionIds, switchSession]);
+
+  // 两阶段展示：切换会话时先显示一个轻量占位层（避免首帧直接 paint 大量 DOM），下一帧再揭示真实内容。
+  // keep-alive 不变：ChatView 始终保留在 DOM 中，只在短时间内用 `visibility:hidden` 抑制绘制。
+  useLayoutEffect(() => {
+    if (!activeSessionId) {
+      setDeferredRevealSessionId(null);
+      return;
+    }
+
+    revealSeqRef.current += 1;
+    setDeferredRevealSessionId(activeSessionId);
+  }, [activeSessionId]);
+
+  useEffect(() => {
+    if (!activeSessionId) return;
+    if (deferredRevealSessionId !== activeSessionId) return;
+
+    const seq = revealSeqRef.current;
+    let cancelled = false;
+    const cancel = () => {
+      cancelled = true;
+    };
+
+    // 等占位层完成一次 paint（useEffect 在 paint 后触发），再在下一帧揭示真实内容。
+    const rafId = requestAnimationFrame(() => {
+      if (cancelled) return;
+      if (revealSeqRef.current !== seq) return;
+      setDeferredRevealSessionId((cur) => (cur === activeSessionId ? null : cur));
+    });
+
+    return () => {
+      cancel();
+      cancelAnimationFrame(rafId);
+    };
+  }, [activeSessionId, deferredRevealSessionId]);
 
   // 切换会话时，如果焦点仍在已隐藏的会话层里，主动 blur，避免键盘输入落到不可见输入框。
   useEffect(() => {
@@ -132,7 +169,14 @@ const ChatViewContainerInner: React.FC = () => {
           className={`absolute inset-0 ${sessionId === activeSessionId ? '' : 'invisible pointer-events-none'}`}
           aria-hidden={sessionId !== activeSessionId}
         >
-          <MemoChatView sessionId={sessionId} />
+          <div className={sessionId === deferredRevealSessionId ? 'invisible' : ''}>
+            <MemoChatView sessionId={sessionId} />
+          </div>
+          {sessionId === deferredRevealSessionId ? (
+            <div className="absolute inset-0 z-10 flex items-center justify-center bg-white dark:bg-gray-950">
+              <div className="text-sm text-gray-500 dark:text-gray-400">正在渲染…</div>
+            </div>
+          ) : null}
         </div>
       ))}
     </div>
