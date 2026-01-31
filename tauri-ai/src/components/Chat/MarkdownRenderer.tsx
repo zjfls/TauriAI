@@ -165,6 +165,22 @@ function sanitizeMermaidSvg(svg: string): string {
   return out;
 }
 
+function findNearestAnchorWithLink(start: Element): SVGElement | HTMLAnchorElement | null {
+  let cur: Element | null = start;
+  while (cur) {
+    if (cur.tagName.toLowerCase() === 'a') {
+      const href =
+        cur.getAttribute('href') ??
+        cur.getAttribute('xlink:href') ??
+        cur.getAttributeNS?.('http://www.w3.org/1999/xlink', 'href') ??
+        '';
+      if (href && href.trim().length > 0) return cur as any;
+    }
+    cur = cur.parentElement;
+  }
+  return null;
+}
+
 const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferenceToken }: MermaidBlockProps) {
   const [svg, setSvg] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -256,7 +272,7 @@ const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferen
   const handleSvgClickCapture = (e: React.SyntheticEvent) => {
     const el = e.target as Element | null;
     if (!el) return;
-    const anchor = el.closest?.('a[href], a[xlink\\:href]') as SVGElement | null;
+    const anchor = findNearestAnchorWithLink(el);
     if (!anchor) return;
 
     const hrefRaw =

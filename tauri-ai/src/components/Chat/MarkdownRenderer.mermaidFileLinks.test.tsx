@@ -2,6 +2,7 @@ import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MarkdownRenderer } from './MarkdownRenderer';
+import mermaid from 'mermaid';
 
 const mockInvoke = vi.fn();
 const mockOpenOrFocusViewWindow = vi.fn();
@@ -28,6 +29,8 @@ describe('MarkdownRenderer Mermaid file links', () => {
   beforeEach(() => {
     mockInvoke.mockReset();
     mockOpenOrFocusViewWindow.mockReset();
+    (mermaid as any).parse?.mockClear?.();
+    (mermaid as any).render?.mockClear?.();
     (window as any).__TAURI__ = true;
   });
 
@@ -61,5 +64,38 @@ describe('MarkdownRenderer Mermaid file links', () => {
       })
     );
   });
-});
 
+  it('opens workstudio when clicking mermaid <a> xlink:href token', async () => {
+    mockInvoke.mockResolvedValue({ id: 'ws1', mainFolder: '/tmp' });
+    (mermaid as any).render.mockResolvedValueOnce({
+      svg: '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><a xlink:href="src/app.ts:42"><text>OpenX</text></a></svg>',
+    });
+
+    render(
+      <MarkdownRenderer
+        content={'```mermaid\nflowchart TD\nA[OpenX]\n```'}
+        conversationId="conv1"
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('OpenX')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByText('OpenX'));
+
+    await waitFor(() => {
+      expect(mockOpenOrFocusViewWindow).toHaveBeenCalledTimes(1);
+    });
+
+    expect(mockOpenOrFocusViewWindow).toHaveBeenCalledWith(
+      'workstudio',
+      expect.any(String),
+      expect.objectContaining({
+        workstudioId: 'ws1',
+        filePath: 'src/app.ts',
+        line: 42,
+      })
+    );
+  });
+});
