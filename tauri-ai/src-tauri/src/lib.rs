@@ -24,6 +24,7 @@ use commands::{
     set_agent_mcp_set, test_mcp_server, upsert_mcp_server, upsert_mcp_set,
     list_skills, create_skill,
     get_format_prompt,
+    get_mermaid_svg_cache, set_mermaid_svg_cache,
     update_conversation_metadata, write_local_text_file,
     update_conversation_title, list_pty_sessions, close_pty_session,
     ensure_workstudio_for_conversation, get_workstudio, add_workstudio_folder, create_workstudio,
@@ -265,6 +266,9 @@ pub fn run() {
             create_skill,
             // Prompt commands
             get_format_prompt,
+            // Mermaid SVG cache (disk)
+            get_mermaid_svg_cache,
+            set_mermaid_svg_cache,
             // File commands (drag & drop paths -> data)
             read_local_file_base64,
             list_local_directory,

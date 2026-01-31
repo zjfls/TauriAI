@@ -37,6 +37,7 @@ pub const CHAT_FORMAT_PROMPT: &str = r#"
 - **不支持数学公式**：Mermaid 内部不支持 LaTeX 公式渲染，如需数学符号请使用 Unicode（如 ∫、∑、√、∞、≤、≥、α、β、π）
 - **禁止使用 `*` 作乘号**：类图中 `*` 是保留符号，请用 `×` 或 `·` 代替
 - **Class Diagram**：必须先定义类名再使用 `<<interface>>` 注解
+- **Class Diagram**：类名/接口名不要写成字符串（不要用引号），例如不要写 `class "Tag"`；这里必须是合法标识符（否则常见报错 `got 'STR'`）
 - **Sequence Diagram**：参与者 ID 不要使用 Mermaid 保留关键字（如 `loop/alt/else/end/opt/par/and/break/critical/note/rect/activate/deactivate`），也不要包含 `-` `/` `.` 等符号；需要展示长名称时用 `participant "展示名" as SAFE_ID`，消息线用 `SAFE_ID` 引用
 错误示范：
 ```mermaid

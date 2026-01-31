@@ -4534,6 +4534,7 @@ dependencies = [
  "chrono",
  "dirs 5.0.1",
  "dunce",
+ "filetime",
  "futures",
  "notify",
  "portable-pty",

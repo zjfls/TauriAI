@@ -61,6 +61,33 @@ const isTauriRuntime = (): boolean => {
   return Boolean(w.__TAURI_INTERNALS__ || w.__TAURI__);
 };
 
+async function getMermaidSvgCacheFromDisk(key: string): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  if (!key.trim()) return null;
+
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const out = await invoke<unknown>('get_mermaid_svg_cache', { key });
+    if (typeof out !== 'string') return null;
+    return out.trim() ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+async function setMermaidSvgCacheToDisk(key: string, svg: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  if (!key.trim()) return;
+  if (!svg.trim()) return;
+
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('set_mermaid_svg_cache', { key, svg });
+  } catch {
+    // ignore (cache is best-effort)
+  }
+}
+
 // ============================================================================
 // Components
 // ============================================================================
@@ -222,6 +249,18 @@ const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferen
 
     const renderDiagram = async () => {
       try {
+        const diskSvg = await getMermaidSvgCacheFromDisk(cacheKey);
+
+        if (cancelled) return;
+
+        if (diskSvg) {
+          const cleaned = sanitizeMermaidSvg(diskSvg);
+          mermaidCache.set(cacheKey, cleaned);
+          setSvg(cleaned);
+          setError('');
+          return;
+        }
+
         const renderId = generateMermaidId();
         await mermaid.parse(cleanCode);
 
@@ -235,6 +274,9 @@ const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferen
         mermaidCache.set(cacheKey, cleaned);
         setSvg(cleaned);
         setError('');
+
+        // Best-effort 落盘缓存（不阻塞 UI）
+        void setMermaidSvgCacheToDisk(cacheKey, cleaned);
       } catch (err) {
         if (cancelled) return;
 

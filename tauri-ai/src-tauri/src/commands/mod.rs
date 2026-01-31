@@ -15,6 +15,7 @@ mod workstudio_terminal;
 mod workstudio_state;
 mod workstudio_security;
 mod prompts;
+mod mermaid_cache;
 
 pub use run::{abort_run, retry_turn, run_task};
 pub use run::respond_approval;
@@ -31,6 +32,7 @@ pub use mcp::{
 };
 pub use skills::{create_skill, list_skills};
 pub use prompts::get_format_prompt;
+pub use mermaid_cache::{get_mermaid_svg_cache, set_mermaid_svg_cache};
 pub use workstudio::{
     add_workstudio_folder, create_workstudio, ensure_workstudio_for_conversation, get_workstudio,
     remove_workstudio_folder, set_workstudio_main_folder, workstudio_find_files,
