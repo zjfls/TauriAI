@@ -91,13 +91,13 @@ x^2
   ```
   - Few-shot（更好看：短标签 + tooltip + 配色）
   ```mermaid
-  flowchart TD
-    classDef api fill:#e8f3ff,stroke:#3b82f6,color:#1e3a8a;
-    classDef mw  fill:#ecfdf3,stroke:#22c55e,color:#064e3b;
-    R[HTTP Request]:::api --> MW[Auth Middleware]:::mw
-    click R  "server/src/http/server.ts:21" "server/src/http/server.ts:21"
-    click MW "server/src/middleware/auth.ts:42" "server/src/middleware/auth.ts:42"
-  ```
+	  flowchart TD
+	    classDef api fill:#e8f3ff,stroke:#3b82f6,color:#1e3a8a;
+	    classDef mw  fill:#ecfdf3,stroke:#22c55e,color:#064e3b;
+	    R[HTTP Request]:::api --> MW[Auth Middleware]:::mw
+	    click R "server/src/http/server.ts:21" "server/src/http/server.ts:21"
+	    click MW "server/src/middleware/auth.ts:42" "server/src/middleware/auth.ts:42"
+	  ```
 "#;
 
 /// Tool usage prompt when "持久进程" enhancement is enabled for a toolset.
