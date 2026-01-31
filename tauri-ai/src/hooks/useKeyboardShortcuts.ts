@@ -7,6 +7,8 @@
 import { useEffect, useCallback, useState } from 'react';
 import { useSessionStore } from '../stores/sessionStore';
 import { useConfigStore } from '../stores/configStore';
+import { useUIStore } from '../stores/uiStore';
+import { markChatOpenProfile, startChatOpenProfile } from '../utils/chatOpenProfile';
 import type { AgentSession, AppConfig } from '../types';
 
 interface KeyboardShortcutsOptions {
@@ -127,6 +129,20 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
     const nextIndex = (currentIndex + 1) % orderedSessions.length;
     const nextSession = orderedSessions[nextIndex];
     if (nextSession) {
+      const activeView = useUIStore.getState().activeView;
+      const profileId =
+        activeView === 'chat'
+          ? startChatOpenProfile({
+              source: 'keyboard_shortcuts:next_session',
+              sessionId: nextSession.id,
+              conversationId: nextSession.conversationId ?? undefined,
+              meta: {
+                title: nextSession.title,
+                messageCount: nextSession.messages?.length ?? 0,
+              },
+            })
+          : null;
+      markChatOpenProfile('keyboard_shortcuts:switchSession', { profileId: profileId || undefined, sessionId: nextSession.id });
       useSessionStore.getState().switchSession(nextSession.id);
     }
   }, [getOrderedSessions, getCurrentSessionIndex]);
@@ -143,6 +159,20 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
     const prevIndex = currentIndex <= 0 ? orderedSessions.length - 1 : currentIndex - 1;
     const prevSession = orderedSessions[prevIndex];
     if (prevSession) {
+      const activeView = useUIStore.getState().activeView;
+      const profileId =
+        activeView === 'chat'
+          ? startChatOpenProfile({
+              source: 'keyboard_shortcuts:previous_session',
+              sessionId: prevSession.id,
+              conversationId: prevSession.conversationId ?? undefined,
+              meta: {
+                title: prevSession.title,
+                messageCount: prevSession.messages?.length ?? 0,
+              },
+            })
+          : null;
+      markChatOpenProfile('keyboard_shortcuts:switchSession', { profileId: profileId || undefined, sessionId: prevSession.id });
       useSessionStore.getState().switchSession(prevSession.id);
     }
   }, [getOrderedSessions, getCurrentSessionIndex]);
@@ -159,6 +189,24 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
     if (targetIndex >= 0 && targetIndex < orderedSessions.length) {
       const targetSession = orderedSessions[targetIndex];
       if (targetSession) {
+        const activeView = useUIStore.getState().activeView;
+        const profileId =
+          activeView === 'chat'
+            ? startChatOpenProfile({
+                source: 'keyboard_shortcuts:switch_to_index',
+                sessionId: targetSession.id,
+                conversationId: targetSession.conversationId ?? undefined,
+                meta: {
+                  index,
+                  title: targetSession.title,
+                  messageCount: targetSession.messages?.length ?? 0,
+                },
+              })
+            : null;
+        markChatOpenProfile('keyboard_shortcuts:switchSession', {
+          profileId: profileId || undefined,
+          sessionId: targetSession.id,
+        });
         useSessionStore.getState().switchSession(targetSession.id);
       }
     }

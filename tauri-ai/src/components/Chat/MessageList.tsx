@@ -226,41 +226,62 @@ const MessageListInner: React.FC<MessageListProps> = ({
   );
 
   useLayoutEffect(() => {
+    const startedAt =
+      typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
+    markChatOpenProfile('messageList:layoutEffect:init:start', {
+      conversationId: conversationKey || undefined,
+      meta: { totalMessages: messages.length },
+    });
+
     loadMoreInFlightRef.current = false;
     pendingScrollAdjustRef.current = null;
 
     const forceToBottom = consumeConversationScrollToBottomOnce(conversationKey);
     const saved = forceToBottom ? undefined : getConversationViewState(conversationKey);
-    if (saved) {
-      const clampedStartIndex = Math.max(0, Math.min(messages.length, saved.startIndex));
-      const nextVisibleCount = Math.min(
-        messages.length,
-        Math.max(DEFAULT_VISIBLE_MESSAGES, messages.length - clampedStartIndex)
-      );
-      setVisibleCount(nextVisibleCount);
-      setIsAtBottom(saved.isAtBottom);
-      setUserScrolledAway(saved.userScrolledAway);
-      followOutputRef.current = saved.isAtBottom;
-      if (saved.isAtBottom) {
-        pendingRestoreRef.current = { mode: 'bottom' };
-      } else if (saved.anchorMessageId && typeof saved.anchorViewportTop === 'number') {
-        pendingRestoreRef.current = {
-          mode: 'anchor',
-          messageId: saved.anchorMessageId,
-          viewportTop: saved.anchorViewportTop,
-          fallbackScrollTop: saved.scrollTop,
-        };
-      } else {
-        pendingRestoreRef.current = { mode: 'scrollTop', scrollTop: saved.scrollTop };
+    try {
+      if (saved) {
+        const clampedStartIndex = Math.max(0, Math.min(messages.length, saved.startIndex));
+        const nextVisibleCount = Math.min(
+          messages.length,
+          Math.max(DEFAULT_VISIBLE_MESSAGES, messages.length - clampedStartIndex)
+        );
+        setVisibleCount(nextVisibleCount);
+        setIsAtBottom(saved.isAtBottom);
+        setUserScrolledAway(saved.userScrolledAway);
+        followOutputRef.current = saved.isAtBottom;
+        if (saved.isAtBottom) {
+          pendingRestoreRef.current = { mode: 'bottom' };
+        } else if (saved.anchorMessageId && typeof saved.anchorViewportTop === 'number') {
+          pendingRestoreRef.current = {
+            mode: 'anchor',
+            messageId: saved.anchorMessageId,
+            viewportTop: saved.anchorViewportTop,
+            fallbackScrollTop: saved.scrollTop,
+          };
+        } else {
+          pendingRestoreRef.current = { mode: 'scrollTop', scrollTop: saved.scrollTop };
+        }
+        return;
       }
-      return;
-    }
 
-    setVisibleCount(DEFAULT_VISIBLE_MESSAGES);
-    setIsAtBottom(true);
-    setUserScrolledAway(false);
-    followOutputRef.current = true;
-    pendingRestoreRef.current = { mode: 'bottom' };
+      setVisibleCount(DEFAULT_VISIBLE_MESSAGES);
+      setIsAtBottom(true);
+      setUserScrolledAway(false);
+      followOutputRef.current = true;
+      pendingRestoreRef.current = { mode: 'bottom' };
+    } finally {
+      const endedAt =
+        typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
+      markChatOpenProfile('messageList:layoutEffect:init:done', {
+        conversationId: conversationKey || undefined,
+        meta: {
+          durationMs: Number((endedAt - startedAt).toFixed(1)),
+          usedSaved: Boolean(saved),
+          forceToBottom,
+          totalMessages: messages.length,
+        },
+      });
+    }
   }, [conversationKey, messages.length]);
 
   // Handle “scroll to bottom” requests even when conversationKey doesn't change (e.g. clicking the same conversation in history).
@@ -293,28 +314,52 @@ const MessageListInner: React.FC<MessageListProps> = ({
     const container = containerRef.current;
     if (!pending || !container) return;
 
+    const startedAt =
+      typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
+    markChatOpenProfile('messageList:layoutEffect:restore:start', {
+      conversationId: conversationKey || undefined,
+      meta: { mode: pending.mode, visibleCount, totalMessages: messages.length },
+    });
+
     cancelRestoreCalibration();
+    let anchorFound: boolean | undefined = undefined;
 
-    if (pending.mode === 'bottom') {
-      followOutputRef.current = true;
-      bottomRef.current?.scrollIntoView({ behavior: 'instant' });
-    } else if (pending.mode === 'scrollTop') {
-      followOutputRef.current = false;
-      container.scrollTop = pending.scrollTop;
-    } else {
-      followOutputRef.current = false;
-      const anchorEl = findMessageElement(pending.messageId);
-      if (anchorEl) {
-        const containerTop = container.getBoundingClientRect().top;
-        const currentTop = anchorEl.getBoundingClientRect().top - containerTop;
-        container.scrollTop += currentTop - pending.viewportTop;
-        startRestoreCalibration(pending.messageId, pending.viewportTop);
+    try {
+      if (pending.mode === 'bottom') {
+        followOutputRef.current = true;
+        bottomRef.current?.scrollIntoView({ behavior: 'instant' });
+      } else if (pending.mode === 'scrollTop') {
+        followOutputRef.current = false;
+        container.scrollTop = pending.scrollTop;
       } else {
-        container.scrollTop = pending.fallbackScrollTop;
+        followOutputRef.current = false;
+        const anchorEl = findMessageElement(pending.messageId);
+        anchorFound = Boolean(anchorEl);
+        if (anchorEl) {
+          const containerTop = container.getBoundingClientRect().top;
+          const currentTop = anchorEl.getBoundingClientRect().top - containerTop;
+          container.scrollTop += currentTop - pending.viewportTop;
+          startRestoreCalibration(pending.messageId, pending.viewportTop);
+        } else {
+          container.scrollTop = pending.fallbackScrollTop;
+        }
       }
-    }
+    } finally {
+      pendingRestoreRef.current = null;
 
-    pendingRestoreRef.current = null;
+      const endedAt =
+        typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
+      markChatOpenProfile('messageList:layoutEffect:restore:done', {
+        conversationId: conversationKey || undefined,
+        meta: {
+          mode: pending.mode,
+          durationMs: Number((endedAt - startedAt).toFixed(1)),
+          anchorFound,
+          visibleCount,
+          totalMessages: messages.length,
+        },
+      });
+    }
   }, [cancelRestoreCalibration, conversationKey, findMessageElement, startRestoreCalibration, visibleCount]);
 
   useEffect(() => cancelRestoreCalibration, [cancelRestoreCalibration]);
