@@ -11,6 +11,7 @@ pub mod skills;
 pub mod storage;
 pub mod tray;
 pub mod bundled_tools;
+pub mod workstudio_security;
 
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -28,6 +29,7 @@ use commands::{
     ensure_workstudio_for_conversation, get_workstudio, add_workstudio_folder, create_workstudio,
     set_workstudio_main_folder, remove_workstudio_folder, workstudio_find_files,
     get_workstudio_ui_state, set_workstudio_ui_state,
+    get_workstudio_security_config, set_workstudio_security_config,
     workstudio_terminal_close, workstudio_terminal_create, workstudio_terminal_read,
     workstudio_terminal_read_base64,
     workstudio_terminal_write,
@@ -230,6 +232,9 @@ pub fn run() {
             // Workstudio state (UI persisted)
             get_workstudio_ui_state,
             set_workstudio_ui_state,
+            // Workstudio security (workspace-scoped)
+            get_workstudio_security_config,
+            set_workstudio_security_config,
             // Conversation commands
             get_conversations,
             get_messages,

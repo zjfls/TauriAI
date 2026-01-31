@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { open as openDialog } from '@tauri-apps/plugin-dialog';
+import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { openPath, revealItemInDir } from '@tauri-apps/plugin-opener';
 import Editor, { type OnMount } from '@monaco-editor/react';
 import { Terminal } from 'xterm';
@@ -176,6 +176,7 @@ const languageForPath = (path: string) => {
   if (lower.endsWith('.json')) return 'json';
   if (lower.endsWith('.css')) return 'css';
   if (lower.endsWith('.html') || lower.endsWith('.htm')) return 'html';
+  if (lower.endsWith('.tauri.richtxt')) return 'markdown';
   if (lower.endsWith('.md') || lower.endsWith('.markdown')) return 'markdown';
   if (lower.endsWith('.py')) return 'python';
   if (lower.endsWith('.rs')) return 'rust';
@@ -190,6 +191,23 @@ const basename = (p: string) => {
   const segments = normalized.split('/').filter(Boolean);
   return segments.length === 0 ? p : segments[segments.length - 1];
 };
+
+const UNTITLED_PREFIX = 'untitled:';
+const isUntitledPath = (p: string) => p.startsWith(UNTITLED_PREFIX);
+
+const nextUntitledRichTxtTitle = (files: OpenFile[]) => {
+  const re = /^Untitled-(\d+)\.tauri\.richtxt$/i;
+  let max = 0;
+  for (const f of files) {
+    const m = re.exec(f.title);
+    if (!m) continue;
+    const n = Number(m[1]);
+    if (Number.isFinite(n)) max = Math.max(max, n);
+  }
+  return `Untitled-${max + 1}.tauri.richtxt`;
+};
+
+const utf8Size = (text: string) => new TextEncoder().encode(text).length;
 
 const decodeBase64ToUtf8 = (base64: string) => {
   const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
@@ -318,6 +336,7 @@ export const WorkstudioView: React.FC = () => {
   const [ws, setWs] = useState<Workstudio | null>(null);
   const [wsError, setWsError] = useState<string | null>(null);
   const [wsLoading, setWsLoading] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(() => new Set());
   const [entriesByDir, setEntriesByDir] = useState<Record<string, DirEntry[]>>({});
@@ -877,26 +896,125 @@ export const WorkstudioView: React.FC = () => {
 
   const saveFile = useCallback(
     async (fileId: string, editor: import('monaco-editor').editor.IStandaloneCodeEditor | null) => {
-      const file = openFiles.find((f) => f.id === fileId);
+      const file = openFilesRef.current.find((f) => f.id === fileId);
       if (!file) return;
       if (file.kind !== 'text') return;
       const latest = editor?.getValue() ?? file.content ?? '';
-      await invoke('write_local_text_file', { path: file.path, content: latest });
-      setOpenFiles((prev) =>
-        prev.map((f) =>
-          f.id === file.id ? { ...f, content: latest, originalContent: latest, dirty: false } : f
-        )
-      );
+      setSaveError(null);
+      try {
+        const isRichTxt = file.title.toLowerCase().endsWith('.tauri.richtxt');
+
+        if (isUntitledPath(file.id) || isUntitledPath(file.path)) {
+          const suggested = ws?.mainFolder ? `${ws.mainFolder}/${file.title}` : file.title;
+          const picked = await saveDialog({
+            title: '保存文件',
+            defaultPath: suggested,
+          });
+          if (!picked) return;
+
+          const nextPath =
+            isRichTxt && !picked.toLowerCase().endsWith('.tauri.richtxt') ? `${picked}.tauri.richtxt` : picked;
+          const normalizedPath = normalizeFsPath(nextPath);
+          if (!normalizedPath) return;
+
+          await invoke('write_local_text_file', { path: normalizedPath, content: latest });
+
+          setOpenFiles((prev) => {
+            const existing = prev.find((f) => f.id === normalizedPath);
+            const nextTitle = basename(normalizedPath);
+
+            if (existing) {
+              return prev
+                .filter((f) => f.id !== file.id)
+                .map((f) =>
+                  f.id === normalizedPath
+                    ? {
+                        ...f,
+                        title: nextTitle,
+                        path: normalizedPath,
+                        kind: 'text',
+                        mime: 'text/plain',
+                        size: utf8Size(latest),
+                        content: latest,
+                        originalContent: latest,
+                        dirty: false,
+                      }
+                    : f
+                );
+            }
+
+            return prev.map((f) =>
+              f.id === file.id
+                ? {
+                    ...f,
+                    id: normalizedPath,
+                    title: nextTitle,
+                    path: normalizedPath,
+                    kind: 'text',
+                    mime: 'text/plain',
+                    size: utf8Size(latest),
+                    content: latest,
+                    originalContent: latest,
+                    dirty: false,
+                  }
+                : f
+            );
+          });
+
+          setGroups((prev) =>
+            prev.map((g) => {
+              const replaced = g.openFileIds.map((id) => (id === file.id ? normalizedPath : id));
+              const deduped = Array.from(new Set(replaced));
+              const active = g.activeFileId === file.id ? normalizedPath : g.activeFileId;
+              const nextActive = active && deduped.includes(active) ? active : deduped[0] ?? null;
+              return { ...g, openFileIds: deduped, activeFileId: nextActive };
+            })
+          );
+
+          return;
+        }
+
+        await invoke('write_local_text_file', { path: file.path, content: latest });
+        setOpenFiles((prev) =>
+          prev.map((f) =>
+            f.id === file.id
+              ? { ...f, content: latest, originalContent: latest, dirty: false, size: utf8Size(latest) }
+              : f
+          )
+        );
+      } catch (e) {
+        setSaveError(e instanceof Error ? e.message : String(e));
+      }
     },
-    [openFiles]
+    [ws]
   );
 
-  const saveFocusedFile = useCallback(async () => {
-    const fileId = focusedGroup?.activeFileId ?? null;
-    if (!fileId) return;
-    const editor = focusedGroup ? editorByGroupRef.current.get(focusedGroup.id) ?? null : null;
-    await saveFile(fileId, editor);
-  }, [focusedGroup, saveFile]);
+  const createUntitledRichTxt = useCallback(() => {
+    const title = nextUntitledRichTxtTitle(openFilesRef.current);
+    const id = `${UNTITLED_PREFIX}${title}`;
+    const content = '<!-- tauri.richtxt v1 -->\n\n# 新建文档\n\n';
+
+    const next: OpenFile = {
+      id,
+      title,
+      path: id,
+      kind: 'text',
+      mime: 'text/plain',
+      size: utf8Size(content),
+      content,
+      originalContent: '',
+      dirty: true,
+    };
+
+    setOpenFiles((prev) => (prev.some((f) => f.id === id) ? prev : [...prev, next]));
+    setGroups((prev) =>
+      prev.map((g) => {
+        if (g.id !== focusedGroupId) return g;
+        const openFileIds = g.openFileIds.includes(id) ? g.openFileIds : [...g.openFileIds, id];
+        return { ...g, openFileIds, activeFileId: id };
+      })
+    );
+  }, [focusedGroupId]);
 
   const ensureTerminalSession = useCallback(async () => {
     if (!ws) return null;
@@ -1029,11 +1147,13 @@ export const WorkstudioView: React.FC = () => {
         editorByGroupRef.current.set(groupId, editor);
 
         editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
-          void saveFocusedFile();
+          const fileId = groupsRef.current.find((g) => g.id === groupId)?.activeFileId ?? null;
+          if (!fileId) return;
+          void saveFile(fileId, editor);
         });
         editor.onDidFocusEditorWidget(() => setFocusedGroupId(groupId));
       },
-    [saveFocusedFile]
+    [saveFile]
   );
 
   const editorTheme = useMemo(() => {
@@ -1364,11 +1484,12 @@ export const WorkstudioView: React.FC = () => {
     if (!ws) return;
     if (saveStateTimerRef.current) window.clearTimeout(saveStateTimerRef.current);
     saveStateTimerRef.current = window.setTimeout(() => {
+      const persistedOpenFiles = openFiles.filter((f) => !isUntitledPath(f.path));
       const state: WorkstudioUiState = {
-        openFiles: Array.from(new Set(openFiles.map((f) => f.path))),
+        openFiles: Array.from(new Set(persistedOpenFiles.map((f) => f.path))),
         groups: groups.map((g) => ({
-          openFiles: Array.from(new Set(g.openFileIds)),
-          activeFile: g.activeFileId ?? undefined,
+          openFiles: Array.from(new Set(g.openFileIds.filter((id) => !isUntitledPath(id)))),
+          activeFile: g.activeFileId && !isUntitledPath(g.activeFileId) ? g.activeFileId : undefined,
           weight: g.weight,
         })),
         focusedGroupIndex: Math.max(0, groups.findIndex((g) => g.id === focusedGroupId)),
@@ -1429,6 +1550,25 @@ export const WorkstudioView: React.FC = () => {
       unlisten?.();
     };
   }, [openFileFromDialog]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    void listen('menu:new_richtxt', () => {
+      try {
+        createUntitledRichTxt();
+      } catch (error) {
+        console.error('Workstudio new .tauri.richtxt failed:', error);
+      }
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => {});
+
+    return () => {
+      unlisten?.();
+    };
+  }, [createUntitledRichTxt]);
 
   const renderDirNode = (dirPath: string, depth: number, opts?: { isRoot?: boolean; isMainRoot?: boolean }) => {
     const expanded = expandedDirs.has(dirPath);
@@ -1571,29 +1711,34 @@ export const WorkstudioView: React.FC = () => {
         </div>
 
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-          <div className="flex items-center justify-between border-b border-gray-200 bg-white px-3 py-2 dark:border-gray-800 dark:bg-gray-950">
-            <div className="min-w-0 text-xs text-gray-600 dark:text-gray-300">
-              编辑组: {groups.length}{' '}
-              <span className="text-gray-400">
-                （聚焦 {Math.max(1, groups.findIndex((g) => g.id === focusedGroupId) + 1)}）
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-                onClick={() => setTerminalOpen((v) => !v)}
-                title="终端"
-              >
-                {terminalOpen ? '关闭终端' : '终端'}
-              </button>
-            </div>
-          </div>
-          {openFromLinkError && (
-            <div className="border-b border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-200">
-              打开链接文件失败：{openFromLinkError}
-            </div>
-          )}
+	          <div className="flex items-center justify-between border-b border-gray-200 bg-white px-3 py-2 dark:border-gray-800 dark:bg-gray-950">
+	            <div className="min-w-0 text-xs text-gray-600 dark:text-gray-300">
+	              编辑组: {groups.length}{' '}
+	              <span className="text-gray-400">
+	                （聚焦 {Math.max(1, groups.findIndex((g) => g.id === focusedGroupId) + 1)}）
+	              </span>
+	            </div>
+	            <div className="flex items-center gap-2">
+	              <button
+	                type="button"
+	                className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+	                onClick={() => setTerminalOpen((v) => !v)}
+	                title="终端"
+	              >
+	                {terminalOpen ? '关闭终端' : '终端'}
+	              </button>
+	            </div>
+	          </div>
+	          {saveError && (
+	            <div className="border-b border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-200">
+	              保存失败：{saveError}
+	            </div>
+	          )}
+	          {openFromLinkError && (
+	            <div className="border-b border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-200">
+	              打开链接文件失败：{openFromLinkError}
+	            </div>
+	          )}
 
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
             <div ref={groupRowRef} className="flex min-h-0 flex-1 flex-row overflow-hidden">
@@ -2069,10 +2214,10 @@ export const WorkstudioView: React.FC = () => {
           style={{ left: tabMenu.x, top: tabMenu.y }}
           onMouseDown={(e) => e.stopPropagation()}
         >
-          <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400 truncate" title={tabMenu.path}>
-            {tabMenu.path}
-          </div>
-          <div className="py-1 text-sm">
+	          <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400 truncate" title={tabMenu.path}>
+	            {tabMenu.path}
+	          </div>
+	          <div className="py-1 text-sm">
             <button
               type="button"
               className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
@@ -2123,18 +2268,20 @@ export const WorkstudioView: React.FC = () => {
             >
               关闭右侧
             </button>
-            <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
-            <button
-              type="button"
-              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
-              onClick={() => {
-                const p = tabMenu.path;
-                setTabMenu(null);
-                void revealItemInDir(p);
-              }}
-            >
-              在系统中打开所在文件夹
-            </button>
+	            <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
+	            <button
+	              type="button"
+	              disabled={isUntitledPath(tabMenu.path)}
+	              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:text-gray-200 dark:hover:bg-gray-800"
+	              onClick={() => {
+	                const p = tabMenu.path;
+	                setTabMenu(null);
+	                if (isUntitledPath(p)) return;
+	                void revealItemInDir(p);
+	              }}
+	            >
+	              在系统中打开所在文件夹
+	            </button>
             <button
               type="button"
               className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"

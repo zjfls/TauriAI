@@ -73,6 +73,12 @@ export interface SecuritySettings {
   defaultPolicy: string;
 }
 
+// Workstudio-scoped security overlay (stored under `<mainFolder>/.tauriai/security.json`)
+export interface WorkstudioSecurityConfig {
+  writableRoots: string[];
+  trustedCommands: TrustedCommandConfig[];
+}
+
 // ============================================================================
 // New Provider-Model-Agent Architecture
 // ============================================================================

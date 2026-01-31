@@ -20,6 +20,10 @@ interface DocumentState {
   closeDocument: (id: string) => void;
   setActiveDocument: (id: string | null) => void;
   updateDocumentContent: (id: string, content: string) => void;
+  updateDocumentMeta: (
+    id: string,
+    meta: Partial<Pick<OpenDocument, 'title' | 'path' | 'kind'>>
+  ) => void;
   clearAllDocuments: () => void;
 }
 
@@ -97,6 +101,53 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     set({
       documents: documents.map((d) =>
         d.id === id ? { ...d, content, updatedAt: now } : d
+      ),
+    });
+  },
+
+  updateDocumentMeta: (id, meta) => {
+    const { documents, activeDocumentId } = get();
+    const now = new Date().toISOString();
+    const target = documents.find((d) => d.id === id);
+    if (!target) return;
+
+    const nextPath = meta.path?.trim();
+    if (nextPath) {
+      const existingByPath = documents.find((d) => d.path === nextPath && d.id !== id);
+      if (existingByPath) {
+        // Path is treated as stable identity; avoid duplicates by merging into the existing doc.
+        const mergedDocs = documents
+          .filter((d) => d.id !== id)
+          .map((d) =>
+            d.id === existingByPath.id
+              ? {
+                  ...d,
+                  title: meta.title ?? d.title,
+                  path: nextPath,
+                  kind: meta.kind ?? d.kind,
+                  content: target.content,
+                  updatedAt: now,
+                }
+              : d
+          );
+        const nextActive = activeDocumentId === id ? existingByPath.id : activeDocumentId;
+        set({ documents: mergedDocs, activeDocumentId: nextActive });
+        useWorkspaceTabStore.getState().removeDocumentTab(id);
+        return;
+      }
+    }
+
+    set({
+      documents: documents.map((d) =>
+        d.id === id
+          ? {
+              ...d,
+              ...(meta.title !== undefined ? { title: meta.title } : {}),
+              ...(meta.path !== undefined ? { path: meta.path } : {}),
+              ...(meta.kind !== undefined ? { kind: meta.kind } : {}),
+              updatedAt: now,
+            }
+          : d
       ),
     });
   },

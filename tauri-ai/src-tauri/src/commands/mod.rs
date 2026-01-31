@@ -13,6 +13,7 @@ mod skills;
 mod workstudio;
 mod workstudio_terminal;
 mod workstudio_state;
+mod workstudio_security;
 mod prompts;
 
 pub use run::{abort_run, retry_turn, run_task};
@@ -39,3 +40,4 @@ pub use workstudio_terminal::{
     workstudio_terminal_read_base64, workstudio_terminal_write,
 };
 pub use workstudio_state::{get_workstudio_ui_state, set_workstudio_ui_state};
+pub use workstudio_security::{get_workstudio_security_config, set_workstudio_security_config};

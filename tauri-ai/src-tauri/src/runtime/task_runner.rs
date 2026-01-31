@@ -39,6 +39,7 @@ use crate::skills::loader::{
 };
 use crate::skills::SkillEntry;
 use crate::storage::Database;
+use crate::workstudio_security::read_workstudio_security_config;
 
 use super::approvals::ApprovalDecision;
 use super::emitter::RunEmitter;
@@ -2941,6 +2942,21 @@ async fn run_task_inner(
         })
         .unwrap_or_default();
 
+    // Workstudio 域安全配置（存储在 main_folder/.tauriai/security.json）
+    // 分层策略采用 OR：只要任一层允许即可（这里体现为对可写目录/信任命令做并集叠加）。
+    let workstudio_security = workstudio.as_ref().and_then(|ws| {
+        match read_workstudio_security_config(&ws.main_folder) {
+            Ok(cfg) => Some(cfg),
+            Err(err) => {
+                eprintln!(
+                    "[security] read workstudio security config failed ({}): {err}",
+                    ws.main_folder
+                );
+                None
+            }
+        }
+    });
+
     let base_security_policy = config
         .security
         .resolve_policy(agent.security_policy.as_deref());
@@ -2960,6 +2976,18 @@ async fn run_task_inner(
         sandbox_policy = crate::models::SandboxPolicy::DangerFullAccess;
     }
 
+    // OR 合并：Workstudio 的额外可写目录追加到 sandboxPolicy.writableRoots（仅对 workspace-write 生效）。
+    if let (Some(ws_sec), crate::models::SandboxPolicy::WorkspaceWrite { writable_roots, .. }) =
+        (workstudio_security.as_ref(), &mut sandbox_policy)
+    {
+        if !ws_sec.writable_roots.is_empty() {
+            writable_roots.extend(ws_sec.writable_roots.iter().cloned());
+            // 去重（保持相对稳定的顺序）
+            let mut seen = std::collections::HashSet::<String>::new();
+            writable_roots.retain(|r| seen.insert(r.clone()));
+        }
+    }
+
     let approval_policy = if use_custom_security {
         agent
             .approval_policy
@@ -2973,6 +3001,16 @@ async fn run_task_inner(
     } else {
         base_security_policy.name.clone()
     };
+
+    // OR 合并：Workstudio 的信任命令列表与 Agent 安全策略叠加。
+    let mut trusted_commands = base_security_policy.trusted_commands.clone();
+    if let Some(ws_sec) = workstudio_security.as_ref() {
+        if !ws_sec.trusted_commands.is_empty() {
+            trusted_commands.extend(ws_sec.trusted_commands.iter().cloned());
+            let mut seen = std::collections::HashSet::<(String, String)>::new();
+            trusted_commands.retain(|t| seen.insert((t.tool.clone(), t.command.clone())));
+        }
+    }
 
     // 3) 允许 stop/撤回 等并发操作中断当前 run
     let (abort_tx, mut abort_rx) = mpsc::channel::<()>(1);
@@ -3469,7 +3507,7 @@ async fn run_task_inner(
         sandbox_policy,
         approval_policy,
         security_policy_name,
-        trusted_commands: base_security_policy.trusted_commands.clone(),
+        trusted_commands,
         approval_store,
         run_state: run_state.clone(),
         runtime_messages,
@@ -3731,7 +3769,7 @@ async fn stream_one_turn(
     // - 只在“本轮尚未向前端输出任何增量”时才自动重试，避免重复输出/状态错乱
     // - 最大尝试次数由配置决定（至少 1）
     let max_attempts = max_attempts.max(1);
-    const BASE_DELAY_MS: u64 = 100;
+    const BASE_DELAY_MS: u64 = 1_000;
     const MAX_DELAY_MS: u64 = 30_000;
 
     fn status_from_debug(di: Option<&DebugInfoData>) -> Option<u16> {

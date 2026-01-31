@@ -17,6 +17,7 @@ import { useDocumentStore } from './stores/documentStore';
 import { useUIStore } from './stores/uiStore';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { getViewDefinition } from './views/registry';
+import { ChatViewContainer } from './views/ChatViewContainer';
 import { getViewWindowParams } from './utils/viewWindow';
 import './App.css';
 
@@ -41,6 +42,7 @@ function App() {
   
   // Track if session initialization has been done to prevent duplicate execution
   const sessionInitialized = useRef(false);
+  const chatKeepAliveLayerRef = useRef<HTMLDivElement>(null);
 
   // Debug logging
   useEffect(() => {
@@ -118,9 +120,20 @@ function App() {
     let unlisten: null | (() => void) = null;
 
     void listen('menu:new_richtxt', () => {
+      const re = /^Untitled-(\d+)\.tauri\.richtxt$/i;
+      const docs = useDocumentStore.getState().documents;
+      let max = 0;
+      for (const d of docs) {
+        const m = re.exec(d.title);
+        if (!m) continue;
+        const n = Number(m[1]);
+        if (Number.isFinite(n)) max = Math.max(max, n);
+      }
+      const title = `Untitled-${max + 1}.tauri.richtxt`;
+
       // Create a new untitled .tauri.richtxt document
       useDocumentStore.getState().openDocument({
-        title: 'Untitled.tauri.richtxt',
+        title,
         path: undefined,
         kind: 'text',
         content: '<!-- tauri.richtxt v1 -->\n\n# 新建文档\n\n',
@@ -312,6 +325,7 @@ function App() {
    */
   const resolvedView = viewOverride || activeView;
   const viewDef = getViewDefinition(resolvedView) || getViewDefinition('chat');
+  const isChatActive = (viewDef?.id ?? 'chat') === 'chat';
 
   useEffect(() => {
     if (viewOverride && viewOverride !== activeView) {
@@ -319,21 +333,50 @@ function App() {
     }
   }, [viewOverride, activeView, setActiveView]);
 
-  const renderActiveView = () => {
+  // ChatView keep-alive:
+  // - 在主窗口内切换到 History/Settings 等视图时，不卸载 ChatView（避免滚动/定位在重建时漂移）
+  // - 仅通过可见性与 pointer-events 控制展示，保证回到聊天时“像没离开一样”
+  useEffect(() => {
+    if (isStandalone) return;
+    if (isChatActive) return;
+
+    const chatLayer = chatKeepAliveLayerRef.current;
+    const active = document.activeElement;
+    if (!chatLayer || !active) return;
+    if (!(active instanceof HTMLElement)) return;
+    if (chatLayer.contains(active)) {
+      active.blur();
+    }
+  }, [isChatActive, isStandalone]);
+
+  const renderNonChatView = () => {
+    if (isChatActive) return null;
+    if (viewDef?.id === 'chat') return null;
     return viewDef?.render() ?? null;
   };
 
   if (isStandalone) {
     return (
       <StandaloneLayout title={viewDef?.title}>
-        {renderActiveView()}
+        {viewDef?.render() ?? null}
       </StandaloneLayout>
     );
   }
 
   return (
     <MainLayout>
-      {renderActiveView()}
+      <div className="relative h-full w-full overflow-hidden">
+        <div
+          ref={chatKeepAliveLayerRef}
+          className={`absolute inset-0 ${isChatActive ? '' : 'invisible pointer-events-none'}`}
+          aria-hidden={!isChatActive}
+        >
+          <ChatViewContainer />
+        </div>
+        {!isChatActive && (
+          <div className="absolute inset-0 z-10 bg-gray-50 dark:bg-gray-900">{renderNonChatView()}</div>
+        )}
+      </div>
     </MainLayout>
   );
 }

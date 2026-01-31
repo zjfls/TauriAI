@@ -697,7 +697,7 @@ function CompactSelector<T extends { label: string; value: string }>({
       </button>
 
       {isOpen && (
-        <div className="absolute bottom-full left-0 mb-1 w-56 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-1 z-50 max-h-60 overflow-auto">
+        <div className="absolute bottom-full left-0 mb-1 w-[18.667rem] bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-1 z-50 max-h-60 overflow-auto">
           {options.length === 0 ? (
             <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">
               暂无可用选项

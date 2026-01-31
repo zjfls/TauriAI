@@ -23,6 +23,7 @@ import { openOrFocusViewWindow } from '../../utils/viewWindow';
 import { endChatOpenProfile, getActiveChatOpenProfile, markChatOpenProfile } from '../../utils/chatOpenProfile';
 import { ChevronDown } from 'lucide-react';
 import type { WebSearchProvider } from './WebSearchToggle';
+import { WorkstudioSecurityModal } from './WorkstudioSecurityModal';
 
 interface ChatViewProps {
   sessionId: string | null;
@@ -278,6 +279,24 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
     useSessionStore.getState().setSessionWebSearchProvider(sessionId, preferred);
   }, [sessionId, session, supportsWebSearch, availableWebSearchProviders]);
 
+  // 模型切换/配置变更后，校验一次当前会话的搜索提供方是否仍可用：
+  // - 例如：从支持 native web search 的模型切到不支持的模型时，避免仍显示/使用 "native"
+  // - 若用户显式选择了“不搜索”(null)，则保持不变
+  useEffect(() => {
+    if (!sessionId) return;
+    if (!session) return;
+
+    const selected = session.webSearchProvider;
+    if (selected === undefined) return;
+    if (selected === null) return;
+
+    if (!availableWebSearchProviders.includes(selected)) {
+      const fallback =
+        (availableWebSearchProviders.includes('native') ? 'native' : availableWebSearchProviders[0]) ?? null;
+      useSessionStore.getState().setSessionWebSearchProvider(sessionId, fallback);
+    }
+  }, [availableWebSearchProviders, sessionId, session?.webSearchProvider]);
+
   const webSearchDetails = useMemo(() => {
     if (availableWebSearchProviders.length === 0) {
       return '未配置搜索提供方（设置→通用）';
@@ -375,6 +394,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
   const [workstudio, setWorkstudio] = useState<Workstudio | null>(null);
   const [workstudioLoading, setWorkstudioLoading] = useState(false);
   const [workstudioMenuOpen, setWorkstudioMenuOpen] = useState(false);
+  const [workstudioSecurityOpen, setWorkstudioSecurityOpen] = useState(false);
   const workstudioMenuRef = useRef<HTMLDivElement | null>(null);
 
   const currentAgentForDisplay = useMemo((): Agent | null => {
@@ -1233,6 +1253,11 @@ Guidelines:
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
+      <WorkstudioSecurityModal
+        isOpen={workstudioSecurityOpen}
+        onClose={() => setWorkstudioSecurityOpen(false)}
+        workstudio={workstudio}
+      />
       {workspaceEnabled && (
         <div className="flex items-center justify-between border-b border-gray-100 px-4 py-2 text-xs text-gray-500 dark:border-gray-800 dark:text-gray-400">
           <div className="min-w-0">
@@ -1280,21 +1305,35 @@ Guidelines:
                     </button>
                   )}
 
-                <button
-                  type="button"
-                  className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
-                  onClick={() => {
-                    setWorkstudioMenuOpen(false);
-                    void ensureWorkstudio().then((ws) => {
-                      if (!ws) return;
-                      openWorkstudioWindow(ws);
-                    });
-                  }}
-                >
-                  打开 Workstudio
-                </button>
-              </div>
-            )}
+	                <button
+	                  type="button"
+	                  className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+	                  onClick={() => {
+	                    setWorkstudioMenuOpen(false);
+	                    void ensureWorkstudio().then((ws) => {
+	                      if (!ws) return;
+	                      openWorkstudioWindow(ws);
+	                    });
+	                  }}
+	                >
+	                  打开 Workstudio
+	                </button>
+
+	                <button
+	                  type="button"
+	                  className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+	                  onClick={() => {
+	                    setWorkstudioMenuOpen(false);
+	                    void ensureWorkstudio().then((ws) => {
+	                      if (!ws) return;
+	                      setWorkstudioSecurityOpen(true);
+	                    });
+	                  }}
+	                >
+	                  编辑安全配置…
+	                </button>
+	              </div>
+	            )}
           </div>
         </div>
       )}
