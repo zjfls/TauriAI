@@ -76,7 +76,6 @@ const MessageListInner: React.FC<MessageListProps> = ({
   // 用户意图：是否跟随输出保持贴底（不要依赖 isAtBottom 的 state，避免时序抖动）
   const followOutputRef = useRef(true);
   const lastUserIntentTsRef = useRef(0);
-  const debugScrollRef = useRef<(event: string, extra?: Record<string, unknown>) => void>(() => undefined);
 
   // Track if user is at bottom (should auto-scroll)
   const [isAtBottom, setIsAtBottom] = useState(true);
@@ -88,46 +87,6 @@ const MessageListInner: React.FC<MessageListProps> = ({
   const loadMoreInFlightRef = useRef(false);
   const pendingScrollAdjustRef = useRef<{ prevScrollHeight: number; prevScrollTop: number } | null>(null);
   const conversationKey = conversationId ?? messages[0]?.conversationId ?? '';
-
-  const debugScrollEnabled = useMemo(() => {
-    try {
-      return typeof window !== 'undefined' && window.localStorage?.getItem('tauriai:debugScroll') === '1';
-    } catch {
-      return false;
-    }
-  }, []);
-
-  const debugScroll = useCallback(
-    (event: string, extra?: Record<string, unknown>) => {
-      if (!debugScrollEnabled) return;
-      const container = containerRef.current;
-      const payload: Record<string, unknown> = {
-        event,
-        conversationKey,
-        ts: Date.now(),
-        followOutput: followOutputRef.current,
-        isAtBottom,
-        userScrolledAway,
-        messagesLen: messages.length,
-        streaming: streamingBlocks !== null,
-      };
-      if (container) {
-        payload.scrollTop = container.scrollTop;
-        payload.scrollHeight = container.scrollHeight;
-        payload.clientHeight = container.clientHeight;
-      } else {
-        payload.container = null;
-      }
-      if (extra) Object.assign(payload, extra);
-      // eslint-disable-next-line no-console
-      console.log('[debugScroll]', payload);
-    },
-    [conversationKey, debugScrollEnabled, isAtBottom, messages.length, streamingBlocks, userScrolledAway]
-  );
-
-  useEffect(() => {
-    debugScrollRef.current = debugScroll;
-  }, [debugScroll]);
 
   const isContainerUsableForPersist = useCallback((container: HTMLDivElement): boolean => {
     if (!container.isConnected) return false;
@@ -454,12 +413,6 @@ const MessageListInner: React.FC<MessageListProps> = ({
     // UI/persist 视角：若仍在跟随输出，则视为“在底部”（后续会被 ResizeObserver 补偿）。
     const effectiveAtBottom = nextFollowOutput ? true : physicalAtBottom;
     setIsAtBottom(effectiveAtBottom);
-    debugScrollRef.current('scroll', {
-      physicalAtBottom,
-      effectiveAtBottom,
-      userIntentActive,
-      distanceToBottom: container.scrollHeight - container.scrollTop - container.clientHeight,
-    });
 
     // If user scrolls away from bottom during streaming, mark as manually scrolled
     let nextUserScrolledAway = userScrolledAway;
@@ -545,7 +498,6 @@ const MessageListInner: React.FC<MessageListProps> = ({
         if (distanceToBottom <= SCROLL_THRESHOLD) return;
 
         // 直接写 scrollTop 更可靠：即使元素暂时不可见，回到聊天时也能保持贴底。
-        debugScrollRef.current('resize:stick_bottom', { distanceToBottom });
         container.scrollTop = container.scrollHeight;
       });
     });
@@ -560,7 +512,6 @@ const MessageListInner: React.FC<MessageListProps> = ({
   // Auto-scroll only if user is following output
   useEffect(() => {
     if (followOutputRef.current) {
-      debugScrollRef.current('auto_scroll:bottom');
       bottomRef.current?.scrollIntoView({ behavior: 'instant' });
     }
   }, [messages, streamingBlocks]);
