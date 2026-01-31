@@ -291,8 +291,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const { sessions } = get();
     if (!sessions.has(sessionId)) return;
 
+    const startedAt =
+      typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
+    markChatOpenProfile('sessionStore:switchSession:start', { sessionId });
+
     set({
       activeSessionId: sessionId,
+    });
+
+    const afterSetActiveAt =
+      typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
+    markChatOpenProfile('sessionStore:switchSession:after_set_active', {
+      sessionId,
+      meta: { deltaMs: Number((afterSetActiveAt - startedAt).toFixed(1)) },
     });
 
     // Update lastActiveAt
@@ -308,8 +319,26 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return { sessions: newSessions };
     });
 
+    const afterLastActiveAt =
+      typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
+    markChatOpenProfile('sessionStore:switchSession:after_update_lastActiveAt', {
+      sessionId,
+      meta: { deltaMs: Number((afterLastActiveAt - startedAt).toFixed(1)) },
+    });
+
     // Save state after switching
+    const beforeSaveAt =
+      typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
     get().saveSessionState();
+    const afterSaveAt =
+      typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
+    markChatOpenProfile('sessionStore:switchSession:after_save', {
+      sessionId,
+      meta: {
+        deltaMs: Number((afterSaveAt - startedAt).toFixed(1)),
+        saveMs: Number((afterSaveAt - beforeSaveAt).toFixed(1)),
+      },
+    });
   },
 
   /**

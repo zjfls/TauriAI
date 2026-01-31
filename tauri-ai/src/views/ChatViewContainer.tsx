@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef } from 'react';
 import { useShallow } from 'zustand/shallow';
 import { ChatView } from '../components/Chat/ChatView';
 import { useSessionStore } from '../stores/sessionStore';
@@ -40,6 +40,29 @@ const ChatViewContainerInner: React.FC = () => {
         break;
       }
     }
+  }, [activeSessionId]);
+
+  // Debug profiling: 标记“切换后 DOM 已完成 commit（但尚未 paint）”的时点，帮助判断卡顿发生在 commit 之前还是之后。
+  useLayoutEffect(() => {
+    if (!activeSessionId) return;
+
+    const profile = getActiveChatOpenProfile();
+    if (!profile || profile.ended) return;
+
+    const activeSession = useSessionStore.getState().sessions.get(activeSessionId);
+    const conversationId = activeSession?.conversationId ?? undefined;
+
+    const matches =
+      (profile.sessionId ? profile.sessionId === activeSessionId : false) ||
+      (conversationId && profile.conversationId ? profile.conversationId === conversationId : false);
+    if (!matches) return;
+
+    markChatOpenProfile('chatViewContainer:layout_effect', {
+      profileId: profile.id,
+      sessionId: activeSessionId,
+      conversationId,
+      meta: { keepAlive: true },
+    });
   }, [activeSessionId]);
 
   // Debug profiling: keep-alive 模式下 ChatView 不会随切换重新渲染，因此在容器层补齐“切换到可见并完成绘制”的时点。
