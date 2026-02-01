@@ -43,6 +43,8 @@ interface WorkspaceTabBarProps {
   onTabClose: (sessionId: string) => Promise<void> | void;
   onNewSession: (agentName: string) => void | Promise<void>;
   onPopoutSession?: (sessionId: string) => void | Promise<void>;
+  /** 是否在顶部栏展示 chat tabs（多 Pane 模式下应关闭，改为每个 Pane 自己的 tabs） */
+  showChatTabs?: boolean;
 }
 
 interface TabRenderItem {
@@ -233,6 +235,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
   onTabClose,
   onNewSession,
   onPopoutSession,
+  showChatTabs = true,
 }) => {
   const tabBarRef = useRef<HTMLDivElement>(null);
   const newSessionButtonRef = useRef<HTMLButtonElement>(null);
@@ -271,6 +274,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
     for (const id of tabOrder) {
       const parsed = parseWorkspaceTabId(id);
       if (parsed.kind === 'chat') {
+        if (!showChatTabs) continue;
         const session = parsed.sessionId ? sessionsById.get(parsed.sessionId) : undefined;
         if (!session) continue;
         out.push({
@@ -292,7 +296,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
       }
     }
     return out;
-  }, [tabOrder, sessionsById, documents]);
+  }, [tabOrder, sessionsById, documents, showChatTabs]);
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
 

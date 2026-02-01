@@ -161,6 +161,21 @@ pub const PERSISTENT_PROCESS_PROMPT: &str = r#"
 - `shell_command` 不支持交互式 stdin；需要交互时请改用 PTY（尤其是持久 PTY）。
 "#;
 
+/// Tool usage hint for `apply_patch` when file write is enabled.
+pub const APPLY_PATCH_TOOL_PROMPT: &str = r#"
+
+## 文件编辑（apply_patch）
+
+使用 apply_patch 工具来编辑文件（绝不要尝试 applypatch 或 apply-patch，只用 apply_patch）。
+
+注意：本项目的 `apply_patch` 工具参数是 JSON：`{ "input": "…补丁正文…" }`（不要使用 `{"command":[…]}` 这种命令数组形式）。
+
+示例：
+{ "input": "*** Begin Patch\\n*** Update File: path/to/file.py\\n@@ def example():\\n- pass\\n+ return 123\\n*** End Patch" }
+
+（Codex CLI 文档里常见的写法，与你当前工具参数不同，仅供参考：{"command":["apply_patch","*** Begin Patch\\n*** Update File: path/to/file.py\\n@@ def example():\\n- pass\\n+ return 123\\n*** End Patch"]}）
+"#;
+
 /// Prompt guide for the hidden local web search tool (`web_search`).
 pub const WEB_SEARCH_TOOL_PROMPT: &str = r#"
 
@@ -191,6 +206,33 @@ If MCP tools are available in the current tool list, you can use them to fetch a
 Guidelines:
 - Prefer MCP resources over web search when the information is available via MCP.
 - Use `list_mcp_resources` / `list_mcp_resource_templates` to discover what's available before reading.
+"#;
+
+/// System prompt for Codex-like context compaction ("normal compact").
+///
+/// The user message will contain a plain text transcript. The assistant should produce a concise
+/// summary that preserves key constraints and decisions for future turns.
+pub const NORMAL_COMPACT_PROMPT: &str = r#"
+
+## 任务：对话压缩（Normal Compact）
+
+你将收到一段“对话历史转写”（由多个 [User]/[Assistant]/[Tool] 段落组成）。
+请把它压缩成一段**可用于后续对话继续推理**的摘要（而不是复述原文）。
+
+要求：
+- 使用简体中文输出
+- 只总结历史中明确出现的信息；不要编造细节
+- 优先保留：用户目标、关键背景、已做决策、重要约束/偏好、未完成事项、关键结论/最终结果
+- 如果出现代码/命令/文件路径：保留“结论与关键点”，避免粘贴大段代码/长日志（可用要点列表）
+- 尽量短，但要信息密度高；如果信息不足就写“（无足够信息）”
+
+推荐格式（可根据内容增删小节）：
+1) 用户目标
+2) 现状/关键背景
+3) 已确定的约束与偏好
+4) 已完成的工作与结论
+5) 待办/下一步
+
 "#;
 
 /// Optional hint for Python command selection when `python` is not available but `python3` is.

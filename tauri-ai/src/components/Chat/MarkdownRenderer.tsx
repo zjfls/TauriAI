@@ -2,6 +2,9 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import jsx from 'react-syntax-highlighter/dist/esm/languages/prism/jsx';
+import tsx from 'react-syntax-highlighter/dist/esm/languages/prism/tsx';
+import typescript from 'react-syntax-highlighter/dist/esm/languages/prism/typescript';
 import remarkGfm from 'remark-gfm';
 import remarkGemoji from 'remark-gemoji';
 import remarkMath from 'remark-math';
@@ -33,6 +36,18 @@ mermaid.initialize({
   forceLegacyMathML: true,
   suppressErrorRendering: false,
 });
+
+// Prism 语言按需注册：确保 ```tsx / ```typescriptreact 的代码块能高亮
+// （react-syntax-highlighter 的 ESM Prism 版本不会默认包含所有语言定义）
+try {
+  (SyntaxHighlighter as any).registerLanguage?.('typescript', typescript);
+  (SyntaxHighlighter as any).registerLanguage?.('tsx', tsx);
+  (SyntaxHighlighter as any).registerLanguage?.('jsx', jsx);
+  // 常见 fence 别名兼容
+  (SyntaxHighlighter as any).registerLanguage?.('typescriptreact', tsx);
+} catch {
+  // ignore: best-effort
+}
 
 // ============================================================================
 // Mermaid SVG Cache - prevents re-rendering identical diagrams

@@ -90,6 +90,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
           onTabClose={handleTabClose}
           onNewSession={handleNewSession}
           onPopoutSession={handlePopoutSession}
+          showChatTabs={false}
         />
 
         {/* Content */}

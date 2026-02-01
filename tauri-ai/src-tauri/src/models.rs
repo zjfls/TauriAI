@@ -174,6 +174,36 @@ pub struct MessageMeta {
     /// Persisted per-turn metadata (without sensitive debug headers).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turns: Option<Vec<MessageTurn>>,
+
+    /// Context compaction metadata (e.g. normal compact summary snapshots).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_compaction: Option<ContextCompactionMeta>,
+}
+
+/// Metadata for a persisted context compaction summary.
+///
+/// NOTE:
+/// - We keep original messages in DB for audit/UI.
+/// - The runtime prompt builder may prefer the latest summary and skip messages
+///   covered by `compacted_until_*` when constructing context for the model.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextCompactionMeta {
+    /// Strategy name (e.g. "normal_compact").
+    pub strategy: String,
+    /// The last message id covered by this summary (inclusive).
+    pub compacted_until_message_id: String,
+    /// The timestamp of the last message covered by this summary (inclusive).
+    pub compacted_until_created_at: DateTime<Utc>,
+    /// Keep window used when this summary was produced.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keep_last_messages: Option<u32>,
+    /// How many older messages were dropped from the compaction transcript to fit the budget.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dropped_for_fit: Option<u32>,
+    /// Best-effort cap applied when building the compaction transcript.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_compact_input_messages: Option<u32>,
 }
 
 // ============================================================================
@@ -762,6 +792,13 @@ pub struct Agent {
     ///   assistant 的上下文内容中（用于下一轮续写/继续工具循环）。
     #[serde(default)]
     pub reinject_thinking: bool,
+
+    /// Context 管理策略（可选，按 agent 级配置）。
+    ///
+    /// - None：等价于 Disabled（不做自动 compact/裁剪）
+    /// - Some(...)：启用对应策略（例如 NormalCompact）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_policy: Option<ContextPolicyConfig>,
 }
 
 impl Default for Agent {
@@ -784,6 +821,102 @@ impl Default for Agent {
             workspace_support: None,
             max_turns: None,
             reinject_thinking: false,
+            context_policy: None,
+        }
+    }
+}
+
+// ============================================================================
+// Context Management (agent-level)
+// ============================================================================
+
+/// Context 管理策略配置（可扩展）。
+///
+/// 设计目标：
+/// - 允许未来接入不同于 Codex 的策略与参数
+/// - 允许以 `custom` 形式携带任意 JSON 参数（UI 可用 JSON 编辑器）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ContextPolicyConfig {
+    /// Disable all automatic context management (default).
+    Disabled,
+    /// Codex-like compaction + hard trimming.
+    #[serde(rename_all = "camelCase")]
+    NormalCompact(NormalCompactPolicyConfig),
+    /// Custom strategy name + JSON params for forward compatibility.
+    #[serde(rename_all = "camelCase")]
+    Custom { name: String, params: serde_json::Value },
+}
+
+impl Default for ContextPolicyConfig {
+    fn default() -> Self {
+        Self::Disabled
+    }
+}
+
+/// A Codex-like "normal compact" policy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NormalCompactPolicyConfig {
+    /// Master switch for this policy.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Enable history compaction (rewrite older history into a summary message).
+    ///
+    /// When disabled, the policy can still perform hard trimming (if enabled) to avoid context overflow.
+    #[serde(default = "default_true")]
+    pub compact_enabled: bool,
+
+    /// Whether to auto-run compaction when the estimated prompt usage reaches `auto_compact_threshold_percent`.
+    #[serde(default = "default_true")]
+    pub auto_compact: bool,
+
+    /// Enable hard trimming for the *runtime prompt* to avoid context window exceeded.
+    ///
+    /// - This does NOT mutate persisted history.
+    /// - Disabling this may cause model requests to fail when the context gets too long.
+    #[serde(default = "default_true")]
+    pub trim_enabled: bool,
+
+    /// Trigger threshold in percent of model context length.
+    /// Default: 85 (%).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_compact_threshold_percent: Option<u8>,
+
+    /// Hard cap in percent of model context length used for the final prompt (after trimming).
+    /// Default: 90 (%).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hard_limit_percent: Option<u8>,
+
+    /// After compaction, keep the last N messages (excluding the inserted summary).
+    /// Default: 60.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keep_last_messages: Option<u32>,
+
+    /// Max tokens for the compaction summary generation output.
+    /// Default: 800.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_summary_tokens: Option<u32>,
+
+    /// Best-effort cap for how many historical messages to feed into the compaction prompt.
+    /// Default: 400.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_compact_input_messages: Option<u32>,
+}
+
+impl Default for NormalCompactPolicyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            compact_enabled: true,
+            auto_compact: true,
+            trim_enabled: true,
+            auto_compact_threshold_percent: None,
+            hard_limit_percent: None,
+            keep_last_messages: None,
+            max_summary_tokens: None,
+            max_compact_input_messages: None,
         }
     }
 }
@@ -1625,6 +1758,7 @@ impl AppConfig {
                 workspace_support: None,
                 max_turns: None,
                 reinject_thinking: false,
+                context_policy: None,
             });
 
             // Set default agent

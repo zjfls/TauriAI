@@ -4,7 +4,7 @@
  * Requirements: 2.3, 3.5
  */
 
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Message, MessageBlock, Action, MessageTurn } from '../../types';
 import { MessageItem } from './MessageItem';
 import { MessageBlocks } from './MessageBlocks';
@@ -36,12 +36,11 @@ interface MessageListProps {
 
 // Threshold in pixels to consider "at bottom"
 const SCROLL_THRESHOLD = 50;
-const WIDE_VISUAL_FENCE_RE = /```(?:mermaid|plot|mafs|json\\s+mafs)\\b/i;
 
 // 长对话在切换会话/渲染时会明显卡顿：默认只渲染最后 N 条，向上按需加载
-const DEFAULT_VISIBLE_TURNS = 1;
+const DEFAULT_VISIBLE_TURNS = 3;
 const DEFAULT_VISIBLE_MESSAGES = DEFAULT_VISIBLE_TURNS * 2;
-const LOAD_MORE_PAGE_SIZE = 40;
+const LOAD_MORE_PAGE_SIZE = 15;
 const LOAD_MORE_SCROLL_THRESHOLD = 80;
 const USER_INTENT_WINDOW_MS = 250;
 
@@ -76,6 +75,8 @@ const MessageListInner: React.FC<MessageListProps> = ({
   // 用户意图：是否跟随输出保持贴底（不要依赖 isAtBottom 的 state，避免时序抖动）
   const followOutputRef = useRef(true);
   const lastUserIntentTsRef = useRef(0);
+  const commitRafRef = useRef<number | null>(null);
+  const pendingCommitRef = useRef<{ isAtBottom: boolean; userScrolledAway: boolean } | null>(null);
 
   // Track if user is at bottom (should auto-scroll)
   const [isAtBottom, setIsAtBottom] = useState(true);
@@ -149,6 +150,30 @@ const MessageListInner: React.FC<MessageListProps> = ({
     },
     [conversationKey, getAnchorSnapshot, isContainerUsableForPersist, messages.length, visibleCount]
   );
+
+  const scheduleCommitViewState = useCallback(
+    (next: { isAtBottom: boolean; userScrolledAway: boolean }) => {
+      pendingCommitRef.current = next;
+      if (commitRafRef.current !== null) return;
+      commitRafRef.current = requestAnimationFrame(() => {
+        commitRafRef.current = null;
+        const container = containerRef.current;
+        const pending = pendingCommitRef.current;
+        pendingCommitRef.current = null;
+        if (!container || !pending) return;
+        commitViewState(container, pending);
+      });
+    },
+    [commitViewState]
+  );
+
+  useEffect(() => {
+    return () => {
+      if (commitRafRef.current !== null) cancelAnimationFrame(commitRafRef.current);
+      commitRafRef.current = null;
+      pendingCommitRef.current = null;
+    };
+  }, []);
 
   const cancelRestoreCalibration = useCallback(() => {
     restoreCalibrationRef.current?.cancel();
@@ -409,7 +434,9 @@ const MessageListInner: React.FC<MessageListProps> = ({
       pendingScrollAdjustRef.current = null;
     }
 
-    setVisibleCount((current) => Math.min(messages.length, current + LOAD_MORE_PAGE_SIZE));
+    startTransition(() => {
+      setVisibleCount((current) => Math.min(messages.length, current + LOAD_MORE_PAGE_SIZE));
+    });
   }, [messages.length, startIndex]);
 
   useLayoutEffect(() => {
@@ -472,7 +499,7 @@ const MessageListInner: React.FC<MessageListProps> = ({
 
     // 向上滚动接近顶部时自动加载更早的消息
     if (hasOverflow) {
-      commitViewState(container, { isAtBottom: effectiveAtBottom, userScrolledAway: nextUserScrolledAway });
+      scheduleCommitViewState({ isAtBottom: effectiveAtBottom, userScrolledAway: nextUserScrolledAway });
     }
 
     if (container.scrollTop < LOAD_MORE_SCROLL_THRESHOLD && startIndex > 0) {
@@ -480,9 +507,9 @@ const MessageListInner: React.FC<MessageListProps> = ({
     }
   }, [
     checkIfAtBottom,
-    commitViewState,
     isContainerUsableForPersist,
     loadMore,
+    scheduleCommitViewState,
     startIndex,
     streamingBlocks,
     userScrolledAway,
@@ -492,8 +519,8 @@ const MessageListInner: React.FC<MessageListProps> = ({
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
-    commitViewState(container, { isAtBottom, userScrolledAway });
-  }, [commitViewState, isAtBottom, userScrolledAway]);
+    scheduleCommitViewState({ isAtBottom, userScrolledAway });
+  }, [scheduleCommitViewState, isAtBottom, userScrolledAway]);
 
   // Scroll to bottom function
   const scrollToBottom = useCallback(
@@ -507,10 +534,10 @@ const MessageListInner: React.FC<MessageListProps> = ({
 
       const container = containerRef.current;
       if (container) {
-        commitViewState(container, { isAtBottom: true, userScrolledAway: false });
+        scheduleCommitViewState({ isAtBottom: true, userScrolledAway: false });
       }
     },
-    [commitViewState]
+    [scheduleCommitViewState]
   );
 
   // Note: avoid persisting on unmount by reading `container.scrollTop`, because the DOM might
@@ -635,10 +662,6 @@ const MessageListInner: React.FC<MessageListProps> = ({
     [extractFilesFromDataTransfer, onDropFiles, onDropText]
   );
 
-  const streamingPreferWideBubble =
-    streamingBlocks?.some((b) => b.type === 'text' && WIDE_VISUAL_FENCE_RE.test(b.text)) ?? false;
-  const streamingBubbleWidthClass = streamingPreferWideBubble ? 'w-full max-w-[92%]' : 'max-w-[80%]';
-
   return (
     <div
       ref={containerRef}
@@ -685,9 +708,7 @@ const MessageListInner: React.FC<MessageListProps> = ({
           </div>
 
           {/* Streaming content */}
-          <div
-            className={`relative ${streamingBubbleWidthClass} rounded-2xl bg-white px-4 py-2 text-gray-900 shadow-sm dark:bg-gray-800 dark:text-gray-100`}
-          >
+          <div className="relative w-fit min-w-[60%] max-w-[92%] rounded-2xl bg-white px-4 py-2 text-gray-900 shadow-sm dark:bg-gray-800 dark:text-gray-100">
             <MessageBlocks
               blocks={streamingBlocks}
               conversationId={conversationId ?? messages[0]?.conversationId}

@@ -216,6 +216,7 @@ mod tests {
                 workspace_support: None,
                 max_turns: None,
                 reinject_thinking: false,
+                context_policy: None,
             }],
             default_agent: "test-agent".to_string(),
             ..Default::default()

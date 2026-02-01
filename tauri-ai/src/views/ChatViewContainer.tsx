@@ -1,144 +1,221 @@
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { useShallow } from 'zustand/shallow';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  DndContext,
+  DragOverlay,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragMoveEvent,
+  type DragStartEvent,
+} from '@dnd-kit/core';
+import type { AgentSession } from '../types';
 import { ChatView } from '../components/Chat/ChatView';
-import { useSessionStore } from '../stores/sessionStore';
+import { PaneHeader } from '../components/Chat/PaneHeader';
+import { useSessionStore, type SessionPane } from '../stores/sessionStore';
 import { endChatOpenProfile, getActiveChatOpenProfile, markChatOpenProfile } from '../utils/chatOpenProfile';
+import { openOrFocusConversationChatWindow } from '../utils/viewWindow';
 
 const MemoChatView = React.memo(ChatView);
 MemoChatView.displayName = 'MemoChatView';
 
-const ChatViewContainerInner: React.FC = () => {
-  const sessionIds = useSessionStore(
-    useShallow((state): string[] => Array.from(state.sessions.keys()))
+const TEAR_OFF_THRESHOLD_PX = 48;
+
+const ChatPane: React.FC<{
+  pane: SessionPane;
+  sessionsById: Map<string, AgentSession>;
+  isFocused: boolean;
+  canClosePane: boolean;
+  onFocus: () => void;
+  onSelectSession: (sessionId: string) => void;
+  onCloseSession: (sessionId: string) => void;
+  onClosePane: () => void;
+  registerLayerRef: (sessionId: string) => (el: HTMLDivElement | null) => void;
+  registerPaneRootRef: (paneId: string) => (el: HTMLDivElement | null) => void;
+  registerPaneBodyRef: (paneId: string) => (el: HTMLDivElement | null) => void;
+}> = ({
+  pane,
+  sessionsById,
+  isFocused,
+  canClosePane,
+  onFocus,
+  onSelectSession,
+  onCloseSession,
+  onClosePane,
+  registerLayerRef,
+  registerPaneRootRef,
+  registerPaneBodyRef,
+}) => {
+  const activeSessionId =
+    pane.activeSessionId && pane.sessionIds.includes(pane.activeSessionId)
+      ? pane.activeSessionId
+      : pane.sessionIds[0] ?? null;
+
+  return (
+    <div
+      ref={registerPaneRootRef(pane.id)}
+      className={[
+        'flex h-full min-w-0 flex-col overflow-hidden',
+        'bg-gray-50 dark:bg-gray-900',
+        isFocused ? 'outline outline-1 outline-blue-500/30' : 'outline outline-1 outline-transparent',
+      ].join(' ')}
+      style={{ flexGrow: pane.weight, flexBasis: 0 }}
+      onPointerDownCapture={onFocus}
+    >
+      <PaneHeader
+        paneId={pane.id}
+        sessionIds={pane.sessionIds}
+        activeSessionId={activeSessionId}
+        sessionsById={sessionsById}
+        isFocused={isFocused}
+        canClosePane={canClosePane}
+        onSelectSession={onSelectSession}
+        onCloseSession={onCloseSession}
+        onClosePane={onClosePane}
+      />
+
+      <div ref={registerPaneBodyRef(pane.id)} className="relative flex-1 overflow-hidden">
+        {pane.sessionIds.length === 0 ? (
+          <div className="flex h-full items-center justify-center text-gray-500 dark:text-gray-400">
+            暂无会话
+          </div>
+        ) : (
+          pane.sessionIds.map((sessionId) => (
+            <div
+              key={sessionId}
+              ref={registerLayerRef(sessionId)}
+              className={`absolute inset-0 ${sessionId === activeSessionId ? '' : 'invisible pointer-events-none'}`}
+              aria-hidden={sessionId !== activeSessionId}
+            >
+              <MemoChatView sessionId={sessionId} autoFocus={isFocused && sessionId === activeSessionId} />
+            </div>
+          ))
+        )}
+      </div>
+    </div>
   );
-  const activeSessionId = useSessionStore((state) => state.activeSessionId);
-  const hasActive = useSessionStore((state) => {
-    const active = state.activeSessionId;
-    return Boolean(active && state.sessions.has(active));
-  });
+};
+
+const ChatViewContainerInner: React.FC = () => {
+  const panes = useSessionStore((state) => state.panes);
+  const focusedPaneId = useSessionStore((state) => state.focusedPaneId);
+  const sessionsMap = useSessionStore((state) => state.sessions);
+
+  const setFocusedPane = useSessionStore((state) => state.setFocusedPane);
   const switchSession = useSessionStore((state) => state.switchSession);
+  const closeSession = useSessionStore((state) => state.closeSession);
+  const closePaneAndMerge = useSessionStore((state) => state.closePaneAndMerge);
+  const reorderSessionInPane = useSessionStore((state) => state.reorderSessionInPane);
+  const moveSessionToPane = useSessionStore((state) => state.moveSessionToPane);
+  const splitSessionToNewPane = useSessionStore((state) => state.splitSessionToNewPane);
+  const setPaneWeights = useSessionStore((state) => state.setPaneWeights);
+  const saveSessionState = useSessionStore((state) => state.saveSessionState);
+
   const layerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const paneRootRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const paneBodyRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const profileScheduledRef = useRef<string | null>(null);
-  const [deferredRevealSessionId, setDeferredRevealSessionId] = useState<string | null>(null);
-  const revealSeqRef = useRef(0);
+  const fallbackPaneIdRef = useRef<string>(crypto.randomUUID());
 
-  // 容错：恢复状态异常时（sessions 有值但 activeSessionId 为空），自动选择第一个会话。
+  // 防御：历史状态/异常操作可能导致出现“空 Pane / 引用不存在 session 的 Pane”残留，
+  // 从而在右侧留下空白列。这里在渲染层面过滤掉这类 Pane（只要存在至少一个有效 Pane）。
+  const resolvedPanes = useMemo(() => {
+    const base =
+      panes.length > 0
+        ? panes
+        : [
+            {
+              id: fallbackPaneIdRef.current,
+              sessionIds: [],
+              activeSessionId: null,
+              weight: 1,
+            },
+          ];
+
+    const valid = base.filter((p) => p.sessionIds.some((sid) => sessionsMap.has(sid)));
+    return valid.length > 0 ? valid : base;
+  }, [panes, sessionsMap]);
+
+  const sessionsById = useMemo(() => {
+    const map = new Map<string, AgentSession>();
+    for (const s of sessionsMap.values()) map.set(s.id, s);
+    return map;
+  }, [sessionsMap]);
+
+  const hasAnySession = sessionsMap.size > 0;
+
+  const resolvedFocusedPaneId = useMemo(() => {
+    if (focusedPaneId && resolvedPanes.some((p) => p.id === focusedPaneId)) return focusedPaneId;
+    return resolvedPanes[0]?.id ?? null;
+  }, [focusedPaneId, resolvedPanes]);
+
+  // 容错：恢复状态异常时（有 sessions，但没有 focusedPaneId），自动聚焦第一个 pane。
   useEffect(() => {
-    if (activeSessionId) return;
-    const firstId = sessionIds[0];
-    if (!firstId) return;
-    switchSession(firstId);
-  }, [activeSessionId, sessionIds, switchSession]);
+    if (!hasAnySession) return;
+    if (!resolvedFocusedPaneId) return;
+    if (focusedPaneId === resolvedFocusedPaneId) return;
+    setFocusedPane(resolvedFocusedPaneId);
+  }, [focusedPaneId, hasAnySession, resolvedFocusedPaneId, setFocusedPane]);
 
-  // 两阶段展示：切换会话时先显示一个轻量占位层（避免首帧直接 paint 大量 DOM），下一帧再揭示真实内容。
-  // keep-alive 不变：ChatView 始终保留在 DOM 中，只在短时间内用 `visibility:hidden` 抑制绘制。
-  useLayoutEffect(() => {
-    if (!activeSessionId) {
-      setDeferredRevealSessionId(null);
-      return;
-    }
-
-    revealSeqRef.current += 1;
-    setDeferredRevealSessionId(activeSessionId);
-  }, [activeSessionId]);
+  // 切换/隐藏 tab 时，如果焦点仍在不可见层里，主动 blur，避免键盘输入落到不可见输入框。
+  const visibleSessionKey = useMemo(() => {
+    return resolvedPanes.map((p) => p.activeSessionId ?? '').join('|');
+  }, [resolvedPanes]);
 
   useEffect(() => {
-    if (!activeSessionId) return;
-    if (deferredRevealSessionId !== activeSessionId) return;
-
-    const seq = revealSeqRef.current;
-    let cancelled = false;
-    const cancel = () => {
-      cancelled = true;
-    };
-
-    // 等占位层完成一次 paint（useEffect 在 paint 后触发），再在下一帧揭示真实内容。
-    const rafId = requestAnimationFrame(() => {
-      if (cancelled) return;
-      if (revealSeqRef.current !== seq) return;
-      setDeferredRevealSessionId((cur) => (cur === activeSessionId ? null : cur));
-    });
-
-    // 兜底：极端情况下 rAF 可能被暂停/丢失（例如窗口切到后台），避免 UI 永久停留在占位层。
-    const timeoutId = window.setTimeout(() => {
-      if (cancelled) return;
-      if (revealSeqRef.current !== seq) return;
-      setDeferredRevealSessionId((cur) => (cur === activeSessionId ? null : cur));
-    }, 500);
-
-    return () => {
-      cancel();
-      cancelAnimationFrame(rafId);
-      clearTimeout(timeoutId);
-    };
-  }, [activeSessionId, deferredRevealSessionId]);
-
-  // 兜底：窗口从后台切回时，确保不会停留在占位/隐藏态（重大可用性问题）。
-  useEffect(() => {
-    const maybeReveal = () => {
-      if (!activeSessionId) return;
-      if (typeof document !== 'undefined' && document.visibilityState && document.visibilityState !== 'visible') return;
-      setDeferredRevealSessionId((cur) => (cur === activeSessionId ? null : cur));
-    };
-
-    document.addEventListener('visibilitychange', maybeReveal);
-    window.addEventListener('focus', maybeReveal);
-
-    return () => {
-      document.removeEventListener('visibilitychange', maybeReveal);
-      window.removeEventListener('focus', maybeReveal);
-    };
-  }, [activeSessionId]);
-
-  // 切换会话时，如果焦点仍在已隐藏的会话层里，主动 blur，避免键盘输入落到不可见输入框。
-  useEffect(() => {
-    if (!activeSessionId) return;
     const active = document.activeElement;
     if (!active || !(active instanceof HTMLElement)) return;
+    const visible = new Set<string>();
+    for (const p of resolvedPanes) {
+      if (p.activeSessionId) visible.add(p.activeSessionId);
+    }
     for (const [sessionId, el] of layerRefs.current) {
-      if (sessionId === activeSessionId) continue;
+      if (visible.has(sessionId)) continue;
       if (el.contains(active)) {
         active.blur();
         break;
       }
     }
-  }, [activeSessionId]);
+  }, [visibleSessionKey, resolvedPanes]);
 
-  // Debug profiling: 标记“切换后 DOM 已完成 commit（但尚未 paint）”的时点，帮助判断卡顿发生在 commit 之前还是之后。
+  // Debug profiling: 标记“切换后 DOM 已完成 commit（但尚未 paint）”的时点
+  const globalActiveSessionId = useSessionStore((state) => state.activeSessionId);
   useLayoutEffect(() => {
-    if (!activeSessionId) return;
+    if (!globalActiveSessionId) return;
 
     const profile = getActiveChatOpenProfile();
     if (!profile || profile.ended) return;
 
-    const activeSession = useSessionStore.getState().sessions.get(activeSessionId);
+    const activeSession = useSessionStore.getState().sessions.get(globalActiveSessionId);
     const conversationId = activeSession?.conversationId ?? undefined;
 
     const matches =
-      (profile.sessionId ? profile.sessionId === activeSessionId : false) ||
+      (profile.sessionId ? profile.sessionId === globalActiveSessionId : false) ||
       (conversationId && profile.conversationId ? profile.conversationId === conversationId : false);
     if (!matches) return;
 
     markChatOpenProfile('chatViewContainer:layout_effect', {
       profileId: profile.id,
-      sessionId: activeSessionId,
+      sessionId: globalActiveSessionId,
       conversationId,
-      meta: { keepAlive: true },
+      meta: { keepAlive: true, panes: resolvedPanes.length },
     });
-  }, [activeSessionId]);
+  }, [globalActiveSessionId, resolvedPanes.length]);
 
-  // Debug profiling: keep-alive 模式下 ChatView 不会随切换重新渲染，因此在容器层补齐“切换到可见并完成绘制”的时点。
+  // Debug profiling: keep-alive 模式下补齐“完成绘制”的时点
   useEffect(() => {
-    if (!activeSessionId) return;
+    if (!globalActiveSessionId) return;
 
     const profile = getActiveChatOpenProfile();
     if (!profile || profile.ended) return;
 
-    const activeSession = useSessionStore.getState().sessions.get(activeSessionId);
+    const activeSession = useSessionStore.getState().sessions.get(globalActiveSessionId);
     const conversationId = activeSession?.conversationId ?? undefined;
 
     const matches =
-      (profile.sessionId ? profile.sessionId === activeSessionId : false) ||
+      (profile.sessionId ? profile.sessionId === globalActiveSessionId : false) ||
       (conversationId && profile.conversationId ? profile.conversationId === conversationId : false);
     if (!matches) return;
 
@@ -147,23 +224,23 @@ const ChatViewContainerInner: React.FC = () => {
 
     markChatOpenProfile('chatViewContainer:active_changed', {
       profileId: profile.id,
-      sessionId: activeSessionId,
+      sessionId: globalActiveSessionId,
       conversationId,
-      meta: { keepAlive: true },
+      meta: { keepAlive: true, panes: resolvedPanes.length },
     });
 
     requestAnimationFrame(() => {
-      markChatOpenProfile('chatViewContainer:raf1', { profileId: profile.id, sessionId: activeSessionId, conversationId });
+      markChatOpenProfile('chatViewContainer:raf1', { profileId: profile.id, sessionId: globalActiveSessionId, conversationId });
       requestAnimationFrame(() => {
-        markChatOpenProfile('chatViewContainer:raf2', { profileId: profile.id, sessionId: activeSessionId, conversationId });
+        markChatOpenProfile('chatViewContainer:raf2', { profileId: profile.id, sessionId: globalActiveSessionId, conversationId });
         requestAnimationFrame(() => {
-          endChatOpenProfile('chatViewContainer:painted', { profileId: profile.id, sessionId: activeSessionId, conversationId });
+          endChatOpenProfile('chatViewContainer:painted', { profileId: profile.id, sessionId: globalActiveSessionId, conversationId });
         });
       });
     });
-  }, [activeSessionId]);
+  }, [globalActiveSessionId, resolvedPanes.length]);
 
-  const setLayerRef = useCallback(
+  const registerLayerRef = useCallback(
     (sessionId: string) => (el: HTMLDivElement | null) => {
       const map = layerRefs.current;
       if (el) map.set(sessionId, el);
@@ -172,39 +249,354 @@ const ChatViewContainerInner: React.FC = () => {
     []
   );
 
-  if (!hasActive) {
+  const registerPaneRootRef = useCallback(
+    (paneId: string) => (el: HTMLDivElement | null) => {
+      const map = paneRootRefs.current;
+      if (el) map.set(paneId, el);
+      else map.delete(paneId);
+    },
+    []
+  );
+
+  const registerPaneBodyRef = useCallback(
+    (paneId: string) => (el: HTMLDivElement | null) => {
+      const map = paneBodyRefs.current;
+      if (el) map.set(paneId, el);
+      else map.delete(paneId);
+    },
+    []
+  );
+
+  const sessionToPaneId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const p of resolvedPanes) {
+      for (const sid of p.sessionIds) map.set(sid, p.id);
+    }
+    return map;
+  }, [resolvedPanes]);
+
+  const paneById = useMemo(() => {
+    const map = new Map<string, SessionPane>();
+    for (const p of resolvedPanes) map.set(p.id, p);
+    return map;
+  }, [resolvedPanes]);
+
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
+
+  type SplitPreview = {
+    paneId: string;
+    direction: 'left' | 'right';
+    rect: { left: number; top: number; width: number; height: number };
+  };
+
+  const [activeDragSessionId, setActiveDragSessionId] = useState<string | null>(null);
+  const dragStartRef = useRef<{ x: number; y: number } | null>(null);
+  const lastDragPointRef = useRef<{ x: number; y: number } | null>(null);
+  const [splitPreview, setSplitPreview] = useState<SplitPreview | null>(null);
+
+  const [resizeOverlay, setResizeOverlay] = useState<{ x: number; ratio: number } | null>(null);
+
+  const computeSplitPreview = useCallback((point: { x: number; y: number }): SplitPreview | null => {
+    for (const [paneId, el] of paneBodyRefs.current) {
+      const rect = el.getBoundingClientRect();
+      if (point.x < rect.left || point.x > rect.right) continue;
+      if (point.y < rect.top || point.y > rect.bottom) continue;
+
+      const edge = rect.width * 0.25;
+      if (rect.width > 120 && point.x <= rect.left + edge) {
+        return {
+          paneId,
+          direction: 'left',
+          rect: { left: rect.left, top: rect.top, width: rect.width / 2, height: rect.height },
+        };
+      }
+      if (rect.width > 120 && point.x >= rect.right - edge) {
+        return {
+          paneId,
+          direction: 'right',
+          rect: { left: rect.left + rect.width / 2, top: rect.top, width: rect.width / 2, height: rect.height },
+        };
+      }
+    }
+    return null;
+  }, []);
+
+  const handleDragStart = useCallback((e: DragStartEvent) => {
+    const activeId = String(e.active.id);
+    setActiveDragSessionId(activeId);
+    setSplitPreview(null);
+
+    const ev = e.activatorEvent as MouseEvent | PointerEvent | TouchEvent | null;
+    if (ev && 'clientX' in ev) {
+      dragStartRef.current = { x: ev.clientX, y: ev.clientY };
+      lastDragPointRef.current = { x: ev.clientX, y: ev.clientY };
+    } else {
+      dragStartRef.current = null;
+      lastDragPointRef.current = null;
+    }
+  }, []);
+
+  const handleDragMove = useCallback((e: DragMoveEvent) => {
+    const start = dragStartRef.current;
+    if (!start) return;
+    const point = { x: start.x + e.delta.x, y: start.y + e.delta.y };
+    lastDragPointRef.current = point;
+    const next = computeSplitPreview(point);
+    setSplitPreview((prev) => {
+      if (!next && !prev) return prev;
+      if (!next) return null;
+      if (prev && prev.paneId === next.paneId && prev.direction === next.direction) return prev;
+      return next;
+    });
+  }, [computeSplitPreview]);
+
+  const handleDragEnd = useCallback((e: DragEndEvent) => {
+    const activeId = String(e.active.id);
+    const point = lastDragPointRef.current;
+
+    dragStartRef.current = null;
+    lastDragPointRef.current = null;
+
+    const preview = point ? computeSplitPreview(point) : null;
+    if (preview) {
+      splitSessionToNewPane(activeId, preview.direction, preview.paneId);
+      setActiveDragSessionId(null);
+      setSplitPreview(null);
+      return;
+    }
+
+    const rect = containerRef.current?.getBoundingClientRect();
+    const shouldTearOff =
+      Boolean(rect && point) &&
+      Boolean(
+        rect &&
+          point &&
+          (point.x < rect.left - TEAR_OFF_THRESHOLD_PX ||
+            point.x > rect.right + TEAR_OFF_THRESHOLD_PX ||
+            point.y < rect.top - TEAR_OFF_THRESHOLD_PX ||
+            point.y > rect.bottom + TEAR_OFF_THRESHOLD_PX)
+      );
+
+    if (shouldTearOff) {
+      const session = sessionsById.get(activeId);
+      setActiveDragSessionId(null);
+      setSplitPreview(null);
+
+      if (!session?.conversationId) return;
+      if (session.isGenerating) {
+        alert('流式生成中，暂不支持脱离到新窗口');
+        return;
+      }
+
+      void (async () => {
+        try {
+          const { win, isExisting } = await openOrFocusConversationChatWindow(session.conversationId!, session.title);
+          if (isExisting) {
+            void closeSession(activeId);
+            return;
+          }
+          win.once('tauri://created', () => {
+            void win.setFocus().catch(() => {});
+            void closeSession(activeId);
+          });
+          win.once('tauri://error', (err) => {
+            console.error('Failed to popout chat window:', (err as any)?.payload ?? err);
+            alert('打开新窗口失败，请检查窗口权限/配置');
+          });
+        } catch (err) {
+          console.error('Failed to popout chat window:', err);
+          alert('当前环境不支持打开新窗口');
+        }
+      })();
+      return;
+    }
+
+    const overIdRaw = e.over?.id;
+    if (!overIdRaw) {
+      setActiveDragSessionId(null);
+      setSplitPreview(null);
+      return;
+    }
+
+    const overId = String(overIdRaw);
+    const fromPaneId = sessionToPaneId.get(activeId) ?? null;
+
+    if (overId.startsWith('pane:')) {
+      const toPaneId = overId.slice('pane:'.length);
+      moveSessionToPane(activeId, toPaneId);
+      setActiveDragSessionId(null);
+      setSplitPreview(null);
+      return;
+    }
+
+    const toPaneId = sessionToPaneId.get(overId) ?? null;
+    if (!toPaneId) {
+      setActiveDragSessionId(null);
+      setSplitPreview(null);
+      return;
+    }
+
+    if (fromPaneId && fromPaneId === toPaneId) {
+      reorderSessionInPane(toPaneId, activeId, overId);
+    } else {
+      const targetPane = paneById.get(toPaneId);
+      const index = targetPane ? targetPane.sessionIds.indexOf(overId) : -1;
+      moveSessionToPane(activeId, toPaneId, index >= 0 ? index : undefined);
+    }
+
+    setActiveDragSessionId(null);
+    setSplitPreview(null);
+  }, [closeSession, computeSplitPreview, moveSessionToPane, paneById, reorderSessionInPane, sessionToPaneId, sessionsById, splitSessionToNewPane]);
+
+  const startResize = useCallback(
+    (leftPaneId: string, rightPaneId: string, startEv: React.MouseEvent) => {
+      startEv.preventDefault();
+      startEv.stopPropagation();
+
+      const leftEl = paneRootRefs.current.get(leftPaneId);
+      const rightEl = paneRootRefs.current.get(rightPaneId);
+      if (!leftEl || !rightEl) return;
+
+      const leftRect = leftEl.getBoundingClientRect();
+      const rightRect = rightEl.getBoundingClientRect();
+      const total = leftRect.width + rightRect.width;
+      if (!Number.isFinite(total) || total <= 0) return;
+
+      const leftPane = paneById.get(leftPaneId);
+      const rightPane = paneById.get(rightPaneId);
+      const groupWeight = (leftPane?.weight ?? 1) + (rightPane?.weight ?? 1);
+      const startX = startEv.clientX;
+
+      const prevUserSelect = document.body.style.userSelect;
+      const prevCursor = document.body.style.cursor;
+      document.body.style.userSelect = 'none';
+      document.body.style.cursor = 'col-resize';
+
+      const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
+
+      const onMove = (ev: MouseEvent) => {
+        const delta = ev.clientX - startX;
+        const ratio = clamp((leftRect.width + delta) / total, 0.2, 0.8);
+        const leftWeight = groupWeight * ratio;
+        const rightWeight = groupWeight - leftWeight;
+        setPaneWeights([
+          { paneId: leftPaneId, weight: leftWeight },
+          { paneId: rightPaneId, weight: rightWeight },
+        ]);
+        setResizeOverlay({ x: ev.clientX, ratio });
+      };
+
+      const onUp = () => {
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+        document.body.style.userSelect = prevUserSelect;
+        document.body.style.cursor = prevCursor;
+        setResizeOverlay(null);
+        void saveSessionState();
+      };
+
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    },
+    [paneById, saveSessionState, setPaneWeights]
+  );
+
+  if (!hasAnySession) {
     return (
       <div className="flex h-full items-center justify-center text-gray-500 dark:text-gray-400">
         <div className="text-center">
           <p className="text-lg mb-2">暂无活动会话</p>
-          <p className="text-sm">点击上方 "+" 按钮创建新会话</p>
+          <p className="text-sm">点击上方 “+” 按钮创建新会话</p>
         </div>
       </div>
     );
   }
 
-  // Keep-alive（按会话）：为每个会话保留一个 ChatView 实例，切换时仅做显示/隐藏，
-  // 从而保留各自的滚动位置与 UI 状态，避免“重入后重新渲染导致定位漂移”。
+  const canClosePane = resolvedPanes.length > 1;
+
   return (
-    <div className="relative h-full w-full overflow-hidden">
-      {sessionIds.map((sessionId) => (
-        <div
-          key={sessionId}
-          ref={setLayerRef(sessionId)}
-          className={`absolute inset-0 ${sessionId === activeSessionId ? '' : 'invisible pointer-events-none'}`}
-          aria-hidden={sessionId !== activeSessionId}
-        >
-          <div className={`h-full w-full ${sessionId === deferredRevealSessionId ? 'invisible' : ''}`}>
-            <MemoChatView sessionId={sessionId} />
+    <DndContext
+      sensors={sensors}
+      collisionDetection={closestCenter}
+      onDragStart={handleDragStart}
+      onDragMove={handleDragMove}
+      onDragEnd={handleDragEnd}
+    >
+      <div ref={containerRef} className="flex h-full w-full overflow-hidden">
+        {resolvedPanes.map((pane, idx) => {
+          const next = resolvedPanes[idx + 1];
+          return (
+            <React.Fragment key={pane.id}>
+              <ChatPane
+                pane={pane}
+                sessionsById={sessionsById}
+                isFocused={pane.id === resolvedFocusedPaneId}
+                canClosePane={canClosePane}
+                onFocus={() => {
+                  if (!resolvedFocusedPaneId || pane.id !== resolvedFocusedPaneId) {
+                    setFocusedPane(pane.id);
+                  }
+                }}
+                onSelectSession={(sessionId) => {
+                  switchSession(sessionId);
+                }}
+                onCloseSession={(sessionId) => {
+                  void closeSession(sessionId);
+                }}
+                onClosePane={() => closePaneAndMerge(pane.id)}
+                registerLayerRef={registerLayerRef}
+                registerPaneRootRef={registerPaneRootRef}
+                registerPaneBodyRef={registerPaneBodyRef}
+              />
+
+              {next && (
+                <div
+                  className="relative w-1 flex-shrink-0 cursor-col-resize bg-gray-200/70 hover:bg-blue-400/60 dark:bg-gray-800 dark:hover:bg-blue-500/40"
+                  onMouseDown={(e) => startResize(pane.id, next.id, e)}
+                  title="拖拽调整分屏宽度"
+                />
+              )}
+            </React.Fragment>
+          );
+        })}
+      </div>
+
+      <DragOverlay>
+        {activeDragSessionId ? (
+          <div className="rounded-md border border-gray-200 bg-white px-3 py-2 text-sm text-gray-800 shadow-lg dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100">
+            {sessionsById.get(activeDragSessionId)?.title ?? '会话'}
           </div>
-          {sessionId === deferredRevealSessionId ? (
-            <div className="absolute inset-0 z-10 flex items-center justify-center bg-white dark:bg-gray-950">
-              <div className="text-sm text-gray-500 dark:text-gray-400">正在渲染…</div>
-            </div>
-          ) : null}
+        ) : null}
+      </DragOverlay>
+
+      {splitPreview && (
+        <div
+          className="pointer-events-none fixed z-[240]"
+          style={{
+            left: `${splitPreview.rect.left}px`,
+            top: `${splitPreview.rect.top}px`,
+            width: `${splitPreview.rect.width}px`,
+            height: `${splitPreview.rect.height}px`,
+          }}
+        >
+          <div className="h-full w-full rounded bg-blue-500/10 outline outline-2 outline-blue-500/40" />
+          <div className="absolute left-2 top-2 rounded bg-blue-600 px-2 py-1 text-xs text-white shadow">
+            {splitPreview.direction === 'left' ? '分屏到左侧' : '分屏到右侧'}
+          </div>
         </div>
-      ))}
-    </div>
+      )}
+
+      {resizeOverlay && (
+        <div
+          className="pointer-events-none fixed z-[260] -translate-x-1/2"
+          style={{ left: `${resizeOverlay.x}px`, top: '10px' }}
+        >
+          <div className="rounded bg-gray-900/80 px-2 py-1 text-xs text-white shadow">
+            {Math.round(resizeOverlay.ratio * 100)}%
+          </div>
+        </div>
+      )}
+    </DndContext>
   );
 };
 

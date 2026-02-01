@@ -5,7 +5,7 @@
  */
 
 import React, { useState, useCallback, useRef } from 'react';
-import { MessageSquare, Trash2, Edit2, Check, X, Plus } from 'lucide-react';
+import { ArrowLeft, MessageSquare, Trash2, Edit2, Check, X, Plus } from 'lucide-react';
 import { useConversationStore } from '../../stores/conversationStore';
 import { useSessionStore } from '../../stores/sessionStore';
 import { useConfigStore } from '../../stores/configStore';
@@ -419,9 +419,19 @@ export const HistoryPanel: React.FC = () => {
     <div className="flex flex-col h-full bg-white dark:bg-gray-900">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700">
-        <h2 className="text-lg font-semibold text-gray-800 dark:text-white">
-          对话历史
-        </h2>
+        <div className="flex items-center gap-2 min-w-0">
+          <button
+            type="button"
+            onClick={() => setActiveView('chat')}
+            className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800 rounded-lg transition-colors"
+          >
+            <ArrowLeft size={16} />
+            返回聊天
+          </button>
+          <h2 className="text-lg font-semibold text-gray-800 dark:text-white truncate">
+            对话历史
+          </h2>
+        </div>
         <button
           onClick={handleNewConversation}
           className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors"

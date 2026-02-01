@@ -212,6 +212,16 @@ pub async fn update_conversation_title(
 }
 
 #[tauri::command]
+pub async fn clone_conversation(
+    conversation_id: String,
+    db: tauri::State<'_, Arc<Mutex<Database>>>,
+) -> Result<Conversation, String> {
+    let db = db.lock().await;
+    db.clone_conversation(&conversation_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn update_conversation_metadata(
     conversation_id: String,
     agent_name: Option<String>,

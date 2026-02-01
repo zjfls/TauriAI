@@ -48,13 +48,20 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
   // Track if we're showing agent selector
   const [showAgentSelector, setShowAgentSelector] = useState(false);
   
-  // Get ordered session list
+  // Get ordered sessions in the focused pane (VS Code-like group behavior)
   const getOrderedSessions = useCallback((): AgentSession[] => {
-    const currentSessions = useSessionStore.getState().sessions;
-    const sessionArray: AgentSession[] = Array.from(currentSessions.values());
-    return sessionArray.sort((a, b) => 
-      new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-    );
+    const state = useSessionStore.getState();
+    const panes = state.panes ?? [];
+    const focusedPaneId = state.focusedPaneId ?? panes[0]?.id ?? null;
+    const focusedPane = (focusedPaneId ? panes.find((p) => p.id === focusedPaneId) : null) ?? panes[0] ?? null;
+    if (!focusedPane) return [];
+
+    const out: AgentSession[] = [];
+    for (const id of focusedPane.sessionIds) {
+      const s = state.sessions.get(id);
+      if (s) out.push(s);
+    }
+    return out;
   }, []);
   
   // Get current session index

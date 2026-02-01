@@ -35,6 +35,14 @@ enum Hunk {
 #[derive(Debug, Clone)]
 struct UpdateChunk {
     change_context: Option<String>,
+    /// Whether `change_context` is a "soft" hint (best-effort) instead of a strict requirement.
+    ///
+    /// - Custom apply_patch format: `@@ some exact line` -> strict
+    /// - Unified diff header: `@@ -a,b +c,d @@ heading` -> soft (heading may not exist verbatim)
+    change_context_soft: bool,
+    /// 0-based line hint extracted from unified diff headers (`@@ -old_start,... +... @@`).
+    /// Used to pick the closest match when multiple candidates exist.
+    line_hint: Option<usize>,
     old_lines: Vec<String>,
     new_lines: Vec<String>,
     is_end_of_file: bool,
@@ -495,13 +503,12 @@ fn parse_patch(input: &str) -> Result<Vec<Hunk>, ToolError> {
 
                 if let Some(header) = change_line.strip_prefix("@@") {
                     finish_chunk(&mut current, &mut chunks);
-                    let header = header.strip_prefix(' ').unwrap_or(header).trim();
+                    let header = header.strip_prefix(' ').unwrap_or(header);
+                    let parsed = parse_update_header(header.trim());
                     current = Some(UpdateChunk {
-                        change_context: if header.is_empty() {
-                            None
-                        } else {
-                            Some(header.to_string())
-                        },
+                        change_context: parsed.change_context,
+                        change_context_soft: parsed.change_context_soft,
+                        line_hint: parsed.line_hint,
                         old_lines: Vec::new(),
                         new_lines: Vec::new(),
                         is_end_of_file: false,
@@ -522,6 +529,8 @@ fn parse_patch(input: &str) -> Result<Vec<Hunk>, ToolError> {
                 if current.is_none() {
                     current = Some(UpdateChunk {
                         change_context: None,
+                        change_context_soft: false,
+                        line_hint: None,
                         old_lines: Vec::new(),
                         new_lines: Vec::new(),
                         is_end_of_file: false,
@@ -605,11 +614,129 @@ fn parse_patch_path(rest: &str) -> Result<PathBuf, ToolError> {
     Ok(PathBuf::from(raw))
 }
 
+#[derive(Debug, Clone)]
+struct ParsedUpdateHeader {
+    change_context: Option<String>,
+    change_context_soft: bool,
+    line_hint: Option<usize>,
+}
+
+fn parse_update_header(header: &str) -> ParsedUpdateHeader {
+    let trimmed = header.trim();
+    if trimmed.is_empty() {
+        return ParsedUpdateHeader {
+            change_context: None,
+            change_context_soft: false,
+            line_hint: None,
+        };
+    }
+
+    // Support unified diff hunk headers:
+    //   @@ -old_start,old_count +new_start,new_count @@ optional heading
+    // We ignore the counts, use `old_start` as a 0-based hint, and treat the optional heading
+    // as a *soft* anchor (best-effort), because it may not exist verbatim in the file.
+    if let Some(parsed) = try_parse_unified_diff_header(trimmed) {
+        return parsed;
+    }
+
+    // Custom apply_patch header: `@@ some exact line`
+    ParsedUpdateHeader {
+        change_context: Some(trimmed.to_string()),
+        change_context_soft: false,
+        line_hint: None,
+    }
+}
+
+fn try_parse_unified_diff_header(header: &str) -> Option<ParsedUpdateHeader> {
+    let header = header.trim_start();
+    if !header.starts_with('-') {
+        return None;
+    }
+
+    // Unified diff header has a trailing "@@" separator.
+    let atat_pos = header.find("@@")?;
+    let (range_part, tail) = header.split_at(atat_pos);
+    let range_part = range_part.trim();
+    let heading = tail.strip_prefix("@@").unwrap_or("").trim();
+
+    let old_start_0 = parse_unified_diff_range_old_start(range_part)?;
+    let ctx = if heading.is_empty() {
+        None
+    } else {
+        Some(heading.to_string())
+    };
+
+    Some(ParsedUpdateHeader {
+        change_context: ctx,
+        change_context_soft: true,
+        line_hint: Some(old_start_0),
+    })
+}
+
+fn parse_unified_diff_range_old_start(range: &str) -> Option<usize> {
+    // Expected: "-<old_start>[,<old_count>] +<new_start>[,<new_count>]"
+    // Counts are optional. We only use old_start.
+    let mut chars = range.trim().chars().peekable();
+
+    if chars.next()? != '-' {
+        return None;
+    }
+    let old_start = parse_usize_from_chars(&mut chars)?;
+    if matches!(chars.peek(), Some(',')) {
+        let _ = chars.next();
+        let _ = parse_usize_from_chars(&mut chars)?;
+    }
+
+    consume_spaces(&mut chars);
+
+    if chars.next()? != '+' {
+        return None;
+    }
+    let _new_start = parse_usize_from_chars(&mut chars)?;
+    if matches!(chars.peek(), Some(',')) {
+        let _ = chars.next();
+        let _ = parse_usize_from_chars(&mut chars)?;
+    }
+
+    consume_spaces(&mut chars);
+    if chars.peek().is_some() {
+        return None;
+    }
+
+    Some(old_start.saturating_sub(1))
+}
+
+fn parse_usize_from_chars<I: Iterator<Item = char>>(
+    chars: &mut std::iter::Peekable<I>,
+) -> Option<usize> {
+    let mut n: usize = 0;
+    let mut any = false;
+    while let Some(c) = chars.peek().copied() {
+        if !c.is_ascii_digit() {
+            break;
+        }
+        any = true;
+        chars.next();
+        n = n.saturating_mul(10).saturating_add((c as u8 - b'0') as usize);
+    }
+    if any { Some(n) } else { None }
+}
+
+fn consume_spaces<I: Iterator<Item = char>>(chars: &mut std::iter::Peekable<I>) {
+    while matches!(chars.peek(), Some(' ' | '\t')) {
+        let _ = chars.next();
+    }
+}
+
 fn finish_chunk(current: &mut Option<UpdateChunk>, out: &mut Vec<UpdateChunk>) {
     let Some(chunk) = current.take() else {
         return;
     };
-    if chunk.old_lines.is_empty() && chunk.new_lines.is_empty() && chunk.change_context.is_none() {
+    if chunk.old_lines.is_empty()
+        && chunk.new_lines.is_empty()
+        && chunk.change_context.is_none()
+        && chunk.line_hint.is_none()
+    {
         return;
     }
     out.push(chunk);
@@ -653,9 +780,21 @@ fn compute_replacements(
     for chunk in chunks {
         if let Some(ctx_line) = chunk.change_context.as_ref() {
             let ctx_pattern = vec![ctx_line.to_string()];
-            if let Some(idx) = seek_sequence(original_lines, &ctx_pattern, line_index, false) {
+            let found = seek_sequence(
+                original_lines,
+                &ctx_pattern,
+                line_index,
+                false,
+                chunk.line_hint,
+                if chunk.change_context_soft {
+                    SeekAmbiguityPolicy::Ignore
+                } else {
+                    SeekAmbiguityPolicy::Error
+                },
+            )?;
+            if let Some(idx) = found {
                 line_index = idx + 1;
-            } else {
+            } else if !chunk.change_context_soft {
                 return Err(ToolError::new(format!(
                     "无法找到上下文 '{}'（{}）",
                     ctx_line,
@@ -665,20 +804,37 @@ fn compute_replacements(
         }
 
         if chunk.old_lines.is_empty() {
-            replacements.push((original_lines.len(), 0, chunk.new_lines.clone()));
+            let insert_at = chunk.line_hint.unwrap_or(original_lines.len());
+            let insert_at = insert_at.min(original_lines.len());
+            replacements.push((insert_at, 0, chunk.new_lines.clone()));
+            line_index = line_index.max(insert_at);
             continue;
         }
 
         let mut pattern: &[String] = &chunk.old_lines;
         let mut new_slice: &[String] = &chunk.new_lines;
-        let mut found = seek_sequence(original_lines, pattern, line_index, chunk.is_end_of_file);
+        let mut found = seek_sequence(
+            original_lines,
+            pattern,
+            line_index,
+            chunk.is_end_of_file,
+            chunk.line_hint,
+            SeekAmbiguityPolicy::Error,
+        )?;
 
         if found.is_none() && pattern.last().is_some_and(String::is_empty) {
             pattern = &pattern[..pattern.len() - 1];
             if new_slice.last().is_some_and(String::is_empty) {
                 new_slice = &new_slice[..new_slice.len() - 1];
             }
-            found = seek_sequence(original_lines, pattern, line_index, chunk.is_end_of_file);
+            found = seek_sequence(
+                original_lines,
+                pattern,
+                line_index,
+                chunk.is_end_of_file,
+                chunk.line_hint,
+                SeekAmbiguityPolicy::Error,
+            )?;
         }
 
         if let Some(start_idx) = found {
@@ -718,50 +874,35 @@ fn apply_replacements(
     lines
 }
 
-fn seek_sequence(lines: &[String], pattern: &[String], start: usize, eof: bool) -> Option<usize> {
+#[derive(Debug, Clone, Copy)]
+enum SeekAmbiguityPolicy {
+    Error,
+    Ignore,
+}
+
+fn seek_sequence(
+    lines: &[String],
+    pattern: &[String],
+    start: usize,
+    eof: bool,
+    hint: Option<usize>,
+    ambiguity_policy: SeekAmbiguityPolicy,
+) -> Result<Option<usize>, ToolError> {
     if pattern.is_empty() {
-        return Some(start);
+        return Ok(Some(start));
     }
     if pattern.len() > lines.len() {
-        return None;
+        return Ok(None);
     }
 
+    let max_start = lines.len().saturating_sub(pattern.len());
     let search_start = if eof && lines.len() >= pattern.len() {
-        lines.len() - pattern.len()
+        max_start
     } else {
-        start
+        start.min(lines.len())
     };
-
-    for idx in search_start..=lines.len().saturating_sub(pattern.len()) {
-        if lines[idx..idx + pattern.len()] == *pattern {
-            return Some(idx);
-        }
-    }
-
-    for idx in search_start..=lines.len().saturating_sub(pattern.len()) {
-        let mut ok = true;
-        for (pat_idx, pat) in pattern.iter().enumerate() {
-            if lines[idx + pat_idx].trim_end() != pat.trim_end() {
-                ok = false;
-                break;
-            }
-        }
-        if ok {
-            return Some(idx);
-        }
-    }
-
-    for idx in search_start..=lines.len().saturating_sub(pattern.len()) {
-        let mut ok = true;
-        for (pat_idx, pat) in pattern.iter().enumerate() {
-            if lines[idx + pat_idx].trim() != pat.trim() {
-                ok = false;
-                break;
-            }
-        }
-        if ok {
-            return Some(idx);
-        }
+    if search_start > max_start {
+        return Ok(None);
     }
 
     fn normalise(s: &str) -> String {
@@ -780,20 +921,109 @@ fn seek_sequence(lines: &[String], pattern: &[String], start: usize, eof: bool) 
             .collect::<String>()
     }
 
-    for idx in search_start..=lines.len().saturating_sub(pattern.len()) {
-        let mut ok = true;
-        for (pat_idx, pat) in pattern.iter().enumerate() {
-            if normalise(&lines[idx + pat_idx]) != normalise(pat) {
-                ok = false;
-                break;
+    let mut candidates: Vec<usize> = Vec::new();
+
+    fn scan<F: FnMut(&str, &str) -> bool>(
+        out: &mut Vec<usize>,
+        lines: &[String],
+        pattern: &[String],
+        search_start: usize,
+        max_start: usize,
+        mut cmp: F,
+    ) {
+        for idx in search_start..=max_start {
+            let mut ok = true;
+            for (pat_idx, pat) in pattern.iter().enumerate() {
+                if !cmp(&lines[idx + pat_idx], pat) {
+                    ok = false;
+                    break;
+                }
             }
-        }
-        if ok {
-            return Some(idx);
+            if ok {
+                out.push(idx);
+            }
         }
     }
 
-    None
+    // 1) Exact
+    scan(&mut candidates, lines, pattern, search_start, max_start, |a, b| a == b);
+    if candidates.is_empty() {
+        // 2) trim_end
+        scan(
+            &mut candidates,
+            lines,
+            pattern,
+            search_start,
+            max_start,
+            |a, b| a.trim_end() == b.trim_end(),
+        );
+    }
+    if candidates.is_empty() {
+        // 3) trim (ignore leading whitespace too)
+        scan(
+            &mut candidates,
+            lines,
+            pattern,
+            search_start,
+            max_start,
+            |a, b| a.trim() == b.trim(),
+        );
+    }
+    if candidates.is_empty() {
+        // 4) normalize unicode punctuation/whitespace
+        scan(
+            &mut candidates,
+            lines,
+            pattern,
+            search_start,
+            max_start,
+            |a, b| normalise(a) == normalise(b),
+        );
+    }
+
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+    if candidates.len() == 1 {
+        return Ok(Some(candidates[0]));
+    }
+
+    if let Some(h) = hint {
+        let mut best = candidates[0];
+        let mut best_dist = best.abs_diff(h);
+        for &idx in &candidates[1..] {
+            let d = idx.abs_diff(h);
+            if d < best_dist || (d == best_dist && idx < best) {
+                best = idx;
+                best_dist = d;
+            }
+        }
+        return Ok(Some(best));
+    }
+
+    match ambiguity_policy {
+        SeekAmbiguityPolicy::Ignore => Ok(None),
+        SeekAmbiguityPolicy::Error => {
+            let preview = pattern
+                .iter()
+                .take(3)
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join("\\n");
+            let locs = candidates
+                .iter()
+                .take(8)
+                .map(|idx| (idx + 1).to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(ToolError::new(format!(
+                "补丁匹配不唯一：目标内容在文件中出现多处（{} 处，起始行示例：{}）。\n请在补丁中添加更多上下文行（以空格开头的行），或使用 `@@ <唯一定位行>` 来锚定位置。\n匹配片段预览（前 3 行）：\n{}",
+                candidates.len(),
+                locs,
+                preview
+            )))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -849,6 +1079,73 @@ mod tests {
         let updated = fs::read_to_string(&file_path).await.expect("read");
         assert!(updated.contains("\r\n"));
         assert_eq!(updated, "a\r\nB\r\n");
+    }
+
+    #[tokio::test]
+    async fn apply_patch_update_accepts_unified_diff_hunk_headers() {
+        let dir = tempdir().expect("tmp");
+        let base = dir.path();
+        let file_path = base.join("c.txt");
+        fs::write(&file_path, "hello\nworld\n").await.expect("write");
+
+        let patch = r#"*** Begin Patch
+*** Update File: c.txt
+@@ -1,2 +1,2 @@
+-hello
++HELLO
+*** End Patch"#;
+        let hunks = parse_patch(patch).expect("parse");
+        let _ = apply_hunks(base, &SandboxPolicy::DangerFullAccess, &[], &hunks)
+            .await
+            .expect("apply");
+
+        let updated = fs::read_to_string(&file_path).await.expect("read");
+        assert_eq!(updated, "HELLO\nworld\n");
+    }
+
+    #[tokio::test]
+    async fn apply_patch_unified_diff_heading_is_best_effort() {
+        let dir = tempdir().expect("tmp");
+        let base = dir.path();
+        let file_path = base.join("d.txt");
+        fs::write(&file_path, "hello\nworld\n").await.expect("write");
+
+        // Heading after the second @@ is a hint in unified diff; it might not exist verbatim.
+        let patch = r#"*** Begin Patch
+*** Update File: d.txt
+@@ -1,2 +1,2 @@ this heading does not exist
+-hello
++HELLO
+*** End Patch"#;
+        let hunks = parse_patch(patch).expect("parse");
+        let _ = apply_hunks(base, &SandboxPolicy::DangerFullAccess, &[], &hunks)
+            .await
+            .expect("apply");
+
+        let updated = fs::read_to_string(&file_path).await.expect("read");
+        assert_eq!(updated, "HELLO\nworld\n");
+    }
+
+    #[tokio::test]
+    async fn apply_patch_update_errors_on_ambiguous_match_without_hint() {
+        let dir = tempdir().expect("tmp");
+        let base = dir.path();
+        let file_path = base.join("e.txt");
+        fs::write(&file_path, "alpha\nbeta\nalpha\nbeta\n")
+            .await
+            .expect("write");
+
+        let patch = r#"*** Begin Patch
+*** Update File: e.txt
+@@
+-alpha
++ALPHA
+*** End Patch"#;
+        let hunks = parse_patch(patch).expect("parse");
+        let err = apply_hunks(base, &SandboxPolicy::DangerFullAccess, &[], &hunks)
+            .await
+            .expect_err("should fail");
+        assert!(err.message.contains("补丁匹配不唯一"));
     }
 
     #[test]

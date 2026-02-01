@@ -21,7 +21,7 @@ pub use run::{abort_run, retry_turn, run_task};
 pub use run::respond_approval;
 pub use config::{fetch_provider_models, get_app_config, save_app_config, test_connection};
 pub use conversation::{
-    create_conversation, delete_conversation, delete_messages_from, generate_title,
+    clone_conversation, create_conversation, delete_conversation, delete_messages_from, generate_title,
     get_conversations, get_messages, get_turn_debug_info, update_conversation_metadata, update_conversation_title,
 };
 pub use file::{list_local_directory, read_local_file_base64, write_local_text_file};

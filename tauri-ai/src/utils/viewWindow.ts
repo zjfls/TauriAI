@@ -1,5 +1,65 @@
+import { listen } from '@tauri-apps/api/event';
 import { WebviewWindow, getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import type { ActiveView } from '../types';
+
+type WorkstudioOpenPayload = {
+  filePath: string;
+  line?: number | null;
+  column?: number | null;
+  endLine?: number | null;
+  endColumn?: number | null;
+};
+
+export type ChatDockPlacement = 'tab' | 'split-left' | 'split-right';
+
+type ChatDockRequestPayload = {
+  requestId: string;
+  conversationId: string;
+  fromWindowLabel: string;
+  placement: ChatDockPlacement;
+};
+
+type ChatDockAckPayload = {
+  requestId: string;
+  ok: boolean;
+  error?: string | null;
+};
+
+const workstudioOpenSeqByLabel = new Map<string, number>();
+const workstudioOpenTimersByLabel = new Map<string, number[]>();
+
+const clearWorkstudioOpenTimers = (label: string) => {
+  const timers = workstudioOpenTimersByLabel.get(label);
+  if (timers) {
+    for (const id of timers) window.clearTimeout(id);
+  }
+  workstudioOpenTimersByLabel.delete(label);
+};
+
+const scheduleWorkstudioOpenFile = async (
+  win: WebviewWindow,
+  label: string,
+  payload: WorkstudioOpenPayload
+) => {
+  const nextSeq = (workstudioOpenSeqByLabel.get(label) ?? 0) + 1;
+  workstudioOpenSeqByLabel.set(label, nextSeq);
+  clearWorkstudioOpenTimers(label);
+
+  const delays = [0, 60, 180, 420, 900];
+  const timerIds: number[] = [];
+
+  for (const delayMs of delays) {
+    const id = window.setTimeout(() => {
+      if (workstudioOpenSeqByLabel.get(label) !== nextSeq) return;
+      void win.emit('workstudio:open_file', payload).catch(() => {
+        // ignore; best-effort
+      });
+    }, delayMs);
+    timerIds.push(id);
+  }
+
+  workstudioOpenTimersByLabel.set(label, timerIds);
+};
 
 export interface ViewWindowParams {
   view?: ActiveView | null;
@@ -70,9 +130,10 @@ export const openViewWindow = (
     column?: number;
     endLine?: number;
     endColumn?: number;
+    label?: string;
   }
 ) => {
-  const label = `view-${view}-${Date.now()}`;
+  const label = opts?.label ?? `view-${view}-${Date.now()}`;
   const params = new URLSearchParams();
   params.set('view', view);
   params.set('standalone', '1');
@@ -101,12 +162,22 @@ export const openViewWindow = (
     params.set('endColumn', String(opts.endColumn));
   }
   const url = `/?${params.toString()}`;
-  return new WebviewWindow(label, {
+  const win = new WebviewWindow(label, {
     title,
     url,
     width: 900,
     height: 700,
   });
+  // 在一些环境中，新窗口创建失败不会 throw，而是触发 `tauri://error` 事件。
+  // 这里做一个低成本的诊断日志，方便排查“看起来没反应”的问题。
+  try {
+    win.once('tauri://error', (e) => {
+      console.error('[openViewWindow] tauri://error', { label, view, url, payload: (e as any)?.payload });
+    });
+  } catch {
+    // ignore
+  }
+  return win;
 };
 
 export const openOrFocusViewWindow = async (
@@ -129,24 +200,21 @@ export const openOrFocusViewWindow = async (
     try {
       const existing = await WebviewWindow.getByLabel(label);
       if (existing) {
-        // Workstudio: focus existing window and send it an "open file" event.
-        if (
-          view === 'workstudio' &&
-          opts?.filePath
-        ) {
-          try {
-            await existing.emit('workstudio:open_file', {
-              filePath: opts.filePath,
-              line: opts.line ?? null,
-              column: opts.column ?? null,
-              endLine: opts.endLine ?? null,
-              endColumn: opts.endColumn ?? null,
-            });
-          } catch {
-            // ignore; best-effort
-          }
-        }
         await existing.setFocus();
+
+        // Workstudio: focus existing window and send it an "open file" event.
+        // 这里需要做“多次投递 + 时序取消”，因为：
+        // - window 已存在但 WebView 可能仍在加载中，JS listener 尚未注册，单次 emit 会丢
+        // - 用户可能连续点击多个不同链接，旧的投递必须被取消，避免最后跳回旧位置
+        if (view === 'workstudio' && opts?.filePath) {
+          await scheduleWorkstudioOpenFile(existing, label, {
+            filePath: opts.filePath,
+            line: opts.line ?? null,
+            column: opts.column ?? null,
+            endLine: opts.endLine ?? null,
+            endColumn: opts.endColumn ?? null,
+          });
+        }
         return existing;
       }
     } catch {
@@ -189,6 +257,149 @@ export const openOrFocusViewWindow = async (
     width: 900,
     height: 700,
   });
+};
+
+export const openOrFocusConversationChatWindow = async (conversationId: string, title: string) => {
+  const label = `view-chat-${conversationId}`;
+  try {
+    const existing = await WebviewWindow.getByLabel(label);
+    if (existing) {
+      await existing.setFocus();
+      return { win: existing, isExisting: true as const, label };
+    }
+  } catch {
+    // ignore, will create new window
+  }
+
+  const win = openViewWindow('chat', title, { conversationId, label });
+  return { win, isExisting: false as const, label };
+};
+
+export type ChatWindowInfo = {
+  label: string;
+  kind: 'main' | 'chat';
+  conversationId?: string | null;
+};
+
+export const listChatWindows = async (): Promise<ChatWindowInfo[]> => {
+  try {
+    const wins = await WebviewWindow.getAll();
+    const labels = wins.map((w) => w.label);
+    const infos: ChatWindowInfo[] = [];
+    for (const label of labels) {
+      if (label === 'main') {
+        infos.push({ label, kind: 'main', conversationId: null });
+        continue;
+      }
+      if (label.startsWith('view-chat-')) {
+        infos.push({
+          label,
+          kind: 'chat',
+          conversationId: label.slice('view-chat-'.length),
+        });
+      }
+    }
+    infos.sort((a, b) => {
+      if (a.kind === 'main' && b.kind !== 'main') return -1;
+      if (b.kind === 'main' && a.kind !== 'main') return 1;
+      return a.label.localeCompare(b.label);
+    });
+    return infos;
+  } catch {
+    return [];
+  }
+};
+
+export const emitToWindowLabel = async (label: string, eventName: string, payload: unknown): Promise<boolean> => {
+  try {
+    const win = await WebviewWindow.getByLabel(label);
+    if (!win) return false;
+    await win.emit(eventName, payload);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+export const dockConversationToWindow = async (
+  conversationId: string,
+  targetLabel: string,
+  placement: ChatDockPlacement = 'tab'
+): Promise<void> => {
+  const sourceLabel = getCurrentWebviewWindow().label;
+  const target = await WebviewWindow.getByLabel(targetLabel);
+  if (!target) {
+    throw new Error(`目标窗口不存在：${targetLabel}`);
+  }
+
+  const requestId =
+    typeof crypto !== 'undefined' && typeof (crypto as any).randomUUID === 'function'
+      ? (crypto as any).randomUUID()
+      : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  const payload: ChatDockRequestPayload = {
+    requestId,
+    conversationId,
+    fromWindowLabel: sourceLabel,
+    placement,
+  };
+
+  const delaysMs = [0, 60, 180, 420, 900];
+  const timeoutMs = 2200;
+
+  let done = false;
+  const timers: number[] = [];
+  let unlisten: null | (() => void) = null;
+
+  const stop = () => {
+    if (unlisten) {
+      unlisten();
+      unlisten = null;
+    }
+    for (const id of timers) window.clearTimeout(id);
+    timers.length = 0;
+  };
+
+  const sendOnce = () => {
+    void target.emit('chat:dock_request', payload).catch(() => {
+      // ignore; best-effort retry
+    });
+  };
+
+  await new Promise<void>((resolve, reject) => {
+    void (async () => {
+      try {
+        unlisten = await listen<ChatDockAckPayload>('chat:dock_ack', (event) => {
+          const ack = event.payload;
+          if (!ack || ack.requestId !== requestId) return;
+          if (done) return;
+          done = true;
+          stop();
+          if (ack.ok) resolve();
+          else reject(new Error(ack.error || '停靠失败'));
+        });
+      } catch (err) {
+        done = true;
+        stop();
+        reject(err instanceof Error ? err : new Error(String(err)));
+        return;
+      }
+
+      for (const delay of delaysMs) {
+        timers.push(window.setTimeout(sendOnce, delay));
+      }
+      timers.push(
+        window.setTimeout(() => {
+          if (done) return;
+          done = true;
+          stop();
+          reject(new Error('停靠超时：目标窗口未响应'));
+        }, timeoutMs)
+      );
+    })();
+  });
+
+  void target.setFocus().catch(() => {});
 };
 
 export const closeCurrentWindow = async () => {

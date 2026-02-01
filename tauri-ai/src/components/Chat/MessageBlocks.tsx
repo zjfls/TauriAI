@@ -11,12 +11,11 @@
  import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
  import { AlertTriangle, Brain, Bug, ChevronDown, ChevronRight, RefreshCw, Search, Wrench } from 'lucide-react';
  import { invoke, isTauri } from '@tauri-apps/api/core';
- import type { MessageBlock, MessageTurn } from '../../types';
+ import type { AnsiColorMode, AnsiRenderMode, MessageBlock, MessageSource, MessageTurn } from '../../types';
  import { DeferredMarkdown } from './DeferredMarkdown';
  import { AnsiText } from './AnsiText';
  import { useConfigStore } from '../../stores/configStore';
  import { DebugModal } from './DebugModal';
- import type { AnsiColorMode, AnsiRenderMode } from '../../types';
 
 interface ThinkingBlockProps {
   text: string;
@@ -992,11 +991,12 @@ export const MessageBlocks: React.FC<{
   conversationId?: string;
   isStreaming?: boolean;
   isUserBrowsing?: boolean;
+  messageSource?: MessageSource;
   turns?: MessageTurn[];
   onAbortTool?: (callId: string) => void;
   assistantMessageId?: string;
   onRetryTurn?: (assistantMessageId: string, turnId: string) => void;
-}> = ({ blocks, conversationId, isStreaming, isUserBrowsing, turns, onAbortTool, assistantMessageId, onRetryTurn }) => {
+}> = ({ blocks, conversationId, isStreaming, isUserBrowsing, messageSource, turns, onAbortTool, assistantMessageId, onRetryTurn }) => {
   if (!blocks || blocks.length === 0) return null;
 
   const { config } = useConfigStore();
@@ -1006,7 +1006,9 @@ export const MessageBlocks: React.FC<{
   const [activeDebugTurn, setActiveDebugTurn] = useState<MessageTurn | null>(null);
 
   const computeDefaultCollapsedTurns = useCallback((): Set<string> => {
-    // 默认只展开“最新一轮”，其余 turn 全部收起（避免切换会话时渲染爆炸）
+    // 对“历史加载”的多 Turn：默认只展开最新一轮，避免长对话渲染爆炸。
+    // 对“刚生成（live）”的多 Turn：默认全展开，便于用户立刻检查/回看。
+    if (messageSource === 'live') return new Set();
     const all = new Set<string>();
     let lastTurnId: string | null = null;
     for (const b of blocks) {
@@ -1020,7 +1022,7 @@ export const MessageBlocks: React.FC<{
       if (id !== lastTurnId) collapsed.add(id);
     }
     return collapsed;
-  }, [blocks]);
+  }, [blocks, messageSource]);
 
   const [collapsedTurns, setCollapsedTurns] = useState<Set<string>>(() => computeDefaultCollapsedTurns());
 

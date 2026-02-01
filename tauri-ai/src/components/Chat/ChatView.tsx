@@ -8,6 +8,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/shallow';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
+import { Folder, ChevronDown, Shield } from 'lucide-react';
 import { useSessionStore } from '../../stores/sessionStore';
 import { useConfigStore } from '../../stores/configStore';
 import { MessageList } from './MessageList';
@@ -16,25 +18,22 @@ import { ToolSessionsPanel } from './ToolSessionsPanel';
 import { estimateTokens, estimateTokensForTexts } from '../../utils/tokenizer';
 import { getApiProtocol } from '../../utils/apiUtils';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
 import type { TokenUsage, ContextUsageBreakdown, ContextMessageGroups, ContentPart, ThinkingMode, PtySessionInfo, Workstudio, Agent, SkillEntry, SkillLoadOutcome, SandboxPolicy, SecurityPolicyConfig, Message, MessageBlock } from '../../types';
 import { useToolSessionStore } from '../../stores/toolSessionStore';
-import { openOrFocusViewWindow } from '../../utils/viewWindow';
 import { endChatOpenProfile, getActiveChatOpenProfile, markChatOpenProfile } from '../../utils/chatOpenProfile';
-import { ChevronDown } from 'lucide-react';
-import type { WebSearchProvider } from './WebSearchToggle';
+import { openOrFocusViewWindow } from '../../utils/viewWindow';
 import { WorkstudioSecurityModal } from './WorkstudioSecurityModal';
+import type { WebSearchProvider } from './WebSearchToggle';
 
 interface ChatViewProps {
   sessionId: string | null;
+  /** 仅在“当前聚焦 Pane 的激活会话”里自动聚焦输入框（避免 keep-alive 多实例抢焦点） */
+  autoFocus?: boolean;
 }
 
 const EMPTY_PTY_SESSIONS: PtySessionInfo[] = [];
 
-const normalizePath = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '');
-const isSystemWorkstudioPath = (p: string) => normalizePath(p).includes('/.tauri-ai/workstudios/');
-
-export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
+export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false }) => {
   // Get session from SessionStore
 	  const {
 	    session,
@@ -42,6 +41,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
 	    abortGeneration,
 	    retry: retryMessage,
 	    retryTurn,
+	    cloneConversation,
 	    setSessionModel,
 	    undoToMessage,
 	    setSessionRunMode,
@@ -54,6 +54,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
 	      abortGeneration: state.abortGeneration,
 	      retry: state.retry,
 	      retryTurn: state.retryTurn,
+	      cloneConversation: state.cloneConversation,
 	      setSessionModel: state.setSessionModel,
 	      undoToMessage: state.undoToMessage,
 	      setSessionRunMode: state.setSessionRunMode,
@@ -65,6 +66,17 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
 
   const inputRef = useRef<InputAreaHandle>(null);
   const chatOpenProfileScheduledRef = useRef<string | null>(null);
+
+  // 仅对“当前聚焦 Pane 的激活会话”自动聚焦，避免 keep-alive 多会话同时挂载时互相抢焦点。
+  useEffect(() => {
+    if (!autoFocus) return;
+    const focus = () => inputRef.current?.focus();
+    if (typeof requestAnimationFrame === 'function') {
+      const rafId = requestAnimationFrame(focus);
+      return () => cancelAnimationFrame(rafId);
+    }
+    focus();
+  }, [autoFocus, sessionId]);
 
   // 允许把文件/文本拖拽到聊天窗口（消息列表）时，直接追加到输入框里
   const handleDropFilesToInput = useCallback((files: FileList | File[]) => {
@@ -82,6 +94,12 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
   const streamingTurns = session?.streamingTurns ? Array.from(session.streamingTurns.values()) : undefined;
   const isGenerating = session?.isGenerating ?? false;
   const conversationId = session?.conversationId ?? '';
+  const agentName = session?.agentName ?? null;
+
+  const messagesRef = useRef(messages);
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   // ---------------------------------------------------------------------------
   // Debug performance: profile "click -> ChatView ready"
@@ -133,8 +151,8 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
   );
 
   const agentForSession = useMemo(() => {
-    return session ? getAgent(session.agentName) ?? null : null;
-  }, [session, getAgent]);
+    return agentName ? getAgent(agentName) ?? null : null;
+  }, [agentName, getAgent]);
 
   const activeFormatType = (agentForSession?.formatType || 'chat') as 'chat' | 'plain' | 'json' | 'none';
   const [formatPromptTextFromBackend, setFormatPromptTextFromBackend] = useState<string>('');
@@ -166,32 +184,24 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
   }, [activeFormatType]);
 
   // Get current model's context length based on session's model or agent's default
+  const resolvedModelRef = session?.modelRef || agentForSession?.modelRef || null;
   const currentModel = useMemo(() => {
-    // Use session's modelRef, or fall back to agent's default modelRef
-    const sessionModelRef = session?.modelRef;
-    const agent = session ? getAgent(session.agentName) : null;
-    const modelRef = sessionModelRef || agent?.modelRef;
+    if (!resolvedModelRef) return null;
 
-    if (!modelRef) return null;
-
-    const [providerName, modelName] = modelRef.split('/');
+    const [providerName, modelName] = resolvedModelRef.split('/');
     const provider = getProvider(providerName);
     if (!provider) return null;
 
     return provider.models.find(m => m.name === modelName) || null;
-  }, [config, session, getProvider, getAgent]);
+  }, [config, getProvider, resolvedModelRef]);
 
   // Get provider type for current model (responses thinking levels differ by provider)
   const currentProviderType = useMemo(() => {
-    const sessionModelRef = session?.modelRef;
-    const agent = session ? getAgent(session.agentName) : null;
-    const modelRef = sessionModelRef || agent?.modelRef;
+    if (!resolvedModelRef) return undefined;
 
-    if (!modelRef) return undefined;
-
-    const [providerName] = modelRef.split('/');
+    const [providerName] = resolvedModelRef.split('/');
     return getProvider(providerName)?.type;
-  }, [config, session, getProvider, getAgent]);
+  }, [config, getProvider, resolvedModelRef]);
 
   // Check if current model supports thinking
   const supportsThinking = useMemo(() => {
@@ -270,14 +280,14 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
     if (!sessionId) return;
     if (!supportsWebSearch) return;
     if (!availableWebSearchProviders.length) return;
-    if (!session) return;
-    if (session.webSearchProvider !== undefined) return;
+    if (!agentName) return;
+    if (session?.webSearchProvider !== undefined) return;
 
     const preferred =
       (availableWebSearchProviders.includes('native') ? 'native' : availableWebSearchProviders[0]) ??
       null;
     useSessionStore.getState().setSessionWebSearchProvider(sessionId, preferred);
-  }, [sessionId, session, supportsWebSearch, availableWebSearchProviders]);
+  }, [agentName, availableWebSearchProviders, session?.webSearchProvider, sessionId, supportsWebSearch]);
 
   // 模型切换/配置变更后，校验一次当前会话的搜索提供方是否仍可用：
   // - 例如：从支持 native web search 的模型切到不支持的模型时，避免仍显示/使用 "native"
@@ -313,13 +323,13 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
   }, [availableWebSearchProviders, config]);
 
   const persistanceShellEnhance = useMemo(() => {
-    if (!session) return false;
-    const agent = getAgent(session.agentName);
+    if (!agentName) return false;
+    const agent = getAgent(agentName);
     const toolsetName = agent?.toolset;
     if (!toolsetName) return false;
     const toolset = config?.tools?.toolsets?.find((t) => t.name === toolsetName);
     return Boolean(toolset?.persistanceShellEnhance);
-  }, [session, getAgent, config]);
+  }, [agentName, getAgent, config]);
 
   // Check if current model uses reasoning_effort parameter
   const useReasoningEffort = useMemo(() => {
@@ -328,14 +338,9 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
 
   // Get API protocol type for thinking mode
   const apiProtocol = useMemo(() => {
-    const sessionModelRef = session?.modelRef;
-    const agent = session ? getAgent(session.agentName) : null;
-    const modelRef = sessionModelRef || agent?.modelRef;
-
-    if (!modelRef) return 'chat_completions';
-
-    return getApiProtocol(modelRef, config?.providers || []);
-  }, [session, getAgent, config]);
+    if (!resolvedModelRef) return 'chat_completions';
+    return getApiProtocol(resolvedModelRef, config?.providers || []);
+  }, [config, resolvedModelRef]);
 
   const thinkingMode = useMemo((): ThinkingMode => {
     if (session?.thinkingMode !== undefined) return session.thinkingMode;
@@ -385,11 +390,11 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
   const activeToolCount = persistentToolSessions.filter((s) => s.isAlive).length;
 
   const workspaceEnabled = useMemo(() => {
-    if (!session) return false;
-    const agent = getAgent(session.agentName);
+    if (!agentName) return false;
+    const agent = getAgent(agentName);
     const agentType = agent?.type ?? 'chat';
     return agentType === 'tool' && (agent?.workspaceSupport ?? true);
-  }, [session, getAgent]);
+  }, [agentName, getAgent]);
 
   const [workstudio, setWorkstudio] = useState<Workstudio | null>(null);
   const [workstudioLoading, setWorkstudioLoading] = useState(false);
@@ -398,17 +403,17 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
   const workstudioMenuRef = useRef<HTMLDivElement | null>(null);
 
   const currentAgentForDisplay = useMemo((): Agent | null => {
-    if (!session) return null;
-    return getAgent(session.agentName) ?? null;
-  }, [session, getAgent]);
+    if (!agentName) return null;
+    return getAgent(agentName) ?? null;
+  }, [agentName, getAgent]);
 
   // Determine if export should be shown based on format type (richtext)
   const canExportChat = useMemo(() => {
-    if (!session) return false;
-    const agent = getAgent(session.agentName);
+    if (!agentName) return false;
+    const agent = getAgent(agentName);
     // Only 'chat' format (richtext) supports export
     return agent?.formatType === 'chat';
-  }, [session, getAgent]);
+  }, [agentName, getAgent]);
 
   // Export chat to .tauri.richtxt
   const [exporting, setExporting] = useState(false);
@@ -586,9 +591,50 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
   }, [session, buildRichTxtMarkdown]);
 
   useEffect(() => {
+    setWorkstudioMenuOpen(false);
+    setWorkstudioSecurityOpen(false);
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (!workstudioMenuOpen) return;
+    const handlePointerDown = (event: MouseEvent | TouchEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (workstudioMenuRef.current?.contains(target)) return;
+      setWorkstudioMenuOpen(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setWorkstudioMenuOpen(false);
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('touchstart', handlePointerDown);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('touchstart', handlePointerDown);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [workstudioMenuOpen]);
+
+  useEffect(() => {
+    if (!workspaceEnabled) {
+      setWorkstudio(null);
+      setWorkstudioLoading(false);
+      return;
+    }
+    if (!isTauri()) {
+      setWorkstudio(null);
+      setWorkstudioLoading(false);
+      return;
+    }
+
     const wsId = session?.workstudioId;
     const convId = session?.conversationId;
-    if (!convId) return;
+    if (!convId) {
+      setWorkstudio(null);
+      setWorkstudioLoading(false);
+      return;
+    }
 
     let cancelled = false;
     const run = async () => {
@@ -613,43 +659,19 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
     return () => {
       cancelled = true;
     };
-  }, [session?.workstudioId, session?.conversationId]);
-
-  useEffect(() => {
-    if (!workstudioMenuOpen) return;
-    const handlePointerDown = (event: MouseEvent | TouchEvent) => {
-      const target = event.target as Node | null;
-      if (!target) return;
-      if (workstudioMenuRef.current?.contains(target)) return;
-      setWorkstudioMenuOpen(false);
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setWorkstudioMenuOpen(false);
-    };
-    document.addEventListener('mousedown', handlePointerDown);
-    document.addEventListener('touchstart', handlePointerDown);
-    window.addEventListener('keydown', handleKeyDown);
-    return () => {
-      document.removeEventListener('mousedown', handlePointerDown);
-      document.removeEventListener('touchstart', handlePointerDown);
-      window.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [workstudioMenuOpen]);
-
-  const openWorkstudioWindow = useCallback((ws: Workstudio) => {
-    void openOrFocusViewWindow('workstudio', `Workstudio: ${ws.mainFolder}`, {
-      workstudioId: ws.id,
-      label: `view-workstudio-${ws.id}`,
-    });
-  }, []);
+  }, [workspaceEnabled, session?.workstudioId, session?.conversationId]);
 
   const ensureWorkstudio = useCallback(async (): Promise<Workstudio | null> => {
-    let ws = workstudio;
-    if (ws) return ws;
-    if (!conversationId) return null;
+    if (!workspaceEnabled) return null;
+    const convId = session?.conversationId;
+    if (!convId) return null;
+    if (!isTauri()) return null;
+
+    if (workstudio) return workstudio;
+
     setWorkstudioLoading(true);
     try {
-      ws = await invoke<Workstudio>('ensure_workstudio_for_conversation', { conversationId });
+      const ws = await invoke<Workstudio>('ensure_workstudio_for_conversation', { conversationId: convId });
       setWorkstudio(ws);
       return ws;
     } catch {
@@ -658,11 +680,21 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
     } finally {
       setWorkstudioLoading(false);
     }
-  }, [conversationId, workstudio]);
+  }, [session?.conversationId, workspaceEnabled, workstudio]);
+
+  const openWorkstudioWindow = useCallback(async () => {
+    const ws = await ensureWorkstudio();
+    if (!ws) return;
+    await openOrFocusViewWindow('workstudio', `Workstudio: ${ws.mainFolder}`, {
+      workstudioId: ws.id,
+      label: `view-workstudio-${ws.id}`,
+    });
+  }, [ensureWorkstudio]);
 
   const handleSetWorkstudioMainFolder = useCallback(async () => {
     const ws = await ensureWorkstudio();
     if (!ws) return;
+    if (!isTauri()) return;
 
     const selected = await openDialog({
       title: '设置主目录',
@@ -679,13 +711,22 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
         setAsMain: true,
       });
       setWorkstudio(updated);
-      openWorkstudioWindow(updated);
+      await openOrFocusViewWindow('workstudio', `Workstudio: ${updated.mainFolder}`, {
+        workstudioId: updated.id,
+        label: `view-workstudio-${updated.id}`,
+      });
     } catch (e) {
       console.error('set workstudio main folder failed:', e);
     } finally {
       setWorkstudioLoading(false);
     }
-  }, [ensureWorkstudio, openWorkstudioWindow]);
+  }, [ensureWorkstudio]);
+
+  const handleOpenWorkstudioSecurity = useCallback(async () => {
+    const ws = await ensureWorkstudio();
+    if (!ws) return;
+    setWorkstudioSecurityOpen(true);
+  }, [ensureWorkstudio]);
 
   const prevConversationIdRef = useRef<string | null>(null);
   const prevIsGeneratingRef = useRef<boolean>(false);
@@ -770,7 +811,7 @@ Guidelines:
   const [skillOutcome, setSkillOutcome] = useState<SkillLoadOutcome | null>(null);
 
   useEffect(() => {
-    const agent = session ? getAgent(session.agentName) : null;
+    const agent = agentName ? getAgent(agentName) : null;
     const hasSkillSet = Boolean(agent?.skillSet);
     if (!hasSkillSet) {
       setSkillOutcome(null);
@@ -811,7 +852,7 @@ Guidelines:
       cancelled = true;
       unlisten?.();
     };
-  }, [session, getAgent, workstudio?.mainFolder]);
+  }, [agentName, getAgent, workstudio?.mainFolder]);
 
   // Calculate context usage breakdown (async compute; avoid blocking initial render)
   const computeContextUsage = useCallback((): ContextUsageBreakdown | null => {
@@ -1173,14 +1214,15 @@ Guidelines:
             const messageId = parsed.messageId;
             if (!messageId) return;
 
-            const targetIndex = messages.findIndex((m) => m.id === messageId);
+            const allMessages = messagesRef.current;
+            const targetIndex = allMessages.findIndex((m) => m.id === messageId);
             const resolvedUserMessage =
               targetIndex >= 0
                 ? (() => {
-                    const m = messages[targetIndex];
+                    const m = allMessages[targetIndex];
                     if (m.role === 'user') return m;
                     for (let i = targetIndex - 1; i >= 0; i--) {
-                      if (messages[i].role === 'user') return messages[i];
+                      if (allMessages[i].role === 'user') return allMessages[i];
                     }
                     return undefined;
                   })()
@@ -1214,7 +1256,7 @@ Guidelines:
         }
         break;
     }
-  }, [messages, openUrl, sessionId, undoToMessage]);
+  }, [openUrl, retryMessage, sessionId, undoToMessage]);
 
 	  const handleAbortTool = useCallback(
 	    (_callId: string) => {
@@ -1253,123 +1295,119 @@ Guidelines:
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      <WorkstudioSecurityModal
-        isOpen={workstudioSecurityOpen}
-        onClose={() => setWorkstudioSecurityOpen(false)}
-        workstudio={workstudio}
-      />
-      {workspaceEnabled && (
-        <div className="flex items-center justify-between border-b border-gray-100 px-4 py-2 text-xs text-gray-500 dark:border-gray-800 dark:text-gray-400">
-          <div className="min-w-0">
-            <div className="text-[11px] text-gray-400">工作区</div>
-            <div
-              className="truncate text-sm font-semibold text-gray-800 dark:text-gray-100"
-              title={workstudio?.mainFolder || ''}
-            >
-              {workstudioLoading
-                ? '加载中...'
-                : workstudio?.mainFolder
-                  ? workstudio.mainFolder
-                  : '(未绑定工作区)'}
-            </div>
-            {/* agent 已在输入框工具条展示，这里不重复显示 */}
-          </div>
-          <div ref={workstudioMenuRef} className="relative flex items-center">
-            <button
-              type="button"
-              onClick={() => setWorkstudioMenuOpen((v) => !v)}
-              disabled={workstudioLoading}
-              className="flex items-center gap-1 rounded border border-gray-200 px-3 py-1 text-xs font-medium text-gray-600 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-              title={workstudioLoading ? '加载中…' : 'Workstudio 菜单'}
-            >
-              <span>打开 Workstudio</span>
-              <ChevronDown
-                size={14}
-                className={workstudioMenuOpen ? 'rotate-180 transition-transform' : 'transition-transform'}
-              />
-            </button>
+      {(persistanceShellEnhance || workspaceEnabled || (canExportChat && session)) && (
+        <div className="flex items-center justify-between gap-3 border-b border-gray-100 px-4 py-2 text-xs text-gray-500 dark:border-gray-800 dark:text-gray-400">
+          <div className="flex min-w-0 items-center gap-2">
+            {persistanceShellEnhance && (
+              <button
+                type="button"
+                onClick={() => conversationId && setShowToolSessions(true)}
+                className="flex items-center gap-2 rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                title="查看持久进程（跨任务 PTY 会话）"
+                disabled={!conversationId}
+              >
+                <span>持久进程</span>
+                <span className="rounded-full bg-gray-200 px-1.5 text-[10px] text-gray-700 dark:bg-gray-700 dark:text-gray-200">
+                  {activeToolCount}
+                </span>
+              </button>
+            )}
 
-            {workstudioMenuOpen && (
-              <div className="absolute right-0 top-full z-[120] mt-1 w-48 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900">
-                {!workstudioLoading &&
-                  (!workstudio?.mainFolder || isSystemWorkstudioPath(workstudio.mainFolder)) && (
+            {workspaceEnabled && (
+              <div ref={workstudioMenuRef} className="relative flex min-w-0 items-center gap-1">
+                <WorkstudioSecurityModal
+                  isOpen={workstudioSecurityOpen}
+                  onClose={() => setWorkstudioSecurityOpen(false)}
+                  workstudio={workstudio}
+                />
+
+                <button
+                  type="button"
+                  onClick={() => setWorkstudioMenuOpen((v) => !v)}
+                  className="flex min-w-0 items-center gap-1 rounded border border-transparent px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
+                  title={workstudioLoading ? '加载中…' : workstudio?.mainFolder || 'Workstudio'}
+                  disabled={!session?.conversationId}
+                >
+                  <Folder size={14} className="shrink-0 text-gray-400" />
+                  <span className="max-w-[360px] truncate">
+                    {workstudioLoading ? '加载中…' : workstudio?.mainFolder ? workstudio.mainFolder : 'Workstudio'}
+                  </span>
+                  <ChevronDown
+                    size={14}
+                    className={workstudioMenuOpen ? 'shrink-0 rotate-180 transition-transform' : 'shrink-0 transition-transform'}
+                  />
+                </button>
+
+                {workstudioMenuOpen && (
+                  <div className="absolute left-0 top-full z-[200] mt-1 w-56 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900">
                     <button
                       type="button"
-                      className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+                      onClick={() => {
+                        setWorkstudioMenuOpen(false);
+                        void openWorkstudioWindow();
+                      }}
+                    >
+                      <Folder size={14} className="text-gray-500" />
+                      <span>打开 Workstudio</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
                       onClick={() => {
                         setWorkstudioMenuOpen(false);
                         void handleSetWorkstudioMainFolder();
                       }}
                     >
-                      设置主目录…
+                      <Folder size={14} className="text-gray-500" />
+                      <span>设置主目录…</span>
                     </button>
-                  )}
 
-	                <button
-	                  type="button"
-	                  className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
-	                  onClick={() => {
-	                    setWorkstudioMenuOpen(false);
-	                    void ensureWorkstudio().then((ws) => {
-	                      if (!ws) return;
-	                      openWorkstudioWindow(ws);
-	                    });
-	                  }}
-	                >
-	                  打开 Workstudio
-	                </button>
-
-	                <button
-	                  type="button"
-	                  className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
-	                  onClick={() => {
-	                    setWorkstudioMenuOpen(false);
-	                    void ensureWorkstudio().then((ws) => {
-	                      if (!ws) return;
-	                      setWorkstudioSecurityOpen(true);
-	                    });
-	                  }}
-	                >
-	                  编辑安全配置…
-	                </button>
-	              </div>
-	            )}
+                    <button
+                      type="button"
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+                      onClick={() => {
+                        setWorkstudioMenuOpen(false);
+                        void handleOpenWorkstudioSecurity();
+                      }}
+                    >
+                      <Shield size={14} className="text-gray-500" />
+                      <span>编辑安全配置…</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
-        </div>
-      )}
-      {persistanceShellEnhance && (
-        <div className="flex items-center justify-between border-b border-gray-100 px-4 py-2 text-xs text-gray-500 dark:border-gray-800 dark:text-gray-400">
-          <button
-            type="button"
-            onClick={() => conversationId && setShowToolSessions(true)}
-            className="flex items-center gap-2 rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-            title="查看持久进程（跨任务 PTY 会话）"
-            disabled={!conversationId}
-          >
-            <span>持久进程</span>
-            <span className="rounded-full bg-gray-200 px-1.5 text-[10px] text-gray-700 dark:bg-gray-700 dark:text-gray-200">
-              {activeToolCount}
-            </span>
-          </button>
-        </div>
-      )}
-      {/* Chat toolbar with export button */}
-      {canExportChat && session && (
-        <div className="flex items-center justify-end border-b border-gray-100 px-4 py-1.5 text-xs text-gray-500 dark:border-gray-800 dark:text-gray-400">
-          <button
-            type="button"
-            disabled={exporting || !session.conversationId || session.messages.length === 0}
-            onClick={handleExportChat}
-            className="flex items-center gap-1.5 rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-            title={!session.conversationId ? '对话未绑定' : session.messages.length === 0 ? '暂无消息' : '导出对话为 .tauri.richtxt'}
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-              <polyline points="7 10 12 15 17 10"/>
-              <line x1="12" y1="15" x2="12" y2="3"/>
-            </svg>
-            <span>{exporting ? '导出中...' : '导出'}</span>
-          </button>
+
+          <div className="flex items-center gap-2">
+            {canExportChat && session && (
+              <button
+                type="button"
+                disabled={exporting || !session.conversationId || session.messages.length === 0}
+                onClick={handleExportChat}
+                className="flex items-center gap-1.5 rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                title={!session.conversationId ? '对话未绑定' : session.messages.length === 0 ? '暂无消息' : '导出对话为 .tauri.richtxt'}
+              >
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="7 10 12 15 17 10" />
+                  <line x1="12" y1="15" x2="12" y2="3" />
+                </svg>
+                <span>{exporting ? '导出中...' : '导出'}</span>
+              </button>
+            )}
+          </div>
         </div>
       )}
 	      <React.Profiler id="MessageList" onRender={handleMessageListProfiler}>
@@ -1399,6 +1437,20 @@ Guidelines:
         ref={inputRef}
         onSend={handleSend}
         onAbort={handleAbort}
+        onCloneConversation={
+          conversationId
+            ? async () => {
+                if (!sessionId) return;
+                try {
+                  await cloneConversation(sessionId);
+                } catch (err) {
+                  const message = err instanceof Error ? err.message : String(err);
+                  console.error('cloneConversation failed:', err);
+                  alert(`克隆失败：${message}`);
+                }
+              }
+            : undefined
+        }
         disabled={false}
         isGenerating={isGenerating}
         runMode={session?.runMode ?? 'chat'}

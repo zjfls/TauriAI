@@ -5,7 +5,7 @@
  */
 
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Send, Square, Bot, Cpu, ChevronDown, Check, ImagePlus, Paperclip, FileText, Plug, File as FileIcon } from 'lucide-react';
+import { Send, Square, Bot, Cpu, ChevronDown, Check, ImagePlus, Paperclip, FileText, Plug, File as FileIcon, Copy } from 'lucide-react';
 import { ContextUsageIndicator } from './ContextUsageIndicator';
 import { McpModal } from './McpModal';
 import { AttachmentPreview } from './AttachmentPreview';
@@ -287,6 +287,7 @@ interface ModelOption {
 interface InputAreaProps {
   onSend: (content: string, thinking?: ThinkingMode, images?: ContentPart[]) => void;
   onAbort?: () => void;
+  onCloneConversation?: () => void;
   disabled: boolean;
   isGenerating: boolean;
   supportsThinking?: boolean;  // Whether current model supports thinking
@@ -634,6 +635,82 @@ const AttachmentMenu: React.FC<AttachmentMenuProps> = ({
   );
 };
 
+interface ExtraActionsMenuProps {
+  onCloneConversation?: () => void;
+  disabled?: boolean;
+}
+
+const ExtraActionsMenu: React.FC<ExtraActionsMenuProps> = ({
+  onCloneConversation,
+  disabled = false,
+}) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  // Close menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const menuItems = [
+    {
+      icon: <Copy size={14} />,
+      label: '克隆对话',
+      onClick: onCloneConversation,
+      enabled: typeof onCloneConversation === 'function',
+      disabledTip: '当前对话不可克隆',
+    },
+  ];
+
+  return (
+    <div className="relative" ref={menuRef}>
+      <button
+        type="button"
+        onClick={() => setIsOpen(!isOpen)}
+        disabled={disabled}
+        className="inline-flex items-center gap-1 text-gray-400 hover:text-blue-500 dark:text-gray-500 dark:hover:text-blue-400 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+        title="更多操作"
+        aria-label="更多操作"
+      >
+        <FileIcon size={12} />
+        <span>更多</span>
+        <ChevronDown size={10} className={`transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+      </button>
+
+      {isOpen && (
+        <div className="absolute bottom-full right-0 mb-1 w-40 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-1 z-50">
+          {menuItems.map((item) => (
+            <button
+              key={item.label}
+              onClick={() => {
+                if (item.enabled && item.onClick) {
+                  item.onClick();
+                  setIsOpen(false);
+                }
+              }}
+              disabled={!item.enabled || disabled}
+              className={`flex items-center gap-2 w-full px-3 py-1.5 text-left transition-colors ${item.enabled && !disabled
+                ? 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
+                : 'text-gray-400 dark:text-gray-600 cursor-not-allowed'
+                }`}
+              title={!item.enabled ? item.disabledTip : undefined}
+            >
+              {item.icon}
+              <span className="text-xs">{item.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
 /**
  * Compact dropdown selector for agent/model selection
  * 
@@ -795,6 +872,7 @@ export interface InputAreaHandle {
 export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   onSend,
   onAbort,
+  onCloneConversation,
   disabled,
   isGenerating,
   supportsThinking = false,
@@ -1801,9 +1879,9 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   /**
    * Focus textarea on mount
    */
-  useEffect(() => {
-    textareaRef.current?.focus();
-  }, []);
+  // 注意：InputArea 可能会在 keep-alive / 多 Pane 场景下同时挂载多份。
+  // 如果这里强制 focus，会导致“隐藏会话抢焦点”，甚至触发聚焦/切换的循环更新。
+  // 输入框的自动聚焦由上层（ChatViewContainer/ChatView）按“当前聚焦 Pane 的激活会话”统一控制。
 
   /**
    * Handle sending message
@@ -2515,8 +2593,8 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
         )}
       </div>
 
-      {/* Attachment menu */}
-      <div className="mt-1 flex items-center text-xs">
+      {/* Attachment menu + extra actions */}
+      <div className="mt-1 flex items-center justify-between text-xs">
         <AttachmentMenu
           onImageClick={() => fileInputRef.current?.click()}
           onTextFileClick={() => textFileInputRef.current?.click()}
@@ -2524,6 +2602,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
           supportsVision={supportsVision}
           disabled={disabled || isGenerating}
         />
+        <ExtraActionsMenu onCloneConversation={onCloneConversation} disabled={disabled || isGenerating} />
       </div>
 
       {/* MCP modal */}

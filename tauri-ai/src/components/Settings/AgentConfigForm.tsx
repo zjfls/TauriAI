@@ -348,6 +348,31 @@ const AgentForm: React.FC<AgentFormProps> = ({
   const effectiveSandboxPolicy: SandboxPolicy = agent.sandboxPolicy ?? baseSecurityPolicy.sandboxPolicy;
   const effectiveApprovalPolicy: AskForApproval = agent.approvalPolicy ?? baseSecurityPolicy.approvalPolicy;
 
+  const contextPolicyType = (agent.contextPolicy?.type ?? 'disabled') as 'disabled' | 'normal_compact' | 'custom';
+  const normalCompactPolicy =
+    contextPolicyType === 'normal_compact' ? (agent.contextPolicy as any) : null;
+  const customPolicy = contextPolicyType === 'custom' ? (agent.contextPolicy as any) : null;
+  const [customParamsText, setCustomParamsText] = useState(() => {
+    if (contextPolicyType !== 'custom') return '';
+    try {
+      return JSON.stringify(customPolicy?.params ?? {}, null, 2);
+    } catch {
+      return '{}';
+    }
+  });
+  const [customParamsError, setCustomParamsError] = useState<string | null>(null);
+  useEffect(() => {
+    if (contextPolicyType !== 'custom') return;
+    try {
+      setCustomParamsText(JSON.stringify(customPolicy?.params ?? {}, null, 2));
+      setCustomParamsError(null);
+    } catch {
+      setCustomParamsText('{}');
+      setCustomParamsError(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [contextPolicyType, agent.contextPolicy]);
+
   const defaultPolicyForType = (type: SandboxPolicy['type']): SandboxPolicy => {
     switch (type) {
       case 'read-only':
@@ -722,6 +747,322 @@ const AgentForm: React.FC<AgentFormProps> = ({
           <p className="text-xs text-gray-500">
             默认关闭：thinking 只用于 UI/调试展示；开启会增加上下文长度，并可能影响模型输出风格。
           </p>
+        </div>
+
+        <div className="space-y-2">
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Context 管理</label>
+          <select
+            value={contextPolicyType}
+            onChange={(e) => {
+              const v = e.target.value as typeof contextPolicyType;
+              if (v === 'disabled') {
+                onFieldChange('contextPolicy', undefined);
+                return;
+              }
+              if (v === 'normal_compact') {
+                onFieldChange('contextPolicy', {
+                  type: 'normal_compact',
+                  enabled: true,
+                  trimEnabled: true,
+                  hardLimitPercent: 90,
+                  compactEnabled: true,
+                  autoCompact: true,
+                  autoCompactThresholdPercent: 85,
+                  keepLastMessages: 60,
+                  maxSummaryTokens: 800,
+                  maxCompactInputMessages: 400,
+                });
+                return;
+              }
+              onFieldChange('contextPolicy', { type: 'custom', name: 'custom', params: {} });
+            }}
+            disabled={!isEditing}
+            className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800"
+          >
+            <option value="disabled">关闭（不自动 compact）</option>
+            <option value="normal_compact">Normal Compact（类 Codex）</option>
+            <option value="custom">自定义（JSON 参数）</option>
+          </select>
+
+          {contextPolicyType === 'normal_compact' && (
+            <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-900/30 space-y-3">
+	              <div className="flex items-center justify-between">
+	                <div className="text-sm font-medium text-gray-800 dark:text-gray-200">Normal Compact</div>
+	                <div className="flex items-center gap-2">
+	                  <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+	                    <input
+	                      type="checkbox"
+	                      checked={Boolean(normalCompactPolicy?.enabled ?? true)}
+	                      onChange={(e) =>
+	                        onFieldChange('contextPolicy', {
+	                          ...(normalCompactPolicy ?? { type: 'normal_compact' }),
+	                          enabled: e.target.checked,
+	                        })
+	                      }
+	                      disabled={!isEditing}
+	                      className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
+	                    />
+	                    启用
+	                  </label>
+	                </div>
+	              </div>
+
+	              <div className="space-y-3">
+	                {/* Trim (hard limit for runtime prompt; does NOT mutate history) */}
+	                <div className="rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-900/40 space-y-2">
+	                  <div className="flex items-center justify-between">
+	                    <div className="text-xs font-medium text-gray-700 dark:text-gray-300">硬裁剪（Trim）</div>
+	                    <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+	                      <input
+	                        type="checkbox"
+	                        checked={Boolean(normalCompactPolicy?.trimEnabled ?? true)}
+	                        onChange={(e) =>
+	                          onFieldChange('contextPolicy', {
+	                            ...(normalCompactPolicy ?? { type: 'normal_compact' }),
+	                            trimEnabled: e.target.checked,
+	                          })
+	                        }
+	                        disabled={!isEditing || !(normalCompactPolicy?.enabled ?? true)}
+	                        className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
+	                      />
+	                      启用硬裁剪
+	                    </label>
+	                  </div>
+
+	                  <div className="grid grid-cols-2 gap-3">
+	                    <div className="space-y-1">
+	                      <label className="block text-xs text-gray-600 dark:text-gray-400">硬上限（%）</label>
+	                      <input
+	                        type="number"
+	                        min={1}
+	                        max={99}
+	                        value={normalCompactPolicy?.hardLimitPercent ?? 90}
+	                        onChange={(e) =>
+	                          onFieldChange('contextPolicy', {
+	                            ...(normalCompactPolicy ?? { type: 'normal_compact' }),
+	                            hardLimitPercent: Number(e.target.value || 90),
+	                          })
+	                        }
+	                        disabled={
+	                          !isEditing ||
+	                          !(normalCompactPolicy?.enabled ?? true) ||
+	                          !(normalCompactPolicy?.trimEnabled ?? true)
+	                        }
+	                        className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800 text-sm"
+	                      />
+	                      <p className="text-xs text-gray-500">
+	                        仅影响本次请求的 runtime prompt：会删除更老的非 system 消息，避免超窗；不会改写历史。
+	                      </p>
+	                    </div>
+	                  </div>
+	                </div>
+
+	                {/* Compaction (rewrite older history into a summary message) */}
+	                <div className="rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-900/40 space-y-2">
+	                  <div className="flex items-center justify-between">
+	                    <div className="text-xs font-medium text-gray-700 dark:text-gray-300">历史压缩（Compact）</div>
+	                    <div className="flex items-center gap-3">
+	                      <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+	                        <input
+	                          type="checkbox"
+	                          checked={Boolean(normalCompactPolicy?.compactEnabled ?? true)}
+	                          onChange={(e) =>
+	                            onFieldChange('contextPolicy', {
+	                              ...(normalCompactPolicy ?? { type: 'normal_compact' }),
+	                              compactEnabled: e.target.checked,
+	                            })
+	                          }
+	                          disabled={!isEditing || !(normalCompactPolicy?.enabled ?? true)}
+	                          className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
+	                        />
+	                        启用 compact
+	                      </label>
+	                      <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+	                        <input
+	                          type="checkbox"
+	                          checked={Boolean(normalCompactPolicy?.autoCompact ?? true)}
+	                          onChange={(e) =>
+	                            onFieldChange('contextPolicy', {
+	                              ...(normalCompactPolicy ?? { type: 'normal_compact' }),
+	                              autoCompact: e.target.checked,
+	                            })
+	                          }
+	                          disabled={
+	                            !isEditing ||
+	                            !(normalCompactPolicy?.enabled ?? true) ||
+	                            !(normalCompactPolicy?.compactEnabled ?? true)
+	                          }
+	                          className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
+	                        />
+	                        自动 compact
+	                      </label>
+	                    </div>
+	                  </div>
+
+	                  <div className="grid grid-cols-2 gap-3">
+	                    <div className="space-y-1">
+	                      <label className="block text-xs text-gray-600 dark:text-gray-400">触发阈值（%）</label>
+	                      <input
+	                        type="number"
+	                        min={1}
+	                        max={99}
+	                        value={normalCompactPolicy?.autoCompactThresholdPercent ?? 85}
+	                        onChange={(e) =>
+	                          onFieldChange('contextPolicy', {
+	                            ...(normalCompactPolicy ?? { type: 'normal_compact' }),
+	                            autoCompactThresholdPercent: Number(e.target.value || 85),
+	                          })
+	                        }
+	                        disabled={
+	                          !isEditing ||
+	                          !(normalCompactPolicy?.enabled ?? true) ||
+	                          !(normalCompactPolicy?.compactEnabled ?? true) ||
+	                          !(normalCompactPolicy?.autoCompact ?? true)
+	                        }
+	                        className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800 text-sm"
+	                      />
+	                    </div>
+	                    <div className="space-y-1">
+	                      <label className="block text-xs text-gray-600 dark:text-gray-400">保留最近消息数</label>
+	                      <input
+	                        type="number"
+	                        min={5}
+	                        max={200}
+	                        value={normalCompactPolicy?.keepLastMessages ?? 60}
+	                        onChange={(e) =>
+	                          onFieldChange('contextPolicy', {
+	                            ...(normalCompactPolicy ?? { type: 'normal_compact' }),
+	                            keepLastMessages: Number(e.target.value || 60),
+	                          })
+	                        }
+	                        disabled={
+	                          !isEditing ||
+	                          !(normalCompactPolicy?.enabled ?? true) ||
+	                          !(normalCompactPolicy?.compactEnabled ?? true)
+	                        }
+	                        className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800 text-sm"
+	                      />
+	                    </div>
+	                    <div className="space-y-1">
+	                      <label className="block text-xs text-gray-600 dark:text-gray-400">摘要 max_tokens</label>
+	                      <input
+	                        type="number"
+	                        min={64}
+	                        max={4096}
+	                        value={normalCompactPolicy?.maxSummaryTokens ?? 800}
+	                        onChange={(e) =>
+	                          onFieldChange('contextPolicy', {
+	                            ...(normalCompactPolicy ?? { type: 'normal_compact' }),
+	                            maxSummaryTokens: Number(e.target.value || 800),
+	                          })
+	                        }
+	                        disabled={
+	                          !isEditing ||
+	                          !(normalCompactPolicy?.enabled ?? true) ||
+	                          !(normalCompactPolicy?.compactEnabled ?? true)
+	                        }
+	                        className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800 text-sm"
+	                      />
+	                    </div>
+	                    <div className="space-y-1">
+	                      <label className="block text-xs text-gray-600 dark:text-gray-400">compact 输入消息上限</label>
+	                      <input
+	                        type="number"
+	                        min={50}
+	                        max={5000}
+	                        value={normalCompactPolicy?.maxCompactInputMessages ?? 400}
+	                        onChange={(e) =>
+	                          onFieldChange('contextPolicy', {
+	                            ...(normalCompactPolicy ?? { type: 'normal_compact' }),
+	                            maxCompactInputMessages: Number(e.target.value || 400),
+	                          })
+	                        }
+	                        disabled={
+	                          !isEditing ||
+	                          !(normalCompactPolicy?.enabled ?? true) ||
+	                          !(normalCompactPolicy?.compactEnabled ?? true)
+	                        }
+	                        className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800 text-sm"
+	                      />
+	                    </div>
+	                  </div>
+
+		                  <p className="text-xs text-gray-500">
+		                    compact 不会删除原始历史：后端会新增一条摘要消息，并在构建 runtime prompt 时优先使用摘要来跳过更早消息；随后本次请求仍会按硬上限做裁剪以避免超窗。
+		                  </p>
+	                </div>
+	              </div>
+            </div>
+          )}
+
+          {contextPolicyType === 'custom' && (
+            <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-900/30 space-y-2">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="block text-xs text-gray-600 dark:text-gray-400">策略名</label>
+                  <input
+                    type="text"
+                    value={customPolicy?.name ?? 'custom'}
+                    onChange={(e) =>
+                      onFieldChange('contextPolicy', {
+                        ...(customPolicy ?? { type: 'custom', params: {} }),
+                        name: e.target.value || 'custom',
+                      })
+                    }
+                    disabled={!isEditing}
+                    className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800 text-sm"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="block text-xs text-gray-600 dark:text-gray-400">参数（JSON）</label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCustomParamsText('{}');
+                      setCustomParamsError(null);
+                      onFieldChange('contextPolicy', {
+                        ...(customPolicy ?? { type: 'custom', name: 'custom' }),
+                        params: {},
+                      });
+                    }}
+                    disabled={!isEditing}
+                    className="w-full rounded-lg border border-gray-200 px-3 py-2 text-xs text-gray-600 hover:bg-gray-100 disabled:opacity-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                    title="重置 params"
+                  >
+                    重置 params
+                  </button>
+                </div>
+              </div>
+              <textarea
+                value={customParamsText}
+                onChange={(e) => {
+                  setCustomParamsText(e.target.value);
+                  setCustomParamsError(null);
+                }}
+                onBlur={() => {
+                  try {
+                    const parsed = JSON.parse(customParamsText || '{}');
+                    setCustomParamsError(null);
+                    onFieldChange('contextPolicy', {
+                      ...(customPolicy ?? { type: 'custom', name: 'custom' }),
+                      params: parsed,
+                    });
+                  } catch (err) {
+                    setCustomParamsError('JSON 格式不合法，未保存（请修正后再失焦）');
+                  }
+                }}
+                disabled={!isEditing}
+                rows={6}
+                className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800 font-mono text-xs"
+              />
+              {customParamsError && (
+                <div className="text-xs text-red-600 dark:text-red-300">{customParamsError}</div>
+              )}
+              <p className="text-xs text-gray-500">
+                自定义策略目前仅做“配置落盘”，后端会忽略未知策略（为未来扩展保留）。
+              </p>
+            </div>
+          )}
         </div>
       </div>
     </div>

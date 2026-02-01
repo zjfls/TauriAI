@@ -39,23 +39,6 @@ const getUsageColor = (percentage: number): { stroke: string; text: string; bg: 
   return { stroke: '#22c55e', text: 'text-green-500', bg: 'bg-green-500' };
 };
 
-const countChineseChars = (text: string): number => {
-  let chineseChars = 0;
-  for (let i = 0; i < text.length; i++) {
-    const code = text.charCodeAt(i);
-    if (code >= 0x4e00 && code <= 0x9fff) chineseChars++;
-  }
-  return chineseChars;
-};
-
-// 轻量估算（用于消息列表明细，避免在 UI 上做 BPE 编码导致卡顿）
-const estimateTokensFast = (text: string): number => {
-  if (!text) return 0;
-  const chineseChars = countChineseChars(text);
-  const otherChars = Math.max(0, text.length - chineseChars);
-  return Math.ceil(chineseChars * 1.5 + otherChars * 0.25);
-};
-
 const shortId = (id: string, keep = 8): string => {
   if (!id) return '';
   return id.length <= keep ? id : id.slice(0, keep);
@@ -110,24 +93,17 @@ const buildMessageGroupsText = (usage: ContextUsageBreakdown): string => {
 
     for (const m of shown) {
       const status = m.status ?? 'success';
-      const contentTokens = estimateTokensFast(m.content || '');
-      const thinkingText = includeThinking ? m.thinking || '' : '';
-      const thinkingTokens = includeThinking ? estimateTokensFast(thinkingText) : 0;
-      const approxTokens = contentTokens + thinkingTokens;
-      const pct = limit > 0 ? (approxTokens / limit) * 100 : 0;
-
       const partsCount = Array.isArray(m.contentParts) ? m.contentParts.length : 0;
       const extra = partsCount > 0 ? ` parts:${partsCount}` : '';
 
       const preview = normalizeOneLine(m.content || '', 160);
+      const thinkingText = includeThinking ? m.thinking || '' : '';
       const thinkingPreview =
         includeThinking && thinkingText.trim()
           ? ` | thinking:${normalizeOneLine(thinkingText, 120)}`
           : '';
 
-      lines.push(
-        `- ${roleAbbrev(m.role)}/${status} ${shortId(m.id)} tok~${approxTokens}${limit ? ` (${pct.toFixed(1)}%)` : ''}${extra} :: ${preview}${thinkingPreview}`
-      );
+      lines.push(`- ${roleAbbrev(m.role)}/${status} ${shortId(m.id)}${extra} :: ${preview}${thinkingPreview}`);
     }
   };
 

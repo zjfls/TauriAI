@@ -28,8 +28,12 @@ use crate::models::{
     MessageStatus, MessageTurn,
 };
 use crate::prompts::{
-    MCP_RESOURCE_TOOL_PROMPT, PERSISTENT_PROCESS_PROMPT, PYTHON3_FALLBACK_PROMPT,
-    WEB_SEARCH_TOOL_PROMPT, WORKSTUDIO_PROMPT_GUIDE,
+    APPLY_PATCH_TOOL_PROMPT, MCP_RESOURCE_TOOL_PROMPT, PERSISTENT_PROCESS_PROMPT,
+    PYTHON3_FALLBACK_PROMPT, WEB_SEARCH_TOOL_PROMPT, WORKSTUDIO_PROMPT_GUIDE,
+};
+use crate::runtime::context_manager::{
+    auto_compact_threshold_tokens, estimate_prompt_tokens, hard_limit_tokens, run_normal_compact,
+    trim_runtime_messages_to_hard_limit, ContextManager,
 };
 use crate::runtime::events::RunEvent;
 use crate::runtime::mcp::global_mcp_runtime;
@@ -342,6 +346,7 @@ fn compute_system_prompt_cache_key(
     agent: &crate::models::Agent,
     workstudio: Option<&crate::models::Workstudio>,
     allow_persistent_pty: bool,
+    enable_apply_patch_tool_prompt: bool,
     enable_local_web_search_tool: bool,
     enable_mcp_resource_tool_prompt: bool,
     enabled_skills: &[SkillEntry],
@@ -352,7 +357,7 @@ fn compute_system_prompt_cache_key(
     let mut h = Sha1::new();
     // NOTE: Cache key must include any prompt text that can affect the actual HTTP request.
     // Bump this version whenever the cache inputs change.
-    h.update(b"v4\n");
+    h.update(b"v5\n");
     h.update(agent.name.as_bytes());
     h.update(b"\n");
     h.update(agent.system_prompt.as_bytes());
@@ -379,6 +384,7 @@ fn compute_system_prompt_cache_key(
     }
 
     h.update(format!("pty:{allow_persistent_pty}\n").as_bytes());
+    h.update(format!("apply_patch_prompt:{enable_apply_patch_tool_prompt}\n").as_bytes());
     h.update(format!("py:{}/{}\n", py.has_python, py.has_python3).as_bytes());
     h.update(format!("local_web_search:{enable_local_web_search_tool}\n").as_bytes());
     h.update(format!("mcp_resource_prompt:{enable_mcp_resource_tool_prompt}\n").as_bytes());
@@ -487,6 +493,32 @@ fn inject_workstudio_prompt(
         .take_while(|m| m.role == MessageRole::System)
         .count();
 
+    messages.insert(
+        insert_at,
+        Message {
+            id: uuid::Uuid::new_v4().to_string(),
+            conversation_id: conversation_id.to_string(),
+            role: MessageRole::System,
+            content,
+            content_parts: Vec::new(),
+            thinking: None,
+            meta: None,
+            created_at: chrono::Utc::now(),
+            status: MessageStatus::Success,
+            error_message: None,
+        },
+    );
+}
+
+fn inject_apply_patch_tool_prompt(messages: &mut Vec<Message>, conversation_id: &str) {
+    let content = APPLY_PATCH_TOOL_PROMPT.trim().to_string();
+    if content.is_empty() {
+        return;
+    }
+    let insert_at = messages
+        .iter()
+        .take_while(|m| m.role == MessageRole::System)
+        .count();
     messages.insert(
         insert_at,
         Message {
@@ -2914,6 +2946,26 @@ async fn run_task_inner(
         _ => append_tool_trace_for_model_input(base_messages),
     };
 
+    // ---------------------------------------------------------------------
+    // Context management (agent-level): apply latest persisted compaction summary to the prompt view.
+    //
+    // NOTE: This does NOT delete/modify raw messages in DB; it only affects what we send to the model.
+    // ---------------------------------------------------------------------
+    let ctx_mgr = ContextManager::new(agent.context_policy.clone());
+    let base_messages = if user_message_id_for_status_update.is_some() {
+        ctx_mgr
+            .apply_persisted_compaction_view_for_prompt(
+                &input.conversation_id,
+                user_message_id_for_status_update.as_deref(),
+                base_messages,
+                db.clone(),
+            )
+            .await
+    } else {
+        // `base_messages_override` is used by retry/restore flows; keep it intact.
+        base_messages
+    };
+
     // 2.5) Workstudio: tool agents can bind a working directory (main folder).
     let workspace_enabled =
         matches!(runtime_agent_type, AgentType::Tool) && agent.workspace_support.unwrap_or(true);
@@ -3270,6 +3322,9 @@ async fn run_task_inner(
             Some(allowed_tool_names),
         )
     };
+    let enable_apply_patch_tool_prompt = allowed_tool_names
+        .as_ref()
+        .is_some_and(|names| names.contains("apply_patch"));
 
     // 4) TurnLoop：Chat 默认单 Turn，但只要启用了工具调用，就至少需要 2 Turn 才能完成
     //    （Turn1: tool_calls -> 执行工具；Turn2: 带工具结果继续生成最终回复）。
@@ -3377,6 +3432,7 @@ async fn run_task_inner(
         agent,
         workstudio.as_ref(),
         allow_persistent_pty,
+        enable_apply_patch_tool_prompt,
         enable_local_web_search_tool,
         enable_mcp_resource_tool_prompt,
         &enabled_skills_meta,
@@ -3440,6 +3496,9 @@ async fn run_task_inner(
         if allow_persistent_pty {
             inject_persistent_process_prompt(&mut messages, &input.conversation_id);
         }
+        if enable_apply_patch_tool_prompt {
+            inject_apply_patch_tool_prompt(&mut messages, &input.conversation_id);
+        }
         if enable_local_web_search_tool {
             inject_web_search_tool_prompt(&mut messages, &input.conversation_id);
         }
@@ -3492,6 +3551,120 @@ async fn run_task_inner(
                     }
                 }
             }
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Context management: normal compact + hard trimming (agent-level)
+    // ---------------------------------------------------------------------
+    let can_mutate_history = user_message_id_for_status_update.is_some();
+    let context_length = model.context_length;
+
+    if let Some(ctx_len) = context_length.filter(|v| *v > 0) {
+        // Auto compact (Codex-like): when prompt usage gets high, compact persisted history.
+        let estimated_tokens = estimate_prompt_tokens(&runtime_messages);
+        let hard_pct = ctx_mgr.hard_limit_percent();
+        let hard_limit = hard_limit_tokens(ctx_len, hard_pct);
+        let threshold_pct = ctx_mgr
+            .auto_compact_threshold_percent()
+            .min(hard_pct.saturating_sub(1).max(1));
+        let threshold = auto_compact_threshold_tokens(ctx_len, threshold_pct);
+
+        if can_mutate_history && ctx_mgr.should_auto_compact() && estimated_tokens >= threshold {
+            if let crate::models::ContextPolicyConfig::NormalCompact(cfg) = &ctx_mgr.policy {
+                match run_normal_compact(
+                    cfg,
+                    &input.conversation_id,
+                    user_message_id_for_status_update.as_deref(),
+                    context_length,
+                    client.clone(),
+                    &model_config,
+                    db.clone(),
+                )
+                .await
+                {
+                    Ok(result) if result.compacted => {
+                        // Tell frontend to reload messages, because persisted history has changed (summary inserted).
+                        emitter.emit(RunEvent::HistorySyncNeeded {
+                            reason: "normal_compact".to_string(),
+                            removed_messages: Some(result.removed_messages as u32),
+                            dropped_for_fit: Some(result.dropped_for_fit as u32),
+                        });
+
+                        // Reload base messages for this request (keep system prompt as-is).
+                        let refreshed_base_messages = {
+                            let db = db.lock().await;
+                            db.get_messages(&input.conversation_id, 100, None)
+                                .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?
+                                .into_iter()
+                                .filter(|m| {
+                                    m.status == MessageStatus::Success
+                                        || user_message_id_for_status_update
+                                            .as_ref()
+                                            .is_some_and(|id| m.id == *id)
+                                })
+                                .collect::<Vec<_>>()
+                        };
+
+                        let refreshed_base_messages = refreshed_base_messages
+                            .into_iter()
+                            .map(|mut m| {
+                                if m.role == MessageRole::Assistant && !keep_history_thinking {
+                                    m.thinking = None;
+                                    if let Some(meta) = m.meta.as_mut() {
+                                        if let Some(blocks) = meta.blocks.as_mut() {
+                                            blocks.retain(|b| !matches!(b, MessageBlock::Thinking { .. }));
+                                        }
+                                    }
+                                }
+                                m
+                            })
+                            .collect::<Vec<_>>();
+
+                        let refreshed_base_messages = match runtime_agent_type {
+                            AgentType::Tool => match provider.provider_type {
+                                crate::models::ProviderType::Openai
+                                | crate::models::ProviderType::OpenaiCompatible
+                                | crate::models::ProviderType::OpenaiResponses
+                                | crate::models::ProviderType::Anthropic
+                                | crate::models::ProviderType::Google => {
+                                    expand_persisted_blocks_for_model_input(refreshed_base_messages)
+                                }
+                                _ => append_tool_trace_for_model_input(refreshed_base_messages),
+                            },
+                            _ => append_tool_trace_for_model_input(refreshed_base_messages),
+                        };
+
+                        let refreshed_base_messages = ctx_mgr
+                            .apply_persisted_compaction_view_for_prompt(
+                                &input.conversation_id,
+                                user_message_id_for_status_update.as_deref(),
+                                refreshed_base_messages,
+                                db.clone(),
+                            )
+                            .await;
+
+                        let sys_prefix = runtime_messages
+                            .iter()
+                            .take_while(|m| m.role == MessageRole::System)
+                            .count();
+                        let mut rebuilt = runtime_messages[..sys_prefix].to_vec();
+                        rebuilt.extend(refreshed_base_messages);
+                        runtime_messages = rebuilt;
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        // Compaction failure should not fail the user task; fall back to trimming.
+                        eprintln!("normal_compact failed: {}", e.message);
+                    }
+                }
+            }
+        }
+
+        // Hard trim the prompt for this request to avoid context window exceeded.
+        if ctx_mgr.should_trim() {
+            let trim = trim_runtime_messages_to_hard_limit(runtime_messages, hard_limit);
+            runtime_messages = trim.trimmed_messages;
         }
     }
 

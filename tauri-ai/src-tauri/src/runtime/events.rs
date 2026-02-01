@@ -78,6 +78,20 @@ pub enum RunEvent {
     },
 
     // --------------------
+    // context (history mutations)
+    // --------------------
+    /// Backend mutated persisted history (e.g. normal compact). Frontend should reload messages.
+    #[serde(rename_all = "camelCase")]
+    HistorySyncNeeded {
+        /// Reason identifier (e.g. "normal_compact").
+        reason: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        removed_messages: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dropped_for_fit: Option<u32>,
+    },
+
+    // --------------------
     // output
     // --------------------
     #[serde(rename_all = "camelCase")]

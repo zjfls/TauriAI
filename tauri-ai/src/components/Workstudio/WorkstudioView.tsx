@@ -9,11 +9,14 @@ import { FitAddon } from '@xterm/addon-fit';
 import 'xterm/css/xterm.css';
 import {
   DndContext,
+  DragOverlay,
   PointerSensor,
   closestCenter,
   useDroppable,
   useSensor,
   useSensors,
+  type DragMoveEvent,
+  type DragStartEvent,
   type DragEndEvent,
 } from '@dnd-kit/core';
 import { SortableContext, arrayMove, useSortable, horizontalListSortingStrategy } from '@dnd-kit/sortable';
@@ -92,7 +95,6 @@ const parseTabKey = (id: string): { groupId: string; fileId: string } | null => 
 };
 
 const dropKey = (groupId: string) => `drop:${groupId}`;
-const splitDropKey = (groupId: string) => `split:${groupId}`;
 
 const GroupDropZone: React.FC<{ groupId: string; children: React.ReactNode }> = ({ groupId, children }) => {
   const { setNodeRef } = useDroppable({ id: dropKey(groupId) });
@@ -100,24 +102,6 @@ const GroupDropZone: React.FC<{ groupId: string; children: React.ReactNode }> = 
     <div ref={setNodeRef} className="min-w-0">
       {children}
     </div>
-  );
-};
-
-const SplitDropButton: React.FC<{ groupId: string; onClick: () => void }> = ({ groupId, onClick }) => {
-  const { setNodeRef, isOver } = useDroppable({ id: splitDropKey(groupId) });
-  return (
-    <button
-      ref={setNodeRef}
-      type="button"
-      className={[
-        'rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800',
-        isOver ? 'bg-blue-100 dark:bg-blue-900/30' : '',
-      ].join(' ')}
-      onClick={onClick}
-      title="向右拆分（也可把标签拖到这里形成分屏）"
-    >
-      拆分
-    </button>
   );
 };
 
@@ -263,6 +247,47 @@ const normalizeFsPath = (input: string) => {
   return `${isAbs ? '/' : ''}${body}`.replace(/\/+$/, '') || (isAbs ? '/' : '');
 };
 
+// Monaco 的 model key（Editor 的 `path` 属性）使用 URI 更可靠：
+// - 直接传 Windows 路径（如 `C:/x`）可能会被 Uri.parse 当作 scheme，导致跳转/定位匹配失败
+// - 统一转成 file:// URI 后，model.uri.fsPath / toString 都更稳定
+const toMonacoModelPath = (fsPath: string) => {
+  const normalized = normalizeFsPath(fsPath);
+  if (!normalized) return fsPath;
+  if (isUntitledPath(normalized)) return normalized;
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(normalized)) return normalized;
+
+  if (normalized.startsWith('//')) {
+    // UNC: //server/share/path -> file://server/share/path
+    const rest = normalized.slice(2);
+    const [host, ...parts] = rest.split('/').filter(Boolean);
+    const encoded = parts.map((p) => encodeURIComponent(p)).join('/');
+    if (!host) return `file://${encoded ? `/${encoded}` : ''}`;
+    return `file://${host}${encoded ? `/${encoded}` : ''}`;
+  }
+
+  if (/^[A-Za-z]:\//.test(normalized)) {
+    // Windows drive: C:/path -> file:///C:/path
+    const drive = normalized.slice(0, 2); // "C:"
+    const rest = normalized.slice(2); // "/path..."
+    const encoded = rest
+      .split('/')
+      .map((seg, idx) => (idx === 0 ? '' : encodeURIComponent(seg)))
+      .join('/');
+    return `file:///${drive}${encoded}`;
+  }
+
+  if (normalized.startsWith('/')) {
+    // POSIX: /Users/x -> file:///Users/x
+    const encoded = normalized
+      .split('/')
+      .map((seg, idx) => (idx === 0 ? '' : encodeURIComponent(seg)))
+      .join('/');
+    return `file://${encoded}`;
+  }
+
+  return normalized;
+};
+
 const fileKindFor = (path: string, mime: string): OpenFile['kind'] => {
   const lower = path.toLowerCase();
   if (lower.endsWith('.pdf') || mime === 'application/pdf') return 'pdf';
@@ -324,6 +349,7 @@ export const WorkstudioView: React.FC = () => {
   const editorByGroupRef = useRef(
     new Map<string, import('monaco-editor').editor.IStandaloneCodeEditor>()
   );
+  const explorerContainerRef = useRef<HTMLDivElement | null>(null);
   const openFilesRef = useRef<OpenFile[]>([]);
   const openingPathsRef = useRef<Set<string>>(new Set());
   const filePaletteInputRef = useRef<HTMLInputElement | null>(null);
@@ -341,11 +367,25 @@ export const WorkstudioView: React.FC = () => {
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(() => new Set());
   const [entriesByDir, setEntriesByDir] = useState<Record<string, DirEntry[]>>({});
   const [loadingDirs, setLoadingDirs] = useState<Record<string, boolean>>({});
+  const expandedDirsRef = useRef<Set<string>>(expandedDirs);
+  useEffect(() => {
+    expandedDirsRef.current = expandedDirs;
+  }, [expandedDirs]);
+  const entriesByDirRef = useRef<Record<string, DirEntry[]>>(entriesByDir);
+  useEffect(() => {
+    entriesByDirRef.current = entriesByDir;
+  }, [entriesByDir]);
+  const loadingDirsRef = useRef<Record<string, boolean>>(loadingDirs);
+  useEffect(() => {
+    loadingDirsRef.current = loadingDirs;
+  }, [loadingDirs]);
 
   const [openFiles, setOpenFiles] = useState<OpenFile[]>([]);
   useEffect(() => {
     openFilesRef.current = openFiles;
   }, [openFiles]);
+  const [explorerSelectedFilePath, setExplorerSelectedFilePath] = useState<string | null>(null);
+  const [uiStateRestored, setUiStateRestored] = useState(false);
   const [groups, setGroups] = useState<EditorGroup[]>(() => [
     { id: 'g-0', openFileIds: [], activeFileId: null, weight: 1 },
   ]);
@@ -354,6 +394,10 @@ export const WorkstudioView: React.FC = () => {
     groupsRef.current = groups;
   }, [groups]);
   const [focusedGroupId, setFocusedGroupId] = useState<string>('g-0');
+  const focusedGroupIdRef = useRef<string>(focusedGroupId);
+  useEffect(() => {
+    focusedGroupIdRef.current = focusedGroupId;
+  }, [focusedGroupId]);
   const [contextMenu, setContextMenu] = useState<
     | { visible: true; x: number; y: number; kind: 'root'; folder: string }
     | { visible: true; x: number; y: number; kind: 'blank' }
@@ -371,6 +415,8 @@ export const WorkstudioView: React.FC = () => {
 
   const saveStateTimerRef = useRef<number | null>(null);
   const groupRowRef = useRef<HTMLDivElement | null>(null);
+  const groupRootRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const groupBodyRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const resizeRef = useRef<{
     dragging: boolean;
     index: number;
@@ -387,8 +433,13 @@ export const WorkstudioView: React.FC = () => {
   const activeFilePathInFocusedGroup = useMemo(() => {
     const activeId = focusedGroup?.activeFileId ?? null;
     if (!activeId) return null;
-    return openFiles.find((f) => f.id === activeId)?.path ?? null;
+    const raw = openFiles.find((f) => f.id === activeId)?.path ?? null;
+    return raw ? normalizeFsPath(raw) : null;
   }, [focusedGroup?.activeFileId, openFiles]);
+
+  useEffect(() => {
+    setExplorerSelectedFilePath(activeFilePathInFocusedGroup);
+  }, [activeFilePathInFocusedGroup]);
 
   useEffect(() => {
     const hasDup = groups.some((g) => new Set(g.openFileIds).size !== g.openFileIds.length);
@@ -448,6 +499,10 @@ export const WorkstudioView: React.FC = () => {
     // Hide roots nested under the main folder (redundant).
     return pruned.filter((f) => f === ws.mainFolder || !isSubpath(f, ws.mainFolder));
   }, [ws]);
+  const rootFoldersRef = useRef<string[]>(rootFolders);
+  useEffect(() => {
+    rootFoldersRef.current = rootFolders;
+  }, [rootFolders]);
 
   const loadWorkstudio = useCallback(async (id: string) => {
     setWsError(null);
@@ -500,15 +555,20 @@ export const WorkstudioView: React.FC = () => {
   );
 
   const openFileAtPath = useCallback(
-    async (path: string): Promise<string | null> => {
+    async (path: string, opts?: { groupId?: string | null }): Promise<string | null> => {
       const normalizedPath = normalizeFsPath(path);
       if (!normalizedPath) return null;
+      setExplorerSelectedFilePath(normalizedPath);
+      const requestedGroupId = opts?.groupId ?? focusedGroupIdRef.current;
+      const targetGroupId = groupsRef.current.some((g) => g.id === requestedGroupId)
+        ? requestedGroupId
+        : (groupsRef.current[0]?.id ?? 'g-0');
 
       const existing = openFilesRef.current.find((f) => f.id === normalizedPath);
       if (existing) {
         setGroups((prev) =>
           prev.map((g) => {
-            if (g.id !== focusedGroupId) return g;
+            if (g.id !== targetGroupId) return g;
             const nextIds = g.openFileIds.includes(existing.id)
               ? g.openFileIds
               : [...g.openFileIds, existing.id];
@@ -518,7 +578,18 @@ export const WorkstudioView: React.FC = () => {
         return existing.id;
       }
 
-      if (openingPathsRef.current.has(normalizedPath)) return normalizedPath;
+      if (openingPathsRef.current.has(normalizedPath)) {
+        // 如果同一路径正在打开中，也要确保它成为当前组的 active，
+        // 否则“跳转到行”逻辑可能因为 activeFileId 还没切换而一直失败。
+        setGroups((prev) =>
+          prev.map((g) => {
+            if (g.id !== targetGroupId) return g;
+            const nextIds = g.openFileIds.includes(normalizedPath) ? g.openFileIds : [...g.openFileIds, normalizedPath];
+            return { ...g, openFileIds: nextIds, activeFileId: normalizedPath };
+          })
+        );
+        return normalizedPath;
+      }
       openingPathsRef.current.add(normalizedPath);
       try {
       const file = await invoke<{ filename: string; mime: string; base64: string; size: number }>(
@@ -544,7 +615,7 @@ export const WorkstudioView: React.FC = () => {
       setOpenFiles((prev) => (prev.some((f) => f.id === id) ? prev : [...prev, next]));
       setGroups((prev) =>
         prev.map((g) => {
-          if (g.id !== focusedGroupId) return g;
+          if (g.id !== targetGroupId) return g;
           const openFileIds = g.openFileIds.includes(id) ? g.openFileIds : [...g.openFileIds, id];
           return { ...g, openFileIds, activeFileId: id };
         })
@@ -554,7 +625,7 @@ export const WorkstudioView: React.FC = () => {
         openingPathsRef.current.delete(normalizedPath);
       }
     },
-    [focusedGroupId]
+    []
   );
 
   type LinkTarget = {
@@ -568,14 +639,131 @@ export const WorkstudioView: React.FC = () => {
   const openLinkSeqRef = useRef(0);
   const openedFromUrlRef = useRef(false);
   const [openFromLinkError, setOpenFromLinkError] = useState<string | null>(null);
+  // 如果在 Workstudio UI state 尚未恢复完成时收到了 open_file 事件，先暂存，待就绪后再执行。
+  const pendingOpenLinkRef = useRef<LinkTarget | null>(null);
 
-  const openLinkTarget = useCallback(async (target: LinkTarget) => {
+  const revealFileInExplorer = useCallback(
+    async (absFilePath: string, seq: number) => {
+      if (!ws) return;
+      const normalizedFile = normalizeFsPath(absFilePath);
+      if (!normalizedFile) return;
+
+      const rootsRaw = rootFoldersRef.current;
+      let bestRoot: { raw: string; norm: string } | null = null;
+      for (const raw of rootsRaw) {
+        const norm = normalizeFsPath(raw);
+        if (!norm) continue;
+        if (normalizedFile === norm || normalizedFile.startsWith(`${norm}/`)) {
+          if (!bestRoot || norm.length > bestRoot.norm.length) {
+            bestRoot = { raw, norm };
+          }
+        }
+      }
+
+      // If the file is not under any declared root, fall back to main folder.
+      const rootNorm = bestRoot?.norm ?? normalizeFsPath(ws.mainFolder);
+      if (!rootNorm) return;
+
+      const parentDir = (() => {
+        const parts = normalizedFile.split('/');
+        if (parts.length <= 1) return rootNorm;
+        return parts.slice(0, -1).join('/') || rootNorm;
+      })();
+
+      const dirsToExpand: string[] = [];
+      dirsToExpand.push(rootNorm);
+
+      if (parentDir !== rootNorm && parentDir.startsWith(`${rootNorm}/`)) {
+        const rel = parentDir.slice(rootNorm.length).replace(/^\/+/, '');
+        if (rel) {
+          let cur = rootNorm;
+          for (const seg of rel.split('/')) {
+            if (!seg) continue;
+            cur = `${cur}/${seg}`;
+            dirsToExpand.push(cur);
+          }
+        }
+      }
+
+      // Expand dirs in UI state.
+      setExpandedDirs((prev) => {
+        const next = new Set(prev);
+        // Best-effort: include the raw root path too, in case it differs from normalized form.
+        if (bestRoot?.raw) next.add(bestRoot.raw);
+        next.add(rootNorm);
+        for (const d of dirsToExpand) next.add(d);
+        return next;
+      });
+
+      // Ensure directory entries are loaded so the selected file is visible.
+      const dirsToList = (() => {
+        const out: string[] = [];
+        if (bestRoot?.raw && bestRoot.raw !== rootNorm) out.push(bestRoot.raw);
+        out.push(...dirsToExpand);
+        return out;
+      })();
+
+      for (const d of dirsToList) {
+        if (openLinkSeqRef.current !== seq) return;
+        const already = entriesByDirRef.current[d];
+        if (already) continue;
+        if (loadingDirsRef.current[d]) continue;
+        try {
+          await listDir(d);
+        } catch {
+          // ignore: best-effort reveal
+        }
+      }
+
+      // Scroll the file node into view (best-effort).
+      const escapeCss = (value: string): string => {
+        const cssAny = (globalThis as any).CSS;
+        if (cssAny && typeof cssAny.escape === 'function') return cssAny.escape(value);
+        return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      };
+
+      let attempts = 20;
+      const tick = () => {
+        if (openLinkSeqRef.current !== seq) return;
+        const container = explorerContainerRef.current;
+        if (!container) return;
+
+        const selector = `[title="${escapeCss(normalizedFile)}"]`;
+        const el = container.querySelector(selector) as HTMLElement | null;
+        if (el) {
+          try {
+            el.scrollIntoView({ block: 'nearest' });
+          } catch {
+            // ignore
+          }
+          return;
+        }
+
+        attempts -= 1;
+        if (attempts <= 0) return;
+        window.setTimeout(tick, 80);
+      };
+      window.requestAnimationFrame(() => tick());
+    },
+    [listDir, ws]
+  );
+
+  const openLinkTarget = useCallback(async (target: LinkTarget, opts?: { groupId?: string | null }) => {
     const seq = openLinkSeqRef.current + 1;
     openLinkSeqRef.current = seq;
-    const groupId = focusedGroupId;
+    const groupIdFromCaller = opts?.groupId ?? focusedGroupIdRef.current;
+    const groupId =
+      groupsRef.current.some((g) => g.id === groupIdFromCaller)
+        ? groupIdFromCaller
+        : (groupsRef.current[0]?.id ?? 'g-0');
 
     const targetPath = target.filePath;
     if (!targetPath) return;
+
+    if (!ws || !uiStateRestored) {
+      pendingOpenLinkRef.current = target;
+      return;
+    }
 
     const normalizedTargetPath = normalizeFsPath(targetPath);
     const isAbs =
@@ -602,20 +790,41 @@ export const WorkstudioView: React.FC = () => {
     })();
     if (!resolved) return;
 
-    const applySelection = (openedFileId: string | null): boolean => {
+    const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+
+    const applySelection = (openedFileId: string | null, expectedPath: string): boolean => {
       if (openLinkSeqRef.current !== seq) return true;
 
       const rawLine = typeof target.line === 'number' ? target.line : null;
       if (!rawLine) return true;
+
+      const group = groupsRef.current.find((g) => g.id === groupId) ?? null;
+      if (openedFileId && (!group || group.activeFileId !== openedFileId)) return false;
 
       const editor = editorByGroupRef.current.get(groupId);
       if (!editor) return false;
       const model = editor.getModel();
       if (!model) return false;
 
+      try {
+        const modelUri: any = (model as any).uri;
+        const modelPathRaw: string =
+          (typeof modelUri?.fsPath === 'string' && modelUri.fsPath) ||
+          (typeof modelUri?.path === 'string' && modelUri.path) ||
+          '';
+        const modelPath = normalizeFsPath(modelPathRaw);
+        const expectedFsPath = normalizeFsPath(expectedPath);
+        const expectedModelKey = toMonacoModelPath(expectedFsPath);
+        const modelKey = typeof modelUri?.toString === 'function' ? String(modelUri.toString()) : '';
+        const matches =
+          (expectedFsPath && modelPath && modelPath === expectedFsPath) ||
+          (expectedModelKey && modelKey && modelKey === expectedModelKey);
+        if (!matches) return false;
+      } catch {
+        // ignore
+      }
+
       if (openedFileId) {
-        const group = groupsRef.current.find((g) => g.id === groupId) ?? null;
-        if (!group || group.activeFileId !== openedFileId) return false;
         const file = openFilesRef.current.find((f) => f.id === openedFileId) ?? null;
         if (!file) return false;
         if (file.kind !== 'text') return true;
@@ -640,24 +849,16 @@ export const WorkstudioView: React.FC = () => {
           typeof target.column === 'number' ? target.column : 1
         );
 
-        // Single-point jump: VSCode-like behavior (caret only).
-        if (rawEndLine === null && rawEndColumn === null) {
-          editor.setSelection({
-            startLineNumber,
-            startColumn,
-            endLineNumber: startLineNumber,
-            endColumn: startColumn,
-          });
-          editor.revealPositionInCenter({ lineNumber: startLineNumber, column: startColumn });
-          editor.focus();
-          return true;
-        }
-
-        const endLineNumber = clampLine(rawEndLine ?? startLineNumber);
-        const endColumn = clampCol(
-          endLineNumber,
-          typeof rawEndColumn === 'number' ? rawEndColumn : model.getLineMaxColumn(endLineNumber)
-        );
+        // 单点/范围跳转共用同一套 selection + reveal 逻辑，避免两个分支出现行为漂移。
+        const endLineNumber =
+          rawEndLine === null && rawEndColumn === null ? startLineNumber : clampLine(rawEndLine ?? startLineNumber);
+        const endColumn =
+          rawEndLine === null && rawEndColumn === null
+            ? startColumn
+            : clampCol(
+                endLineNumber,
+                typeof rawEndColumn === 'number' ? rawEndColumn : model.getLineMaxColumn(endLineNumber)
+              );
 
         const sel = (() => {
           if (endLineNumber < startLineNumber) {
@@ -693,23 +894,31 @@ export const WorkstudioView: React.FC = () => {
       }
     };
 
-    const applyLater = (openedFileId: string | null) => {
-      let attempts = 40;
-      const tick = () => {
-        if (openLinkSeqRef.current !== seq) return;
-        const done = applySelection(openedFileId);
+    const applyWithWait = async (openedFileId: string | null, expectedPath: string) => {
+      const startAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      const timeoutMs = 2600;
+
+      // VS Code-like：在跳转时把目标组设为聚焦（确保 editor mount / focus 链路稳定）
+      if (focusedGroupIdRef.current !== groupId) setFocusedGroupId(groupId);
+
+      while (openLinkSeqRef.current === seq) {
+        const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        if (now - startAt > timeoutMs) return;
+        const done = applySelection(openedFileId, expectedPath);
         if (done) return;
-        attempts -= 1;
-        if (attempts <= 0) return;
-        window.setTimeout(tick, 50);
-      };
-      window.requestAnimationFrame(() => tick());
+        // 等待 React commit + Monaco model ready
+        // - 20ms：比 rAF 更宽松，避免主线程忙时错过帧
+        // - 也避免 setTimeout(0) 过于频繁造成额外压力
+        // eslint-disable-next-line no-await-in-loop
+        await sleep(20);
+      }
     };
 
     setOpenFromLinkError(null);
     try {
-      const openedId = await openFileAtPath(resolved);
-      applyLater(openedId);
+      const openedId = await openFileAtPath(resolved, { groupId });
+      void revealFileInExplorer(resolved, seq);
+      await applyWithWait(openedId, resolved);
       return;
     } catch (error) {
       try {
@@ -738,8 +947,9 @@ export const WorkstudioView: React.FC = () => {
         const best = pickBest();
         if (!best) throw error;
 
-        const openedId = await openFileAtPath(best);
-        applyLater(openedId);
+        const openedId = await openFileAtPath(best, { groupId });
+        void revealFileInExplorer(best, seq);
+        await applyWithWait(openedId, normalizeFsPath(best));
         return;
       } catch (fallbackError) {
         console.error('open file from link failed:', fallbackError);
@@ -750,9 +960,20 @@ export const WorkstudioView: React.FC = () => {
         );
       }
     }
-  }, [focusedGroupId, openFileAtPath, ws?.id, ws?.mainFolder]);
+  }, [openFileAtPath, revealFileInExplorer, uiStateRestored, ws]);
+
+  // 在 Workstudio UI state 恢复完成后，处理之前暂存的 open_file 请求（只保留最后一次）。
+  useEffect(() => {
+    if (!ws) return;
+    if (!uiStateRestored) return;
+    const pending = pendingOpenLinkRef.current;
+    if (!pending) return;
+    pendingOpenLinkRef.current = null;
+    void openLinkTarget(pending);
+  }, [openLinkTarget, uiStateRestored, ws]);
 
   useEffect(() => {
+    if (!uiStateRestored) return;
     if (!filePath || openedFromUrlRef.current) return;
 
     const normalized = normalizeFsPath(filePath);
@@ -761,7 +982,7 @@ export const WorkstudioView: React.FC = () => {
     if (!isAbs && !ws?.mainFolder) return;
     openedFromUrlRef.current = true;
     void openLinkTarget({ filePath, line, column, endLine, endColumn });
-  }, [filePath, line, column, endLine, endColumn, ws?.mainFolder, openLinkTarget]);
+  }, [uiStateRestored, filePath, line, column, endLine, endColumn, ws?.mainFolder, openLinkTarget]);
 
   useEffect(() => {
     let unlisten: null | (() => void) = null;
@@ -811,30 +1032,6 @@ export const WorkstudioView: React.FC = () => {
       return nextGroups;
     });
   }, [focusedGroupId]);
-
-  const splitGroupToRight = useCallback((groupId: string, fileId?: string) => {
-    const newId = `g-${Date.now()}`;
-    setGroups((prev) => {
-      const idx = prev.findIndex((g) => g.id === groupId);
-      if (idx < 0) return prev;
-      const source = prev[idx]!;
-      const sourceWeight = source.weight || 1;
-      const leftWeight = Math.max(0.2, sourceWeight / 2);
-      const rightWeight = Math.max(0.2, sourceWeight - leftWeight);
-      const nextSource = { ...source, weight: leftWeight };
-      const next: EditorGroup = {
-        id: newId,
-        openFileIds: fileId ? [fileId] : source.activeFileId ? [source.activeFileId] : [],
-        activeFileId: fileId ?? source.activeFileId ?? null,
-        weight: rightWeight,
-      };
-      const out = [...prev];
-      out[idx] = nextSource;
-      out.splice(idx + 1, 0, next);
-      return out;
-    });
-    setFocusedGroupId(newId);
-  }, []);
 
   const startResize = useCallback(
     (index: number, startClientX: number) => {
@@ -1201,16 +1398,202 @@ export const WorkstudioView: React.FC = () => {
     []
   );
 
-  const onDragEnd = useCallback(
+  const registerGroupRootRef = useCallback(
+    (groupId: string) => (el: HTMLDivElement | null) => {
+      const map = groupRootRefs.current;
+      if (el) map.set(groupId, el);
+      else map.delete(groupId);
+    },
+    []
+  );
+
+  const registerGroupBodyRef = useCallback(
+    (groupId: string) => (el: HTMLDivElement | null) => {
+      const map = groupBodyRefs.current;
+      if (el) map.set(groupId, el);
+      else map.delete(groupId);
+    },
+    []
+  );
+
+  const splitTabToNewGroup = useCallback(
+    (args: { fromGroupId: string; fileId: string; targetGroupId: string; direction: 'left' | 'right' }) => {
+      const newId = `g-${crypto.randomUUID()}`;
+
+      setGroups((prev) => {
+        if (prev.length === 0) return prev;
+
+        let out: EditorGroup[] = prev.map((g) => ({
+          ...g,
+          openFileIds: [...g.openFileIds],
+        }));
+
+        const sourceIdx = out.findIndex((g) => g.id === args.fromGroupId);
+        const targetIdxBefore = out.findIndex((g) => g.id === args.targetGroupId);
+        if (targetIdxBefore < 0) return prev;
+
+        const source = sourceIdx >= 0 ? out[sourceIdx] : undefined;
+        // VS Code-like：如果从同一个组把“最后一个 tab”拖到边缘进行分屏，直接复制而不是移走，
+        // 否则会出现空组/分屏立刻被折叠的糟糕体验。
+        const shouldDuplicate =
+          args.fromGroupId === args.targetGroupId &&
+          source !== undefined &&
+          source.openFileIds.length === 1 &&
+          source.openFileIds[0] === args.fileId;
+
+        if (!shouldDuplicate && sourceIdx >= 0) {
+          const g = out[sourceIdx]!;
+          const nextIds = g.openFileIds.filter((id) => id !== args.fileId);
+          const nextActive = g.activeFileId === args.fileId ? nextIds[0] ?? null : g.activeFileId;
+          out[sourceIdx] = { ...g, openFileIds: nextIds, activeFileId: nextActive };
+
+          const removedWeight =
+            out[sourceIdx]!.openFileIds.length === 0 && out.length > 1 ? out[sourceIdx]!.weight || 1 : 0;
+          const removedIndex = sourceIdx;
+          out = pruneEmptyGroups(out);
+          if (removedWeight > 0 && out.length < prev.length) {
+            out = redistributeWeightOnRemove(out, removedIndex, removedWeight);
+          }
+        }
+
+        const targetIdx = out.findIndex((g) => g.id === args.targetGroupId);
+        if (targetIdx < 0) return normalizeGroupWeights(out);
+
+        const target = out[targetIdx]!;
+        const targetWeight = Number.isFinite(target.weight) && target.weight > 0 ? target.weight : 1;
+        const leftWeight = targetWeight / 2;
+        const rightWeight = targetWeight - leftWeight;
+
+        const newGroup: EditorGroup = {
+          id: newId,
+          openFileIds: [args.fileId],
+          activeFileId: args.fileId,
+          weight: args.direction === 'left' ? leftWeight : rightWeight,
+        };
+
+        out[targetIdx] = {
+          ...target,
+          weight: args.direction === 'left' ? rightWeight : leftWeight,
+        };
+
+        const insertAt = args.direction === 'left' ? targetIdx : targetIdx + 1;
+        const next = [...out];
+        next.splice(insertAt, 0, newGroup);
+        return normalizeGroupWeights(next);
+      });
+
+      setFocusedGroupId(newId);
+    },
+    []
+  );
+
+  type SplitPreview = {
+    groupId: string;
+    direction: 'left' | 'right';
+    rect: { left: number; top: number; width: number; height: number };
+  };
+
+  const [activeDragTabId, setActiveDragTabId] = useState<string | null>(null);
+  const dragStartRef = useRef<{ x: number; y: number } | null>(null);
+  const lastDragPointRef = useRef<{ x: number; y: number } | null>(null);
+  const [splitPreview, setSplitPreview] = useState<SplitPreview | null>(null);
+
+  const computeSplitPreview = useCallback((point: { x: number; y: number }): SplitPreview | null => {
+    for (const [groupId, el] of groupBodyRefs.current) {
+      const rect = el.getBoundingClientRect();
+      if (point.x < rect.left || point.x > rect.right) continue;
+      if (point.y < rect.top || point.y > rect.bottom) continue;
+
+      const edge = rect.width * 0.25;
+      if (rect.width > 160 && point.x <= rect.left + edge) {
+        return {
+          groupId,
+          direction: 'left',
+          rect: { left: rect.left, top: rect.top, width: rect.width / 2, height: rect.height },
+        };
+      }
+      if (rect.width > 160 && point.x >= rect.right - edge) {
+        return {
+          groupId,
+          direction: 'right',
+          rect: { left: rect.left + rect.width / 2, top: rect.top, width: rect.width / 2, height: rect.height },
+        };
+      }
+    }
+    return null;
+  }, []);
+
+  const handleDragStart = useCallback((e: DragStartEvent) => {
+    const activeId = String(e.active.id);
+    setActiveDragTabId(activeId);
+    setSplitPreview(null);
+
+    const ev = e.activatorEvent as MouseEvent | PointerEvent | TouchEvent | null;
+    if (ev && 'clientX' in ev) {
+      dragStartRef.current = { x: ev.clientX, y: ev.clientY };
+      lastDragPointRef.current = { x: ev.clientX, y: ev.clientY };
+    } else {
+      dragStartRef.current = null;
+      lastDragPointRef.current = null;
+    }
+  }, []);
+
+  const handleDragMove = useCallback(
+    (e: DragMoveEvent) => {
+      const start = dragStartRef.current;
+      if (!start) return;
+      const point = { x: start.x + e.delta.x, y: start.y + e.delta.y };
+      lastDragPointRef.current = point;
+      const next = computeSplitPreview(point);
+      setSplitPreview((prev) => {
+        if (!next && !prev) return prev;
+        if (!next) return null;
+        if (prev && prev.groupId === next.groupId && prev.direction === next.direction) return prev;
+        return next;
+      });
+    },
+    [computeSplitPreview]
+  );
+
+  const handleDragEnd = useCallback(
     (event: DragEndEvent) => {
       const active = String(event.active.id);
       const over = event.over ? String(event.over.id) : null;
+
+      const point = lastDragPointRef.current;
+      dragStartRef.current = null;
+      lastDragPointRef.current = null;
+
+      const preview = point ? computeSplitPreview(point) : null;
+      if (preview) {
+        const a = parseTabKey(active);
+        if (a) {
+          splitTabToNewGroup({
+            fromGroupId: a.groupId,
+            fileId: a.fileId,
+            targetGroupId: preview.groupId,
+            direction: preview.direction,
+          });
+        }
+        setActiveDragTabId(null);
+        setSplitPreview(null);
+        return;
+      }
+
       const a = parseTabKey(active);
-      if (!a || !over) return;
+      if (!a || !over) {
+        setActiveDragTabId(null);
+        setSplitPreview(null);
+        return;
+      }
 
       if (over.startsWith('tab:')) {
         const b = parseTabKey(over);
-        if (!b) return;
+        if (!b) {
+          setActiveDragTabId(null);
+          setSplitPreview(null);
+          return;
+        }
         if (a.groupId === b.groupId) {
           setGroups((prev) =>
             prev.map((g) => {
@@ -1221,43 +1604,30 @@ export const WorkstudioView: React.FC = () => {
               return { ...g, openFileIds: arrayMove(g.openFileIds, oldIndex, newIndex) };
             })
           );
+          setActiveDragTabId(null);
+          setSplitPreview(null);
           return;
         }
-        const toIndex = groups.find((g) => g.id === b.groupId)?.openFileIds.indexOf(b.fileId);
+
+        const toIndex = groupsRef.current.find((g) => g.id === b.groupId)?.openFileIds.indexOf(b.fileId);
         moveTab(a.groupId, b.groupId, a.fileId, typeof toIndex === 'number' && toIndex >= 0 ? toIndex : undefined);
+        setActiveDragTabId(null);
+        setSplitPreview(null);
         return;
       }
 
       if (over.startsWith('drop:')) {
         const toGroupId = over.slice('drop:'.length);
         if (toGroupId) moveTab(a.groupId, toGroupId, a.fileId);
+        setActiveDragTabId(null);
+        setSplitPreview(null);
         return;
       }
 
-      if (over.startsWith('split:')) {
-        const toGroupId = over.slice('split:'.length);
-        // Create a new group to the right of toGroupId with this tab
-        // (also remove from its original group)
-        setGroups((prev) => {
-          const nextPre = prev.map((g) => {
-            if (g.id !== a.groupId) return g;
-            const nextIds = g.openFileIds.filter((id) => id !== a.fileId);
-            const nextActive = g.activeFileId === a.fileId ? nextIds[0] ?? null : g.activeFileId;
-            return { ...g, openFileIds: nextIds, activeFileId: nextActive };
-          });
-          const removedIndex = nextPre.findIndex((g) => g.id === a.groupId);
-          const removedWeight =
-            removedIndex >= 0 && nextPre[removedIndex]?.openFileIds.length === 0 ? nextPre[removedIndex]!.weight || 1 : 0;
-          let next = pruneEmptyGroups(nextPre);
-          if (removedWeight > 0 && next.length < nextPre.length) {
-            next = redistributeWeightOnRemove(next, removedIndex, removedWeight);
-          }
-          return normalizeGroupWeights(next);
-        });
-        splitGroupToRight(toGroupId, a.fileId);
-      }
+      setActiveDragTabId(null);
+      setSplitPreview(null);
     },
-    [groups, moveTab, splitGroupToRight]
+    [computeSplitPreview, moveTab, splitTabToNewGroup]
   );
 
   const addFolder = useCallback(async () => {
@@ -1359,6 +1729,7 @@ export const WorkstudioView: React.FC = () => {
 
   useEffect(() => {
     if (!ws) return;
+    setUiStateRestored(false);
     let cancelled = false;
     (async () => {
       try {
@@ -1473,6 +1844,8 @@ export const WorkstudioView: React.FC = () => {
         }
       } catch {
         // ignore
+      } finally {
+        if (!cancelled) setUiStateRestored(true);
       }
     })();
     return () => {
@@ -1630,7 +2003,9 @@ export const WorkstudioView: React.FC = () => {
                 if (entry.isDir) {
                   return renderDirNode(entry.path, depth + 1);
                 }
-                const isActive = activeFilePathInFocusedGroup === normalizeFsPath(entry.path);
+                const normalizedEntryPath = normalizeFsPath(entry.path);
+                const isActive =
+                  Boolean(normalizedEntryPath) && explorerSelectedFilePath === normalizedEntryPath;
                 return (
                   <button
                     key={entry.path}
@@ -1640,11 +2015,11 @@ export const WorkstudioView: React.FC = () => {
                     className={[
                       'flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-xs',
                       isActive
-                        ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
+                        ? 'bg-blue-200/70 text-blue-900 ring-1 ring-blue-300/60 dark:bg-blue-900/60 dark:text-blue-100 dark:ring-blue-700/60'
                         : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800',
                     ].join(' ')}
                     style={{ paddingLeft: 8 + (depth + 1) * 14 }}
-                    title={entry.path}
+                    title={normalizedEntryPath || entry.path}
                   >
                     <FileText size={13} />
                     <span className="truncate">{entry.name}</span>
@@ -1707,6 +2082,7 @@ export const WorkstudioView: React.FC = () => {
 
           <div
             className="flex-1 overflow-auto px-2 py-2"
+            ref={explorerContainerRef}
             onContextMenu={(e) => {
               const target = e.target as HTMLElement | null;
               if (target && target.closest('[data-ws-node="1"]')) return;
@@ -1752,7 +2128,13 @@ export const WorkstudioView: React.FC = () => {
 	            </div>
 	          )}
 
-          <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragStart={handleDragStart}
+            onDragMove={handleDragMove}
+            onDragEnd={handleDragEnd}
+          >
             <div ref={groupRowRef} className="flex min-h-0 flex-1 flex-row overflow-hidden">
             {groups.map((group, idx) => {
               const groupActive = group.activeFileId
@@ -1770,6 +2152,7 @@ export const WorkstudioView: React.FC = () => {
                     />
                   )}
                   <div
+                    ref={registerGroupRootRef(group.id)}
                     className={[
                       'flex min-w-0 flex-col overflow-hidden',
                       isFocused ? 'bg-blue-50/30 dark:bg-blue-950/10' : '',
@@ -1815,10 +2198,6 @@ export const WorkstudioView: React.FC = () => {
                         </SortableContext>
 
                         <div className="ml-auto flex items-center gap-2 px-1">
-                          <SplitDropButton
-                            groupId={group.id}
-                            onClick={() => splitGroupToRight(group.id, group.activeFileId ?? undefined)}
-                          />
                       <button
                         type="button"
                         disabled={groups.length <= 1}
@@ -1868,11 +2247,11 @@ export const WorkstudioView: React.FC = () => {
                       </div>
                     </GroupDropZone>
 
-                  <div className="min-h-0 flex-1">
+                  <div ref={registerGroupBodyRef(group.id)} className="min-h-0 flex-1">
                     {groupActive ? (
                       groupActive.kind === 'text' ? (
                         <Editor
-                          path={groupActive.path}
+                          path={toMonacoModelPath(groupActive.path)}
                           language={languageForPath(groupActive.path)}
                           value={groupActive.content ?? ''}
                           onMount={handleEditorMountForGroup(group.id)}
@@ -1963,6 +2342,35 @@ export const WorkstudioView: React.FC = () => {
               );
             })}
           </div>
+          <DragOverlay>
+            {activeDragTabId ? (
+              <div className="rounded-md border border-gray-200 bg-white px-3 py-2 text-sm text-gray-800 shadow-lg dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100">
+                {(() => {
+                  const parsed = parseTabKey(activeDragTabId);
+                  if (!parsed) return '文件';
+                  const file = openFiles.find((f) => f.id === parsed.fileId);
+                  return file?.title ?? basename(parsed.fileId);
+                })()}
+              </div>
+            ) : null}
+          </DragOverlay>
+
+          {splitPreview && (
+            <div
+              className="pointer-events-none fixed z-[240]"
+              style={{
+                left: `${splitPreview.rect.left}px`,
+                top: `${splitPreview.rect.top}px`,
+                width: `${splitPreview.rect.width}px`,
+                height: `${splitPreview.rect.height}px`,
+              }}
+            >
+              <div className="h-full w-full rounded bg-blue-500/10 outline outline-2 outline-blue-500/40" />
+              <div className="absolute left-2 top-2 rounded bg-blue-600 px-2 py-1 text-xs text-white shadow">
+                {splitPreview.direction === 'left' ? '分屏到左侧' : '分屏到右侧'}
+              </div>
+            </div>
+          )}
           </DndContext>
 
         </div>

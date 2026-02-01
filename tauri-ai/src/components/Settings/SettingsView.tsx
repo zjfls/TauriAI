@@ -4,7 +4,7 @@
  */
 
 import React, { useState } from 'react';
-import { Server, Bot, Palette, Sliders, Wrench, Shield, Plug, Sparkles, ChevronDown } from 'lucide-react';
+import { ArrowLeft, Server, Bot, Palette, Sliders, Wrench, Shield, Plug, Sparkles, ChevronDown } from 'lucide-react';
 
 import { ProviderConfigForm } from './ProviderConfigForm';
 import { AgentConfigForm } from './AgentConfigForm';
@@ -49,7 +49,7 @@ const TabButton: React.FC<TabButtonProps> = ({ icon, label, active, onClick }) =
 export const SettingsView: React.FC = () => {
   const [activeTab, setActiveTab] = useState<SettingsTab>('providers');
   const { config, saveConfig } = useConfigStore();
-  const { theme, setTheme } = useUIStore();
+  const { theme, setTheme, setActiveView } = useUIStore();
 
   const tabs: { id: SettingsTab; icon: React.ReactNode; label: string }[] = [
     { id: 'providers', icon: <Server size={18} />, label: '提供商' },
@@ -245,6 +245,17 @@ export const SettingsView: React.FC = () => {
 
   return (
     <div className="flex flex-col h-full bg-gray-50 dark:bg-gray-900">
+      <div className="flex items-center gap-3 px-4 py-3 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
+        <button
+          type="button"
+          onClick={() => setActiveView('chat')}
+          className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700 rounded-lg transition-colors"
+        >
+          <ArrowLeft size={16} />
+          返回聊天
+        </button>
+        <h2 className="text-lg font-semibold text-gray-800 dark:text-white">设置</h2>
+      </div>
       <div className="flex gap-2 p-4 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
         {tabs.map((tab) => (
           <TabButton

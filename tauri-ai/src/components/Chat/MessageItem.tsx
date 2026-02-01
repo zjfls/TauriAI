@@ -4,7 +4,7 @@
  * Requirements: 3.1, 3.2, 3.6
  */
 
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { User, Bot, Bug, AlertCircle, RefreshCw, ZoomIn, File as FileIcon } from 'lucide-react';
 import type { Message, Action, ContentPart } from '../../types';
 import { DeferredMarkdown } from './DeferredMarkdown';
@@ -185,13 +185,13 @@ interface MessageItemProps {
   onRetryTurn?: (assistantMessageId: string, turnId: string) => void;
 }
 
-export const MessageItem: React.FC<MessageItemProps> = ({
+export const MessageItem = React.memo(function MessageItem({
   message,
   isStreaming = false,
   onAction,
   onAbortTool,
   onRetryTurn,
-}) => {
+}: MessageItemProps) {
   const [isHovered, setIsHovered] = useState(false);
   const [showDebugModal, setShowDebugModal] = useState(false);
   const { config } = useConfigStore();
@@ -207,15 +207,21 @@ export const MessageItem: React.FC<MessageItemProps> = ({
   const isPending = message.status === 'pending';
 
   // Build actions
-  const actions = buildMessageActions(message);
+  const actions = useMemo(() => buildMessageActions(message), [message]);
 
   // 统一以 blocks 作为 assistant 输出渲染入口（未来可扩展 tool/websearch/多模态输出）
-  const assistantBlocks = isAssistant ? getAssistantMessageBlocks(message) : [];
+  const assistantBlocks = useMemo(
+    () => (isAssistant ? getAssistantMessageBlocks(message) : []),
+    [isAssistant, message]
+  );
   const shouldPreferWideBubble =
     hasWideVisualFence(message.content) ||
     assistantBlocks.some((b) => b.type === 'text' && hasWideVisualFence(b.text));
-  const bubbleWidthClass = shouldPreferWideBubble ? 'w-full max-w-[92%]' : 'max-w-[80%]';
-  const minBubbleWidthClass = isAssistant ? 'min-w-[min(420px,100%)]' : '';
+  // 气泡宽度策略：
+  // - 默认使用“内容自适应 + 上限”保持对话气泡感
+  // - streaming 初期内容很短会导致宽度反复变化；最小宽度由 streaming 容器控制（见 MessageList）
+  // - 遇到宽图表/代码块时允许更宽
+  const bubbleWidthClass = shouldPreferWideBubble ? 'w-full max-w-[98%]' : 'w-fit max-w-[92%]';
 
   // Error message styling
   if (isError) {
@@ -297,7 +303,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
 
       {/* Message Content */}
       <div
-        className={`relative ${bubbleWidthClass} ${minBubbleWidthClass} rounded-2xl px-4 py-2 overflow-hidden ${isUser
+        className={`relative ${bubbleWidthClass} rounded-2xl px-4 py-2 overflow-hidden ${isUser
           ? isPending
             ? 'bg-blue-400 text-white'
             : 'bg-blue-500 text-white'
@@ -328,6 +334,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
             <MessageBlocks
               blocks={assistantBlocks}
               conversationId={message.conversationId}
+              messageSource={message.source}
               turns={message.turns}
               onAbortTool={onAbortTool}
               assistantMessageId={message.id}
@@ -409,6 +416,8 @@ export const MessageItem: React.FC<MessageItemProps> = ({
       )}
     </div>
   );
-};
+});
+
+MessageItem.displayName = 'MessageItem';
 
 export default MessageItem;

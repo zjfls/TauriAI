@@ -37,6 +37,7 @@ export function hydrateMessageFromBackend(message: Message): Message {
 
   return {
     ...message,
+    source: 'history',
     meta: (sanitizedMeta ?? message.meta) as any,
     blocks: blocks ?? message.blocks,
     turns: turns ?? message.turns,

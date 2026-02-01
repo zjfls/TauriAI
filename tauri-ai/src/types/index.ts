@@ -218,7 +218,37 @@ export interface Agent {
   workspaceSupport?: boolean; // Tool agent workspace support (default: true for tool, else false)
   maxTurns?: number;      // Max turns per run/task (default depends on agent type)
   reinjectThinking?: boolean; // Whether to reinject thinking into next turn context (default: false)
+  contextPolicy?: ContextPolicyConfig; // Optional context management policy (agent-level)
 }
+
+// ============================================================================
+// Context Management (agent-level)
+// ============================================================================
+
+export interface ContextPolicyDisabled {
+  type: 'disabled';
+}
+
+export interface NormalCompactContextPolicy {
+  type: 'normal_compact';
+  enabled?: boolean;
+  compactEnabled?: boolean; // enable history compaction (rewrite old history into a summary)
+  autoCompact?: boolean;
+  trimEnabled?: boolean; // enable hard trimming for runtime prompt
+  autoCompactThresholdPercent?: number; // trigger threshold (% of contextLength)
+  hardLimitPercent?: number; // hard cap (% of contextLength) for final prompt after trimming
+  keepLastMessages?: number; // keep last N messages after compaction
+  maxSummaryTokens?: number; // max output tokens for summary generation
+  maxCompactInputMessages?: number; // best-effort cap of messages fed into compaction prompt
+}
+
+export interface CustomContextPolicy {
+  type: 'custom';
+  name: string;
+  params?: any;
+}
+
+export type ContextPolicyConfig = ContextPolicyDisabled | NormalCompactContextPolicy | CustomContextPolicy;
 
 // ============================================================================
 // Multimodal Content Types
@@ -511,6 +541,8 @@ export interface MessageMeta {
   duration?: number;
 }
 
+export type MessageSource = 'live' | 'history';
+
 /**
  * Single chat message
  */
@@ -521,6 +553,12 @@ export interface Message {
   content: string;
   contentParts?: ContentPart[];  // Multimodal content (images, etc.)
   thinking?: string;      // Thinking/reasoning content (for models like DeepSeek-R1)
+  /**
+   * UI-only hint to control default rendering behaviors (e.g. collapse strategy).
+   * - `live`: generated in current runtime (e.g. just finished streaming)
+   * - `history`: loaded from backend history
+   */
+  source?: MessageSource;
   // 结构化输出块（架构演进入口）：
   // - 未来 tool/websearch/非文本输出都将通过 blocks 表达
   // - 现阶段仍保留 content/thinking 作为兼容字段
@@ -583,6 +621,7 @@ export type RunEventType =
   | 'turn_phase_started'
   | 'turn_phase_finished'
   | 'turn_finished'
+  | 'history_sync_needed'
   | 'block_delta'
   | 'done'
   | 'error';
@@ -677,6 +716,16 @@ export type RunEventPayload =
     debugInfo?: DebugInfo;
     usage?: TokenUsage;
     model?: string;
+  }
+  | {
+    conversationId: string;
+    runId: string;
+    seq: number;
+    timestampMs: number;
+    type: 'history_sync_needed';
+    reason: string;
+    removedMessages?: number;
+    droppedForFit?: number;
   }
   | {
     conversationId: string;
@@ -1066,6 +1115,19 @@ export interface PersistedSession {
 }
 
 /**
+ * Persisted pane (chat editor group) layout
+ * - sessionIds: tab order within the pane
+ * - activeSessionId: active tab inside the pane
+ * - weight: horizontal split weight (flex-grow)
+ */
+export interface PersistedSessionPane {
+  id: string;
+  sessionIds: string[];
+  activeSessionId: string | null;
+  weight: number;
+}
+
+/**
  * Persisted session state structure
  * Contains all data needed to restore workspace sessions
  * 
@@ -1075,6 +1137,8 @@ export interface PersistedSessionState {
   version: number;                    // Version number for migration support
   sessions: PersistedSession[];       // Array of persisted sessions
   activeSessionId: string | null;     // ID of the active session
+  panes?: PersistedSessionPane[];     // Optional: v2+ pane layout
+  focusedPaneId?: string | null;      // Optional: v2+ focused pane
 }
 
 // ============================================================================

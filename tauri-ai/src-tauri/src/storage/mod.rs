@@ -4,6 +4,7 @@
 
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::{collections::HashSet, fs};
 
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -224,6 +225,340 @@ impl Database {
             system_prompt_cache_key: None,
             thinking_mode: None,
             workstudio_id: None,
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    fn split_clone_suffix(title: &str) -> (String, String) {
+        fn is_base62_char(c: char) -> bool {
+            c.is_ascii_alphanumeric()
+        }
+
+        let trimmed = title.trim();
+        let trimmed = if trimmed.is_empty() { "新对话" } else { trimmed };
+
+        let Some(hash_pos) = trimmed.rfind('#') else {
+            return (trimmed.to_string(), String::new());
+        };
+
+        if hash_pos + 1 >= trimmed.len() {
+            return (trimmed.to_string(), String::new());
+        }
+
+        let suffix = &trimmed[(hash_pos + 1)..];
+        if suffix.is_empty() || !suffix.chars().all(is_base62_char) {
+            return (trimmed.to_string(), String::new());
+        }
+
+        let prefix = &trimmed[..hash_pos];
+        if !prefix.chars().last().is_some_and(|c| c.is_whitespace()) {
+            return (trimmed.to_string(), String::new());
+        }
+
+        let base = prefix.trim_end();
+        let base = if base.is_empty() { "新对话" } else { base };
+        (base.to_string(), suffix.to_string())
+    }
+
+    fn clone_conversation_title(&self, title: &str) -> Result<String, StorageError> {
+        // 采用“树状后缀”命名：在标题末尾追加 ` #<path>`，每次克隆在 path 末尾追加 1 个字符。
+        // 例如：
+        // - 原始：Foo
+        // - 克隆 1 次：Foo #1
+        // - 再克隆：Foo #2
+        // - 克隆 Foo #1：Foo #11 / Foo #12 ...
+        const ALPHABET: &str = "1234567890abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+        let existing_titles: HashSet<String> = self
+            .get_conversations()?
+            .into_iter()
+            .map(|c| c.title)
+            .collect();
+
+        let (base, parent_path) = Self::split_clone_suffix(title);
+
+        let mut used_next: HashSet<char> = HashSet::new();
+        for t in &existing_titles {
+            let (t_base, t_path) = Self::split_clone_suffix(t);
+            if t_base != base {
+                continue;
+            }
+            if !t_path.starts_with(&parent_path) {
+                continue;
+            }
+            if t_path.len() != parent_path.len() + 1 {
+                continue;
+            }
+            let next_ch = t_path[parent_path.len()..].chars().next().unwrap_or('\0');
+            if next_ch != '\0' {
+                used_next.insert(next_ch);
+            }
+        }
+
+        for ch in ALPHABET.chars() {
+            if used_next.contains(&ch) {
+                continue;
+            }
+            let path = format!("{parent_path}{ch}");
+            let candidate = format!("{base} #{path}");
+            if !existing_titles.contains(&candidate) {
+                return Ok(candidate);
+            }
+        }
+
+        // 极端情况：同一父节点克隆次数超过 62。这里退化为追加一个随机 token（仍保持只用 0-9a-zA-Z）。
+        for _ in 0..32 {
+            let frag = uuid::Uuid::new_v4().simple().to_string();
+            let mut extra = String::with_capacity(4);
+            for b in frag.bytes() {
+                // map hex char into base62 roughly (deterministic).
+                let idx = (b as usize) % ALPHABET.len();
+                extra.push(ALPHABET.as_bytes()[idx] as char);
+                if extra.len() >= 4 {
+                    break;
+                }
+            }
+            let candidate = format!("{base} #{}{}", parent_path, extra);
+            if !existing_titles.contains(&candidate) {
+                return Ok(candidate);
+            }
+        }
+
+        // Fallback：允许重名（理论上极难触发）。
+        Ok(format!("{base} #{}1", parent_path))
+    }
+
+    fn is_default_workstudio_main_folder(&self, ws: &Workstudio) -> bool {
+        let Ok(default_main) = Self::default_workstudio_main_folder(&ws.id) else {
+            return false;
+        };
+        ws.main_folder == default_main.to_string_lossy().to_string()
+    }
+
+    fn remap_workstudio_folder(folder: &str, old_root: &str, new_root: &str) -> String {
+        fn normalize(p: &str) -> String {
+            p.replace('\\', "/").trim_end_matches('/').to_string()
+        }
+
+        let folder_n = normalize(folder);
+        let old_n = normalize(old_root);
+
+        if folder_n == old_n {
+            return new_root.to_string();
+        }
+
+        let prefix = format!("{old_n}/");
+        if folder_n.starts_with(&prefix) {
+            let rel = &folder_n[prefix.len()..];
+            let mut out = PathBuf::from(new_root);
+            for seg in rel.split('/') {
+                if seg.is_empty() {
+                    continue;
+                }
+                out.push(seg);
+            }
+            return out.to_string_lossy().to_string();
+        }
+
+        folder.to_string()
+    }
+
+    fn copy_dir_recursive(src: &PathBuf, dst: &PathBuf) -> Result<(), StorageError> {
+        if !dst.exists() {
+            fs::create_dir_all(dst)?;
+        }
+
+        for entry in fs::read_dir(src)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            let from = entry.path();
+            let to = dst.join(entry.file_name());
+
+            if file_type.is_dir() {
+                Self::copy_dir_recursive(&from, &to)?;
+                continue;
+            }
+
+            if file_type.is_file() {
+                // Overwrite if exists.
+                let _ = fs::copy(&from, &to)?;
+                continue;
+            }
+
+            // Skip symlinks and other special files for safety.
+        }
+
+        Ok(())
+    }
+
+    /// Clone an existing conversation (including messages + workstudio binding).
+    ///
+    /// 语义：
+    /// - 新建一个 conversation（新 id / 新 title / created_at/updated_at = now）
+    /// - 复制原 conversation 的元数据（agent/model/thinking/system_prompt/workstudio 绑定）
+    /// - 复制 messages（新 message id，但内容/顺序/元数据保持）
+    /// - workstudio：默认工作区（~/.tauri-ai/workstudios/<id>）会“复制目录”到新的默认工作区；非默认则只复制绑定（不改写文件系统）
+    pub fn clone_conversation(&self, source_conversation_id: &str) -> Result<Conversation, StorageError> {
+        let source = self
+            .get_conversation(source_conversation_id)?
+            .ok_or_else(|| StorageError::NotFound(format!("Conversation {source_conversation_id} not found")))?;
+
+        let new_title = self.clone_conversation_title(&source.title)?;
+        let now = Utc::now();
+        let now_str = now.to_rfc3339();
+
+        let source_messages = self.get_all_messages(source_conversation_id)?;
+
+        // Clone workstudio if present.
+        let mut workstudio_insert: Option<(Workstudio, String /* folders_json */)> = None;
+        if let Some(source_ws_id) = source.workstudio_id.as_deref() {
+            if let Some(ws) = self.get_workstudio(source_ws_id)? {
+                let new_ws_id = uuid::Uuid::new_v4().to_string();
+
+                let mut main_folder = ws.main_folder.clone();
+                let mut folders = ws.folders.clone();
+                let mut should_write_marker = false;
+
+                if self.is_default_workstudio_main_folder(&ws) {
+                    // Default workstudio: deep copy folder to a new default location.
+                    let new_main_path = Self::default_workstudio_main_folder(&new_ws_id)?;
+                    let old_main_path = PathBuf::from(&ws.main_folder);
+
+                    fs::create_dir_all(&new_main_path)?;
+                    if old_main_path.exists() {
+                        // Best-effort: clone contents to keep the workspace self-contained.
+                        let _ = Self::copy_dir_recursive(&old_main_path, &new_main_path);
+                    }
+
+                    let new_main = new_main_path.to_string_lossy().to_string();
+                    main_folder = new_main.clone();
+                    folders = folders
+                        .iter()
+                        .map(|f| Self::remap_workstudio_folder(f, &ws.main_folder, &new_main))
+                        .collect();
+                    should_write_marker = true;
+                }
+
+                // Ensure main folder is present and is the first entry.
+                if !folders.iter().any(|f| f == &main_folder) {
+                    folders.insert(0, main_folder.clone());
+                }
+                folders.retain(|f| f != &main_folder);
+                folders.insert(0, main_folder.clone());
+
+                let folders_json = serde_json::to_string(&folders)?;
+                let new_ws = Workstudio {
+                    id: new_ws_id,
+                    kind: ws.kind,
+                    main_folder,
+                    folders,
+                    created_at: now,
+                    updated_at: now,
+                };
+
+                if should_write_marker {
+                    let _ = Self::write_workstudio_marker(&PathBuf::from(&new_ws.main_folder), &new_ws);
+                }
+
+                workstudio_insert = Some((new_ws, folders_json));
+            }
+        }
+
+        let new_conversation_id = uuid::Uuid::new_v4().to_string();
+        let thinking_mode_json = source
+            .thinking_mode
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
+
+        let workstudio_id = workstudio_insert.as_ref().map(|(ws, _)| ws.id.clone());
+
+        {
+            let mut conn = self
+                .conn
+                .lock()
+                .map_err(|e| StorageError::Lock(e.to_string()))?;
+
+            let tx = conn.transaction()?;
+
+            if let Some((ws, folders_json)) = workstudio_insert.as_ref() {
+                tx.execute(
+                    "INSERT INTO workstudios (id, kind, main_folder, folders_json, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![ws.id, ws.kind, ws.main_folder, folders_json, now_str, now_str],
+                )?;
+            }
+
+            tx.execute(
+                "INSERT INTO conversations (id, title, model_id, agent_name, model_ref, system_prompt, system_prompt_cache_key, thinking_mode, workstudio_id, created_at, updated_at)
+                 VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    new_conversation_id,
+                    new_title,
+                    source.agent_name,
+                    source.model_ref,
+                    source.system_prompt,
+                    source.system_prompt_cache_key,
+                    thinking_mode_json,
+                    workstudio_id,
+                    now_str,
+                    now_str
+                ],
+            )?;
+
+            for m in source_messages {
+                let new_message_id = uuid::Uuid::new_v4().to_string();
+                let role_str = match m.role {
+                    MessageRole::User => "user",
+                    MessageRole::Assistant => "assistant",
+                    MessageRole::System => "system",
+                    MessageRole::Tool => "tool",
+                };
+
+                let meta_json = m.meta.as_ref().map(|meta| serde_json::to_string(meta)).transpose()?;
+                let content_parts_json = if m.content_parts.is_empty() {
+                    None
+                } else {
+                    Some(serde_json::to_string(&m.content_parts)?)
+                };
+
+                let status_str = match m.status {
+                    crate::models::MessageStatus::Pending => "pending",
+                    crate::models::MessageStatus::Success => "success",
+                    crate::models::MessageStatus::Failed => "failed",
+                };
+
+                tx.execute(
+                    "INSERT INTO messages (id, conversation_id, role, content, thinking, content_parts, meta, status, error_message, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    params![
+                        new_message_id,
+                        new_conversation_id,
+                        role_str,
+                        m.content,
+                        m.thinking,
+                        content_parts_json,
+                        meta_json,
+                        status_str,
+                        m.error_message,
+                        m.created_at.to_rfc3339(),
+                    ],
+                )?;
+            }
+
+            tx.commit()?;
+        }
+
+        Ok(Conversation {
+            id: new_conversation_id,
+            title: new_title,
+            agent_name: source.agent_name,
+            model_ref: source.model_ref,
+            system_prompt: source.system_prompt,
+            system_prompt_cache_key: source.system_prompt_cache_key,
+            thinking_mode: source.thinking_mode,
+            workstudio_id,
             created_at: now,
             updated_at: now,
         })
@@ -1060,6 +1395,50 @@ impl Database {
         Ok(())
     }
 
+    /// Delete messages by id list (conversation-scoped).
+    ///
+    /// Used by context compaction to replace old history with a summary message.
+    pub fn delete_messages_by_ids(
+        &self,
+        conversation_id: &str,
+        ids: &[String],
+    ) -> Result<(), StorageError> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Lock(e.to_string()))?;
+
+        // SQLite has a limit on bound parameters (commonly 999). Chunk to be safe.
+        const CHUNK: usize = 400;
+        for chunk in ids.chunks(CHUNK) {
+            let mut sql = String::from("DELETE FROM messages WHERE conversation_id = ?1 AND id IN (");
+            for i in 0..chunk.len() {
+                if i > 0 {
+                    sql.push(',');
+                }
+                // bind placeholders start at ?2 because ?1 is conversation_id
+                sql.push_str(&format!("?{}", i + 2));
+            }
+            sql.push(')');
+
+            let params_iter = std::iter::once(conversation_id.to_string()).chain(chunk.iter().cloned());
+            conn.execute(&sql, rusqlite::params_from_iter(params_iter))?;
+        }
+
+        // Update conversation's updated_at timestamp
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
+            params![now, conversation_id],
+        )?;
+
+        Ok(())
+    }
+
     /// Get messages for a conversation with pagination
     ///
     /// # Arguments
@@ -1125,6 +1504,62 @@ impl Database {
         };
 
         Ok(messages)
+    }
+
+    /// Get all messages for a conversation in chronological order.
+    ///
+    /// NOTE: This can be large. Prefer `get_messages` for normal UI pagination.
+    pub fn get_all_messages(&self, conversation_id: &str) -> Result<Vec<Message>, StorageError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Lock(e.to_string()))?;
+
+        let mut stmt = conn.prepare(
+            "SELECT id, conversation_id, role, content, thinking, content_parts, meta, created_at, status, error_message
+             FROM messages
+             WHERE conversation_id = ?1
+             ORDER BY created_at ASC",
+        )?;
+
+        let msgs: Vec<Message> = stmt
+            .query_map(params![conversation_id], |row| self.row_to_message(row))?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(msgs)
+    }
+
+    /// Get the latest message in a conversation whose `content` contains the given marker.
+    ///
+    /// This is used for locating persisted context compaction summaries without scanning the whole table.
+    pub fn get_latest_message_containing(
+        &self,
+        conversation_id: &str,
+        marker: &str,
+    ) -> Result<Option<Message>, StorageError> {
+        if marker.trim().is_empty() {
+            return Ok(None);
+        }
+
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Lock(e.to_string()))?;
+
+        let like = format!("%{}%", marker);
+        let mut stmt = conn.prepare(
+            "SELECT id, conversation_id, role, content, thinking, content_parts, meta, created_at, status, error_message
+             FROM messages
+             WHERE conversation_id = ?1 AND content LIKE ?2
+             ORDER BY created_at DESC
+             LIMIT 1",
+        )?;
+
+        let row = stmt
+            .query_row(params![conversation_id, like], |row| self.row_to_message(row))
+            .optional()?;
+
+        Ok(row)
     }
 
     /// Get a single message by id within a conversation.
@@ -1211,6 +1646,7 @@ impl Database {
 mod tests {
     use super::*;
     use crate::models::MessageMeta;
+    use serde_json::json;
 
     #[test]
     fn test_database_initialization() {
@@ -1438,5 +1874,107 @@ mod tests {
             .get_messages(&conv.id, 10, None)
             .expect("Failed to get messages");
         assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn test_clone_conversation_copies_metadata_messages_and_workstudio_binding() {
+        let db = Database::new_in_memory().expect("Failed to create database");
+
+        let conv = db
+            .create_conversation("原始对话")
+            .expect("Failed to create conversation");
+
+        // Insert a fake workstudio row without touching filesystem.
+        let ws_id = uuid::Uuid::new_v4().to_string();
+        let folders = vec!["test_ws_main".to_string()];
+        let folders_json = serde_json::to_string(&folders).unwrap();
+        let now = Utc::now().to_rfc3339();
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO workstudios (id, kind, main_folder, folders_json, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![ws_id, "code", "test_ws_main", folders_json, now, now],
+            )
+            .unwrap();
+        }
+
+        let thinking_mode = json!({ "enabled": true, "level": "high" });
+        db.update_conversation_metadata(
+            &conv.id,
+            Some("test-agent"),
+            Some("test-provider/test-model"),
+            Some(&thinking_mode),
+            Some(&ws_id),
+        )
+        .unwrap();
+
+        // Add some messages.
+        let msg1 = Message {
+            id: uuid::Uuid::new_v4().to_string(),
+            conversation_id: conv.id.clone(),
+            role: MessageRole::User,
+            content: "hello".to_string(),
+            content_parts: Vec::new(),
+            thinking: None,
+            meta: None,
+            created_at: Utc::now(),
+            status: crate::models::MessageStatus::Success,
+            error_message: None,
+        };
+        let msg2 = Message {
+            id: uuid::Uuid::new_v4().to_string(),
+            conversation_id: conv.id.clone(),
+            role: MessageRole::Assistant,
+            content: "world".to_string(),
+            content_parts: Vec::new(),
+            thinking: Some("t".to_string()),
+            meta: Some(MessageMeta {
+                model: Some("test".to_string()),
+                tokens: Some(10),
+                ..Default::default()
+            }),
+            created_at: Utc::now(),
+            status: crate::models::MessageStatus::Success,
+            error_message: None,
+        };
+        db.add_message(&conv.id, &msg1).unwrap();
+        db.add_message(&conv.id, &msg2).unwrap();
+
+        let cloned = db.clone_conversation(&conv.id).unwrap();
+        assert_ne!(cloned.id, conv.id);
+        assert_ne!(cloned.title, conv.title);
+        assert_eq!(cloned.agent_name.as_deref(), Some("test-agent"));
+        assert_eq!(cloned.model_ref.as_deref(), Some("test-provider/test-model"));
+        assert!(cloned.workstudio_id.is_some());
+        assert_ne!(cloned.workstudio_id.as_deref(), Some(ws_id.as_str()));
+
+        let cloned_messages = db.get_all_messages(&cloned.id).unwrap();
+        assert_eq!(cloned_messages.len(), 2);
+        assert_eq!(cloned_messages[0].content, "hello");
+        assert_eq!(cloned_messages[1].content, "world");
+        assert_ne!(cloned_messages[0].id, msg1.id);
+        assert_ne!(cloned_messages[1].id, msg2.id);
+    }
+
+    #[test]
+    fn test_clone_conversation_title_uses_tree_suffix() {
+        let db = Database::new_in_memory().expect("Failed to create database");
+
+        let conv = db
+            .create_conversation("原始对话")
+            .expect("Failed to create conversation");
+
+        let clone1 = db.clone_conversation(&conv.id).unwrap();
+        assert_eq!(clone1.title, "原始对话 #1");
+
+        let clone2 = db.clone_conversation(&conv.id).unwrap();
+        assert_eq!(clone2.title, "原始对话 #2");
+
+        let clone11 = db.clone_conversation(&clone1.id).unwrap();
+        assert_eq!(clone11.title, "原始对话 #11");
+
+        let clone12 = db.clone_conversation(&clone1.id).unwrap();
+        assert_eq!(clone12.title, "原始对话 #12");
     }
 }
