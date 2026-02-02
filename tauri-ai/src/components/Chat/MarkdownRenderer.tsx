@@ -169,23 +169,31 @@ interface MermaidBlockProps {
   tryOpenFileReferenceToken?: (token: string) => boolean;
 }
 
-function extractMermaidFileReferenceToken(hrefRaw: string): string | null {
+function parseFileReferenceTokenFromHref(hrefRaw: string): string | null {
   const href = hrefRaw.trim();
   if (!href) return null;
 
-  // 支持 `click X "tauri-ai://open-file?ref=<encoded-token>"`，其中 token 格式与行内 code 一致：
-  // 例如：`src/app.ts:42`、`events.rs#L10C2`、`a/foo.rs#L9-L12` 等。
+  // 支持自定义 scheme：`tauri-ai://open-file?ref=<encoded-token>`。
+  // 其中 token 格式与行内 code 一致：
+  // `src/app.ts:42`、`events.rs#L10C2`、`a/foo.rs#L9-L12` 等。
   try {
     const url = new URL(href);
     if (url.protocol === 'tauri-ai:' && url.hostname === 'open-file') {
       const ref = url.searchParams.get('ref');
-      return ref ? ref.trim() : null;
+      if (!ref) return null;
+      // URLSearchParams.get 已做 decode；这里再做一次容错（避免调用方 double-encode）
+      try {
+        return decodeURIComponent(ref).trim();
+      } catch {
+        return ref.trim();
+      }
     }
   } catch {
     // ignore: 不是合法 URL（可能是相对路径/我们自己的 token）
   }
 
-  // 也允许直接把 token 当 href：`click X "src/app.ts:42"`（不含 scheme）
+  // 也允许直接把 token 当 href：`src/app.ts:42` / `events.rs#L10`
+  // 如果是标准 URL（https://...），则不当作文件引用。
   if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(href)) {
     return href;
   }
@@ -338,7 +346,7 @@ const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferen
       anchor.getAttributeNS('http://www.w3.org/1999/xlink', 'href') ??
       '';
 
-    const token = extractMermaidFileReferenceToken(hrefRaw);
+    const token = parseFileReferenceTokenFromHref(hrefRaw);
     if (!token) return;
     if (!tryOpenFileReferenceToken) return;
 
@@ -544,7 +552,7 @@ export const MarkdownRenderer = React.memo(function MarkdownRendererImpl({ conte
     if (!isTauriRuntime()) return;
 
     try {
-      const [{ invoke }, { openOrFocusViewWindow }] = await Promise.all([
+      const [{ invoke }, { openOrFocusWorkstudioWindow }] = await Promise.all([
         import('@tauri-apps/api/core'),
         import('../../utils/viewWindow'),
       ]);
@@ -571,14 +579,13 @@ export const MarkdownRenderer = React.memo(function MarkdownRendererImpl({ conte
       }
 
       const title = ws ? `Workstudio: ${ws.mainFolder}` : 'Workstudio';
-      await openOrFocusViewWindow('workstudio', title, {
+      await openOrFocusWorkstudioWindow(title, {
         workstudioId: resolvedWorkstudioId,
         filePath: ref.filePath,
         line: ref.line,
         column: ref.column,
         endLine: ref.endLine,
         endColumn: ref.endColumn,
-        label: `view-workstudio-${resolvedWorkstudioId}`,
       });
     } catch (error) {
       console.warn('openFileReference failed:', error);
@@ -619,7 +626,8 @@ export const MarkdownRenderer = React.memo(function MarkdownRendererImpl({ conte
 	  const components = useMemo(() => ({
     a: ({ href, children, ...props }: any) => {
       const hrefStr = typeof href === 'string' ? href : '';
-      const fileRef = hrefStr ? parseFileReferenceToken(hrefStr) : null;
+      const token = hrefStr ? parseFileReferenceTokenFromHref(hrefStr) : null;
+      const fileRef = token ? parseFileReferenceToken(token) : null;
       const canOpen = Boolean(fileRef) && isTauriRuntime() && Boolean(conversationId || workstudioId);
 
       if (!canOpen) {

@@ -82,6 +82,8 @@ const scheduleWorkstudioOpenFile = async (
   workstudioOpenTimersByLabel.set(label, timerIds);
 };
 
+export const workstudioWindowLabel = (workstudioId: string) => `view-workstudio-${workstudioId}`;
+
 export interface ViewWindowParams {
   view?: ActiveView | null;
   standalone: boolean;
@@ -327,6 +329,24 @@ export const openOrFocusConversationChatWindow = async (
     agentName: opts?.agentName,
   });
   return { win, isExisting: false as const, label };
+};
+
+export const openOrFocusWorkstudioWindow = async (
+  title: string,
+  opts: {
+    workstudioId: string;
+    filePath?: string;
+    line?: number;
+    column?: number;
+    endLine?: number;
+    endColumn?: number;
+  }
+) => {
+  const label = workstudioWindowLabel(opts.workstudioId);
+  return openOrFocusViewWindow('workstudio', title, {
+    ...opts,
+    label,
+  });
 };
 
 export type ChatWindowInfo = {

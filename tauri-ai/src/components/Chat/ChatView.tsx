@@ -21,7 +21,7 @@ import { openUrl } from '@tauri-apps/plugin-opener';
 import type { TokenUsage, ContextUsageBreakdown, ContextMessageGroups, ContentPart, ThinkingMode, PtySessionInfo, Workstudio, Agent, SkillEntry, SkillLoadOutcome, SandboxPolicy, SecurityPolicyConfig, Message, MessageBlock } from '../../types';
 import { useToolSessionStore } from '../../stores/toolSessionStore';
 import { endChatOpenProfile, getActiveChatOpenProfile, markChatOpenProfile } from '../../utils/chatOpenProfile';
-import { openOrFocusViewWindow } from '../../utils/viewWindow';
+import { openOrFocusWorkstudioWindow } from '../../utils/viewWindow';
 import { WorkstudioSecurityModal } from './WorkstudioSecurityModal';
 import type { WebSearchProvider } from './WebSearchToggle';
 
@@ -685,10 +685,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
   const openWorkstudioWindow = useCallback(async () => {
     const ws = await ensureWorkstudio();
     if (!ws) return;
-    await openOrFocusViewWindow('workstudio', `Workstudio: ${ws.mainFolder}`, {
-      workstudioId: ws.id,
-      label: `view-workstudio-${ws.id}`,
-    });
+    await openOrFocusWorkstudioWindow(`Workstudio: ${ws.mainFolder}`, { workstudioId: ws.id });
   }, [ensureWorkstudio]);
 
   const handleSetWorkstudioMainFolder = useCallback(async () => {
@@ -711,10 +708,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
         setAsMain: true,
       });
       setWorkstudio(updated);
-      await openOrFocusViewWindow('workstudio', `Workstudio: ${updated.mainFolder}`, {
-        workstudioId: updated.id,
-        label: `view-workstudio-${updated.id}`,
-      });
+      await openOrFocusWorkstudioWindow(`Workstudio: ${updated.mainFolder}`, { workstudioId: updated.id });
     } catch (e) {
       console.error('set workstudio main folder failed:', e);
     } finally {

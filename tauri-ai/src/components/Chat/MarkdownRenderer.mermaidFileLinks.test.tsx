@@ -5,7 +5,7 @@ import { MarkdownRenderer } from './MarkdownRenderer';
 import mermaid from 'mermaid';
 
 const mockInvoke = vi.fn();
-const mockOpenOrFocusViewWindow = vi.fn();
+const mockOpenOrFocusWorkstudioWindow = vi.fn();
 
 vi.mock('mermaid', () => ({
   default: {
@@ -22,13 +22,13 @@ vi.mock('@tauri-apps/api/core', async () => ({
 }));
 
 vi.mock('../../utils/viewWindow', async () => ({
-  openOrFocusViewWindow: mockOpenOrFocusViewWindow,
+  openOrFocusWorkstudioWindow: mockOpenOrFocusWorkstudioWindow,
 }));
 
 describe('MarkdownRenderer Mermaid file links', () => {
   beforeEach(() => {
     mockInvoke.mockReset();
-    mockOpenOrFocusViewWindow.mockReset();
+    mockOpenOrFocusWorkstudioWindow.mockReset();
     (mermaid as any).parse?.mockClear?.();
     (mermaid as any).render?.mockClear?.();
     (window as any).__TAURI__ = true;
@@ -51,11 +51,10 @@ describe('MarkdownRenderer Mermaid file links', () => {
     fireEvent.click(screen.getByText('Open'));
 
     await waitFor(() => {
-      expect(mockOpenOrFocusViewWindow).toHaveBeenCalledTimes(1);
+      expect(mockOpenOrFocusWorkstudioWindow).toHaveBeenCalledTimes(1);
     });
 
-    expect(mockOpenOrFocusViewWindow).toHaveBeenCalledWith(
-      'workstudio',
+    expect(mockOpenOrFocusWorkstudioWindow).toHaveBeenCalledWith(
       expect.any(String),
       expect.objectContaining({
         workstudioId: 'ws1',
@@ -85,11 +84,10 @@ describe('MarkdownRenderer Mermaid file links', () => {
     fireEvent.click(screen.getByText('OpenX'));
 
     await waitFor(() => {
-      expect(mockOpenOrFocusViewWindow).toHaveBeenCalledTimes(1);
+      expect(mockOpenOrFocusWorkstudioWindow).toHaveBeenCalledTimes(1);
     });
 
-    expect(mockOpenOrFocusViewWindow).toHaveBeenCalledWith(
-      'workstudio',
+    expect(mockOpenOrFocusWorkstudioWindow).toHaveBeenCalledWith(
       expect.any(String),
       expect.objectContaining({
         workstudioId: 'ws1',
