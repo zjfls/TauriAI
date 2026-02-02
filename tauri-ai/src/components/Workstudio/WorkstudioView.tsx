@@ -164,6 +164,21 @@ const languageForPath = (path: string) => {
   if (lower.endsWith('.md') || lower.endsWith('.markdown')) return 'markdown';
   if (lower.endsWith('.py')) return 'python';
   if (lower.endsWith('.rs')) return 'rust';
+  if (lower.endsWith('.c')) return 'c';
+  if (
+    lower.endsWith('.cc') ||
+    lower.endsWith('.cpp') ||
+    lower.endsWith('.cxx') ||
+    lower.endsWith('.h') ||
+    lower.endsWith('.hh') ||
+    lower.endsWith('.hpp') ||
+    lower.endsWith('.hxx') ||
+    lower.endsWith('.inl') ||
+    lower.endsWith('.ipp') ||
+    lower.endsWith('.ixx') ||
+    lower.endsWith('.cppm')
+  )
+    return 'cpp';
   if (lower.endsWith('.toml')) return 'toml';
   if (lower.endsWith('.yaml') || lower.endsWith('.yml')) return 'yaml';
   if (lower.endsWith('.sh') || lower.endsWith('.bash') || lower.endsWith('.zsh')) return 'shell';
@@ -211,7 +226,9 @@ const normalizeFsPath = (input: string) => {
   let drive = '';
 
   if (/^[A-Za-z]:/.test(path)) {
-    drive = path.slice(0, 2);
+    // Normalize drive letter case so comparisons are stable across sources
+    // (e.g. Monaco URI may use lowercase drive while backend paths are uppercase).
+    drive = path.slice(0, 2).toUpperCase();
     path = path.slice(2);
     if (path.startsWith('/')) {
       isAbs = true;
@@ -358,6 +375,7 @@ export const WorkstudioView: React.FC = () => {
   const terminalContainerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const terminalFitRef = useRef<FitAddon | null>(null);
+  const terminalReadPokeRef = useRef<null | (() => void)>(null);
 
   const [ws, setWs] = useState<Workstudio | null>(null);
   const [wsError, setWsError] = useState<string | null>(null);
@@ -1273,6 +1291,7 @@ export const WorkstudioView: React.FC = () => {
       if (!ws) return;
       void ensureTerminalSession().then((sid) => {
         if (!sid) return;
+        terminalReadPokeRef.current?.();
         return invoke('workstudio_terminal_write', { workstudioId: ws.id, sessionId: sid, chars: data });
       });
     });
@@ -1307,6 +1326,13 @@ export const WorkstudioView: React.FC = () => {
     if (!ws) return;
     let cancelled = false;
     let timer: number | null = null;
+    let lastHadOutput = false;
+
+    const schedule = (delayMs: number) => {
+      if (cancelled) return;
+      if (timer) window.clearTimeout(timer);
+      timer = window.setTimeout(tick, delayMs);
+    };
 
     const tick = async () => {
       if (cancelled) return;
@@ -1316,24 +1342,37 @@ export const WorkstudioView: React.FC = () => {
         const base64 = await invoke<string>('workstudio_terminal_read_base64', {
           workstudioId: ws.id,
           sessionId: sid,
-          timeoutMs: 80,
+          // Backend no longer blocks stdin writes while waiting on reads,
+          // so we can afford a slightly longer wait to reduce polling overhead.
+          timeoutMs: 200,
           maxBytes: 64 * 1024,
         });
         if (cancelled) return;
-        if (!base64) return;
-        const bytes = decodeBase64ToBytes(base64);
-        terminalRef.current?.write(bytes);
+        if (base64) {
+          const bytes = decodeBase64ToBytes(base64);
+          terminalRef.current?.write(bytes);
+          lastHadOutput = true;
+        } else {
+          lastHadOutput = false;
+        }
       } catch {
         // ignore
       } finally {
-        if (!cancelled) timer = window.setTimeout(tick, 250);
+        // Adaptive polling:
+        // - When output is flowing, poll aggressively for responsiveness.
+        // - When idle, back off to reduce CPU usage.
+        schedule(lastHadOutput ? 30 : 120);
       }
     };
 
-    timer = window.setTimeout(tick, 50);
+    // Allow onData to "poke" the read loop for snappier echo/response.
+    terminalReadPokeRef.current = () => schedule(0);
+
+    timer = window.setTimeout(tick, 30);
     return () => {
       cancelled = true;
       if (timer) window.clearTimeout(timer);
+      terminalReadPokeRef.current = null;
     };
   }, [terminalOpen, ws, ensureTerminalSession]);
 

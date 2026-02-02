@@ -299,6 +299,11 @@ async fn drain_pty_output(
         .await
         .ok_or_else(|| ToolError::invalid(format!("PTY session 不存在: {session_id}")))?;
 
+    let rx = {
+        let guard = session.lock().await;
+        std::sync::Arc::clone(&guard.rx)
+    };
+
     let mut output = String::new();
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(yield_time_ms);
 
@@ -309,17 +314,20 @@ async fn drain_pty_output(
         }
         let remaining = deadline - now;
 
-        let mut guard = session.lock().await;
-
         tokio::select! {
             _ = ctx.abort_rx.recv() => {
                 // best-effort kill & remove
-                let _ = guard.child.kill();
-                drop(guard);
+                {
+                    let mut guard = session.lock().await;
+                    let _ = guard.child.kill();
+                }
                 let _ = ctx.services.pty.remove_session(session_id).await;
                 return Err(ToolError::aborted("已中止 PTY 会话"));
             }
-            recv = tokio::time::timeout(remaining, guard.rx.recv()) => {
+            recv = async {
+                let mut guard = rx.lock().await;
+                tokio::time::timeout(remaining, guard.recv()).await
+            } => {
                 match recv {
                     Ok(Some(bytes)) => {
                         let text = String::from_utf8_lossy(&bytes).to_string();
@@ -363,7 +371,12 @@ async fn check_and_maybe_close_session(
         Ok(None) => {
             // 某些平台/边界情况下 try_wait 可能短暂返回 None，但 PTY reader 已经退出（rx 关闭）。
             // 这时继续保留 session 会导致下一轮 write_stdin 触发 BrokenPipe/232。
-            if guard.rx.is_closed() {
+            let rx_closed = guard
+                .rx
+                .try_lock()
+                .map(|g| g.is_closed())
+                .unwrap_or(false);
+            if rx_closed {
                 drop(guard);
 
                 // 尽量在回收前拿到退出码（短命令在 Windows/ConPTY 上比较容易发生竞态）。
@@ -525,9 +538,12 @@ async fn write_stdin_with_scope(
     let mut pipe_closed_during_write = false;
     if !args.chars.is_empty() {
         // 写 stdin（用 take/move 避免在 spawn_blocking 里借用 &mut）
-        let mut guard = session.lock().await;
+        let writer_arc = {
+            let guard = session.lock().await;
+            std::sync::Arc::clone(&guard.writer)
+        };
+        let mut guard = writer_arc.lock().await;
         let mut writer = guard
-            .writer
             .take()
             .ok_or_else(|| ToolError::internal("PTY writer 不可用"))?;
         drop(guard);
@@ -545,8 +561,8 @@ async fn write_stdin_with_scope(
         .map_err(|e| ToolError::new(format!("write_stdin 线程失败: {e}")))?;
 
         // 无论成功/失败都放回 writer，避免 session 被“写坏”导致后续无法收尾。
-        let mut guard = session.lock().await;
-        guard.writer = Some(writer);
+        let mut guard = writer_arc.lock().await;
+        *guard = Some(writer);
         drop(guard);
 
         if let Err(e) = write_result {

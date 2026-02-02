@@ -25,7 +25,15 @@ export type AnsiRenderMode = 'color' | 'strip' | 'raw';
 export type AnsiColorMode = 'auto' | 'xterm' | 'vscode-dark' | 'vscode-light';
 
 // View types for navigation
-export type ActiveView = 'chat' | 'history' | 'settings' | 'document' | 'workstudio' | 'window_test';
+export type ActiveView =
+  | 'chat'
+  | 'history'
+  | 'settings'
+  | 'document'
+  | 'workstudio'
+  | 'web'
+  | 'terminal'
+  | 'window_test';
 
 // Format prompt types
 export type FormatPromptType = 'chat' | 'plain' | 'json' | 'none';

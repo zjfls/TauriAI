@@ -73,7 +73,11 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
     const session = sessions.find((s) => s.id === sessionId);
     if (!session) return;
     const conversationId = session.conversationId ?? undefined;
-    openViewWindow('chat', session.title, conversationId ? { conversationId } : undefined);
+    openViewWindow(
+      'chat',
+      session.title,
+      conversationId ? { conversationId, runMode: session.runMode, agentName: session.agentName } : undefined
+    );
     await closeSession(sessionId);
   };
 

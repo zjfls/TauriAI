@@ -52,8 +52,29 @@ fn conv_key(workstudio_id: &str) -> String {
 fn default_shell_command() -> Vec<String> {
     #[cfg(windows)]
     {
-        // Minimal fallback. (Workstudio UI currently targets macOS/Linux primarily.)
-        vec!["cmd.exe".to_string()]
+        // Prefer PowerShell for better ANSI/color support on Windows.
+        // Fallback order: pwsh (PowerShell 7+) -> powershell (Windows PowerShell) -> cmd.
+        fn find_in_path(candidates: &[&str]) -> Option<String> {
+            let path = std::env::var_os("PATH")?;
+            for dir in std::env::split_paths(&path) {
+                for name in candidates {
+                    let full = dir.join(name);
+                    if full.is_file() {
+                        return Some(full.to_string_lossy().to_string());
+                    }
+                }
+            }
+            None
+        }
+
+        let shell = find_in_path(&["pwsh.exe", "powershell.exe", "cmd.exe"])
+            .unwrap_or_else(|| "cmd.exe".to_string());
+        let lower = shell.to_lowercase();
+        if lower.ends_with("pwsh.exe") || lower.ends_with("powershell.exe") {
+            vec![shell, "-NoLogo".to_string()]
+        } else {
+            vec![shell]
+        }
     }
     #[cfg(not(windows))]
     {
@@ -112,8 +133,12 @@ pub async fn workstudio_terminal_write(
     run_state: tauri::State<'_, Arc<RunState>>,
 ) -> Result<(), String> {
     let session = ensure_session_owned(&run_state, &workstudio_id, session_id).await?;
-    let mut guard = session.lock().await;
-    if let Some(writer) = guard.writer.as_mut() {
+    let writer = {
+        let guard = session.lock().await;
+        Arc::clone(&guard.writer)
+    };
+    let mut guard = writer.lock().await;
+    if let Some(writer) = guard.as_mut() {
         writer
             .write_all(chars.as_bytes())
             .map_err(|e| format!("write stdin 失败: {e}"))?;
@@ -135,12 +160,16 @@ pub async fn workstudio_terminal_read(
     let session = ensure_session_owned(&run_state, &workstudio_id, session_id).await?;
 
     // NOTE: This locks the session while waiting; keep timeouts short on the frontend.
-    let mut guard: MutexGuard<'_, PtySession> = session.lock().await;
+    let rx = {
+        let guard: MutexGuard<'_, PtySession> = session.lock().await;
+        Arc::clone(&guard.rx)
+    };
+    let mut guard = rx.lock().await;
 
     let mut out: Vec<u8> = Vec::new();
     let deadline = Duration::from_millis(timeout_ms.max(10));
 
-    let chunk = match tokio::time::timeout(deadline, guard.rx.recv()).await {
+    let chunk = match tokio::time::timeout(deadline, guard.recv()).await {
         Ok(Some(chunk)) => chunk,
         _ => Vec::new(),
     };
@@ -149,7 +178,7 @@ pub async fn workstudio_terminal_read(
     }
 
     while out.len() < max_bytes {
-        match guard.rx.try_recv() {
+        match guard.try_recv() {
             Ok(chunk) => {
                 out.extend_from_slice(&chunk);
             }
@@ -175,12 +204,16 @@ pub async fn workstudio_terminal_read_base64(
     let session = ensure_session_owned(&run_state, &workstudio_id, session_id).await?;
 
     // NOTE: This locks the session while waiting; keep timeouts short on the frontend.
-    let mut guard: MutexGuard<'_, PtySession> = session.lock().await;
+    let rx = {
+        let guard: MutexGuard<'_, PtySession> = session.lock().await;
+        Arc::clone(&guard.rx)
+    };
+    let mut guard = rx.lock().await;
 
     let mut out: Vec<u8> = Vec::new();
     let deadline = Duration::from_millis(timeout_ms.max(10));
 
-    let chunk = match tokio::time::timeout(deadline, guard.rx.recv()).await {
+    let chunk = match tokio::time::timeout(deadline, guard.recv()).await {
         Ok(Some(chunk)) => chunk,
         _ => Vec::new(),
     };
@@ -189,7 +222,7 @@ pub async fn workstudio_terminal_read_base64(
     }
 
     while out.len() < max_bytes {
-        match guard.rx.try_recv() {
+        match guard.try_recv() {
             Ok(chunk) => {
                 out.extend_from_slice(&chunk);
             }

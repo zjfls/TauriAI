@@ -133,8 +133,8 @@ pub struct PtySession {
     // 当前我们不需要调用 master 的方法，仅用于 keepalive。
     pub _master: Box<dyn portable_pty::MasterPty + Send>,
     pub child: Box<dyn portable_pty::Child + Send>,
-    pub writer: Option<Box<dyn Write + Send>>,
-    pub rx: mpsc::Receiver<Vec<u8>>,
+    pub writer: Arc<tokio::sync::Mutex<Option<Box<dyn Write + Send>>>>,
+    pub rx: Arc<tokio::sync::Mutex<mpsc::Receiver<Vec<u8>>>>,
 }
 
 impl Drop for PtySession {
@@ -191,6 +191,13 @@ impl PtyService {
         if let Some(dir) = workdir.as_ref() {
             cmd.cwd(dir);
         }
+        // Best-effort: hint to child processes that ANSI/truecolor is supported.
+        // This improves colored output for many CLIs (git/ls/pretty loggers).
+        cmd.env("TERM", "xterm-256color");
+        cmd.env("COLORTERM", "truecolor");
+        cmd.env("CLICOLOR", "1");
+        cmd.env("CLICOLOR_FORCE", "1");
+        cmd.env("FORCE_COLOR", "1");
 
         let child = pair
             .slave
@@ -229,8 +236,8 @@ impl PtyService {
         let session = Arc::new(Mutex::new(PtySession {
             _master: master,
             child,
-            writer: Some(writer),
-            rx,
+            writer: Arc::new(tokio::sync::Mutex::new(Some(writer))),
+            rx: Arc::new(tokio::sync::Mutex::new(rx)),
         }));
 
         let now_ms = Self::now_ms();

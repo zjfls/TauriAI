@@ -1,9 +1,9 @@
 import { create } from 'zustand';
 import { arrayMove } from '@dnd-kit/sortable';
 
-export type WorkspaceTabKind = 'chat' | 'document';
+export type WorkspaceTabKind = 'chat' | 'document' | 'web' | 'terminal';
 
-export type WorkspaceTabId = `chat:${string}` | `doc:${string}`;
+export type WorkspaceTabId = `chat:${string}` | `doc:${string}` | `web:${string}` | `term:${string}`;
 
 export interface WorkspaceTab {
   id: WorkspaceTabId;
@@ -11,18 +11,30 @@ export interface WorkspaceTab {
   // One of these will be set depending on kind.
   sessionId?: string;
   documentId?: string;
+  webTabId?: string;
+  terminalTabId?: string;
 }
 
 export const chatTabId = (sessionId: string): WorkspaceTabId => `chat:${sessionId}`;
 export const docTabId = (documentId: string): WorkspaceTabId => `doc:${documentId}`;
+export const webTabId = (webTabId: string): WorkspaceTabId => `web:${webTabId}`;
+export const terminalTabId = (terminalTabId: string): WorkspaceTabId => `term:${terminalTabId}`;
 
 export const parseWorkspaceTabId = (id: WorkspaceTabId): WorkspaceTab => {
   if (id.startsWith('chat:')) {
     const sessionId = id.slice('chat:'.length);
     return { id, kind: 'chat', sessionId };
   }
-  const documentId = id.slice('doc:'.length);
-  return { id, kind: 'document', documentId };
+  if (id.startsWith('doc:')) {
+    const documentId = id.slice('doc:'.length);
+    return { id, kind: 'document', documentId };
+  }
+  if (id.startsWith('web:')) {
+    const webId = id.slice('web:'.length);
+    return { id, kind: 'web', webTabId: webId };
+  }
+  const termId = id.slice('term:'.length);
+  return { id, kind: 'terminal', terminalTabId: termId };
 };
 
 const STORAGE_KEY = 'tauri-ai:workspace-tabs:v1';
@@ -36,9 +48,15 @@ interface WorkspaceTabState {
   upsertDocumentTab: (documentId: string) => void;
   removeDocumentTab: (documentId: string) => void;
 
+  upsertWebTab: (webTabId: string) => void;
+  removeWebTab: (webTabId: string) => void;
+
+  upsertTerminalTab: (terminalTabId: string) => void;
+  removeTerminalTab: (terminalTabId: string) => void;
+
   reorderTabs: (activeId: WorkspaceTabId, overId: WorkspaceTabId) => void;
   setTabOrder: (order: WorkspaceTabId[]) => void;
-  syncTabs: (chatSessionIds: string[], documentIds: string[]) => void;
+  syncTabs: (chatSessionIds: string[], documentIds: string[], webTabIds: string[], terminalTabIds: string[]) => void;
 }
 
 const loadInitialOrder = (): WorkspaceTabId[] => {
@@ -50,7 +68,7 @@ const loadInitialOrder = (): WorkspaceTabId[] => {
     // Best-effort validation: keep only known prefixes.
     return items
       .filter((s) => typeof s === 'string')
-      .filter((s) => s.startsWith('chat:') || s.startsWith('doc:')) as WorkspaceTabId[];
+      .filter((s) => s.startsWith('chat:') || s.startsWith('doc:') || s.startsWith('web:') || s.startsWith('term:')) as WorkspaceTabId[];
   } catch {
     return [];
   }
@@ -99,6 +117,38 @@ export const useWorkspaceTabStore = create<WorkspaceTabState>((set, get) => ({
     persistOrder(next);
   },
 
+  upsertWebTab: (webId) => {
+    const id = webTabId(webId);
+    const { tabOrder } = get();
+    if (tabOrder.includes(id)) return;
+    const next = [...tabOrder, id];
+    set({ tabOrder: next });
+    persistOrder(next);
+  },
+
+  removeWebTab: (webId) => {
+    const id = webTabId(webId);
+    const next = get().tabOrder.filter((t) => t !== id);
+    set({ tabOrder: next });
+    persistOrder(next);
+  },
+
+  upsertTerminalTab: (termId) => {
+    const id = terminalTabId(termId);
+    const { tabOrder } = get();
+    if (tabOrder.includes(id)) return;
+    const next = [...tabOrder, id];
+    set({ tabOrder: next });
+    persistOrder(next);
+  },
+
+  removeTerminalTab: (termId) => {
+    const id = terminalTabId(termId);
+    const next = get().tabOrder.filter((t) => t !== id);
+    set({ tabOrder: next });
+    persistOrder(next);
+  },
+
   reorderTabs: (activeId, overId) => {
     const { tabOrder } = get();
     const oldIndex = tabOrder.indexOf(activeId);
@@ -114,10 +164,12 @@ export const useWorkspaceTabStore = create<WorkspaceTabState>((set, get) => ({
     persistOrder(order);
   },
 
-  syncTabs: (chatSessionIds, documentIds) => {
+  syncTabs: (chatSessionIds, documentIds, webTabIds, terminalTabIds) => {
     const known = new Set<WorkspaceTabId>();
     for (const id of chatSessionIds) known.add(chatTabId(id));
     for (const id of documentIds) known.add(docTabId(id));
+    for (const id of webTabIds) known.add(webTabId(id));
+    for (const id of terminalTabIds) known.add(terminalTabId(id));
 
     const current = get().tabOrder;
     const next: WorkspaceTabId[] = [];

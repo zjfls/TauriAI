@@ -1455,6 +1455,7 @@ impl<'a> TurnLoop<'a> {
 
                         match decision {
                             ApprovalDecision::Abort => {
+                                let msg = "TOOL_ABORTED: 用户终止了工具审批".to_string();
                                 aborted_in_tools = Some("用户终止了工具审批".to_string());
                                 if let Some((status, reason)) = approval_record.take() {
                                     blocks.push(MessageBlock::Approval {
@@ -1468,6 +1469,38 @@ impl<'a> TurnLoop<'a> {
                                         reason,
                                     });
                                 }
+
+                                self.emitter.emit(RunEvent::BlockDelta {
+                                    task_id: self.task_id.clone(),
+                                    turn_id: turn_id.clone(),
+                                    assistant_message_id: Some(self.assistant_message_id.clone()),
+                                    block_id: format!("tool_result:{}", call.id),
+                                    block_type: "tool_result".to_string(),
+                                    format: Some("plain".to_string()),
+                                    delta: msg.clone(),
+                                });
+                                blocks.push(MessageBlock::ToolResult {
+                                    id: format!("{turn_id}:tool_result:{}", call.id),
+                                    turn_id: Some(turn_id.clone()),
+                                    turn_index: Some(turn_index),
+                                    call_id: call.id.clone(),
+                                    text: msg.clone(),
+                                });
+                                self.runtime_messages.push(Message {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    conversation_id: self.conversation_id.clone(),
+                                    role: MessageRole::Tool,
+                                    content: msg,
+                                    content_parts: Vec::new(),
+                                    thinking: None,
+                                    meta: Some(MessageMeta {
+                                        tool_call_id: Some(call.id.clone()),
+                                        ..Default::default()
+                                    }),
+                                    created_at: chrono::Utc::now(),
+                                    status: MessageStatus::Success,
+                                    error_message: None,
+                                });
                                 break;
                             }
                             ApprovalDecision::Denied => {
@@ -1591,6 +1624,7 @@ impl<'a> TurnLoop<'a> {
 
                                     match decision2 {
                                         ApprovalDecision::Abort => {
+                                            let msg = "TOOL_ABORTED: 用户终止了工具提权审批".to_string();
                                             aborted_in_tools =
                                                 Some("用户终止了工具提权审批".to_string());
                                             if let Some((status, reason)) = approval_record.take() {
@@ -1605,6 +1639,40 @@ impl<'a> TurnLoop<'a> {
                                                     reason,
                                                 });
                                             }
+
+                                            self.emitter.emit(RunEvent::BlockDelta {
+                                                task_id: self.task_id.clone(),
+                                                turn_id: turn_id.clone(),
+                                                assistant_message_id: Some(
+                                                    self.assistant_message_id.clone(),
+                                                ),
+                                                block_id: format!("tool_result:{}", call.id),
+                                                block_type: "tool_result".to_string(),
+                                                format: Some("plain".to_string()),
+                                                delta: msg.clone(),
+                                            });
+                                            blocks.push(MessageBlock::ToolResult {
+                                                id: format!("{turn_id}:tool_result:{}", call.id),
+                                                turn_id: Some(turn_id.clone()),
+                                                turn_index: Some(turn_index),
+                                                call_id: call.id.clone(),
+                                                text: msg.clone(),
+                                            });
+                                            self.runtime_messages.push(Message {
+                                                id: uuid::Uuid::new_v4().to_string(),
+                                                conversation_id: self.conversation_id.clone(),
+                                                role: MessageRole::Tool,
+                                                content: msg,
+                                                content_parts: Vec::new(),
+                                                thinking: None,
+                                                meta: Some(MessageMeta {
+                                                    tool_call_id: Some(call.id.clone()),
+                                                    ..Default::default()
+                                                }),
+                                                created_at: chrono::Utc::now(),
+                                                status: MessageStatus::Success,
+                                                error_message: None,
+                                            });
                                             break;
                                         }
                                         ApprovalDecision::Denied => {
@@ -1720,6 +1788,7 @@ impl<'a> TurnLoop<'a> {
                             Ok(v) => v.content,
                             Err(e) => {
                                 if e.kind == super::tools::registry::ToolErrorKind::Aborted {
+                                    let msg = format!("TOOL_ABORTED: {}", e.message);
                                     self.emitter.emit(RunEvent::BlockDelta {
                                         task_id: self.task_id.clone(),
                                         turn_id: turn_id.clone(),
@@ -1729,14 +1798,29 @@ impl<'a> TurnLoop<'a> {
                                         block_id: format!("tool_result:{}", call.id),
                                         block_type: "tool_result".to_string(),
                                         format: Some("plain".to_string()),
-                                        delta: format!("TOOL_ABORTED: {}", e.message),
+                                        delta: msg.clone(),
                                     });
                                     blocks.push(MessageBlock::ToolResult {
                                         id: format!("{turn_id}:tool_result:{}", call.id),
                                         turn_id: Some(turn_id.clone()),
                                         turn_index: Some(turn_index),
                                         call_id: call.id.clone(),
-                                        text: format!("TOOL_ABORTED: {}", e.message),
+                                        text: msg.clone(),
+                                    });
+                                    self.runtime_messages.push(Message {
+                                        id: uuid::Uuid::new_v4().to_string(),
+                                        conversation_id: self.conversation_id.clone(),
+                                        role: MessageRole::Tool,
+                                        content: msg,
+                                        content_parts: Vec::new(),
+                                        thinking: None,
+                                        meta: Some(MessageMeta {
+                                            tool_call_id: Some(call.id.clone()),
+                                            ..Default::default()
+                                        }),
+                                        created_at: chrono::Utc::now(),
+                                        status: MessageStatus::Success,
+                                        error_message: None,
                                     });
                                     aborted_in_tools = Some(e.message);
                                     break;
@@ -2330,7 +2414,7 @@ fn expand_persisted_blocks_for_model_input(messages: Vec<Message>) -> Vec<Messag
                 thinking,
                 meta: if has_tool_calls {
                     Some(MessageMeta {
-                        tool_calls: Some(bundle.tool_calls),
+                        tool_calls: Some(bundle.tool_calls.clone()),
                         ..Default::default()
                     })
                 } else {
@@ -2342,7 +2426,25 @@ fn expand_persisted_blocks_for_model_input(messages: Vec<Message>) -> Vec<Messag
             });
 
             if has_tool_calls {
+                let call_ids: HashSet<String> =
+                    bundle.tool_calls.iter().map(|c| c.id.clone()).collect();
+                let mut results_by_id: HashMap<String, String> = HashMap::new();
                 for (call_id, text) in bundle.tool_results {
+                    if !call_ids.contains(&call_id) {
+                        continue;
+                    }
+                    results_by_id.entry(call_id).or_insert(text);
+                }
+
+                // 严格模型要求：每个 tool_call_id 都必须有对应的 tool 输出。
+                // 对于历史数据里缺失的结果（例如审批被中断/工具异常未落库），这里补一个占位输出，避免请求直接失败。
+                for call in bundle.tool_calls {
+                    let text = results_by_id.remove(&call.id).unwrap_or_else(|| {
+                        format!(
+                            "TOOL_RESULT_MISSING: 未收到该工具调用的返回值（可能因审批中断/执行异常）。tool={} call_id={}",
+                            call.name, call.id
+                        )
+                    });
                     out.push(Message {
                         id: uuid::Uuid::new_v4().to_string(),
                         conversation_id: msg.conversation_id.clone(),
@@ -2351,7 +2453,7 @@ fn expand_persisted_blocks_for_model_input(messages: Vec<Message>) -> Vec<Messag
                         content_parts: Vec::new(),
                         thinking: None,
                         meta: Some(MessageMeta {
-                            tool_call_id: Some(call_id),
+                            tool_call_id: Some(call.id),
                             ..Default::default()
                         }),
                         created_at: created_at.clone(),
@@ -4571,5 +4673,114 @@ mod tests {
             TurnStreamResult::Error { content, .. } => assert_eq!(content, "he"),
             other => panic!("expected TurnStreamResult::Error, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn expand_persisted_blocks_should_fill_missing_tool_results() {
+        let assistant = crate::models::Message {
+            id: "a1".to_string(),
+            conversation_id: "c1".to_string(),
+            role: crate::models::MessageRole::Assistant,
+            content: "".to_string(),
+            content_parts: vec![],
+            thinking: None,
+            meta: Some(crate::models::MessageMeta {
+                blocks: Some(vec![crate::models::MessageBlock::ToolCall {
+                    id: "t1:tool_call:call_1".to_string(),
+                    turn_id: Some("t1".to_string()),
+                    turn_index: Some(1),
+                    call_id: "call_1".to_string(),
+                    name: "read_file".to_string(),
+                    arguments: "{\"file_path\":\"requirements.txt\"}".to_string(),
+                }]),
+                ..Default::default()
+            }),
+            created_at: chrono::Utc::now(),
+            status: crate::models::MessageStatus::Success,
+            error_message: None,
+        };
+
+        let out = expand_persisted_blocks_for_model_input(vec![assistant]);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].role, crate::models::MessageRole::Assistant);
+        let tool_calls = out[0]
+            .meta
+            .as_ref()
+            .and_then(|m| m.tool_calls.as_ref())
+            .expect("missing tool_calls");
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].id, "call_1");
+
+        assert_eq!(out[1].role, crate::models::MessageRole::Tool);
+        assert_eq!(
+            out[1].meta.as_ref().and_then(|m| m.tool_call_id.as_deref()),
+            Some("call_1")
+        );
+        assert!(
+            out[1].content.contains("TOOL_RESULT_MISSING"),
+            "unexpected tool content: {}",
+            out[1].content
+        );
+    }
+
+    #[test]
+    fn expand_persisted_blocks_should_preserve_tool_call_order() {
+        let assistant = crate::models::Message {
+            id: "a1".to_string(),
+            conversation_id: "c1".to_string(),
+            role: crate::models::MessageRole::Assistant,
+            content: "".to_string(),
+            content_parts: vec![],
+            thinking: None,
+            meta: Some(crate::models::MessageMeta {
+                blocks: Some(vec![
+                    crate::models::MessageBlock::ToolCall {
+                        id: "t1:tool_call:call_1".to_string(),
+                        turn_id: Some("t1".to_string()),
+                        turn_index: Some(1),
+                        call_id: "call_1".to_string(),
+                        name: "read_file".to_string(),
+                        arguments: "{}".to_string(),
+                    },
+                    crate::models::MessageBlock::ToolCall {
+                        id: "t1:tool_call:call_2".to_string(),
+                        turn_id: Some("t1".to_string()),
+                        turn_index: Some(1),
+                        call_id: "call_2".to_string(),
+                        name: "shell_command".to_string(),
+                        arguments: "{}".to_string(),
+                    },
+                    crate::models::MessageBlock::ToolResult {
+                        id: "t1:tool_result:call_2".to_string(),
+                        turn_id: Some("t1".to_string()),
+                        turn_index: Some(1),
+                        call_id: "call_2".to_string(),
+                        text: "ok".to_string(),
+                    },
+                ]),
+                ..Default::default()
+            }),
+            created_at: chrono::Utc::now(),
+            status: crate::models::MessageStatus::Success,
+            error_message: None,
+        };
+
+        let out = expand_persisted_blocks_for_model_input(vec![assistant]);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].role, crate::models::MessageRole::Assistant);
+
+        assert_eq!(out[1].role, crate::models::MessageRole::Tool);
+        assert_eq!(
+            out[1].meta.as_ref().and_then(|m| m.tool_call_id.as_deref()),
+            Some("call_1")
+        );
+        assert!(out[1].content.contains("TOOL_RESULT_MISSING"));
+
+        assert_eq!(out[2].role, crate::models::MessageRole::Tool);
+        assert_eq!(
+            out[2].meta.as_ref().and_then(|m| m.tool_call_id.as_deref()),
+            Some("call_2")
+        );
+        assert_eq!(out[2].content, "ok");
     }
 }

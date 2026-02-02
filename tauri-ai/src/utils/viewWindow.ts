@@ -1,6 +1,7 @@
 import { listen } from '@tauri-apps/api/event';
 import { WebviewWindow, getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
-import type { ActiveView } from '../types';
+import { cursorPosition } from '@tauri-apps/api/window';
+import type { ActiveView, RunMode } from '../types';
 
 type WorkstudioOpenPayload = {
   filePath: string;
@@ -17,12 +18,20 @@ type ChatDockRequestPayload = {
   conversationId: string;
   fromWindowLabel: string;
   placement: ChatDockPlacement;
+  runMode?: RunMode;
+  agentName?: string;
 };
 
 type ChatDockAckPayload = {
   requestId: string;
   ok: boolean;
   error?: string | null;
+};
+
+type PhysicalRect = { x: number; y: number; width: number; height: number };
+
+const pointInRect = (p: { x: number; y: number }, r: PhysicalRect) => {
+  return p.x >= r.x && p.y >= r.y && p.x <= r.x + r.width && p.y <= r.y + r.height;
 };
 
 const workstudioOpenSeqByLabel = new Map<string, number>();
@@ -34,6 +43,18 @@ const clearWorkstudioOpenTimers = (label: string) => {
     for (const id of timers) window.clearTimeout(id);
   }
   workstudioOpenTimersByLabel.delete(label);
+};
+
+const parseRunMode = (value: string | null): RunMode | null => {
+  switch (value) {
+    case 'chat':
+    case 'agent':
+    case 'agent-custom':
+    case 'agent-full-access':
+      return value;
+    default:
+      return null;
+  }
 };
 
 const scheduleWorkstudioOpenFile = async (
@@ -65,6 +86,8 @@ export interface ViewWindowParams {
   view?: ActiveView | null;
   standalone: boolean;
   conversationId?: string | null;
+  runMode?: RunMode | null;
+  agentName?: string | null;
   documentPath?: string | null;
   workstudioId?: string | null;
   filePath?: string | null;
@@ -80,6 +103,8 @@ export const getViewWindowParams = (): ViewWindowParams => {
       view: null,
       standalone: false,
       conversationId: null,
+      runMode: null,
+      agentName: null,
       documentPath: null,
       workstudioId: null,
       filePath: null,
@@ -93,6 +118,8 @@ export const getViewWindowParams = (): ViewWindowParams => {
   const view = params.get('view') as ActiveView | null;
   const standalone = params.get('standalone') === '1';
   const conversationId = params.get('conversationId');
+  const runMode = parseRunMode(params.get('runMode'));
+  const agentName = params.get('agentName');
   const documentPath = params.get('documentPath');
   const workstudioId = params.get('workstudioId');
   const filePath = params.get('filePath');
@@ -108,6 +135,8 @@ export const getViewWindowParams = (): ViewWindowParams => {
     view,
     standalone,
     conversationId,
+    runMode,
+    agentName,
     documentPath,
     workstudioId,
     filePath,
@@ -123,6 +152,8 @@ export const openViewWindow = (
   title: string,
   opts?: {
     conversationId?: string;
+    runMode?: RunMode;
+    agentName?: string;
     documentPath?: string;
     workstudioId?: string;
     filePath?: string;
@@ -139,6 +170,12 @@ export const openViewWindow = (
   params.set('standalone', '1');
   if (opts?.conversationId) {
     params.set('conversationId', opts.conversationId);
+  }
+  if (opts?.runMode) {
+    params.set('runMode', opts.runMode);
+  }
+  if (opts?.agentName) {
+    params.set('agentName', opts.agentName);
   }
   if (opts?.documentPath) {
     params.set('documentPath', opts.documentPath);
@@ -185,6 +222,8 @@ export const openOrFocusViewWindow = async (
   title: string,
   opts?: {
     conversationId?: string;
+    runMode?: RunMode;
+    agentName?: string;
     documentPath?: string;
     workstudioId?: string;
     filePath?: string;
@@ -228,6 +267,12 @@ export const openOrFocusViewWindow = async (
   if (opts?.conversationId) {
     params.set('conversationId', opts.conversationId);
   }
+  if (opts?.runMode) {
+    params.set('runMode', opts.runMode);
+  }
+  if (opts?.agentName) {
+    params.set('agentName', opts.agentName);
+  }
   if (opts?.documentPath) {
     params.set('documentPath', opts.documentPath);
   }
@@ -259,7 +304,11 @@ export const openOrFocusViewWindow = async (
   });
 };
 
-export const openOrFocusConversationChatWindow = async (conversationId: string, title: string) => {
+export const openOrFocusConversationChatWindow = async (
+  conversationId: string,
+  title: string,
+  opts?: { runMode?: RunMode; agentName?: string }
+) => {
   const label = `view-chat-${conversationId}`;
   try {
     const existing = await WebviewWindow.getByLabel(label);
@@ -271,7 +320,12 @@ export const openOrFocusConversationChatWindow = async (conversationId: string, 
     // ignore, will create new window
   }
 
-  const win = openViewWindow('chat', title, { conversationId, label });
+  const win = openViewWindow('chat', title, {
+    conversationId,
+    label,
+    runMode: opts?.runMode,
+    agentName: opts?.agentName,
+  });
   return { win, isExisting: false as const, label };
 };
 
@@ -310,6 +364,51 @@ export const listChatWindows = async (): Promise<ChatWindowInfo[]> => {
   }
 };
 
+export const findChatDockTargetAtCursor = async (): Promise<
+  | {
+      targetLabel: string;
+      placement: ChatDockPlacement;
+    }
+  | null
+> => {
+  const sourceLabel = (() => {
+    try {
+      return getCurrentWebviewWindow().label;
+    } catch {
+      return null;
+    }
+  })();
+
+  const cursor = await cursorPosition().catch(() => null);
+  if (!cursor) return null;
+
+  const cursorPoint = { x: cursor.x, y: cursor.y };
+
+  const candidates = await listChatWindows();
+
+  for (const w of candidates) {
+    if (sourceLabel && w.label === sourceLabel) continue;
+    const win = await WebviewWindow.getByLabel(w.label).catch(() => null);
+    if (!win) continue;
+
+    const [pos, size] = await Promise.all([
+      win.outerPosition().catch(() => null),
+      win.outerSize().catch(() => null),
+    ]);
+
+    if (!pos || !size) continue;
+    const rect: PhysicalRect = { x: pos.x, y: pos.y, width: size.width, height: size.height };
+    if (!pointInRect(cursorPoint, rect)) continue;
+
+    const ratioX = rect.width > 0 ? (cursorPoint.x - rect.x) / rect.width : 0.5;
+    const placement: ChatDockPlacement = ratioX <= 0.25 ? 'split-left' : ratioX >= 0.75 ? 'split-right' : 'tab';
+
+    return { targetLabel: w.label, placement };
+  }
+
+  return null;
+};
+
 export const emitToWindowLabel = async (label: string, eventName: string, payload: unknown): Promise<boolean> => {
   try {
     const win = await WebviewWindow.getByLabel(label);
@@ -324,7 +423,8 @@ export const emitToWindowLabel = async (label: string, eventName: string, payloa
 export const dockConversationToWindow = async (
   conversationId: string,
   targetLabel: string,
-  placement: ChatDockPlacement = 'tab'
+  placement: ChatDockPlacement = 'tab',
+  opts?: { runMode?: RunMode; agentName?: string }
 ): Promise<void> => {
   const sourceLabel = getCurrentWebviewWindow().label;
   const target = await WebviewWindow.getByLabel(targetLabel);
@@ -342,6 +442,8 @@ export const dockConversationToWindow = async (
     conversationId,
     fromWindowLabel: sourceLabel,
     placement,
+    runMode: opts?.runMode,
+    agentName: opts?.agentName,
   };
 
   const delaysMs = [0, 60, 180, 420, 900];

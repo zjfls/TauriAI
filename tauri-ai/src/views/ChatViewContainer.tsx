@@ -15,7 +15,7 @@ import { ChatView } from '../components/Chat/ChatView';
 import { PaneHeader } from '../components/Chat/PaneHeader';
 import { useSessionStore, type SessionPane } from '../stores/sessionStore';
 import { endChatOpenProfile, getActiveChatOpenProfile, markChatOpenProfile } from '../utils/chatOpenProfile';
-import { openOrFocusConversationChatWindow } from '../utils/viewWindow';
+import { findChatDockTargetAtCursor, openOrFocusConversationChatWindow } from '../utils/viewWindow';
 
 const MemoChatView = React.memo(ChatView);
 MemoChatView.displayName = 'MemoChatView';
@@ -134,8 +134,50 @@ const ChatViewContainerInner: React.FC = () => {
             },
           ];
 
-    const valid = base.filter((p) => p.sessionIds.some((sid) => sessionsMap.has(sid)));
-    return valid.length > 0 ? valid : base;
+    // 注意：不能把空 pane 直接过滤掉，否则把唯一 tab 拖到分屏时（尤其是独立窗口），
+    // 会留下「空 pane + 新 pane」，渲染层过滤空 pane 会导致看起来像“无法分屏”。
+    const assigned = new Set<string>();
+    const next: SessionPane[] = base.map((p) => {
+      const sessionIds = (p.sessionIds ?? []).filter((sid) => {
+        if (!sessionsMap.has(sid)) return false;
+        if (assigned.has(sid)) return false;
+        assigned.add(sid);
+        return true;
+      });
+
+      const activeSessionId =
+        p.activeSessionId && sessionIds.includes(p.activeSessionId) ? p.activeSessionId : sessionIds[0] ?? null;
+
+      return {
+        ...p,
+        sessionIds,
+        activeSessionId,
+        weight: Number.isFinite(p.weight) && p.weight > 0 ? p.weight : 1,
+      };
+    });
+
+    // 兜底：如果存在未归属的 session，把它们补到第一个 pane，避免“有 session 但界面没有任何 tab”。
+    const unassigned: string[] = [];
+    for (const sid of sessionsMap.keys()) {
+      if (!assigned.has(sid)) unassigned.push(sid);
+    }
+    if (unassigned.length > 0) {
+      const first = next[0] ?? {
+        id: fallbackPaneIdRef.current,
+        sessionIds: [],
+        activeSessionId: null,
+        weight: 1,
+      };
+      const mergedIds = [...first.sessionIds, ...unassigned];
+      next[0] = {
+        ...first,
+        sessionIds: mergedIds,
+        activeSessionId: first.activeSessionId ?? unassigned[0] ?? null,
+        weight: Number.isFinite(first.weight) && first.weight > 0 ? first.weight : 1,
+      };
+    }
+
+    return next.length > 0 ? next : base;
   }, [panes, sessionsMap]);
 
   const sessionsById = useMemo(() => {
@@ -389,8 +431,21 @@ const ChatViewContainerInner: React.FC = () => {
       }
 
       void (async () => {
+        const dockTarget = await findChatDockTargetAtCursor().catch(() => null);
+        if (dockTarget) {
+          try {
+            await useSessionStore.getState().dockSessionToWindow(activeId, dockTarget.targetLabel, dockTarget.placement);
+            return;
+          } catch (err) {
+            console.warn('Failed to dock chat window via drag-drop, fallback to popout:', err);
+          }
+        }
+
         try {
-          const { win, isExisting } = await openOrFocusConversationChatWindow(session.conversationId!, session.title);
+          const { win, isExisting } = await openOrFocusConversationChatWindow(session.conversationId!, session.title, {
+            runMode: session.runMode,
+            agentName: session.agentName,
+          });
           if (isExisting) {
             void closeSession(activeId);
             return;

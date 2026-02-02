@@ -248,7 +248,10 @@ export interface SessionState {
   restoreSessionState: () => Promise<void>;
 
   // History
-  openHistoricalConversation: (conversationId: string) => Promise<string>;
+  openHistoricalConversation: (
+    conversationId: string,
+    opts?: { agentName?: string; runMode?: RunMode }
+  ) => Promise<string>;
   /** 克隆当前会话对应的对话，并在同一 Pane 新建一个 tab 打开 */
   cloneConversation: (sessionId: string) => Promise<string>;
 
@@ -534,7 +537,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       throw new Error('对话尚未初始化，无法停靠');
     }
 
-    await dockConversationToWindow(session.conversationId, targetWindowLabel, placement);
+    await dockConversationToWindow(session.conversationId, targetWindowLabel, placement, {
+      runMode: session.runMode,
+      agentName: session.agentName,
+    });
     await get().closeSession(sessionId);
 
     if (isStandaloneWindow() && get().sessions.size === 0) {
@@ -2142,7 +2148,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
       // 让全局 tabOrder（用于文档/历史）保持整洁：移除不存在的 chat
       if (canUseSharedWorkspaceTabs) {
-        useWorkspaceTabStore.getState().syncTabs(allSessionIds, useDocumentStore.getState().documents.map((d) => d.id));
+        useWorkspaceTabStore
+          .getState()
+          .syncTabs(allSessionIds, useDocumentStore.getState().documents.map((d) => d.id), [], []);
       }
 
       if (storedVersion !== PERSISTENCE_VERSION) {
@@ -2157,7 +2165,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   * Open a historical conversation in a new session
   * Requirements: 8.1, 8.2, 8.3, 8.4
   */
-  openHistoricalConversation: async (conversationId: string) => {
+  openHistoricalConversation: async (conversationId: string, opts?: { agentName?: string; runMode?: RunMode }) => {
     markChatOpenProfile('sessionStore:openHistoricalConversation:enter', { conversationId });
     requestConversationScrollToBottomOnce(conversationId);
     const { sessions } = get();
@@ -2165,6 +2173,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // Check if already open
     for (const session of sessions.values()) {
       if (session.conversationId === conversationId) {
+        if (opts?.runMode && session.runMode !== opts.runMode) {
+          get().setSessionRunMode(session.id, opts.runMode);
+        }
         setChatOpenProfileTarget({ conversationId, sessionId: session.id });
         markChatOpenProfile('sessionStore:openHistoricalConversation:already_open', {
           conversationId,
@@ -2189,15 +2200,20 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const conversations = useConversationStore.getState().conversations;
     const conversation = conversations.find(c => c.id === conversationId);
 
-    // Get agent name from conversation or use default
+    // Get agent name from conversation or use default (allow override from window docking/popout)
     const { useConfigStore } = await import('./configStore');
     const config = useConfigStore.getState().config;
-    let agentName = conversation?.agentName || config?.defaultAgent || '';
 
-    // Validate agent exists
-    const availableAgents = config?.agents?.map(a => a.name) || [];
+    const availableAgents = config?.agents?.map((a) => a.name) || [];
+    const defaultAgent = config?.defaultAgent || availableAgents[0] || '';
+
+    let agentName = conversation?.agentName || defaultAgent || '';
+    const requestedAgentName = (opts?.agentName ?? '').trim();
+    if (requestedAgentName && availableAgents.includes(requestedAgentName)) {
+      agentName = requestedAgentName;
+    }
     if (!availableAgents.includes(agentName)) {
-      agentName = config?.defaultAgent || availableAgents[0] || '';
+      agentName = defaultAgent;
     }
 
     const agent = useConfigStore.getState().getAgent(agentName);
@@ -2208,7 +2224,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     const agentType = agent?.type ?? 'chat';
     const workspaceEnabled = agentType === 'tool' && (agent?.workspaceSupport ?? true);
-    const runMode: RunMode = agentType === 'tool' ? 'agent' : 'chat';
+    const defaultRunMode: RunMode = agentType === 'tool' ? 'agent' : 'chat';
+    const runMode: RunMode = opts?.runMode ?? defaultRunMode;
 
     let resolvedWorkstudioId: string | null = conversation?.workstudioId ?? null;
     if (workspaceEnabled) {
@@ -2395,6 +2412,8 @@ type ChatDockRequestPayload = {
   conversationId: string;
   fromWindowLabel: string;
   placement?: ChatDockPlacement;
+  runMode?: RunMode;
+  agentName?: string;
 };
 
 const pendingStreamChunksBySessionId = new Map<string, PendingStreamChunks>();
@@ -2844,7 +2863,10 @@ export const initStreamListeners = async () => {
           const basePaneId = state.focusedPaneId ?? state.panes?.[0]?.id ?? null;
           const placement: ChatDockPlacement = payload.placement ?? 'tab';
 
-          const sessionId = await state.openHistoricalConversation(payload.conversationId);
+          const sessionId = await state.openHistoricalConversation(payload.conversationId, {
+            agentName: payload.agentName,
+            runMode: payload.runMode,
+          });
 
           if (placement !== 'tab' && basePaneId) {
             const direction = placement === 'split-left' ? 'left' : 'right';

@@ -9,7 +9,8 @@ interface StandaloneLayoutProps {
 
 export const StandaloneLayout: React.FC<StandaloneLayoutProps> = ({ title, children }) => {
   const params = getViewWindowParams();
-  const showHeader = params.view !== 'workstudio';
+  // Chat/Document/Workstudio 都有各自的顶部栏（或依赖原生标题栏），避免重复再渲染一层 “TauriAI + 关闭” 的 header。
+  const showHeader = params.view !== 'workstudio' && params.view !== 'chat' && params.view !== 'document';
 
   if (!showHeader) {
     return <div className="h-screen w-screen overflow-hidden bg-gray-50 dark:bg-gray-900">{children}</div>;

@@ -27,12 +27,13 @@ import { Bot, ChevronDown, FileText, Loader2, Menu, MessageSquare, History, Sett
 import type { Agent, AgentSession } from '../../types';
 import { useDocumentStore } from '../../stores/documentStore';
 import { useUIStore } from '../../stores/uiStore';
+import { useSessionStore } from '../../stores/sessionStore';
 import {
   parseWorkspaceTabId,
   useWorkspaceTabStore,
   type WorkspaceTabId,
 } from '../../stores/workspaceTabStore';
-import { openViewWindow } from '../../utils/viewWindow';
+import { findChatDockTargetAtCursor, openViewWindow } from '../../utils/viewWindow';
 import { WorkspaceTabContextMenu } from './WorkspaceTabContextMenu';
 
 interface WorkspaceTabBarProps {
@@ -265,7 +266,9 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
   useEffect(() => {
     syncTabs(
       sessions.map((s) => s.id),
-      documents.map((d) => d.id)
+      documents.map((d) => d.id),
+      [],
+      []
     );
   }, [sessions, documents, syncTabs]);
 
@@ -320,7 +323,13 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
         await onPopoutSession(session.id);
       } else {
         const conversationId = session.conversationId ?? undefined;
-        openViewWindow('chat', session.title, conversationId ? { conversationId } : undefined);
+        openViewWindow(
+          'chat',
+          session.title,
+          conversationId
+            ? { conversationId, runMode: session.runMode, agentName: session.agentName }
+            : undefined
+        );
         await onTabClose(session.id);
       }
       return;
@@ -413,6 +422,19 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
     lastDragPointRef.current = null;
 
     if (shouldTearOff) {
+      const parsed = parseWorkspaceTabId(activeId);
+      if (parsed.kind === 'chat' && parsed.sessionId) {
+        const dockTarget = await findChatDockTargetAtCursor().catch(() => null);
+        if (dockTarget) {
+          try {
+            await useSessionStore.getState().dockSessionToWindow(parsed.sessionId, dockTarget.targetLabel, dockTarget.placement);
+            return;
+          } catch (err) {
+            console.warn('Failed to dock chat tab via drag-drop, fallback to popout:', err);
+          }
+        }
+      }
+
       await popoutTab(activeId);
       return;
     }

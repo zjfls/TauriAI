@@ -121,7 +121,10 @@ const SortableTab: React.FC<{
                 return;
               }
               try {
-                const { win, isExisting } = await openOrFocusConversationChatWindow(session.conversationId, session.title);
+                const { win, isExisting } = await openOrFocusConversationChatWindow(session.conversationId, session.title, {
+                  runMode: session.runMode,
+                  agentName: session.agentName,
+                });
                 if (isExisting) {
                   onClose();
                   return;

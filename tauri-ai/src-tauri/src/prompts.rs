@@ -166,14 +166,34 @@ pub const APPLY_PATCH_TOOL_PROMPT: &str = r#"
 
 ## 文件编辑（apply_patch）
 
-使用 apply_patch 工具来编辑文件（绝不要尝试 applypatch 或 apply-patch，只用 apply_patch）。
+当需要创建/修改/删除项目文件时，优先使用 `apply_patch` 工具（不要写 `applypatch` 或 `apply-patch`）。
 
-注意：本项目的 `apply_patch` 工具参数是 JSON：`{ "input": "…补丁正文…" }`（不要使用 `{"command":[…]}` 这种命令数组形式）。
+### 调用方式（重要）
+`apply_patch` 的参数是一个 JSON 对象，并且必须包含 `input` 字段：`{ "input": "…补丁正文…" }`。
 
-示例：
+### 补丁格式（必须严格遵守）
+`input` 中放入一段纯文本补丁，规则如下：
+- 必须以 `*** Begin Patch` 开头，以 `*** End Patch` 结尾
+- 文件操作头（只能用以下几种）：
+  - `*** Add File: <path>` 新建文件（后续每一行都必须以 `+` 开头）
+  - `*** Update File: <path>` 修改文件（用 `+/-/ ` 表示新增/删除/保持不变）
+  - `*** Delete File: <path>` 删除文件
+  - 可选：在 `*** Update File` 后用 `*** Move to: <new_path>` 实现重命名/移动
+- 变更块头 `@@ ...`：
+  - 推荐：`@@ <必须精确匹配的原文行>`（更稳定）
+  - 兼容：统一 diff 头 `@@ -a,b +c,d @@ heading`（heading 可能是“软提示”，不保证逐字匹配）
+- 变更行前缀（`*** Update File` 内）：
+  - `+` 新增行
+  - `-` 删除行
+  - 空格开头（` `）原样保留行
+  - 可选的 `*** End of File` 只能出现在某个 Update 变更块末尾
+
+### 例子
 { "input": "*** Begin Patch\\n*** Update File: path/to/file.py\\n@@ def example():\\n- pass\\n+ return 123\\n*** End Patch" }
 
-（Codex CLI 文档里常见的写法，与你当前工具参数不同，仅供参考：{"command":["apply_patch","*** Begin Patch\\n*** Update File: path/to/file.py\\n@@ def example():\\n- pass\\n+ return 123\\n*** End Patch"]}）
+### 路径与安全
+- 优先使用相对路径（相对当前工作区/默认工作目录）。
+- 绝对路径只有在确有必要时才使用，并且必须落在允许写入的目录范围内，否则会被拒绝。
 "#;
 
 /// Prompt guide for the hidden local web search tool (`web_search`).

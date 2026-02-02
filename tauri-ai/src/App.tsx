@@ -30,6 +30,8 @@ function App() {
   const viewOverride = windowParams.view;
   const isStandalone = windowParams.standalone;
   const conversationIdOverride = windowParams.conversationId;
+  const agentNameOverride = windowParams.agentName;
+  const runModeOverride = windowParams.runMode;
   const documentPathOverride = windowParams.documentPath;
   // Standalone non-chat views should not start/restore chat sessions or stream listeners.
   // Otherwise opening a "文本/导图" window can create or mutate chat sessions unexpectedly.
@@ -288,7 +290,10 @@ function App() {
           console.warn('Failed to load conversations for standalone chat:', err);
         }
         try {
-          await openHistoricalConversation(conversationIdOverride);
+          await openHistoricalConversation(conversationIdOverride, {
+            agentName: agentNameOverride ?? undefined,
+            runMode: runModeOverride ?? undefined,
+          });
         } catch (err) {
           console.error('Failed to open conversation in standalone chat:', err);
         }
@@ -328,6 +333,8 @@ function App() {
     isStandalone,
     viewOverride,
     conversationIdOverride,
+    agentNameOverride,
+    runModeOverride,
     loadConversations,
   ]);
 
