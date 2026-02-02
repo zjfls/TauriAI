@@ -617,6 +617,34 @@ export const MarkdownRenderer = React.memo(function MarkdownRendererImpl({ conte
 
   // Memoize components object to prevent recreation on each render
 	  const components = useMemo(() => ({
+    a: ({ href, children, ...props }: any) => {
+      const hrefStr = typeof href === 'string' ? href : '';
+      const fileRef = hrefStr ? parseFileReferenceToken(hrefStr) : null;
+      const canOpen = Boolean(fileRef) && isTauriRuntime() && Boolean(conversationId || workstudioId);
+
+      if (!canOpen) {
+        return (
+          <a href={hrefStr} {...props}>
+            {children}
+          </a>
+        );
+      }
+
+      return (
+        <a
+          href={hrefStr}
+          {...props}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (!fileRef) return;
+            void openFileReference(fileRef);
+          }}
+        >
+          {children}
+        </a>
+      );
+    },
     code({ inline, className, children, ...props }: any) {
       const match = /language-(\w+)/.exec(className || '');
       const language = match?.[1] || '';
