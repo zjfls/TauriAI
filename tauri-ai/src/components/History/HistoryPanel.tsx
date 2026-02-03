@@ -5,15 +5,27 @@
  */
 
 import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
-import { ArrowLeft, MessageSquare, Trash2, Edit2, Check, X, Plus } from 'lucide-react';
+import { ArrowLeft, MessageSquare, Trash2, Edit2, Check, X, Plus, Folder } from 'lucide-react';
 import { useShallow } from 'zustand/shallow';
 import { useConversationStore } from '../../stores/conversationStore';
 import { useSessionStore } from '../../stores/sessionStore';
 import { useConfigStore } from '../../stores/configStore';
 import { useUIStore } from '../../stores/uiStore';
-import type { Conversation } from '../../types';
+import type { Conversation, Workstudio } from '../../types';
 import { markChatOpenProfile, setChatOpenProfileTarget, startChatOpenProfile } from '../../utils/chatOpenProfile';
 import { collectOpenConversationIdsFromPresence, subscribeWindowPresenceChanges } from '../../utils/windowPresence';
+
+const isTauriRuntime = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  const w = window as any;
+  return Boolean(w.__TAURI_INTERNALS__ || w.__TAURI__);
+};
+
+const basenameForDisplay = (p: string): string => {
+  const normalized = p.replace(/\\/g, '/');
+  const parts = normalized.split('/').filter(Boolean);
+  return parts[parts.length - 1] || p;
+};
 
 /**
  * Format date for display
@@ -84,6 +96,7 @@ interface ConversationItemProps {
   isActive: boolean;
   isOpen: boolean;
   isSelected: boolean;
+  workstudioMainFolder?: string | null;
   onMouseDown?: (e: React.MouseEvent) => void;
   onSelect: (e: React.MouseEvent) => void;
   onDelete: () => void;
@@ -95,6 +108,7 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
   isActive,
   isOpen,
   isSelected,
+  workstudioMainFolder,
   onMouseDown,
   onSelect,
   onDelete,
@@ -219,22 +233,37 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
                    Turn {conversation.turnCount}
                  </span>
                )}
-               {isOpen && (
-                 <span
-                   className={`inline-flex items-center px-1.5 py-0.5 text-xs rounded font-medium ${
-                     isActive
-                       ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200'
-                       : 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-200'
-                   }`}
-                 >
-                   {isActive ? '当前' : '已打开'}
-                 </span>
-               )}
-               {conversation.agentName && (
-                 <span className="inline-flex items-center px-1.5 py-0.5 text-xs rounded bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400">
-                   {config?.agents?.find(a => a.name === conversation.agentName)?.displayName || conversation.agentName}
-                 </span>
-               )}
+                {isOpen && (
+                  <span
+                    className={`inline-flex items-center px-1.5 py-0.5 text-xs rounded font-medium ${
+                      isActive
+                        ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200'
+                        : 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-200'
+                    }`}
+                  >
+                    {isActive ? '当前' : '已打开'}
+                  </span>
+                )}
+                {conversation.workstudioId && (
+                  <span
+                    className="inline-flex items-center gap-1 px-1.5 py-0.5 text-xs rounded bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300 truncate max-w-[220px]"
+                    title={
+                      workstudioMainFolder?.trim()
+                        ? `工作区：${workstudioMainFolder}`
+                        : `工作区：${conversation.workstudioId}`
+                    }
+                  >
+                    <Folder size={12} className="shrink-0" />
+                    <span className="truncate">
+                      {workstudioMainFolder?.trim() ? `工作区 ${basenameForDisplay(workstudioMainFolder)}` : '工作区'}
+                    </span>
+                  </span>
+                )}
+                {conversation.agentName && (
+                  <span className="inline-flex items-center px-1.5 py-0.5 text-xs rounded bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400">
+                    {config?.agents?.find(a => a.name === conversation.agentName)?.displayName || conversation.agentName}
+                  </span>
+                )}
               {conversation.modelRef && (
                 <span className="inline-flex items-center px-1.5 py-0.5 text-xs rounded bg-green-100 text-green-600 dark:bg-green-900/40 dark:text-green-400 truncate max-w-[120px]" title={conversation.modelRef}>
                   {conversation.modelRef.split('/').pop()}
@@ -328,6 +357,53 @@ export const HistoryPanel: React.FC = () => {
   const [lastSelectedIndex, setLastSelectedIndex] = useState<number | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [showBatchDeleteConfirm, setShowBatchDeleteConfirm] = useState(false);
+
+  const [workstudioMainFolderById, setWorkstudioMainFolderById] = useState<Record<string, string>>({});
+  useEffect(() => {
+    const uniqueIds = new Set<string>();
+    for (const c of conversations) {
+      const id = (c.workstudioId ?? '').trim();
+      if (id) uniqueIds.add(id);
+    }
+
+    const missing = Array.from(uniqueIds).filter((id) => !(id in workstudioMainFolderById));
+    if (missing.length === 0) return;
+
+    let cancelled = false;
+
+    (async () => {
+      const updates: Record<string, string> = {};
+
+      if (!isTauriRuntime()) {
+        for (const id of missing) updates[id] = id;
+        if (!cancelled) setWorkstudioMainFolderById((prev) => ({ ...prev, ...updates }));
+        return;
+      }
+
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        await Promise.all(
+          missing.map(async (id) => {
+            try {
+              const ws = await invoke<Workstudio | null>('get_workstudio', { workstudioId: id });
+              const mainFolder = (ws?.mainFolder ?? '').trim();
+              updates[id] = mainFolder || id;
+            } catch {
+              updates[id] = id;
+            }
+          })
+        );
+      } catch {
+        for (const id of missing) updates[id] = id;
+      }
+
+      if (!cancelled) setWorkstudioMainFolderById((prev) => ({ ...prev, ...updates }));
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [conversations, workstudioMainFolderById]);
 
   const modifierSnapshotRef = useRef<{ ctrl: boolean; shift: boolean } | null>(null);
 
@@ -553,17 +629,20 @@ export const HistoryPanel: React.FC = () => {
           </div>
         ) : (
           conversations.map((conversation, index) => (
-            <ConversationItem
-              key={conversation.id}
-              conversation={conversation}
-              isActive={conversation.id === currentConversationId}
-              isOpen={openConversationIds.has(conversation.id)}
-              isSelected={selectedIds.has(conversation.id)}
-              onMouseDown={handleItemMouseDown}
-              onSelect={(e) => handleItemClick(e, conversation, index)}
-              onDelete={() => handleDeleteConversation(conversation.id)}
-              onRename={(newTitle) => handleRenameConversation(conversation.id, newTitle)}
-            />
+              <ConversationItem
+                key={conversation.id}
+                conversation={conversation}
+                isActive={conversation.id === currentConversationId}
+                isOpen={openConversationIds.has(conversation.id)}
+                isSelected={selectedIds.has(conversation.id)}
+                workstudioMainFolder={
+                  conversation.workstudioId ? workstudioMainFolderById[conversation.workstudioId] ?? null : null
+                }
+                onMouseDown={handleItemMouseDown}
+                onSelect={(e) => handleItemClick(e, conversation, index)}
+                onDelete={() => handleDeleteConversation(conversation.id)}
+                onRename={(newTitle) => handleRenameConversation(conversation.id, newTitle)}
+              />
           ))
         )}
       </div>
