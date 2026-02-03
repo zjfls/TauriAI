@@ -64,6 +64,13 @@ const WorkspacePaneView: React.FC<{
   const activeTabId =
     pane.activeTabId && pane.tabIds.includes(pane.activeTabId) ? pane.activeTabId : pane.tabIds[0] ?? null;
 
+  useEffect(() => {
+    // 当 pane 内没有任何可渲染的 tab 时（例如关闭/拖走了最后一个 tab），自动销毁该 pane。
+    if (pane.tabIds.length > 0) return;
+    if (!canClosePane) return;
+    onClosePane();
+  }, [canClosePane, onClosePane, pane.tabIds.length]);
+
   const renderTab = (tabId: WorkspaceTabId) => {
     const parsed = parseWorkspaceTabId(tabId);
     if (parsed.kind === 'chat') {
@@ -817,4 +824,3 @@ const ChatViewContainerInner: React.FC = () => {
 // 避免主视图切换（activeView 改变）导致 ChatViewContainer 重渲染
 export const ChatViewContainer = React.memo(ChatViewContainerInner);
 ChatViewContainer.displayName = 'ChatViewContainer';
-

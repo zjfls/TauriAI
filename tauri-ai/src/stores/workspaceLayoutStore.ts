@@ -54,6 +54,52 @@ const ensureAtLeastOnePane = (panes: WorkspacePane[]): WorkspacePane[] => {
   ];
 };
 
+const compactEmptyPanes = (
+  panes: WorkspacePane[],
+  focusedPaneId: string | null
+): { panes: WorkspacePane[]; focusedPaneId: string | null } => {
+  let nextFocusedPaneId = focusedPaneId;
+  let nextPanes = panes.map((p) => ({
+    ...p,
+    tabIds: [...p.tabIds],
+    weight: Number.isFinite(p.weight) && p.weight > 0 ? p.weight : 1,
+  }));
+
+  nextPanes = ensureAtLeastOnePane(nextPanes);
+
+  // Remove empty panes if there is at least one other pane.
+  for (let i = 0; i < nextPanes.length && nextPanes.length > 1; ) {
+    const pane = nextPanes[i]!;
+    if (pane.tabIds.length > 0) {
+      i++;
+      continue;
+    }
+
+    const closingWeight = Number.isFinite(pane.weight) && pane.weight > 0 ? pane.weight : 1;
+    const targetIdx = i < nextPanes.length - 1 ? i + 1 : i - 1;
+    const target = nextPanes[targetIdx]!;
+    target.weight = (Number.isFinite(target.weight) && target.weight > 0 ? target.weight : 1) + closingWeight;
+
+    if (nextFocusedPaneId === pane.id) nextFocusedPaneId = target.id;
+    nextPanes.splice(i, 1);
+  }
+
+  nextPanes = ensureAtLeastOnePane(nextPanes).map((p) => {
+    const active = p.activeTabId && p.tabIds.includes(p.activeTabId) ? p.activeTabId : p.tabIds[0] ?? null;
+    return {
+      ...p,
+      activeTabId: active,
+      weight: Number.isFinite(p.weight) && p.weight > 0 ? p.weight : 1,
+    };
+  });
+
+  if (!nextFocusedPaneId || !nextPanes.some((p) => p.id === nextFocusedPaneId)) {
+    nextFocusedPaneId = nextPanes[0]!.id;
+  }
+
+  return { panes: normalizePaneWeights(nextPanes), focusedPaneId: nextFocusedPaneId };
+};
+
 const isWorkspaceTabIdString = (s: unknown): s is WorkspaceTabId => {
   return (
     typeof s === 'string' &&
@@ -100,7 +146,7 @@ const loadInitialLayout = (): { panes: WorkspacePane[]; focusedPaneId: string | 
       .filter((p): p is WorkspacePane => p !== null);
 
     const focusedPaneId = typeof parsed?.focusedPaneId === 'string' ? (parsed?.focusedPaneId as string) : null;
-    return { panes: normalizePaneWeights(ensureAtLeastOnePane(panes)), focusedPaneId };
+    return compactEmptyPanes(panes, focusedPaneId);
   } catch {
     return { panes: ensureAtLeastOnePane([]), focusedPaneId: null };
   }
@@ -237,28 +283,11 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>((set, get) =
             pane.activeTabId =
               pane.tabIds.length > 0 ? pane.tabIds[Math.min(removedIndexInPane, pane.tabIds.length - 1)]! : null;
           }
-          if (pane.tabIds.length === 0 && nextPanes.length > 1) {
-            nextPanes.splice(removedPaneIndex, 1);
-          }
         }
 
-        const finalized = ensureAtLeastOnePane(nextPanes).map((p) => {
-          if (p.activeTabId && !p.tabIds.includes(p.activeTabId)) {
-            return { ...p, activeTabId: p.tabIds[0] ?? null };
-          }
-          if (!p.activeTabId && p.tabIds.length > 0) {
-            return { ...p, activeTabId: p.tabIds[0]! };
-          }
-          return p;
-        });
+        const compacted = compactEmptyPanes(nextPanes, state.focusedPaneId ?? null);
 
-        let focusedPaneId = state.focusedPaneId;
-        if (!focusedPaneId || !finalized.some((p) => p.id === focusedPaneId)) {
-          const fallbackIndex = removedPaneIndex >= 0 ? Math.min(removedPaneIndex, finalized.length - 1) : 0;
-          focusedPaneId = finalized[fallbackIndex]!.id;
-        }
-
-        const next = { panes: normalizePaneWeights(finalized), focusedPaneId };
+        const next = { panes: compacted.panes, focusedPaneId: compacted.focusedPaneId };
         persistLayout(next);
         return next;
       });
@@ -306,9 +335,10 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>((set, get) =
 
         // 移除空 pane（只要还有其它 pane）
         let compacted = nextPanes.filter((p) => p.tabIds.length > 0 || nextPanes.length === 1);
-        compacted = ensureAtLeastOnePane(compacted);
+        const compactedState = compactEmptyPanes(nextPanes, target.id);
+        compacted = compactedState.panes;
 
-        const next = { panes: normalizePaneWeights(compacted), focusedPaneId: target.id };
+        const next = { panes: compacted, focusedPaneId: compactedState.focusedPaneId };
         persistLayout(next);
         return next;
       });
@@ -324,8 +354,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>((set, get) =
           tabIds: [...p.tabIds].filter((id) => id !== tabId),
         }));
 
-        nextPanes = nextPanes.filter((p) => p.tabIds.length > 0 || nextPanes.length === 1);
-        nextPanes = ensureAtLeastOnePane(nextPanes);
+        nextPanes = compactEmptyPanes(nextPanes, state.focusedPaneId ?? null).panes;
 
         const targetIndex = Math.max(0, nextPanes.findIndex((p) => p.id === targetPaneId));
         const target = nextPanes[targetIndex] ?? nextPanes[0]!;
@@ -414,8 +443,9 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>((set, get) =
     },
 
     replaceLayout: (next) => {
-      set({ panes: next.panes, focusedPaneId: next.focusedPaneId });
-      persistLayout(next);
+      const compacted = compactEmptyPanes(next.panes, next.focusedPaneId ?? null);
+      set({ panes: compacted.panes, focusedPaneId: compacted.focusedPaneId });
+      persistLayout(compacted);
     },
   };
 });
