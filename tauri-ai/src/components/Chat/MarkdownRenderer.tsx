@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
@@ -12,7 +12,7 @@ import rehypeKatex from 'rehype-katex';
 import rehypeRaw from 'rehype-raw';
 import DOMPurify from 'dompurify';
 import mermaid from 'mermaid';
-import { Copy, Check, FileCode2 } from 'lucide-react';
+import { Copy, Check, FileCode2, Image as ImageIcon } from 'lucide-react';
 import { MathBlock } from './MathBlock';
 import 'katex/dist/katex.min.css';
 import type { Workstudio } from '../../types';
@@ -274,13 +274,80 @@ function findNearestAnchorWithLink(start: Element): SVGElement | HTMLAnchorEleme
   return null;
 }
 
+async function svgStringToPngBlob(svgText: string, width: number, height: number): Promise<Blob> {
+  const svgBlob = new Blob([svgText], { type: 'image/svg+xml;charset=utf-8' });
+  const url = URL.createObjectURL(svgBlob);
+
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const image = new window.Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error('Failed to load SVG image'));
+      image.src = url;
+    });
+
+    const dpr = window.devicePixelRatio || 1;
+    let pixelWidth = Math.max(1, Math.round(width * dpr));
+    let pixelHeight = Math.max(1, Math.round(height * dpr));
+
+    // Avoid generating extremely large clipboard images (can be slow / OOM).
+    const maxSide = 4096;
+    const maxArea = 4096 * 4096;
+    let scale = 1;
+    if (pixelWidth > maxSide || pixelHeight > maxSide) {
+      scale = Math.min(scale, maxSide / pixelWidth, maxSide / pixelHeight);
+    }
+    if (pixelWidth * pixelHeight > maxArea) {
+      scale = Math.min(scale, Math.sqrt(maxArea / (pixelWidth * pixelHeight)));
+    }
+    if (scale < 1) {
+      pixelWidth = Math.max(1, Math.round(pixelWidth * scale));
+      pixelHeight = Math.max(1, Math.round(pixelHeight * scale));
+    }
+
+    const canvas = document.createElement('canvas');
+    canvas.width = pixelWidth;
+    canvas.height = pixelHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Canvas context not available');
+
+    // Fill background for better readability when pasting into other apps.
+    const isDark = document.documentElement.classList.contains('dark');
+    ctx.fillStyle = isDark ? '#111827' : '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+    const pngBlob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(
+        (blob) => {
+          if (blob) resolve(blob);
+          else reject(new Error('Failed to create PNG blob'));
+        },
+        'image/png',
+        0.92
+      );
+    });
+
+    return pngBlob;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferenceToken }: MermaidBlockProps) {
   const [svg, setSvg] = useState<string>('');
   const [error, setError] = useState<string>('');
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [scale, setScale] = useState(1.5);
 
-  const cacheKey = useMemo(() => hashCode(code.trim()), [code]);
+  const [copiedText, setCopiedText] = useState(false);
+  const [copiedImage, setCopiedImage] = useState(false);
+  const [isCopyingImage, setIsCopyingImage] = useState(false);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  const cleanCode = useMemo(() => code.trim().replace(/\r\n/g, '\n'), [code]);
+  const cacheKey = useMemo(() => hashCode(cleanCode), [cleanCode]);
 
   // ESC key to close fullscreen
   useEffect(() => {
@@ -298,8 +365,6 @@ const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferen
 
   useEffect(() => {
     let cancelled = false;
-
-    const cleanCode = code.trim().replace(/\r\n/g, '\n');
 
     if (!cleanCode) {
       setError('Empty diagram code');
@@ -357,7 +422,99 @@ const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferen
     return () => {
       cancelled = true;
     };
-  }, [code, cacheKey]);
+  }, [cleanCode, cacheKey]);
+
+  const handleCopyText = useCallback(
+    async (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      try {
+        await navigator.clipboard.writeText(cleanCode);
+        setCopiedText(true);
+        window.setTimeout(() => setCopiedText(false), 2000);
+      } catch (err) {
+        console.warn('[Mermaid] Failed to copy text:', err);
+      }
+    },
+    [cleanCode]
+  );
+
+  const handleCopyImage = useCallback(
+    async (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      try {
+        setIsCopyingImage(true);
+
+        const svgEl = (containerRef.current?.querySelector('svg') ?? null) as SVGSVGElement | null;
+        const svgSource = svgEl ? new XMLSerializer().serializeToString(svgEl) : svg;
+
+        let width = 0;
+        let height = 0;
+
+        if (svgEl) {
+          const rect = svgEl.getBoundingClientRect();
+          width = rect.width;
+          height = rect.height;
+
+          if ((!width || !height) && svgEl.viewBox?.baseVal) {
+            width = width || svgEl.viewBox.baseVal.width;
+            height = height || svgEl.viewBox.baseVal.height;
+          }
+        }
+
+        if (!width || !height) {
+          const widthMatch = svgSource.match(/width=\"([\d.]+)(?:px)?\"/i);
+          const heightMatch = svgSource.match(/height=\"([\d.]+)(?:px)?\"/i);
+          if (!width && widthMatch) width = Number.parseFloat(widthMatch[1]);
+          if (!height && heightMatch) height = Number.parseFloat(heightMatch[1]);
+        }
+
+        if (!width || !height) {
+          const viewBoxMatch = svgSource.match(/viewBox=\"([^\"]+)\"/i);
+          if (viewBoxMatch) {
+            const parts = viewBoxMatch[1].trim().split(/\s+/).map((v) => Number.parseFloat(v));
+            if (parts.length === 4) {
+              width = width || parts[2];
+              height = height || parts[3];
+            }
+          }
+        }
+
+        if (!Number.isFinite(width) || width <= 0) width = 800;
+        if (!Number.isFinite(height) || height <= 0) height = 600;
+
+        const pngBlob = await svgStringToPngBlob(svgSource, width, height);
+
+        const clipboardWrite = (navigator.clipboard as any)?.write as undefined | ((data: any[]) => Promise<void>);
+        const ClipboardItemCtor = (window as any).ClipboardItem as any;
+        if (!clipboardWrite || !ClipboardItemCtor) {
+          throw new Error('Clipboard image API not supported');
+        }
+
+        await clipboardWrite([new ClipboardItemCtor({ 'image/png': pngBlob })]);
+
+        setCopiedImage(true);
+        window.setTimeout(() => setCopiedImage(false), 2000);
+      } catch (err) {
+        console.warn('[Mermaid] Failed to copy image:', err);
+
+        // Fallback: copy SVG text so user can still paste something usable.
+        try {
+          await navigator.clipboard.writeText(svg);
+          setCopiedImage(true);
+          window.setTimeout(() => setCopiedImage(false), 2000);
+        } catch (fallbackErr) {
+          console.warn('[Mermaid] Fallback copy SVG failed:', fallbackErr);
+        }
+      } finally {
+        setIsCopyingImage(false);
+      }
+    },
+    [svg]
+  );
 
   if (error) {
     return (
@@ -403,17 +560,43 @@ const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferen
 
   return (
     <>
-      <div
-        className="my-2 w-full overflow-x-auto rounded-lg bg-gray-100 dark:bg-gray-700/50 p-4 cursor-zoom-in flex justify-center [&_svg]:max-w-none"
-        onClickCapture={handleSvgClickCapture}
-        onClick={(e) => {
-          // 如果点的是链接，就不进入全屏（否则“链接不可用”）。
-          if (e.defaultPrevented) return;
-          setIsFullscreen(true);
-        }}
-        title="点击放大查看"
-        dangerouslySetInnerHTML={{ __html: svg }}
-      />
+      <div className="group relative my-2 w-full">
+        <div className="absolute right-2 top-2 z-10 flex items-center gap-2">
+          <button
+            type="button"
+            className="flex items-center gap-1.5 rounded bg-white/90 dark:bg-gray-800/90 px-2.5 py-1 text-xs text-gray-700 dark:text-gray-200 shadow hover:bg-white dark:hover:bg-gray-800 transition-colors"
+            onClick={handleCopyText}
+            title={copiedText ? '已复制 Mermaid 文本' : '复制 Mermaid 文本'}
+          >
+            {copiedText ? <Check size={14} /> : <Copy size={14} />}
+            <span className="text-xs">{copiedText ? '已复制' : '复制文本'}</span>
+          </button>
+
+          <button
+            type="button"
+            disabled={isCopyingImage}
+            className="flex items-center gap-1.5 rounded bg-white/90 dark:bg-gray-800/90 px-2.5 py-1 text-xs text-gray-700 dark:text-gray-200 shadow hover:bg-white dark:hover:bg-gray-800 transition-colors disabled:opacity-60"
+            onClick={handleCopyImage}
+            title={copiedImage ? '已复制图片（或已复制 SVG 作为兜底）' : '复制 Mermaid 图片'}
+          >
+            {copiedImage ? <Check size={14} /> : <ImageIcon size={14} />}
+            <span className="text-xs">{isCopyingImage ? '复制中…' : copiedImage ? '已复制' : '复制图片'}</span>
+          </button>
+        </div>
+
+        <div
+          ref={containerRef}
+          className="w-full overflow-x-auto rounded-lg bg-gray-100 dark:bg-gray-700/50 p-4 cursor-zoom-in flex justify-center [&_svg]:max-w-none"
+          onClickCapture={handleSvgClickCapture}
+          onClick={(e) => {
+            // 如果点的是链接，就不进入全屏（否则“链接不可用”）。
+            if (e.defaultPrevented) return;
+            setIsFullscreen(true);
+          }}
+          title="点击放大查看"
+          dangerouslySetInnerHTML={{ __html: svg }}
+        />
+      </div>
 
       {/* Fullscreen Modal */}
       {isFullscreen && (
@@ -465,12 +648,32 @@ const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferen
             />
           </div>
 
-          <button
-            className="absolute top-4 right-4 px-4 py-2 bg-white dark:bg-gray-700 rounded shadow hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors"
-            onClick={() => setIsFullscreen(false)}
-          >
-            关闭
-          </button>
+          <div className="absolute top-4 right-4 flex items-center gap-2">
+            <button
+              type="button"
+              className="px-3 py-2 bg-white dark:bg-gray-700 rounded shadow hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors text-sm"
+              onClick={handleCopyText}
+              title={copiedText ? '已复制 Mermaid 文本' : '复制 Mermaid 文本'}
+            >
+              {copiedText ? '已复制文本' : '复制文本'}
+            </button>
+            <button
+              type="button"
+              className="px-3 py-2 bg-white dark:bg-gray-700 rounded shadow hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors text-sm disabled:opacity-60"
+              disabled={isCopyingImage}
+              onClick={handleCopyImage}
+              title={copiedImage ? '已复制图片（或已复制 SVG 作为兜底）' : '复制 Mermaid 图片'}
+            >
+              {isCopyingImage ? '复制中…' : copiedImage ? '已复制图片' : '复制图片'}
+            </button>
+            <button
+              type="button"
+              className="px-4 py-2 bg-white dark:bg-gray-700 rounded shadow hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors"
+              onClick={() => setIsFullscreen(false)}
+            >
+              关闭
+            </button>
+          </div>
         </div>
       )}
     </>
