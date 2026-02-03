@@ -22,8 +22,9 @@
  } from '../../types';
  import { DeferredMarkdown } from './DeferredMarkdown';
  import { AnsiText } from './AnsiText';
- import { useConfigStore } from '../../stores/configStore';
- import { DebugModal } from './DebugModal';
+  import { useConfigStore } from '../../stores/configStore';
+  import { useSessionStore } from '../../stores/sessionStore';
+  import { DebugModal } from './DebugModal';
 
 interface ThinkingBlockProps {
   text: string;
@@ -192,9 +193,18 @@ const ApprovalBlock: React.FC<{
   const resolvedDefaultExpanded = defaultExpanded ?? Boolean(isStreaming || block.status === 'pending');
   const [isExpanded, setIsExpanded] = useState(Boolean(resolvedDefaultExpanded));
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [trustInProject, setTrustInProject] = useState(true);
-  const [trustInSecurityGroup, setTrustInSecurityGroup] = useState(false);
+  // “信任并允许”的默认范围：优先写入安全组（跨项目/跨会话），项目内可选。
+  const [trustInProject, setTrustInProject] = useState(false);
+  const [trustInSecurityGroup, setTrustInSecurityGroup] = useState(true);
   const { config, saveConfig } = useConfigStore();
+  const sessionWorkstudioId = useSessionStore((state) => {
+    if (!conversationId) return null;
+    for (const s of state.sessions.values()) {
+      if (s.conversationId === conversationId) return s.workstudioId ?? null;
+    }
+    return null;
+  });
+  const hasWorkspace = Boolean(sessionWorkstudioId && sessionWorkstudioId.trim());
 
   useEffect(() => {
     if (!autoCollapseEnabled) return;
@@ -275,7 +285,8 @@ const ApprovalBlock: React.FC<{
 
   const canInvoke = Boolean(conversationId && isTauri());
   const canClick = canInvoke && block.status === 'pending' && !isSubmitting;
-  const trustScopeSelected = trustInProject || trustInSecurityGroup;
+  const trustInProjectEffective = trustInProject && hasWorkspace;
+  const trustScopeSelected = trustInProjectEffective || trustInSecurityGroup;
   const canTrust =
     canClick &&
     Boolean(trustCandidate) &&
@@ -291,14 +302,15 @@ const ApprovalBlock: React.FC<{
     try {
       const nextEntry = { tool: trustCandidate.tool, command: trustCandidate.command };
 
-      if (trustInProject) {
-        const ws = await invoke<Workstudio>('ensure_workstudio_for_conversation', { conversationId });
+      if (trustInProjectEffective) {
+        const wsId = (sessionWorkstudioId ?? '').trim();
+        if (!wsId) throw new Error('当前会话未绑定 Workstudio，无法写入“项目内允许”');
+
+        const ws = await invoke<Workstudio | null>('get_workstudio', { workstudioId: wsId });
         if (!ws?.id) throw new Error('Workstudio 不存在，无法写入“项目内允许”');
         if (!ws.mainFolder?.trim()) throw new Error('Workstudio 主目录为空，无法写入“项目内允许”');
 
-        const wsSec = await invoke<WorkstudioSecurityConfig>('get_workstudio_security_config', {
-          workstudioId: ws.id,
-        });
+        const wsSec = await invoke<WorkstudioSecurityConfig>('get_workstudio_security_config', { workstudioId: wsId });
         const existing = wsSec?.trustedCommands ?? [];
         const already = existing.some((t) => t.tool === nextEntry.tool && t.command === nextEntry.command);
         if (!already) {
@@ -306,7 +318,7 @@ const ApprovalBlock: React.FC<{
             writableRoots: wsSec?.writableRoots ?? [],
             trustedCommands: [...existing, nextEntry],
           };
-          await invoke('set_workstudio_security_config', { workstudioId: ws.id, config: payload });
+          await invoke('set_workstudio_security_config', { workstudioId: wsId, config: payload });
         }
       }
 
@@ -426,16 +438,18 @@ const ApprovalBlock: React.FC<{
               {trustCandidate ? (
                 <>
                   <div className="flex flex-wrap items-center gap-2 rounded border border-orange-200 bg-white px-2 py-1 text-xs text-orange-900 dark:border-orange-800 dark:bg-orange-950/20 dark:text-orange-100">
-                    <label className="inline-flex items-center gap-1">
-                      <input
-                        type="checkbox"
-                        className="h-3 w-3"
-                        checked={trustInProject}
-                        disabled={!canClick}
-                        onChange={(e) => setTrustInProject(e.target.checked)}
-                      />
-                      <span className={!canClick ? 'opacity-50' : undefined}>项目内允许</span>
-                    </label>
+                    {hasWorkspace ? (
+                      <label className="inline-flex items-center gap-1">
+                        <input
+                          type="checkbox"
+                          className="h-3 w-3"
+                          checked={trustInProject}
+                          disabled={!canClick}
+                          onChange={(e) => setTrustInProject(e.target.checked)}
+                        />
+                        <span className={!canClick ? 'opacity-50' : undefined}>项目内允许</span>
+                      </label>
+                    ) : null}
                     <label className="inline-flex items-center gap-1">
                       <input
                         type="checkbox"
@@ -456,7 +470,7 @@ const ApprovalBlock: React.FC<{
                       ? 'border-orange-300 bg-white text-orange-900 hover:bg-orange-50 dark:border-orange-700 dark:bg-orange-950/30 dark:text-orange-100 dark:hover:bg-orange-900/30'
                       : 'cursor-not-allowed border-orange-200 bg-orange-50 text-orange-400 dark:border-orange-900/50 dark:bg-orange-950/20 dark:text-orange-600'
                       }`}
-                    title="加入信任列表并执行（可选：项目内/安全组；默认仅项目内）"
+                    title="加入信任列表并执行（可选：安全组/项目内；默认安全组；无工作区时不显示“项目内”）"
                   >
                     信任并允许
                   </button>
