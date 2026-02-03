@@ -1,11 +1,13 @@
 import React from 'react';
-import { MessageSquare, History, Settings, FileText, LayoutPanelLeft, ExternalLink } from 'lucide-react';
+import { MessageSquare, History, Settings, FileText, LayoutPanelLeft, ExternalLink, Globe, Terminal } from 'lucide-react';
 import type { ActiveView } from '../types';
 import { ChatViewContainer } from './ChatViewContainer';
 import { HistoryPanel } from '../components/History/HistoryPanel';
 import { SettingsView } from '../components/Settings/SettingsView';
 import { DocumentView } from '../components/Documents/DocumentView';
 import { WorkstudioView } from '../components/Workstudio/WorkstudioView';
+import { WebView } from '../components/Web/WebView';
+import { TerminalView } from '../components/Terminal/TerminalView';
 import { WindowTestView } from '../components/Test/WindowTestView';
 
 export interface ViewDefinition {
@@ -58,6 +60,22 @@ export const VIEW_DEFINITIONS: ViewDefinition[] = [
     title: 'Workstudio',
     icon: <LayoutPanelLeft size={20} />,
     render: () => <WorkstudioView />,
+    inSidebar: false,
+  },
+  {
+    id: 'web',
+    label: '网页',
+    title: 'Web',
+    icon: <Globe size={20} />,
+    render: () => <WebView />,
+    inSidebar: false,
+  },
+  {
+    id: 'terminal',
+    label: '终端',
+    title: 'Terminal',
+    icon: <Terminal size={20} />,
+    render: () => <TerminalView />,
     inSidebar: false,
   },
   {

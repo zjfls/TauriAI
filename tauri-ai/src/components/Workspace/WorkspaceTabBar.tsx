@@ -23,11 +23,13 @@ import {
   horizontalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { Bot, ChevronDown, FileText, Loader2, Menu, MessageSquare, History, Settings, Plus, X } from 'lucide-react';
+import { Bot, ChevronDown, FileText, Loader2, Menu, MessageSquare, History, Settings, Plus, X, Globe, Terminal } from 'lucide-react';
 import type { Agent, AgentSession } from '../../types';
 import { useDocumentStore } from '../../stores/documentStore';
 import { useUIStore } from '../../stores/uiStore';
 import { useSessionStore } from '../../stores/sessionStore';
+import { useWebTabStore } from '../../stores/webTabStore';
+import { useTerminalTabStore } from '../../stores/terminalTabStore';
 import {
   parseWorkspaceTabId,
   useWorkspaceTabStore,
@@ -50,7 +52,7 @@ interface WorkspaceTabBarProps {
 
 interface TabRenderItem {
   id: WorkspaceTabId;
-  kind: 'chat' | 'document';
+  kind: 'chat' | 'document' | 'web' | 'terminal';
   title: string;
   // For chat
   session?: AgentSession;
@@ -60,6 +62,9 @@ interface TabRenderItem {
     title: string;
     path?: string;
   };
+  // For web/terminal
+  webTab?: { id: string; title: string; url: string };
+  terminalTab?: { id: string; title: string };
 }
 
 const TEAR_OFF_THRESHOLD_PX = 48;
@@ -165,8 +170,9 @@ const SortableWorkspaceTab: React.FC<{
     opacity: isDragging ? 0.5 : 1,
   };
 
-  const icon = item.kind === 'chat'
-    ? (
+  const icon = (() => {
+    if (item.kind === 'chat') {
+      return (
         <div className="flex-shrink-0">
           {item.session?.isGenerating ? (
             <Loader2 size={14} className="animate-spin text-blue-500" />
@@ -174,10 +180,16 @@ const SortableWorkspaceTab: React.FC<{
             <Bot size={14} className={isActive ? 'text-blue-500' : 'text-gray-400'} />
           )}
         </div>
-      )
-    : (
-        <FileText size={14} className={isActive ? 'text-blue-500' : 'text-gray-400'} />
       );
+    }
+    if (item.kind === 'web') {
+      return <Globe size={14} className={isActive ? 'text-blue-500' : 'text-gray-400'} />;
+    }
+    if (item.kind === 'terminal') {
+      return <Terminal size={14} className={isActive ? 'text-blue-500' : 'text-gray-400'} />;
+    }
+    return <FileText size={14} className={isActive ? 'text-blue-500' : 'text-gray-400'} />;
+  })();
 
   const badge =
     item.kind === 'chat' && item.session?.apiType === 'responses' ? (
@@ -252,6 +264,16 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
   const setActiveDocument = useDocumentStore((s) => s.setActiveDocument);
   const closeDocument = useDocumentStore((s) => s.closeDocument);
 
+  const webTabs = useWebTabStore((s) => s.tabs);
+  const activeWebTabId = useWebTabStore((s) => s.activeTabId);
+  const setActiveWebTab = useWebTabStore((s) => s.setActiveWebTab);
+  const closeWebTab = useWebTabStore((s) => s.closeWebTab);
+
+  const terminalTabs = useTerminalTabStore((s) => s.tabs);
+  const activeTerminalTabId = useTerminalTabStore((s) => s.activeTabId);
+  const setActiveTerminalTab = useTerminalTabStore((s) => s.setActiveTerminalTab);
+  const closeTerminalTab = useTerminalTabStore((s) => s.closeTerminalTab);
+
   const tabOrder = useWorkspaceTabStore((s) => s.tabOrder);
   const reorderTabs = useWorkspaceTabStore((s) => s.reorderTabs);
   const syncTabs = useWorkspaceTabStore((s) => s.syncTabs);
@@ -267,10 +289,10 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
     syncTabs(
       sessions.map((s) => s.id),
       documents.map((d) => d.id),
-      [],
-      []
+      webTabs.map((t) => t.id),
+      terminalTabs.map((t) => t.id)
     );
-  }, [sessions, documents, syncTabs]);
+  }, [sessions, documents, webTabs, terminalTabs, syncTabs]);
 
   const items = useMemo((): TabRenderItem[] => {
     const out: TabRenderItem[] = [];
@@ -286,7 +308,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
           title: session.title,
           session,
         });
-      } else {
+      } else if (parsed.kind === 'document') {
         const docId = parsed.documentId;
         const doc = docId ? documents.find((d) => d.id === docId) : undefined;
         if (!doc) continue;
@@ -296,10 +318,30 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
           title: doc.title,
           doc: { id: doc.id, title: doc.title, path: doc.path },
         });
+      } else if (parsed.kind === 'web') {
+        const wid = parsed.webTabId;
+        const tab = wid ? webTabs.find((t) => t.id === wid) : undefined;
+        if (!tab) continue;
+        out.push({
+          id,
+          kind: 'web',
+          title: tab.title,
+          webTab: { id: tab.id, title: tab.title, url: tab.url },
+        });
+      } else {
+        const tid = parsed.terminalTabId;
+        const tab = tid ? terminalTabs.find((t) => t.id === tid) : undefined;
+        if (!tab) continue;
+        out.push({
+          id,
+          kind: 'terminal',
+          title: tab.title,
+          terminalTab: { id: tab.id, title: tab.title },
+        });
       }
     }
     return out;
-  }, [tabOrder, sessionsById, documents, showChatTabs]);
+  }, [tabOrder, sessionsById, documents, showChatTabs, webTabs, terminalTabs]);
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
 
@@ -335,12 +377,17 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
       return;
     }
 
-    const docId = parsed.documentId;
-    const doc = docId ? documents.find((d) => d.id === docId) : undefined;
-    if (!doc) return;
-    if (!doc.path) return;
-    openViewWindow('document', doc.title, { documentPath: doc.path });
-    closeDocument(doc.id);
+    if (parsed.kind === 'document') {
+      const docId = parsed.documentId;
+      const doc = docId ? documents.find((d) => d.id === docId) : undefined;
+      if (!doc) return;
+      if (!doc.path) return;
+      openViewWindow('document', doc.title, { documentPath: doc.path });
+      closeDocument(doc.id);
+      return;
+    }
+
+    // Web/Terminal: 目前不支持 tear-off 到独立窗口（还需要跨窗口状态管理），先忽略。
   };
 
   const closeTab = async (tabId: WorkspaceTabId) => {
@@ -351,9 +398,21 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
       await onTabClose(sid);
       return;
     }
-    const did = parsed.documentId;
-    if (!did) return;
-    closeDocument(did);
+    if (parsed.kind === 'document') {
+      const did = parsed.documentId;
+      if (!did) return;
+      closeDocument(did);
+      return;
+    }
+    if (parsed.kind === 'web') {
+      const wid = parsed.webTabId;
+      if (!wid) return;
+      closeWebTab(wid);
+      return;
+    }
+    const tid = parsed.terminalTabId;
+    if (!tid) return;
+    await closeTerminalTab(tid);
   };
 
   const closeOtherTabs = async (keepId: WorkspaceTabId) => {
@@ -471,7 +530,9 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
     if (item.kind === 'chat') {
       return activeView === 'chat' && item.session?.id === activeSessionId;
     }
-    return activeView === 'document' && item.doc?.id === activeDocumentId;
+    if (item.kind === 'document') return activeView === 'document' && item.doc?.id === activeDocumentId;
+    if (item.kind === 'web') return activeView === 'web' && item.webTab?.id === activeWebTabId;
+    return activeView === 'terminal' && item.terminalTab?.id === activeTerminalTabId;
   };
 
   const handleSelectTab = (item: TabRenderItem) => {
@@ -483,6 +544,16 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
     if (item.kind === 'document' && item.doc) {
       setActiveDocument(item.doc.id);
       setActiveView('document');
+      return;
+    }
+    if (item.kind === 'web' && item.webTab) {
+      setActiveWebTab(item.webTab.id);
+      setActiveView('web');
+      return;
+    }
+    if (item.kind === 'terminal' && item.terminalTab) {
+      setActiveTerminalTab(item.terminalTab.id);
+      setActiveView('terminal');
     }
   };
 
@@ -545,6 +616,8 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
             <div className="absolute right-0 top-[calc(100%+6px)] w-40 rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-800 z-[120] overflow-hidden">
               {[
                 { id: 'chat' as const, label: '聊天', icon: <MessageSquare size={14} /> },
+                { id: 'web' as const, label: '网页', icon: <Globe size={14} /> },
+                { id: 'terminal' as const, label: '终端', icon: <Terminal size={14} /> },
                 { id: 'history' as const, label: '历史', icon: <History size={14} /> },
                 { id: 'settings' as const, label: '设置', icon: <Settings size={14} /> },
               ].map((item) => (
@@ -552,6 +625,31 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
                   key={item.id}
                   type="button"
                   onClick={() => {
+                    if (item.id === 'web') {
+                      if (webTabs.length === 0) {
+                        useWebTabStore.getState().openWebTab('about:blank', { title: '网页' });
+                      } else if (activeWebTabId) {
+                        setActiveWebTab(activeWebTabId);
+                      } else {
+                        setActiveWebTab(webTabs[0]!.id);
+                      }
+                      setActiveView('web');
+                      setShowViewMenu(false);
+                      return;
+                    }
+                    if (item.id === 'terminal') {
+                      if (terminalTabs.length === 0) {
+                        useTerminalTabStore.getState().openTerminalTab({ title: '终端' });
+                      } else if (activeTerminalTabId) {
+                        setActiveTerminalTab(activeTerminalTabId);
+                      } else {
+                        setActiveTerminalTab(terminalTabs[0]!.id);
+                      }
+                      setActiveView('terminal');
+                      setShowViewMenu(false);
+                      return;
+                    }
+
                     setActiveView(item.id);
                     setShowViewMenu(false);
                   }}
