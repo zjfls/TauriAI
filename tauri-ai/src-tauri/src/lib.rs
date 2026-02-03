@@ -46,38 +46,41 @@ use skills::watcher::{SkillsWatcher, SkillsWatcherState};
 use skills::installer::install_bundled_skills;
 
 #[cfg(all(debug_assertions, target_os = "macos"))]
-fn try_set_dev_dock_icon(_app: &tauri::AppHandle) {
-    use objc2::AllocAnyThread;
-    use objc2::MainThreadMarker;
-    use objc2_app_kit::{NSApplication, NSImage};
-    use objc2_foundation::NSData;
-
-    let mtm = match MainThreadMarker::new() {
-        Some(mtm) => mtm,
-        None => {
-            eprintln!("[dev] 无法设置 Dock 图标：当前不在主线程");
-            return;
-        }
-    };
+fn schedule_set_dev_dock_icon(app: &tauri::AppHandle) {
+    use std::sync::Arc;
+    use std::time::Duration;
 
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("icons-dev")
         .join("icon.png");
     let bytes = match std::fs::read(&path) {
-        Ok(b) => b,
+        Ok(b) => Arc::new(b),
         Err(_) => return,
     };
 
-    let app_ns = NSApplication::sharedApplication(mtm);
-    let data = NSData::with_bytes(&bytes);
-    let icon = match NSImage::initWithData(NSImage::alloc(), &data) {
-        Some(icon) => icon,
-        None => {
-            eprintln!("[dev] 无法设置 Dock 图标：NSImage 解码失败");
-            return;
-        }
-    };
-    unsafe { app_ns.setApplicationIconImage(Some(&icon)) };
+    // 关键点：
+    // - Tauri 在 dev 模式下会在 `RunEvent::Ready` 再设置一次 Dock 图标（来自 app_icon），
+    //   所以这里必须“延后一点点”再设置，确保不会被覆盖。
+    // - 用 run_on_main_thread 保证在主线程执行（并使用 new_unchecked 与 Tauri 内部保持一致）。
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let bytes = bytes.clone();
+        let _ = handle.run_on_main_thread(move || {
+            use objc2::AllocAnyThread;
+            use objc2::MainThreadMarker;
+            use objc2_app_kit::{NSApplication, NSImage};
+            use objc2_foundation::NSData;
+
+            // 与 Tauri 内部实现对齐：不做主线程检查（否则在某些情况下会被误判）。
+            let mtm = unsafe { MainThreadMarker::new_unchecked() };
+            let app_ns = NSApplication::sharedApplication(mtm);
+            let data = NSData::with_bytes(&bytes);
+            if let Some(icon) = NSImage::initWithData(NSImage::alloc(), &data) {
+                unsafe { app_ns.setApplicationIconImage(Some(&icon)) };
+            }
+        });
+    });
 }
 
 /// Get the default database path (~/.tauri-ai/data.db)
@@ -385,9 +388,7 @@ pub fn run() {
             // DEV: 动态设置 macOS Dock 图标（来自 `src-tauri/icons-dev/icon.png`）。
             // 说明：这不会影响 build 产物图标；仅在开发运行时生效。
             #[cfg(all(debug_assertions, target_os = "macos"))]
-            {
-                try_set_dev_dock_icon(app.handle());
-            }
+            schedule_set_dev_dock_icon(app.handle());
 
             // 设置窗口关闭事件处理
             // 满足需求 9.4: 点击关闭按钮时隐藏窗口而非退出

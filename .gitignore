@@ -25,6 +25,3 @@ tauri-ai/.system-analyst/
 /scripts/
 tauri-ai/docs/
 tauri-ai/metadata.json
-
-# Dev-only window icons (generated from SVG)
-tauri-ai/src-tauri/icons-dev/
