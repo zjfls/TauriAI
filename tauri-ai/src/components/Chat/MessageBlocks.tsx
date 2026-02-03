@@ -242,12 +242,14 @@ const ApprovalBlock: React.FC<{
 
     const tool = block.toolName;
     const raw =
-      tool === 'shell_command' && typeof (parsedArgs as any).command === 'string'
-        ? (parsedArgs as any).command
-        : (tool === 'exec_command' || tool === 'exec_command_persistent') &&
-            typeof (parsedArgs as any).cmd === 'string'
-          ? (parsedArgs as any).cmd
-          : null;
+      tool === 'web_search'
+        ? '*'
+        : tool === 'shell_command' && typeof (parsedArgs as any).command === 'string'
+          ? (parsedArgs as any).command
+          : (tool === 'exec_command' || tool === 'exec_command_persistent') &&
+              typeof (parsedArgs as any).cmd === 'string'
+            ? (parsedArgs as any).cmd
+            : null;
 
     const command = typeof raw === 'string' ? raw.trim() : '';
     if (!command) return null;

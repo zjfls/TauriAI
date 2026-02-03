@@ -148,6 +148,8 @@ struct TurnLoop<'a> {
     sandbox_policy: crate::models::SandboxPolicy,
     /// Effective approval policy for this run.
     approval_policy: AskForApproval,
+    /// Whether this run is in chat mode (`run_mode == "chat"`).
+    chat_mode: bool,
     /// Effective security policy name for this run.
     security_policy_name: String,
     /// Trusted commands (used with AskForApproval::UnlessTrusted).
@@ -795,6 +797,12 @@ impl<'a> TurnLoop<'a> {
     }
 
     fn approval_cache_key(call: &ToolCall) -> String {
+        // Chat UX: allow "approve for session" to apply to *all* web_search calls
+        // in the same conversation, regardless of query text.
+        if call.name == "web_search" {
+            return "web_search".to_string();
+        }
+
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
 
@@ -806,6 +814,7 @@ impl<'a> TurnLoop<'a> {
 
     fn trusted_command_key(call: &ToolCall) -> Option<(String, String)> {
         let field = match call.name.as_str() {
+            "web_search" => return Some((call.name.clone(), "*".to_string())),
             "shell_command" => "command",
             "exec_command" | "exec_command_persistent" => "cmd",
             _ => return None,
@@ -910,10 +919,19 @@ impl<'a> TurnLoop<'a> {
             return false;
         }
 
+        // Chat mode: rely on sandbox for local tools. Only network tools may trigger approvals.
+        if self.chat_mode && !Self::is_network_tool(tool_name) {
+            return false;
+        }
+
         // Network tools: when sandbox forbids network, require approval (if policy allows).
         if Self::is_network_tool(tool_name) {
             if self.sandbox_policy.has_full_network_access() {
                 return false;
+            }
+            // Chat mode: always ask before enabling network access.
+            if self.chat_mode {
+                return true;
             }
             return match self.approval_policy {
                 AskForApproval::Never | AskForApproval::OnFailure => false,
@@ -969,6 +987,20 @@ impl<'a> TurnLoop<'a> {
             return (false, ApprovalDecision::Approved, None);
         }
 
+        // Network tools: let "approve for session" short-circuit even when policy wouldn't prompt
+        // (e.g., AskForApproval::OnFailure first attempt).
+        if Self::is_network_tool(tool_name) {
+            let approval_key = Self::approval_cache_key(call);
+            let already_approved_for_session = {
+                let store = self.approval_store.lock().await;
+                store.is_approved_for_session(&approval_key)
+            };
+            if already_approved_for_session {
+                let sandbox = self.sandbox_policy_for_approved_call(tool_name, escalated);
+                return (false, ApprovalDecision::ApprovedForSession, Some(sandbox));
+            }
+        }
+
         let mut needs_prompt = if force_prompt {
             !matches!(self.approval_policy, AskForApproval::Never)
         } else {
@@ -976,24 +1008,37 @@ impl<'a> TurnLoop<'a> {
         };
 
         // OnFailure: first attempt never prompts; only retry will.
-        if matches!(self.approval_policy, AskForApproval::OnFailure) && !force_prompt {
+        if matches!(self.approval_policy, AskForApproval::OnFailure) && !force_prompt && !self.chat_mode {
             needs_prompt = false;
         }
 
-        // UnlessTrusted: allow trusted commands without prompting (Codex-like).
+        let is_trusted = self.is_trusted_call(call);
+
+        // Trusted list: allow trusted network tool calls without prompting (even in OnRequest),
+        // and keep the existing "UnlessTrusted" behavior for exec/write tools.
         if needs_prompt
-            && matches!(self.approval_policy, AskForApproval::UnlessTrusted)
-            && self.is_trusted_call(call)
+            && ((Self::is_network_tool(tool_name) && is_trusted)
+                || (matches!(self.approval_policy, AskForApproval::UnlessTrusted) && is_trusted))
         {
             needs_prompt = false;
         }
 
         if !needs_prompt {
             // Policy allows running without asking; keep the current sandbox policy.
+            // Special-case: trusted network tools may need a temporary sandbox override to enable
+            // network access (no approval UI).
+            let sandbox = if Self::is_network_tool(tool_name)
+                && is_trusted
+                && !self.sandbox_policy.has_full_network_access()
+            {
+                self.sandbox_policy_for_approved_call(tool_name, escalated)
+            } else {
+                self.sandbox_policy.clone()
+            };
             return (
                 false,
                 ApprovalDecision::Approved,
-                Some(self.sandbox_policy.clone()),
+                Some(sandbox),
             );
         }
 
@@ -1579,7 +1624,8 @@ impl<'a> TurnLoop<'a> {
                         };
 
                         // 2) OnFailure: if denied by sandbox, ask to retry with escalation.
-                        if matches!(self.approval_policy, AskForApproval::OnFailure) {
+                        // Chat mode: do not escalate; rely on sandbox deny results directly.
+                        if matches!(self.approval_policy, AskForApproval::OnFailure) && !self.chat_mode {
                             if let Err(e) = &exec {
                                 let web_search_needs_network = call.name == "web_search"
                                     && !sandbox_policy_for_call.has_full_network_access();
@@ -2904,6 +2950,7 @@ async fn run_task_inner(
     let output_format = get_output_format(agent);
 
     let requested_mode = input.run_mode.as_deref().unwrap_or("").trim();
+    let chat_mode = requested_mode == "chat";
     let runtime_agent_type = match requested_mode {
         "chat" => AgentType::Chat,
         "agent" | "agent-custom" | "agent-full-access" => AgentType::Tool,
@@ -2912,7 +2959,7 @@ async fn run_task_inner(
     let force_full_access = requested_mode == "agent-full-access";
     let use_custom_security = requested_mode == "agent-custom";
     // Tools can also be enabled in chat mode (read-only sandbox by default).
-    let tools_enabled = matches!(runtime_agent_type, AgentType::Tool) || requested_mode == "chat";
+    let tools_enabled = matches!(runtime_agent_type, AgentType::Tool) || chat_mode;
 
     if !provider.enabled {
         return Err(AppErrorCode::AiServiceError(format!(
@@ -3133,7 +3180,7 @@ async fn run_task_inner(
     } else {
         base_security_policy.sandbox_policy.clone()
     };
-    if requested_mode == "chat" {
+    if chat_mode {
         sandbox_policy = crate::models::SandboxPolicy::ReadOnly;
     }
     if force_full_access {
@@ -3790,6 +3837,7 @@ async fn run_task_inner(
         workspace_roots,
         sandbox_policy,
         approval_policy,
+        chat_mode,
         security_policy_name,
         trusted_commands,
         approval_store,
