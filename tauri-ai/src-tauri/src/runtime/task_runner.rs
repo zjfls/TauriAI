@@ -4331,14 +4331,16 @@ async fn stream_one_turn(
 
                 // 对齐 Codex：提供类似 “Reconnecting... x/y” 的可见提示（同时保留现有 Debug 逻辑）
                 let prefix = if reconnecting { "重连中" } else { "重试中" };
+                // 注意：attempt 是当前“已发生失败”的次数（1-based）。
+                // 这里展示 attempt/max_attempts，让第一次失败也能显示 1/N，避免从 2/N 开始跳号。
                 emitter.emit(RunEvent::BlockDelta {
                     task_id: task_id.to_string(),
                     turn_id: turn_id.to_string(),
                     assistant_message_id: Some(assistant_message_id.to_string()),
-                    block_id: format!("assistant_status:{}", attempt + 1),
+                    block_id: format!("assistant_status:{attempt}"),
                     block_type: "status".to_string(),
                     format: Some("plain".to_string()),
-                    delta: format!("{prefix}... {}/{max_attempts}（等待 {delay_ms}ms）\n", attempt + 1),
+                    delta: format!("{prefix}... {attempt}/{max_attempts}（等待 {delay_ms}ms）\n"),
                 });
 
                 // 避免把“上一轮错误”带到最终返回
