@@ -96,4 +96,36 @@ describe('MarkdownRenderer Mermaid file links', () => {
       })
     );
   });
+
+  it('opens workstudio when clicking mermaid <a> href path without line', async () => {
+    mockInvoke.mockResolvedValue({ id: 'ws1', mainFolder: '/tmp' });
+    (mermaid as any).render.mockResolvedValueOnce({
+      svg: '<svg xmlns="http://www.w3.org/2000/svg"><a href="Source/ChaosVehicles/Public/ChaosVehicleManagerAsyncCallback.h"><text>OpenH</text></a></svg>',
+    });
+
+    render(
+      <MarkdownRenderer
+        content={'```mermaid\nflowchart TD\nA[OpenH]\n```'}
+        conversationId="conv1"
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('OpenH')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByText('OpenH'));
+
+    await waitFor(() => {
+      expect(mockOpenOrFocusWorkstudioWindow).toHaveBeenCalledTimes(1);
+    });
+
+    expect(mockOpenOrFocusWorkstudioWindow).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        workstudioId: 'ws1',
+        filePath: 'Source/ChaosVehicles/Public/ChaosVehicleManagerAsyncCallback.h',
+      })
+    );
+  });
 });

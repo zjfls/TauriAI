@@ -201,6 +201,34 @@ function parseFileReferenceTokenFromHref(hrefRaw: string): string | null {
   return null;
 }
 
+function looksLikeFilePath(token: string): boolean {
+  const t = token.trim();
+  if (!t) return false;
+  if (t.length > 800) return false;
+  if (/[\r\n\t]/.test(t)) return false;
+  // Disallow URLs (but keep Windows paths like C:\...)
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(t)) return false;
+
+  const normalized = t.replace(/\\/g, '/');
+  const base = normalized.split('/').pop() ?? normalized;
+  const lower = base.toLowerCase();
+
+  // Common source file suffixes; keep this list tight to avoid treating random labels as paths.
+  const exts = [
+    '.c', '.cc', '.cpp', '.cxx', '.h', '.hh', '.hpp', '.hxx', '.inl', '.ipp', '.ixx', '.cppm',
+    '.rs', '.ts', '.tsx', '.js', '.jsx', '.json', '.toml', '.yaml', '.yml', '.md', '.markdown',
+    '.py', '.java', '.go', '.kt', '.kts', '.swift', '.m', '.mm',
+  ];
+  if (exts.some((e) => lower.endsWith(e))) return true;
+
+  // Fallback: absolute paths or repo-like paths that contain a directory separator.
+  if (/^[A-Za-z]:[\\/]/.test(t)) return true;
+  if (normalized.startsWith('/') || normalized.startsWith('//')) return true;
+  if (normalized.includes('/')) return true;
+
+  return false;
+}
+
 function sanitizeMermaidSvg(svg: string): string {
   // Mermaid 在 securityLevel=loose 时可能生成内联事件处理器或不安全的 href；
   // 这里做最小清洗，避免 WebView 默认行为（例如 window.open / 导航）抢走点击。
@@ -592,14 +620,66 @@ export const MarkdownRenderer = React.memo(function MarkdownRendererImpl({ conte
     }
   }, [conversationId, workstudioId]);
 
+  const openFilePath = useCallback(
+    async (filePath: string): Promise<void> => {
+      if (!isTauriRuntime()) return;
+
+      try {
+        const [{ invoke }, { openOrFocusWorkstudioWindow }] = await Promise.all([
+          import('@tauri-apps/api/core'),
+          import('../../utils/viewWindow'),
+        ]);
+
+        let resolvedWorkstudioId: string | null = workstudioId ?? null;
+        let ws: Workstudio | null = null;
+
+        if (!resolvedWorkstudioId && conversationId) {
+          ws = await invoke<Workstudio>('ensure_workstudio_for_conversation', { conversationId });
+          resolvedWorkstudioId = ws.id;
+        }
+
+        if (!resolvedWorkstudioId) {
+          console.warn('openFilePath skipped: missing workstudio context');
+          return;
+        }
+
+        if (!ws) {
+          try {
+            ws = await invoke<Workstudio | null>('get_workstudio', { workstudioId: resolvedWorkstudioId });
+          } catch {
+            // ignore
+          }
+        }
+
+        const title = ws ? `Workstudio: ${ws.mainFolder}` : 'Workstudio';
+        await openOrFocusWorkstudioWindow(title, {
+          workstudioId: resolvedWorkstudioId,
+          filePath,
+        });
+      } catch (error) {
+        console.warn('openFilePath failed:', error);
+      }
+    },
+    [conversationId, workstudioId]
+  );
+
   const tryOpenFileReferenceToken = useCallback(
     (token: string): boolean => {
       const ref = parseFileReferenceToken(token);
-      if (!ref) return false;
-      void openFileReference(ref);
-      return true;
+      if (ref) {
+        void openFileReference(ref);
+        return true;
+      }
+
+      // Mermaid click(...) 允许没有行号的文件路径：只要像路径就打开文件。
+      if (looksLikeFilePath(token)) {
+        void openFilePath(token.trim());
+        return true;
+      }
+
+      return false;
     },
-    [openFileReference]
+    [openFilePath, openFileReference]
   );
 
   // Process content: protect LaTeX & Mermaid -> sanitize -> restore
