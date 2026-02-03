@@ -79,3 +79,9 @@ dirs = "5"
 tempfile = "3"
 # Property-based testing
 proptest = "1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# 仅用于开发态动态设置 Dock 图标（不影响 build 产物图标）
+objc2 = "0.6.3"
+objc2-app-kit = "0.3.2"
+objc2-foundation = "0.3.2"

@@ -11,6 +11,17 @@ use tokio::sync::Mutex;
 use crate::config::ConfigManager;
 use crate::storage::Database;
 
+#[cfg(debug_assertions)]
+fn try_load_dev_icon_from_disk() -> Option<Image<'static>> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("icons-dev")
+        .join("icon.png");
+    match Image::from_path(&path) {
+        Ok(img) => Some(img.to_owned()),
+        Err(_) => None,
+    }
+}
+
 fn dev_icon_image() -> Image<'static> {
     const SIZE: u32 = 32;
     let mut rgba = vec![0u8; (SIZE * SIZE * 4) as usize];
@@ -155,7 +166,16 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     // - DEV：使用带 “DEV” 标识的图标，避免与打包版本混淆
     // - Release：使用内嵌的 PNG 图标
     let icon = if cfg!(debug_assertions) {
-        dev_icon_image()
+        #[cfg(debug_assertions)]
+        {
+            // 优先使用本地 `src-tauri/icons-dev/icon.png`（由脚本从 SVG 生成）。
+            // 若文件不存在或解码失败，则回退到内置的 DEV 图标（避免开发环境启动失败）。
+            try_load_dev_icon_from_disk().unwrap_or_else(dev_icon_image)
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            dev_icon_image()
+        }
     } else {
         Image::from_bytes(include_bytes!("../icons/32x32.png")).expect("Failed to load tray icon")
     };

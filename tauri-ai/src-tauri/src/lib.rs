@@ -45,6 +45,41 @@ use tauri::WebviewUrl;
 use skills::watcher::{SkillsWatcher, SkillsWatcherState};
 use skills::installer::install_bundled_skills;
 
+#[cfg(all(debug_assertions, target_os = "macos"))]
+fn try_set_dev_dock_icon(_app: &tauri::AppHandle) {
+    use objc2::AllocAnyThread;
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::NSData;
+
+    let mtm = match MainThreadMarker::new() {
+        Some(mtm) => mtm,
+        None => {
+            eprintln!("[dev] 无法设置 Dock 图标：当前不在主线程");
+            return;
+        }
+    };
+
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("icons-dev")
+        .join("icon.png");
+    let bytes = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(_) => return,
+    };
+
+    let app_ns = NSApplication::sharedApplication(mtm);
+    let data = NSData::with_bytes(&bytes);
+    let icon = match NSImage::initWithData(NSImage::alloc(), &data) {
+        Some(icon) => icon,
+        None => {
+            eprintln!("[dev] 无法设置 Dock 图标：NSImage 解码失败");
+            return;
+        }
+    };
+    unsafe { app_ns.setApplicationIconImage(Some(&icon)) };
+}
+
 /// Get the default database path (~/.tauri-ai/data.db)
 fn get_database_path() -> std::path::PathBuf {
     let home_dir = dirs::home_dir().expect("Failed to get home directory");
@@ -346,6 +381,13 @@ pub fn run() {
 
             // 初始化系统托盘
             tray::create_tray(app.handle())?;
+
+            // DEV: 动态设置 macOS Dock 图标（来自 `src-tauri/icons-dev/icon.png`）。
+            // 说明：这不会影响 build 产物图标；仅在开发运行时生效。
+            #[cfg(all(debug_assertions, target_os = "macos"))]
+            {
+                try_set_dev_dock_icon(app.handle());
+            }
 
             // 设置窗口关闭事件处理
             // 满足需求 9.4: 点击关闭按钮时隐藏窗口而非退出

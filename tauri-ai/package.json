@@ -8,6 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "gen:dev-icon": "node scripts/gen-dev-icon.mjs",
     "test": "vitest --run",
     "test:watch": "vitest"
   },
@@ -41,6 +42,7 @@
     "zustand": "^5.0.9"
   },
   "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
     "@tailwindcss/typography": "^0.5.19",
     "@tauri-apps/cli": "^2",
     "@testing-library/jest-dom": "^6.9.1",
