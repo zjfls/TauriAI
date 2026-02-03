@@ -685,7 +685,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
   const openWorkstudioWindow = useCallback(async () => {
     const ws = await ensureWorkstudio();
     if (!ws) return;
-    await openOrFocusWorkstudioWindow(`Workstudio: ${ws.mainFolder}`, { workstudioId: ws.id });
+    await openOrFocusWorkstudioWindow(`Workstudio: ${ws.mainFolder}`, { workstudioId: ws.id, mainFolder: ws.mainFolder });
   }, [ensureWorkstudio]);
 
   const handleSetWorkstudioMainFolder = useCallback(async () => {
@@ -708,7 +708,10 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
         setAsMain: true,
       });
       setWorkstudio(updated);
-      await openOrFocusWorkstudioWindow(`Workstudio: ${updated.mainFolder}`, { workstudioId: updated.id });
+      await openOrFocusWorkstudioWindow(`Workstudio: ${updated.mainFolder}`, {
+        workstudioId: updated.id,
+        mainFolder: updated.mainFolder,
+      });
     } catch (e) {
       console.error('set workstudio main folder failed:', e);
     } finally {

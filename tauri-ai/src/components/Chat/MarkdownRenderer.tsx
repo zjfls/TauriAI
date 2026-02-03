@@ -622,6 +622,7 @@ export const MarkdownRenderer = React.memo(function MarkdownRendererImpl({ conte
       const title = ws ? `Workstudio: ${ws.mainFolder}` : 'Workstudio';
       await openOrFocusWorkstudioWindow(title, {
         workstudioId: resolvedWorkstudioId,
+        mainFolder: ws?.mainFolder ?? null,
         filePath: ref.filePath,
         line: ref.line,
         column: ref.column,
@@ -664,14 +665,15 @@ export const MarkdownRenderer = React.memo(function MarkdownRendererImpl({ conte
           }
         }
 
-        const title = ws ? `Workstudio: ${ws.mainFolder}` : 'Workstudio';
-        await openOrFocusWorkstudioWindow(title, {
-          workstudioId: resolvedWorkstudioId,
-          filePath,
-        });
-      } catch (error) {
-        console.warn('openFilePath failed:', error);
-      }
+      const title = ws ? `Workstudio: ${ws.mainFolder}` : 'Workstudio';
+      await openOrFocusWorkstudioWindow(title, {
+        workstudioId: resolvedWorkstudioId,
+        mainFolder: ws?.mainFolder ?? null,
+        filePath,
+      });
+    } catch (error) {
+      console.warn('openFilePath failed:', error);
+    }
     },
     [conversationId, workstudioId]
   );

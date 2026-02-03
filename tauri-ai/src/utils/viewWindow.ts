@@ -84,6 +84,43 @@ const scheduleWorkstudioOpenFile = async (
 
 export const workstudioWindowLabel = (workstudioId: string) => `view-workstudio-${workstudioId}`;
 
+const normalizeWorkstudioMainFolderKey = (input: string): string => {
+  const raw = (input ?? '').trim();
+  if (!raw) return '';
+
+  let out = raw.replace(/[\\]+/g, '/').replace(/\/+/g, '/');
+
+  // Keep "C:/" as-is (root drive), otherwise strip trailing slashes for stability.
+  if (!/^[A-Za-z]:\/$/.test(out)) {
+    out = out.replace(/\/+$/, '');
+  }
+
+  // Windows drive paths are case-insensitive; normalize to lowercase for stable identity.
+  if (/^[A-Za-z]:\//.test(out)) {
+    out = out.toLowerCase();
+  }
+
+  return out;
+};
+
+const hashToWorkstudioLabel = (key: string): string => {
+  // 64-bit FNV-1a (stable, fast, no crypto dependency).
+  let hash = 0xcbf29ce484222325n;
+  const prime = 0x100000001b3n;
+  for (let i = 0; i < key.length; i++) {
+    hash ^= BigInt(key.charCodeAt(i));
+    hash = (hash * prime) & 0xffffffffffffffffn;
+  }
+  return hash.toString(36);
+};
+
+export const workstudioWindowLabelByMainFolder = (mainFolder: string) => {
+  const key = normalizeWorkstudioMainFolderKey(mainFolder);
+  if (!key) return null;
+  const h = hashToWorkstudioLabel(key).slice(0, 13);
+  return `view-workstudio-dir-${h}`;
+};
+
 export interface ViewWindowParams {
   view?: ActiveView | null;
   standalone: boolean;
@@ -383,6 +420,7 @@ export const openOrFocusWorkstudioWindow = async (
   title: string,
   opts: {
     workstudioId: string;
+    mainFolder?: string | null;
     filePath?: string;
     line?: number;
     column?: number;
@@ -390,7 +428,10 @@ export const openOrFocusWorkstudioWindow = async (
     endColumn?: number;
   }
 ) => {
-  const label = workstudioWindowLabel(opts.workstudioId);
+  const label = (() => {
+    const byFolder = opts.mainFolder ? workstudioWindowLabelByMainFolder(opts.mainFolder) : null;
+    return byFolder ?? workstudioWindowLabel(opts.workstudioId);
+  })();
   return openOrFocusViewWindow('workstudio', title, {
     ...opts,
     label,
