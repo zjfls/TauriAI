@@ -162,7 +162,8 @@ impl ToolHandler for ShellCommandTool {
         }
 
         let policy = &ctx.sandbox_policy;
-        if matches!(policy, SandboxPolicy::ReadOnly) && !is_known_safe_command(&args.command) {
+        // Chat mode expects the sandbox to enforce write restrictions; do not hard-block commands here.
+        if false && matches!(policy, SandboxPolicy::ReadOnly) && !is_known_safe_command(&args.command) {
             return Err(ToolError::denied(
                 "read-only 策略下仅允许只读命令（建议优先使用 read_file/list_dir/rg 等工具）",
             ));
