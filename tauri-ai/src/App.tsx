@@ -9,6 +9,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { MainLayout } from './components/Layout/MainLayout';
+import { StandaloneLayout } from './components/Layout/StandaloneLayout';
+import { WorkstudioView } from './components/Workstudio/WorkstudioView';
 import { useConfigStore } from './stores/configStore';
 import { useConversationStore } from './stores/conversationStore';
 import { useSessionStore, initStreamListeners } from './stores/sessionStore';
@@ -17,7 +19,7 @@ import { useWebTabStore } from './stores/webTabStore';
 import { useTerminalTabStore } from './stores/terminalTabStore';
 import { useUIStore } from './stores/uiStore';
 import { useWorkspaceLayoutStore } from './stores/workspaceLayoutStore';
-import { docTabId, terminalTabId, webTabId, workstudioTabId } from './stores/workspaceTabStore';
+import { docTabId, terminalTabId, webTabId } from './stores/workspaceTabStore';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { getViewDefinition } from './views/registry';
 import { ChatViewContainer } from './views/ChatViewContainer';
@@ -45,7 +47,8 @@ function App() {
   const terminalTitleOverride = windowParams.terminalTitle;
   // Standalone non-chat views should not start/restore chat sessions or stream listeners.
   // Otherwise opening a "文本/导图" window can create or mutate chat sessions unexpectedly.
-  const shouldInitChatRuntime = true;
+  const isWorkstudioWindow = viewOverride === 'workstudio';
+  const shouldInitChatRuntime = !isWorkstudioWindow;
   
   // Session store for multi-agent workspace
   const restoreSessionState = useSessionStore((state) => state.restoreSessionState);
@@ -128,7 +131,7 @@ function App() {
    * Initialize keyboard shortcuts for session management
    * Requirements: 9.1, 9.2, 9.3, 9.4, 9.5
    */
-  useKeyboardShortcuts({ enabled: true });
+  useKeyboardShortcuts({ enabled: shouldInitChatRuntime });
 
   /**
    * Menu: File -> Open File...
@@ -137,7 +140,7 @@ function App() {
   useEffect(() => {
     // Workstudio 窗口需要把“打开文件”路由到自己的编辑器，而不是切换到全局 DocumentView。
     // 因此在 workstudio 视图（含 standalone 窗口）里跳过这里的监听（由 WorkstudioView 自己处理）。
-    if (activeView === 'workstudio') return;
+    if (isWorkstudioWindow) return;
 
     let disposed = false;
     let unlisten: null | (() => void) = null;
@@ -202,7 +205,7 @@ function App() {
    * Create a new empty .tauri.richtxt document
    */
   useEffect(() => {
-    if (activeView === 'workstudio') return;
+    if (isWorkstudioWindow) return;
 
     let disposed = false;
     let unlisten: null | (() => void) = null;
@@ -258,7 +261,7 @@ function App() {
    */
   useEffect(() => {
     if (!shouldInitChatRuntime) return;
-    if (activeView === 'workstudio') return;
+    if (isWorkstudioWindow) return;
 
     let disposed = false;
     let unlisten: null | (() => void) = null;
@@ -291,7 +294,7 @@ function App() {
    */
   useEffect(() => {
     if (!shouldInitChatRuntime) return;
-    if (activeView === 'workstudio') return;
+    if (isWorkstudioWindow) return;
 
     let disposed = false;
     let unlisten: null | (() => void) = null;
@@ -379,19 +382,11 @@ function App() {
         useUIStore.getState().setActiveView('chat');
         return;
       }
-
-      if (viewOverride === 'workstudio') {
-        if (!workstudioIdOverride) return;
-        initialStandaloneTabsAppliedRef.current = true;
-        useWorkspaceLayoutStore.getState().openTabInFocusedPane(workstudioTabId(workstudioIdOverride));
-        useUIStore.getState().setActiveView('chat');
-      }
     })();
   }, [
     isStandalone,
     viewOverride,
     documentPathOverride,
-    workstudioIdOverride,
     webUrlOverride,
     webTitleOverride,
     terminalWorkdirOverride,
@@ -437,14 +432,16 @@ function App() {
     }).catch((err) => {
       console.error('Failed to load config:', err);
     });
-    // Load conversations from backend
-    loadConversations()
-      .then(() => {
-        console.log('Conversations loaded');
-      })
-      .catch((err) => {
-        console.error('Failed to load conversations:', err);
-      });
+    if (shouldInitChatRuntime) {
+      // Load conversations from backend
+      loadConversations()
+        .then(() => {
+          console.log('Conversations loaded');
+        })
+        .catch((err) => {
+          console.error('Failed to load conversations:', err);
+        });
+    }
   }, [loadConfig, loadConversations, shouldInitChatRuntime]);
 
   /**
@@ -566,6 +563,11 @@ function App() {
       return;
     }
 
+    if (viewOverride === 'workstudio') {
+      if (activeView !== 'workstudio') setActiveView('workstudio');
+      return;
+    }
+
     if (activeView !== 'chat') setActiveView('chat');
   }, [viewOverride, activeView, setActiveView]);
 
@@ -589,6 +591,14 @@ function App() {
     if (viewDef?.id === 'chat') return null;
     return viewDef?.render() ?? null;
   };
+
+  if (isWorkstudioWindow) {
+    return (
+      <StandaloneLayout title="Workstudio">
+        <WorkstudioView workstudioId={workstudioIdOverride} />
+      </StandaloneLayout>
+    );
+  }
 
   return (
     <MainLayout>

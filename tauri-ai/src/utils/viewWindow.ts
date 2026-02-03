@@ -44,11 +44,6 @@ export type WorkspaceDockItem =
       kind: 'terminal';
       title?: string | null;
       terminalWorkdir?: string | null;
-    }
-  | {
-      kind: 'workstudio';
-      title?: string | null;
-      workstudioId: string;
     };
 
 export type WorkspaceDockRequestPayload = {
@@ -478,13 +473,6 @@ export const openOrFocusWorkstudioWindow = async (
     workstudioId,
     noDefaultSession: true,
   });
-
-  // Ensure the window contains a Workstudio tab (even if the user previously closed it).
-  try {
-    await dockWorkspaceItemToWindow({ kind: 'workstudio', title, workstudioId }, win, 'tab');
-  } catch (err) {
-    console.warn('Failed to dock workstudio tab into window:', err);
-  }
 
   if (opts.filePath) {
     await scheduleWorkstudioOpenFile(win, label, {

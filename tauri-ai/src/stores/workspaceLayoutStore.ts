@@ -91,8 +91,7 @@ const isWorkspaceTabIdString = (s: unknown): s is WorkspaceTabId => {
     (s.startsWith('chat:') ||
       s.startsWith('doc:') ||
       s.startsWith('web:') ||
-      s.startsWith('term:') ||
-      s.startsWith('ws:'))
+      s.startsWith('term:'))
   );
 };
 

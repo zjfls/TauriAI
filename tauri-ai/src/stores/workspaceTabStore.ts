@@ -2,14 +2,13 @@ import { create } from 'zustand';
 import { arrayMove } from '@dnd-kit/sortable';
 import { getWindowLabelForStorage, getWindowScopedStorageKey, isMainWindowLabel } from '../utils/windowStorage';
 
-export type WorkspaceTabKind = 'chat' | 'document' | 'web' | 'terminal' | 'workstudio';
+export type WorkspaceTabKind = 'chat' | 'document' | 'web' | 'terminal';
 
 export type WorkspaceTabId =
   | `chat:${string}`
   | `doc:${string}`
   | `web:${string}`
-  | `term:${string}`
-  | `ws:${string}`;
+  | `term:${string}`;
 
 export interface WorkspaceTab {
   id: WorkspaceTabId;
@@ -18,14 +17,12 @@ export interface WorkspaceTab {
   documentId?: string;
   webTabId?: string;
   terminalTabId?: string;
-  workstudioId?: string;
 }
 
 export const chatTabId = (sessionId: string): WorkspaceTabId => `chat:${sessionId}`;
 export const docTabId = (documentId: string): WorkspaceTabId => `doc:${documentId}`;
 export const webTabId = (webTabId: string): WorkspaceTabId => `web:${webTabId}`;
 export const terminalTabId = (terminalTabId: string): WorkspaceTabId => `term:${terminalTabId}`;
-export const workstudioTabId = (workstudioId: string): WorkspaceTabId => `ws:${workstudioId}`;
 
 export const parseWorkspaceTabId = (id: WorkspaceTabId): WorkspaceTab => {
   if (id.startsWith('chat:')) {
@@ -39,10 +36,6 @@ export const parseWorkspaceTabId = (id: WorkspaceTabId): WorkspaceTab => {
   if (id.startsWith('web:')) {
     const webId = id.slice('web:'.length);
     return { id, kind: 'web', webTabId: webId };
-  }
-  if (id.startsWith('ws:')) {
-    const workstudioId = id.slice('ws:'.length);
-    return { id, kind: 'workstudio', workstudioId };
   }
   const termId = id.slice('term:'.length);
   return { id, kind: 'terminal', terminalTabId: termId };
@@ -95,8 +88,7 @@ const loadInitialOrder = (): WorkspaceTabId[] => {
           s.startsWith('chat:') ||
           s.startsWith('doc:') ||
           s.startsWith('web:') ||
-          s.startsWith('term:') ||
-          s.startsWith('ws:')
+          s.startsWith('term:')
       ) as WorkspaceTabId[];
 
     try {

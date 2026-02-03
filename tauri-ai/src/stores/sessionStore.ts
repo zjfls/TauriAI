@@ -27,7 +27,7 @@ import { useTerminalTabStore } from './terminalTabStore';
 import { useUIStore } from './uiStore';
 import { useWebTabStore } from './webTabStore';
 import { useWorkspaceLayoutStore } from './workspaceLayoutStore';
-import { chatTabId, docTabId, terminalTabId, useWorkspaceTabStore, webTabId, workstudioTabId, type WorkspaceTabId } from './workspaceTabStore';
+import { chatTabId, docTabId, terminalTabId, useWorkspaceTabStore, webTabId, type WorkspaceTabId } from './workspaceTabStore';
 
 // Constants for persistence
 const SESSION_STORAGE_KEY_PREFIX = 'tauri-ai:sessions:v3';
@@ -2964,10 +2964,6 @@ export const initStreamListeners = async () => {
               activate: true,
             });
             tabId = webTabId(wid);
-          } else if (payload.item.kind === 'workstudio') {
-            const workstudioId = (payload.item.workstudioId ?? '').trim();
-            if (!workstudioId) throw new Error('缺少 workstudioId');
-            tabId = workstudioTabId(workstudioId);
           } else if (payload.item.kind === 'terminal') {
             const tid = useTerminalTabStore.getState().openTerminalTab({
               title: payload.item.title ?? undefined,
