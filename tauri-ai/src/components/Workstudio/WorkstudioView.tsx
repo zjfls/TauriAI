@@ -361,8 +361,9 @@ const isSubpath = (child: string, parent: string) => {
   return c.startsWith(`${p}/`);
 };
 
-export const WorkstudioView: React.FC = () => {
-  const { workstudioId, filePath, line, column, endLine, endColumn } = getViewWindowParams();
+export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ workstudioId: workstudioIdProp }) => {
+  const { workstudioId: workstudioIdFromUrl, filePath, line, column, endLine, endColumn } = getViewWindowParams();
+  const workstudioId = (workstudioIdProp ?? workstudioIdFromUrl ?? '').trim() || null;
   const editorByGroupRef = useRef(
     new Map<string, import('monaco-editor').editor.IStandaloneCodeEditor>()
   );
@@ -647,6 +648,7 @@ export const WorkstudioView: React.FC = () => {
   );
 
   type LinkTarget = {
+    workstudioId?: string | null;
     filePath: string;
     line?: number | null;
     column?: number | null;
@@ -1007,6 +1009,7 @@ export const WorkstudioView: React.FC = () => {
     void listen('workstudio:open_file', (event) => {
       const payload = (event as any).payload as LinkTarget | null | undefined;
       if (!payload?.filePath) return;
+      if (payload.workstudioId && workstudioId && payload.workstudioId !== workstudioId) return;
       void openLinkTarget(payload);
     })
       .then((fn) => {

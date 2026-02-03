@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { arrayMove } from '@dnd-kit/sortable';
 import type { WorkspaceTabId } from './workspaceTabStore';
+import { getWindowLabelForStorage, getWindowScopedStorageKey, isMainWindowLabel } from '../utils/windowStorage';
 
 export interface WorkspacePane {
   id: string;
@@ -10,26 +11,10 @@ export interface WorkspacePane {
   weight: number;
 }
 
-const STORAGE_KEY = 'tauri-ai:workspace-layout:v1';
+const STORAGE_KEY_PREFIX = 'tauri-ai:workspace-layout:v2';
+const LEGACY_STORAGE_KEY = 'tauri-ai:workspace-layout:v1';
 
-const isStandaloneWindow = (): boolean => {
-  try {
-    if (typeof window === 'undefined') return false;
-    const params = new URLSearchParams(window.location.search);
-    return params.get('standalone') === '1';
-  } catch {
-    return false;
-  }
-};
-
-const getWorkspaceLayoutStorage = (): Storage | null => {
-  try {
-    if (typeof window === 'undefined') return null;
-    return isStandaloneWindow() ? window.sessionStorage : window.localStorage;
-  } catch {
-    return null;
-  }
-};
+const getStorageKey = (): string => getWindowScopedStorageKey(STORAGE_KEY_PREFIX);
 
 const normalizePaneWeights = (panes: WorkspacePane[]): WorkspacePane[] => {
   if (panes.length === 0) return panes;
@@ -103,14 +88,28 @@ const compactEmptyPanes = (
 const isWorkspaceTabIdString = (s: unknown): s is WorkspaceTabId => {
   return (
     typeof s === 'string' &&
-    (s.startsWith('chat:') || s.startsWith('doc:') || s.startsWith('web:') || s.startsWith('term:'))
+    (s.startsWith('chat:') ||
+      s.startsWith('doc:') ||
+      s.startsWith('web:') ||
+      s.startsWith('term:') ||
+      s.startsWith('ws:'))
   );
 };
 
 const loadInitialLayout = (): { panes: WorkspacePane[]; focusedPaneId: string | null } => {
   try {
-    const storage = getWorkspaceLayoutStorage();
-    const raw = storage?.getItem(STORAGE_KEY);
+    const storage = typeof window !== 'undefined' ? window.localStorage : null;
+    const key = getStorageKey();
+    let raw = storage?.getItem(key);
+
+    // Migration (main window): v1 global key -> v2 window-scoped key.
+    if (!raw) {
+      const label = getWindowLabelForStorage();
+      if (isMainWindowLabel(label)) {
+        raw = storage?.getItem(LEGACY_STORAGE_KEY);
+      }
+    }
+
     if (!raw) return { panes: ensureAtLeastOnePane([]), focusedPaneId: null };
     const parsed = JSON.parse(raw) as
       | {
@@ -146,7 +145,16 @@ const loadInitialLayout = (): { panes: WorkspacePane[]; focusedPaneId: string | 
       .filter((p): p is WorkspacePane => p !== null);
 
     const focusedPaneId = typeof parsed?.focusedPaneId === 'string' ? (parsed?.focusedPaneId as string) : null;
-    return compactEmptyPanes(panes, focusedPaneId);
+    const compacted = compactEmptyPanes(panes, focusedPaneId);
+
+    // Best-effort persist to the new v2 key after a successful parse (covers v1 migration).
+    try {
+      storage?.setItem(key, JSON.stringify({ panes: compacted.panes, focusedPaneId: compacted.focusedPaneId }));
+    } catch {
+      // ignore
+    }
+
+    return compacted;
   } catch {
     return { panes: ensureAtLeastOnePane([]), focusedPaneId: null };
   }
@@ -154,9 +162,9 @@ const loadInitialLayout = (): { panes: WorkspacePane[]; focusedPaneId: string | 
 
 const persistLayout = (next: { panes: WorkspacePane[]; focusedPaneId: string | null }) => {
   try {
-    const storage = getWorkspaceLayoutStorage();
-    storage?.setItem(
-      STORAGE_KEY,
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(
+      getStorageKey(),
       JSON.stringify({
         panes: next.panes,
         focusedPaneId: next.focusedPaneId,

@@ -1,24 +1,31 @@
 import { create } from 'zustand';
 import { arrayMove } from '@dnd-kit/sortable';
+import { getWindowLabelForStorage, getWindowScopedStorageKey, isMainWindowLabel } from '../utils/windowStorage';
 
-export type WorkspaceTabKind = 'chat' | 'document' | 'web' | 'terminal';
+export type WorkspaceTabKind = 'chat' | 'document' | 'web' | 'terminal' | 'workstudio';
 
-export type WorkspaceTabId = `chat:${string}` | `doc:${string}` | `web:${string}` | `term:${string}`;
+export type WorkspaceTabId =
+  | `chat:${string}`
+  | `doc:${string}`
+  | `web:${string}`
+  | `term:${string}`
+  | `ws:${string}`;
 
 export interface WorkspaceTab {
   id: WorkspaceTabId;
   kind: WorkspaceTabKind;
-  // One of these will be set depending on kind.
   sessionId?: string;
   documentId?: string;
   webTabId?: string;
   terminalTabId?: string;
+  workstudioId?: string;
 }
 
 export const chatTabId = (sessionId: string): WorkspaceTabId => `chat:${sessionId}`;
 export const docTabId = (documentId: string): WorkspaceTabId => `doc:${documentId}`;
 export const webTabId = (webTabId: string): WorkspaceTabId => `web:${webTabId}`;
 export const terminalTabId = (terminalTabId: string): WorkspaceTabId => `term:${terminalTabId}`;
+export const workstudioTabId = (workstudioId: string): WorkspaceTabId => `ws:${workstudioId}`;
 
 export const parseWorkspaceTabId = (id: WorkspaceTabId): WorkspaceTab => {
   if (id.startsWith('chat:')) {
@@ -33,31 +40,18 @@ export const parseWorkspaceTabId = (id: WorkspaceTabId): WorkspaceTab => {
     const webId = id.slice('web:'.length);
     return { id, kind: 'web', webTabId: webId };
   }
+  if (id.startsWith('ws:')) {
+    const workstudioId = id.slice('ws:'.length);
+    return { id, kind: 'workstudio', workstudioId };
+  }
   const termId = id.slice('term:'.length);
   return { id, kind: 'terminal', terminalTabId: termId };
 };
 
-const STORAGE_KEY = 'tauri-ai:workspace-tabs:v1';
+const STORAGE_KEY_PREFIX = 'tauri-ai:workspace-tabs:v2';
+const LEGACY_STORAGE_KEY = 'tauri-ai:workspace-tabs:v1';
 
-const isStandaloneWindow = (): boolean => {
-  try {
-    if (typeof window === 'undefined') return false;
-    const params = new URLSearchParams(window.location.search);
-    return params.get('standalone') === '1';
-  } catch {
-    return false;
-  }
-};
-
-const getWorkspaceTabStorage = (): Storage | null => {
-  try {
-    if (typeof window === 'undefined') return null;
-    // 多窗口隔离：standalone 窗口用 sessionStorage（每个窗口独立），主窗口用 localStorage（跨重启持久化）。
-    return isStandaloneWindow() ? window.sessionStorage : window.localStorage;
-  } catch {
-    return null;
-  }
-};
+const getStorageKey = (): string => getWindowScopedStorageKey(STORAGE_KEY_PREFIX);
 
 interface WorkspaceTabState {
   tabOrder: WorkspaceTabId[];
@@ -81,15 +75,37 @@ interface WorkspaceTabState {
 
 const loadInitialOrder = (): WorkspaceTabId[] => {
   try {
-    const storage = getWorkspaceTabStorage();
-    const raw = storage?.getItem(STORAGE_KEY);
+    if (typeof window === 'undefined') return [];
+    const storage = window.localStorage;
+    const key = getStorageKey();
+    let raw = storage.getItem(key);
+
+    if (!raw && isMainWindowLabel(getWindowLabelForStorage())) {
+      raw = storage.getItem(LEGACY_STORAGE_KEY);
+    }
+
     if (!raw) return [];
     const parsed = JSON.parse(raw) as { tabOrder?: string[] } | null;
     const items = parsed?.tabOrder ?? [];
-    // Best-effort validation: keep only known prefixes.
-    return items
+
+    const next = items
       .filter((s) => typeof s === 'string')
-      .filter((s) => s.startsWith('chat:') || s.startsWith('doc:') || s.startsWith('web:') || s.startsWith('term:')) as WorkspaceTabId[];
+      .filter(
+        (s) =>
+          s.startsWith('chat:') ||
+          s.startsWith('doc:') ||
+          s.startsWith('web:') ||
+          s.startsWith('term:') ||
+          s.startsWith('ws:')
+      ) as WorkspaceTabId[];
+
+    try {
+      storage.setItem(key, JSON.stringify({ tabOrder: next }));
+    } catch {
+      // ignore
+    }
+
+    return next;
   } catch {
     return [];
   }
@@ -97,8 +113,8 @@ const loadInitialOrder = (): WorkspaceTabId[] => {
 
 const persistOrder = (tabOrder: WorkspaceTabId[]) => {
   try {
-    const storage = getWorkspaceTabStorage();
-    storage?.setItem(STORAGE_KEY, JSON.stringify({ tabOrder }));
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(getStorageKey(), JSON.stringify({ tabOrder }));
   } catch {
     // ignore
   }
@@ -196,7 +212,6 @@ export const useWorkspaceTabStore = create<WorkspaceTabState>((set, get) => ({
     const current = get().tabOrder;
     const next: WorkspaceTabId[] = [];
 
-    // Keep existing order for items that still exist.
     for (const t of current) {
       if (known.has(t)) {
         next.push(t);
@@ -204,7 +219,6 @@ export const useWorkspaceTabStore = create<WorkspaceTabState>((set, get) => ({
       }
     }
 
-    // Append any new tabs not previously recorded.
     for (const t of known) {
       next.push(t);
     }
@@ -213,4 +227,3 @@ export const useWorkspaceTabStore = create<WorkspaceTabState>((set, get) => ({
     persistOrder(next);
   },
 }));
-

@@ -11,6 +11,80 @@ use tokio::sync::Mutex;
 use crate::config::ConfigManager;
 use crate::storage::Database;
 
+fn dev_icon_image() -> Image<'static> {
+    const SIZE: u32 = 32;
+    let mut rgba = vec![0u8; (SIZE * SIZE * 4) as usize];
+
+    let mut set_pixel = |x: u32, y: u32, r: u8, g: u8, b: u8, a: u8| {
+        if x >= SIZE || y >= SIZE {
+            return;
+        }
+        let i = ((y * SIZE + x) * 4) as usize;
+        rgba[i] = r;
+        rgba[i + 1] = g;
+        rgba[i + 2] = b;
+        rgba[i + 3] = a;
+    };
+
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let mut r: u8 = 239;
+            let mut g: u8 = 68;
+            let mut b: u8 = 68;
+            if (x + y) % 8 < 4 {
+                r = r.saturating_add(18);
+                g = g.saturating_add(18);
+                b = b.saturating_add(18);
+            }
+            if x == 0 || y == 0 || x == SIZE - 1 || y == SIZE - 1 {
+                r = 255;
+                g = 255;
+                b = 255;
+            }
+            set_pixel(x, y, r, g, b, 255);
+        }
+    }
+
+    let glyph_d = ["1110", "1001", "1001", "1001", "1001", "1110"];
+    let glyph_e = ["1111", "1000", "1110", "1000", "1000", "1111"];
+    let glyph_v = ["1001", "1001", "1001", "1001", "0101", "0010"];
+    let letters = [glyph_d, glyph_e, glyph_v];
+
+    let glyph_w: u32 = 4;
+    let glyph_h: u32 = 6;
+    let scale: u32 = 2;
+    let spacing: u32 = 2;
+    let total_w = (glyph_w * scale) * letters.len() as u32 + spacing * (letters.len() as u32 - 1);
+    let total_h = glyph_h * scale;
+    let start_x = (SIZE.saturating_sub(total_w)) / 2;
+    let start_y = (SIZE.saturating_sub(total_h)) / 2;
+
+    for (li, glyph) in letters.iter().enumerate() {
+        let base_x = start_x + li as u32 * (glyph_w * scale + spacing);
+        for (gy, row) in glyph.iter().enumerate() {
+            for gx in 0..glyph_w as usize {
+                if row.as_bytes().get(gx).copied() != Some(b'1') {
+                    continue;
+                }
+                for sy in 0..scale {
+                    for sx in 0..scale {
+                        set_pixel(
+                            base_x + gx as u32 * scale + sx,
+                            start_y + gy as u32 * scale + sy,
+                            255,
+                            255,
+                            255,
+                            255,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    Image::new_owned(rgba, SIZE, SIZE)
+}
+
 /// 切换主窗口的可见性
 ///
 /// 如果窗口当前可见，则隐藏它；如果隐藏，则显示并聚焦。
@@ -77,9 +151,14 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     // 创建托盘菜单
     let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
 
-    // 加载托盘图标 - 使用内嵌的 PNG 图标
-    let icon =
-        Image::from_bytes(include_bytes!("../icons/32x32.png")).expect("Failed to load tray icon");
+    // 加载托盘图标：
+    // - DEV：使用带 “DEV” 标识的图标，避免与打包版本混淆
+    // - Release：使用内嵌的 PNG 图标
+    let icon = if cfg!(debug_assertions) {
+        dev_icon_image()
+    } else {
+        Image::from_bytes(include_bytes!("../icons/32x32.png")).expect("Failed to load tray icon")
+    };
 
     // 构建托盘图标
     let _tray = TrayIconBuilder::new()

@@ -13,6 +13,7 @@ import {
 import type { AgentSession } from '../types';
 import { ChatView } from '../components/Chat/ChatView';
 import { DocumentView } from '../components/Documents/DocumentView';
+import { WorkstudioView } from '../components/Workstudio/WorkstudioView';
 import { TerminalTabView } from '../components/Terminal/TerminalTabView';
 import { WebTabView } from '../components/Web/WebTabView';
 import { WorkspacePaneHeader } from '../components/Workspace/WorkspacePaneHeader';
@@ -23,7 +24,13 @@ import { useWebTabStore } from '../stores/webTabStore';
 import { type WorkspacePane, useWorkspaceLayoutStore } from '../stores/workspaceLayoutStore';
 import { chatTabId, parseWorkspaceTabId, type WorkspaceTabId } from '../stores/workspaceTabStore';
 import { endChatOpenProfile, getActiveChatOpenProfile, markChatOpenProfile } from '../utils/chatOpenProfile';
-import { dockWorkspaceItemToWindow, findChatDockTargetAtCursor, openOrFocusConversationChatWindow, openViewWindow } from '../utils/viewWindow';
+import {
+  dockWorkspaceItemToWindow,
+  findChatDockTargetAtCursor,
+  openOrFocusConversationChatWindow,
+  openOrFocusWorkstudioWindow,
+  openViewWindow,
+} from '../utils/viewWindow';
 
 const MemoChatView = React.memo(ChatView);
 MemoChatView.displayName = 'MemoChatView';
@@ -87,6 +94,11 @@ const WorkspacePaneView: React.FC<{
       const wid = parsed.webTabId;
       if (!wid) return null;
       return <WebTabView webTabId={wid} />;
+    }
+    if (parsed.kind === 'workstudio') {
+      const wsid = parsed.workstudioId;
+      if (!wsid) return null;
+      return <WorkstudioView workstudioId={wsid} />;
     }
     const tid = parsed.terminalTabId;
     if (!tid) return null;
@@ -182,8 +194,15 @@ const ChatViewContainerInner: React.FC = () => {
     for (const d of documents) set.add(`doc:${d.id}` as WorkspaceTabId);
     for (const w of webTabs) set.add(`web:${w.id}` as WorkspaceTabId);
     for (const t of terminalTabs) set.add(`term:${t.id}` as WorkspaceTabId);
+
+    // Workstudio tabs are window-scoped and do not have a global store; keep whatever exists in the layout.
+    for (const p of panes ?? []) {
+      for (const tid of p.tabIds) {
+        if (tid.startsWith('ws:')) set.add(tid);
+      }
+    }
     return set;
-  }, [documents, sessionsMap, terminalTabs, webTabs]);
+  }, [documents, panes, sessionsMap, terminalTabs, webTabs]);
 
   const resolvedPanes = useMemo((): WorkspacePane[] => {
     const base =
@@ -603,6 +622,34 @@ const ChatViewContainerInner: React.FC = () => {
           return;
         }
 
+        if (parsed.kind === 'workstudio') {
+          const wsid = parsed.workstudioId;
+          if (!wsid) return;
+          void (async () => {
+            const item = { kind: 'workstudio' as const, title: 'Workstudio', workstudioId: wsid };
+
+            const dockTarget = await findChatDockTargetAtCursor().catch(() => null);
+            if (dockTarget) {
+              try {
+                await dockWorkspaceItemToWindow(item, dockTarget.targetLabel, dockTarget.placement);
+                closeTabInLayout(activeId);
+                return;
+              } catch (err) {
+                console.warn('Failed to dock workstudio tab via drag-drop, fallback to popout:', err);
+              }
+            }
+
+            try {
+              await openOrFocusWorkstudioWindow('Workstudio', { workstudioId: wsid });
+              closeTabInLayout(activeId);
+            } catch (err) {
+              console.error('Failed to popout workstudio tab:', err);
+              alert('当前环境不支持打开新窗口');
+            }
+          })();
+          return;
+        }
+
         const tab = parsed.terminalTabId ? terminalTabs.find((t) => t.id === parsed.terminalTabId) : undefined;
         if (!tab) return;
         void (async () => {
@@ -760,6 +807,9 @@ const ChatViewContainerInner: React.FC = () => {
         if (parsed.webTabId) closeWebTab(parsed.webTabId);
         return;
       }
+      if (parsed.kind === 'workstudio') {
+        return;
+      }
       if (parsed.terminalTabId) void closeTerminalTab(parsed.terminalTabId);
     },
     [closeDocument, closeSession, closeTabInLayout, closeTerminalTab, closeWebTab]
@@ -774,6 +824,8 @@ const ChatViewContainerInner: React.FC = () => {
         setActiveDocument(parsed.documentId);
       } else if (parsed.kind === 'web' && parsed.webTabId) {
         setActiveWebTab(parsed.webTabId);
+      } else if (parsed.kind === 'workstudio') {
+        // No extra store sync needed.
       } else if (parsed.kind === 'terminal' && parsed.terminalTabId) {
         setActiveTerminalTab(parsed.terminalTabId);
       }
@@ -838,6 +890,9 @@ const ChatViewContainerInner: React.FC = () => {
               }
               if (parsed.kind === 'web') {
                 return parsed.webTabId ? webTabs.find((t) => t.id === parsed.webTabId)?.title ?? '网页' : '网页';
+              }
+              if (parsed.kind === 'workstudio') {
+                return 'Workstudio';
               }
               return parsed.terminalTabId
                 ? terminalTabs.find((t) => t.id === parsed.terminalTabId)?.title ?? '终端'

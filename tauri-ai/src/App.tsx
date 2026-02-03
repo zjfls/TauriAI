@@ -9,7 +9,6 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { MainLayout } from './components/Layout/MainLayout';
-import { StandaloneLayout } from './components/Layout/StandaloneLayout';
 import { useConfigStore } from './stores/configStore';
 import { useConversationStore } from './stores/conversationStore';
 import { useSessionStore, initStreamListeners } from './stores/sessionStore';
@@ -18,7 +17,7 @@ import { useWebTabStore } from './stores/webTabStore';
 import { useTerminalTabStore } from './stores/terminalTabStore';
 import { useUIStore } from './stores/uiStore';
 import { useWorkspaceLayoutStore } from './stores/workspaceLayoutStore';
-import { docTabId, terminalTabId, webTabId } from './stores/workspaceTabStore';
+import { docTabId, terminalTabId, webTabId, workstudioTabId } from './stores/workspaceTabStore';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { getViewDefinition } from './views/registry';
 import { ChatViewContainer } from './views/ChatViewContainer';
@@ -35,14 +34,18 @@ function App() {
   const viewOverride = windowParams.view;
   const isStandalone = windowParams.standalone;
   const noDefaultSession = windowParams.noDefaultSession;
-  const isStandaloneChatWindow = isStandalone && viewOverride === 'chat';
   const conversationIdOverride = windowParams.conversationId;
   const agentNameOverride = windowParams.agentName;
   const runModeOverride = windowParams.runMode;
   const documentPathOverride = windowParams.documentPath;
+  const workstudioIdOverride = windowParams.workstudioId;
+  const webUrlOverride = windowParams.webUrl;
+  const webTitleOverride = windowParams.webTitle;
+  const terminalWorkdirOverride = windowParams.terminalWorkdir;
+  const terminalTitleOverride = windowParams.terminalTitle;
   // Standalone non-chat views should not start/restore chat sessions or stream listeners.
   // Otherwise opening a "文本/导图" window can create or mutate chat sessions unexpectedly.
-  const shouldInitChatRuntime = !isStandalone || viewOverride === 'chat';
+  const shouldInitChatRuntime = true;
   
   // Session store for multi-agent workspace
   const restoreSessionState = useSessionStore((state) => state.restoreSessionState);
@@ -52,6 +55,7 @@ function App() {
   // Track if session initialization has been done to prevent duplicate execution
   const sessionInitialized = useRef(false);
   const viewOverrideAppliedRef = useRef(false);
+  const initialStandaloneTabsAppliedRef = useRef(false);
   const chatKeepAliveLayerRef = useRef<HTMLDivElement>(null);
 
   // Debug logging
@@ -133,7 +137,7 @@ function App() {
   useEffect(() => {
     // Workstudio 窗口需要把“打开文件”路由到自己的编辑器，而不是切换到全局 DocumentView。
     // 因此在 workstudio 视图（含 standalone 窗口）里跳过这里的监听（由 WorkstudioView 自己处理）。
-    if ((isStandaloneChatWindow ? activeView : (viewOverride || activeView)) === 'workstudio') return;
+    if (activeView === 'workstudio') return;
 
     let disposed = false;
     let unlisten: null | (() => void) = null;
@@ -191,14 +195,14 @@ function App() {
       disposed = true;
       unlisten?.();
     };
-  }, [viewOverride, activeView, isStandaloneChatWindow, shouldInitChatRuntime]);
+  }, [viewOverride, activeView, shouldInitChatRuntime]);
 
   /**
    * Menu: File -> New .tauri.richtxt
    * Create a new empty .tauri.richtxt document
    */
   useEffect(() => {
-    if ((isStandaloneChatWindow ? activeView : (viewOverride || activeView)) === 'workstudio') return;
+    if (activeView === 'workstudio') return;
 
     let disposed = false;
     let unlisten: null | (() => void) = null;
@@ -246,7 +250,7 @@ function App() {
       disposed = true;
       unlisten?.();
     };
-  }, [viewOverride, activeView, isStandaloneChatWindow, shouldInitChatRuntime]);
+  }, [viewOverride, activeView, shouldInitChatRuntime]);
 
   /**
    * Menu: View -> Open Web Tab
@@ -254,7 +258,7 @@ function App() {
    */
   useEffect(() => {
     if (!shouldInitChatRuntime) return;
-    if ((isStandaloneChatWindow ? activeView : (viewOverride || activeView)) === 'workstudio') return;
+    if (activeView === 'workstudio') return;
 
     let disposed = false;
     let unlisten: null | (() => void) = null;
@@ -279,7 +283,7 @@ function App() {
       disposed = true;
       unlisten?.();
     };
-  }, [viewOverride, activeView, isStandaloneChatWindow, shouldInitChatRuntime]);
+  }, [viewOverride, activeView, shouldInitChatRuntime]);
 
   /**
    * Menu: View -> Open Terminal Tab
@@ -287,7 +291,7 @@ function App() {
    */
   useEffect(() => {
     if (!shouldInitChatRuntime) return;
-    if ((isStandaloneChatWindow ? activeView : (viewOverride || activeView)) === 'workstudio') return;
+    if (activeView === 'workstudio') return;
 
     let disposed = false;
     let unlisten: null | (() => void) = null;
@@ -312,41 +316,87 @@ function App() {
       disposed = true;
       unlisten?.();
     };
-  }, [viewOverride, activeView, isStandaloneChatWindow, shouldInitChatRuntime]);
+  }, [viewOverride, activeView, shouldInitChatRuntime]);
 
   /**
-   * Standalone document window: open a local file if provided via query param.
+   * Standalone window: 兼容旧的 `view=` 语义，把 document/web/terminal 映射到工作区 Tab。
    */
   useEffect(() => {
     if (!isStandalone) return;
-    if (viewOverride !== 'document') return;
-    if (!documentPathOverride) return;
+    if (!viewOverride) return;
+    if (initialStandaloneTabsAppliedRef.current) return;
 
     void (async () => {
-      try {
-        const file = await invoke<{
-          filename: string;
-          mime: string;
-          base64: string;
-          size: number;
-        }>('read_local_file_base64', { path: documentPathOverride });
+      if (viewOverride === 'document') {
+        if (!documentPathOverride) return;
+        initialStandaloneTabsAppliedRef.current = true;
+        try {
+          const file = await invoke<{
+            filename: string;
+            mime: string;
+            base64: string;
+            size: number;
+          }>('read_local_file_base64', { path: documentPathOverride });
 
-        const bytes = Uint8Array.from(atob(file.base64), (c) => c.charCodeAt(0));
-        const content = new TextDecoder('utf-8').decode(bytes);
+          const bytes = Uint8Array.from(atob(file.base64), (c) => c.charCodeAt(0));
+          const content = new TextDecoder('utf-8').decode(bytes);
 
-        useDocumentStore.getState().openDocument({
-          title: file.filename,
-          path: documentPathOverride,
-          kind: 'text',
-          content,
+          const docId = useDocumentStore.getState().openDocument({
+            title: file.filename,
+            path: documentPathOverride,
+            kind: 'text',
+            content,
+          });
+
+          useWorkspaceLayoutStore.getState().openTabInFocusedPane(docTabId(docId));
+          useUIStore.getState().setActiveView('chat');
+        } catch (error) {
+          console.error('Failed to open document in standalone window:', error);
+        }
+        return;
+      }
+
+      if (viewOverride === 'web') {
+        if (!webUrlOverride) return;
+        initialStandaloneTabsAppliedRef.current = true;
+        const wid = useWebTabStore.getState().openWebTab(webUrlOverride, {
+          title: webTitleOverride ?? undefined,
+          activate: true,
         });
+        useWorkspaceLayoutStore.getState().openTabInFocusedPane(webTabId(wid));
+        useUIStore.getState().setActiveView('chat');
+        return;
+      }
 
-        useUIStore.getState().setActiveView('document');
-      } catch (error) {
-        console.error('Failed to open document in standalone window:', error);
+      if (viewOverride === 'terminal') {
+        initialStandaloneTabsAppliedRef.current = true;
+        const tid = useTerminalTabStore.getState().openTerminalTab({
+          title: terminalTitleOverride ?? undefined,
+          workdir: terminalWorkdirOverride ?? undefined,
+          activate: true,
+        });
+        useWorkspaceLayoutStore.getState().openTabInFocusedPane(terminalTabId(tid));
+        useUIStore.getState().setActiveView('chat');
+        return;
+      }
+
+      if (viewOverride === 'workstudio') {
+        if (!workstudioIdOverride) return;
+        initialStandaloneTabsAppliedRef.current = true;
+        useWorkspaceLayoutStore.getState().openTabInFocusedPane(workstudioTabId(workstudioIdOverride));
+        useUIStore.getState().setActiveView('chat');
       }
     })();
-  }, [isStandalone, viewOverride, documentPathOverride]);
+  }, [
+    isStandalone,
+    viewOverride,
+    documentPathOverride,
+    workstudioIdOverride,
+    webUrlOverride,
+    webTitleOverride,
+    terminalWorkdirOverride,
+    terminalTitleOverride,
+  ]);
 
   /**
    * Handle window resize to force re-render
@@ -388,14 +438,14 @@ function App() {
       console.error('Failed to load config:', err);
     });
     // Load conversations from backend
-    if (!isStandalone || viewOverride === 'history' || viewOverride === 'chat') {
-      loadConversations().then(() => {
+    loadConversations()
+      .then(() => {
         console.log('Conversations loaded');
-      }).catch((err) => {
+      })
+      .catch((err) => {
         console.error('Failed to load conversations:', err);
       });
-    }
-  }, [loadConfig, loadConversations, shouldInitChatRuntime, isStandalone, viewOverride]);
+  }, [loadConfig, loadConversations, shouldInitChatRuntime]);
 
   /**
    * Restore session state after config is loaded
@@ -451,10 +501,17 @@ function App() {
       console.log('Current sessions count:', currentSessions.size);
       
       if (currentSessions.size === 0) {
-        // If a standalone chat window is bound to an existing conversation, don't create a new one.
-        if (isStandalone && viewOverride === 'chat' && (conversationIdOverride || noDefaultSession)) {
-          return;
-        }
+        const skipDefaultSession =
+          isStandalone &&
+          (noDefaultSession ||
+            Boolean(conversationIdOverride) ||
+            (viewOverride !== null &&
+              viewOverride !== undefined &&
+              viewOverride !== 'chat' &&
+              viewOverride !== 'history' &&
+              viewOverride !== 'settings'));
+
+        if (skipDefaultSession) return;
         const defaultAgent = config.defaultAgent || config.agents?.[0]?.name;
         console.log('Creating default session with agent:', defaultAgent);
         if (defaultAgent) {
@@ -492,30 +549,30 @@ function App() {
    * Render the active view based on UI state
    * Requirements: 2.1-2.6
    */
-  const resolvedView = isStandaloneChatWindow ? activeView : viewOverride || activeView;
+  const resolvedView = activeView;
   const viewDef = getViewDefinition(resolvedView) || getViewDefinition('chat');
   const isChatActive = (viewDef?.id ?? 'chat') === 'chat';
 
   useEffect(() => {
     if (!viewOverride) return;
+    if (viewOverrideAppliedRef.current) return;
+    viewOverrideAppliedRef.current = true;
 
-    // Standalone chat windows should behave like a mini-workspace: allow switching to web/terminal/etc.
-    // So we apply the view override once as the initial active view, instead of locking it forever.
-    if (isStandaloneChatWindow) {
-      if (viewOverrideAppliedRef.current) return;
-      viewOverrideAppliedRef.current = true;
+    // 兼容旧的 standalone window 语义：
+    // - history/settings：作为初始 activeView
+    // - document/web/terminal/workstudio：视为“在工作区内打开一个 Tab”，activeView 仍为 chat
+    if (viewOverride === 'history' || viewOverride === 'settings') {
       if (viewOverride !== activeView) setActiveView(viewOverride);
       return;
     }
 
-    if (viewOverride !== activeView) setActiveView(viewOverride);
-  }, [viewOverride, activeView, setActiveView, isStandaloneChatWindow]);
+    if (activeView !== 'chat') setActiveView('chat');
+  }, [viewOverride, activeView, setActiveView]);
 
   // ChatView keep-alive:
   // - 在主窗口内切换到 History/Settings 等视图时，不卸载 ChatView（避免滚动/定位在重建时漂移）
   // - 仅通过可见性与 pointer-events 控制展示，保证回到聊天时“像没离开一样”
   useEffect(() => {
-    if (isStandalone && !isStandaloneChatWindow) return;
     if (isChatActive) return;
 
     const chatLayer = chatKeepAliveLayerRef.current;
@@ -525,21 +582,13 @@ function App() {
     if (chatLayer.contains(active)) {
       active.blur();
     }
-  }, [isChatActive, isStandalone, isStandaloneChatWindow]);
+  }, [isChatActive]);
 
   const renderNonChatView = () => {
     if (isChatActive) return null;
     if (viewDef?.id === 'chat') return null;
     return viewDef?.render() ?? null;
   };
-
-  if (isStandalone && !isStandaloneChatWindow) {
-    return (
-      <StandaloneLayout title={viewDef?.title}>
-        {viewDef?.render() ?? null}
-      </StandaloneLayout>
-    );
-  }
 
   return (
     <MainLayout>

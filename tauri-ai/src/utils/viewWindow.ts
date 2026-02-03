@@ -4,6 +4,7 @@ import { cursorPosition } from '@tauri-apps/api/window';
 import type { ActiveView, RunMode } from '../types';
 
 type WorkstudioOpenPayload = {
+  workstudioId?: string | null;
   filePath: string;
   line?: number | null;
   column?: number | null;
@@ -43,6 +44,11 @@ export type WorkspaceDockItem =
       kind: 'terminal';
       title?: string | null;
       terminalWorkdir?: string | null;
+    }
+  | {
+      kind: 'workstudio';
+      title?: string | null;
+      workstudioId: string;
     };
 
 export type WorkspaceDockRequestPayload = {
@@ -355,20 +361,6 @@ export const openOrFocusViewWindow = async (
       const existing = await WebviewWindow.getByLabel(label);
       if (existing) {
         await existing.setFocus();
-
-        // Workstudio: focus existing window and send it an "open file" event.
-        // 这里需要做“多次投递 + 时序取消”，因为：
-        // - window 已存在但 WebView 可能仍在加载中，JS listener 尚未注册，单次 emit 会丢
-        // - 用户可能连续点击多个不同链接，旧的投递必须被取消，避免最后跳回旧位置
-        if (view === 'workstudio' && opts?.filePath) {
-          await scheduleWorkstudioOpenFile(existing, label, {
-            filePath: opts.filePath,
-            line: opts.line ?? null,
-            column: opts.column ?? null,
-            endLine: opts.endLine ?? null,
-            endColumn: opts.endColumn ?? null,
-          });
-        }
         return existing;
       }
     } catch {
@@ -471,14 +463,41 @@ export const openOrFocusWorkstudioWindow = async (
     endColumn?: number;
   }
 ) => {
+  const workstudioId = (opts.workstudioId ?? '').trim();
+  if (!workstudioId) {
+    throw new Error('workstudioId 不能为空');
+  }
+
   const label = (() => {
     const byFolder = opts.mainFolder ? workstudioWindowLabelByMainFolder(opts.mainFolder) : null;
-    return byFolder ?? workstudioWindowLabel(opts.workstudioId);
+    return byFolder ?? workstudioWindowLabel(workstudioId);
   })();
-  return openOrFocusViewWindow('workstudio', title, {
-    ...opts,
+
+  const win = await openOrFocusViewWindow('workstudio', title, {
     label,
+    workstudioId,
+    noDefaultSession: true,
   });
+
+  // Ensure the window contains a Workstudio tab (even if the user previously closed it).
+  try {
+    await dockWorkspaceItemToWindow({ kind: 'workstudio', title, workstudioId }, win, 'tab');
+  } catch (err) {
+    console.warn('Failed to dock workstudio tab into window:', err);
+  }
+
+  if (opts.filePath) {
+    await scheduleWorkstudioOpenFile(win, label, {
+      workstudioId,
+      filePath: opts.filePath,
+      line: opts.line ?? null,
+      column: opts.column ?? null,
+      endLine: opts.endLine ?? null,
+      endColumn: opts.endColumn ?? null,
+    });
+  }
+
+  return win;
 };
 
 export type ChatWindowInfo = {
@@ -502,6 +521,14 @@ export const listChatWindows = async (): Promise<ChatWindowInfo[]> => {
           label,
           kind: 'chat',
           conversationId: label.slice('view-chat-'.length),
+        });
+        continue;
+      }
+      if (label.startsWith('view-workstudio-')) {
+        infos.push({
+          label,
+          kind: 'chat',
+          conversationId: null,
         });
         continue;
       }

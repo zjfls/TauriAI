@@ -20,16 +20,18 @@ import {
   type ChatDockPlacement,
   type WorkspaceDockRequestPayload,
 } from '../utils/viewWindow';
+import { getWindowLabelForStorage, getWindowScopedStorageKey, isMainWindowLabel } from '../utils/windowStorage';
 import { useConfigStore } from './configStore';
 import { useDocumentStore } from './documentStore';
 import { useTerminalTabStore } from './terminalTabStore';
 import { useUIStore } from './uiStore';
 import { useWebTabStore } from './webTabStore';
 import { useWorkspaceLayoutStore } from './workspaceLayoutStore';
-import { chatTabId, docTabId, terminalTabId, useWorkspaceTabStore, webTabId, type WorkspaceTabId } from './workspaceTabStore';
+import { chatTabId, docTabId, terminalTabId, useWorkspaceTabStore, webTabId, workstudioTabId, type WorkspaceTabId } from './workspaceTabStore';
 
 // Constants for persistence
-const SESSION_STORAGE_KEY = 'tauri-ai:sessions';
+const SESSION_STORAGE_KEY_PREFIX = 'tauri-ai:sessions:v3';
+const LEGACY_SESSION_STORAGE_KEY = 'tauri-ai:sessions';
 const PERSISTENCE_VERSION = 2;
 const MAX_SESSIONS = 10;
 const DRAFT_PERSIST_DEBOUNCE_MS = 500;
@@ -49,11 +51,13 @@ const getSessionStateStorage = (): Storage | null => {
   try {
     if (typeof window === 'undefined') return null;
     // 多窗口隔离：standalone 窗口用 sessionStorage（每个窗口独立），主窗口用 localStorage（跨重启持久化）。
-    return isStandaloneWindow() ? window.sessionStorage : window.localStorage;
+    return window.localStorage;
   } catch {
     return null;
   }
 };
+
+const getSessionStateStorageKey = (): string => getWindowScopedStorageKey(SESSION_STORAGE_KEY_PREFIX);
 
 export interface SessionPane {
   id: string;
@@ -424,9 +428,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     // WorkspaceTabBar uses a separate order list; keep it in sync.
     // 多窗口隔离：standalone 窗口不应影响主窗口的 workspace tab 顺序（文档 tabs 也依赖该顺序）。
-    if (!isStandaloneWindow()) {
-      useWorkspaceTabStore.getState().upsertChatTab(sessionId);
-    }
+    useWorkspaceTabStore.getState().upsertChatTab(sessionId);
 
     // Workspace panes: ensure the new session is visible as a tab in the focused pane.
     useWorkspaceLayoutStore.getState().openTabInFocusedPane(chatTabId(sessionId));
@@ -531,9 +533,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       };
     });
 
-    if (!isStandaloneWindow()) {
-      useWorkspaceTabStore.getState().removeChatTab(sessionId);
-    }
+    useWorkspaceTabStore.getState().removeChatTab(sessionId);
 
     // Save state after closing session
     get().saveSessionState();
@@ -682,10 +682,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       };
     });
 
-    if (!isStandaloneWindow()) {
-      for (const id of toClose) {
-        useWorkspaceTabStore.getState().removeChatTab(id);
-      }
+    for (const id of toClose) {
+      useWorkspaceTabStore.getState().removeChatTab(id);
     }
 
     get().saveSessionState();
@@ -743,10 +741,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       };
     });
 
-    if (!isStandaloneWindow()) {
-      for (const id of toClose) {
-        useWorkspaceTabStore.getState().removeChatTab(id);
-      }
+    for (const id of toClose) {
+      useWorkspaceTabStore.getState().removeChatTab(id);
     }
 
     get().saveSessionState();
@@ -804,10 +800,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       };
     });
 
-    if (!isStandaloneWindow()) {
-      for (const id of toClose) {
-        useWorkspaceTabStore.getState().removeChatTab(id);
-      }
+    for (const id of toClose) {
+      useWorkspaceTabStore.getState().removeChatTab(id);
     }
 
     get().saveSessionState();
@@ -1957,7 +1951,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     try {
       const storage = getSessionStateStorage();
-      storage?.setItem(SESSION_STORAGE_KEY, JSON.stringify(state));
+      storage?.setItem(getSessionStateStorageKey(), JSON.stringify(state));
     } catch (error) {
       console.error('Failed to save session state:', error);
     }
@@ -1969,11 +1963,22 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    */
   restoreSessionState: async () => {
     const storage = getSessionStateStorage();
-    const stored = storage?.getItem(SESSION_STORAGE_KEY);
+    const nextKey = getSessionStateStorageKey();
+    let stored = storage?.getItem(nextKey) ?? null;
+    let loadedFromLegacy = false;
+
+    if (!stored && storage) {
+      const label = getWindowLabelForStorage();
+      if (isMainWindowLabel(label)) {
+        stored = storage.getItem(LEGACY_SESSION_STORAGE_KEY);
+        loadedFromLegacy = Boolean(stored);
+      }
+    }
+
     if (!stored) return;
 
     try {
-      const canUseSharedWorkspaceTabs = !isStandaloneWindow();
+      const canUseSharedWorkspaceTabs = true;
       const raw = JSON.parse(stored) as PersistedSessionState | null;
       const storedVersion = typeof raw?.version === 'number' ? raw.version : 1;
       const persistedSessions = Array.isArray(raw?.sessions) ? raw.sessions : [];
@@ -2158,6 +2163,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         activeSessionId,
       });
 
+      if (loadedFromLegacy) {
+        try {
+          storage?.setItem(nextKey, stored);
+        } catch {
+          // ignore
+        }
+      }
+
       // 让全局 tabOrder（用于文档/历史）保持整洁：移除不存在的 chat
       if (canUseSharedWorkspaceTabs) {
         useWorkspaceTabStore
@@ -2340,9 +2353,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
     markChatOpenProfile('sessionStore:setState(done)', { conversationId, meta: { sessionId } });
 
-    if (!isStandaloneWindow()) {
-      useWorkspaceTabStore.getState().upsertChatTab(sessionId);
-    }
+    useWorkspaceTabStore.getState().upsertChatTab(sessionId);
     markChatOpenProfile('sessionStore:upsertChatTab', { conversationId, meta: { sessionId } });
 
     useWorkspaceLayoutStore.getState().openTabInFocusedPane(chatTabId(sessionId));
@@ -2953,6 +2964,10 @@ export const initStreamListeners = async () => {
               activate: true,
             });
             tabId = webTabId(wid);
+          } else if (payload.item.kind === 'workstudio') {
+            const workstudioId = (payload.item.workstudioId ?? '').trim();
+            if (!workstudioId) throw new Error('缺少 workstudioId');
+            tabId = workstudioTabId(workstudioId);
           } else if (payload.item.kind === 'terminal') {
             const tid = useTerminalTabStore.getState().openTerminalTab({
               title: payload.item.title ?? undefined,

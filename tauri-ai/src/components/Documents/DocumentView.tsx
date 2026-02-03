@@ -1,9 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { save as saveDialog } from '@tauri-apps/plugin-dialog';
+import Editor, { type OnMount } from '@monaco-editor/react';
 import { FileText, Copy, Pencil, Eye, Save, SaveAll } from 'lucide-react';
-import { useDocumentStore } from '../../stores/documentStore';
+import { useDocumentStore, type DocumentRevealTarget } from '../../stores/documentStore';
 import { useSessionStore } from '../../stores/sessionStore';
+import { setupMonaco } from '../../utils/monaco';
 import MarkdownRenderer from '../Chat/MarkdownRenderer';
 
 const isRichTxtDoc = (pathOrTitle: string) => pathOrTitle.toLowerCase().endsWith('.tauri.richtxt');
@@ -12,6 +14,38 @@ const basename = (path: string) => {
   const normalized = path.replace(/\\/g, '/');
   const parts = normalized.split('/');
   return parts[parts.length - 1] || path;
+};
+
+const languageForPath = (path: string): string => {
+  const lower = path.toLowerCase();
+  if (lower.endsWith('.ts') || lower.endsWith('.tsx')) return 'typescript';
+  if (lower.endsWith('.js') || lower.endsWith('.jsx')) return 'javascript';
+  if (lower.endsWith('.json')) return 'json';
+  if (lower.endsWith('.css')) return 'css';
+  if (lower.endsWith('.html') || lower.endsWith('.htm')) return 'html';
+  if (lower.endsWith('.tauri.richtxt')) return 'markdown';
+  if (lower.endsWith('.md') || lower.endsWith('.markdown')) return 'markdown';
+  if (lower.endsWith('.py')) return 'python';
+  if (lower.endsWith('.rs')) return 'rust';
+  if (lower.endsWith('.c')) return 'c';
+  if (
+    lower.endsWith('.cc') ||
+    lower.endsWith('.cpp') ||
+    lower.endsWith('.cxx') ||
+    lower.endsWith('.h') ||
+    lower.endsWith('.hh') ||
+    lower.endsWith('.hpp') ||
+    lower.endsWith('.hxx') ||
+    lower.endsWith('.inl') ||
+    lower.endsWith('.ipp') ||
+    lower.endsWith('.ixx') ||
+    lower.endsWith('.cppm')
+  )
+    return 'cpp';
+  if (lower.endsWith('.toml')) return 'toml';
+  if (lower.endsWith('.yaml') || lower.endsWith('.yml')) return 'yaml';
+  if (lower.endsWith('.sh') || lower.endsWith('.bash') || lower.endsWith('.zsh')) return 'shell';
+  return 'plaintext';
 };
 
 export const DocumentView: React.FC<{ documentId?: string }> = ({ documentId }) => {
@@ -26,6 +60,10 @@ export const DocumentView: React.FC<{ documentId?: string }> = ({ documentId }) 
   });
 
   const resolvedDocumentId = (documentId ?? activeDocumentId) || null;
+  const revealTarget = useDocumentStore((s) =>
+    resolvedDocumentId ? s.revealTargets[resolvedDocumentId] : undefined
+  );
+  const setRevealTarget = useDocumentStore((s) => s.setRevealTarget);
 
   const activeDoc = useMemo(() => {
     if (!resolvedDocumentId) return null;
@@ -34,6 +72,8 @@ export const DocumentView: React.FC<{ documentId?: string }> = ({ documentId }) 
 
   const modeByDocIdRef = useRef<Record<string, 'preview' | 'edit'>>({});
   const [mode, setMode] = useState<'preview' | 'edit'>('preview');
+  const editorRef = useRef<any>(null);
+  const [editorRevision, setEditorRevision] = useState(0);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -58,6 +98,47 @@ export const DocumentView: React.FC<{ documentId?: string }> = ({ documentId }) 
     },
     [activeDoc]
   );
+
+  const handleEditorMount = useCallback<OnMount>((editor, monaco) => {
+    setupMonaco(monaco);
+    editorRef.current = editor;
+    setEditorRevision((v) => v + 1);
+  }, []);
+
+  useEffect(() => {
+    if (!activeDoc || !resolvedDocumentId) return;
+    if (!revealTarget) return;
+    if (mode !== 'edit') setModeAndRemember('edit');
+  }, [activeDoc, mode, resolvedDocumentId, revealTarget, setModeAndRemember]);
+
+  useEffect(() => {
+    if (!activeDoc || !resolvedDocumentId) return;
+    if (!revealTarget) return;
+    const editor = editorRef.current as any;
+    if (!editor) return;
+
+    const target: DocumentRevealTarget = revealTarget;
+    const startLineNumber = Math.max(1, Math.floor(target.line));
+    const startColumn = Math.max(1, Math.floor(target.column ?? 1));
+    const endLineNumber = Math.max(1, Math.floor(target.endLine ?? startLineNumber));
+    const endColumn = Math.max(1, Math.floor(target.endColumn ?? startColumn));
+
+    const sel = {
+      startLineNumber,
+      startColumn,
+      endLineNumber,
+      endColumn,
+    };
+
+    try {
+      editor.setSelection(sel);
+      editor.revealRangeInCenter(sel);
+      editor.focus();
+      setRevealTarget(resolvedDocumentId, null);
+    } catch {
+      // ignore
+    }
+  }, [activeDoc, editorRevision, resolvedDocumentId, revealTarget, setRevealTarget]);
 
   const writeFile = useCallback(
     async (path: string) => {
@@ -258,13 +339,32 @@ export const DocumentView: React.FC<{ documentId?: string }> = ({ documentId }) 
             pathOrTitle.endsWith('.tauri.richtxt');
 
           if (mode === 'edit') {
+            const language = languageForPath(activeDoc.path || activeDoc.title || '');
+            const theme =
+              typeof document !== 'undefined' && document.documentElement.classList.contains('dark')
+                ? 'vs-dark'
+                : 'vs';
             return (
-              <textarea
-                value={activeDoc.content}
-                onChange={(e) => updateDocumentContent(activeDoc.id, e.target.value)}
-                className="h-full w-full resize-none rounded-lg border border-gray-200 bg-white p-4 font-mono text-xs leading-relaxed text-gray-800 shadow-sm outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
-                spellCheck={false}
-              />
+              <div className="h-full w-full overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-800">
+                <Editor
+                  height="100%"
+                  theme={theme}
+                  value={activeDoc.content}
+                  language={language}
+                  onMount={handleEditorMount}
+                  onChange={(value) => updateDocumentContent(activeDoc.id, value ?? '')}
+                  options={{
+                    fontSize: 12,
+                    minimap: { enabled: false },
+                    wordWrap: renderMarkdown ? 'on' : 'off',
+                    scrollBeyondLastLine: false,
+                    automaticLayout: true,
+                    lineNumbers: 'on',
+                    renderWhitespace: 'selection',
+                    tabSize: 2,
+                  }}
+                />
+              </div>
             );
           }
 

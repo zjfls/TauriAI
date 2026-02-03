@@ -3,6 +3,13 @@ import { useWorkspaceTabStore } from './workspaceTabStore';
 
 export type DocumentKind = 'text';
 
+export type DocumentRevealTarget = {
+  line: number;
+  column?: number;
+  endLine?: number;
+  endColumn?: number;
+};
+
 export interface OpenDocument {
   id: string;
   title: string;
@@ -16,6 +23,7 @@ export interface OpenDocument {
 interface DocumentState {
   documents: OpenDocument[];
   activeDocumentId: string | null;
+  revealTargets: Record<string, DocumentRevealTarget | undefined>;
   openDocument: (doc: Omit<OpenDocument, 'id' | 'openedAt' | 'updatedAt'> & { id?: string }) => string;
   closeDocument: (id: string) => void;
   setActiveDocument: (id: string | null) => void;
@@ -24,6 +32,7 @@ interface DocumentState {
     id: string,
     meta: Partial<Pick<OpenDocument, 'title' | 'path' | 'kind'>>
   ) => void;
+  setRevealTarget: (id: string, target: DocumentRevealTarget | null) => void;
   clearAllDocuments: () => void;
 }
 
@@ -32,6 +41,7 @@ const makeDocId = () => `doc-${Date.now()}-${Math.random().toString(16).slice(2)
 export const useDocumentStore = create<DocumentState>((set, get) => ({
   documents: [],
   activeDocumentId: null,
+  revealTargets: {},
 
   openDocument: (doc) => {
     const now = new Date().toISOString();
@@ -87,7 +97,11 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
       activeDocumentId === id
         ? (nextDocs.length > 0 ? nextDocs[nextDocs.length - 1].id : null)
         : activeDocumentId;
-    set({ documents: nextDocs, activeDocumentId: nextActive });
+    set((state) => {
+      const nextReveal = { ...state.revealTargets };
+      delete nextReveal[id];
+      return { documents: nextDocs, activeDocumentId: nextActive, revealTargets: nextReveal };
+    });
     useWorkspaceTabStore.getState().removeDocumentTab(id);
   },
 
@@ -152,10 +166,19 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     });
   },
 
+  setRevealTarget: (id, target) => {
+    set((state) => {
+      const next = { ...state.revealTargets };
+      if (target) next[id] = target;
+      else delete next[id];
+      return { revealTargets: next };
+    });
+  },
+
   clearAllDocuments: () => {
     for (const d of get().documents) {
       useWorkspaceTabStore.getState().removeDocumentTab(d.id);
     }
-    set({ documents: [], activeDocumentId: null });
+    set({ documents: [], activeDocumentId: null, revealTargets: {} });
   },
 }));

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Bot, Dock, ExternalLink, FileText, Globe, Loader2, TerminalSquare, X } from 'lucide-react';
+import { Bot, Dock, ExternalLink, FileText, Globe, LayoutPanelLeft, Loader2, TerminalSquare, X } from 'lucide-react';
 import { useDroppable } from '@dnd-kit/core';
 import { SortableContext, useSortable, horizontalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -15,6 +15,7 @@ import {
   dockWorkspaceItemToWindow,
   listChatWindows,
   openOrFocusConversationChatWindow,
+  openOrFocusWorkstudioWindow,
   openViewWindow,
   type ChatDockPlacement,
   type ChatWindowInfo,
@@ -59,6 +60,12 @@ type TabViewModel =
       title: string;
       terminalTabId: string;
       workdir?: string | null;
+    }
+  | {
+      id: WorkspaceTabId;
+      kind: 'workstudio';
+      title: string;
+      workstudioId: string;
     };
 
 const SortableTab: React.FC<{
@@ -88,6 +95,8 @@ const SortableTab: React.FC<{
     }
     if (tab.kind === 'document') return <FileText size={14} className={isActive ? 'text-blue-500' : 'text-gray-400'} />;
     if (tab.kind === 'web') return <Globe size={14} className={isActive ? 'text-blue-500' : 'text-gray-400'} />;
+    if (tab.kind === 'workstudio')
+      return <LayoutPanelLeft size={14} className={isActive ? 'text-blue-500' : 'text-gray-400'} />;
     return <TerminalSquare size={14} className={isActive ? 'text-blue-500' : 'text-gray-400'} />;
   })();
 
@@ -95,6 +104,7 @@ const SortableTab: React.FC<{
   const canPopout = (() => {
     if (tab.kind === 'chat') return !tab.session.isGenerating && Boolean(tab.session.conversationId);
     if (tab.kind === 'document') return Boolean(tab.path);
+    if (tab.kind === 'workstudio') return true;
     return true;
   })();
 
@@ -143,6 +153,17 @@ const SortableTab: React.FC<{
           onClose();
         } catch (err) {
           console.error('Failed to popout document tab:', err);
+          alert('当前环境不支持打开新窗口');
+        }
+        return;
+      }
+
+      if (tab.kind === 'workstudio') {
+        try {
+          await openOrFocusWorkstudioWindow(tab.title || 'Workstudio', { workstudioId: tab.workstudioId });
+          onClose();
+        } catch (err) {
+          console.error('Failed to popout workstudio tab:', err);
           alert('当前环境不支持打开新窗口');
         }
         return;
@@ -322,6 +343,12 @@ export const WorkspacePaneHeader: React.FC<WorkspacePaneHeaderProps> = ({
         const tab = wid ? webTabs.find((t) => t.id === wid) : undefined;
         if (!tab) continue;
         out.push({ id, kind: 'web', title: tab.title, webTabId: tab.id, url: tab.url });
+        continue;
+      }
+      if (parsed.kind === 'workstudio') {
+        const wsid = parsed.workstudioId;
+        if (!wsid) continue;
+        out.push({ id, kind: 'workstudio', title: `Workstudio`, workstudioId: wsid });
         continue;
       }
       const tid = parsed.terminalTabId;
