@@ -11,7 +11,15 @@
  import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
  import { AlertTriangle, Brain, Bug, ChevronDown, ChevronRight, RefreshCw, Search, Wrench } from 'lucide-react';
  import { invoke, isTauri } from '@tauri-apps/api/core';
- import type { AnsiColorMode, AnsiRenderMode, MessageBlock, MessageSource, MessageTurn } from '../../types';
+ import type {
+   AnsiColorMode,
+   AnsiRenderMode,
+   MessageBlock,
+   MessageSource,
+   MessageTurn,
+   Workstudio,
+   WorkstudioSecurityConfig,
+ } from '../../types';
  import { DeferredMarkdown } from './DeferredMarkdown';
  import { AnsiText } from './AnsiText';
  import { useConfigStore } from '../../stores/configStore';
@@ -184,6 +192,8 @@ const ApprovalBlock: React.FC<{
   const resolvedDefaultExpanded = defaultExpanded ?? Boolean(isStreaming || block.status === 'pending');
   const [isExpanded, setIsExpanded] = useState(Boolean(resolvedDefaultExpanded));
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [trustInProject, setTrustInProject] = useState(true);
+  const [trustInSecurityGroup, setTrustInSecurityGroup] = useState(false);
   const { config, saveConfig } = useConfigStore();
 
   useEffect(() => {
@@ -263,37 +273,65 @@ const ApprovalBlock: React.FC<{
 
   const canInvoke = Boolean(conversationId && isTauri());
   const canClick = canInvoke && block.status === 'pending' && !isSubmitting;
-  const canTrust = canClick && Boolean(trustCandidate) && Boolean(config);
+  const trustScopeSelected = trustInProject || trustInSecurityGroup;
+  const canTrust =
+    canClick &&
+    Boolean(trustCandidate) &&
+    trustScopeSelected &&
+    (!trustInSecurityGroup || Boolean(config));
 
   const trustAndApprove = async () => {
     if (!canTrust) return;
     if (!conversationId) return;
     if (!trustCandidate) return;
-    if (!config) return;
 
     setIsSubmitting(true);
     try {
-      const policyFromBlock = block.securityPolicy;
-      const fallbackName = config.security.defaultPolicy || config.security.policies[0]?.name;
-      const policyName = policyFromBlock || fallbackName;
-
-      const idx = config.security.policies.findIndex((p) => p.name === policyName);
-      const fallbackIdx = config.security.policies.findIndex((p) => p.name === config.security.defaultPolicy);
-      const targetIndex = idx !== -1 ? idx : fallbackIdx !== -1 ? fallbackIdx : 0;
-
-      const targetPolicy = config.security.policies[targetIndex];
-      const existing = targetPolicy.trustedCommands ?? [];
       const nextEntry = { tool: trustCandidate.tool, command: trustCandidate.command };
-      const already = existing.some((t) => t.tool === nextEntry.tool && t.command === nextEntry.command);
 
-      if (!already) {
-        const nextPolicies = config.security.policies.map((p, i) =>
-          i === targetIndex ? { ...p, trustedCommands: [...existing, nextEntry] } : p
-        );
-        await saveConfig({
-          ...config,
-          security: { ...config.security, policies: nextPolicies },
+      if (trustInProject) {
+        const ws = await invoke<Workstudio>('ensure_workstudio_for_conversation', { conversationId });
+        if (!ws?.id) throw new Error('Workstudio 不存在，无法写入“项目内允许”');
+        if (!ws.mainFolder?.trim()) throw new Error('Workstudio 主目录为空，无法写入“项目内允许”');
+
+        const wsSec = await invoke<WorkstudioSecurityConfig>('get_workstudio_security_config', {
+          workstudioId: ws.id,
         });
+        const existing = wsSec?.trustedCommands ?? [];
+        const already = existing.some((t) => t.tool === nextEntry.tool && t.command === nextEntry.command);
+        if (!already) {
+          const payload: WorkstudioSecurityConfig = {
+            writableRoots: wsSec?.writableRoots ?? [],
+            trustedCommands: [...existing, nextEntry],
+          };
+          await invoke('set_workstudio_security_config', { workstudioId: ws.id, config: payload });
+        }
+      }
+
+      if (trustInSecurityGroup) {
+        if (!config) throw new Error('应用配置尚未加载，无法写入“安全组允许”');
+
+        const policyFromBlock = block.securityPolicy;
+        const fallbackName = config.security.defaultPolicy || config.security.policies[0]?.name;
+        const policyName = policyFromBlock || fallbackName;
+
+        const idx = config.security.policies.findIndex((p) => p.name === policyName);
+        const fallbackIdx = config.security.policies.findIndex((p) => p.name === config.security.defaultPolicy);
+        const targetIndex = idx !== -1 ? idx : fallbackIdx !== -1 ? fallbackIdx : 0;
+
+        const targetPolicy = config.security.policies[targetIndex];
+        const existing = targetPolicy.trustedCommands ?? [];
+        const already = existing.some((t) => t.tool === nextEntry.tool && t.command === nextEntry.command);
+
+        if (!already) {
+          const nextPolicies = config.security.policies.map((p, i) =>
+            i === targetIndex ? { ...p, trustedCommands: [...existing, nextEntry] } : p
+          );
+          await saveConfig({
+            ...config,
+            security: { ...config.security, policies: nextPolicies },
+          });
+        }
       }
 
       await invoke('respond_approval', {
@@ -384,18 +422,43 @@ const ApprovalBlock: React.FC<{
                 允许一次
               </button>
               {trustCandidate ? (
-                <button
-                  type="button"
-                  disabled={!canTrust}
-                  onClick={trustAndApprove}
-                  className={`rounded border px-2 py-1 text-xs font-medium ${canTrust
-                    ? 'border-orange-300 bg-white text-orange-900 hover:bg-orange-50 dark:border-orange-700 dark:bg-orange-950/30 dark:text-orange-100 dark:hover:bg-orange-900/30'
-                    : 'cursor-not-allowed border-orange-200 bg-orange-50 text-orange-400 dark:border-orange-900/50 dark:bg-orange-950/20 dark:text-orange-600'
-                    }`}
-                  title="加入信任列表并执行（后续相同命令将自动通过）"
-                >
-                  信任并允许
-                </button>
+                <>
+                  <div className="flex flex-wrap items-center gap-2 rounded border border-orange-200 bg-white px-2 py-1 text-xs text-orange-900 dark:border-orange-800 dark:bg-orange-950/20 dark:text-orange-100">
+                    <label className="inline-flex items-center gap-1">
+                      <input
+                        type="checkbox"
+                        className="h-3 w-3"
+                        checked={trustInProject}
+                        disabled={!canClick}
+                        onChange={(e) => setTrustInProject(e.target.checked)}
+                      />
+                      <span className={!canClick ? 'opacity-50' : undefined}>项目内允许</span>
+                    </label>
+                    <label className="inline-flex items-center gap-1">
+                      <input
+                        type="checkbox"
+                        className="h-3 w-3"
+                        checked={trustInSecurityGroup}
+                        disabled={!canClick || !config}
+                        onChange={(e) => setTrustInSecurityGroup(e.target.checked)}
+                        title={!config ? '应用配置尚未加载，暂不可用' : undefined}
+                      />
+                      <span className={!canClick || !config ? 'opacity-50' : undefined}>安全组允许</span>
+                    </label>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={!canTrust}
+                    onClick={trustAndApprove}
+                    className={`rounded border px-2 py-1 text-xs font-medium ${canTrust
+                      ? 'border-orange-300 bg-white text-orange-900 hover:bg-orange-50 dark:border-orange-700 dark:bg-orange-950/30 dark:text-orange-100 dark:hover:bg-orange-900/30'
+                      : 'cursor-not-allowed border-orange-200 bg-orange-50 text-orange-400 dark:border-orange-900/50 dark:bg-orange-950/20 dark:text-orange-600'
+                      }`}
+                    title="加入信任列表并执行（可选：项目内/安全组；默认仅项目内）"
+                  >
+                    信任并允许
+                  </button>
+                </>
               ) : null}
               <button
                 type="button"

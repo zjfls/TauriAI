@@ -38,6 +38,11 @@ pub struct WorkstudioSecurityConfig {
 }
 
 pub fn read_workstudio_security_config(main_folder: &str) -> Result<WorkstudioSecurityConfig, String> {
+    let main_folder = main_folder.trim();
+    if main_folder.is_empty() {
+        // No main folder -> no project-scoped security config.
+        return Ok(WorkstudioSecurityConfig::default());
+    }
     let path = security_file_path(main_folder);
     if !path.exists() {
         return Ok(WorkstudioSecurityConfig::default());
@@ -55,6 +60,10 @@ pub fn write_workstudio_security_config(
     main_folder: &str,
     config: &WorkstudioSecurityConfig,
 ) -> Result<(), String> {
+    let main_folder = main_folder.trim();
+    if main_folder.is_empty() {
+        return Err("Workstudio 主目录为空，无法写入安全配置（.tauriai/security.json）".to_string());
+    }
     let path = security_file_path(main_folder);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("create .tauriai failed: {e}"))?;
