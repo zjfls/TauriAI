@@ -1,5 +1,4 @@
 import { create } from 'zustand';
-import { useUIStore } from './uiStore';
 import { useWorkspaceTabStore } from './workspaceTabStore';
 
 export type WebTab = {
@@ -66,9 +65,6 @@ export const useWebTabStore = create<WebTabState>((set, get) => ({
     }));
 
     useWorkspaceTabStore.getState().upsertWebTab(id);
-    if (opts?.activate !== false) {
-      useUIStore.getState().setActiveView('web');
-    }
     return id;
   },
 
@@ -80,10 +76,6 @@ export const useWebTabStore = create<WebTabState>((set, get) => ({
 
     set({ tabs: nextTabs, activeTabId: nextActive });
     useWorkspaceTabStore.getState().removeWebTab(id);
-
-    if (nextTabs.length === 0 && useUIStore.getState().activeView === 'web') {
-      useUIStore.getState().setActiveView('chat');
-    }
   },
 
   setActiveWebTab: (id) => {
@@ -116,9 +108,5 @@ export const useWebTabStore = create<WebTabState>((set, get) => ({
       useWorkspaceTabStore.getState().removeWebTab(id);
     }
     set({ tabs: [], activeTabId: null });
-    if (useUIStore.getState().activeView === 'web') {
-      useUIStore.getState().setActiveView('chat');
-    }
   },
 }));
-

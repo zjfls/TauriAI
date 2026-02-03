@@ -15,6 +15,8 @@ import { useConversationStore } from './stores/conversationStore';
 import { useSessionStore, initStreamListeners } from './stores/sessionStore';
 import { useDocumentStore } from './stores/documentStore';
 import { useUIStore } from './stores/uiStore';
+import { useWorkspaceLayoutStore } from './stores/workspaceLayoutStore';
+import { docTabId } from './stores/workspaceTabStore';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { getViewDefinition } from './views/registry';
 import { ChatViewContainer } from './views/ChatViewContainer';
@@ -91,14 +93,20 @@ function App() {
         const bytes = Uint8Array.from(atob(file.base64), (c) => c.charCodeAt(0));
         const content = new TextDecoder('utf-8').decode(bytes);
 
-        useDocumentStore.getState().openDocument({
+        const docId = useDocumentStore.getState().openDocument({
           title: file.filename,
           path: selected,
           kind: 'text',
           content,
         });
 
-        useUIStore.getState().setActiveView('document');
+        if (!shouldInitChatRuntime) {
+          useUIStore.getState().setActiveView('document');
+          return;
+        }
+
+        useWorkspaceLayoutStore.getState().openTabInFocusedPane(docTabId(docId));
+        useUIStore.getState().setActiveView('chat');
       } catch (error) {
         console.error('Failed to open file:', error);
       }
@@ -118,7 +126,7 @@ function App() {
       disposed = true;
       unlisten?.();
     };
-  }, [viewOverride, activeView, isStandaloneChatWindow]);
+  }, [viewOverride, activeView, isStandaloneChatWindow, shouldInitChatRuntime]);
 
   /**
    * Menu: File -> New .tauri.richtxt
@@ -143,14 +151,20 @@ function App() {
       const title = `Untitled-${max + 1}.tauri.richtxt`;
 
       // Create a new untitled .tauri.richtxt document
-      useDocumentStore.getState().openDocument({
+      const docId = useDocumentStore.getState().openDocument({
         title,
         path: undefined,
         kind: 'text',
         content: '<!-- tauri.richtxt v1 -->\n\n# 新建文档\n\n',
       });
 
-      useUIStore.getState().setActiveView('document');
+      if (!shouldInitChatRuntime) {
+        useUIStore.getState().setActiveView('document');
+        return;
+      }
+
+      useWorkspaceLayoutStore.getState().openTabInFocusedPane(docTabId(docId));
+      useUIStore.getState().setActiveView('chat');
     })
       .then((fn) => {
         if (disposed) {
@@ -167,7 +181,7 @@ function App() {
       disposed = true;
       unlisten?.();
     };
-  }, [viewOverride, activeView, isStandaloneChatWindow]);
+  }, [viewOverride, activeView, isStandaloneChatWindow, shouldInitChatRuntime]);
 
   /**
    * Standalone document window: open a local file if provided via query param.

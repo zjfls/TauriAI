@@ -26,7 +26,6 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
   // Use shallow comparison to prevent infinite re-renders
   const sessionsMap = useSessionStore((state) => state.sessions);
   const sessions = React.useMemo(() => Array.from(sessionsMap.values()), [sessionsMap]);
-  const activeSessionId = useSessionStore((state) => state.activeSessionId);
   const switchSession = useSessionStore((state) => state.switchSession);
   const closeSession = useSessionStore((state) => state.closeSession);
   const createSession = useSessionStore((state) => state.createSession);
@@ -88,7 +87,6 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
         {/* Workspace Tab Bar (chat sessions) */}
         <WorkspaceTabBar
           sessions={sessions}
-          activeSessionId={activeSessionId}
           agents={agents}
           onTabClick={handleTabClick}
           onTabClose={handleTabClose}

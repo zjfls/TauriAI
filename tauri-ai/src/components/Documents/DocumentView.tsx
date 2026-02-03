@@ -14,7 +14,7 @@ const basename = (path: string) => {
   return parts[parts.length - 1] || path;
 };
 
-export const DocumentView: React.FC = () => {
+export const DocumentView: React.FC<{ documentId?: string }> = ({ documentId }) => {
   const documents = useDocumentStore((s) => s.documents);
   const activeDocumentId = useDocumentStore((s) => s.activeDocumentId);
   const updateDocumentContent = useDocumentStore((s) => s.updateDocumentContent);
@@ -25,10 +25,12 @@ export const DocumentView: React.FC = () => {
     return s.sessions.get(sid)?.workstudioId ?? null;
   });
 
+  const resolvedDocumentId = (documentId ?? activeDocumentId) || null;
+
   const activeDoc = useMemo(() => {
-    if (!activeDocumentId) return null;
-    return documents.find((d) => d.id === activeDocumentId) ?? null;
-  }, [documents, activeDocumentId]);
+    if (!resolvedDocumentId) return null;
+    return documents.find((d) => d.id === resolvedDocumentId) ?? null;
+  }, [documents, resolvedDocumentId]);
 
   const modeByDocIdRef = useRef<Record<string, 'preview' | 'edit'>>({});
   const [mode, setMode] = useState<'preview' | 'edit'>('preview');

@@ -30,6 +30,7 @@ import { useUIStore } from '../../stores/uiStore';
 import { useSessionStore } from '../../stores/sessionStore';
 import { useWebTabStore } from '../../stores/webTabStore';
 import { useTerminalTabStore } from '../../stores/terminalTabStore';
+import { useWorkspaceLayoutStore } from '../../stores/workspaceLayoutStore';
 import {
   parseWorkspaceTabId,
   useWorkspaceTabStore,
@@ -40,7 +41,6 @@ import { WorkspaceTabContextMenu } from './WorkspaceTabContextMenu';
 
 interface WorkspaceTabBarProps {
   sessions: AgentSession[];
-  activeSessionId: string | null;
   agents: Agent[];
   onTabClick: (sessionId: string) => void;
   onTabClose: (sessionId: string) => Promise<void> | void;
@@ -242,7 +242,6 @@ const SortableWorkspaceTab: React.FC<{
 
 export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
   sessions,
-  activeSessionId,
   agents,
   onTabClick,
   onTabClose,
@@ -260,7 +259,6 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
   const setActiveView = useUIStore((s) => s.setActiveView);
 
   const documents = useDocumentStore((s) => s.documents);
-  const activeDocumentId = useDocumentStore((s) => s.activeDocumentId);
   const setActiveDocument = useDocumentStore((s) => s.setActiveDocument);
   const closeDocument = useDocumentStore((s) => s.closeDocument);
 
@@ -283,6 +281,17 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
     for (const s of sessions) map.set(s.id, s);
     return map;
   }, [sessions]);
+
+  const workspacePanes = useWorkspaceLayoutStore((s) => s.panes);
+  const workspaceFocusedPaneId = useWorkspaceLayoutStore((s) => s.focusedPaneId);
+
+  const activeWorkspaceTabId = useMemo(() => {
+    const panes = workspacePanes ?? [];
+    if (panes.length === 0) return null;
+    const focused = workspaceFocusedPaneId ? panes.find((p) => p.id === workspaceFocusedPaneId) : null;
+    const pane = focused ?? panes[0] ?? null;
+    return pane?.activeTabId ?? null;
+  }, [workspaceFocusedPaneId, workspacePanes]);
 
   // Keep workspace tab order consistent with current sessions/documents.
   useEffect(() => {
@@ -363,6 +372,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
       if (!session) return;
       if (onPopoutSession) {
         await onPopoutSession(session.id);
+        useWorkspaceLayoutStore.getState().closeTabInLayout(tabId);
       } else {
         const conversationId = session.conversationId ?? undefined;
         openViewWindow(
@@ -372,6 +382,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
             ? { conversationId, runMode: session.runMode, agentName: session.agentName }
             : undefined
         );
+        useWorkspaceLayoutStore.getState().closeTabInLayout(tabId);
         await onTabClose(session.id);
       }
       return;
@@ -383,6 +394,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
       if (!doc) return;
       if (!doc.path) return;
       openViewWindow('document', doc.title, { documentPath: doc.path });
+      useWorkspaceLayoutStore.getState().closeTabInLayout(tabId);
       closeDocument(doc.id);
       return;
     }
@@ -392,6 +404,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
       const tab = wid ? webTabs.find((t) => t.id === wid) : undefined;
       if (!tab) return;
       openViewWindow('web', tab.title || '网页', { webUrl: tab.url, webTitle: tab.title });
+      useWorkspaceLayoutStore.getState().closeTabInLayout(tabId);
       closeWebTab(tab.id);
       return;
     }
@@ -404,11 +417,13 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
         terminalWorkdir: tab.workdir ?? undefined,
         terminalTitle: tab.title,
       });
+      useWorkspaceLayoutStore.getState().closeTabInLayout(tabId);
       await closeTerminalTab(tab.id);
     }
   };
 
   const closeTab = async (tabId: WorkspaceTabId) => {
+    useWorkspaceLayoutStore.getState().closeTabInLayout(tabId);
     const parsed = parseWorkspaceTabId(tabId);
     if (parsed.kind === 'chat') {
       const sid = parsed.sessionId;
@@ -545,33 +560,39 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
   }, [showViewMenu]);
 
   const isTabActive = (item: TabRenderItem) => {
-    if (item.kind === 'chat') {
-      return activeView === 'chat' && item.session?.id === activeSessionId;
+    if (activeView !== 'chat') return false;
+    return activeWorkspaceTabId === item.id;
+  };
+
+  const activateWorkspaceTab = (tabId: WorkspaceTabId) => {
+    const layout = useWorkspaceLayoutStore.getState();
+    const existing = (layout.panes ?? []).find((p) => p.tabIds.includes(tabId)) ?? null;
+    if (existing) {
+      layout.setFocusedPane(existing.id);
+      layout.setActiveTabInPane(existing.id, tabId);
+      return;
     }
-    if (item.kind === 'document') return activeView === 'document' && item.doc?.id === activeDocumentId;
-    if (item.kind === 'web') return activeView === 'web' && item.webTab?.id === activeWebTabId;
-    return activeView === 'terminal' && item.terminalTab?.id === activeTerminalTabId;
+    layout.openTabInFocusedPane(tabId);
   };
 
   const handleSelectTab = (item: TabRenderItem) => {
+    setActiveView('chat');
+    activateWorkspaceTab(item.id);
+
     if (item.kind === 'chat' && item.session) {
       onTabClick(item.session.id);
-      setActiveView('chat');
       return;
     }
     if (item.kind === 'document' && item.doc) {
       setActiveDocument(item.doc.id);
-      setActiveView('document');
       return;
     }
     if (item.kind === 'web' && item.webTab) {
       setActiveWebTab(item.webTab.id);
-      setActiveView('web');
       return;
     }
     if (item.kind === 'terminal' && item.terminalTab) {
       setActiveTerminalTab(item.terminalTab.id);
-      setActiveView('terminal');
     }
   };
 
@@ -651,7 +672,9 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
                       } else {
                         setActiveWebTab(webTabs[0]!.id);
                       }
-                      setActiveView('web');
+                      setActiveView('chat');
+                      const wid = useWebTabStore.getState().activeTabId;
+                      if (wid) activateWorkspaceTab(`web:${wid}` as WorkspaceTabId);
                       setShowViewMenu(false);
                       return;
                     }
@@ -663,7 +686,9 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
                       } else {
                         setActiveTerminalTab(terminalTabs[0]!.id);
                       }
-                      setActiveView('terminal');
+                      setActiveView('chat');
+                      const tid = useTerminalTabStore.getState().activeTabId;
+                      if (tid) activateWorkspaceTab(`term:${tid}` as WorkspaceTabId);
                       setShowViewMenu(false);
                       return;
                     }

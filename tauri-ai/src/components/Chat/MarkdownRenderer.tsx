@@ -19,6 +19,8 @@ import type { Workstudio } from '../../types';
 import type { ParsedFileReference } from '../../utils/fileReference';
 import { parseFileReferenceToken } from '../../utils/fileReference';
 import { useWebTabStore } from '../../stores/webTabStore';
+import { useWorkspaceLayoutStore } from '../../stores/workspaceLayoutStore';
+import { webTabId as toWorkspaceWebTabId } from '../../stores/workspaceTabStore';
 
 // Initialize mermaid with math support
 mermaid.initialize({
@@ -746,7 +748,8 @@ export const MarkdownRenderer = React.memo(function MarkdownRendererImpl({ conte
               return;
             }
             if (canOpenWebTab) {
-              useWebTabStore.getState().openWebTab(hrefStr);
+              const id = useWebTabStore.getState().openWebTab(hrefStr, { activate: true });
+              useWorkspaceLayoutStore.getState().openTabInFocusedPane(toWorkspaceWebTabId(id));
             }
           }}
         >

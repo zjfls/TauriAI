@@ -17,7 +17,8 @@ import { closeCurrentWindow, dockConversationToWindow, emitToWindowLabel, type C
 import { useConfigStore } from './configStore';
 import { useDocumentStore } from './documentStore';
 import { useUIStore } from './uiStore';
-import { useWorkspaceTabStore } from './workspaceTabStore';
+import { useWorkspaceLayoutStore } from './workspaceLayoutStore';
+import { chatTabId, useWorkspaceTabStore } from './workspaceTabStore';
 
 // Constants for persistence
 const SESSION_STORAGE_KEY = 'tauri-ai:sessions';
@@ -418,6 +419,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (!isStandaloneWindow()) {
       useWorkspaceTabStore.getState().upsertChatTab(sessionId);
     }
+
+    // Workspace panes: ensure the new session is visible as a tab in the focused pane.
+    useWorkspaceLayoutStore.getState().openTabInFocusedPane(chatTabId(sessionId));
 
     // Save state after creating session
     get().saveSessionState();
@@ -2182,6 +2186,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           meta: { sessionId: session.id },
         });
         get().switchSession(session.id);
+        useWorkspaceLayoutStore.getState().openTabInFocusedPane(chatTabId(session.id));
         markChatOpenProfile('sessionStore:switchSession(done)', {
           conversationId,
           meta: { sessionId: session.id },
@@ -2331,6 +2336,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       useWorkspaceTabStore.getState().upsertChatTab(sessionId);
     }
     markChatOpenProfile('sessionStore:upsertChatTab', { conversationId, meta: { sessionId } });
+
+    useWorkspaceLayoutStore.getState().openTabInFocusedPane(chatTabId(sessionId));
 
     // Save state
     get().saveSessionState();

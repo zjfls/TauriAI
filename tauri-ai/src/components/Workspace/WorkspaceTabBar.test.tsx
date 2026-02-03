@@ -62,7 +62,6 @@ describe('WorkspaceTabBar', () => {
     render(
       <WorkspaceTabBar
         sessions={mockSessions}
-        activeSessionId="session-1"
         agents={mockAgents}
         onTabClick={vi.fn()}
         onTabClose={vi.fn()}
@@ -85,7 +84,6 @@ describe('WorkspaceTabBar', () => {
     render(
       <WorkspaceTabBar
         sessions={mockSessions}
-        activeSessionId="session-1"
         agents={mockAgents}
         onTabClick={vi.fn()}
         onTabClose={onTabClose}

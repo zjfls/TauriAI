@@ -1,6 +1,5 @@
 import { create } from 'zustand';
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import { useUIStore } from './uiStore';
 import { useWorkspaceTabStore } from './workspaceTabStore';
 
 export type TerminalTab = {
@@ -48,9 +47,6 @@ export const useTerminalTabStore = create<TerminalTabState>((set, get) => ({
     }));
 
     useWorkspaceTabStore.getState().upsertTerminalTab(id);
-    if (opts?.activate !== false) {
-      useUIStore.getState().setActiveView('terminal');
-    }
     return id;
   },
 
@@ -71,10 +67,6 @@ export const useTerminalTabStore = create<TerminalTabState>((set, get) => ({
       get().activeTabId === id ? (nextTabs.length > 0 ? nextTabs[nextTabs.length - 1]!.id : null) : get().activeTabId;
     set({ tabs: nextTabs, activeTabId: nextActive });
     useWorkspaceTabStore.getState().removeTerminalTab(id);
-
-    if (nextTabs.length === 0 && useUIStore.getState().activeView === 'terminal') {
-      useUIStore.getState().setActiveView('chat');
-    }
   },
 
   setActiveTerminalTab: (id) => {
@@ -110,4 +102,3 @@ export const useTerminalTabStore = create<TerminalTabState>((set, get) => ({
     for (const id of ids) await get().closeTerminalTab(id);
   },
 }));
-
