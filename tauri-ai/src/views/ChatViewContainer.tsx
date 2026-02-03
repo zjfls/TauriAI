@@ -23,7 +23,7 @@ import { useWebTabStore } from '../stores/webTabStore';
 import { type WorkspacePane, useWorkspaceLayoutStore } from '../stores/workspaceLayoutStore';
 import { chatTabId, parseWorkspaceTabId, type WorkspaceTabId } from '../stores/workspaceTabStore';
 import { endChatOpenProfile, getActiveChatOpenProfile, markChatOpenProfile } from '../utils/chatOpenProfile';
-import { findChatDockTargetAtCursor, openOrFocusConversationChatWindow, openViewWindow } from '../utils/viewWindow';
+import { dockWorkspaceItemToWindow, findChatDockTargetAtCursor, openOrFocusConversationChatWindow, openViewWindow } from '../utils/viewWindow';
 
 const MemoChatView = React.memo(ChatView);
 MemoChatView.displayName = 'MemoChatView';
@@ -398,7 +398,9 @@ const ChatViewContainerInner: React.FC = () => {
       if (point.x < rect.left || point.x > rect.right || point.y < rect.top || point.y > rect.bottom) continue;
       const width = rect.width;
       if (!Number.isFinite(width) || width <= 0) continue;
-      const edge = 44;
+      // 分屏触发区不要太“像素级”：降低拖到边缘才能分屏的门槛。
+      // 这里用“固定最小值 + 按宽度比例 + 上限”做一个更宽松的边缘判定区。
+      const edge = Math.max(56, Math.min(140, Math.round(rect.width * 0.18)));
       const distLeft = point.x - rect.left;
       const distRight = rect.right - point.x;
       if (distLeft <= edge) {
@@ -539,41 +541,96 @@ const ChatViewContainerInner: React.FC = () => {
             alert('该文档尚未保存到文件，暂不支持在新窗口打开');
             return;
           }
-          try {
-            openViewWindow('document', doc.title, { documentPath: doc.path });
-            closeTabInLayout(activeId);
-            closeDocument(doc.id);
-          } catch {
-            alert('当前环境不支持打开新窗口');
-          }
+          const documentPath = doc.path;
+          void (async () => {
+            const item = { kind: 'document' as const, title: doc.title, documentPath };
+
+            const dockTarget = await findChatDockTargetAtCursor().catch(() => null);
+            if (dockTarget) {
+              try {
+                await dockWorkspaceItemToWindow(item, dockTarget.targetLabel, dockTarget.placement);
+                closeTabInLayout(activeId);
+                closeDocument(doc.id);
+                return;
+              } catch (err) {
+                console.warn('Failed to dock document tab via drag-drop, fallback to popout:', err);
+              }
+            }
+
+            try {
+              const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+              const win = openViewWindow('chat', doc.title, { label, noDefaultSession: true });
+              await dockWorkspaceItemToWindow(item, win, 'tab');
+              closeTabInLayout(activeId);
+              closeDocument(doc.id);
+            } catch (err) {
+              console.error('Failed to popout document tab:', err);
+              alert('当前环境不支持打开新窗口');
+            }
+          })();
           return;
         }
 
         if (parsed.kind === 'web') {
           const tab = parsed.webTabId ? webTabs.find((t) => t.id === parsed.webTabId) : undefined;
           if (!tab) return;
-          try {
-            openViewWindow('web', tab.title || '网页', { webUrl: tab.url, webTitle: tab.title });
-            closeTabInLayout(activeId);
-            closeWebTab(tab.id);
-          } catch {
-            alert('当前环境不支持打开新窗口');
-          }
+          void (async () => {
+            const item = { kind: 'web' as const, title: tab.title, webUrl: tab.url };
+
+            const dockTarget = await findChatDockTargetAtCursor().catch(() => null);
+            if (dockTarget) {
+              try {
+                await dockWorkspaceItemToWindow(item, dockTarget.targetLabel, dockTarget.placement);
+                closeTabInLayout(activeId);
+                closeWebTab(tab.id);
+                return;
+              } catch (err) {
+                console.warn('Failed to dock web tab via drag-drop, fallback to popout:', err);
+              }
+            }
+
+            try {
+              const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+              const win = openViewWindow('chat', tab.title || '网页', { label, noDefaultSession: true });
+              await dockWorkspaceItemToWindow(item, win, 'tab');
+              closeTabInLayout(activeId);
+              closeWebTab(tab.id);
+            } catch (err) {
+              console.error('Failed to popout web tab:', err);
+              alert('当前环境不支持打开新窗口');
+            }
+          })();
           return;
         }
 
         const tab = parsed.terminalTabId ? terminalTabs.find((t) => t.id === parsed.terminalTabId) : undefined;
         if (!tab) return;
-        try {
-          openViewWindow('terminal', tab.title || '终端', {
-            terminalWorkdir: tab.workdir ?? undefined,
-            terminalTitle: tab.title,
-          });
-          closeTabInLayout(activeId);
-          void closeTerminalTab(tab.id);
-        } catch {
-          alert('当前环境不支持打开新窗口');
-        }
+        void (async () => {
+          const item = { kind: 'terminal' as const, title: tab.title, terminalWorkdir: tab.workdir ?? undefined };
+
+          const dockTarget = await findChatDockTargetAtCursor().catch(() => null);
+          if (dockTarget) {
+            try {
+              await dockWorkspaceItemToWindow(item, dockTarget.targetLabel, dockTarget.placement);
+              closeTabInLayout(activeId);
+              void closeTerminalTab(tab.id);
+              return;
+            } catch (err) {
+              console.warn('Failed to dock terminal tab via drag-drop, fallback to popout:', err);
+            }
+          }
+
+          try {
+            const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+            const win = openViewWindow('chat', tab.title || '终端', { label, noDefaultSession: true });
+            await dockWorkspaceItemToWindow(item, win, 'tab');
+            closeTabInLayout(activeId);
+            void closeTerminalTab(tab.id);
+          } catch (err) {
+            console.error('Failed to popout terminal tab:', err);
+            alert('当前环境不支持打开新窗口');
+          }
+        })();
         return;
       }
 

@@ -28,6 +28,36 @@ type ChatDockAckPayload = {
   error?: string | null;
 };
 
+export type WorkspaceDockItem =
+  | {
+      kind: 'document';
+      title?: string | null;
+      documentPath: string;
+    }
+  | {
+      kind: 'web';
+      title?: string | null;
+      webUrl: string;
+    }
+  | {
+      kind: 'terminal';
+      title?: string | null;
+      terminalWorkdir?: string | null;
+    };
+
+export type WorkspaceDockRequestPayload = {
+  requestId: string;
+  fromWindowLabel: string;
+  placement: ChatDockPlacement;
+  item: WorkspaceDockItem;
+};
+
+export type WorkspaceDockAckPayload = {
+  requestId: string;
+  ok: boolean;
+  error?: string | null;
+};
+
 type PhysicalRect = { x: number; y: number; width: number; height: number };
 
 const pointInRect = (p: { x: number; y: number }, r: PhysicalRect) => {
@@ -124,6 +154,8 @@ export const workstudioWindowLabelByMainFolder = (mainFolder: string) => {
 export interface ViewWindowParams {
   view?: ActiveView | null;
   standalone: boolean;
+  /** Standalone chat window: do not auto-create a default session when empty. */
+  noDefaultSession?: boolean;
   conversationId?: string | null;
   runMode?: RunMode | null;
   agentName?: string | null;
@@ -145,6 +177,7 @@ export const getViewWindowParams = (): ViewWindowParams => {
     return {
       view: null,
       standalone: false,
+      noDefaultSession: false,
       conversationId: null,
       runMode: null,
       agentName: null,
@@ -164,6 +197,7 @@ export const getViewWindowParams = (): ViewWindowParams => {
   const params = new URLSearchParams(window.location.search);
   const view = params.get('view') as ActiveView | null;
   const standalone = params.get('standalone') === '1';
+  const noDefaultSession = params.get('noDefaultSession') === '1';
   const conversationId = params.get('conversationId');
   const runMode = parseRunMode(params.get('runMode'));
   const agentName = params.get('agentName');
@@ -185,6 +219,7 @@ export const getViewWindowParams = (): ViewWindowParams => {
   return {
     view,
     standalone,
+    noDefaultSession,
     conversationId,
     runMode,
     agentName,
@@ -209,6 +244,7 @@ export const openViewWindow = (
     conversationId?: string;
     runMode?: RunMode;
     agentName?: string;
+    noDefaultSession?: boolean;
     documentPath?: string;
     workstudioId?: string;
     webUrl?: string;
@@ -227,6 +263,9 @@ export const openViewWindow = (
   const params = new URLSearchParams();
   params.set('view', view);
   params.set('standalone', '1');
+  if (opts?.noDefaultSession) {
+    params.set('noDefaultSession', '1');
+  }
   if (opts?.conversationId) {
     params.set('conversationId', opts.conversationId);
   }
@@ -295,6 +334,7 @@ export const openOrFocusViewWindow = async (
     conversationId?: string;
     runMode?: RunMode;
     agentName?: string;
+    noDefaultSession?: boolean;
     documentPath?: string;
     workstudioId?: string;
     webUrl?: string;
@@ -339,6 +379,9 @@ export const openOrFocusViewWindow = async (
   const params = new URLSearchParams();
   params.set('view', view);
   params.set('standalone', '1');
+  if (opts?.noDefaultSession) {
+    params.set('noDefaultSession', '1');
+  }
   if (opts?.conversationId) {
     params.set('conversationId', opts.conversationId);
   }
@@ -460,6 +503,15 @@ export const listChatWindows = async (): Promise<ChatWindowInfo[]> => {
           kind: 'chat',
           conversationId: label.slice('view-chat-'.length),
         });
+        continue;
+      }
+      // Generic workspace window (tab/pane container). Treated as a chat-capable window for docking.
+      if (label.startsWith('workspace-')) {
+        infos.push({
+          label,
+          kind: 'chat',
+          conversationId: null,
+        });
       }
     }
     infos.sort((a, b) => {
@@ -510,7 +562,8 @@ export const findChatDockTargetAtCursor = async (): Promise<
     if (!pointInRect(cursorPoint, rect)) continue;
 
     const ratioX = rect.width > 0 ? (cursorPoint.x - rect.x) / rect.width : 0.5;
-    const placement: ChatDockPlacement = ratioX <= 0.25 ? 'split-left' : ratioX >= 0.75 ? 'split-right' : 'tab';
+    // 降低跨窗口分屏门槛：左右 1/3 区域即可触发分屏，其余区域为 tab 停靠。
+    const placement: ChatDockPlacement = ratioX <= 0.33 ? 'split-left' : ratioX >= 0.67 ? 'split-right' : 'tab';
 
     return { targetLabel: w.label, placement };
   }
@@ -611,6 +664,86 @@ export const dockConversationToWindow = async (
   });
 
   void target.setFocus().catch(() => {});
+};
+
+export const dockWorkspaceItemToWindow = async (
+  item: WorkspaceDockItem,
+  target: string | WebviewWindow,
+  placement: ChatDockPlacement = 'tab'
+): Promise<void> => {
+  const sourceLabel = getCurrentWebviewWindow().label;
+  const targetLabel = typeof target === 'string' ? target : target.label;
+  const targetWin = typeof target === 'string' ? await WebviewWindow.getByLabel(target) : target;
+  if (!targetWin) throw new Error(`目标窗口不存在：${targetLabel}`);
+
+  const requestId =
+    typeof crypto !== 'undefined' && typeof (crypto as any).randomUUID === 'function'
+      ? (crypto as any).randomUUID()
+      : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  const payload: WorkspaceDockRequestPayload = {
+    requestId,
+    item,
+    fromWindowLabel: sourceLabel,
+    placement,
+  };
+
+  const delaysMs = [0, 60, 180, 420, 900];
+  const timeoutMs = 2200;
+
+  let done = false;
+  const timers: number[] = [];
+  let unlisten: null | (() => void) = null;
+
+  const stop = () => {
+    if (unlisten) {
+      unlisten();
+      unlisten = null;
+    }
+    for (const id of timers) window.clearTimeout(id);
+    timers.length = 0;
+  };
+
+  const sendOnce = () => {
+    void targetWin.emit('workspace:dock_request', payload).catch(() => {
+      // ignore; best-effort retry
+    });
+  };
+
+  await new Promise<void>((resolve, reject) => {
+    void (async () => {
+      try {
+        unlisten = await listen<WorkspaceDockAckPayload>('workspace:dock_ack', (event) => {
+          const ack = event.payload;
+          if (!ack || ack.requestId !== requestId) return;
+          if (done) return;
+          done = true;
+          stop();
+          if (ack.ok) resolve();
+          else reject(new Error(ack.error || '停靠失败'));
+        });
+      } catch (err) {
+        done = true;
+        stop();
+        reject(err instanceof Error ? err : new Error(String(err)));
+        return;
+      }
+
+      for (const delay of delaysMs) {
+        timers.push(window.setTimeout(sendOnce, delay));
+      }
+      timers.push(
+        window.setTimeout(() => {
+          if (done) return;
+          done = true;
+          stop();
+          reject(new Error('停靠超时：目标窗口未响应'));
+        }, timeoutMs)
+      );
+    })();
+  });
+
+  void targetWin.setFocus().catch(() => {});
 };
 
 export const closeCurrentWindow = async () => {

@@ -4,14 +4,16 @@
  * Requirements: 7.3, 7.4, 8.1, 8.2, 8.3, 8.4
  */
 
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { ArrowLeft, MessageSquare, Trash2, Edit2, Check, X, Plus } from 'lucide-react';
+import { useShallow } from 'zustand/shallow';
 import { useConversationStore } from '../../stores/conversationStore';
 import { useSessionStore } from '../../stores/sessionStore';
 import { useConfigStore } from '../../stores/configStore';
 import { useUIStore } from '../../stores/uiStore';
 import type { Conversation } from '../../types';
 import { markChatOpenProfile, setChatOpenProfileTarget, startChatOpenProfile } from '../../utils/chatOpenProfile';
+import { collectOpenConversationIdsFromPresence, subscribeWindowPresenceChanges } from '../../utils/windowPresence';
 
 /**
  * Format date for display
@@ -80,6 +82,7 @@ const getNativeModifierState = (e: React.MouseEvent, key: 'Shift' | 'Control' | 
 interface ConversationItemProps {
   conversation: Conversation;
   isActive: boolean;
+  isOpen: boolean;
   isSelected: boolean;
   onMouseDown?: (e: React.MouseEvent) => void;
   onSelect: (e: React.MouseEvent) => void;
@@ -90,6 +93,7 @@ interface ConversationItemProps {
 const ConversationItem: React.FC<ConversationItemProps> = ({
   conversation,
   isActive,
+  isOpen,
   isSelected,
   onMouseDown,
   onSelect,
@@ -192,24 +196,45 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
           />
         ) : (
           <>
-            <h3 className={`
-              text-sm font-medium truncate
-              ${isActive
-                ? 'text-blue-700 dark:text-blue-300'
-                : 'text-gray-800 dark:text-gray-200'
-              }
-            `}>
-              {conversation.title}
-            </h3>
-            <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-              <span className="text-xs text-gray-500 dark:text-gray-400">
-                {formatDate(conversation.updatedAt)}
-              </span>
-              {conversation.agentName && (
-                <span className="inline-flex items-center px-1.5 py-0.5 text-xs rounded bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400">
-                  {config?.agents?.find(a => a.name === conversation.agentName)?.displayName || conversation.agentName}
-                </span>
-              )}
+             <h3 className={`
+               text-sm font-medium truncate
+               ${isActive
+                 ? 'text-blue-700 dark:text-blue-300'
+                 : 'text-gray-800 dark:text-gray-200'
+               }
+             `}>
+               {conversation.title}
+             </h3>
+             <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+               <span className="text-xs text-gray-500 dark:text-gray-400">
+                 {formatDate(conversation.updatedAt)}
+               </span>
+               {typeof conversation.messageCount === 'number' && (
+                 <span className="inline-flex items-center px-1.5 py-0.5 text-xs rounded bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+                   消息 {conversation.messageCount}
+                 </span>
+               )}
+               {typeof conversation.turnCount === 'number' && (
+                 <span className="inline-flex items-center px-1.5 py-0.5 text-xs rounded bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300">
+                   Turn {conversation.turnCount}
+                 </span>
+               )}
+               {isOpen && (
+                 <span
+                   className={`inline-flex items-center px-1.5 py-0.5 text-xs rounded font-medium ${
+                     isActive
+                       ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200'
+                       : 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-200'
+                   }`}
+                 >
+                   {isActive ? '当前' : '已打开'}
+                 </span>
+               )}
+               {conversation.agentName && (
+                 <span className="inline-flex items-center px-1.5 py-0.5 text-xs rounded bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400">
+                   {config?.agents?.find(a => a.name === conversation.agentName)?.displayName || conversation.agentName}
+                 </span>
+               )}
               {conversation.modelRef && (
                 <span className="inline-flex items-center px-1.5 py-0.5 text-xs rounded bg-green-100 text-green-600 dark:bg-green-900/40 dark:text-green-400 truncate max-w-[120px]" title={conversation.modelRef}>
                   {conversation.modelRef.split('/').pop()}
@@ -274,6 +299,30 @@ export const HistoryPanel: React.FC = () => {
   const { openHistoricalConversation, createSession } = useSessionStore();
   const { config } = useConfigStore();
   const { setActiveView } = useUIStore();
+
+  // 当前窗口 session 中打开的 conversation（用于列表“已打开”标记）
+  const localOpenConversationIds = useSessionStore(
+    useShallow((state) => {
+      const ids = new Set<string>();
+      for (const s of state.sessions.values()) {
+        if (s.conversationId) ids.add(s.conversationId);
+      }
+      return Array.from(ids).sort();
+    })
+  );
+
+  // 其他窗口打开的 conversation（来自 localStorage presence 广播）
+  const [presenceTick, setPresenceTick] = useState(0);
+  useEffect(() => {
+    const unsub = subscribeWindowPresenceChanges(() => setPresenceTick((v) => v + 1));
+    return () => unsub();
+  }, []);
+
+  const openConversationIds = useMemo(() => {
+    const remote = collectOpenConversationIdsFromPresence();
+    for (const cid of localOpenConversationIds) remote.add(cid);
+    return remote;
+  }, [localOpenConversationIds, presenceTick]);
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [lastSelectedIndex, setLastSelectedIndex] = useState<number | null>(null);
@@ -508,6 +557,7 @@ export const HistoryPanel: React.FC = () => {
               key={conversation.id}
               conversation={conversation}
               isActive={conversation.id === currentConversationId}
+              isOpen={openConversationIds.has(conversation.id)}
               isSelected={selectedIds.has(conversation.id)}
               onMouseDown={handleItemMouseDown}
               onSelect={(e) => handleItemClick(e, conversation, index)}

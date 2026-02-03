@@ -828,6 +828,10 @@ export interface Conversation {
   systemPromptCacheKey?: string; // Cache key for systemPrompt
   thinkingMode?: ThinkingMode; // Conversation-scoped thinking mode/level
   workstudioId?: string;  // Optional workstudio binding
+  /** 消息数量（用于历史列表/概览展示） */
+  messageCount?: number;
+  /** Turn 数量（所有消息 meta.turns 的总和，用于展示“多 turn”规模） */
+  turnCount?: number;
   createdAt: string;
   updatedAt: string;
 }

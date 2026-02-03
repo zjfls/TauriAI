@@ -36,7 +36,7 @@ import {
   useWorkspaceTabStore,
   type WorkspaceTabId,
 } from '../../stores/workspaceTabStore';
-import { findChatDockTargetAtCursor, openViewWindow } from '../../utils/viewWindow';
+import { dockWorkspaceItemToWindow, findChatDockTargetAtCursor, openViewWindow } from '../../utils/viewWindow';
 import { WorkspaceTabContextMenu } from './WorkspaceTabContextMenu';
 
 interface WorkspaceTabBarProps {
@@ -263,12 +263,10 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
   const closeDocument = useDocumentStore((s) => s.closeDocument);
 
   const webTabs = useWebTabStore((s) => s.tabs);
-  const activeWebTabId = useWebTabStore((s) => s.activeTabId);
   const setActiveWebTab = useWebTabStore((s) => s.setActiveWebTab);
   const closeWebTab = useWebTabStore((s) => s.closeWebTab);
 
   const terminalTabs = useTerminalTabStore((s) => s.tabs);
-  const activeTerminalTabId = useTerminalTabStore((s) => s.activeTabId);
   const setActiveTerminalTab = useTerminalTabStore((s) => s.setActiveTerminalTab);
   const closeTerminalTab = useTerminalTabStore((s) => s.closeTerminalTab);
 
@@ -393,9 +391,17 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
       const doc = docId ? documents.find((d) => d.id === docId) : undefined;
       if (!doc) return;
       if (!doc.path) return;
-      openViewWindow('document', doc.title, { documentPath: doc.path });
-      useWorkspaceLayoutStore.getState().closeTabInLayout(tabId);
-      closeDocument(doc.id);
+      try {
+        const item = { kind: 'document' as const, title: doc.title, documentPath: doc.path };
+        const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        const win = openViewWindow('chat', doc.title, { label, noDefaultSession: true });
+        await dockWorkspaceItemToWindow(item, win, 'tab');
+        useWorkspaceLayoutStore.getState().closeTabInLayout(tabId);
+        closeDocument(doc.id);
+      } catch (err) {
+        console.error('Failed to popout document tab:', err);
+        alert('当前环境不支持打开新窗口');
+      }
       return;
     }
 
@@ -403,9 +409,17 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
       const wid = parsed.webTabId;
       const tab = wid ? webTabs.find((t) => t.id === wid) : undefined;
       if (!tab) return;
-      openViewWindow('web', tab.title || '网页', { webUrl: tab.url, webTitle: tab.title });
-      useWorkspaceLayoutStore.getState().closeTabInLayout(tabId);
-      closeWebTab(tab.id);
+      try {
+        const item = { kind: 'web' as const, title: tab.title, webUrl: tab.url };
+        const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        const win = openViewWindow('chat', tab.title || '网页', { label, noDefaultSession: true });
+        await dockWorkspaceItemToWindow(item, win, 'tab');
+        useWorkspaceLayoutStore.getState().closeTabInLayout(tabId);
+        closeWebTab(tab.id);
+      } catch (err) {
+        console.error('Failed to popout web tab:', err);
+        alert('当前环境不支持打开新窗口');
+      }
       return;
     }
 
@@ -413,12 +427,17 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
       const tid = parsed.terminalTabId;
       const tab = tid ? terminalTabs.find((t) => t.id === tid) : undefined;
       if (!tab) return;
-      openViewWindow('terminal', tab.title || '终端', {
-        terminalWorkdir: tab.workdir ?? undefined,
-        terminalTitle: tab.title,
-      });
-      useWorkspaceLayoutStore.getState().closeTabInLayout(tabId);
-      await closeTerminalTab(tab.id);
+      try {
+        const item = { kind: 'terminal' as const, title: tab.title, terminalWorkdir: tab.workdir ?? undefined };
+        const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        const win = openViewWindow('chat', tab.title || '终端', { label, noDefaultSession: true });
+        await dockWorkspaceItemToWindow(item, win, 'tab');
+        useWorkspaceLayoutStore.getState().closeTabInLayout(tabId);
+        await closeTerminalTab(tab.id);
+      } catch (err) {
+        console.error('Failed to popout terminal tab:', err);
+        alert('当前环境不支持打开新窗口');
+      }
     }
   };
 
@@ -523,6 +542,63 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
             return;
           } catch (err) {
             console.warn('Failed to dock chat tab via drag-drop, fallback to popout:', err);
+          }
+        }
+      }
+
+      if (parsed.kind === 'document') {
+        const docId = parsed.documentId;
+        const doc = docId ? documents.find((d) => d.id === docId) : undefined;
+        if (doc?.path) {
+          const dockTarget = await findChatDockTargetAtCursor().catch(() => null);
+          if (dockTarget) {
+            try {
+              const item = { kind: 'document' as const, title: doc.title, documentPath: doc.path };
+              await dockWorkspaceItemToWindow(item, dockTarget.targetLabel, dockTarget.placement);
+              useWorkspaceLayoutStore.getState().closeTabInLayout(activeId);
+              closeDocument(doc.id);
+              return;
+            } catch (err) {
+              console.warn('Failed to dock document tab via drag-drop, fallback to popout:', err);
+            }
+          }
+        }
+      }
+
+      if (parsed.kind === 'web') {
+        const wid = parsed.webTabId;
+        const tab = wid ? webTabs.find((t) => t.id === wid) : undefined;
+        if (tab) {
+          const dockTarget = await findChatDockTargetAtCursor().catch(() => null);
+          if (dockTarget) {
+            try {
+              const item = { kind: 'web' as const, title: tab.title, webUrl: tab.url };
+              await dockWorkspaceItemToWindow(item, dockTarget.targetLabel, dockTarget.placement);
+              useWorkspaceLayoutStore.getState().closeTabInLayout(activeId);
+              closeWebTab(tab.id);
+              return;
+            } catch (err) {
+              console.warn('Failed to dock web tab via drag-drop, fallback to popout:', err);
+            }
+          }
+        }
+      }
+
+      if (parsed.kind === 'terminal') {
+        const tid = parsed.terminalTabId;
+        const tab = tid ? terminalTabs.find((t) => t.id === tid) : undefined;
+        if (tab) {
+          const dockTarget = await findChatDockTargetAtCursor().catch(() => null);
+          if (dockTarget) {
+            try {
+              const item = { kind: 'terminal' as const, title: tab.title, terminalWorkdir: tab.workdir ?? undefined };
+              await dockWorkspaceItemToWindow(item, dockTarget.targetLabel, dockTarget.placement);
+              useWorkspaceLayoutStore.getState().closeTabInLayout(activeId);
+              await closeTerminalTab(tab.id);
+              return;
+            } catch (err) {
+              console.warn('Failed to dock terminal tab via drag-drop, fallback to popout:', err);
+            }
           }
         }
       }
@@ -655,8 +731,6 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
             <div className="absolute right-0 top-[calc(100%+6px)] w-40 rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-800 z-[120] overflow-hidden">
               {[
                 { id: 'chat' as const, label: '聊天', icon: <MessageSquare size={14} /> },
-                { id: 'web' as const, label: '网页', icon: <Globe size={14} /> },
-                { id: 'terminal' as const, label: '终端', icon: <Terminal size={14} /> },
                 { id: 'history' as const, label: '历史', icon: <History size={14} /> },
                 { id: 'settings' as const, label: '设置', icon: <Settings size={14} /> },
               ].map((item) => (
@@ -664,35 +738,6 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
                   key={item.id}
                   type="button"
                   onClick={() => {
-                    if (item.id === 'web') {
-                      if (webTabs.length === 0) {
-                        useWebTabStore.getState().openWebTab('about:blank', { title: '网页' });
-                      } else if (activeWebTabId) {
-                        setActiveWebTab(activeWebTabId);
-                      } else {
-                        setActiveWebTab(webTabs[0]!.id);
-                      }
-                      setActiveView('chat');
-                      const wid = useWebTabStore.getState().activeTabId;
-                      if (wid) activateWorkspaceTab(`web:${wid}` as WorkspaceTabId);
-                      setShowViewMenu(false);
-                      return;
-                    }
-                    if (item.id === 'terminal') {
-                      if (terminalTabs.length === 0) {
-                        useTerminalTabStore.getState().openTerminalTab({ title: '终端' });
-                      } else if (activeTerminalTabId) {
-                        setActiveTerminalTab(activeTerminalTabId);
-                      } else {
-                        setActiveTerminalTab(terminalTabs[0]!.id);
-                      }
-                      setActiveView('chat');
-                      const tid = useTerminalTabStore.getState().activeTabId;
-                      if (tid) activateWorkspaceTab(`term:${tid}` as WorkspaceTabId);
-                      setShowViewMenu(false);
-                      return;
-                    }
-
                     setActiveView(item.id);
                     setShowViewMenu(false);
                   }}

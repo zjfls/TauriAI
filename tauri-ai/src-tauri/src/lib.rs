@@ -100,6 +100,12 @@ pub fn run() {
                 Some("CmdOrCtrl+Shift+N"),
             )?;
 
+            // View: open web/terminal as tabs inside the workspace (not standalone windows).
+            let open_web_tab = MenuItem::with_id(app, "open_web_tab", "打开网页标签", true, None::<&str>)?;
+            let open_terminal_tab =
+                MenuItem::with_id(app, "open_terminal_tab", "打开终端标签", true, None::<&str>)?;
+            let view_separator = PredefinedMenuItem::separator(app)?;
+
             // Find existing "File" submenu and insert at the top. If not found (e.g. Linux),
             // create one.
             let mut file_submenu: Option<Submenu<_>> = None;
@@ -121,6 +127,28 @@ pub fn run() {
                 // On macOS, index 0 is the app menu. Insert after it.
                 let pos = if cfg!(target_os = "macos") { 1 } else { 0 };
                 menu.insert(&file, pos)?;
+            }
+
+            // Find existing "View" submenu and insert our actions at the top. If not found, create one.
+            let mut view_submenu: Option<Submenu<_>> = None;
+            for item in menu.items().unwrap_or_default() {
+                if let MenuItemKind::Submenu(submenu) = item {
+                    if let Ok(text) = submenu.text() {
+                        if text == "View" || text == "视图" {
+                            view_submenu = Some(submenu);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if let Some(view) = view_submenu {
+                view.insert_items(&[&open_web_tab, &open_terminal_tab, &view_separator], 0)?;
+            } else {
+                let view = Submenu::with_items(app, "View", true, &[&open_web_tab, &open_terminal_tab])?;
+                // Insert after File submenu (best-effort). On macOS index 0 is app menu.
+                let pos = if cfg!(target_os = "macos") { 2 } else { 1 };
+                menu.insert(&view, pos)?;
             }
 
             Ok(menu)
@@ -151,6 +179,30 @@ pub fn run() {
                         let _ = window.emit("menu:open_file", ());
                     } else {
                         let _ = app.emit("menu:open_file", ());
+                    }
+                }
+                "open_web_tab" => {
+                    let focused = app
+                        .webview_windows()
+                        .into_values()
+                        .find(|w| w.is_focused().unwrap_or(false));
+
+                    if let Some(window) = focused.or_else(|| app.get_webview_window("main")) {
+                        let _ = window.emit("menu:open_web_tab", ());
+                    } else {
+                        let _ = app.emit("menu:open_web_tab", ());
+                    }
+                }
+                "open_terminal_tab" => {
+                    let focused = app
+                        .webview_windows()
+                        .into_values()
+                        .find(|w| w.is_focused().unwrap_or(false));
+
+                    if let Some(window) = focused.or_else(|| app.get_webview_window("main")) {
+                        let _ = window.emit("menu:open_terminal_tab", ());
+                    } else {
+                        let _ = app.emit("menu:open_terminal_tab", ());
                     }
                 }
                 "test_window" => {

@@ -426,6 +426,20 @@ pub struct Conversation {
     /// Optional workstudio binding (many conversations can map to one workstudio).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workstudio_id: Option<String>,
+    /// Conversation message count (denormalized for list display).
+    ///
+    /// 说明：
+    /// - 仅用于前端列表/概览展示；不参与持久化写入。
+    /// - 目前在 `get_conversations` 里按需计算并填充。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_count: Option<u32>,
+    /// Conversation total turn count (sum of `meta.turns` across messages).
+    ///
+    /// 说明：
+    /// - 用于让用户直观看到“一个 message 包含多个 turn”时的规模。
+    /// - 仅用于展示；不参与持久化写入。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_count: Option<u32>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

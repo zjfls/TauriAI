@@ -13,12 +13,20 @@ import { getApiProtocol, getDefaultThinkingMode, getProviderType } from '../util
 import { hydrateMessagesFromBackend } from '../utils/hydrateMessages';
 import { markChatOpenProfile, setChatOpenProfileTarget } from '../utils/chatOpenProfile';
 import { requestConversationScrollToBottomOnce } from '../utils/conversationViewState';
-import { closeCurrentWindow, dockConversationToWindow, emitToWindowLabel, type ChatDockPlacement } from '../utils/viewWindow';
+import {
+  closeCurrentWindow,
+  dockConversationToWindow,
+  emitToWindowLabel,
+  type ChatDockPlacement,
+  type WorkspaceDockRequestPayload,
+} from '../utils/viewWindow';
 import { useConfigStore } from './configStore';
 import { useDocumentStore } from './documentStore';
+import { useTerminalTabStore } from './terminalTabStore';
 import { useUIStore } from './uiStore';
+import { useWebTabStore } from './webTabStore';
 import { useWorkspaceLayoutStore } from './workspaceLayoutStore';
-import { chatTabId, useWorkspaceTabStore } from './workspaceTabStore';
+import { chatTabId, docTabId, terminalTabId, useWorkspaceTabStore, webTabId, type WorkspaceTabId } from './workspaceTabStore';
 
 // Constants for persistence
 const SESSION_STORAGE_KEY = 'tauri-ai:sessions';
@@ -2867,7 +2875,8 @@ export const initStreamListeners = async () => {
           }
 
           const state = useSessionStore.getState();
-          const basePaneId = state.focusedPaneId ?? state.panes?.[0]?.id ?? null;
+          const layout = useWorkspaceLayoutStore.getState();
+          const basePaneId = layout.focusedPaneId ?? layout.panes?.[0]?.id ?? null;
           const placement: ChatDockPlacement = payload.placement ?? 'tab';
 
           const sessionId = await state.openHistoricalConversation(payload.conversationId, {
@@ -2877,7 +2886,7 @@ export const initStreamListeners = async () => {
 
           if (placement !== 'tab' && basePaneId) {
             const direction = placement === 'split-left' ? 'left' : 'right';
-            state.splitSessionToNewPane(sessionId, direction, basePaneId);
+            useWorkspaceLayoutStore.getState().splitTabToNewPane(chatTabId(sessionId), direction, basePaneId);
           }
 
           await emitToWindowLabel(payload.fromWindowLabel, 'chat:dock_ack', {
@@ -2887,6 +2896,90 @@ export const initStreamListeners = async () => {
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           await emitToWindowLabel(payload.fromWindowLabel, 'chat:dock_ack', {
+            requestId: payload.requestId,
+            ok: false,
+            error: message,
+          });
+        }
+      })();
+    });
+
+    // 跨窗口停靠：把一个“非聊天 tab”（文档/网页/终端）移入本窗口（作为 tab 或分屏）。
+    await listen<WorkspaceDockRequestPayload>('workspace:dock_request', (event) => {
+      const payload = event.payload;
+      if (!payload?.requestId || !payload?.fromWindowLabel || !payload?.item?.kind) return;
+
+      void (async () => {
+        try {
+          // 主窗口可能停留在 History/Settings，停靠时应直接切回聊天界面（workspace 容器）。
+          try {
+            useUIStore.getState().setActiveView('chat');
+          } catch {
+            // ignore
+          }
+
+          const layout = useWorkspaceLayoutStore.getState();
+          const basePaneId = layout.focusedPaneId ?? layout.panes?.[0]?.id ?? null;
+          const placement: ChatDockPlacement = payload.placement ?? 'tab';
+
+          let tabId: WorkspaceTabId | null = null;
+
+          if (payload.item.kind === 'document') {
+            const path = (payload.item.documentPath ?? '').trim();
+            if (!path) throw new Error('缺少 documentPath');
+
+            const file = await invoke<{
+              filename: string;
+              mime: string;
+              base64: string;
+              size: number;
+            }>('read_local_file_base64', { path });
+
+            const bytes = Uint8Array.from(atob(file.base64), (c) => c.charCodeAt(0));
+            const content = new TextDecoder('utf-8').decode(bytes);
+
+            const docId = useDocumentStore.getState().openDocument({
+              title: (payload.item.title ?? '').trim() || file.filename,
+              path,
+              kind: 'text',
+              content,
+            });
+            tabId = docTabId(docId);
+          } else if (payload.item.kind === 'web') {
+            const url = (payload.item.webUrl ?? '').trim();
+            if (!url) throw new Error('缺少 webUrl');
+            const wid = useWebTabStore.getState().openWebTab(url, {
+              title: payload.item.title ?? undefined,
+              activate: true,
+            });
+            tabId = webTabId(wid);
+          } else if (payload.item.kind === 'terminal') {
+            const tid = useTerminalTabStore.getState().openTerminalTab({
+              title: payload.item.title ?? undefined,
+              workdir: payload.item.terminalWorkdir ?? undefined,
+              activate: true,
+            });
+            tabId = terminalTabId(tid);
+          } else {
+            throw new Error(`不支持的停靠类型：${(payload.item as any).kind}`);
+          }
+
+          if (!tabId) throw new Error('无法创建目标 tab');
+
+          if (placement === 'tab' || !basePaneId) {
+            useWorkspaceLayoutStore.getState().openTabInFocusedPane(tabId);
+          } else {
+            const direction = placement === 'split-left' ? 'left' : 'right';
+            useWorkspaceLayoutStore.getState().splitTabToNewPane(tabId, direction, basePaneId);
+          }
+
+          await emitToWindowLabel(payload.fromWindowLabel, 'workspace:dock_ack', {
+            requestId: payload.requestId,
+            ok: true,
+          });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          await emitToWindowLabel(payload.fromWindowLabel, 'workspace:dock_ack', {
             requestId: payload.requestId,
             ok: false,
             error: message,

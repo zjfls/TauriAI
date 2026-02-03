@@ -12,6 +12,7 @@ import { useDocumentStore } from '../../stores/documentStore';
 import { useWebTabStore } from '../../stores/webTabStore';
 import { useTerminalTabStore } from '../../stores/terminalTabStore';
 import {
+  dockWorkspaceItemToWindow,
   listChatWindows,
   openOrFocusConversationChatWindow,
   openViewWindow,
@@ -135,9 +136,13 @@ const SortableTab: React.FC<{
       if (tab.kind === 'document') {
         if (!tab.path) return;
         try {
-          openViewWindow('document', tab.title, { documentPath: tab.path });
+          const item = { kind: 'document' as const, title: tab.title, documentPath: tab.path };
+          const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+          const win = openViewWindow('chat', tab.title, { label, noDefaultSession: true });
+          await dockWorkspaceItemToWindow(item, win, 'tab');
           onClose();
-        } catch {
+        } catch (err) {
+          console.error('Failed to popout document tab:', err);
           alert('当前环境不支持打开新窗口');
         }
         return;
@@ -145,21 +150,26 @@ const SortableTab: React.FC<{
 
       if (tab.kind === 'web') {
         try {
-          openViewWindow('web', tab.title || '网页', { webUrl: tab.url, webTitle: tab.title });
+          const item = { kind: 'web' as const, title: tab.title, webUrl: tab.url };
+          const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+          const win = openViewWindow('chat', tab.title || '网页', { label, noDefaultSession: true });
+          await dockWorkspaceItemToWindow(item, win, 'tab');
           onClose();
-        } catch {
+        } catch (err) {
+          console.error('Failed to popout web tab:', err);
           alert('当前环境不支持打开新窗口');
         }
         return;
       }
 
       try {
-        openViewWindow('terminal', tab.title || '终端', {
-          terminalWorkdir: tab.workdir ?? undefined,
-          terminalTitle: tab.title,
-        });
+        const item = { kind: 'terminal' as const, title: tab.title, terminalWorkdir: tab.workdir ?? undefined };
+        const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        const win = openViewWindow('chat', tab.title || '终端', { label, noDefaultSession: true });
+        await dockWorkspaceItemToWindow(item, win, 'tab');
         onClose();
-      } catch {
+      } catch (err) {
+        console.error('Failed to popout terminal tab:', err);
         alert('当前环境不支持打开新窗口');
       }
     })();

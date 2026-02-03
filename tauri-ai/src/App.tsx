@@ -14,13 +14,16 @@ import { useConfigStore } from './stores/configStore';
 import { useConversationStore } from './stores/conversationStore';
 import { useSessionStore, initStreamListeners } from './stores/sessionStore';
 import { useDocumentStore } from './stores/documentStore';
+import { useWebTabStore } from './stores/webTabStore';
+import { useTerminalTabStore } from './stores/terminalTabStore';
 import { useUIStore } from './stores/uiStore';
 import { useWorkspaceLayoutStore } from './stores/workspaceLayoutStore';
-import { docTabId } from './stores/workspaceTabStore';
+import { docTabId, terminalTabId, webTabId } from './stores/workspaceTabStore';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { getViewDefinition } from './views/registry';
 import { ChatViewContainer } from './views/ChatViewContainer';
 import { getViewWindowParams } from './utils/viewWindow';
+import { getCurrentWindowLabelSafe, removeWindowPresence, writeWindowPresence } from './utils/windowPresence';
 import './App.css';
 
 function App() {
@@ -31,6 +34,7 @@ function App() {
   const windowParams = getViewWindowParams();
   const viewOverride = windowParams.view;
   const isStandalone = windowParams.standalone;
+  const noDefaultSession = windowParams.noDefaultSession;
   const isStandaloneChatWindow = isStandalone && viewOverride === 'chat';
   const conversationIdOverride = windowParams.conversationId;
   const agentNameOverride = windowParams.agentName;
@@ -54,6 +58,67 @@ function App() {
   useEffect(() => {
     console.log('App mounted, config:', config, 'loading:', configLoading, 'error:', configError);
   }, [config, configLoading, configError]);
+
+  // Cross-window "open conversation" presence:
+  // - 供 History 列表标记“该对话已在其他窗口打开”
+  // - 用 localStorage 做轻量广播，避免引入额外的后端状态
+  useEffect(() => {
+    if (!shouldInitChatRuntime) return;
+
+    const label = getCurrentWindowLabelSafe();
+    let disposed = false;
+    let lastKey = '';
+    let lastWriteAt = 0;
+    let timer: number | null = null;
+
+    const computeConversationIds = () => {
+      const sessions = useSessionStore.getState().sessions;
+      const ids = new Set<string>();
+      for (const s of sessions.values()) {
+        if (s.conversationId) ids.add(s.conversationId);
+      }
+      return Array.from(ids).sort();
+    };
+
+    const schedulePublish = (force: boolean) => {
+      if (disposed) return;
+      if (timer) return;
+      timer = window.setTimeout(() => {
+        timer = null;
+        if (disposed) return;
+        const ids = computeConversationIds();
+        const key = ids.join('|');
+        const now = Date.now();
+        const heartbeatDue = now - lastWriteAt >= 4_000;
+        if (!force && key === lastKey && !heartbeatDue) return;
+        writeWindowPresence(label, { openConversationIds: ids });
+        lastKey = key;
+        lastWriteAt = now;
+      }, 120);
+    };
+
+    schedulePublish(true);
+
+    const unsubscribe = useSessionStore.subscribe(() => {
+      schedulePublish(false);
+    });
+
+    const interval = window.setInterval(() => schedulePublish(true), 4_000);
+
+    const cleanup = () => {
+      disposed = true;
+      if (timer) window.clearTimeout(timer);
+      window.clearInterval(interval);
+      unsubscribe();
+      removeWindowPresence(label);
+    };
+
+    window.addEventListener('beforeunload', cleanup);
+    return () => {
+      window.removeEventListener('beforeunload', cleanup);
+      cleanup();
+    };
+  }, [shouldInitChatRuntime]);
 
   /**
    * Initialize keyboard shortcuts for session management
@@ -175,6 +240,72 @@ function App() {
       })
       .catch(() => {
         // In non-Tauri environments, the listener may not be available.
+      });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [viewOverride, activeView, isStandaloneChatWindow, shouldInitChatRuntime]);
+
+  /**
+   * Menu: View -> Open Web Tab
+   * Open a web tab inside the workspace (Pane + Tab), instead of a standalone window.
+   */
+  useEffect(() => {
+    if (!shouldInitChatRuntime) return;
+    if ((isStandaloneChatWindow ? activeView : (viewOverride || activeView)) === 'workstudio') return;
+
+    let disposed = false;
+    let unlisten: null | (() => void) = null;
+
+    void listen('menu:open_web_tab', () => {
+      const id = useWebTabStore.getState().openWebTab('about:blank', { title: '网页', activate: true });
+      useWorkspaceLayoutStore.getState().openTabInFocusedPane(webTabId(id));
+      useUIStore.getState().setActiveView('chat');
+    })
+      .then((fn) => {
+        if (disposed) {
+          fn();
+          return;
+        }
+        unlisten = fn;
+      })
+      .catch(() => {
+        // ignore in non-Tauri environments
+      });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [viewOverride, activeView, isStandaloneChatWindow, shouldInitChatRuntime]);
+
+  /**
+   * Menu: View -> Open Terminal Tab
+   * Open a terminal tab inside the workspace (Pane + Tab), instead of a standalone window.
+   */
+  useEffect(() => {
+    if (!shouldInitChatRuntime) return;
+    if ((isStandaloneChatWindow ? activeView : (viewOverride || activeView)) === 'workstudio') return;
+
+    let disposed = false;
+    let unlisten: null | (() => void) = null;
+
+    void listen('menu:open_terminal_tab', () => {
+      const id = useTerminalTabStore.getState().openTerminalTab({ title: '终端', activate: true });
+      useWorkspaceLayoutStore.getState().openTabInFocusedPane(terminalTabId(id));
+      useUIStore.getState().setActiveView('chat');
+    })
+      .then((fn) => {
+        if (disposed) {
+          fn();
+          return;
+        }
+        unlisten = fn;
+      })
+      .catch(() => {
+        // ignore in non-Tauri environments
       });
 
     return () => {
@@ -321,7 +452,7 @@ function App() {
       
       if (currentSessions.size === 0) {
         // If a standalone chat window is bound to an existing conversation, don't create a new one.
-        if (isStandalone && viewOverride === 'chat' && conversationIdOverride) {
+        if (isStandalone && viewOverride === 'chat' && (conversationIdOverride || noDefaultSession)) {
           return;
         }
         const defaultAgent = config.defaultAgent || config.agents?.[0]?.name;
@@ -349,6 +480,7 @@ function App() {
     isStandalone,
     viewOverride,
     conversationIdOverride,
+    noDefaultSession,
     agentNameOverride,
     runModeOverride,
     loadConversations,

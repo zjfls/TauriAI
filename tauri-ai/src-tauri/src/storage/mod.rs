@@ -225,6 +225,8 @@ impl Database {
             system_prompt_cache_key: None,
             thinking_mode: None,
             workstudio_id: None,
+            message_count: None,
+            turn_count: None,
             created_at: now,
             updated_at: now,
         })
@@ -559,6 +561,8 @@ impl Database {
             system_prompt_cache_key: source.system_prompt_cache_key,
             thinking_mode: source.thinking_mode,
             workstudio_id,
+            message_count: None,
+            turn_count: None,
             created_at: now,
             updated_at: now,
         })
@@ -572,9 +576,34 @@ impl Database {
             .map_err(|e| StorageError::Lock(e.to_string()))?;
 
         let mut stmt = conn.prepare(
-            "SELECT id, title, agent_name, model_ref, system_prompt, system_prompt_cache_key, thinking_mode, workstudio_id, created_at, updated_at 
-             FROM conversations 
-             ORDER BY updated_at DESC",
+            "SELECT
+               c.id,
+               c.title,
+               c.agent_name,
+               c.model_ref,
+               c.system_prompt,
+               c.system_prompt_cache_key,
+               c.thinking_mode,
+               c.workstudio_id,
+               c.created_at,
+               c.updated_at,
+               (SELECT COUNT(1) FROM messages m WHERE m.conversation_id = c.id) AS message_count,
+               (
+                 SELECT COALESCE(
+                   SUM(
+                     CASE
+                       WHEN m.meta IS NULL OR m.meta = '' THEN 0
+                       WHEN json_valid(m.meta) = 0 THEN 0
+                       ELSE COALESCE(json_array_length(json_extract(m.meta, '$.turns')), 0)
+                     END
+                   ),
+                   0
+                 )
+                 FROM messages m
+                 WHERE m.conversation_id = c.id
+               ) AS turn_count
+             FROM conversations c
+             ORDER BY c.updated_at DESC",
         )?;
 
         let conversations = stmt
@@ -585,6 +614,8 @@ impl Database {
                 let workstudio_id: Option<String> = row.get(7)?;
                 let created_at_str: String = row.get(8)?;
                 let updated_at_str: String = row.get(9)?;
+                let message_count_i64: i64 = row.get(10)?;
+                let turn_count_i64: i64 = row.get(11)?;
 
                 let thinking_mode: Option<serde_json::Value> = thinking_mode_str
                     .as_deref()
@@ -599,6 +630,8 @@ impl Database {
                     system_prompt_cache_key,
                     thinking_mode,
                     workstudio_id,
+                    message_count: u32::try_from(message_count_i64).ok(),
+                    turn_count: u32::try_from(turn_count_i64).ok(),
                     created_at: DateTime::parse_from_rfc3339(&created_at_str)
                         .map(|dt| dt.with_timezone(&Utc))
                         .unwrap_or_else(|_| Utc::now()),
@@ -648,6 +681,8 @@ impl Database {
                 system_prompt_cache_key,
                 thinking_mode,
                 workstudio_id,
+                message_count: None,
+                turn_count: None,
                 created_at: DateTime::parse_from_rfc3339(&created_at_str)
                     .map(|dt| dt.with_timezone(&Utc))
                     .unwrap_or_else(|_| Utc::now()),
