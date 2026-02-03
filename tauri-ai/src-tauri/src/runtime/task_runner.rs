@@ -2911,6 +2911,8 @@ async fn run_task_inner(
     };
     let force_full_access = requested_mode == "agent-full-access";
     let use_custom_security = requested_mode == "agent-custom";
+    // Tools can also be enabled in chat mode (read-only sandbox by default).
+    let tools_enabled = matches!(runtime_agent_type, AgentType::Tool) || requested_mode == "chat";
 
     if !provider.enabled {
         return Err(AppErrorCode::AiServiceError(format!(
@@ -3068,9 +3070,13 @@ async fn run_task_inner(
         base_messages
     };
 
-    // 2.5) Workstudio: tool agents can bind a working directory (main folder).
+    // 2.5) Workstudio: when tools are enabled, bind a working directory (main folder) so
+    // read-only tools (rg/read_file/list_dir) have a workspace root to operate on.
+    //
+    // Chat mode in this project can also run tools (under a stricter sandbox), so we don't
+    // tie this solely to AgentType::Tool.
     let workspace_enabled =
-        matches!(runtime_agent_type, AgentType::Tool) && agent.workspace_support.unwrap_or(true);
+        tools_enabled && agent.workspace_support.unwrap_or(true);
     let (workstudio, default_workdir) = if workspace_enabled {
         let ws = {
             let db = db.lock().await;
@@ -3116,6 +3122,7 @@ async fn run_task_inner(
         .resolve_policy(agent.security_policy.as_deref());
 
     // RunMode semantics:
+    // - chat: enable tools but enforce read-only sandbox (block file writes)
     // - agent: use security policy only
     // - agent-custom: use agent overrides (sandboxPolicy/approvalPolicy) on top of the security policy
     let mut sandbox_policy = if use_custom_security {
@@ -3126,6 +3133,9 @@ async fn run_task_inner(
     } else {
         base_security_policy.sandbox_policy.clone()
     };
+    if requested_mode == "chat" {
+        sandbox_policy = crate::models::SandboxPolicy::ReadOnly;
+    }
     if force_full_access {
         sandbox_policy = crate::models::SandboxPolicy::DangerFullAccess;
     }
@@ -3190,9 +3200,8 @@ async fn run_task_inner(
     let approval_store = run_state.get_approval_store(&input.conversation_id).await;
 
     // 工具系统是否启用：由本次输入的运行模式/AgentType 决定，而不是全局开关。
-    // - Chat：不暴露工具定义，也不执行工具调用
+    // - Chat：允许工具调用，但在更严格的沙盒策略下运行（例如禁止写文件）
     // - Agent：按 toolset + 安全策略暴露/执行
-    let tools_enabled = matches!(runtime_agent_type, AgentType::Tool);
     let mut allow_persistent_pty = false;
     let mut enable_local_web_search_tool = false;
     let mut enable_mcp_resource_tool_prompt = false;
