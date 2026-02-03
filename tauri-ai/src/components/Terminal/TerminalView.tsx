@@ -85,7 +85,7 @@ export const TerminalView: React.FC = () => {
         if (!isTauri()) return;
         void ensureTerminalSession(tabId).then((sid) => {
           if (!sid) return;
-          return invoke('terminal_write', { terminalId: tabId, sessionId: sid, chars: data });
+          return invoke('workstudio_terminal_write', { workstudioId: tabId, sessionId: sid, chars: data });
         });
       });
 
@@ -99,8 +99,8 @@ export const TerminalView: React.FC = () => {
           if (!isTauri()) return;
           const sid = await ensureTerminalSession(tabId);
           if (!sid) return;
-          const base64 = await invoke<string>('terminal_read_base64', {
-            terminalId: tabId,
+          const base64 = await invoke<string>('workstudio_terminal_read_base64', {
+            workstudioId: tabId,
             sessionId: sid,
             timeoutMs: 80,
             maxBytes: 64 * 1024,

@@ -56,7 +56,7 @@ export const useTerminalTabStore = create<TerminalTabState>((set, get) => ({
 
     if (target?.sessionId && isTauri()) {
       try {
-        await invoke('terminal_close', { terminalId: id, sessionId: target.sessionId });
+        await invoke('workstudio_terminal_close', { workstudioId: id, sessionId: target.sessionId });
       } catch {
         // ignore
       }
@@ -85,8 +85,8 @@ export const useTerminalTabStore = create<TerminalTabState>((set, get) => ({
     if (target.sessionId) return target.sessionId;
     if (!isTauri()) return null;
 
-    const sessionId = await invoke<number>('terminal_create', {
-      terminalId: id,
+    const sessionId = await invoke<number>('workstudio_terminal_create', {
+      workstudioId: id,
       workdir: target.workdir ?? undefined,
     });
 

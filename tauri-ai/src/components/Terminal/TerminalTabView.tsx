@@ -74,7 +74,7 @@ export const TerminalTabView: React.FC<{ terminalTabId: string; isActive?: boole
       void (async () => {
         const sid = await ensureSessionId();
         if (!sid) return;
-        await invoke('terminal_write', { terminalId: terminalTabId, sessionId: sid, chars: data });
+        await invoke('workstudio_terminal_write', { workstudioId: terminalTabId, sessionId: sid, chars: data });
       })();
     });
 
@@ -88,8 +88,8 @@ export const TerminalTabView: React.FC<{ terminalTabId: string; isActive?: boole
         if (!sid) return;
 
         const timeoutMs = activeRef.current ? 1000 : 0;
-        const base64 = await invoke<string>('terminal_read_base64', {
-          terminalId: terminalTabId,
+        const base64 = await invoke<string>('workstudio_terminal_read_base64', {
+          workstudioId: terminalTabId,
           sessionId: sid,
           timeoutMs,
           maxBytes: 64 * 1024,
