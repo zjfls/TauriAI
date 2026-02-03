@@ -18,6 +18,7 @@ import 'katex/dist/katex.min.css';
 import type { Workstudio } from '../../types';
 import type { ParsedFileReference } from '../../utils/fileReference';
 import { parseFileReferenceToken } from '../../utils/fileReference';
+import { useWebTabStore } from '../../stores/webTabStore';
 
 // Initialize mermaid with math support
 mermaid.initialize({
@@ -226,6 +227,18 @@ function looksLikeFilePath(token: string): boolean {
   if (normalized.startsWith('/') || normalized.startsWith('//')) return true;
   if (normalized.includes('/')) return true;
 
+  return false;
+}
+
+function looksLikeWebUrl(href: string): boolean {
+  const raw = (href ?? '').trim();
+  if (!raw) return false;
+  if (/[\r\n\t]/.test(raw)) return false;
+  if (raw.startsWith('about:')) return true;
+  if (raw.startsWith('//')) return true;
+  if (/^https?:\/\//i.test(raw)) return true;
+  // Basic heuristic: common "www." style links; keep tight to avoid capturing file paths.
+  if (/^www\.[^\s]+$/i.test(raw)) return true;
   return false;
 }
 
@@ -708,9 +721,10 @@ export const MarkdownRenderer = React.memo(function MarkdownRendererImpl({ conte
       const hrefStr = typeof href === 'string' ? href : '';
       const token = hrefStr ? parseFileReferenceTokenFromHref(hrefStr) : null;
       const fileRef = token ? parseFileReferenceToken(token) : null;
-      const canOpen = Boolean(fileRef) && isTauriRuntime() && Boolean(conversationId || workstudioId);
+      const canOpenFileRef = Boolean(fileRef) && isTauriRuntime() && Boolean(conversationId || workstudioId);
+      const canOpenWebTab = isTauriRuntime() && looksLikeWebUrl(hrefStr);
 
-      if (!canOpen) {
+      if (!canOpenFileRef && !canOpenWebTab) {
         return (
           <a href={hrefStr} {...props}>
             {children}
@@ -725,8 +739,13 @@ export const MarkdownRenderer = React.memo(function MarkdownRendererImpl({ conte
           onClick={(e) => {
             e.preventDefault();
             e.stopPropagation();
-            if (!fileRef) return;
-            void openFileReference(fileRef);
+            if (fileRef) {
+              void openFileReference(fileRef);
+              return;
+            }
+            if (canOpenWebTab) {
+              useWebTabStore.getState().openWebTab(hrefStr);
+            }
           }}
         >
           {children}
