@@ -64,7 +64,7 @@ interface TabRenderItem {
   };
   // For web/terminal
   webTab?: { id: string; title: string; url: string };
-  terminalTab?: { id: string; title: string };
+  terminalTab?: { id: string; title: string; workdir?: string | null };
 }
 
 const TEAR_OFF_THRESHOLD_PX = 48;
@@ -336,7 +336,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
           id,
           kind: 'terminal',
           title: tab.title,
-          terminalTab: { id: tab.id, title: tab.title },
+          terminalTab: { id: tab.id, title: tab.title, workdir: tab.workdir ?? null },
         });
       }
     }
@@ -387,7 +387,25 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
       return;
     }
 
-    // Web/Terminal: 目前不支持 tear-off 到独立窗口（还需要跨窗口状态管理），先忽略。
+    if (parsed.kind === 'web') {
+      const wid = parsed.webTabId;
+      const tab = wid ? webTabs.find((t) => t.id === wid) : undefined;
+      if (!tab) return;
+      openViewWindow('web', tab.title || '网页', { webUrl: tab.url, webTitle: tab.title });
+      closeWebTab(tab.id);
+      return;
+    }
+
+    if (parsed.kind === 'terminal') {
+      const tid = parsed.terminalTabId;
+      const tab = tid ? terminalTabs.find((t) => t.id === tid) : undefined;
+      if (!tab) return;
+      openViewWindow('terminal', tab.title || '终端', {
+        terminalWorkdir: tab.workdir ?? undefined,
+        terminalTitle: tab.title,
+      });
+      await closeTerminalTab(tab.id);
+    }
   };
 
   const closeTab = async (tabId: WorkspaceTabId) => {

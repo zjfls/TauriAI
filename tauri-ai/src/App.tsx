@@ -29,6 +29,7 @@ function App() {
   const windowParams = getViewWindowParams();
   const viewOverride = windowParams.view;
   const isStandalone = windowParams.standalone;
+  const isStandaloneChatWindow = isStandalone && viewOverride === 'chat';
   const conversationIdOverride = windowParams.conversationId;
   const agentNameOverride = windowParams.agentName;
   const runModeOverride = windowParams.runMode;
@@ -44,6 +45,7 @@ function App() {
   
   // Track if session initialization has been done to prevent duplicate execution
   const sessionInitialized = useRef(false);
+  const viewOverrideAppliedRef = useRef(false);
   const chatKeepAliveLayerRef = useRef<HTMLDivElement>(null);
 
   // Debug logging
@@ -64,7 +66,7 @@ function App() {
   useEffect(() => {
     // Workstudio 窗口需要把“打开文件”路由到自己的编辑器，而不是切换到全局 DocumentView。
     // 因此在 workstudio 视图（含 standalone 窗口）里跳过这里的监听（由 WorkstudioView 自己处理）。
-    if ((viewOverride || activeView) === 'workstudio') return;
+    if ((isStandaloneChatWindow ? activeView : (viewOverride || activeView)) === 'workstudio') return;
 
     let disposed = false;
     let unlisten: null | (() => void) = null;
@@ -116,14 +118,14 @@ function App() {
       disposed = true;
       unlisten?.();
     };
-  }, [viewOverride, activeView]);
+  }, [viewOverride, activeView, isStandaloneChatWindow]);
 
   /**
    * Menu: File -> New .tauri.richtxt
    * Create a new empty .tauri.richtxt document
    */
   useEffect(() => {
-    if ((viewOverride || activeView) === 'workstudio') return;
+    if ((isStandaloneChatWindow ? activeView : (viewOverride || activeView)) === 'workstudio') return;
 
     let disposed = false;
     let unlisten: null | (() => void) = null;
@@ -165,7 +167,7 @@ function App() {
       disposed = true;
       unlisten?.();
     };
-  }, [viewOverride, activeView]);
+  }, [viewOverride, activeView, isStandaloneChatWindow]);
 
   /**
    * Standalone document window: open a local file if provided via query param.
@@ -344,21 +346,30 @@ function App() {
    * Render the active view based on UI state
    * Requirements: 2.1-2.6
    */
-  const resolvedView = viewOverride || activeView;
+  const resolvedView = isStandaloneChatWindow ? activeView : viewOverride || activeView;
   const viewDef = getViewDefinition(resolvedView) || getViewDefinition('chat');
   const isChatActive = (viewDef?.id ?? 'chat') === 'chat';
 
   useEffect(() => {
-    if (viewOverride && viewOverride !== activeView) {
-      setActiveView(viewOverride);
+    if (!viewOverride) return;
+
+    // Standalone chat windows should behave like a mini-workspace: allow switching to web/terminal/etc.
+    // So we apply the view override once as the initial active view, instead of locking it forever.
+    if (isStandaloneChatWindow) {
+      if (viewOverrideAppliedRef.current) return;
+      viewOverrideAppliedRef.current = true;
+      if (viewOverride !== activeView) setActiveView(viewOverride);
+      return;
     }
-  }, [viewOverride, activeView, setActiveView]);
+
+    if (viewOverride !== activeView) setActiveView(viewOverride);
+  }, [viewOverride, activeView, setActiveView, isStandaloneChatWindow]);
 
   // ChatView keep-alive:
   // - 在主窗口内切换到 History/Settings 等视图时，不卸载 ChatView（避免滚动/定位在重建时漂移）
   // - 仅通过可见性与 pointer-events 控制展示，保证回到聊天时“像没离开一样”
   useEffect(() => {
-    if (isStandalone) return;
+    if (isStandalone && !isStandaloneChatWindow) return;
     if (isChatActive) return;
 
     const chatLayer = chatKeepAliveLayerRef.current;
@@ -368,7 +379,7 @@ function App() {
     if (chatLayer.contains(active)) {
       active.blur();
     }
-  }, [isChatActive, isStandalone]);
+  }, [isChatActive, isStandalone, isStandaloneChatWindow]);
 
   const renderNonChatView = () => {
     if (isChatActive) return null;
@@ -376,7 +387,7 @@ function App() {
     return viewDef?.render() ?? null;
   };
 
-  if (isStandalone) {
+  if (isStandalone && !isStandaloneChatWindow) {
     return (
       <StandaloneLayout title={viewDef?.title}>
         {viewDef?.render() ?? null}

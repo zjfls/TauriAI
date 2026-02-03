@@ -92,6 +92,10 @@ export interface ViewWindowParams {
   agentName?: string | null;
   documentPath?: string | null;
   workstudioId?: string | null;
+  webUrl?: string | null;
+  webTitle?: string | null;
+  terminalWorkdir?: string | null;
+  terminalTitle?: string | null;
   filePath?: string | null;
   line?: number | null;
   column?: number | null;
@@ -109,6 +113,10 @@ export const getViewWindowParams = (): ViewWindowParams => {
       agentName: null,
       documentPath: null,
       workstudioId: null,
+      webUrl: null,
+      webTitle: null,
+      terminalWorkdir: null,
+      terminalTitle: null,
       filePath: null,
       line: null,
       column: null,
@@ -124,6 +132,10 @@ export const getViewWindowParams = (): ViewWindowParams => {
   const agentName = params.get('agentName');
   const documentPath = params.get('documentPath');
   const workstudioId = params.get('workstudioId');
+  const webUrl = params.get('webUrl');
+  const webTitle = params.get('webTitle');
+  const terminalWorkdir = params.get('terminalWorkdir');
+  const terminalTitle = params.get('terminalTitle');
   const filePath = params.get('filePath');
   const lineRaw = params.get('line');
   const columnRaw = params.get('column');
@@ -141,6 +153,10 @@ export const getViewWindowParams = (): ViewWindowParams => {
     agentName,
     documentPath,
     workstudioId,
+    webUrl,
+    webTitle,
+    terminalWorkdir,
+    terminalTitle,
     filePath,
     line: Number.isFinite(line) ? line : null,
     column: Number.isFinite(column) ? column : null,
@@ -158,6 +174,10 @@ export const openViewWindow = (
     agentName?: string;
     documentPath?: string;
     workstudioId?: string;
+    webUrl?: string;
+    webTitle?: string;
+    terminalWorkdir?: string;
+    terminalTitle?: string;
     filePath?: string;
     line?: number;
     column?: number;
@@ -184,6 +204,18 @@ export const openViewWindow = (
   }
   if (opts?.workstudioId) {
     params.set('workstudioId', opts.workstudioId);
+  }
+  if (opts?.webUrl) {
+    params.set('webUrl', opts.webUrl);
+  }
+  if (opts?.webTitle) {
+    params.set('webTitle', opts.webTitle);
+  }
+  if (opts?.terminalWorkdir) {
+    params.set('terminalWorkdir', opts.terminalWorkdir);
+  }
+  if (opts?.terminalTitle) {
+    params.set('terminalTitle', opts.terminalTitle);
   }
   if (opts?.filePath) {
     params.set('filePath', opts.filePath);
@@ -228,6 +260,10 @@ export const openOrFocusViewWindow = async (
     agentName?: string;
     documentPath?: string;
     workstudioId?: string;
+    webUrl?: string;
+    webTitle?: string;
+    terminalWorkdir?: string;
+    terminalTitle?: string;
     filePath?: string;
     line?: number;
     column?: number;
@@ -280,6 +316,18 @@ export const openOrFocusViewWindow = async (
   }
   if (opts?.workstudioId) {
     params.set('workstudioId', opts.workstudioId);
+  }
+  if (opts?.webUrl) {
+    params.set('webUrl', opts.webUrl);
+  }
+  if (opts?.webTitle) {
+    params.set('webTitle', opts.webTitle);
+  }
+  if (opts?.terminalWorkdir) {
+    params.set('terminalWorkdir', opts.terminalWorkdir);
+  }
+  if (opts?.terminalTitle) {
+    params.set('terminalTitle', opts.terminalTitle);
   }
   if (opts?.filePath) {
     params.set('filePath', opts.filePath);

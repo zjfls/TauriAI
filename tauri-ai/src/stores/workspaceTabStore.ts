@@ -39,6 +39,26 @@ export const parseWorkspaceTabId = (id: WorkspaceTabId): WorkspaceTab => {
 
 const STORAGE_KEY = 'tauri-ai:workspace-tabs:v1';
 
+const isStandaloneWindow = (): boolean => {
+  try {
+    if (typeof window === 'undefined') return false;
+    const params = new URLSearchParams(window.location.search);
+    return params.get('standalone') === '1';
+  } catch {
+    return false;
+  }
+};
+
+const getWorkspaceTabStorage = (): Storage | null => {
+  try {
+    if (typeof window === 'undefined') return null;
+    // 多窗口隔离：standalone 窗口用 sessionStorage（每个窗口独立），主窗口用 localStorage（跨重启持久化）。
+    return isStandaloneWindow() ? window.sessionStorage : window.localStorage;
+  } catch {
+    return null;
+  }
+};
+
 interface WorkspaceTabState {
   tabOrder: WorkspaceTabId[];
 
@@ -61,7 +81,8 @@ interface WorkspaceTabState {
 
 const loadInitialOrder = (): WorkspaceTabId[] => {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const storage = getWorkspaceTabStorage();
+    const raw = storage?.getItem(STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw) as { tabOrder?: string[] } | null;
     const items = parsed?.tabOrder ?? [];
@@ -76,7 +97,8 @@ const loadInitialOrder = (): WorkspaceTabId[] => {
 
 const persistOrder = (tabOrder: WorkspaceTabId[]) => {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ tabOrder }));
+    const storage = getWorkspaceTabStorage();
+    storage?.setItem(STORAGE_KEY, JSON.stringify({ tabOrder }));
   } catch {
     // ignore
   }

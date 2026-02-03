@@ -5,6 +5,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import 'xterm/css/xterm.css';
 import { Plus, TerminalSquare } from 'lucide-react';
 import { useTerminalTabStore } from '../../stores/terminalTabStore';
+import { getViewWindowParams } from '../../utils/viewWindow';
 
 const decodeBase64ToBytes = (base64: string) => Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
 
@@ -14,6 +15,7 @@ export const TerminalView: React.FC = () => {
   const openTerminalTab = useTerminalTabStore((s) => s.openTerminalTab);
   const setActiveTerminalTab = useTerminalTabStore((s) => s.setActiveTerminalTab);
   const ensureTerminalSession = useTerminalTabStore((s) => s.ensureTerminalSession);
+  const bootstrappedFromWindowParamsRef = useRef(false);
 
   const activeTab = useMemo(() => {
     if (!activeTabId) return null;
@@ -30,6 +32,27 @@ export const TerminalView: React.FC = () => {
     const id = openTerminalTab();
     setActiveTerminalTab(id);
   };
+
+  useEffect(() => {
+    if (bootstrappedFromWindowParamsRef.current) return;
+    if (tabs.length > 0) {
+      bootstrappedFromWindowParamsRef.current = true;
+      return;
+    }
+
+    const params = getViewWindowParams();
+    const workdir = (params.terminalWorkdir ?? '').trim();
+    const title = (params.terminalTitle ?? '').trim();
+    if (!workdir && !title) return;
+
+    bootstrappedFromWindowParamsRef.current = true;
+    const id = openTerminalTab({
+      title: title || undefined,
+      workdir: workdir || undefined,
+      activate: true,
+    });
+    setActiveTerminalTab(id);
+  }, [openTerminalTab, setActiveTerminalTab, tabs.length]);
 
   const ensureTerminal = useCallback(
     (tabId: string, el: HTMLDivElement) => {

@@ -1,8 +1,9 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Globe, ExternalLink, Plus } from 'lucide-react';
 import { isTauri } from '@tauri-apps/api/core';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { useWebTabStore } from '../../stores/webTabStore';
+import { getViewWindowParams } from '../../utils/viewWindow';
 
 const normalizeDisplayUrl = (url: string) => {
   const u = (url ?? '').trim();
@@ -16,6 +17,7 @@ export const WebView: React.FC = () => {
   const openWebTab = useWebTabStore((s) => s.openWebTab);
   const setActiveWebTab = useWebTabStore((s) => s.setActiveWebTab);
   const updateWebTab = useWebTabStore((s) => s.updateWebTab);
+  const bootstrappedFromWindowParamsRef = useRef(false);
 
   const activeTab = useMemo(() => {
     if (!activeTabId) return null;
@@ -23,6 +25,23 @@ export const WebView: React.FC = () => {
   }, [tabs, activeTabId]);
 
   const [address, setAddress] = useState('');
+
+  useEffect(() => {
+    if (bootstrappedFromWindowParamsRef.current) return;
+    if (tabs.length > 0) {
+      bootstrappedFromWindowParamsRef.current = true;
+      return;
+    }
+
+    const params = getViewWindowParams();
+    const url = (params.webUrl ?? '').trim();
+    const title = (params.webTitle ?? '').trim();
+    if (!url) return;
+
+    bootstrappedFromWindowParamsRef.current = true;
+    const id = openWebTab(url, { title: title || undefined, activate: true });
+    setActiveWebTab(id);
+  }, [openWebTab, setActiveWebTab, tabs.length]);
 
   useEffect(() => {
     setAddress(activeTab ? normalizeDisplayUrl(activeTab.url) : '');
@@ -156,4 +175,3 @@ export const WebView: React.FC = () => {
 };
 
 export default WebView;
-
