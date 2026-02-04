@@ -94,6 +94,15 @@ export const SHORTCUT_ACTIONS: ShortcutActionDefinition[] = [
     allowWhenTyping: true,
   },
   {
+    id: 'chat.toggleOutline',
+    title: '显示/隐藏消息目录',
+    description: '切换聊天左侧的“消息目录”面板（默认收起，通过快捷键或点击滑动展开）',
+    category: 'Chat',
+    defaultMac: 'Cmd+Option+O',
+    defaultWindows: 'Ctrl+Alt+O',
+    allowWhenTyping: true,
+  },
+  {
     id: 'chat.toggleScrollNavigator',
     title: '显示/隐藏滚动导航条',
     description: '切换聊天右侧的快速滚动导航条显示状态（更不遮挡内容）',

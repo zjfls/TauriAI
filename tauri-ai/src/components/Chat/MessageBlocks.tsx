@@ -20,11 +20,183 @@
    Workstudio,
    WorkstudioSecurityConfig,
  } from '../../types';
- import { DeferredMarkdown } from './DeferredMarkdown';
- import { AnsiText } from './AnsiText';
-  import { useConfigStore } from '../../stores/configStore';
-  import { useSessionStore } from '../../stores/sessionStore';
-  import { DebugModal } from './DebugModal';
+import { DeferredMarkdown } from './DeferredMarkdown';
+import { AnsiText } from './AnsiText';
+ import { useConfigStore } from '../../stores/configStore';
+ import { useSessionStore } from '../../stores/sessionStore';
+ import { DebugModal } from './DebugModal';
+
+const TOOL_SUMMARY_MAX_CHARS = 220;
+const TOOL_SUMMARY_SCAN_MAX_CHARS = 30_000;
+const TOOL_SUMMARY_EXTRACT_VALUE_MAX_CHARS = 2_000;
+
+const normalizeToolSummary = (value: string): string => {
+  const oneLine = value.replace(/\r\n/g, '\n').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (oneLine.length <= TOOL_SUMMARY_MAX_CHARS) return oneLine;
+  return `${oneLine.slice(0, TOOL_SUMMARY_MAX_CHARS - 1)}…`;
+};
+
+const extractJsonStringField = (raw: string, key: string): string | null => {
+  if (!raw) return null;
+  if (!key) return null;
+
+  const haystack = raw.length > TOOL_SUMMARY_SCAN_MAX_CHARS ? raw.slice(0, TOOL_SUMMARY_SCAN_MAX_CHARS) : raw;
+  const needle = `"${key}"`;
+  let idx = haystack.indexOf(needle);
+  while (idx !== -1) {
+    let j = idx - 1;
+    while (j >= 0 && /\s/.test(haystack[j])) j--;
+    if (j < 0 || haystack[j] === '{' || haystack[j] === ',') break;
+    idx = haystack.indexOf(needle, idx + needle.length);
+  }
+  if (idx === -1) return null;
+
+  let i = idx + needle.length;
+  while (i < haystack.length && /\s/.test(haystack[i])) i++;
+  if (haystack[i] !== ':') return null;
+  i++;
+  while (i < haystack.length && /\s/.test(haystack[i])) i++;
+  if (haystack[i] !== '"') return null;
+  i++;
+
+  let out = '';
+  let escaped = false;
+  while (i < haystack.length) {
+    const ch = haystack[i++];
+    if (escaped) {
+      escaped = false;
+      switch (ch) {
+        case '"':
+          out += '"';
+          break;
+        case '\\':
+          out += '\\';
+          break;
+        case '/':
+          out += '/';
+          break;
+        case 'b':
+          out += '\b';
+          break;
+        case 'f':
+          out += '\f';
+          break;
+        case 'n':
+          out += '\n';
+          break;
+        case 'r':
+          out += '\r';
+          break;
+        case 't':
+          out += '\t';
+          break;
+        case 'u': {
+          const hex = haystack.slice(i, i + 4);
+          if (/^[0-9a-fA-F]{4}$/.test(hex)) {
+            out += String.fromCharCode(Number.parseInt(hex, 16));
+            i += 4;
+          } else {
+            out += 'u';
+          }
+          break;
+        }
+        default:
+          out += ch;
+          break;
+      }
+    } else if (ch === '\\') {
+      escaped = true;
+    } else if (ch === '"') {
+      break;
+    } else {
+      out += ch;
+    }
+
+    if (out.length >= TOOL_SUMMARY_EXTRACT_VALUE_MAX_CHARS) {
+      out += '…';
+      break;
+    }
+  }
+
+  return out;
+};
+
+const extractApplyPatchOps = (rawArgs: string): string[] => {
+  if (!rawArgs) return [];
+  const haystack = rawArgs.length > TOOL_SUMMARY_SCAN_MAX_CHARS ? rawArgs.slice(0, TOOL_SUMMARY_SCAN_MAX_CHARS) : rawArgs;
+  const ops: string[] = [];
+  const re = /\*\*\*\s+(Update|Add|Delete)\s+File:\s*([^\r\n\\]+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(haystack)) !== null) {
+    const action = (m[1] || '').trim();
+    const path = (m[2] || '').trim();
+    if (!action || !path) continue;
+    ops.push(`${action} ${path}`);
+    if (ops.length >= 3) break;
+  }
+  return ops;
+};
+
+const extractToolSummary = (toolName: string, rawArgs: string, parsedArgs: unknown | null): string => {
+  const tool = (toolName || '').trim();
+  if (!tool) return '';
+
+  const raw = rawArgs || '';
+  const obj = parsedArgs && typeof parsedArgs === 'object' ? (parsedArgs as any) : null;
+  const getObjString = (key: string): string | null => (obj && typeof obj[key] === 'string' ? obj[key] : null);
+  const getRawString = (key: string): string | null => extractJsonStringField(raw, key);
+
+  switch (tool) {
+    case 'shell_command': {
+      const command = getObjString('command') ?? getRawString('command');
+      return command ? normalizeToolSummary(command) : '';
+    }
+    case 'exec_command':
+    case 'exec_command_persistent': {
+      const cmd = getObjString('cmd') ?? getRawString('cmd');
+      return cmd ? normalizeToolSummary(cmd) : '';
+    }
+    case 'write_stdin':
+    case 'write_stdin_persistent': {
+      const chars = getObjString('chars') ?? getRawString('chars');
+      return chars ? normalizeToolSummary(chars) : '';
+    }
+    case 'read_file': {
+      const filePath =
+        getObjString('file_path') ?? getRawString('file_path') ?? getObjString('path') ?? getRawString('path');
+      return filePath ? normalizeToolSummary(filePath) : '';
+    }
+    case 'list_dir': {
+      const dirPath = getObjString('dir_path') ?? getRawString('dir_path') ?? getObjString('path') ?? getRawString('path');
+      return dirPath ? normalizeToolSummary(dirPath) : '';
+    }
+    case 'rg': {
+      const pattern = getObjString('pattern') ?? getRawString('pattern');
+      const include = getObjString('include') ?? getRawString('include');
+      const path = getObjString('path') ?? getRawString('path');
+      const parts: string[] = [];
+      if (pattern) parts.push(pattern);
+      if (include) parts.push(`include=${include}`);
+      if (path) parts.push(`path=${path}`);
+      return parts.length > 0 ? normalizeToolSummary(parts.join(' ')) : '';
+    }
+    case 'apply_patch': {
+      const ops = extractApplyPatchOps(raw);
+      if (ops.length > 0) return normalizeToolSummary(`apply_patch: ${ops.join(', ')}`);
+      return 'apply_patch';
+    }
+    case 'view_image': {
+      const path = getObjString('path') ?? getRawString('path');
+      return path ? normalizeToolSummary(path) : '';
+    }
+    case 'web_search': {
+      const query = getObjString('query') ?? getRawString('query');
+      return query ? normalizeToolSummary(query) : '';
+    }
+    default:
+      return '';
+  }
+};
 
 interface ThinkingBlockProps {
   text: string;
@@ -145,13 +317,7 @@ const ToolCallBlock: React.FC<{
     }
   }, [args, isExpanded, parsedArgs]);
 
-  const summary = useMemo(() => {
-    if (!isExpanded) return '';
-    if (!parsedArgs || typeof parsedArgs !== 'object') return '';
-    if (name === 'exec_command' && typeof (parsedArgs as any).cmd === 'string') return (parsedArgs as any).cmd;
-    if (name === 'shell_command' && typeof (parsedArgs as any).command === 'string') return (parsedArgs as any).command;
-    return '';
-  }, [isExpanded, name, parsedArgs]);
+  const summary = useMemo(() => extractToolSummary(name, args, parsedArgs), [name, args, parsedArgs]);
 
   return (
     <div className="mb-2 rounded-lg border border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-900/30">
@@ -193,9 +359,6 @@ const ApprovalBlock: React.FC<{
   const resolvedDefaultExpanded = defaultExpanded ?? Boolean(isStreaming || block.status === 'pending');
   const [isExpanded, setIsExpanded] = useState(Boolean(resolvedDefaultExpanded));
   const [isSubmitting, setIsSubmitting] = useState(false);
-  // “信任并允许”的默认范围：优先写入安全组（跨项目/跨会话），项目内可选。
-  const [trustInProject, setTrustInProject] = useState(false);
-  const [trustInSecurityGroup, setTrustInSecurityGroup] = useState(true);
   const { config, saveConfig } = useConfigStore();
   const sessionWorkstudioId = useSessionStore((state) => {
     if (!conversationId) return null;
@@ -205,6 +368,17 @@ const ApprovalBlock: React.FC<{
     return null;
   });
   const hasWorkspace = Boolean(sessionWorkstudioId && sessionWorkstudioId.trim());
+  const trustScopeTouchedRef = useRef(false);
+
+  // “信任并允许”的默认范围：优先“项目内允许”（绑定 Workstudio）；没有工作区时才默认“安全组允许”。
+  const [trustInProject, setTrustInProject] = useState(() => hasWorkspace);
+  const [trustInSecurityGroup, setTrustInSecurityGroup] = useState(() => !hasWorkspace);
+
+  useEffect(() => {
+    if (trustScopeTouchedRef.current) return;
+    setTrustInProject(hasWorkspace);
+    setTrustInSecurityGroup(!hasWorkspace);
+  }, [hasWorkspace]);
 
   useEffect(() => {
     if (!autoCollapseEnabled) return;
@@ -236,14 +410,10 @@ const ApprovalBlock: React.FC<{
     }
   }, [block.arguments, isExpanded, parsedArgs]);
 
-  const summary = useMemo(() => {
-    if (!isExpanded) return '';
-    if (!parsedArgs || typeof parsedArgs !== 'object') return '';
-    if (block.toolName === 'exec_command' && typeof (parsedArgs as any).cmd === 'string') return (parsedArgs as any).cmd;
-    if (block.toolName === 'shell_command' && typeof (parsedArgs as any).command === 'string') return (parsedArgs as any).command;
-    if (block.toolName === 'apply_patch' && typeof (parsedArgs as any).input === 'string') return 'apply_patch';
-    return '';
-  }, [block.toolName, isExpanded, parsedArgs]);
+  const summary = useMemo(
+    () => extractToolSummary(block.toolName, block.arguments, parsedArgs),
+    [block.toolName, block.arguments, parsedArgs]
+  );
 
   const trustCandidate = useMemo(() => {
     if (!isExpanded) return null;
@@ -445,7 +615,10 @@ const ApprovalBlock: React.FC<{
                           className="h-3 w-3"
                           checked={trustInProject}
                           disabled={!canClick}
-                          onChange={(e) => setTrustInProject(e.target.checked)}
+                          onChange={(e) => {
+                            trustScopeTouchedRef.current = true;
+                            setTrustInProject(e.target.checked);
+                          }}
                         />
                         <span className={!canClick ? 'opacity-50' : undefined}>项目内允许</span>
                       </label>
@@ -456,7 +629,10 @@ const ApprovalBlock: React.FC<{
                         className="h-3 w-3"
                         checked={trustInSecurityGroup}
                         disabled={!canClick || !config}
-                        onChange={(e) => setTrustInSecurityGroup(e.target.checked)}
+                        onChange={(e) => {
+                          trustScopeTouchedRef.current = true;
+                          setTrustInSecurityGroup(e.target.checked);
+                        }}
                         title={!config ? '应用配置尚未加载，暂不可用' : undefined}
                       />
                       <span className={!canClick || !config ? 'opacity-50' : undefined}>安全组允许</span>
@@ -470,7 +646,7 @@ const ApprovalBlock: React.FC<{
                       ? 'border-orange-300 bg-white text-orange-900 hover:bg-orange-50 dark:border-orange-700 dark:bg-orange-950/30 dark:text-orange-100 dark:hover:bg-orange-900/30'
                       : 'cursor-not-allowed border-orange-200 bg-orange-50 text-orange-400 dark:border-orange-900/50 dark:bg-orange-950/20 dark:text-orange-600'
                       }`}
-                    title="加入信任列表并执行（可选：安全组/项目内；默认安全组；无工作区时不显示“项目内”）"
+                    title="加入信任列表并执行（可选：项目内/安全组；默认项目内；无工作区时默认安全组且不显示“项目内”）"
                   >
                     信任并允许
                   </button>
@@ -575,13 +751,7 @@ const ToolRunBlock: React.FC<{
     }
   }, [args, isExpanded, parsedArgs]);
 
-  const summary = useMemo(() => {
-    if (!isExpanded) return '';
-    if (!parsedArgs || typeof parsedArgs !== 'object') return '';
-    if (name === 'exec_command' && typeof (parsedArgs as any).cmd === 'string') return (parsedArgs as any).cmd;
-    if (name === 'shell_command' && typeof (parsedArgs as any).command === 'string') return (parsedArgs as any).command;
-    return '';
-  }, [isExpanded, name, parsedArgs]);
+  const summary = useMemo(() => extractToolSummary(name, args, parsedArgs), [name, args, parsedArgs]);
 
   return (
     <div className="mb-2 rounded-lg border border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-900/30">

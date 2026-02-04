@@ -46,7 +46,7 @@ interface WorkspaceTabBarProps {
   onTabClose: (sessionId: string) => Promise<void> | void;
   onNewSession: (agentName: string) => void | Promise<void>;
   onPopoutSession?: (sessionId: string) => void | Promise<void>;
-  /** 是否在顶部栏展示 chat tabs（多 Pane 模式下应关闭，改为每个 Pane 自己的 tabs） */
+  /** 是否在顶部栏展示 tabs（多 Pane 模式下应关闭，改为每个 Pane 自己的 `WorkspacePaneHeader` 承载 tabs） */
   showChatTabs?: boolean;
 }
 
@@ -302,11 +302,13 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
   }, [sessions, documents, webTabs, terminalTabs, syncTabs]);
 
   const items = useMemo((): TabRenderItem[] => {
+    // Multi-pane 模式下：每个 Pane 自己有 `WorkspacePaneHeader` 承载 tab
+    // 这里仅保留右侧的 View 菜单与“新建会话”入口，避免顶部再出现重复的 tab 条。
+    if (!showChatTabs) return [];
     const out: TabRenderItem[] = [];
     for (const id of tabOrder) {
       const parsed = parseWorkspaceTabId(id);
       if (parsed.kind === 'chat') {
-        if (!showChatTabs) continue;
         const session = parsed.sessionId ? sessionsById.get(parsed.sessionId) : undefined;
         if (!session) continue;
         out.push({
@@ -678,41 +680,45 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
       data-tauri-drag-region
       className="relative flex items-center bg-gray-100 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700"
     >
-      <DndContext
-        sensors={sensors}
-        collisionDetection={closestCenter}
-        onDragStart={handleDragStart}
-        onDragMove={handleDragMove}
-        onDragEnd={handleDragEnd}
-      >
-        <SortableContext items={items.map((i) => i.id)} strategy={horizontalListSortingStrategy}>
-          <div
-            className="flex-1 flex items-center overflow-x-auto scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600"
-            style={{ scrollbarWidth: 'thin' }}
-          >
-            {items.map((item) => (
-              <SortableWorkspaceTab
-                key={item.id}
-                item={item}
-                isActive={isTabActive(item)}
-                onSelect={() => handleSelectTab(item)}
-                onClose={(e) => {
-                  e.stopPropagation();
-                  void closeTab(item.id);
-                }}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  setContextMenu({
-                    visible: true,
-                    position: { x: e.clientX, y: e.clientY },
-                    targetId: item.id,
-                  });
-                }}
-              />
-            ))}
-          </div>
-        </SortableContext>
-      </DndContext>
+      {showChatTabs ? (
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          onDragStart={handleDragStart}
+          onDragMove={handleDragMove}
+          onDragEnd={handleDragEnd}
+        >
+          <SortableContext items={items.map((i) => i.id)} strategy={horizontalListSortingStrategy}>
+            <div
+              className="flex-1 flex items-center overflow-x-auto scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600"
+              style={{ scrollbarWidth: 'thin' }}
+            >
+              {items.map((item) => (
+                <SortableWorkspaceTab
+                  key={item.id}
+                  item={item}
+                  isActive={isTabActive(item)}
+                  onSelect={() => handleSelectTab(item)}
+                  onClose={(e) => {
+                    e.stopPropagation();
+                    void closeTab(item.id);
+                  }}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    setContextMenu({
+                      visible: true,
+                      position: { x: e.clientX, y: e.clientY },
+                      targetId: item.id,
+                    });
+                  }}
+                />
+              ))}
+            </div>
+          </SortableContext>
+        </DndContext>
+      ) : (
+        <div className="flex-1" />
+      )}
 
       {/* New session button */}
       <div className="relative flex-shrink-0 px-2 flex items-center gap-2">
@@ -781,7 +787,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
         )}
       </div>
 
-      {contextMenu && (
+      {showChatTabs && contextMenu && (
         <WorkspaceTabContextMenu
           visible={contextMenu.visible}
           position={contextMenu.position}

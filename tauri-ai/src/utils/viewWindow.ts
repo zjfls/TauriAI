@@ -5,6 +5,7 @@ import type { ActiveView, RunMode } from '../types';
 
 type WorkstudioOpenPayload = {
   workstudioId?: string | null;
+  mainFolder?: string | null;
   filePath: string;
   line?: number | null;
   column?: number | null;
@@ -103,6 +104,19 @@ const scheduleWorkstudioOpenFile = async (
   for (const delayMs of delays) {
     const id = window.setTimeout(() => {
       if (workstudioOpenSeqByLabel.get(label) !== nextSeq) return;
+      try {
+        if (window.localStorage.getItem('tauri-ai:debug:open_file') === '1') {
+          // eslint-disable-next-line no-console
+          console.log(`[open_file][viewWindow][${new Date().toISOString()}] emit workstudio:open_file`, {
+            label,
+            delayMs,
+            seq: nextSeq,
+            payload,
+          });
+        }
+      } catch {
+        // ignore
+      }
       void win.emit('workstudio:open_file', payload).catch(() => {
         // ignore; best-effort
       });
@@ -111,6 +125,45 @@ const scheduleWorkstudioOpenFile = async (
   }
 
   workstudioOpenTimersByLabel.set(label, timerIds);
+};
+
+// When a window is minimized/hidden, some WebView runtimes throttle timers and delay UI init.
+// For link-open flows (open file + reveal line), we want the target window to be interactive.
+const ensureWindowVisible = async (win: WebviewWindow) => {
+  const debug = (() => {
+    try {
+      return window.localStorage.getItem('tauri-ai:debug:open_file') === '1';
+    } catch {
+      return false;
+    }
+  })();
+  const log = (msg: string, meta?: Record<string, unknown>) => {
+    if (!debug) return;
+    // eslint-disable-next-line no-console
+    console.log(`[open_file][viewWindow][${new Date().toISOString()}] ${msg}`, meta ?? {});
+  };
+
+  try {
+    const minimized = await (win as any).isMinimized?.();
+    if (minimized) {
+      log('window:isMinimized=true; unminimize()', { label: win.label });
+      await (win as any).unminimize?.();
+    }
+  } catch {
+    // ignore: best-effort
+  }
+  try {
+    log('window:show()', { label: win.label });
+    await (win as any).show?.();
+  } catch {
+    // ignore: best-effort
+  }
+  try {
+    log('window:setFocus()', { label: win.label });
+    await win.setFocus();
+  } catch {
+    // ignore: best-effort
+  }
 };
 
 export const workstudioWindowLabel = (workstudioId: string) => `view-workstudio-${workstudioId}`;
@@ -474,9 +527,14 @@ export const openOrFocusWorkstudioWindow = async (
     noDefaultSession: true,
   });
 
+  // If the window already exists but is minimized, make it visible first; otherwise the
+  // open_file event and Monaco reveal logic may be delayed/throttled and time out.
+  await ensureWindowVisible(win);
+
   if (opts.filePath) {
     await scheduleWorkstudioOpenFile(win, label, {
       workstudioId,
+      mainFolder: opts.mainFolder ?? null,
       filePath: opts.filePath,
       line: opts.line ?? null,
       column: opts.column ?? null,

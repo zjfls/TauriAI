@@ -12,7 +12,7 @@ import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialo
 import { Folder, ChevronDown, Shield } from 'lucide-react';
 import { useSessionStore } from '../../stores/sessionStore';
 import { useConfigStore } from '../../stores/configStore';
-import { MessageList } from './MessageList';
+import { MessageList, type MessageListHandle } from './MessageList';
 import { InputArea, type InputAreaHandle } from './InputArea';
 import { ToolSessionsPanel } from './ToolSessionsPanel';
 import { estimateTokens, estimateTokensForTexts } from '../../utils/tokenizer';
@@ -24,6 +24,7 @@ import { endChatOpenProfile, getActiveChatOpenProfile, markChatOpenProfile } fro
 import { openOrFocusWorkstudioWindow } from '../../utils/viewWindow';
 import { WorkstudioSecurityModal } from './WorkstudioSecurityModal';
 import type { WebSearchProvider } from './WebSearchToggle';
+import { ChatOutlinePanel, type ChatOutlineItem } from './ChatOutlinePanel';
 
 interface ChatViewProps {
   sessionId: string | null;
@@ -61,10 +62,13 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
 	      setSessionThinkingMode: state.setSessionThinkingMode,
 	      setSessionDraftContent: state.setSessionDraftContent,
 	    }))
-	  );
+  );
   const [showToolSessions, setShowToolSessions] = useState(false);
+  const [selectedRequestMessageId, setSelectedRequestMessageId] = useState<string | null>(null);
+  const [outlineOpen, setOutlineOpen] = useState(false);
 
   const inputRef = useRef<InputAreaHandle>(null);
+  const messageListRef = useRef<MessageListHandle>(null);
   const chatOpenProfileScheduledRef = useRef<string | null>(null);
 
   // 仅对“当前聚焦 Pane 的激活会话”自动聚焦，避免 keep-alive 多会话同时挂载时互相抢焦点。
@@ -96,10 +100,75 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
   const conversationId = session?.conversationId ?? '';
   const agentName = session?.agentName ?? null;
 
+  // 目录：文本提取与缩略
+  const messageToOutlineText = useCallback((m: Message): string => {
+    const content = (m.content ?? '').trim();
+    if (content) return content;
+    const parts = m.contentParts ?? [];
+    if (parts.length > 0) return `（附件 ${parts.length}）`;
+    return '（空消息）';
+  }, []);
+  const textToOutlinePreview = useCallback((text: string): string => {
+    const line = text.split('\n').find((l) => l.trim().length > 0) ?? text;
+    const trimmed = line.trim();
+    if (trimmed.length <= 32) return trimmed;
+    return `${trimmed.slice(0, 32)}…`;
+  }, []);
+
   const messagesRef = useRef(messages);
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
+
+  const outlineItems = useMemo((): ChatOutlineItem[] => {
+    const out: ChatOutlineItem[] = [];
+    let idx = 0;
+
+    for (const m of messages) {
+      if (m.role !== 'user') continue;
+      idx += 1;
+      const fullText = messageToOutlineText(m);
+      out.push({
+        messageId: m.id,
+        index: idx,
+        preview: textToOutlinePreview(fullText),
+      });
+    }
+    return out;
+  }, [messageToOutlineText, messages, textToOutlinePreview]);
+
+  const selectedOutlineFullText = useMemo(() => {
+    if (!selectedRequestMessageId) return null;
+    const m = messages.find((x) => x.id === selectedRequestMessageId);
+    if (!m) return null;
+    return messageToOutlineText(m);
+  }, [messageToOutlineText, messages, selectedRequestMessageId]);
+
+  useEffect(() => {
+    if (outlineItems.length === 0) {
+      if (selectedRequestMessageId) setSelectedRequestMessageId(null);
+      return;
+    }
+    if (selectedRequestMessageId && outlineItems.some((i) => i.messageId === selectedRequestMessageId)) return;
+    setSelectedRequestMessageId(outlineItems[outlineItems.length - 1]?.messageId ?? null);
+  }, [outlineItems, selectedRequestMessageId]);
+
+  const handleSelectOutline = useCallback((messageId: string) => {
+    setSelectedRequestMessageId(messageId);
+    messageListRef.current?.scrollToMessage(messageId);
+  }, []);
+
+  // 快捷键：切换消息目录（仅作用于聚焦 Pane 的 ChatView）
+  useEffect(() => {
+    const onShortcut = (event: Event) => {
+      if (!autoFocus) return;
+      const e = event as CustomEvent<{ action?: string }>;
+      if (e.detail?.action !== 'chat.toggleOutline') return;
+      setOutlineOpen((v) => !v);
+    };
+    window.addEventListener('tauri-ai:shortcut', onShortcut as EventListener);
+    return () => window.removeEventListener('tauri-ai:shortcut', onShortcut as EventListener);
+  }, [autoFocus]);
 
   // ---------------------------------------------------------------------------
   // Debug performance: profile "click -> ChatView ready"
@@ -277,7 +346,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
   // 否则属于纯聊天场景，不需要引导模型频繁触发搜索与审批流程。
   const hasWorkspaceForWebSearch = useMemo(() => Boolean(session?.workstudioId), [session?.workstudioId]);
   const supportsWebSearch = useMemo(
-    () => hasWorkspaceForWebSearch && availableWebSearchProviders.length > 0,
+    () => availableWebSearchProviders.length > 0 && hasWorkspaceForWebSearch,
     [availableWebSearchProviders, hasWorkspaceForWebSearch]
   );
 
@@ -1413,20 +1482,33 @@ Guidelines:
           </div>
         </div>
       )}
-	      <React.Profiler id="MessageList" onRender={handleMessageListProfiler}>
-	        <MessageList
-	          conversationId={conversationId}
-	          messages={messages}
-	          streamingBlocks={streamingBlocks}
-	          streamingTurns={streamingTurns}
-	          isGenerating={isGenerating}
-	          onAction={handleAction}
-	          onAbortTool={handleAbortTool}
-	          onRetryTurn={handleRetryTurn}
-	          onDropFiles={handleDropFilesToInput}
-	          onDropText={handleDropTextToInput}
-	        />
-	      </React.Profiler>
+      <div className="flex flex-1 min-h-0 overflow-hidden">
+        <ChatOutlinePanel
+          items={outlineItems}
+          selectedMessageId={selectedRequestMessageId}
+          selectedFullText={selectedOutlineFullText}
+          isOpen={outlineOpen}
+          onToggle={() => setOutlineOpen((v) => !v)}
+          onSelect={handleSelectOutline}
+        />
+        <div className="flex min-w-0 flex-1 flex-col">
+          <React.Profiler id="MessageList" onRender={handleMessageListProfiler}>
+            <MessageList
+              ref={messageListRef}
+              conversationId={conversationId}
+              messages={messages}
+              streamingBlocks={streamingBlocks}
+              streamingTurns={streamingTurns}
+              isGenerating={isGenerating}
+              onAction={handleAction}
+              onAbortTool={handleAbortTool}
+              onRetryTurn={handleRetryTurn}
+              onDropFiles={handleDropFilesToInput}
+              onDropText={handleDropTextToInput}
+            />
+          </React.Profiler>
+        </div>
+      </div>
       {/* Conversation total token usage */}
       {showUsage && totalUsage && (
         <div className="flex justify-center px-4 py-1 text-xs text-gray-500 dark:text-gray-400 border-t border-gray-100 dark:border-gray-800 flex-shrink-0">

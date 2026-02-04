@@ -89,6 +89,25 @@ const isTauriRuntime = (): boolean => {
   return Boolean(w.__TAURI_INTERNALS__ || w.__TAURI__);
 };
 
+const isOpenFileDebugEnabled = (): boolean => {
+  try {
+    return window.localStorage.getItem('tauri-ai:debug:open_file') === '1';
+  } catch {
+    return false;
+  }
+};
+
+const dbgOpenFile = (
+  msg: string,
+  meta?: Record<string, unknown>
+) => {
+  if (!isOpenFileDebugEnabled()) return;
+  const ts = new Date().toISOString();
+  // Keep logs easy to grep.
+  // eslint-disable-next-line no-console
+  console.log(`[open_file][MarkdownRenderer][${ts}] ${msg}`, meta ?? {});
+};
+
 async function getMermaidSvgCacheFromDisk(key: string): Promise<string | null> {
   if (!isTauriRuntime()) return null;
   if (!key.trim()) return null;
@@ -825,6 +844,21 @@ export const MarkdownRenderer = React.memo(function MarkdownRendererImpl({ conte
     if (!isTauriRuntime()) return;
 
     try {
+      let windowLabel: string | null = null;
+      try {
+        const { getCurrentWebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+        windowLabel = getCurrentWebviewWindow().label;
+      } catch {
+        windowLabel = null;
+      }
+
+      dbgOpenFile('click:fileRef', {
+        fromWindowLabel: windowLabel,
+        conversationId: conversationId ?? null,
+        workstudioId: workstudioId ?? null,
+        ref,
+      });
+
       const [{ invoke }, { openOrFocusWorkstudioWindow }] = await Promise.all([
         import('@tauri-apps/api/core'),
         import('../../utils/viewWindow'),
@@ -834,12 +868,20 @@ export const MarkdownRenderer = React.memo(function MarkdownRendererImpl({ conte
       let ws: Workstudio | null = null;
 
       if (!resolvedWorkstudioId && conversationId) {
+        dbgOpenFile('ensure_workstudio_for_conversation:begin', { conversationId, fromWindowLabel: windowLabel });
         ws = await invoke<Workstudio>('ensure_workstudio_for_conversation', { conversationId });
         resolvedWorkstudioId = ws.id;
+        dbgOpenFile('ensure_workstudio_for_conversation:ok', { workstudioId: resolvedWorkstudioId, mainFolder: ws.mainFolder });
       }
 
       if (!resolvedWorkstudioId) {
         console.warn('openFileReference skipped: missing workstudio context');
+        dbgOpenFile('openFileReference:skipped_missing_context', {
+          fromWindowLabel: windowLabel,
+          conversationId: conversationId ?? null,
+          workstudioId: workstudioId ?? null,
+          ref,
+        });
         return;
       }
 
@@ -851,7 +893,34 @@ export const MarkdownRenderer = React.memo(function MarkdownRendererImpl({ conte
         }
       }
 
+      // If the provided workstudioId is stale (e.g. merged by mainFolder de-dup), fall back to
+      // resolving from conversation binding so we always target the canonical id.
+      if (!ws && conversationId) {
+        try {
+          dbgOpenFile('ensure_workstudio_for_conversation:fallback', {
+            conversationId,
+            fromWindowLabel: windowLabel,
+            attemptedWorkstudioId: resolvedWorkstudioId,
+          });
+          ws = await invoke<Workstudio>('ensure_workstudio_for_conversation', { conversationId });
+          resolvedWorkstudioId = ws.id;
+        } catch {
+          // ignore
+        }
+      }
+
       const title = ws ? `Workstudio: ${ws.mainFolder}` : 'Workstudio';
+      dbgOpenFile('openOrFocusWorkstudioWindow:begin', {
+        fromWindowLabel: windowLabel,
+        title,
+        workstudioId: resolvedWorkstudioId,
+        mainFolder: ws?.mainFolder ?? null,
+        filePath: ref.filePath,
+        line: ref.line,
+        column: ref.column,
+        endLine: ref.endLine,
+        endColumn: ref.endColumn,
+      });
       await openOrFocusWorkstudioWindow(title, {
         workstudioId: resolvedWorkstudioId,
         mainFolder: ws?.mainFolder ?? null,
@@ -861,8 +930,10 @@ export const MarkdownRenderer = React.memo(function MarkdownRendererImpl({ conte
         endLine: ref.endLine,
         endColumn: ref.endColumn,
       });
+      dbgOpenFile('openOrFocusWorkstudioWindow:done', { fromWindowLabel: windowLabel, workstudioId: resolvedWorkstudioId });
     } catch (error) {
       console.warn('openFileReference failed:', error);
+      dbgOpenFile('openFileReference:failed', { error: String(error) });
     }
   }, [conversationId, workstudioId]);
 
@@ -892,6 +963,15 @@ export const MarkdownRenderer = React.memo(function MarkdownRendererImpl({ conte
         if (!ws) {
           try {
             ws = await invoke<Workstudio | null>('get_workstudio', { workstudioId: resolvedWorkstudioId });
+          } catch {
+            // ignore
+          }
+        }
+
+        if (!ws && conversationId) {
+          try {
+            ws = await invoke<Workstudio>('ensure_workstudio_for_conversation', { conversationId });
+            resolvedWorkstudioId = ws.id;
           } catch {
             // ignore
           }

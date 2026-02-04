@@ -27,6 +27,9 @@ const DEFAULT_LIST_DEPTH: usize = 2;
 const DIR_INDENT_SPACES: usize = 2;
 const RG_TIMEOUT: Duration = Duration::from_secs(30);
 
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 pub struct ReadFileTool;
 pub struct ListDirTool;
 pub struct RgTool;
@@ -799,6 +802,9 @@ async fn run_rg_search(
 ) -> Result<Vec<String>, ToolError> {
     let limit = limit.min(MAX_RG_LIMIT);
     let mut command = Command::new("rg");
+    // Windows 下默认会弹出命令行窗口；rg 属于短命令高频调用，避免影响用户体验。
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
     command
         .arg("--files-with-matches")
         .arg("--sortr=modified")

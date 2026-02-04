@@ -4,7 +4,10 @@
 
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::{collections::HashSet, fs};
+use std::{
+    collections::{BTreeMap, HashSet},
+    fs,
+};
 
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -84,7 +87,7 @@ impl Database {
 
     /// Initialize database schema
     fn initialize(&self) -> Result<(), StorageError> {
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|e| StorageError::Lock(e.to_string()))?;
@@ -134,6 +137,7 @@ impl Database {
                 id TEXT PRIMARY KEY,
                 kind TEXT NOT NULL DEFAULT 'code',
                 main_folder TEXT NOT NULL,
+                main_folder_key TEXT NOT NULL,
                 folders_json TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -145,6 +149,18 @@ impl Database {
             "ALTER TABLE workstudios ADD COLUMN kind TEXT NOT NULL DEFAULT 'code'",
             [],
         );
+        // Migration: Add main_folder_key column if it doesn't exist
+        let _ = conn.execute("ALTER TABLE workstudios ADD COLUMN main_folder_key TEXT", []);
+
+        // Keep a single workstudio per main_folder_key (matches frontend window identity).
+        // Backfill keys first, then merge duplicates, then enforce a unique index.
+        Self::backfill_workstudio_main_folder_keys(&mut conn)?;
+        Self::dedupe_workstudios_by_main_folder_key(&mut conn)?;
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_workstudios_main_folder_key
+             ON workstudios(main_folder_key)",
+            [],
+        )?;
 
         // Create workstudio_states table (UI persisted state, keyed by main_folder + kind)
         conn.execute(
@@ -437,16 +453,18 @@ impl Database {
         let source_messages = self.get_all_messages(source_conversation_id)?;
 
         // Clone workstudio if present.
+        //
+        // 语义：
+        // - 默认 workstudio（~/.tauri-ai/workstudios/<id>）：复制目录到新的默认位置（新 id）
+        // - 非默认 workstudio：只复制绑定（共享同一个 workstudio id），避免出现“同 main_folder 多个 id”
         let mut workstudio_insert: Option<(Workstudio, String /* folders_json */)> = None;
+        let mut cloned_workstudio_id: Option<String> = source.workstudio_id.clone();
+
         if let Some(source_ws_id) = source.workstudio_id.as_deref() {
             if let Some(ws) = self.get_workstudio(source_ws_id)? {
-                let new_ws_id = uuid::Uuid::new_v4().to_string();
-
-                let mut main_folder = ws.main_folder.clone();
-                let mut folders = ws.folders.clone();
-                let mut should_write_marker = false;
-
                 if self.is_default_workstudio_main_folder(&ws) {
+                    let new_ws_id = uuid::Uuid::new_v4().to_string();
+
                     // Default workstudio: deep copy folder to a new default location.
                     let new_main_path = Self::default_workstudio_main_folder(&new_ws_id)?;
                     let old_main_path = PathBuf::from(&ws.main_folder);
@@ -458,37 +476,39 @@ impl Database {
                     }
 
                     let new_main = new_main_path.to_string_lossy().to_string();
-                    main_folder = new_main.clone();
-                    folders = folders
+                    let mut folders: Vec<String> = ws
+                        .folders
                         .iter()
                         .map(|f| Self::remap_workstudio_folder(f, &ws.main_folder, &new_main))
                         .collect();
-                    should_write_marker = true;
+
+                    // Ensure main folder is present and is the first entry.
+                    if !folders.iter().any(|f| f == &new_main) {
+                        folders.insert(0, new_main.clone());
+                    }
+                    folders.retain(|f| f != &new_main);
+                    folders.insert(0, new_main.clone());
+
+                    let folders_json = serde_json::to_string(&folders)?;
+                    let new_ws = Workstudio {
+                        id: new_ws_id.clone(),
+                        kind: ws.kind,
+                        main_folder: new_main.clone(),
+                        folders,
+                        created_at: now,
+                        updated_at: now,
+                    };
+
+                    let _ = Self::write_workstudio_marker(&PathBuf::from(&new_ws.main_folder), &new_ws);
+
+                    cloned_workstudio_id = Some(new_ws_id);
+                    workstudio_insert = Some((new_ws, folders_json));
+                } else {
+                    // Non-default: share workstudio id.
+                    cloned_workstudio_id = Some(source_ws_id.to_string());
                 }
-
-                // Ensure main folder is present and is the first entry.
-                if !folders.iter().any(|f| f == &main_folder) {
-                    folders.insert(0, main_folder.clone());
-                }
-                folders.retain(|f| f != &main_folder);
-                folders.insert(0, main_folder.clone());
-
-                let folders_json = serde_json::to_string(&folders)?;
-                let new_ws = Workstudio {
-                    id: new_ws_id,
-                    kind: ws.kind,
-                    main_folder,
-                    folders,
-                    created_at: now,
-                    updated_at: now,
-                };
-
-                if should_write_marker {
-                    let _ =
-                        Self::write_workstudio_marker(&PathBuf::from(&new_ws.main_folder), &new_ws);
-                }
-
-                workstudio_insert = Some((new_ws, folders_json));
+            } else {
+                cloned_workstudio_id = None;
             }
         }
 
@@ -499,7 +519,7 @@ impl Database {
             .map(serde_json::to_string)
             .transpose()?;
 
-        let workstudio_id = workstudio_insert.as_ref().map(|(ws, _)| ws.id.clone());
+        let workstudio_id = cloned_workstudio_id;
 
         {
             let mut conn = self
@@ -510,10 +530,24 @@ impl Database {
             let tx = conn.transaction()?;
 
             if let Some((ws, folders_json)) = workstudio_insert.as_ref() {
+                let main_folder_key_raw = Self::workstudio_main_folder_key(&ws.main_folder);
+                let main_folder_key = if main_folder_key_raw.trim().is_empty() {
+                    format!("id:{}", ws.id)
+                } else {
+                    main_folder_key_raw
+                };
                 tx.execute(
-                    "INSERT INTO workstudios (id, kind, main_folder, folders_json, created_at, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![ws.id, ws.kind, ws.main_folder, folders_json, now_str, now_str],
+                    "INSERT INTO workstudios (id, kind, main_folder, main_folder_key, folders_json, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![
+                        ws.id,
+                        ws.kind,
+                        ws.main_folder,
+                        main_folder_key,
+                        folders_json,
+                        now_str,
+                        now_str
+                    ],
                 )?;
             }
 
@@ -837,6 +871,227 @@ impl Database {
 
     // ==================== Workstudio Operations ====================
 
+    fn workstudio_main_folder_key(input: &str) -> String {
+        let raw = input.trim();
+        if raw.is_empty() {
+            return String::new();
+        }
+
+        let mut out = raw.replace('\\', "/");
+        while out.contains("//") {
+            out = out.replace("//", "/");
+        }
+
+        // Strip trailing slashes, except for drive roots like "C:/", and POSIX root "/".
+        let is_drive_root = out.len() == 3
+            && out.as_bytes()[0].is_ascii_alphabetic()
+            && out.as_bytes()[1] == b':'
+            && out.as_bytes()[2] == b'/';
+        if !is_drive_root {
+            while out.ends_with('/') && out.len() > 1 {
+                out.pop();
+            }
+        }
+
+        // Windows drive paths are case-insensitive; normalize to lowercase for stable identity.
+        let is_drive_path = out.len() >= 3
+            && out.as_bytes()[0].is_ascii_alphabetic()
+            && out.as_bytes()[1] == b':'
+            && out.as_bytes()[2] == b'/';
+        if is_drive_path {
+            out = out.to_lowercase();
+        }
+
+        out
+    }
+
+    fn backfill_workstudio_main_folder_keys(conn: &mut Connection) -> Result<(), StorageError> {
+        let mut updates: Vec<(String, String)> = Vec::new();
+
+        {
+            let mut stmt = conn.prepare("SELECT id, main_folder, main_folder_key FROM workstudios")?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })?;
+
+            for row in rows {
+                let (id, main_folder, existing_key) = row?;
+                let computed_raw = Self::workstudio_main_folder_key(&main_folder);
+                let computed = if computed_raw.is_empty() {
+                    format!("id:{id}")
+                } else {
+                    computed_raw
+                };
+                let needs_update = match existing_key {
+                    Some(k) => k.trim() != computed,
+                    None => true,
+                };
+                if needs_update {
+                    updates.push((id, computed));
+                }
+            }
+        }
+
+        if updates.is_empty() {
+            return Ok(());
+        }
+
+        let tx = conn.transaction()?;
+        for (id, key) in updates {
+            tx.execute(
+                "UPDATE workstudios SET main_folder_key = ?1 WHERE id = ?2",
+                params![key, id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn dedupe_workstudios_by_main_folder_key(conn: &mut Connection) -> Result<(), StorageError> {
+        #[derive(Debug, Clone)]
+        struct WsRow {
+            id: String,
+            kind: String,
+            main_folder: String,
+            folders_json: String,
+            created_at: String,
+            updated_at: String,
+            key: String,
+        }
+
+        let rows: Vec<WsRow> = {
+            let mut stmt = conn.prepare(
+                "SELECT id, kind, main_folder, folders_json, created_at, updated_at, main_folder_key
+                 FROM workstudios",
+            )?;
+            let iter = stmt.query_map([], |row| {
+                Ok(WsRow {
+                    id: row.get(0)?,
+                    kind: row.get(1)?,
+                    main_folder: row.get(2)?,
+                    folders_json: row.get(3)?,
+                    created_at: row.get(4)?,
+                    updated_at: row.get(5)?,
+                    key: row.get::<_, String>(6)?,
+                })
+            })?;
+
+            let mut out: Vec<WsRow> = Vec::new();
+            for r in iter {
+                out.push(r?);
+            }
+            out
+        };
+
+        let mut groups: BTreeMap<String, Vec<WsRow>> = BTreeMap::new();
+        for r in rows {
+            let key = r.key.trim().to_string();
+            if key.is_empty() {
+                continue;
+            }
+            groups.entry(key).or_default().push(r);
+        }
+
+        let now_str = Utc::now().to_rfc3339();
+
+        let tx = conn.transaction()?;
+
+        for (key, mut list) in groups {
+            if list.len() <= 1 {
+                continue;
+            }
+
+            // Prefer the workstudio that is referenced by more conversations.
+            // Tie-breaker: older created_at, then lexicographically smallest id (stable).
+            let mut best_idx: usize = 0;
+            let mut best_count: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM conversations WHERE workstudio_id = ?1",
+                params![&list[0].id],
+                |r| r.get(0),
+            )?;
+
+            for (idx, cand) in list.iter().enumerate().skip(1) {
+                let count: i64 = tx.query_row(
+                    "SELECT COUNT(*) FROM conversations WHERE workstudio_id = ?1",
+                    params![&cand.id],
+                    |r| r.get(0),
+                )?;
+                let better = count > best_count
+                    || (count == best_count && cand.created_at < list[best_idx].created_at)
+                    || (count == best_count
+                        && cand.created_at == list[best_idx].created_at
+                        && cand.id < list[best_idx].id);
+                if better {
+                    best_idx = idx;
+                    best_count = count;
+                }
+            }
+
+            let best = list[best_idx].clone();
+            let best_id = best.id.clone();
+            let best_main_folder = best.main_folder.clone();
+
+            // Merge folders (best-effort, stable order).
+            list.sort_by(|a, b| a.id.cmp(&b.id));
+            let mut merged: Vec<String> = Vec::new();
+            let mut seen: HashSet<String> = HashSet::new();
+            let mut push_unique = |p: &str| {
+                let p = p.trim();
+                if p.is_empty() {
+                    return;
+                }
+                if seen.insert(p.to_string()) {
+                    merged.push(p.to_string());
+                }
+            };
+
+            // Ensure main folder is the first entry.
+            push_unique(&best_main_folder);
+
+            for r in list.iter() {
+                let folders: Vec<String> = serde_json::from_str(&r.folders_json).unwrap_or_default();
+                for f in folders {
+                    push_unique(&f);
+                }
+            }
+
+            // Keep main folder as first entry even if it appeared later.
+            merged.retain(|f| f != &best_main_folder);
+            merged.insert(0, best_main_folder.clone());
+
+            let merged_json = serde_json::to_string(&merged)?;
+
+            tx.execute(
+                "UPDATE workstudios
+                 SET main_folder = ?1,
+                     main_folder_key = ?2,
+                     folders_json = ?3,
+                     updated_at = ?4
+                 WHERE id = ?5",
+                params![&best_main_folder, &key, &merged_json, &now_str, &best_id],
+            )?;
+
+            for r in list {
+                if r.id == best_id {
+                    continue;
+                }
+                let rid = r.id;
+                tx.execute(
+                    "UPDATE conversations SET workstudio_id = ?1 WHERE workstudio_id = ?2",
+                    params![&best_id, &rid],
+                )?;
+                tx.execute("DELETE FROM workstudios WHERE id = ?1", params![&rid])?;
+            }
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
     fn default_workstudio_main_folder(id: &str) -> Result<PathBuf, StorageError> {
         let home_dir = dirs::home_dir()
             .ok_or_else(|| StorageError::Io("Home directory not found".to_string()))?;
@@ -952,6 +1207,12 @@ impl Database {
             .map_err(|e| StorageError::Io(format!("create workstudio folder failed: {e}")))?;
 
         let main_folder = main_folder_path.to_string_lossy().to_string();
+        let main_folder_key_raw = Self::workstudio_main_folder_key(&main_folder);
+        let main_folder_key = if main_folder_key_raw.trim().is_empty() {
+            format!("id:{id}")
+        } else {
+            main_folder_key_raw
+        };
         let folders = vec![main_folder.clone()];
         let folders_json = serde_json::to_string(&folders)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
@@ -966,9 +1227,17 @@ impl Database {
                 .map_err(|e| StorageError::Lock(e.to_string()))?;
 
             conn.execute(
-                "INSERT INTO workstudios (id, kind, main_folder, folders_json, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![id, "code", main_folder, folders_json, now_str, now_str],
+                "INSERT INTO workstudios (id, kind, main_folder, main_folder_key, folders_json, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    id,
+                    "code",
+                    main_folder,
+                    main_folder_key,
+                    folders_json,
+                    now_str,
+                    now_str
+                ],
             )?;
 
             conn.execute(
@@ -1006,6 +1275,12 @@ impl Database {
             .map_err(|e| StorageError::Io(format!("create workstudio folder failed: {e}")))?;
 
         let main_folder = main_folder_path.to_string_lossy().to_string();
+        let main_folder_key_raw = Self::workstudio_main_folder_key(&main_folder);
+        let main_folder_key = if main_folder_key_raw.trim().is_empty() {
+            format!("id:{id}")
+        } else {
+            main_folder_key_raw
+        };
         let folders = vec![main_folder.clone()];
         let folders_json = serde_json::to_string(&folders)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
@@ -1020,9 +1295,17 @@ impl Database {
                 .map_err(|e| StorageError::Lock(e.to_string()))?;
 
             conn.execute(
-                "INSERT INTO workstudios (id, kind, main_folder, folders_json, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![id, "code", main_folder, folders_json, now_str, now_str],
+                "INSERT INTO workstudios (id, kind, main_folder, main_folder_key, folders_json, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    id,
+                    "code",
+                    main_folder,
+                    main_folder_key,
+                    folders_json,
+                    now_str,
+                    now_str
+                ],
             )?;
         }
 
@@ -1090,20 +1373,108 @@ impl Database {
 
         let folders_json = serde_json::to_string(&ws.folders)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let main_folder_key_raw = Self::workstudio_main_folder_key(&ws.main_folder);
+        let main_folder_key = if main_folder_key_raw.trim().is_empty() {
+            format!("id:{workstudio_id}")
+        } else {
+            main_folder_key_raw
+        };
 
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|e| StorageError::Lock(e.to_string()))?;
 
-        conn.execute(
+        let tx = conn.transaction()?;
+
+        // If another workstudio already owns this main folder key, merge into it and
+        // rebind all conversations from the current workstudio id.
+        if !main_folder_key.trim().is_empty() {
+            let existing_id: Option<String> = tx
+                .query_row(
+                    "SELECT id FROM workstudios WHERE main_folder_key = ?1 AND id != ?2 LIMIT 1",
+                    params![&main_folder_key, workstudio_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+
+            if let Some(target_id) = existing_id {
+                let (target_kind, target_main_folder, target_folders_json, target_created_at_str): (
+                    String,
+                    String,
+                    String,
+                    String,
+                ) = tx.query_row(
+                    "SELECT kind, main_folder, folders_json, created_at FROM workstudios WHERE id = ?1",
+                    params![&target_id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )?;
+
+                let mut merged: Vec<String> = Vec::new();
+                let mut seen: HashSet<String> = HashSet::new();
+                let mut push_unique = |p: &str| {
+                    let p = p.trim();
+                    if p.is_empty() {
+                        return;
+                    }
+                    if seen.insert(p.to_string()) {
+                        merged.push(p.to_string());
+                    }
+                };
+
+                push_unique(&target_main_folder);
+                for f in serde_json::from_str::<Vec<String>>(&target_folders_json).unwrap_or_default() {
+                    push_unique(&f);
+                }
+                for f in ws.folders.iter() {
+                    push_unique(f);
+                }
+                merged.retain(|f| f != &target_main_folder);
+                merged.insert(0, target_main_folder.clone());
+
+                let merged_json = serde_json::to_string(&merged)?;
+
+                tx.execute(
+                    "UPDATE workstudios SET folders_json = ?1, updated_at = ?2 WHERE id = ?3",
+                    params![&merged_json, &now_str, &target_id],
+                )?;
+                tx.execute(
+                    "UPDATE conversations SET workstudio_id = ?1 WHERE workstudio_id = ?2",
+                    params![&target_id, workstudio_id],
+                )?;
+                tx.execute("DELETE FROM workstudios WHERE id = ?1", params![workstudio_id])?;
+
+                tx.commit()?;
+
+                let created_at = DateTime::parse_from_rfc3339(&target_created_at_str)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| now);
+
+                let out = Workstudio {
+                    id: target_id,
+                    kind: target_kind,
+                    main_folder: target_main_folder,
+                    folders: merged,
+                    created_at,
+                    updated_at: now,
+                };
+
+                let _ = Self::write_workstudio_marker(&PathBuf::from(&out.main_folder), &out);
+                return Ok(out);
+            }
+        }
+
+        tx.execute(
             "UPDATE workstudios
              SET main_folder = ?1,
-                 folders_json = ?2,
-                 updated_at = ?3
-             WHERE id = ?4",
-            params![ws.main_folder, folders_json, now_str, workstudio_id],
+                 main_folder_key = ?2,
+                 folders_json = ?3,
+                 updated_at = ?4
+             WHERE id = ?5",
+            params![&ws.main_folder, &main_folder_key, &folders_json, &now_str, workstudio_id],
         )?;
+
+        tx.commit()?;
 
         // Best-effort: marker file in (new) main folder.
         let _ = Self::write_workstudio_marker(&PathBuf::from(&ws.main_folder), &ws);
@@ -1141,20 +1512,105 @@ impl Database {
 
         let folders_json = serde_json::to_string(&ws.folders)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let main_folder_key_raw = Self::workstudio_main_folder_key(&ws.main_folder);
+        let main_folder_key = if main_folder_key_raw.trim().is_empty() {
+            format!("id:{workstudio_id}")
+        } else {
+            main_folder_key_raw
+        };
 
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|e| StorageError::Lock(e.to_string()))?;
 
-        conn.execute(
+        let tx = conn.transaction()?;
+
+        if !main_folder_key.trim().is_empty() {
+            let existing_id: Option<String> = tx
+                .query_row(
+                    "SELECT id FROM workstudios WHERE main_folder_key = ?1 AND id != ?2 LIMIT 1",
+                    params![&main_folder_key, workstudio_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+
+            if let Some(target_id) = existing_id {
+                let (target_kind, target_main_folder, target_folders_json, target_created_at_str): (
+                    String,
+                    String,
+                    String,
+                    String,
+                ) = tx.query_row(
+                    "SELECT kind, main_folder, folders_json, created_at FROM workstudios WHERE id = ?1",
+                    params![&target_id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )?;
+
+                let mut merged: Vec<String> = Vec::new();
+                let mut seen: HashSet<String> = HashSet::new();
+                let mut push_unique = |p: &str| {
+                    let p = p.trim();
+                    if p.is_empty() {
+                        return;
+                    }
+                    if seen.insert(p.to_string()) {
+                        merged.push(p.to_string());
+                    }
+                };
+
+                push_unique(&target_main_folder);
+                for f in serde_json::from_str::<Vec<String>>(&target_folders_json).unwrap_or_default() {
+                    push_unique(&f);
+                }
+                for f in ws.folders.iter() {
+                    push_unique(f);
+                }
+                merged.retain(|f| f != &target_main_folder);
+                merged.insert(0, target_main_folder.clone());
+
+                let merged_json = serde_json::to_string(&merged)?;
+
+                tx.execute(
+                    "UPDATE workstudios SET folders_json = ?1, updated_at = ?2 WHERE id = ?3",
+                    params![&merged_json, &now_str, &target_id],
+                )?;
+                tx.execute(
+                    "UPDATE conversations SET workstudio_id = ?1 WHERE workstudio_id = ?2",
+                    params![&target_id, workstudio_id],
+                )?;
+                tx.execute("DELETE FROM workstudios WHERE id = ?1", params![workstudio_id])?;
+
+                tx.commit()?;
+
+                let created_at = DateTime::parse_from_rfc3339(&target_created_at_str)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| now);
+
+                let out = Workstudio {
+                    id: target_id,
+                    kind: target_kind,
+                    main_folder: target_main_folder,
+                    folders: merged,
+                    created_at,
+                    updated_at: now,
+                };
+                let _ = Self::write_workstudio_marker(&PathBuf::from(&out.main_folder), &out);
+                return Ok(out);
+            }
+        }
+
+        tx.execute(
             "UPDATE workstudios
              SET main_folder = ?1,
-                 folders_json = ?2,
-                 updated_at = ?3
-             WHERE id = ?4",
-            params![ws.main_folder, folders_json, now_str, workstudio_id],
+                 main_folder_key = ?2,
+                 folders_json = ?3,
+                 updated_at = ?4
+             WHERE id = ?5",
+            params![&ws.main_folder, &main_folder_key, &folders_json, &now_str, workstudio_id],
         )?;
+
+        tx.commit()?;
 
         let _ = Self::write_workstudio_marker(&PathBuf::from(&ws.main_folder), &ws);
         Ok(ws)
@@ -1204,20 +1660,105 @@ impl Database {
 
         let folders_json = serde_json::to_string(&ws.folders)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let main_folder_key_raw = Self::workstudio_main_folder_key(&ws.main_folder);
+        let main_folder_key = if main_folder_key_raw.trim().is_empty() {
+            format!("id:{workstudio_id}")
+        } else {
+            main_folder_key_raw
+        };
 
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|e| StorageError::Lock(e.to_string()))?;
 
-        conn.execute(
+        let tx = conn.transaction()?;
+
+        if !main_folder_key.trim().is_empty() {
+            let existing_id: Option<String> = tx
+                .query_row(
+                    "SELECT id FROM workstudios WHERE main_folder_key = ?1 AND id != ?2 LIMIT 1",
+                    params![&main_folder_key, workstudio_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+
+            if let Some(target_id) = existing_id {
+                let (target_kind, target_main_folder, target_folders_json, target_created_at_str): (
+                    String,
+                    String,
+                    String,
+                    String,
+                ) = tx.query_row(
+                    "SELECT kind, main_folder, folders_json, created_at FROM workstudios WHERE id = ?1",
+                    params![&target_id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )?;
+
+                let mut merged: Vec<String> = Vec::new();
+                let mut seen: HashSet<String> = HashSet::new();
+                let mut push_unique = |p: &str| {
+                    let p = p.trim();
+                    if p.is_empty() {
+                        return;
+                    }
+                    if seen.insert(p.to_string()) {
+                        merged.push(p.to_string());
+                    }
+                };
+
+                push_unique(&target_main_folder);
+                for f in serde_json::from_str::<Vec<String>>(&target_folders_json).unwrap_or_default() {
+                    push_unique(&f);
+                }
+                for f in ws.folders.iter() {
+                    push_unique(f);
+                }
+                merged.retain(|f| f != &target_main_folder);
+                merged.insert(0, target_main_folder.clone());
+
+                let merged_json = serde_json::to_string(&merged)?;
+
+                tx.execute(
+                    "UPDATE workstudios SET folders_json = ?1, updated_at = ?2 WHERE id = ?3",
+                    params![&merged_json, &now_str, &target_id],
+                )?;
+                tx.execute(
+                    "UPDATE conversations SET workstudio_id = ?1 WHERE workstudio_id = ?2",
+                    params![&target_id, workstudio_id],
+                )?;
+                tx.execute("DELETE FROM workstudios WHERE id = ?1", params![workstudio_id])?;
+
+                tx.commit()?;
+
+                let created_at = DateTime::parse_from_rfc3339(&target_created_at_str)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| now);
+
+                let out = Workstudio {
+                    id: target_id,
+                    kind: target_kind,
+                    main_folder: target_main_folder,
+                    folders: merged,
+                    created_at,
+                    updated_at: now,
+                };
+                let _ = Self::write_workstudio_marker(&PathBuf::from(&out.main_folder), &out);
+                return Ok(out);
+            }
+        }
+
+        tx.execute(
             "UPDATE workstudios
              SET main_folder = ?1,
-                 folders_json = ?2,
-                 updated_at = ?3
-             WHERE id = ?4",
-            params![ws.main_folder, folders_json, now_str, workstudio_id],
+                 main_folder_key = ?2,
+                 folders_json = ?3,
+                 updated_at = ?4
+             WHERE id = ?5",
+            params![&ws.main_folder, &main_folder_key, &folders_json, &now_str, workstudio_id],
         )?;
+
+        tx.commit()?;
 
         let _ = Self::write_workstudio_marker(&PathBuf::from(&ws.main_folder), &ws);
         Ok(ws)
@@ -1959,10 +2500,19 @@ mod tests {
         let now = Utc::now().to_rfc3339();
         {
             let conn = db.conn.lock().unwrap();
+            let main_folder_key = Database::workstudio_main_folder_key("test_ws_main");
             conn.execute(
-                "INSERT INTO workstudios (id, kind, main_folder, folders_json, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![ws_id, "code", "test_ws_main", folders_json, now, now],
+                "INSERT INTO workstudios (id, kind, main_folder, main_folder_key, folders_json, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    ws_id,
+                    "code",
+                    "test_ws_main",
+                    main_folder_key,
+                    folders_json,
+                    now,
+                    now
+                ],
             )
             .unwrap();
         }
@@ -2017,8 +2567,7 @@ mod tests {
             cloned.model_ref.as_deref(),
             Some("test-provider/test-model")
         );
-        assert!(cloned.workstudio_id.is_some());
-        assert_ne!(cloned.workstudio_id.as_deref(), Some(ws_id.as_str()));
+        assert_eq!(cloned.workstudio_id.as_deref(), Some(ws_id.as_str()));
 
         let cloned_messages = db.get_all_messages(&cloned.id).unwrap();
         assert_eq!(cloned_messages.len(), 2);

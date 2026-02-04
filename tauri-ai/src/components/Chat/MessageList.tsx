@@ -4,7 +4,16 @@
  * Requirements: 2.3, 3.5
  */
 
-import React, { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, {
+  startTransition,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import type { Message, MessageBlock, Action, MessageTurn } from '../../types';
 import { MessageItem } from './MessageItem';
 import { MessageBlocks } from './MessageBlocks';
@@ -35,6 +44,13 @@ interface MessageListProps {
   onDropText?: (text: string) => void;
 }
 
+export interface MessageListHandle {
+  /** 定位到指定消息（必要时自动加载更早消息，并闪烁高亮定位） */
+  scrollToMessage: (messageId: string) => void;
+  /** 还原到“只渲染最近消息”的窗口（同时滚动到底部） */
+  resetToRecent: () => void;
+}
+
 // Threshold in pixels to consider "at bottom"
 const SCROLL_THRESHOLD = 50;
 
@@ -52,7 +68,7 @@ type PendingRestore =
   | { mode: 'anchor'; messageId: string; viewportTop: number; fallbackScrollTop: number }
   | null;
 
-const MessageListInner: React.FC<MessageListProps> = ({
+const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(({
   conversationId,
   messages,
   streamingBlocks,
@@ -63,7 +79,7 @@ const MessageListInner: React.FC<MessageListProps> = ({
   onRetryTurn,
   onDropFiles,
   onDropText,
-}) => {
+}, ref) => {
   void _isGenerating;
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -81,6 +97,7 @@ const MessageListInner: React.FC<MessageListProps> = ({
   const pendingCommitRef = useRef<{ isAtBottom: boolean; userScrolledAway: boolean } | null>(null);
   const suppressAutoLoadMoreRef = useRef(false);
   const pendingNavAfterLoadMoreRef = useRef<null | { kind: 'prevMessage' }>(null);
+  const pendingHighlightMessageIdRef = useRef<string | null>(null);
 
   // Track if user is at bottom (should auto-scroll)
   const [isAtBottom, setIsAtBottom] = useState(true);
@@ -136,6 +153,29 @@ const MessageListInner: React.FC<MessageListProps> = ({
     }
     return null;
   }, []);
+
+  const flashMessage = useCallback(
+    (messageId: string) => {
+      const el = findMessageElement(messageId);
+      if (!el) return;
+
+      const prevBoxShadow = el.style.boxShadow;
+      const prevBorderRadius = el.style.borderRadius;
+
+      el.style.boxShadow = '0 0 0 2px rgba(59, 130, 246, 0.45)';
+      el.style.borderRadius = prevBorderRadius || '12px';
+
+      window.setTimeout(() => {
+        try {
+          el.style.boxShadow = prevBoxShadow;
+          el.style.borderRadius = prevBorderRadius;
+        } catch {
+          // ignore
+        }
+      }, 1200);
+    },
+    [findMessageElement]
+  );
 
   const getAnchorSnapshot = useCallback((): { messageId: string; viewportTop: number } | null => {
     const container = containerRef.current;
@@ -402,6 +442,11 @@ const MessageListInner: React.FC<MessageListProps> = ({
     } finally {
       pendingRestoreRef.current = null;
 
+      if (pending.mode === 'anchor' && pendingHighlightMessageIdRef.current === pending.messageId) {
+        pendingHighlightMessageIdRef.current = null;
+        flashMessage(pending.messageId);
+      }
+
       const endedAt =
         typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
       markChatOpenProfile('messageList:layoutEffect:restore:done', {
@@ -415,7 +460,7 @@ const MessageListInner: React.FC<MessageListProps> = ({
         },
       });
     }
-  }, [cancelRestoreCalibration, conversationKey, findMessageElement, startRestoreCalibration, visibleCount]);
+  }, [cancelRestoreCalibration, conversationKey, findMessageElement, flashMessage, startRestoreCalibration, visibleCount]);
 
   useEffect(() => cancelRestoreCalibration, [cancelRestoreCalibration]);
 
@@ -560,6 +605,8 @@ const MessageListInner: React.FC<MessageListProps> = ({
   const scrollToBottom = useCallback(
     (smooth = true) => {
       followOutputRef.current = true;
+      // 回到底部时恢复“只渲染最近消息”的窗口，避免长对话导致渲染压力持续攀升
+      setVisibleCount(DEFAULT_VISIBLE_MESSAGES);
       bottomRef.current?.scrollIntoView({
         behavior: smooth ? 'smooth' : 'instant',
       });
@@ -654,6 +701,74 @@ const MessageListInner: React.FC<MessageListProps> = ({
     const next = Math.min(nodes.length - 1, Math.max(0, current) + 1);
     scrollToRenderedMessageIndex(next, true);
   }, [getRenderedMessageElements, getTopVisibleMessageIndex, scrollToRenderedMessageIndex]);
+
+  const scrollToMessage = useCallback(
+    (messageId: string) => {
+      const container = containerRef.current;
+      if (!container) return;
+
+      const idx = messages.findIndex((m) => m.id === messageId);
+      if (idx === -1) return;
+
+      // 给目标消息留一点上下文，避免直接贴边
+      const buffer = 2;
+      const targetStartIndex = Math.max(0, idx - buffer);
+      const neededVisibleCount = Math.min(
+        messages.length,
+        Math.max(DEFAULT_VISIBLE_MESSAGES, messages.length - targetStartIndex)
+      );
+
+      suppressAutoLoadMoreRef.current = true;
+      lastUserIntentTsRef.current = Date.now();
+      followOutputRef.current = false;
+      setIsAtBottom(false);
+      setUserScrolledAway(streamingBlocks !== null);
+
+      const el = findMessageElement(messageId);
+      if (el && neededVisibleCount === visibleCount) {
+        const containerTop = container.getBoundingClientRect().top;
+        const currentTop = el.getBoundingClientRect().top - containerTop;
+        container.scrollTop += currentTop - 8;
+        scheduleCommitViewState({ isAtBottom: false, userScrolledAway: streamingBlocks !== null });
+        flashMessage(messageId);
+        return;
+      }
+
+      pendingHighlightMessageIdRef.current = messageId;
+      pendingRestoreRef.current = {
+        mode: 'anchor',
+        messageId,
+        viewportTop: 8,
+        fallbackScrollTop: container.scrollTop,
+      };
+      setVisibleCount(neededVisibleCount === visibleCount ? Math.min(messages.length, visibleCount + 1) : neededVisibleCount);
+    },
+    [
+      findMessageElement,
+      flashMessage,
+      messages,
+      scheduleCommitViewState,
+      streamingBlocks,
+      visibleCount,
+    ]
+  );
+
+  const resetToRecent = useCallback(() => {
+    followOutputRef.current = true;
+    pendingRestoreRef.current = { mode: 'bottom' };
+    setVisibleCount(DEFAULT_VISIBLE_MESSAGES);
+    setUserScrolledAway(false);
+    setIsAtBottom(true);
+  }, []);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      scrollToMessage,
+      resetToRecent,
+    }),
+    [resetToRecent, scrollToMessage]
+  );
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLDivElement>) => {
@@ -946,7 +1061,8 @@ const MessageListInner: React.FC<MessageListProps> = ({
       )}
     </div>
   );
-};
+});
+MessageListInner.displayName = 'MessageListInner';
 
 // Avoid re-rendering the full message list when ChatView updates unrelated state
 // (e.g. context usage estimation, settings panel toggles).

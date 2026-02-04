@@ -6,10 +6,13 @@ import {
   closestCenter,
   useSensor,
   useSensors,
+  type DragCancelEvent,
   type DragEndEvent,
   type DragMoveEvent,
   type DragStartEvent,
 } from '@dnd-kit/core';
+import { cursorPosition } from '@tauri-apps/api/window';
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import type { AgentSession } from '../types';
 import { ChatView } from '../components/Chat/ChatView';
 import { DocumentView } from '../components/Documents/DocumentView';
@@ -426,12 +429,208 @@ const ChatViewContainerInner: React.FC = () => {
   const [splitPreview, setSplitPreview] = useState<SplitPreview | null>(null);
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
   const lastDragPointRef = useRef<{ x: number; y: number } | null>(null);
+  const dragCancelledByEscapeRef = useRef(false);
   const [resizeOverlay, setResizeOverlay] = useState<{ x: number; ratio: number } | null>(null);
+
+  useEffect(() => {
+    if (!activeDragTabId) return;
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key !== 'Escape') return;
+      dragCancelledByEscapeRef.current = true;
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [activeDragTabId]);
+
+  const isCursorOutsideCurrentWindow = useCallback(async (thresholdPx: number): Promise<boolean> => {
+    try {
+      const [cursor, pos, size] = await Promise.all([
+        cursorPosition().catch(() => null),
+        getCurrentWebviewWindow().outerPosition().catch(() => null),
+        getCurrentWebviewWindow().outerSize().catch(() => null),
+      ]);
+      if (!cursor || !pos || !size) return false;
+      const left = pos.x - thresholdPx;
+      const top = pos.y - thresholdPx;
+      const right = pos.x + size.width + thresholdPx;
+      const bottom = pos.y + size.height + thresholdPx;
+      return cursor.x < left || cursor.x > right || cursor.y < top || cursor.y > bottom;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const tearOffTabToNewWindow = useCallback(
+    (tabId: WorkspaceTabId) => {
+      const parsed = parseWorkspaceTabId(tabId);
+      if (parsed.kind === 'chat') {
+        const session = parsed.sessionId ? sessionsById.get(parsed.sessionId) : undefined;
+        if (!session?.conversationId) return;
+        if (session.isGenerating) {
+          alert('流式生成中，暂不支持脱离到新窗口');
+          return;
+        }
+
+        void (async () => {
+          const dockTarget = await findChatDockTargetAtCursor().catch(() => null);
+          if (dockTarget) {
+            try {
+              await useSessionStore
+                .getState()
+                .dockSessionToWindow(parsed.sessionId!, dockTarget.targetLabel, dockTarget.placement);
+              closeTabInLayout(tabId);
+              return;
+            } catch (err) {
+              console.warn('Failed to dock chat window via drag-drop, fallback to popout:', err);
+            }
+          }
+
+          try {
+            const { win, isExisting } = await openOrFocusConversationChatWindow(session.conversationId!, session.title, {
+              runMode: session.runMode,
+              agentName: session.agentName,
+            });
+            if (isExisting) {
+              closeTabInLayout(tabId);
+              void closeSession(parsed.sessionId!);
+              return;
+            }
+            win.once('tauri://created', () => {
+              void win.setFocus().catch(() => {});
+              closeTabInLayout(tabId);
+              void closeSession(parsed.sessionId!);
+            });
+            win.once('tauri://error', (err) => {
+              console.error('Failed to popout chat window:', (err as any)?.payload ?? err);
+              alert('打开新窗口失败，请检查窗口权限/配置');
+            });
+          } catch (err) {
+            console.error('Failed to popout chat window:', err);
+            alert('当前环境不支持打开新窗口');
+          }
+        })();
+        return;
+      }
+
+      if (parsed.kind === 'document') {
+        const doc = parsed.documentId ? documents.find((d) => d.id === parsed.documentId) : undefined;
+        if (!doc?.path) {
+          alert('该文档尚未保存到文件，暂不支持在新窗口打开');
+          return;
+        }
+        const documentPath = doc.path;
+        void (async () => {
+          const item = { kind: 'document' as const, title: doc.title, documentPath };
+
+          const dockTarget = await findChatDockTargetAtCursor().catch(() => null);
+          if (dockTarget) {
+            try {
+              await dockWorkspaceItemToWindow(item, dockTarget.targetLabel, dockTarget.placement);
+              closeTabInLayout(tabId);
+              closeDocument(doc.id);
+              return;
+            } catch (err) {
+              console.warn('Failed to dock document tab via drag-drop, fallback to popout:', err);
+            }
+          }
+
+          try {
+            const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+            const win = openViewWindow('chat', doc.title, { label, noDefaultSession: true });
+            await dockWorkspaceItemToWindow(item, win, 'tab');
+            closeTabInLayout(tabId);
+            closeDocument(doc.id);
+          } catch (err) {
+            console.error('Failed to popout document tab:', err);
+            alert('当前环境不支持打开新窗口');
+          }
+        })();
+        return;
+      }
+
+      if (parsed.kind === 'web') {
+        const tab = parsed.webTabId ? webTabs.find((t) => t.id === parsed.webTabId) : undefined;
+        if (!tab) return;
+        void (async () => {
+          const item = { kind: 'web' as const, title: tab.title, webUrl: tab.url };
+
+          const dockTarget = await findChatDockTargetAtCursor().catch(() => null);
+          if (dockTarget) {
+            try {
+              await dockWorkspaceItemToWindow(item, dockTarget.targetLabel, dockTarget.placement);
+              closeTabInLayout(tabId);
+              closeWebTab(tab.id);
+              return;
+            } catch (err) {
+              console.warn('Failed to dock web tab via drag-drop, fallback to popout:', err);
+            }
+          }
+
+          try {
+            const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+            const win = openViewWindow('chat', tab.title || '网页', { label, noDefaultSession: true });
+            await dockWorkspaceItemToWindow(item, win, 'tab');
+            closeTabInLayout(tabId);
+            closeWebTab(tab.id);
+          } catch (err) {
+            console.error('Failed to popout web tab:', err);
+            alert('当前环境不支持打开新窗口');
+          }
+        })();
+        return;
+      }
+
+      const tab = parsed.terminalTabId ? terminalTabs.find((t) => t.id === parsed.terminalTabId) : undefined;
+      if (!tab) return;
+      void (async () => {
+        const item = { kind: 'terminal' as const, title: tab.title, terminalWorkdir: tab.workdir ?? undefined };
+
+        const dockTarget = await findChatDockTargetAtCursor().catch(() => null);
+        if (dockTarget) {
+          try {
+            await dockWorkspaceItemToWindow(item, dockTarget.targetLabel, dockTarget.placement);
+            closeTabInLayout(tabId);
+            void closeTerminalTab(tab.id);
+            return;
+          } catch (err) {
+            console.warn('Failed to dock terminal tab via drag-drop, fallback to popout:', err);
+          }
+        }
+
+        try {
+          const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+          const win = openViewWindow('chat', tab.title || '终端', { label, noDefaultSession: true });
+          await dockWorkspaceItemToWindow(item, win, 'tab');
+          closeTabInLayout(tabId);
+          void closeTerminalTab(tab.id);
+        } catch (err) {
+          console.error('Failed to popout terminal tab:', err);
+          alert('当前环境不支持打开新窗口');
+        }
+      })();
+    },
+    [
+      closeDocument,
+      closeSession,
+      closeTabInLayout,
+      closeTerminalTab,
+      closeWebTab,
+      dockWorkspaceItemToWindow,
+      documents,
+      findChatDockTargetAtCursor,
+      openOrFocusConversationChatWindow,
+      openViewWindow,
+      sessionsById,
+      terminalTabs,
+      webTabs,
+    ]
+  );
 
   const handleDragStart = useCallback((e: DragStartEvent) => {
     const activeId = String(e.active.id) as WorkspaceTabId;
     setActiveDragTabId(activeId);
     setSplitPreview(null);
+    dragCancelledByEscapeRef.current = false;
 
     const ev = e.activatorEvent as MouseEvent | PointerEvent | TouchEvent | null;
     if (ev && 'clientX' in ev) {
@@ -488,156 +687,13 @@ const ChatViewContainerInner: React.FC = () => {
               point.y > rect.bottom + TEAR_OFF_THRESHOLD_PX)
         );
 
-      if (shouldTearOff) {
-        setActiveDragTabId(null);
-        setSplitPreview(null);
+        if (shouldTearOff) {
+          setActiveDragTabId(null);
+          setSplitPreview(null);
 
-        const parsed = parseWorkspaceTabId(activeId);
-        if (parsed.kind === 'chat') {
-          const session = parsed.sessionId ? sessionsById.get(parsed.sessionId) : undefined;
-          if (!session?.conversationId) return;
-          if (session.isGenerating) {
-            alert('流式生成中，暂不支持脱离到新窗口');
-            return;
-          }
-
-          void (async () => {
-            const dockTarget = await findChatDockTargetAtCursor().catch(() => null);
-            if (dockTarget) {
-              try {
-                await useSessionStore.getState().dockSessionToWindow(parsed.sessionId!, dockTarget.targetLabel, dockTarget.placement);
-                closeTabInLayout(activeId);
-                return;
-              } catch (err) {
-                console.warn('Failed to dock chat window via drag-drop, fallback to popout:', err);
-              }
-            }
-
-            try {
-              const { win, isExisting } = await openOrFocusConversationChatWindow(session.conversationId!, session.title, {
-                runMode: session.runMode,
-                agentName: session.agentName,
-              });
-              if (isExisting) {
-                closeTabInLayout(activeId);
-                void closeSession(parsed.sessionId!);
-                return;
-              }
-              win.once('tauri://created', () => {
-                void win.setFocus().catch(() => {});
-                closeTabInLayout(activeId);
-                void closeSession(parsed.sessionId!);
-              });
-              win.once('tauri://error', (err) => {
-                console.error('Failed to popout chat window:', (err as any)?.payload ?? err);
-                alert('打开新窗口失败，请检查窗口权限/配置');
-              });
-            } catch (err) {
-              console.error('Failed to popout chat window:', err);
-              alert('当前环境不支持打开新窗口');
-            }
-          })();
+          tearOffTabToNewWindow(activeId);
           return;
         }
-
-        if (parsed.kind === 'document') {
-          const doc = parsed.documentId ? documents.find((d) => d.id === parsed.documentId) : undefined;
-          if (!doc?.path) {
-            alert('该文档尚未保存到文件，暂不支持在新窗口打开');
-            return;
-          }
-          const documentPath = doc.path;
-          void (async () => {
-            const item = { kind: 'document' as const, title: doc.title, documentPath };
-
-            const dockTarget = await findChatDockTargetAtCursor().catch(() => null);
-            if (dockTarget) {
-              try {
-                await dockWorkspaceItemToWindow(item, dockTarget.targetLabel, dockTarget.placement);
-                closeTabInLayout(activeId);
-                closeDocument(doc.id);
-                return;
-              } catch (err) {
-                console.warn('Failed to dock document tab via drag-drop, fallback to popout:', err);
-              }
-            }
-
-            try {
-              const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-              const win = openViewWindow('chat', doc.title, { label, noDefaultSession: true });
-              await dockWorkspaceItemToWindow(item, win, 'tab');
-              closeTabInLayout(activeId);
-              closeDocument(doc.id);
-            } catch (err) {
-              console.error('Failed to popout document tab:', err);
-              alert('当前环境不支持打开新窗口');
-            }
-          })();
-          return;
-        }
-
-        if (parsed.kind === 'web') {
-          const tab = parsed.webTabId ? webTabs.find((t) => t.id === parsed.webTabId) : undefined;
-          if (!tab) return;
-          void (async () => {
-            const item = { kind: 'web' as const, title: tab.title, webUrl: tab.url };
-
-            const dockTarget = await findChatDockTargetAtCursor().catch(() => null);
-            if (dockTarget) {
-              try {
-                await dockWorkspaceItemToWindow(item, dockTarget.targetLabel, dockTarget.placement);
-                closeTabInLayout(activeId);
-                closeWebTab(tab.id);
-                return;
-              } catch (err) {
-                console.warn('Failed to dock web tab via drag-drop, fallback to popout:', err);
-              }
-            }
-
-            try {
-              const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-              const win = openViewWindow('chat', tab.title || '网页', { label, noDefaultSession: true });
-              await dockWorkspaceItemToWindow(item, win, 'tab');
-              closeTabInLayout(activeId);
-              closeWebTab(tab.id);
-            } catch (err) {
-              console.error('Failed to popout web tab:', err);
-              alert('当前环境不支持打开新窗口');
-            }
-          })();
-          return;
-        }
-
-        const tab = parsed.terminalTabId ? terminalTabs.find((t) => t.id === parsed.terminalTabId) : undefined;
-        if (!tab) return;
-        void (async () => {
-          const item = { kind: 'terminal' as const, title: tab.title, terminalWorkdir: tab.workdir ?? undefined };
-
-          const dockTarget = await findChatDockTargetAtCursor().catch(() => null);
-          if (dockTarget) {
-            try {
-              await dockWorkspaceItemToWindow(item, dockTarget.targetLabel, dockTarget.placement);
-              closeTabInLayout(activeId);
-              void closeTerminalTab(tab.id);
-              return;
-            } catch (err) {
-              console.warn('Failed to dock terminal tab via drag-drop, fallback to popout:', err);
-            }
-          }
-
-          try {
-            const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-            const win = openViewWindow('chat', tab.title || '终端', { label, noDefaultSession: true });
-            await dockWorkspaceItemToWindow(item, win, 'tab');
-            closeTabInLayout(activeId);
-            void closeTerminalTab(tab.id);
-          } catch (err) {
-            console.error('Failed to popout terminal tab:', err);
-            alert('当前环境不支持打开新窗口');
-          }
-        })();
-        return;
-      }
 
       const overIdRaw = e.over?.id;
       if (!overIdRaw) {
@@ -692,6 +748,56 @@ const ChatViewContainerInner: React.FC = () => {
       terminalTabs,
       webTabs,
     ]
+  );
+
+  const handleDragCancel = useCallback(
+    (e: DragCancelEvent) => {
+      const activeId = String(e.active.id) as WorkspaceTabId;
+      const start = dragStartRef.current;
+      const point = lastDragPointRef.current;
+
+      dragStartRef.current = null;
+      lastDragPointRef.current = null;
+
+      setActiveDragTabId(null);
+      setSplitPreview(null);
+
+      void (async () => {
+        // Esc 取消：不触发“拖出窗口”逻辑
+        if (dragCancelledByEscapeRef.current) return;
+
+        const preview = point ? computeSplitPreview(point) : null;
+        if (preview) {
+          splitTabToNewPane(activeId, preview.direction, preview.paneId);
+          return;
+        }
+
+        const rect = containerRef.current?.getBoundingClientRect();
+        const outsideContainer =
+          Boolean(rect && point) &&
+          Boolean(
+            rect &&
+              point &&
+              (point.x < rect.left - TEAR_OFF_THRESHOLD_PX ||
+                point.x > rect.right + TEAR_OFF_THRESHOLD_PX ||
+                point.y < rect.top - TEAR_OFF_THRESHOLD_PX ||
+                point.y > rect.bottom + TEAR_OFF_THRESHOLD_PX)
+          );
+
+        const movedDist = start && point ? Math.hypot(point.x - start.x, point.y - start.y) : 0;
+        const lostFocus = typeof document !== 'undefined' ? !document.hasFocus() : false;
+        const outsideWindow = await isCursorOutsideCurrentWindow(TEAR_OFF_THRESHOLD_PX);
+
+        // 兼容：把 Tab 拖到其他应用窗口（可能导致 DnD cancel），依然要按“拖出窗体”处理。
+        // 要求：确实发生了拖拽（移动距离够大），且出现了“明显外部”信号（失焦/游标在窗外/point 已在窗外）。
+        const shouldTearOffOnCancel = movedDist >= 24 && (outsideContainer || lostFocus || outsideWindow);
+
+        if (shouldTearOffOnCancel) {
+          tearOffTabToNewWindow(activeId);
+        }
+      })();
+    },
+    [computeSplitPreview, isCursorOutsideCurrentWindow, splitTabToNewPane, tearOffTabToNewWindow]
   );
 
   const startResize = useCallback(
@@ -794,6 +900,7 @@ const ChatViewContainerInner: React.FC = () => {
       onDragStart={handleDragStart}
       onDragMove={handleDragMove}
       onDragEnd={handleDragEnd}
+      onDragCancel={handleDragCancel}
     >
       <div ref={containerRef} className="flex h-full w-full overflow-hidden">
         {resolvedPanes.map((pane, idx) => {

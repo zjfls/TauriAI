@@ -672,6 +672,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
   type LinkTarget = {
     workstudioId?: string | null;
+    mainFolder?: string | null;
     filePath: string;
     line?: number | null;
     column?: number | null;
@@ -684,6 +685,25 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const [openFromLinkError, setOpenFromLinkError] = useState<string | null>(null);
   // 如果在 Workstudio UI state 尚未恢复完成时收到了 open_file 事件，先暂存，待就绪后再执行。
   const pendingOpenLinkRef = useRef<LinkTarget | null>(null);
+
+  // Debug logs for the "click file link -> open in Workstudio" pipeline.
+  // Enable with: localStorage.setItem('tauri-ai:debug:open_file','1')
+  const dbgEnabled = useMemo(() => {
+    try {
+      return window.localStorage.getItem('tauri-ai:debug:open_file') === '1';
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const dbg = useCallback(
+    (msg: string, meta?: Record<string, unknown>) => {
+      if (!dbgEnabled) return;
+      // eslint-disable-next-line no-console
+      console.log(`[open_file][WorkstudioView][${new Date().toISOString()}] ${msg}`, meta ?? {});
+    },
+    [dbgEnabled]
+  );
 
   const revealFileInExplorer = useCallback(
     async (absFilePath: string, seq: number) => {
@@ -803,8 +823,19 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     const targetPath = target.filePath;
     if (!targetPath) return;
 
+    dbg('openLinkTarget:begin', {
+      seq,
+      workstudioId: workstudioId ?? null,
+      wsId: ws?.id ?? null,
+      uiStateRestored,
+      groupId,
+      target,
+      visibility: typeof document !== 'undefined' ? document.visibilityState : null,
+    });
+
     if (!ws || !uiStateRestored) {
       pendingOpenLinkRef.current = target;
+      dbg('openLinkTarget:queued(pendingOpenLinkRef)', { seq, reason: !ws ? 'missing_ws' : 'uiStateNotRestored' });
       return;
     }
 
@@ -833,6 +864,8 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     })();
     if (!resolved) return;
 
+    dbg('openLinkTarget:resolved', { seq, resolved, isAbs, mainFolder: ws?.mainFolder ?? null });
+
     const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
 
     const applySelection = (openedFileId: string | null, expectedPath: string): boolean => {
@@ -845,9 +878,15 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       if (openedFileId && (!group || group.activeFileId !== openedFileId)) return false;
 
       const editor = editorByGroupRef.current.get(groupId);
-      if (!editor) return false;
+      if (!editor) {
+        dbg('applySelection:no_editor', { seq, groupId, openedFileId, expectedPath });
+        return false;
+      }
       const model = editor.getModel();
-      if (!model) return false;
+      if (!model) {
+        dbg('applySelection:no_model', { seq, groupId, openedFileId, expectedPath });
+        return false;
+      }
 
       try {
         const modelUri: any = (model as any).uri;
@@ -931,8 +970,10 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         editor.setSelection(sel);
         editor.revealRangeInCenter(sel);
         editor.focus();
+        dbg('applySelection:ok', { seq, groupId, openedFileId, expectedPath, sel });
         return true;
       } catch {
+        dbg('applySelection:exception', { seq, groupId, openedFileId, expectedPath });
         return false;
       }
     };
@@ -946,7 +987,17 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
       while (openLinkSeqRef.current === seq) {
         const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
-        if (now - startAt > timeoutMs) return;
+        if (now - startAt > timeoutMs) {
+          dbg('applyWithWait:timeout', {
+            seq,
+            groupId,
+            openedFileId,
+            expectedPath,
+            timeoutMs,
+            visibility: typeof document !== 'undefined' ? document.visibilityState : null,
+          });
+          return;
+        }
         const done = applySelection(openedFileId, expectedPath);
         if (done) return;
         // 等待 React commit + Monaco model ready
@@ -960,10 +1011,13 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     setOpenFromLinkError(null);
     try {
       const openedId = await openFileAtPath(resolved, { groupId });
+      dbg('openLinkTarget:file_opened', { seq, openedId, resolved, groupId });
       void revealFileInExplorer(resolved, seq);
       await applyWithWait(openedId, resolved);
+      dbg('openLinkTarget:done', { seq, openedId, resolved, groupId });
       return;
     } catch (error) {
+      dbg('openLinkTarget:primary_error', { seq, error: String(error), resolved, groupId, isAbs });
       try {
         if (!ws?.id || isAbs) throw error;
 
@@ -991,11 +1045,14 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         if (!best) throw error;
 
         const openedId = await openFileAtPath(best, { groupId });
+        dbg('openLinkTarget:fallback_file_opened', { seq, openedId, best, groupId });
         void revealFileInExplorer(best, seq);
         await applyWithWait(openedId, normalizeFsPath(best));
+        dbg('openLinkTarget:fallback_done', { seq, openedId, best, groupId });
         return;
       } catch (fallbackError) {
         console.error('open file from link failed:', fallbackError);
+        dbg('openLinkTarget:failed', { seq, error: String(fallbackError) });
         setOpenFromLinkError(
           typeof fallbackError === 'string'
             ? fallbackError
@@ -1003,7 +1060,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         );
       }
     }
-  }, [openFileAtPath, revealFileInExplorer, uiStateRestored, ws]);
+  }, [dbg, openFileAtPath, revealFileInExplorer, uiStateRestored, workstudioId, ws]);
 
   // 在 Workstudio UI state 恢复完成后，处理之前暂存的 open_file 请求（只保留最后一次）。
   useEffect(() => {
@@ -1032,8 +1089,66 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     void listen('workstudio:open_file', (event) => {
       const payload = (event as any).payload as LinkTarget | null | undefined;
       if (!payload?.filePath) return;
-      if (payload.workstudioId && workstudioId && payload.workstudioId !== workstudioId) return;
-      void openLinkTarget(payload);
+      void (async () => {
+        const incomingId = (payload.workstudioId ?? '').trim();
+        const currentId = (workstudioId ?? '').trim();
+
+        if (incomingId && currentId && incomingId !== currentId) {
+          const currentMainFolderFromState = normalizeFsPath(ws?.mainFolder ?? '');
+          const incomingMainFolderFromPayload = normalizeFsPath((payload.mainFolder ?? '').trim());
+
+          let currentMainFolder = currentMainFolderFromState;
+          let incomingMainFolder = incomingMainFolderFromPayload;
+
+          if (!incomingMainFolder) {
+            try {
+              const other = await invoke<Workstudio | null>('get_workstudio', { workstudioId: incomingId });
+              incomingMainFolder = normalizeFsPath(other?.mainFolder ?? '');
+            } catch {
+              incomingMainFolder = '';
+            }
+          }
+
+          if (!currentMainFolder) {
+            try {
+              const cur = await invoke<Workstudio | null>('get_workstudio', { workstudioId: currentId });
+              currentMainFolder = normalizeFsPath(cur?.mainFolder ?? '');
+            } catch {
+              currentMainFolder = '';
+            }
+          }
+
+          const matchesByFolder = Boolean(currentMainFolder && incomingMainFolder && currentMainFolder === incomingMainFolder);
+
+          if (!matchesByFolder) {
+            dbg('event:workstudio:open_file:ignored(workstudioId_mismatch)', {
+              workstudioId: workstudioId ?? null,
+              incomingWorkstudioId: payload.workstudioId ?? null,
+              currentMainFolder: currentMainFolder || null,
+              incomingMainFolder: incomingMainFolder || null,
+              incomingMainFolderFromPayload: incomingMainFolderFromPayload || null,
+              payload,
+              visibility: typeof document !== 'undefined' ? document.visibilityState : null,
+            });
+            return;
+          }
+
+          dbg('event:workstudio:open_file:accept(mainFolder_match)', {
+            workstudioId: workstudioId ?? null,
+            incomingWorkstudioId: payload.workstudioId ?? null,
+            currentMainFolder: currentMainFolder || null,
+            incomingMainFolder: incomingMainFolder || null,
+            incomingMainFolderFromPayload: incomingMainFolderFromPayload || null,
+          });
+        }
+
+        dbg('event:workstudio:open_file', {
+          workstudioId: workstudioId ?? null,
+          payload,
+          visibility: typeof document !== 'undefined' ? document.visibilityState : null,
+        });
+        void openLinkTarget(payload);
+      })();
     })
       .then((fn) => {
         unlisten = fn;
@@ -1042,7 +1157,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     return () => {
       unlisten?.();
     };
-  }, [openLinkTarget]);
+  }, [dbg, openLinkTarget, workstudioId, ws?.mainFolder]);
 
   const closeFileInGroup = useCallback((groupId: string, fileId: string) => {
     setGroups((prev) => {
