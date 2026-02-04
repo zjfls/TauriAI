@@ -8,13 +8,10 @@ import { create } from 'zustand';
 import type { Theme, ActiveView } from '../types';
 
 interface UIState {
-  sidebarExpanded: boolean;
   activeView: ActiveView;
   theme: Theme;
 
   // Actions
-  toggleSidebar: () => void;
-  setSidebarExpanded: (expanded: boolean) => void;
   setActiveView: (view: ActiveView) => void;
   setTheme: (theme: Theme) => void;
   initializeTheme: (theme: Theme) => void;
@@ -65,23 +62,8 @@ export const applyTheme = (theme: Theme) => {
 };
 
 export const useUIStore = create<UIState>((set) => ({
-  sidebarExpanded: true,
   activeView: 'chat',
   theme: 'system',
-
-  /**
-   * Toggle sidebar expanded state
-   */
-  toggleSidebar: () => {
-    set((state) => ({ sidebarExpanded: !state.sidebarExpanded }));
-  },
-
-  /**
-   * Set sidebar expanded state
-   */
-  setSidebarExpanded: (expanded: boolean) => {
-    set({ sidebarExpanded: expanded });
-  },
 
   /**
    * Set the active view
@@ -188,12 +170,10 @@ if (uiStoreStormDebugEnabled) {
             updatesInWindow,
             windowMs: WINDOW_MS,
             state: {
-              sidebarExpanded: state.sidebarExpanded,
               activeView: state.activeView,
               theme: state.theme,
             },
             prevState: {
-              sidebarExpanded: prev.sidebarExpanded,
               activeView: prev.activeView,
               theme: prev.theme,
             },

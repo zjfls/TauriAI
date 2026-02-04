@@ -11,6 +11,7 @@ use tokio::time::Instant;
 use crate::ai_client::ToolCall;
 use crate::models::SandboxPolicy;
 use crate::runtime::events::RunEvent;
+use crate::runtime::text::decode_process_output;
 use crate::runtime::tools::permissions::ToolPermission;
 use crate::runtime::tools::registry::{
     ToolCallResult, ToolError, ToolExecutionContext, ToolHandler,
@@ -328,7 +329,7 @@ impl ToolHandler for ShellCommandTool {
                             .await
                         {
                             Ok(Some((_is_stderr, bytes))) => {
-                                let text = String::from_utf8_lossy(&bytes).to_string();
+                                let text = decode_process_output(&bytes);
                                 output.push_str(&text);
                                 ctx.emitter.emit(RunEvent::BlockDelta {
                                     task_id: ctx.task_id.to_string(),
@@ -374,7 +375,7 @@ impl ToolHandler for ShellCommandTool {
                 chunk = rx.recv() => {
                     match chunk {
                         Some((_is_stderr, bytes)) => {
-                            let text = String::from_utf8_lossy(&bytes).to_string();
+                            let text = decode_process_output(&bytes);
                             output.push_str(&text);
                             ctx.emitter.emit(RunEvent::BlockDelta {
                                 task_id: ctx.task_id.to_string(),

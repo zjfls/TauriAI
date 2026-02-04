@@ -920,7 +920,6 @@ export interface WebSearchToolSettings {
 // ============================================================================
 
 export type KeyboardShortcutActionId =
-  | 'app.toggleSidebar'
   | 'app.openSettings'
   | 'app.openHistory'
   | 'app.openDevtools'

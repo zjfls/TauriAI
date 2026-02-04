@@ -11,6 +11,7 @@ use tokio::time::timeout;
 
 use crate::ai_client::ToolCall;
 use crate::runtime::events::RunEvent;
+use crate::runtime::text::decode_process_output;
 use crate::runtime::tools::registry::{
     ToolCallResult, ToolError, ToolExecutionContext, ToolHandler,
 };
@@ -830,7 +831,7 @@ async fn run_rg_search(
         Some(0) => Ok(parse_rg_output(&output.stdout, limit)),
         Some(1) => Ok(Vec::new()),
         _ => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stderr = decode_process_output(&output.stderr);
             Err(ToolError::new(format!("rg 执行失败: {stderr}")))
         }
     }

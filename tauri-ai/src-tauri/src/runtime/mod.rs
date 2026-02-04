@@ -14,6 +14,7 @@ pub mod events;
 pub mod mcp;
 pub mod run_state;
 pub mod task_runner;
+pub mod text;
 pub mod tools;
 pub mod types;
 

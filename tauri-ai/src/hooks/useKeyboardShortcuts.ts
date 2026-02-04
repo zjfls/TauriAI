@@ -260,10 +260,6 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
   const executeAction = useCallback(
     async (actionId: string): Promise<boolean> => {
       switch (actionId) {
-        case 'app.toggleSidebar': {
-          useUIStore.getState().toggleSidebar();
-          return true;
-        }
         case 'app.openSettings': {
           useUIStore.getState().setActiveView('settings');
           return true;

@@ -15,15 +15,6 @@ export interface ShortcutActionDefinition {
 
 export const SHORTCUT_ACTIONS: ShortcutActionDefinition[] = [
   {
-    id: 'app.toggleSidebar',
-    title: '切换侧边栏',
-    description: '展开/折叠左侧导航栏（类似 VS Code）',
-    category: '应用',
-    defaultMac: 'Cmd+B',
-    defaultWindows: 'Ctrl+B',
-    allowWhenTyping: true,
-  },
-  {
     id: 'app.openSettings',
     title: '打开设置',
     description: '跳转到设置页面（Preferences/Settings）',
@@ -169,4 +160,3 @@ export const DEFAULT_SHORTCUTS_WINDOWS: Record<KeyboardShortcutActionId, string>
 export const getDefaultShortcut = (platform: ShortcutPlatform, actionId: KeyboardShortcutActionId): string => {
   return platform === 'mac' ? DEFAULT_SHORTCUTS_MAC[actionId] : DEFAULT_SHORTCUTS_WINDOWS[actionId];
 };
-

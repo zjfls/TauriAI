@@ -13,6 +13,7 @@ use tokio::sync::{Mutex, MutexGuard};
 
 use crate::runtime::tools::services::{PtySession, PtySessionScope};
 use crate::runtime::RunState;
+use crate::runtime::text::decode_process_output;
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -80,13 +81,28 @@ fn default_shell_command() -> Vec<String> {
             None
         }
 
-        let shell = find_in_path(&["pwsh.exe", "powershell.exe", "cmd.exe"])
-            .unwrap_or_else(|| "cmd.exe".to_string());
+        let shell = find_in_path(&["pwsh.exe", "powershell.exe", "cmd.exe"]).unwrap_or_else(|| "cmd.exe".to_string());
         let lower = shell.to_lowercase();
         if lower.ends_with("pwsh.exe") || lower.ends_with("powershell.exe") {
-            vec![shell, "-NoLogo".to_string()]
+            // 统一 UTF-8：避免中文输出在前端出现 “�” 乱码（ConPTY + xterm 默认按 UTF-8 解码）。
+            // - `chcp 65001` 影响原生控制台程序（GetConsoleOutputCP）
+            // - `[Console]::OutputEncoding` 影响 PowerShell / native command 输出编码
+            // - `$OutputEncoding` 影响 native command 管道编码
+            let init = "try { chcp 65001 | Out-Null } catch {}; try { [Console]::InputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new() } catch {}; $OutputEncoding = [Console]::OutputEncoding";
+            vec![
+                shell,
+                "-NoLogo".to_string(),
+                "-NoExit".to_string(),
+                "-Command".to_string(),
+                init.to_string(),
+            ]
         } else {
-            vec![shell]
+            // cmd.exe 也尽量切到 UTF-8，减少乱码概率
+            vec![
+                shell,
+                "/K".to_string(),
+                "chcp 65001 >nul 2>&1".to_string(),
+            ]
         }
     }
     #[cfg(not(windows))]
@@ -199,7 +215,7 @@ pub async fn terminal_read(
         out.truncate(max_bytes);
     }
 
-    Ok(String::from_utf8_lossy(&out).to_string())
+    Ok(decode_process_output(&out))
 }
 
 #[tauri::command]

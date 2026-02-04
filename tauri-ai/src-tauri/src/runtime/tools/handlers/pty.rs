@@ -7,6 +7,7 @@ use serde::Deserialize;
 use crate::ai_client::ToolCall;
 use crate::models::SandboxPolicy;
 use crate::runtime::events::RunEvent;
+use crate::runtime::text::decode_process_output;
 use crate::runtime::tools::permissions::ToolPermission;
 use crate::runtime::tools::registry::{
     ToolCallResult, ToolError, ToolExecutionContext, ToolHandler,
@@ -169,6 +170,13 @@ fn build_shell_invocation(command: &str, shell: Option<&str>, login: bool) -> Ve
     let shell = shell.unwrap_or_default().trim();
     #[cfg(windows)]
     {
+        fn wrap_powershell_utf8_script(script: &str) -> String {
+            format!(
+                "try {{ chcp 65001 | Out-Null }} catch {{}}; try {{ [Console]::InputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new() }} catch {{}}; $OutputEncoding = [Console]::OutputEncoding; {}",
+                script
+            )
+        }
+
         // Codex 行为：Windows 默认使用 PowerShell（优先 pwsh，其次 powershell.exe），而不是 cmd.exe。
         // 这样模型可以直接输出 PowerShell 脚本正文，不需要再外包一层 `powershell -Command ...`。
         let (shell, shell_lower) = if shell.is_empty() {
@@ -183,7 +191,8 @@ fn build_shell_invocation(command: &str, shell: Option<&str>, login: bool) -> Ve
 
         // cmd.exe
         if shell_lower.contains("cmd") {
-            return vec!["cmd.exe".to_string(), "/C".to_string(), command.to_string()];
+            let cmd = format!("chcp 65001 >nul 2>&1 && {}", command);
+            return vec!["cmd.exe".to_string(), "/C".to_string(), cmd];
         }
 
         // PowerShell-family: treat `cmd` as a PowerShell script.
@@ -193,7 +202,7 @@ fn build_shell_invocation(command: &str, shell: Option<&str>, login: bool) -> Ve
                 args.push("-NoProfile".to_string());
             }
             args.push("-Command".to_string());
-            args.push(command.to_string());
+            args.push(wrap_powershell_utf8_script(command));
             return args;
         }
         if shell_lower.contains("powershell") {
@@ -202,7 +211,7 @@ fn build_shell_invocation(command: &str, shell: Option<&str>, login: bool) -> Ve
                 args.push("-NoProfile".to_string());
             }
             args.push("-Command".to_string());
-            args.push(command.to_string());
+            args.push(wrap_powershell_utf8_script(command));
             return args;
         }
 
@@ -332,7 +341,7 @@ async fn drain_pty_output(
             } => {
                 match recv {
                     Ok(Some(bytes)) => {
-                        let text = String::from_utf8_lossy(&bytes).to_string();
+                        let text = decode_process_output(&bytes);
                         output.push_str(&text);
                         ctx.emitter.emit(RunEvent::BlockDelta {
                             task_id: ctx.task_id.to_string(),
