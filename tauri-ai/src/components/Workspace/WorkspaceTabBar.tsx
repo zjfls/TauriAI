@@ -206,7 +206,7 @@ const SortableWorkspaceTab: React.FC<{
       ref={setNodeRef}
       style={style}
       className={[
-        'group relative flex items-center gap-2 px-3 py-2 min-w-[120px] max-w-[220px]',
+        'group relative flex items-center gap-2 px-3 py-2 min-w-[140px] max-w-[320px]',
         'cursor-pointer select-none transition-colors duration-150 border-b-2',
         isActive
           ? 'bg-white dark:bg-gray-800 border-blue-500 text-gray-800 dark:text-white'
@@ -219,7 +219,7 @@ const SortableWorkspaceTab: React.FC<{
       {...listeners}
     >
       {icon}
-      <span className="flex-1 text-sm font-medium truncate flex items-center gap-1">
+      <span className="flex-1 min-w-0 text-sm font-medium truncate flex items-center gap-1">
         {item.title}
         {badge}
       </span>
@@ -229,8 +229,8 @@ const SortableWorkspaceTab: React.FC<{
         className={[
           'flex-shrink-0 p-0.5 rounded transition-colors',
           isActive
-            ? 'hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
-            : 'opacity-0 group-hover:opacity-100 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300',
+            ? 'inline-flex hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
+            : 'hidden group-hover:inline-flex hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300',
         ].join(' ')}
         title="关闭标签"
       >

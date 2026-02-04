@@ -2,6 +2,7 @@ import { listen } from '@tauri-apps/api/event';
 import { WebviewWindow, getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { cursorPosition } from '@tauri-apps/api/window';
 import type { ActiveView, RunMode } from '../types';
+import { upsertWindowRecord } from './windowLayout';
 
 type WorkstudioOpenPayload = {
   workstudioId?: string | null;
@@ -311,6 +312,7 @@ export const openViewWindow = (
     endLine?: number;
     endColumn?: number;
     label?: string;
+    window?: { x?: number; y?: number; width?: number; height?: number };
   }
 ) => {
   const label = opts?.label ?? `view-${view}-${Date.now()}`;
@@ -363,11 +365,55 @@ export const openViewWindow = (
     params.set('endColumn', String(opts.endColumn));
   }
   const url = `/?${params.toString()}`;
+
+  try {
+    upsertWindowRecord({
+      label,
+      title,
+      params: {
+        view,
+        standalone: true,
+        noDefaultSession: Boolean(opts?.noDefaultSession),
+        conversationId: opts?.conversationId ?? null,
+        runMode: opts?.runMode ?? null,
+        agentName: opts?.agentName ?? null,
+        documentPath: opts?.documentPath ?? null,
+        workstudioId: opts?.workstudioId ?? null,
+        webUrl: opts?.webUrl ?? null,
+        webTitle: opts?.webTitle ?? null,
+        terminalWorkdir: opts?.terminalWorkdir ?? null,
+        terminalTitle: opts?.terminalTitle ?? null,
+        filePath: opts?.filePath ?? null,
+        line: typeof opts?.line === 'number' ? opts.line : null,
+        column: typeof opts?.column === 'number' ? opts.column : null,
+        endLine: typeof opts?.endLine === 'number' ? opts.endLine : null,
+        endColumn: typeof opts?.endColumn === 'number' ? opts.endColumn : null,
+      },
+      bounds:
+        typeof opts?.window?.x === 'number' &&
+        typeof opts?.window?.y === 'number' &&
+        typeof opts?.window?.width === 'number' &&
+        typeof opts?.window?.height === 'number'
+          ? {
+              x: Math.floor(opts.window.x),
+              y: Math.floor(opts.window.y),
+              width: Math.floor(opts.window.width),
+              height: Math.floor(opts.window.height),
+            }
+          : null,
+    });
+  } catch {
+    // ignore
+  }
+
   const win = new WebviewWindow(label, {
     title,
     url,
-    width: 900,
-    height: 700,
+    width: Math.max(240, Math.floor(opts?.window?.width ?? 900)),
+    height: Math.max(160, Math.floor(opts?.window?.height ?? 700)),
+    ...(typeof opts?.window?.x === 'number' && typeof opts?.window?.y === 'number'
+      ? { x: Math.floor(opts.window.x), y: Math.floor(opts.window.y) }
+      : {}),
   });
   // 在一些环境中，新窗口创建失败不会 throw，而是触发 `tauri://error` 事件。
   // 这里做一个低成本的诊断日志，方便排查“看起来没反应”的问题。
@@ -401,6 +447,7 @@ export const openOrFocusViewWindow = async (
     endLine?: number;
     endColumn?: number;
     label?: string;
+    window?: { x?: number; y?: number; width?: number; height?: number };
   }
 ) => {
   const label = opts?.label ?? `view-${view}-${Date.now()}`;
@@ -466,11 +513,54 @@ export const openOrFocusViewWindow = async (
   }
   const url = `/?${params.toString()}`;
 
+  try {
+    upsertWindowRecord({
+      label,
+      title,
+      params: {
+        view,
+        standalone: true,
+        noDefaultSession: Boolean(opts?.noDefaultSession),
+        conversationId: opts?.conversationId ?? null,
+        runMode: opts?.runMode ?? null,
+        agentName: opts?.agentName ?? null,
+        documentPath: opts?.documentPath ?? null,
+        workstudioId: opts?.workstudioId ?? null,
+        webUrl: opts?.webUrl ?? null,
+        webTitle: opts?.webTitle ?? null,
+        terminalWorkdir: opts?.terminalWorkdir ?? null,
+        terminalTitle: opts?.terminalTitle ?? null,
+        filePath: opts?.filePath ?? null,
+        line: typeof opts?.line === 'number' ? opts.line : null,
+        column: typeof opts?.column === 'number' ? opts.column : null,
+        endLine: typeof opts?.endLine === 'number' ? opts.endLine : null,
+        endColumn: typeof opts?.endColumn === 'number' ? opts.endColumn : null,
+      },
+      bounds:
+        typeof opts?.window?.x === 'number' &&
+        typeof opts?.window?.y === 'number' &&
+        typeof opts?.window?.width === 'number' &&
+        typeof opts?.window?.height === 'number'
+          ? {
+              x: Math.floor(opts.window.x),
+              y: Math.floor(opts.window.y),
+              width: Math.floor(opts.window.width),
+              height: Math.floor(opts.window.height),
+            }
+          : null,
+    });
+  } catch {
+    // ignore
+  }
+
   return new WebviewWindow(label, {
     title,
     url,
-    width: 900,
-    height: 700,
+    width: Math.max(240, Math.floor(opts?.window?.width ?? 900)),
+    height: Math.max(160, Math.floor(opts?.window?.height ?? 700)),
+    ...(typeof opts?.window?.x === 'number' && typeof opts?.window?.y === 'number'
+      ? { x: Math.floor(opts.window.x), y: Math.floor(opts.window.y) }
+      : {}),
   });
 };
 

@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { useWorkspaceTabStore } from './workspaceTabStore';
+import { getWindowScopedStorageKey } from '../utils/windowStorage';
 
 export type WebTab = {
   id: string;
@@ -7,6 +8,66 @@ export type WebTab = {
   title: string;
   createdAt: string;
   lastActiveAt: string;
+};
+
+type PersistedWebTabState = {
+  version: 1;
+  tabs: WebTab[];
+  activeTabId: string | null;
+};
+
+const STORAGE_KEY_PREFIX = 'tauri-ai:web-tabs:v1';
+const getStorageKey = (): string => getWindowScopedStorageKey(STORAGE_KEY_PREFIX);
+
+const safeParseJson = <T,>(raw: string | null): T | null => {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+};
+
+const loadInitialState = (): Pick<WebTabState, 'tabs' | 'activeTabId'> => {
+  try {
+    if (typeof window === 'undefined') return { tabs: [], activeTabId: null };
+    const raw = window.localStorage.getItem(getStorageKey());
+    const parsed = safeParseJson<PersistedWebTabState>(raw);
+    const tabsRaw = Array.isArray(parsed?.tabs) ? parsed!.tabs : [];
+
+    const tabs: WebTab[] = [];
+    const seen = new Set<string>();
+    for (const t of tabsRaw) {
+      const id = typeof t?.id === 'string' ? t.id : '';
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      const url = normalizeWebUrl(typeof t?.url === 'string' ? t.url : 'about:blank');
+      const title = (typeof t?.title === 'string' ? t.title : '').trim() || defaultTitleForUrl(url);
+      const createdAt = typeof t?.createdAt === 'string' ? t.createdAt : new Date().toISOString();
+      const lastActiveAt = typeof t?.lastActiveAt === 'string' ? t.lastActiveAt : createdAt;
+      tabs.push({ id, url, title, createdAt, lastActiveAt });
+    }
+
+    const activeTabId =
+      typeof parsed?.activeTabId === 'string' && tabs.some((t) => t.id === parsed.activeTabId) ? parsed.activeTabId : null;
+    return { tabs, activeTabId };
+  } catch {
+    return { tabs: [], activeTabId: null };
+  }
+};
+
+const persistState = (next: Pick<WebTabState, 'tabs' | 'activeTabId'>) => {
+  try {
+    if (typeof window === 'undefined') return;
+    const payload: PersistedWebTabState = {
+      version: 1,
+      tabs: next.tabs,
+      activeTabId: next.activeTabId,
+    };
+    window.localStorage.setItem(getStorageKey(), JSON.stringify(payload));
+  } catch {
+    // ignore
+  }
 };
 
 const normalizeWebUrl = (input: string): string => {
@@ -42,8 +103,7 @@ interface WebTabState {
 }
 
 export const useWebTabStore = create<WebTabState>((set, get) => ({
-  tabs: [],
-  activeTabId: null,
+  ...(typeof window === 'undefined' ? { tabs: [], activeTabId: null } : loadInitialState()),
 
   openWebTab: (url, opts) => {
     const normalized = normalizeWebUrl(url);
@@ -65,6 +125,7 @@ export const useWebTabStore = create<WebTabState>((set, get) => ({
     }));
 
     useWorkspaceTabStore.getState().upsertWebTab(id);
+    persistState({ tabs: [...get().tabs], activeTabId: get().activeTabId });
     return id;
   },
 
@@ -76,6 +137,7 @@ export const useWebTabStore = create<WebTabState>((set, get) => ({
 
     set({ tabs: nextTabs, activeTabId: nextActive });
     useWorkspaceTabStore.getState().removeWebTab(id);
+    persistState({ tabs: nextTabs, activeTabId: nextActive });
   },
 
   setActiveWebTab: (id) => {
@@ -85,6 +147,7 @@ export const useWebTabStore = create<WebTabState>((set, get) => ({
         t.id === id ? { ...t, lastActiveAt: new Date().toISOString() } : t
       ),
     }));
+    persistState({ tabs: get().tabs, activeTabId: id });
   },
 
   updateWebTab: (id, patch) => {
@@ -100,6 +163,7 @@ export const useWebTabStore = create<WebTabState>((set, get) => ({
         return { ...t, url, title, lastActiveAt: now };
       }),
     }));
+    persistState({ tabs: get().tabs, activeTabId: get().activeTabId });
   },
 
   clearAll: () => {
@@ -108,5 +172,6 @@ export const useWebTabStore = create<WebTabState>((set, get) => ({
       useWorkspaceTabStore.getState().removeWebTab(id);
     }
     set({ tabs: [], activeTabId: null });
+    persistState({ tabs: [], activeTabId: null });
   },
 }));

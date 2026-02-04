@@ -5,9 +5,10 @@
  */
 
 import { useEffect, useRef } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { MainLayout } from './components/Layout/MainLayout';
 import { StandaloneLayout } from './components/Layout/StandaloneLayout';
 import { WorkstudioView } from './components/Workstudio/WorkstudioView';
@@ -23,9 +24,17 @@ import { docTabId, terminalTabId, webTabId } from './stores/workspaceTabStore';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { getViewDefinition } from './views/registry';
 import { ChatViewContainer } from './views/ChatViewContainer';
-import { getViewWindowParams } from './utils/viewWindow';
+import { getViewWindowParams, openOrFocusViewWindow } from './utils/viewWindow';
 import { resolveActiveWorkstudioMainFolder } from './utils/terminalWorkdir';
 import { getCurrentWindowLabelSafe, removeWindowPresence, writeWindowPresence } from './utils/windowPresence';
+import {
+  clearAppClosingIfStale,
+  isAppClosingRecently,
+  markAppClosing,
+  readWindowLayout,
+  removeWindowRecord,
+  upsertWindowRecord,
+} from './utils/windowLayout';
 import './App.css';
 
 function App() {
@@ -61,6 +70,7 @@ function App() {
   const viewOverrideAppliedRef = useRef(false);
   const initialStandaloneTabsAppliedRef = useRef(false);
   const chatKeepAliveLayerRef = useRef<HTMLDivElement>(null);
+  const restoredWindowsRef = useRef(false);
 
   // Debug logging
   useEffect(() => {
@@ -133,6 +143,141 @@ function App() {
    * Requirements: 9.1, 9.2, 9.3, 9.4, 9.5
    */
   useKeyboardShortcuts({ enabled: shouldInitChatRuntime });
+
+  // ---------------------------------------------------------------------------
+  // 窗口/分屏持久化（跨重启）
+  // - 记录当前窗口（label + view params + bounds）
+  // - 主窗口启动时按记录恢复其它窗口
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    if (!isTauri()) return;
+
+    clearAppClosingIfStale();
+
+    const label = getCurrentWindowLabelSafe();
+    const params = getViewWindowParams();
+    const title = document.title || label;
+
+    // 先写一份最小记录，bounds 稍后异步补齐
+    upsertWindowRecord({ label, title, params, bounds: null });
+
+    const win = getCurrentWebviewWindow();
+    let disposed = false;
+    let timer: number | null = null;
+
+    const updateBounds = async () => {
+      if (disposed) return;
+      try {
+        const [pos, size] = await Promise.all([win.outerPosition().catch(() => null), win.outerSize().catch(() => null)]);
+        if (!pos || !size) return;
+        upsertWindowRecord({
+          label,
+          title: document.title || title,
+          params,
+          bounds: { x: pos.x, y: pos.y, width: size.width, height: size.height },
+        });
+      } catch {
+        // ignore
+      }
+    };
+
+    const scheduleBounds = () => {
+      if (disposed) return;
+      if (timer) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        timer = null;
+        void updateBounds();
+      }, 200);
+    };
+
+    void updateBounds();
+
+    let unlistenMoved: null | (() => void) = null;
+    let unlistenResized: null | (() => void) = null;
+    let unlistenClose: null | (() => void) = null;
+
+    void win
+      .onMoved(() => scheduleBounds())
+      .then((fn) => {
+        unlistenMoved = fn;
+      })
+      .catch(() => {});
+    void win
+      .onResized(() => scheduleBounds())
+      .then((fn) => {
+        unlistenResized = fn;
+      })
+      .catch(() => {});
+
+    void win
+      .onCloseRequested(() => {
+        // 主窗口关闭视为“应用退出”：保留窗口布局用于下次恢复，并打标记让其它窗口不要把自己从布局里删掉。
+        if (label === 'main') {
+          markAppClosing();
+          return;
+        }
+        // 单独关闭某个窗口：从“下次启动恢复列表”移除（但应用退出时不移除）。
+        // 注意：整体退出时，非 main 窗口可能先于 main 收到 close 请求；若立刻删除会导致重启丢布局。
+        // 这里做一个极短延迟后二次检查，避免退出竞态误删。
+        if (isAppClosingRecently()) return;
+        window.setTimeout(() => {
+          if (isAppClosingRecently()) return;
+          removeWindowRecord(label);
+        }, 500);
+      })
+      .then((fn) => {
+        unlistenClose = fn;
+      })
+      .catch(() => {});
+
+    return () => {
+      disposed = true;
+      if (timer) window.clearTimeout(timer);
+      unlistenMoved?.();
+      unlistenResized?.();
+      unlistenClose?.();
+    };
+  }, [isStandalone]);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    if (isStandalone) return;
+
+    const label = getCurrentWindowLabelSafe();
+    if (label !== 'main') return;
+    if (restoredWindowsRef.current) return;
+    restoredWindowsRef.current = true;
+
+    const layout = readWindowLayout();
+    const records = layout.windows.filter((w) => w.label !== 'main' && w.params?.standalone && w.params?.view);
+
+    // 逐个恢复；openOrFocus 会自动去重（若窗口已存在则只聚焦）
+    for (const w of records) {
+      const view = w.params.view;
+      if (!view) continue;
+      void openOrFocusViewWindow(view, w.title || view, {
+        label: w.label,
+        noDefaultSession: w.params.noDefaultSession,
+        conversationId: w.params.conversationId ?? undefined,
+        runMode: w.params.runMode ?? undefined,
+        agentName: w.params.agentName ?? undefined,
+        documentPath: w.params.documentPath ?? undefined,
+        workstudioId: w.params.workstudioId ?? undefined,
+        webUrl: w.params.webUrl ?? undefined,
+        webTitle: w.params.webTitle ?? undefined,
+        terminalWorkdir: w.params.terminalWorkdir ?? undefined,
+        terminalTitle: w.params.terminalTitle ?? undefined,
+        filePath: w.params.filePath ?? undefined,
+        line: typeof w.params.line === 'number' ? w.params.line : undefined,
+        column: typeof w.params.column === 'number' ? w.params.column : undefined,
+        endLine: typeof w.params.endLine === 'number' ? w.params.endLine : undefined,
+        endColumn: typeof w.params.endColumn === 'number' ? w.params.endColumn : undefined,
+        window: w.bounds ?? undefined,
+      }).catch(() => {
+        // ignore: best-effort
+      });
+    }
+  }, [isStandalone]);
 
   /**
    * Menu: File -> Open File...

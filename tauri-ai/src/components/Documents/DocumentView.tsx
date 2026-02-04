@@ -70,6 +70,36 @@ export const DocumentView: React.FC<{ documentId?: string }> = ({ documentId }) 
     return documents.find((d) => d.id === resolvedDocumentId) ?? null;
   }, [documents, resolvedDocumentId]);
 
+  // 懒加载：避免把大文件内容塞进 localStorage；需要展示时再从磁盘读取
+  useEffect(() => {
+    if (!activeDoc) return;
+    if (!activeDoc.path) return;
+    if (activeDoc.contentLoaded !== false) return;
+    if (!isTauri()) return;
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const file = await invoke<{
+          filename: string;
+          mime: string;
+          base64: string;
+          size: number;
+        }>('read_local_file_base64', { path: activeDoc.path });
+        const bytes = Uint8Array.from(atob(file.base64), (c) => c.charCodeAt(0));
+        const content = new TextDecoder('utf-8').decode(bytes);
+        if (cancelled) return;
+        updateDocumentContent(activeDoc.id, content);
+      } catch {
+        // ignore: best-effort
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeDoc?.id, activeDoc?.path, activeDoc?.contentLoaded, updateDocumentContent]);
+
   const modeByDocIdRef = useRef<Record<string, 'preview' | 'edit'>>({});
   const [mode, setMode] = useState<'preview' | 'edit'>('preview');
   const editorRef = useRef<any>(null);

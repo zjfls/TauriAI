@@ -50,7 +50,7 @@ const SortableTab: React.FC<{
         }
       }}
       className={[
-        'group flex items-center gap-2 px-3 py-2 min-w-[120px] max-w-[240px] select-none',
+        'group flex items-center gap-2 px-3 py-2 min-w-[140px] max-w-[320px] select-none',
         'border-b-2 transition-colors cursor-pointer',
         isActive
           ? 'border-blue-500 text-gray-900 dark:text-gray-50 bg-white dark:bg-gray-900'
@@ -68,17 +68,17 @@ const SortableTab: React.FC<{
         )}
       </span>
 
-      <span className="flex-1 truncate text-sm font-medium">{session.title}</span>
+      <span className="flex-1 min-w-0 truncate text-sm font-medium">{session.title}</span>
 
       <span className="flex-shrink-0 flex items-center gap-1">
-        <span className="text-[10px] text-gray-400">{session.apiType === 'responses' ? 'R' : ''}</span>
+        {session.apiType === 'responses' ? <span className="text-[10px] text-gray-400">R</span> : null}
         <button
           type="button"
           className={[
             'rounded p-0.5',
             isActive
-              ? 'text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800'
-              : 'text-gray-400 opacity-0 group-hover:opacity-100 hover:bg-gray-200 dark:hover:bg-gray-800',
+              ? 'inline-flex text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800'
+              : 'hidden group-hover:inline-flex text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-800',
             'disabled:cursor-not-allowed disabled:text-gray-300 dark:disabled:text-gray-600 disabled:hover:bg-transparent',
           ].join(' ')}
           disabled={session.isGenerating || !session.conversationId}
@@ -104,8 +104,8 @@ const SortableTab: React.FC<{
           className={[
             'rounded p-0.5',
             isActive
-              ? 'text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800'
-              : 'text-gray-400 opacity-0 group-hover:opacity-100 hover:bg-gray-200 dark:hover:bg-gray-800',
+              ? 'inline-flex text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800'
+              : 'hidden group-hover:inline-flex text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-800',
             'disabled:cursor-not-allowed disabled:text-gray-300 dark:disabled:text-gray-600 disabled:hover:bg-transparent',
           ].join(' ')}
           disabled={session.isGenerating || !session.conversationId}
@@ -152,8 +152,8 @@ const SortableTab: React.FC<{
           className={[
             'rounded p-0.5',
             isActive
-              ? 'text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800'
-              : 'text-gray-400 opacity-0 group-hover:opacity-100 hover:bg-gray-200 dark:hover:bg-gray-800',
+              ? 'inline-flex text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800'
+              : 'hidden group-hover:inline-flex text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-800',
           ].join(' ')}
           onClick={(e) => {
             e.stopPropagation();
@@ -314,7 +314,7 @@ export const PaneHeader: React.FC<PaneHeaderProps> = ({
       {dockMenu && (
         <div
           ref={dockMenuRef}
-          className="fixed z-[320] w-80 overflow-hidden rounded-md border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900"
+          className="fixed z-[1000] w-80 overflow-hidden rounded-md border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900"
           style={{ left: `${dockMenu.x}px`, top: `${dockMenu.y}px` }}
         >
           <div className="border-b border-gray-200 px-3 py-2 text-xs text-gray-600 dark:border-gray-700 dark:text-gray-300">
