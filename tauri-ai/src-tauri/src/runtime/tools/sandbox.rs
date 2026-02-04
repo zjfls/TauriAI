@@ -81,4 +81,3 @@ fn path_is_within(path: &Path, root: &Path) -> bool {
 fn path_is_within(path: &Path, root: &Path) -> bool {
     path.starts_with(root)
 }
-

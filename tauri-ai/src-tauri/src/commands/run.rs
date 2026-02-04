@@ -12,7 +12,9 @@ use crate::config::ConfigManager;
 use crate::errors::SerializableError;
 use crate::models::ContentPart;
 use crate::runtime::approvals::ApprovalDecision;
-use crate::runtime::task_runner::{retry_turn as retry_turn_impl, run_task as run_task_impl, RunTaskInput};
+use crate::runtime::task_runner::{
+    retry_turn as retry_turn_impl, run_task as run_task_impl, RunTaskInput,
+};
 use crate::runtime::RunState;
 use crate::storage::Database;
 

@@ -393,7 +393,9 @@ fn convert_messages(
             role: role.to_string(),
             tool_call_id,
             tool_calls,
-            reasoning_content: if include_reasoning_content && matches!(msg.role, MessageRole::Assistant) {
+            reasoning_content: if include_reasoning_content
+                && matches!(msg.role, MessageRole::Assistant)
+            {
                 Some(if reinject_reasoning_content {
                     msg.thinking.clone().unwrap_or_default()
                 } else {
@@ -422,7 +424,9 @@ fn is_kimi_provider(config: &ModelConfig) -> bool {
         return false;
     };
     let base_lower = api_base.to_ascii_lowercase();
-    base_lower.contains("moonshot") || base_lower.contains("platform.moonshot") || base_lower.contains("api.moonshot")
+    base_lower.contains("moonshot")
+        || base_lower.contains("platform.moonshot")
+        || base_lower.contains("api.moonshot")
 }
 
 fn should_include_reasoning_content(config: &ModelConfig) -> bool {
@@ -1355,7 +1359,8 @@ mod tests {
             error_message: None,
         };
 
-        let openai_messages = convert_messages(&[message], None, SystemRole::System, true, false, false);
+        let openai_messages =
+            convert_messages(&[message], None, SystemRole::System, true, false, false);
 
         assert_eq!(openai_messages.len(), 1);
         let content_parts = match &openai_messages[0].content {
@@ -1422,7 +1427,8 @@ mod tests {
             error_message: None,
         };
 
-        let openai_messages = convert_messages(&[message], None, SystemRole::System, true, false, false);
+        let openai_messages =
+            convert_messages(&[message], None, SystemRole::System, true, false, false);
 
         let content_parts = match &openai_messages[0].content {
             Some(OpenAiContent::Parts(parts)) => parts,
@@ -1529,7 +1535,8 @@ mod tests {
             error_message: None,
         };
 
-        let openai_messages = convert_messages(&[message], None, SystemRole::System, true, false, false);
+        let openai_messages =
+            convert_messages(&[message], None, SystemRole::System, true, false, false);
 
         let content_parts = match &openai_messages[0].content {
             Some(OpenAiContent::Parts(parts)) => parts,

@@ -7,10 +7,10 @@
 //!
 //! 当前阶段先落地“统一事件流”（`run:event`）承载上述概念，Chat 只是最简单的 `TaskKind::Chat`。
 
-pub mod events;
-pub mod emitter;
 pub mod approvals;
 pub mod context_manager;
+pub mod emitter;
+pub mod events;
 pub mod mcp;
 pub mod run_state;
 pub mod task_runner;

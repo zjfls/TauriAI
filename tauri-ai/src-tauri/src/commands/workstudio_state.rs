@@ -36,16 +36,17 @@ fn read_state_file(path: &PathBuf) -> Result<WorkstudioStateFile, String> {
     if !path.exists() {
         return Ok(WorkstudioStateFile::default());
     }
-    let bytes = std::fs::read(path).map_err(|e| format!("read workstudio_state.json failed: {e}"))?;
+    let bytes =
+        std::fs::read(path).map_err(|e| format!("read workstudio_state.json failed: {e}"))?;
     serde_json::from_slice(&bytes).map_err(|e| format!("parse workstudio_state.json failed: {e}"))
 }
 
 fn write_state_file(path: &PathBuf, data: &WorkstudioStateFile) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("create .tauriai failed: {e}"))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("create .tauriai failed: {e}"))?;
     }
-    let json = serde_json::to_vec_pretty(data).map_err(|e| format!("serialize state failed: {e}"))?;
+    let json =
+        serde_json::to_vec_pretty(data).map_err(|e| format!("serialize state failed: {e}"))?;
     std::fs::write(path, json).map_err(|e| format!("write workstudio_state.json failed: {e}"))
 }
 

@@ -84,4 +84,3 @@ fn prepend_to_path(dir: &Path) -> Result<(), String> {
     env::set_var("PATH", &joined);
     Ok(())
 }
-

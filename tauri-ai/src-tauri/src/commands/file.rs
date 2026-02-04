@@ -3,9 +3,9 @@
 //! Used by the frontend to convert OS-level drag & drop paths into data it can
 //! process with the existing attachment pipeline (images/text/PDF).
 
+use base64::Engine as _;
 use serde::Serialize;
 use std::path::Path;
-use base64::Engine as _;
 use tokio::fs;
 
 const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024; // 20MB
@@ -15,10 +15,39 @@ const MAX_TEXT_BYTES: u64 = 1 * 1024 * 1024; // 1MB
 // Keep in sync with `tauri-ai/src/types/index.ts` and `InputArea.tsx`
 const SUPPORTED_TEXT_EXTENSIONS: &[&str] = &[
     ".tauri.richtxt",
-    ".txt", ".md", ".json", ".yaml", ".yml", ".xml", ".csv", ".log", ".ini", ".toml", ".html",
-    ".css", ".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs", ".mts", ".cts",
-    ".py", ".rs", ".go", ".java", ".c", ".cpp", ".h", ".sh", ".bat", ".sql",
-    ".scss", ".sass", ".less",
+    ".txt",
+    ".md",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".xml",
+    ".csv",
+    ".log",
+    ".ini",
+    ".toml",
+    ".html",
+    ".css",
+    ".js",
+    ".ts",
+    ".jsx",
+    ".tsx",
+    ".mjs",
+    ".cjs",
+    ".mts",
+    ".cts",
+    ".py",
+    ".rs",
+    ".go",
+    ".java",
+    ".c",
+    ".cpp",
+    ".h",
+    ".sh",
+    ".bat",
+    ".sql",
+    ".scss",
+    ".sass",
+    ".less",
     ".lock",
 ];
 
@@ -52,7 +81,10 @@ fn infer_mime_from_filename(filename: &str) -> Option<&'static str> {
     if lower.ends_with(".pdf") {
         return Some("application/pdf");
     }
-    if SUPPORTED_TEXT_EXTENSIONS.iter().any(|ext| lower.ends_with(ext)) {
+    if SUPPORTED_TEXT_EXTENSIONS
+        .iter()
+        .any(|ext| lower.ends_with(ext))
+    {
         return Some("text/plain");
     }
     None
@@ -121,7 +153,9 @@ pub async fn read_local_file_base64(path: String) -> Result<LocalFileBase64, Str
     let max_size = max_size_for_mime(&mime);
     if size > max_size {
         let max_mb = max_size / 1024 / 1024;
-        return Err(format!("文件过大（{size} bytes），请拖拽小于 {max_mb}MB 的文件"));
+        return Err(format!(
+            "文件过大（{size} bytes），请拖拽小于 {max_mb}MB 的文件"
+        ));
     }
 
     let bytes = tokio::fs::read(file_path)
@@ -185,12 +219,13 @@ pub async fn list_local_directory(path: String) -> Result<Vec<LocalDirEntry>, St
     }
 
     // Sort: dirs first, then name (case-insensitive).
-    out.sort_by(|a, b| {
-        match (a.is_dir, b.is_dir) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()),
-        }
+    out.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a
+            .name
+            .to_ascii_lowercase()
+            .cmp(&b.name.to_ascii_lowercase()),
     });
 
     Ok(out)

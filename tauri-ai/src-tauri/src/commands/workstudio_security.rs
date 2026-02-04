@@ -3,7 +3,9 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::storage::Database;
-use crate::workstudio_security::{read_workstudio_security_config, write_workstudio_security_config, WorkstudioSecurityConfig};
+use crate::workstudio_security::{
+    read_workstudio_security_config, write_workstudio_security_config, WorkstudioSecurityConfig,
+};
 
 #[tauri::command]
 pub async fn get_workstudio_security_config(
@@ -33,4 +35,3 @@ pub async fn set_workstudio_security_config(
 
     write_workstudio_security_config(&ws.main_folder, &config)
 }
-

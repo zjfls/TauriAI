@@ -76,7 +76,9 @@ fn repo_skills_dir_from_app(app: &tauri::AppHandle) -> Option<PathBuf> {
 }
 
 fn workstudio_skills_dir(workstudio_main_folder: Option<&str>) -> Option<PathBuf> {
-    let main = workstudio_main_folder.map(|s| s.trim()).filter(|s| !s.is_empty())?;
+    let main = workstudio_main_folder
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())?;
     let p = PathBuf::from(main).join("skills");
     p.is_dir().then_some(p)
 }
@@ -188,7 +190,8 @@ pub async fn create_skill(
             .ok_or_else(|| "workstudio_main_folder 不能为空".to_string())?;
         PathBuf::from(main).join("skills")
     } else {
-        skills_dir_from_config_manager(&config_manager).ok_or_else(|| "无法定位应用 skills 目录".to_string())?
+        skills_dir_from_config_manager(&config_manager)
+            .ok_or_else(|| "无法定位应用 skills 目录".to_string())?
     };
 
     ensure_dir(&base_dir)?;

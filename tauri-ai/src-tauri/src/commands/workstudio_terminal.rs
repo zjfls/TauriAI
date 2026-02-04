@@ -92,4 +92,3 @@ pub async fn workstudio_terminal_close(
     )
     .await
 }
-

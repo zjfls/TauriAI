@@ -123,7 +123,10 @@ pub async fn workstudio_find_files(
             }
             // Cheap ignores
             let pstr = path.to_string_lossy();
-            if pstr.contains("/.git/") || pstr.contains("/node_modules/") || pstr.contains("/target/") {
+            if pstr.contains("/.git/")
+                || pstr.contains("/node_modules/")
+                || pstr.contains("/target/")
+            {
                 continue;
             }
             if !file_name.to_lowercase().contains(&query) && !pstr.to_lowercase().contains(&query) {

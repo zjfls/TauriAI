@@ -7,11 +7,13 @@ use tokio::fs;
 use crate::ai_client::ToolCall;
 use crate::models::SandboxPolicy;
 use crate::runtime::events::RunEvent;
+use crate::runtime::tools::permissions::ToolPermission;
+use crate::runtime::tools::registry::{
+    ToolCallResult, ToolError, ToolExecutionContext, ToolHandler,
+};
 use crate::runtime::tools::sandbox::{
     dedupe_paths, effective_workspace_roots, is_path_under_any_root, normalize_root_for_join,
 };
-use crate::runtime::tools::permissions::ToolPermission;
-use crate::runtime::tools::registry::{ToolCallResult, ToolError, ToolExecutionContext, ToolHandler};
 use crate::runtime::tools::spec::ToolSpec;
 
 pub struct ApplyPatchTool;
@@ -23,8 +25,13 @@ struct ApplyPatchArgs {
 
 #[derive(Debug)]
 enum Hunk {
-    AddFile { path: PathBuf, contents: String },
-    DeleteFile { path: PathBuf },
+    AddFile {
+        path: PathBuf,
+        contents: String,
+    },
+    DeleteFile {
+        path: PathBuf,
+    },
     UpdateFile {
         path: PathBuf,
         move_path: Option<PathBuf>,
@@ -224,9 +231,7 @@ async fn apply_hunks(
         }
         SandboxPolicy::DangerFullAccess | SandboxPolicy::ExternalSandbox { .. } => None,
         SandboxPolicy::ReadOnly => {
-            return Err(ToolError::denied(
-                "当前沙盒策略为 read-only：禁止写入文件",
-            ))
+            return Err(ToolError::denied("当前沙盒策略为 read-only：禁止写入文件"))
         }
     };
 
@@ -414,9 +419,7 @@ fn ensure_writable(
             }
             Ok(())
         }
-        SandboxPolicy::ReadOnly => Err(ToolError::denied(
-            "当前沙盒策略为 read-only：禁止写入文件",
-        )),
+        SandboxPolicy::ReadOnly => Err(ToolError::denied("当前沙盒策略为 read-only：禁止写入文件")),
         SandboxPolicy::DangerFullAccess | SandboxPolicy::ExternalSandbox { .. } => Ok(()),
     }
 }
@@ -717,9 +720,15 @@ fn parse_usize_from_chars<I: Iterator<Item = char>>(
         }
         any = true;
         chars.next();
-        n = n.saturating_mul(10).saturating_add((c as u8 - b'0') as usize);
+        n = n
+            .saturating_mul(10)
+            .saturating_add((c as u8 - b'0') as usize);
     }
-    if any { Some(n) } else { None }
+    if any {
+        Some(n)
+    } else {
+        None
+    }
 }
 
 fn consume_spaces<I: Iterator<Item = char>>(chars: &mut std::iter::Peekable<I>) {
@@ -946,7 +955,14 @@ fn seek_sequence(
     }
 
     // 1) Exact
-    scan(&mut candidates, lines, pattern, search_start, max_start, |a, b| a == b);
+    scan(
+        &mut candidates,
+        lines,
+        pattern,
+        search_start,
+        max_start,
+        |a, b| a == b,
+    );
     if candidates.is_empty() {
         // 2) trim_end
         scan(
@@ -1086,7 +1102,9 @@ mod tests {
         let dir = tempdir().expect("tmp");
         let base = dir.path();
         let file_path = base.join("c.txt");
-        fs::write(&file_path, "hello\nworld\n").await.expect("write");
+        fs::write(&file_path, "hello\nworld\n")
+            .await
+            .expect("write");
 
         let patch = r#"*** Begin Patch
 *** Update File: c.txt
@@ -1108,7 +1126,9 @@ mod tests {
         let dir = tempdir().expect("tmp");
         let base = dir.path();
         let file_path = base.join("d.txt");
-        fs::write(&file_path, "hello\nworld\n").await.expect("write");
+        fs::write(&file_path, "hello\nworld\n")
+            .await
+            .expect("write");
 
         // Heading after the second @@ is a hint in unified diff; it might not exist verbatim.
         let patch = r#"*** Begin Patch

@@ -1,6 +1,7 @@
 // Module declarations
-pub mod ai_client;
 pub mod agents;
+pub mod ai_client;
+pub mod bundled_tools;
 pub mod commands;
 pub mod config;
 pub mod errors;
@@ -10,43 +11,36 @@ pub mod runtime;
 pub mod skills;
 pub mod storage;
 pub mod tray;
-pub mod bundled_tools;
 pub mod workstudio_security;
 
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use commands::{
-    abort_run, clone_conversation, create_conversation, delete_conversation, delete_messages_from,
-    fetch_provider_models, generate_title, get_app_config, get_conversations, get_messages, get_turn_debug_info,
-    list_local_directory, read_local_file_base64, respond_approval, run_task, save_app_config, test_connection,
-    delete_mcp_server, delete_mcp_set, list_mcp_server_tools, list_mcp_servers, list_mcp_sets,
-    set_agent_mcp_set, test_mcp_server, upsert_mcp_server, upsert_mcp_set,
-    list_skills, create_skill,
-    get_format_prompt,
-    get_mermaid_svg_cache, set_mermaid_svg_cache,
-    update_conversation_metadata, write_local_text_file,
-    update_conversation_title, list_pty_sessions, close_pty_session,
-    ensure_workstudio_for_conversation, get_workstudio, add_workstudio_folder, create_workstudio,
-    set_workstudio_main_folder, remove_workstudio_folder, workstudio_find_files,
-    get_workstudio_ui_state, set_workstudio_ui_state,
-    get_workstudio_security_config, set_workstudio_security_config,
+    abort_run, add_workstudio_folder, clipboard_write_png_base64, clone_conversation,
+    close_pty_session, create_conversation, create_skill, create_workstudio, delete_conversation,
+    delete_mcp_server, delete_mcp_set, delete_messages_from, ensure_workstudio_for_conversation,
+    fetch_provider_models, generate_title, get_app_config, get_conversations, get_format_prompt,
+    get_mermaid_svg_cache, get_messages, get_turn_debug_info, get_workstudio,
+    get_workstudio_security_config, get_workstudio_ui_state, list_local_directory,
+    list_mcp_server_tools, list_mcp_servers, list_mcp_sets, list_pty_sessions, list_skills,
+    open_devtools_current_window, read_local_file_base64, remove_workstudio_folder,
+    respond_approval, retry_turn, run_task, save_app_config, set_agent_mcp_set,
+    set_mermaid_svg_cache, set_workstudio_main_folder, set_workstudio_security_config,
+    set_workstudio_ui_state, terminal_close, terminal_create, terminal_read, terminal_read_base64,
+    terminal_write, test_connection, test_mcp_server, update_conversation_metadata,
+    update_conversation_title, upsert_mcp_server, upsert_mcp_set, workstudio_find_files,
     workstudio_terminal_close, workstudio_terminal_create, workstudio_terminal_read,
-    workstudio_terminal_read_base64,
-    workstudio_terminal_write,
-    terminal_close, terminal_create, terminal_read, terminal_read_base64, terminal_write,
-    retry_turn,
-    open_devtools_current_window,
-    clipboard_write_png_base64,
+    workstudio_terminal_read_base64, workstudio_terminal_write, write_local_text_file,
 };
-use runtime::RunState;
 use config::ConfigManager;
+use runtime::RunState;
+use skills::installer::install_bundled_skills;
+use skills::watcher::{SkillsWatcher, SkillsWatcherState};
 use storage::Database;
-use tauri::{Emitter, Manager, Url};
 use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu};
 use tauri::WebviewUrl;
-use skills::watcher::{SkillsWatcher, SkillsWatcherState};
-use skills::installer::install_bundled_skills;
+use tauri::{Emitter, Manager, Url};
 
 #[cfg(all(debug_assertions, target_os = "macos"))]
 fn schedule_set_dev_dock_icon(app: &tauri::AppHandle) {
@@ -116,13 +110,8 @@ pub fn run() {
             // Then inject our "Open File" entry into the File submenu.
             let menu = Menu::default(app)?;
 
-            let open_file = MenuItem::with_id(
-                app,
-                "open_file",
-                "打开文件…",
-                true,
-                Some("CmdOrCtrl+O"),
-            )?;
+            let open_file =
+                MenuItem::with_id(app, "open_file", "打开文件…", true, Some("CmdOrCtrl+O"))?;
 
             let new_richtxt = MenuItem::with_id(
                 app,
@@ -142,13 +131,19 @@ pub fn run() {
             )?;
 
             // View: open web/terminal as tabs inside the workspace (not standalone windows).
-            let open_web_tab = MenuItem::with_id(app, "open_web_tab", "打开网页标签", true, None::<&str>)?;
+            let open_web_tab =
+                MenuItem::with_id(app, "open_web_tab", "打开网页标签", true, None::<&str>)?;
             let open_terminal_tab =
                 MenuItem::with_id(app, "open_terminal_tab", "打开终端标签", true, None::<&str>)?;
             let view_separator = PredefinedMenuItem::separator(app)?;
             #[cfg(debug_assertions)]
-            let open_devtools =
-                MenuItem::with_id(app, "open_devtools", "打开开发者工具", true, Some("CmdOrCtrl+Alt+I"))?;
+            let open_devtools = MenuItem::with_id(
+                app,
+                "open_devtools",
+                "打开开发者工具",
+                true,
+                Some("CmdOrCtrl+Alt+I"),
+            )?;
 
             // Find existing "File" submenu and insert at the top. If not found (e.g. Linux),
             // create one.
@@ -167,7 +162,12 @@ pub fn run() {
             if let Some(file) = file_submenu {
                 file.insert_items(&[&new_richtxt, &open_file, &test_window, &separator], 0)?;
             } else {
-                let file = Submenu::with_items(app, "File", true, &[&new_richtxt, &open_file, &test_window])?;
+                let file = Submenu::with_items(
+                    app,
+                    "File",
+                    true,
+                    &[&new_richtxt, &open_file, &test_window],
+                )?;
                 // On macOS, index 0 is the app menu. Insert after it.
                 let pos = if cfg!(target_os = "macos") { 1 } else { 0 };
                 menu.insert(&file, pos)?;
@@ -199,7 +199,8 @@ pub fn run() {
                     &[&open_devtools, &open_web_tab, &open_terminal_tab],
                 )?;
                 #[cfg(not(debug_assertions))]
-                let view = Submenu::with_items(app, "View", true, &[&open_web_tab, &open_terminal_tab])?;
+                let view =
+                    Submenu::with_items(app, "View", true, &[&open_web_tab, &open_terminal_tab])?;
                 // Insert after File submenu (best-effort). On macOS index 0 is app menu.
                 let pos = if cfg!(target_os = "macos") { 2 } else { 1 };
                 menu.insert(&view, pos)?;
@@ -277,10 +278,8 @@ pub fn run() {
                     // On Windows, window creation can deadlock inside event handlers; use a new thread.
                     let handle = app.clone();
                     std::thread::spawn(move || {
-                        let label = format!(
-                            "view-window-test-{}",
-                            chrono::Utc::now().timestamp_millis()
-                        );
+                        let label =
+                            format!("view-window-test-{}", chrono::Utc::now().timestamp_millis());
 
                         let url = if cfg!(debug_assertions) {
                             handle
@@ -290,10 +289,8 @@ pub fn run() {
                                 .clone()
                                 .and_then(|base| {
                                     let base = base.as_str().trim_end_matches('/').to_string();
-                                    Url::parse(&format!(
-                                        "{base}/?view=window_test&standalone=1"
-                                    ))
-                                    .ok()
+                                    Url::parse(&format!("{base}/?view=window_test&standalone=1"))
+                                        .ok()
                                 })
                                 .unwrap_or_else(|| {
                                     Url::parse("tauri://localhost/?view=window_test&standalone=1")
@@ -309,14 +306,10 @@ pub fn run() {
                             _ => WebviewUrl::CustomProtocol(url),
                         };
 
-                        let _ = tauri::WebviewWindowBuilder::new(
-                            &handle,
-                            label,
-                            webview_url,
-                        )
-                        .title("Window Test")
-                        .inner_size(1170.0, 910.0)
-                        .build();
+                        let _ = tauri::WebviewWindowBuilder::new(&handle, label, webview_url)
+                            .title("Window Test")
+                            .inner_size(1170.0, 910.0)
+                            .build();
                     });
                 }
                 _ => {}
@@ -435,13 +428,13 @@ pub fn run() {
                 // 在开发模式下可通过通用设置 / 环境变量打开 DevTools（默认关闭）
                 #[cfg(debug_assertions)]
                 {
-                    let env_override = std::env::var("TAURIAI_OPEN_DEVTOOLS")
-                        .ok()
-                        .and_then(|v| match v.trim().to_ascii_lowercase().as_str() {
+                    let env_override = std::env::var("TAURIAI_OPEN_DEVTOOLS").ok().and_then(|v| {
+                        match v.trim().to_ascii_lowercase().as_str() {
                             "1" | "true" | "yes" | "on" => Some(true),
                             "0" | "false" | "no" | "off" => Some(false),
                             _ => None,
-                        });
+                        }
+                    });
 
                     let config_value = app
                         .try_state::<Arc<ConfigManager>>()

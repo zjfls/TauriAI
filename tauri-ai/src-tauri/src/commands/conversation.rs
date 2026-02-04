@@ -1,4 +1,4 @@
-﻿//! Conversation commands for TauriAI
+//! Conversation commands for TauriAI
 
 use crate::models::{
     Conversation, Message, MessageRole, MessageStatus, ModelConfig, ModelParameters,
@@ -25,7 +25,13 @@ async fn collect_streamed_chat(
         let config = config.clone();
         async move {
             client
-                .chat_stream(messages, &config, None, tx, crate::ai_client::StreamOptions::default())
+                .chat_stream(
+                    messages,
+                    &config,
+                    None,
+                    tx,
+                    crate::ai_client::StreamOptions::default(),
+                )
                 .await
         }
     });
@@ -49,9 +55,7 @@ async fn collect_streamed_chat(
                 break;
             }
             StreamEvent::DoneWithDebug {
-                content,
-                thinking,
-                ..
+                content, thinking, ..
             } => {
                 final_content = Some(content);
                 final_thinking = thinking;
@@ -256,32 +260,32 @@ pub async fn generate_title(
         .and_then(|a| config.resolve_agent(&a.name))
         .ok_or("No agent configured")?;
 
-	    let model_config = ModelConfig {
-	        id: format!("{}/{}", provider.name, model.name),
-	        name: model.name.clone(),
-	        provider: provider.provider_type.to_client_str().to_string(),
-	        api_base: Some(provider.api_base.clone()),
-	        api_key: provider.api_key.clone(),
-	        model: model.name.clone(),
-	        parameters: ModelParameters {
-	            temperature: Some(model.temperature),
-	            max_tokens: model.max_tokens,
-	            top_p: model.top_p,
-	            frequency_penalty: None,
-	            presence_penalty: None,
-	            system_prompt: None,
-	        },
-	        thinking_level: None, // Don't use thinking for title generation
-	        thinking_budget_tokens: None,
-	        vision_enabled: false, // Don't need vision for title generation
-	        web_search_enabled: false, // Don't enable web search for title generation
-	        max_images: None, // Not needed for title generation
-	        use_reasoning_effort: None, // Not needed for title generation
-	        retry_attempts: None,
-	        resume_partial_output: false,
-	        debug_sse: false,
-	        reinject_reasoning_content: false,
-	    };
+    let model_config = ModelConfig {
+        id: format!("{}/{}", provider.name, model.name),
+        name: model.name.clone(),
+        provider: provider.provider_type.to_client_str().to_string(),
+        api_base: Some(provider.api_base.clone()),
+        api_key: provider.api_key.clone(),
+        model: model.name.clone(),
+        parameters: ModelParameters {
+            temperature: Some(model.temperature),
+            max_tokens: model.max_tokens,
+            top_p: model.top_p,
+            frequency_penalty: None,
+            presence_penalty: None,
+            system_prompt: None,
+        },
+        thinking_level: None, // Don't use thinking for title generation
+        thinking_budget_tokens: None,
+        vision_enabled: false,      // Don't need vision for title generation
+        web_search_enabled: false,  // Don't enable web search for title generation
+        max_images: None,           // Not needed for title generation
+        use_reasoning_effort: None, // Not needed for title generation
+        retry_attempts: None,
+        resume_partial_output: false,
+        debug_sse: false,
+        reinject_reasoning_content: false,
+    };
 
     let client = get_client(&model_config.provider).map_err(|e| e.to_string())?;
     let content = messages
@@ -365,8 +369,8 @@ mod tests {
         }
     }
 
-	    fn dummy_model_config() -> ModelConfig {
-	        ModelConfig {
+    fn dummy_model_config() -> ModelConfig {
+        ModelConfig {
             id: "test/test".to_string(),
             name: "test".to_string(),
             provider: "openai_compatible".to_string(),
@@ -385,14 +389,14 @@ mod tests {
             thinking_budget_tokens: None,
             vision_enabled: false,
             web_search_enabled: false,
-	            max_images: None,
-	            use_reasoning_effort: None,
-	            retry_attempts: None,
-	            resume_partial_output: false,
-	            debug_sse: false,
-	            reinject_reasoning_content: false,
-	        }
-	    }
+            max_images: None,
+            use_reasoning_effort: None,
+            retry_attempts: None,
+            resume_partial_output: false,
+            debug_sse: false,
+            reinject_reasoning_content: false,
+        }
+    }
 
     #[tokio::test]
     async fn collect_streamed_chat_prefers_final_content() {
@@ -409,8 +413,9 @@ mod tests {
             ],
         });
 
-        let (content, thinking) =
-            collect_streamed_chat(client, vec![], dummy_model_config()).await.unwrap();
+        let (content, thinking) = collect_streamed_chat(client, vec![], dummy_model_config())
+            .await
+            .unwrap();
         assert_eq!(content, "ab");
         assert!(thinking.is_none());
     }
@@ -426,8 +431,9 @@ mod tests {
             }],
         });
 
-        let (content, thinking) =
-            collect_streamed_chat(client, vec![], dummy_model_config()).await.unwrap();
+        let (content, thinking) = collect_streamed_chat(client, vec![], dummy_model_config())
+            .await
+            .unwrap();
         assert_eq!(content, "标题");
         assert!(thinking.is_none());
     }

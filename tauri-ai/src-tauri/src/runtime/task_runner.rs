@@ -1008,7 +1008,10 @@ impl<'a> TurnLoop<'a> {
         };
 
         // OnFailure: first attempt never prompts; only retry will.
-        if matches!(self.approval_policy, AskForApproval::OnFailure) && !force_prompt && !self.chat_mode {
+        if matches!(self.approval_policy, AskForApproval::OnFailure)
+            && !force_prompt
+            && !self.chat_mode
+        {
             needs_prompt = false;
         }
 
@@ -1035,11 +1038,7 @@ impl<'a> TurnLoop<'a> {
             } else {
                 self.sandbox_policy.clone()
             };
-            return (
-                false,
-                ApprovalDecision::Approved,
-                Some(sandbox),
-            );
+            return (false, ApprovalDecision::Approved, Some(sandbox));
         }
 
         let approval_key = Self::approval_cache_key(call);
@@ -1625,7 +1624,9 @@ impl<'a> TurnLoop<'a> {
 
                         // 2) OnFailure: if denied by sandbox, ask to retry with escalation.
                         // Chat mode: do not escalate; rely on sandbox deny results directly.
-                        if matches!(self.approval_policy, AskForApproval::OnFailure) && !self.chat_mode {
+                        if matches!(self.approval_policy, AskForApproval::OnFailure)
+                            && !self.chat_mode
+                        {
                             if let Err(e) = &exec {
                                 let web_search_needs_network = call.name == "web_search"
                                     && !sandbox_policy_for_call.has_full_network_access();
@@ -1670,7 +1671,8 @@ impl<'a> TurnLoop<'a> {
 
                                     match decision2 {
                                         ApprovalDecision::Abort => {
-                                            let msg = "TOOL_ABORTED: 用户终止了工具提权审批".to_string();
+                                            let msg =
+                                                "TOOL_ABORTED: 用户终止了工具提权审批".to_string();
                                             aborted_in_tools =
                                                 Some("用户终止了工具提权审批".to_string());
                                             if let Some((status, reason)) = approval_record.take() {
@@ -2843,16 +2845,46 @@ pub async fn retry_turn(
                     .cloned()
                     .filter(|b| {
                         let (tid, idx) = match b {
-                            MessageBlock::Text { turn_id, turn_index, .. }
-                            | MessageBlock::Thinking { turn_id, turn_index, .. }
-                            | MessageBlock::ToolCall { turn_id, turn_index, .. }
-                            | MessageBlock::ToolResult { turn_id, turn_index, .. }
-                            | MessageBlock::Approval { turn_id, turn_index, .. }
-                            | MessageBlock::Error { turn_id, turn_index, .. }
-                            | MessageBlock::WebSearch { turn_id, turn_index, .. }
-                            | MessageBlock::Unknown { turn_id, turn_index, .. } => {
-                                (turn_id.as_ref(), *turn_index)
+                            MessageBlock::Text {
+                                turn_id,
+                                turn_index,
+                                ..
                             }
+                            | MessageBlock::Thinking {
+                                turn_id,
+                                turn_index,
+                                ..
+                            }
+                            | MessageBlock::ToolCall {
+                                turn_id,
+                                turn_index,
+                                ..
+                            }
+                            | MessageBlock::ToolResult {
+                                turn_id,
+                                turn_index,
+                                ..
+                            }
+                            | MessageBlock::Approval {
+                                turn_id,
+                                turn_index,
+                                ..
+                            }
+                            | MessageBlock::Error {
+                                turn_id,
+                                turn_index,
+                                ..
+                            }
+                            | MessageBlock::WebSearch {
+                                turn_id,
+                                turn_index,
+                                ..
+                            }
+                            | MessageBlock::Unknown {
+                                turn_id,
+                                turn_index,
+                                ..
+                            } => (turn_id.as_ref(), *turn_index),
                         };
 
                         let Some(tid) = tid else {
@@ -3122,8 +3154,7 @@ async fn run_task_inner(
     //
     // Chat mode in this project can also run tools (under a stricter sandbox), so we don't
     // tie this solely to AgentType::Tool.
-    let workspace_enabled =
-        tools_enabled && agent.workspace_support.unwrap_or(true);
+    let workspace_enabled = tools_enabled && agent.workspace_support.unwrap_or(true);
     let (workstudio, default_workdir) = if workspace_enabled {
         let ws = {
             let db = db.lock().await;
@@ -3151,18 +3182,19 @@ async fn run_task_inner(
 
     // Workstudio 域安全配置（存储在 main_folder/.tauriai/security.json）
     // 分层策略采用 OR：只要任一层允许即可（这里体现为对可写目录/信任命令做并集叠加）。
-    let workstudio_security = workstudio.as_ref().and_then(|ws| {
-        match read_workstudio_security_config(&ws.main_folder) {
-            Ok(cfg) => Some(cfg),
-            Err(err) => {
-                eprintln!(
-                    "[security] read workstudio security config failed ({}): {err}",
-                    ws.main_folder
-                );
-                None
-            }
-        }
-    });
+    let workstudio_security =
+        workstudio.as_ref().and_then(
+            |ws| match read_workstudio_security_config(&ws.main_folder) {
+                Ok(cfg) => Some(cfg),
+                Err(err) => {
+                    eprintln!(
+                        "[security] read workstudio security config failed ({}): {err}",
+                        ws.main_folder
+                    );
+                    None
+                }
+            },
+        );
 
     let base_security_policy = config
         .security
@@ -3771,7 +3803,9 @@ async fn run_task_inner(
                                     m.thinking = None;
                                     if let Some(meta) = m.meta.as_mut() {
                                         if let Some(blocks) = meta.blocks.as_mut() {
-                                            blocks.retain(|b| !matches!(b, MessageBlock::Thinking { .. }));
+                                            blocks.retain(|b| {
+                                                !matches!(b, MessageBlock::Thinking { .. })
+                                            });
                                         }
                                     }
                                 }
@@ -4237,7 +4271,11 @@ async fn stream_one_turn(
         let attempt_messages = messages.clone();
 
         let options = crate::ai_client::StreamOptions {
-            resume_state: if resume_enabled { turn_state.clone() } else { None },
+            resume_state: if resume_enabled {
+                turn_state.clone()
+            } else {
+                None
+            },
         };
 
         let stream_handle = tokio::spawn(async move {
@@ -4387,7 +4425,11 @@ async fn stream_one_turn(
                 delay_ms = delay_ms.min(MAX_DELAY_MS);
 
                 // 对齐 Codex：提供类似 “Reconnecting... x/y” 的可见提示（同时保留现有 Debug 逻辑）
-                let prefix = if reconnecting { "重连中" } else { "重试中" };
+                let prefix = if reconnecting {
+                    "重连中"
+                } else {
+                    "重试中"
+                };
                 // 注意：attempt 是当前“已发生失败”的次数（1-based）。
                 // 这里展示 attempt/max_attempts，让第一次失败也能显示 1/N，避免从 2/N 开始跳号。
                 emitter.emit(RunEvent::BlockDelta {
@@ -4517,27 +4559,27 @@ mod tests {
         }
     }
 
-	    fn test_model_config() -> crate::models::ModelConfig {
-	        crate::models::ModelConfig {
-	            id: "test".to_string(),
-	            name: "test".to_string(),
-	            provider: "openai".to_string(),
-	            api_base: Some("http://127.0.0.1:0".to_string()),
-	            api_key: Some("test".to_string()),
-	            model: "test".to_string(),
-	            parameters: crate::models::ModelParameters::default(),
-	            thinking_level: None,
-	            thinking_budget_tokens: None,
-	            vision_enabled: false,
-	            web_search_enabled: false,
-	            max_images: None,
-	            use_reasoning_effort: None,
-	            retry_attempts: None,
-	            resume_partial_output: false,
-	            debug_sse: false,
-	            reinject_reasoning_content: false,
-	        }
-	    }
+    fn test_model_config() -> crate::models::ModelConfig {
+        crate::models::ModelConfig {
+            id: "test".to_string(),
+            name: "test".to_string(),
+            provider: "openai".to_string(),
+            api_base: Some("http://127.0.0.1:0".to_string()),
+            api_key: Some("test".to_string()),
+            model: "test".to_string(),
+            parameters: crate::models::ModelParameters::default(),
+            thinking_level: None,
+            thinking_budget_tokens: None,
+            vision_enabled: false,
+            web_search_enabled: false,
+            max_images: None,
+            use_reasoning_effort: None,
+            retry_attempts: None,
+            resume_partial_output: false,
+            debug_sse: false,
+            reinject_reasoning_content: false,
+        }
+    }
 
     fn test_user_message() -> crate::models::Message {
         crate::models::Message {
@@ -4561,20 +4603,20 @@ mod tests {
         let (abort_tx, mut abort_rx) = mpsc::channel(1);
         let _keep_abort = abort_tx;
 
-	        let result = stream_one_turn(
-	            client,
-	            test_model_config(),
-	            None,
-	            vec![test_user_message()],
-	            &mut emitter,
-	            "task",
-	            "turn",
-	            "assistant",
-	            None,
-	            &mut abort_rx,
-	            3,
-	        )
-	        .await;
+        let result = stream_one_turn(
+            client,
+            test_model_config(),
+            None,
+            vec![test_user_message()],
+            &mut emitter,
+            "task",
+            "turn",
+            "assistant",
+            None,
+            &mut abort_rx,
+            3,
+        )
+        .await;
 
         match result {
             TurnStreamResult::Error { error, .. } => {
@@ -4596,20 +4638,20 @@ mod tests {
         let (abort_tx, mut abort_rx) = mpsc::channel(1);
         let _keep_abort = abort_tx;
 
-	        let result = stream_one_turn(
-	            client,
-	            test_model_config(),
-	            None,
-	            vec![test_user_message()],
-	            &mut emitter,
-	            "task",
-	            "turn",
-	            "assistant",
-	            None,
-	            &mut abort_rx,
-	            3,
-	        )
-	        .await;
+        let result = stream_one_turn(
+            client,
+            test_model_config(),
+            None,
+            vec![test_user_message()],
+            &mut emitter,
+            "task",
+            "turn",
+            "assistant",
+            None,
+            &mut abort_rx,
+            3,
+        )
+        .await;
 
         match result {
             TurnStreamResult::Final { content, .. } => {

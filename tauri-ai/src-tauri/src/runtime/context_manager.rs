@@ -58,7 +58,9 @@ impl ContextManager {
 
     pub fn auto_compact_threshold_percent(&self) -> u8 {
         match &self.policy {
-            ContextPolicyConfig::NormalCompact(cfg) => cfg.auto_compact_threshold_percent.unwrap_or(85),
+            ContextPolicyConfig::NormalCompact(cfg) => {
+                cfg.auto_compact_threshold_percent.unwrap_or(85)
+            }
             _ => 100,
         }
     }
@@ -101,7 +103,9 @@ impl ContextManager {
 
     pub fn should_auto_compact(&self) -> bool {
         match &self.policy {
-            ContextPolicyConfig::NormalCompact(cfg) => cfg.enabled && cfg.compact_enabled && cfg.auto_compact,
+            ContextPolicyConfig::NormalCompact(cfg) => {
+                cfg.enabled && cfg.compact_enabled && cfg.auto_compact
+            }
             _ => false,
         }
     }
@@ -547,18 +551,20 @@ pub async fn run_normal_compact(
     let compacted_until = eligible
         .get(split.saturating_sub(1))
         .cloned()
-        .unwrap_or_else(|| eligible.first().cloned().unwrap_or_else(|| Message {
-            id: uuid::Uuid::new_v4().to_string(),
-            conversation_id: conversation_id.to_string(),
-            role: MessageRole::Assistant,
-            content: String::new(),
-            content_parts: Vec::new(),
-            thinking: None,
-            meta: None,
-            created_at: Utc::now(),
-            status: MessageStatus::Success,
-            error_message: None,
-        }));
+        .unwrap_or_else(|| {
+            eligible.first().cloned().unwrap_or_else(|| Message {
+                id: uuid::Uuid::new_v4().to_string(),
+                conversation_id: conversation_id.to_string(),
+                role: MessageRole::Assistant,
+                content: String::new(),
+                content_parts: Vec::new(),
+                thinking: None,
+                meta: None,
+                created_at: Utc::now(),
+                status: MessageStatus::Success,
+                error_message: None,
+            })
+        });
 
     let summary_message = Message {
         id: uuid::Uuid::new_v4().to_string(),

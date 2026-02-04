@@ -11,7 +11,9 @@ use tokio::time::timeout;
 
 use crate::ai_client::ToolCall;
 use crate::runtime::events::RunEvent;
-use crate::runtime::tools::registry::{ToolCallResult, ToolError, ToolExecutionContext, ToolHandler};
+use crate::runtime::tools::registry::{
+    ToolCallResult, ToolError, ToolExecutionContext, ToolHandler,
+};
 use crate::runtime::tools::spec::ToolSpec;
 
 const MAX_LINE_LENGTH: usize = 500;
@@ -337,14 +339,12 @@ impl ToolHandler for RgTool {
             return Err(ToolError::invalid("limit 必须大于 0"));
         }
 
-        let search_root = if let Some(path) = args.path.as_ref().filter(|s| !s.trim().is_empty())
-        {
+        let search_root = if let Some(path) = args.path.as_ref().filter(|s| !s.trim().is_empty()) {
             resolve_path(ctx, path)?
         } else if let Some(default_workdir) = ctx.default_workdir.as_ref() {
             default_workdir.clone()
         } else {
-            std::env::current_dir()
-                .map_err(|e| ToolError::new(format!("无法获取当前目录: {e}")))? 
+            std::env::current_dir().map_err(|e| ToolError::new(format!("无法获取当前目录: {e}")))?
         };
 
         fs::metadata(&search_root)
@@ -389,8 +389,8 @@ fn resolve_path(ctx: &ToolExecutionContext<'_>, input: &str) -> Result<PathBuf, 
     if let Some(default_workdir) = ctx.default_workdir.as_ref() {
         return Ok(default_workdir.join(path));
     }
-    let cwd = std::env::current_dir()
-        .map_err(|e| ToolError::new(format!("无法获取当前目录: {e}")))?;
+    let cwd =
+        std::env::current_dir().map_err(|e| ToolError::new(format!("无法获取当前目录: {e}")))?;
     Ok(cwd.join(path))
 }
 
@@ -505,8 +505,7 @@ async fn read_block_with_numbers(
                 i -= 1;
 
                 if effective_indents[iu] == min_indent && !options.include_siblings {
-                    let allow_header_comment =
-                        options.include_header && collected[iu].is_comment();
+                    let allow_header_comment = options.include_header && collected[iu].is_comment();
                     let can_take_line = allow_header_comment || i_counter_min_indent == 0;
 
                     if can_take_line {
@@ -710,7 +709,8 @@ async fn collect_entries(
         while let Some(entry) = read_dir
             .next_entry()
             .await
-            .map_err(|e| ToolError::new(format!("读取目录失败: {e}")))? {
+            .map_err(|e| ToolError::new(format!("读取目录失败: {e}")))?
+        {
             let file_type = entry
                 .file_type()
                 .await

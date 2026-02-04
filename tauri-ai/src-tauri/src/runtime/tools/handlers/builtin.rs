@@ -3,7 +3,9 @@ use async_trait::async_trait;
 use crate::ai_client::ToolCall;
 
 use crate::runtime::events::RunEvent;
-use crate::runtime::tools::registry::{ToolCallResult, ToolError, ToolExecutionContext, ToolHandler};
+use crate::runtime::tools::registry::{
+    ToolCallResult, ToolError, ToolExecutionContext, ToolHandler,
+};
 use crate::runtime::tools::spec::ToolSpec;
 
 pub struct EchoTool;

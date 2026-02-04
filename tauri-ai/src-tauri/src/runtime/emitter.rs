@@ -11,7 +11,11 @@ pub struct RunEmitter {
 }
 
 impl RunEmitter {
-    pub fn new(app: AppHandle, conversation_id: impl Into<String>, run_id: impl Into<String>) -> Self {
+    pub fn new(
+        app: AppHandle,
+        conversation_id: impl Into<String>,
+        run_id: impl Into<String>,
+    ) -> Self {
         Self {
             app,
             conversation_id: conversation_id.into(),
@@ -42,4 +46,3 @@ impl RunEmitter {
         );
     }
 }
-

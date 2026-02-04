@@ -94,7 +94,11 @@ pub fn build_model_config(
                 None
             },
             max_tokens: model.max_tokens,
-            top_p: if model.top_p_enabled { model.top_p } else { None },
+            top_p: if model.top_p_enabled {
+                model.top_p
+            } else {
+                None
+            },
             frequency_penalty: None,
             presence_penalty: None,
             system_prompt: None,

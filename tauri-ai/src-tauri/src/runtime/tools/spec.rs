@@ -84,8 +84,7 @@ impl ToolSet {
     /// 显式白名单判断：仅当 toolset 为 AllowList 且包含该工具时返回 true。
     /// 用于“实验/持久”工具的显式启用，避免默认 allow_all 污染提示词。
     pub fn contains_explicit(&self, tool_name: &str) -> bool {
-        matches!(self.mode, ToolSetMode::AllowList)
-            && self.tools.iter().any(|t| t == tool_name)
+        matches!(self.mode, ToolSetMode::AllowList) && self.tools.iter().any(|t| t == tool_name)
     }
 }
 

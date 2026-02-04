@@ -58,7 +58,8 @@ pub async fn clipboard_write_png_base64(png_base64: String) -> Result<(), String
         }
 
         let bytes = rgba.into_raw();
-        let mut clipboard = arboard::Clipboard::new().map_err(|e| format!("初始化剪贴板失败: {e}"))?;
+        let mut clipboard =
+            arboard::Clipboard::new().map_err(|e| format!("初始化剪贴板失败: {e}"))?;
         clipboard
             .set_image(arboard::ImageData {
                 width: w as usize,
@@ -74,4 +75,3 @@ pub async fn clipboard_write_png_base64(png_base64: String) -> Result<(), String
 
     Ok(())
 }
-

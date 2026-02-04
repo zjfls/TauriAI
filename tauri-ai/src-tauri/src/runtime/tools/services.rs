@@ -252,13 +252,9 @@ impl PtyService {
         };
 
         let mut inner = self.inner.lock().await;
-        inner.sessions.insert(
-            session_id,
-            PtySessionEntry {
-                session,
-                meta,
-            },
-        );
+        inner
+            .sessions
+            .insert(session_id, PtySessionEntry { session, meta });
         Ok(session_id)
     }
 
@@ -271,7 +267,10 @@ impl PtyService {
 
     pub async fn get_session_meta(&self, session_id: i32) -> Option<PtySessionMeta> {
         let inner = self.inner.lock().await;
-        inner.sessions.get(&session_id).map(|entry| entry.meta.clone())
+        inner
+            .sessions
+            .get(&session_id)
+            .map(|entry| entry.meta.clone())
     }
 
     pub async fn remove_session(&self, session_id: i32) -> Option<Arc<Mutex<PtySession>>> {

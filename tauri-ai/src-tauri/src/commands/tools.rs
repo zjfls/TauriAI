@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-use crate::runtime::RunState;
 use crate::runtime::tools::services::PtySessionInfo;
+use crate::runtime::RunState;
 
 #[tauri::command]
 pub async fn list_pty_sessions(
@@ -19,5 +19,7 @@ pub async fn close_pty_session(
     session_id: i32,
     run_state: tauri::State<'_, Arc<RunState>>,
 ) -> Result<bool, String> {
-    Ok(run_state.close_pty_session(&conversation_id, session_id).await)
+    Ok(run_state
+        .close_pty_session(&conversation_id, session_id)
+        .await)
 }

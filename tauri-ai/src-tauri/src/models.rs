@@ -859,7 +859,10 @@ pub enum ContextPolicyConfig {
     NormalCompact(NormalCompactPolicyConfig),
     /// Custom strategy name + JSON params for forward compatibility.
     #[serde(rename_all = "camelCase")]
-    Custom { name: String, params: serde_json::Value },
+    Custom {
+        name: String,
+        params: serde_json::Value,
+    },
 }
 
 impl Default for ContextPolicyConfig {
@@ -1476,7 +1479,11 @@ pub enum SandboxPolicy {
     #[serde(rename = "workspace-write")]
     WorkspaceWrite {
         /// Additional writable roots (beyond workspace roots).
-        #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "writableRoots")]
+        #[serde(
+            default,
+            skip_serializing_if = "Vec::is_empty",
+            rename = "writableRoots"
+        )]
         writable_roots: Vec<String>,
 
         /// When set to `true`, outbound network access is allowed. `false` by default.
@@ -1760,22 +1767,22 @@ impl AppConfig {
             });
 
             // Add model to provider
-	            provider.models.push(Model {
-	                name: model_config.model.clone(),
-	                temperature: model_config.parameters.temperature.unwrap_or(0.7),
-	                temperature_enabled: model_config.parameters.temperature.is_some(),
-	                max_tokens: model_config.parameters.max_tokens,
-	                top_p: model_config.parameters.top_p,
-	                top_p_enabled: model_config.parameters.top_p.is_some(),
-	                context_length: None,
-	                capabilities: ModelCapabilities::default(),
-	                retry_attempts: None,
-	                resume_partial_output: model_config.resume_partial_output,
-	                max_images: None,
-	                thinking_budget_tokens: None,
-	                use_reasoning_effort: None,
-	                reinject_reasoning_content: false,
-	            });
+            provider.models.push(Model {
+                name: model_config.model.clone(),
+                temperature: model_config.parameters.temperature.unwrap_or(0.7),
+                temperature_enabled: model_config.parameters.temperature.is_some(),
+                max_tokens: model_config.parameters.max_tokens,
+                top_p: model_config.parameters.top_p,
+                top_p_enabled: model_config.parameters.top_p.is_some(),
+                context_length: None,
+                capabilities: ModelCapabilities::default(),
+                retry_attempts: None,
+                resume_partial_output: model_config.resume_partial_output,
+                max_images: None,
+                thinking_budget_tokens: None,
+                use_reasoning_effort: None,
+                reinject_reasoning_content: false,
+            });
 
             // Create agent from model's system prompt
             let agent_name = format!("agent_{}", model_config.id);
@@ -1823,9 +1830,7 @@ impl AppConfig {
 
     /// Get agent by name
     pub fn get_agent(&self, name: &str) -> Option<&Agent> {
-        self.agents
-            .iter()
-            .find(|a| a.name == name && a.enabled)
+        self.agents.iter().find(|a| a.name == name && a.enabled)
     }
 
     /// Get default agent

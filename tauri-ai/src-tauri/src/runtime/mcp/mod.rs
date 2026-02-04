@@ -5,28 +5,17 @@ use std::time::Duration;
 
 use futures::future::BoxFuture;
 use futures::FutureExt;
-use rmcp::ClientHandler;
-use rmcp::RoleClient;
 use rmcp::model::{
-    CallToolRequestParam,
-    ClientCapabilities,
-    ClientInfo,
-    Implementation,
-    InitializeRequestParam,
-    JsonObject,
-    ListResourceTemplatesResult,
-    ListResourcesResult,
-    PaginatedRequestParam,
-    ReadResourceRequestParam,
-    ReadResourceResult,
-    Resource,
-    ResourceTemplate,
-    Tool,
+    CallToolRequestParam, ClientCapabilities, ClientInfo, Implementation, InitializeRequestParam,
+    JsonObject, ListResourceTemplatesResult, ListResourcesResult, PaginatedRequestParam,
+    ReadResourceRequestParam, ReadResourceResult, Resource, ResourceTemplate, Tool,
 };
 use rmcp::service::{self, NotificationContext, RequestContext, RunningService, ServiceError};
-use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::child_process::TokioChildProcess;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
+use rmcp::transport::StreamableHttpClientTransport;
+use rmcp::ClientHandler;
+use rmcp::RoleClient;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
@@ -256,8 +245,12 @@ impl ClientHandler for BasicClientHandler {
 }
 
 enum ClientState {
-    Connecting { transport: Option<PendingTransport> },
-    Ready { service: Arc<RunningService<RoleClient, BasicClientHandler>> },
+    Connecting {
+        transport: Option<PendingTransport>,
+    },
+    Ready {
+        service: Arc<RunningService<RoleClient, BasicClientHandler>>,
+    },
 }
 
 enum PendingTransport {
@@ -343,7 +336,10 @@ impl McpClient {
     async fn ensure_ready(&self, timeout: Option<Duration>) -> Result<(), String> {
         let transport_fut: BoxFuture<
             'static,
-            Result<RunningService<RoleClient, BasicClientHandler>, rmcp::service::ClientInitializeError>,
+            Result<
+                RunningService<RoleClient, BasicClientHandler>,
+                rmcp::service::ClientInitializeError,
+            >,
         > = {
             let mut guard = self.state.lock().await;
             match &mut *guard {
@@ -372,7 +368,9 @@ impl McpClient {
                     };
 
                     match pending {
-                        PendingTransport::ChildProcess(t) => service::serve_client(handler, t).boxed(),
+                        PendingTransport::ChildProcess(t) => {
+                            service::serve_client(handler, t).boxed()
+                        }
                         PendingTransport::StreamableHttp { transport } => {
                             service::serve_client(handler, transport).boxed()
                         }
@@ -469,7 +467,9 @@ impl McpClient {
         let mut all = Vec::new();
         let mut cursor: Option<String> = None;
         for _ in 0..100 {
-            let res = self.list_resource_templates(cursor.clone(), timeout).await?;
+            let res = self
+                .list_resource_templates(cursor.clone(), timeout)
+                .await?;
             all.extend(res.resource_templates);
             cursor = res.next_cursor;
             if cursor.is_none() {
@@ -523,11 +523,7 @@ impl McpClient {
     }
 }
 
-async fn run_with_timeout<F, T>(
-    fut: F,
-    timeout: Option<Duration>,
-    label: &str,
-) -> Result<T, String>
+async fn run_with_timeout<F, T>(fut: F, timeout: Option<Duration>, label: &str) -> Result<T, String>
 where
     F: std::future::Future<Output = Result<T, ServiceError>>,
 {
@@ -576,7 +572,9 @@ fn build_http_client(
         }
     }
 
-    Ok(reqwest::Client::builder().default_headers(headers).build()?)
+    Ok(reqwest::Client::builder()
+        .default_headers(headers)
+        .build()?)
 }
 
 fn create_env_for_mcp_server(
@@ -587,7 +585,11 @@ fn create_env_for_mcp_server(
         .iter()
         .copied()
         .chain(env_vars.iter().map(String::as_str))
-        .filter_map(|var| std::env::var(var).ok().map(|value| (var.to_string(), value)))
+        .filter_map(|var| {
+            std::env::var(var)
+                .ok()
+                .map(|value| (var.to_string(), value))
+        })
         .chain(extra_env.unwrap_or_default())
         .collect()
 }

@@ -5,7 +5,9 @@ use serde_json::json;
 use crate::ai_client::ToolCall;
 use crate::models::{SandboxPolicy, WebSearchProvider, WebSearchToolSettings};
 use crate::runtime::events::RunEvent;
-use crate::runtime::tools::registry::{ToolCallResult, ToolError, ToolExecutionContext, ToolHandler};
+use crate::runtime::tools::registry::{
+    ToolCallResult, ToolError, ToolExecutionContext, ToolHandler,
+};
 use crate::runtime::tools::spec::ToolSpec;
 
 pub struct WebSearchTool {
@@ -53,7 +55,9 @@ impl ToolHandler for WebSearchTool {
         call: &ToolCall,
     ) -> Result<ToolCallResult, ToolError> {
         if !sandbox_allows_network(&ctx.sandbox_policy) {
-            return Err(ToolError::denied("当前沙箱策略禁止网络访问，无法使用 web_search"));
+            return Err(ToolError::denied(
+                "当前沙箱策略禁止网络访问，无法使用 web_search",
+            ));
         }
 
         let args: WebSearchArgs = serde_json::from_str(&call.arguments)
@@ -67,7 +71,10 @@ impl ToolHandler for WebSearchTool {
         let provider = self.provider_override.unwrap_or(self.settings.provider);
 
         let min_interval = self.settings.min_interval_ms.unwrap_or(1200);
-        ctx.services.web_search.wait_for_interval(min_interval).await;
+        ctx.services
+            .web_search
+            .wait_for_interval(min_interval)
+            .await;
 
         let max_results = args
             .max_results

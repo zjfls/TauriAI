@@ -39,7 +39,11 @@ fn write_marker(dest_root: &Path, fp: &str) -> io::Result<()> {
 }
 
 fn copy_tree_no_overwrite(src_root: &Path, dest_root: &Path) -> io::Result<()> {
-    for entry in WalkDir::new(src_root).follow_links(false).into_iter().filter_map(|e| e.ok()) {
+    for entry in WalkDir::new(src_root)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
         let path = entry.path();
         let rel = path.strip_prefix(src_root).unwrap_or(path);
         let dest = dest_root.join(rel);
@@ -81,4 +85,3 @@ pub fn install_bundled_skills(src_skills_dir: &Path, dest_skills_dir: &Path) -> 
     write_marker(dest_skills_dir, &fp)?;
     Ok(())
 }
-

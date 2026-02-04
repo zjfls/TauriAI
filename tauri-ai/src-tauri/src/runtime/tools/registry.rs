@@ -5,17 +5,14 @@ use async_trait::async_trait;
 use tokio::sync::Mutex;
 
 use crate::ai_client::ToolCall;
-use crate::runtime::emitter::RunEmitter;
 use crate::models::SandboxPolicy;
+use crate::runtime::emitter::RunEmitter;
 
 use super::handlers::apply_patch::ApplyPatchTool;
 use super::handlers::builtin::{EchoTool, GetTimeTool};
 use super::handlers::file_tools::{ListDirTool, ReadFileTool, RgTool};
 use super::handlers::pty::{
-    ExecCommandPersistentTool,
-    ExecCommandTool,
-    WriteStdinPersistentTool,
-    WriteStdinTool,
+    ExecCommandPersistentTool, ExecCommandTool, WriteStdinPersistentTool, WriteStdinTool,
 };
 use super::handlers::shell::ShellCommandTool;
 use super::services::ToolServices;

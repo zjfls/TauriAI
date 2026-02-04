@@ -37,7 +37,9 @@ pub struct WorkstudioSecurityConfig {
     pub trusted_commands: Vec<TrustedCommandConfig>,
 }
 
-pub fn read_workstudio_security_config(main_folder: &str) -> Result<WorkstudioSecurityConfig, String> {
+pub fn read_workstudio_security_config(
+    main_folder: &str,
+) -> Result<WorkstudioSecurityConfig, String> {
     let main_folder = main_folder.trim();
     if main_folder.is_empty() {
         // No main folder -> no project-scoped security config.
@@ -62,7 +64,9 @@ pub fn write_workstudio_security_config(
 ) -> Result<(), String> {
     let main_folder = main_folder.trim();
     if main_folder.is_empty() {
-        return Err("Workstudio 主目录为空，无法写入安全配置（.tauriai/security.json）".to_string());
+        return Err(
+            "Workstudio 主目录为空，无法写入安全配置（.tauriai/security.json）".to_string(),
+        );
     }
     let path = security_file_path(main_folder);
     if let Some(parent) = path.parent() {
@@ -73,7 +77,8 @@ pub fn write_workstudio_security_config(
         writable_roots: config.writable_roots.clone(),
         trusted_commands: config.trusted_commands.clone(),
     };
-    let json = serde_json::to_vec_pretty(&file).map_err(|e| format!("serialize security.json failed: {e}"))?;
+    let json = serde_json::to_vec_pretty(&file)
+        .map_err(|e| format!("serialize security.json failed: {e}"))?;
     std::fs::write(&path, json).map_err(|e| format!("write security.json failed: {e}"))?;
     Ok(())
 }

@@ -188,9 +188,7 @@ pub async fn set_mermaid_svg_cache(
         .as_nanos();
     let tmp = dir.join(format!(
         "{}.tmp.{uniq}.svg",
-        path.file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
+        path.file_name().unwrap_or_default().to_string_lossy()
     ));
 
     fs::write(&tmp, svg.as_bytes())
@@ -209,4 +207,3 @@ pub async fn set_mermaid_svg_cache(
 
     Ok(())
 }
-

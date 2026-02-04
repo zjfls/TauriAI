@@ -28,11 +28,7 @@ pub enum ToolPermissionDecision {
 /// 注意：这里故意只暴露“最小接口”，避免把 AppConfig/前端审批耦合进 tools 核心层。
 /// 后续会在更上层把“配置 + UI 审批 + 缓存”组合成一个实现。
 pub trait ToolPermissionPolicy: Send + Sync {
-    fn decide(
-        &self,
-        tool_name: &str,
-        required: &[ToolPermission],
-    ) -> ToolPermissionDecision;
+    fn decide(&self, tool_name: &str, required: &[ToolPermission]) -> ToolPermissionDecision;
 }
 
 /// 默认策略：只允许不需要权限的工具。
@@ -41,11 +37,7 @@ pub trait ToolPermissionPolicy: Send + Sync {
 pub struct DenyByDefaultPolicy;
 
 impl ToolPermissionPolicy for DenyByDefaultPolicy {
-    fn decide(
-        &self,
-        tool_name: &str,
-        required: &[ToolPermission],
-    ) -> ToolPermissionDecision {
+    fn decide(&self, tool_name: &str, required: &[ToolPermission]) -> ToolPermissionDecision {
         if required.is_empty() {
             return ToolPermissionDecision::Allow;
         }
@@ -60,11 +52,7 @@ impl ToolPermissionPolicy for DenyByDefaultPolicy {
 pub struct DenyAllPolicy;
 
 impl ToolPermissionPolicy for DenyAllPolicy {
-    fn decide(
-        &self,
-        tool_name: &str,
-        _required: &[ToolPermission],
-    ) -> ToolPermissionDecision {
+    fn decide(&self, tool_name: &str, _required: &[ToolPermission]) -> ToolPermissionDecision {
         ToolPermissionDecision::Deny {
             reason: format!("工具系统已关闭，拒绝调用 '{tool_name}'"),
         }
@@ -92,11 +80,7 @@ impl Default for BasicToolPermissionPolicy {
 }
 
 impl ToolPermissionPolicy for BasicToolPermissionPolicy {
-    fn decide(
-        &self,
-        tool_name: &str,
-        required: &[ToolPermission],
-    ) -> ToolPermissionDecision {
+    fn decide(&self, tool_name: &str, required: &[ToolPermission]) -> ToolPermissionDecision {
         for p in required {
             match p {
                 ToolPermission::ShellExec if !self.allow_shell_exec => {

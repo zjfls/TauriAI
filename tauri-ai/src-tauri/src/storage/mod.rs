@@ -8,11 +8,11 @@ use std::{collections::HashSet, fs};
 
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
-use thiserror::Error;
 use serde::Serialize;
+use thiserror::Error;
 
-use crate::models::{ContentPart, Conversation, Message, MessageRole, Workstudio};
 use crate::models::WorkstudioUiState;
+use crate::models::{ContentPart, Conversation, Message, MessageRole, Workstudio};
 
 /// Errors that can occur during storage operations
 #[derive(Debug, Error)]
@@ -111,10 +111,22 @@ impl Database {
         // We ignore errors as they will fail if columns already exist
         let _ = conn.execute("ALTER TABLE conversations ADD COLUMN agent_name TEXT", []);
         let _ = conn.execute("ALTER TABLE conversations ADD COLUMN model_ref TEXT", []);
-        let _ = conn.execute("ALTER TABLE conversations ADD COLUMN system_prompt TEXT", []);
-        let _ = conn.execute("ALTER TABLE conversations ADD COLUMN system_prompt_cache_key TEXT", []);
-        let _ = conn.execute("ALTER TABLE conversations ADD COLUMN thinking_mode TEXT", []);
-        let _ = conn.execute("ALTER TABLE conversations ADD COLUMN workstudio_id TEXT", []);
+        let _ = conn.execute(
+            "ALTER TABLE conversations ADD COLUMN system_prompt TEXT",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE conversations ADD COLUMN system_prompt_cache_key TEXT",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE conversations ADD COLUMN thinking_mode TEXT",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE conversations ADD COLUMN workstudio_id TEXT",
+            [],
+        );
 
         // Create workstudios table
         conn.execute(
@@ -129,7 +141,10 @@ impl Database {
             [],
         )?;
         // Migration: Add kind column if it doesn't exist
-        let _ = conn.execute("ALTER TABLE workstudios ADD COLUMN kind TEXT NOT NULL DEFAULT 'code'", []);
+        let _ = conn.execute(
+            "ALTER TABLE workstudios ADD COLUMN kind TEXT NOT NULL DEFAULT 'code'",
+            [],
+        );
 
         // Create workstudio_states table (UI persisted state, keyed by main_folder + kind)
         conn.execute(
@@ -238,7 +253,11 @@ impl Database {
         }
 
         let trimmed = title.trim();
-        let trimmed = if trimmed.is_empty() { "新对话" } else { trimmed };
+        let trimmed = if trimmed.is_empty() {
+            "新对话"
+        } else {
+            trimmed
+        };
 
         let Some(hash_pos) = trimmed.rfind('#') else {
             return (trimmed.to_string(), String::new());
@@ -401,10 +420,15 @@ impl Database {
     /// - 复制原 conversation 的元数据（agent/model/thinking/system_prompt/workstudio 绑定）
     /// - 复制 messages（新 message id，但内容/顺序/元数据保持）
     /// - workstudio：默认工作区（~/.tauri-ai/workstudios/<id>）会“复制目录”到新的默认工作区；非默认则只复制绑定（不改写文件系统）
-    pub fn clone_conversation(&self, source_conversation_id: &str) -> Result<Conversation, StorageError> {
+    pub fn clone_conversation(
+        &self,
+        source_conversation_id: &str,
+    ) -> Result<Conversation, StorageError> {
         let source = self
             .get_conversation(source_conversation_id)?
-            .ok_or_else(|| StorageError::NotFound(format!("Conversation {source_conversation_id} not found")))?;
+            .ok_or_else(|| {
+                StorageError::NotFound(format!("Conversation {source_conversation_id} not found"))
+            })?;
 
         let new_title = self.clone_conversation_title(&source.title)?;
         let now = Utc::now();
@@ -460,7 +484,8 @@ impl Database {
                 };
 
                 if should_write_marker {
-                    let _ = Self::write_workstudio_marker(&PathBuf::from(&new_ws.main_folder), &new_ws);
+                    let _ =
+                        Self::write_workstudio_marker(&PathBuf::from(&new_ws.main_folder), &new_ws);
                 }
 
                 workstudio_insert = Some((new_ws, folders_json));
@@ -518,7 +543,11 @@ impl Database {
                     MessageRole::Tool => "tool",
                 };
 
-                let meta_json = m.meta.as_ref().map(|meta| serde_json::to_string(meta)).transpose()?;
+                let meta_json = m
+                    .meta
+                    .as_ref()
+                    .map(|meta| serde_json::to_string(meta))
+                    .transpose()?;
                 let content_parts_json = if m.content_parts.is_empty() {
                     None
                 } else {
@@ -924,8 +953,8 @@ impl Database {
 
         let main_folder = main_folder_path.to_string_lossy().to_string();
         let folders = vec![main_folder.clone()];
-        let folders_json =
-            serde_json::to_string(&folders).map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let folders_json = serde_json::to_string(&folders)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
 
         let now = Utc::now();
         let now_str = now.to_rfc3339();
@@ -978,8 +1007,8 @@ impl Database {
 
         let main_folder = main_folder_path.to_string_lossy().to_string();
         let folders = vec![main_folder.clone()];
-        let folders_json =
-            serde_json::to_string(&folders).map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let folders_json = serde_json::to_string(&folders)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
 
         let now = Utc::now();
         let now_str = now.to_rfc3339();
@@ -1027,9 +1056,9 @@ impl Database {
                 .map_err(|e| StorageError::Io(format!("create folder failed: {e}")))?;
         }
 
-        let mut ws = self
-            .get_workstudio(workstudio_id)?
-            .ok_or_else(|| StorageError::NotFound(format!("Workstudio {workstudio_id} not found")))?;
+        let mut ws = self.get_workstudio(workstudio_id)?.ok_or_else(|| {
+            StorageError::NotFound(format!("Workstudio {workstudio_id} not found"))
+        })?;
 
         let folder_str = folder_path.to_string_lossy().to_string();
 
@@ -1059,8 +1088,8 @@ impl Database {
         let now_str = now.to_rfc3339();
         ws.updated_at = now;
 
-        let folders_json =
-            serde_json::to_string(&ws.folders).map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let folders_json = serde_json::to_string(&ws.folders)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
 
         let conn = self
             .conn
@@ -1092,9 +1121,9 @@ impl Database {
             return Err(StorageError::Serialization("folder is empty".to_string()));
         }
 
-        let mut ws = self
-            .get_workstudio(workstudio_id)?
-            .ok_or_else(|| StorageError::NotFound(format!("Workstudio {workstudio_id} not found")))?;
+        let mut ws = self.get_workstudio(workstudio_id)?.ok_or_else(|| {
+            StorageError::NotFound(format!("Workstudio {workstudio_id} not found"))
+        })?;
 
         if !ws.folders.iter().any(|f| f == folder) {
             return Err(StorageError::NotFound(format!(
@@ -1110,8 +1139,8 @@ impl Database {
         let now_str = now.to_rfc3339();
         ws.updated_at = now;
 
-        let folders_json =
-            serde_json::to_string(&ws.folders).map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let folders_json = serde_json::to_string(&ws.folders)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
 
         let conn = self
             .conn
@@ -1141,9 +1170,9 @@ impl Database {
             return Err(StorageError::Serialization("folder is empty".to_string()));
         }
 
-        let mut ws = self
-            .get_workstudio(workstudio_id)?
-            .ok_or_else(|| StorageError::NotFound(format!("Workstudio {workstudio_id} not found")))?;
+        let mut ws = self.get_workstudio(workstudio_id)?.ok_or_else(|| {
+            StorageError::NotFound(format!("Workstudio {workstudio_id} not found"))
+        })?;
 
         if ws.folders.len() <= 1 {
             return Err(StorageError::Serialization(
@@ -1159,11 +1188,9 @@ impl Database {
 
         ws.folders.retain(|f| f != folder);
         if ws.main_folder == folder {
-            ws.main_folder = ws
-                .folders
-                .first()
-                .cloned()
-                .ok_or_else(|| StorageError::Serialization("workstudio has no folders".to_string()))?;
+            ws.main_folder = ws.folders.first().cloned().ok_or_else(|| {
+                StorageError::Serialization("workstudio has no folders".to_string())
+            })?;
         }
 
         // Keep main folder as the first entry.
@@ -1175,8 +1202,8 @@ impl Database {
         let now_str = now.to_rfc3339();
         ws.updated_at = now;
 
-        let folders_json =
-            serde_json::to_string(&ws.folders).map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let folders_json = serde_json::to_string(&ws.folders)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
 
         let conn = self
             .conn
@@ -1450,7 +1477,8 @@ impl Database {
         // SQLite has a limit on bound parameters (commonly 999). Chunk to be safe.
         const CHUNK: usize = 400;
         for chunk in ids.chunks(CHUNK) {
-            let mut sql = String::from("DELETE FROM messages WHERE conversation_id = ?1 AND id IN (");
+            let mut sql =
+                String::from("DELETE FROM messages WHERE conversation_id = ?1 AND id IN (");
             for i in 0..chunk.len() {
                 if i > 0 {
                     sql.push(',');
@@ -1460,7 +1488,8 @@ impl Database {
             }
             sql.push(')');
 
-            let params_iter = std::iter::once(conversation_id.to_string()).chain(chunk.iter().cloned());
+            let params_iter =
+                std::iter::once(conversation_id.to_string()).chain(chunk.iter().cloned());
             conn.execute(&sql, rusqlite::params_from_iter(params_iter))?;
         }
 
@@ -1591,7 +1620,9 @@ impl Database {
         )?;
 
         let row = stmt
-            .query_row(params![conversation_id, like], |row| self.row_to_message(row))
+            .query_row(params![conversation_id, like], |row| {
+                self.row_to_message(row)
+            })
             .optional()?;
 
         Ok(row)
@@ -1616,7 +1647,9 @@ impl Database {
         )?;
 
         let msg = stmt
-            .query_row(params![conversation_id, message_id], |row| self.row_to_message(row))
+            .query_row(params![conversation_id, message_id], |row| {
+                self.row_to_message(row)
+            })
             .optional()?;
 
         msg.ok_or_else(|| {
@@ -1980,7 +2013,10 @@ mod tests {
         assert_ne!(cloned.id, conv.id);
         assert_ne!(cloned.title, conv.title);
         assert_eq!(cloned.agent_name.as_deref(), Some("test-agent"));
-        assert_eq!(cloned.model_ref.as_deref(), Some("test-provider/test-model"));
+        assert_eq!(
+            cloned.model_ref.as_deref(),
+            Some("test-provider/test-model")
+        );
         assert!(cloned.workstudio_id.is_some());
         assert_ne!(cloned.workstudio_id.as_deref(), Some(ws_id.as_str()));
 

@@ -8,7 +8,9 @@ use crate::ai_client::ToolCall;
 use crate::models::SandboxPolicy;
 use crate::runtime::events::RunEvent;
 use crate::runtime::tools::permissions::ToolPermission;
-use crate::runtime::tools::registry::{ToolCallResult, ToolError, ToolExecutionContext, ToolHandler};
+use crate::runtime::tools::registry::{
+    ToolCallResult, ToolError, ToolExecutionContext, ToolHandler,
+};
 use crate::runtime::tools::sandbox::{
     dedupe_paths, effective_workspace_roots, is_path_under_any_root, normalize_root_for_join,
 };
@@ -371,18 +373,13 @@ async fn check_and_maybe_close_session(
         Ok(None) => {
             // 某些平台/边界情况下 try_wait 可能短暂返回 None，但 PTY reader 已经退出（rx 关闭）。
             // 这时继续保留 session 会导致下一轮 write_stdin 触发 BrokenPipe/232。
-            let rx_closed = guard
-                .rx
-                .try_lock()
-                .map(|g| g.is_closed())
-                .unwrap_or(false);
+            let rx_closed = guard.rx.try_lock().map(|g| g.is_closed()).unwrap_or(false);
             if rx_closed {
                 drop(guard);
 
                 // 尽量在回收前拿到退出码（短命令在 Windows/ConPTY 上比较容易发生竞态）。
                 let mut exit_code: Option<u32> = None;
-                let deadline =
-                    tokio::time::Instant::now() + std::time::Duration::from_millis(250);
+                let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(250);
                 loop {
                     {
                         let mut guard = session.lock().await;
@@ -479,13 +476,7 @@ async fn exec_command_with_scope(
     let session_id = ctx
         .services
         .pty
-        .create_session(
-            command,
-            workdir,
-            ctx.conversation_id,
-            ctx.task_id,
-            scope,
-        )
+        .create_session(command, workdir, ctx.conversation_id, ctx.task_id, scope)
         .await
         .map_err(ToolError::new)?;
 

@@ -1,5 +1,5 @@
-pub mod loader;
 pub mod installer;
+pub mod loader;
 pub mod watcher;
 
 use serde::{Deserialize, Serialize};

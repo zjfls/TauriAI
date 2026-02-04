@@ -7,7 +7,10 @@ use crate::runtime::events::RunEvent;
 
 use super::handlers::apply_patch;
 use super::permissions::{ToolPermissionDecision, ToolPermissionPolicy};
-use super::registry::{register_builtin_handlers, ToolCallResult, ToolError, ToolExecutionContext, ToolHandler, ToolRegistry};
+use super::registry::{
+    register_builtin_handlers, ToolCallResult, ToolError, ToolExecutionContext, ToolHandler,
+    ToolRegistry,
+};
 use super::spec::{ToolSet, ToolSpec};
 
 /// ToolOrchestrator 的运行时配置（每个 run/task 可以不同）。
@@ -98,9 +101,7 @@ impl ToolOrchestrator {
 
     fn resolve_handler(&self, tool_name: &str) -> Result<Arc<dyn ToolHandler>, ToolError> {
         if is_persistent_tool(tool_name) && !self.toolset.persistance_shell_enhance {
-            return Err(ToolError::denied(
-                "持久工具需要在 toolset 中开启“持久进程”",
-            ));
+            return Err(ToolError::denied("持久工具需要在 toolset 中开启“持久进程”"));
         }
         if !is_persistent_tool(tool_name) && !self.toolset.contains(tool_name) {
             return Err(ToolError::denied(format!(
@@ -110,9 +111,7 @@ impl ToolOrchestrator {
 
         self.registry
             .get(tool_name)
-            .ok_or_else(|| {
-                ToolError::invalid(format!("未知工具: {tool_name}"))
-            })
+            .ok_or_else(|| ToolError::invalid(format!("未知工具: {tool_name}")))
     }
 
     fn maybe_extract_apply_patch_from_call(
@@ -120,7 +119,9 @@ impl ToolOrchestrator {
     ) -> Option<(String, ApplyPatchInterceptMode)> {
         let (field, mode) = match call.name.as_str() {
             "shell_command" => ("command", ApplyPatchInterceptMode::PlainText),
-            "exec_command" | "exec_command_persistent" => ("cmd", ApplyPatchInterceptMode::ExecCommandJson),
+            "exec_command" | "exec_command_persistent" => {
+                ("cmd", ApplyPatchInterceptMode::ExecCommandJson)
+            }
             _ => return None,
         };
 
@@ -217,7 +218,9 @@ impl ToolOrchestrator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::tools::permissions::{BasicToolPermissionPolicy, DenyAllPolicy, DenyByDefaultPolicy};
+    use crate::runtime::tools::permissions::{
+        BasicToolPermissionPolicy, DenyAllPolicy, DenyByDefaultPolicy,
+    };
 
     fn tool_names(specs: &[ToolSpec]) -> Vec<String> {
         let mut names = specs.iter().map(|s| s.name.clone()).collect::<Vec<_>>();
@@ -228,7 +231,8 @@ mod tests {
     #[test]
     fn deny_by_default_allows_only_no_permission_tools() {
         let policy: Arc<dyn ToolPermissionPolicy> = Arc::new(DenyByDefaultPolicy::default());
-        let orchestrator = ToolOrchestrator::new_builtin(ToolOrchestratorConfig::builtin_defaults(policy));
+        let orchestrator =
+            ToolOrchestrator::new_builtin(ToolOrchestratorConfig::builtin_defaults(policy));
         let names = tool_names(&orchestrator.tool_specs_for_model());
         assert!(names.contains(&"echo".to_string()));
         assert!(names.contains(&"get_time".to_string()));
@@ -240,7 +244,8 @@ mod tests {
     #[test]
     fn deny_all_filters_everything() {
         let policy: Arc<dyn ToolPermissionPolicy> = Arc::new(DenyAllPolicy::default());
-        let orchestrator = ToolOrchestrator::new_builtin(ToolOrchestratorConfig::builtin_defaults(policy));
+        let orchestrator =
+            ToolOrchestrator::new_builtin(ToolOrchestratorConfig::builtin_defaults(policy));
         let names = tool_names(&orchestrator.tool_specs_for_model());
         assert!(names.is_empty());
     }

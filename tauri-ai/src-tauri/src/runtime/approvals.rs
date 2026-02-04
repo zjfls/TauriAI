@@ -34,4 +34,3 @@ impl ApprovalStore {
         matches!(self.get(key), Some(ApprovalDecision::ApprovedForSession))
     }
 }
-

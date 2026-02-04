@@ -8,4 +8,3 @@ pub fn open_devtools_current_window(window: tauri::WebviewWindow) -> Result<(), 
     window.open_devtools();
     Ok(())
 }
-

@@ -45,16 +45,18 @@ impl SkillsWatcher {
         }
 
         let app = self.app.clone();
-        let mut watcher = match notify::recommended_watcher(move |_res: Result<notify::Event, notify::Error>| {
-            // Debounce is handled by notify's internal coalescing. We also throttle on UI side if needed.
-            let _ = app.emit("skills:changed", ());
-        }) {
-            Ok(w) => w,
-            Err(_) => return,
-        };
+        let mut watcher =
+            match notify::recommended_watcher(move |_res: Result<notify::Event, notify::Error>| {
+                // Debounce is handled by notify's internal coalescing. We also throttle on UI side if needed.
+                let _ = app.emit("skills:changed", ());
+            }) {
+                Ok(w) => w,
+                Err(_) => return,
+            };
 
         // Some platforms require an explicit poll interval to be stable.
-        let _ = watcher.configure(notify::Config::default().with_poll_interval(Duration::from_secs(2)));
+        let _ =
+            watcher.configure(notify::Config::default().with_poll_interval(Duration::from_secs(2)));
         if watcher.watch(&dir, RecursiveMode::Recursive).is_ok() {
             guard.watchers.insert(dir, watcher);
         }

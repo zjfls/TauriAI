@@ -39,7 +39,9 @@ impl std::fmt::Display for SkillParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SkillParseError::Read(e) => write!(f, "读取文件失败: {e}"),
-            SkillParseError::MissingFrontmatter => write!(f, "缺少 YAML frontmatter（用 --- 分隔）"),
+            SkillParseError::MissingFrontmatter => {
+                write!(f, "缺少 YAML frontmatter（用 --- 分隔）")
+            }
             SkillParseError::InvalidYaml(e) => write!(f, "frontmatter YAML 解析失败: {e}"),
             SkillParseError::MissingField(field) => write!(f, "缺少字段 `{field}`"),
             SkillParseError::InvalidField { field, reason } => {
@@ -188,7 +190,11 @@ fn parse_skill_file(
 
     Ok(SkillEntry {
         meta,
-        contents: if include_contents { contents } else { String::new() },
+        contents: if include_contents {
+            contents
+        } else {
+            String::new()
+        },
     })
 }
 
@@ -222,12 +228,7 @@ fn extract_frontmatter(contents: &str) -> Option<String> {
 }
 
 fn sanitize_single_line(value: &str) -> String {
-    value
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_string()
+    value.lines().next().unwrap_or_default().trim().to_string()
 }
 
 fn validate_field(value: &str, max_len: usize, field: &'static str) -> Result<(), SkillParseError> {
@@ -254,7 +255,10 @@ pub fn make_skill_markdown(
     out.push_str("---\n");
     out.push_str(&format!("name: {}\n", name.trim()));
     out.push_str(&format!("description: {}\n", description.trim()));
-    if let Some(sd) = short_description.map(|s| s.trim()).filter(|s| !s.is_empty()) {
+    if let Some(sd) = short_description
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
         out.push_str("metadata:\n");
         out.push_str(&format!("  short-description: {}\n", sd));
     }
@@ -272,4 +276,3 @@ pub fn index_by_name(outcome: &SkillLoadOutcome) -> HashMap<String, SkillEntry> 
         .map(|s| (s.meta.name.clone(), s))
         .collect()
 }
-

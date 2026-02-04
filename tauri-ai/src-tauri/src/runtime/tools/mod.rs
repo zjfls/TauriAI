@@ -11,8 +11,8 @@
 //!   - 更细粒度权限系统（本地能力/网络/文件/终端/打开器…）
 //!   - 沙箱/审批/并发 gate/重试/审计日志/事件重放
 
-pub mod orchestrator;
 pub mod handlers;
+pub mod orchestrator;
 pub mod permissions;
 pub mod registry;
 pub mod sandbox;

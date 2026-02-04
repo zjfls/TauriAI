@@ -2,12 +2,14 @@ use async_trait::async_trait;
 use rmcp::model::Tool as McpTool;
 
 use crate::ai_client::ToolCall;
+use crate::models::McpServerConfig;
 use crate::runtime::events::RunEvent;
 use crate::runtime::mcp::global_mcp_runtime;
 use crate::runtime::tools::permissions::ToolPermission;
-use crate::runtime::tools::registry::{ToolCallResult, ToolError, ToolExecutionContext, ToolHandler};
+use crate::runtime::tools::registry::{
+    ToolCallResult, ToolError, ToolExecutionContext, ToolHandler,
+};
 use crate::runtime::tools::spec::ToolSpec;
-use crate::models::McpServerConfig;
 
 pub struct McpToolHandler {
     pub qualified_name: String,
@@ -69,8 +71,7 @@ impl ToolHandler for McpToolHandler {
             .await
             .map_err(|e| ToolError::new(format!("MCP tools/call 失败: {e}")))?;
 
-        let output = serde_json::to_string_pretty(&result)
-            .unwrap_or_else(|_| result.to_string());
+        let output = serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string());
 
         emit_tool_result(ctx, call.id.as_str(), &output);
         Ok(ToolCallResult { content: output })
@@ -88,4 +89,3 @@ fn emit_tool_result(ctx: &mut ToolExecutionContext<'_>, call_id: &str, content: 
         delta: content.to_string(),
     });
 }
-

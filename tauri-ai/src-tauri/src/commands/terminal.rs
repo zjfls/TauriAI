@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use tokio::sync::{Mutex, MutexGuard};
 
-use crate::runtime::RunState;
 use crate::runtime::tools::services::{PtySession, PtySessionScope};
+use crate::runtime::RunState;
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -261,4 +261,3 @@ pub async fn terminal_close(
     }
     Ok(services.pty.close_session(session_id).await)
 }
-

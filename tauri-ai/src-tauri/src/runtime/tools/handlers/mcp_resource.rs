@@ -2,7 +2,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use rmcp::model::{ListResourceTemplatesResult, ListResourcesResult, ReadResourceResult, Resource, ResourceTemplate};
+use rmcp::model::{
+    ListResourceTemplatesResult, ListResourcesResult, ReadResourceResult, Resource,
+    ResourceTemplate,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::ai_client::ToolCall;
@@ -10,7 +13,9 @@ use crate::models::McpServerConfig;
 use crate::runtime::events::RunEvent;
 use crate::runtime::mcp::global_mcp_runtime;
 use crate::runtime::tools::permissions::ToolPermission;
-use crate::runtime::tools::registry::{ToolCallResult, ToolError, ToolExecutionContext, ToolHandler};
+use crate::runtime::tools::registry::{
+    ToolCallResult, ToolError, ToolExecutionContext, ToolHandler,
+};
 use crate::runtime::tools::spec::ToolSpec;
 
 #[derive(Debug, Deserialize, Default)]
@@ -226,7 +231,9 @@ impl ToolHandler for ListMcpResourcesTool {
 
         let payload = if let Some(server_name) = server {
             let cfg = self.servers.get(&server_name).ok_or_else(|| {
-                ToolError::denied(format!("MCP server '{server_name}' 未配置或不在当前可用范围内"))
+                ToolError::denied(format!(
+                    "MCP server '{server_name}' 未配置或不在当前可用范围内"
+                ))
             })?;
             let result = runtime
                 .list_resources(&server_name, cfg, cursor)
@@ -242,19 +249,22 @@ impl ToolHandler for ListMcpResourcesTool {
 
             let mut all: HashMap<String, Vec<Resource>> = HashMap::new();
             for (server_name, cfg) in self.servers.iter() {
-                let resources = runtime
-                    .list_all_resources(server_name, cfg)
-                    .await
-                    .map_err(|e| {
-                        ToolError::new(format!("MCP resources/list_all 失败: server={server_name} err={e}"))
-                    })?;
+                let resources =
+                    runtime
+                        .list_all_resources(server_name, cfg)
+                        .await
+                        .map_err(|e| {
+                            ToolError::new(format!(
+                                "MCP resources/list_all 失败: server={server_name} err={e}"
+                            ))
+                        })?;
                 all.insert(server_name.clone(), resources);
             }
             ListResourcesPayload::from_all_servers(all)
         };
 
-        let output =
-            serde_json::to_string_pretty(&payload).unwrap_or_else(|_| serde_json::json!(payload).to_string());
+        let output = serde_json::to_string_pretty(&payload)
+            .unwrap_or_else(|_| serde_json::json!(payload).to_string());
         emit_tool_result(ctx, call.id.as_str(), &output);
         Ok(ToolCallResult { content: output })
     }
@@ -299,7 +309,9 @@ impl ToolHandler for ListMcpResourceTemplatesTool {
 
         let payload = if let Some(server_name) = server {
             let cfg = self.servers.get(&server_name).ok_or_else(|| {
-                ToolError::denied(format!("MCP server '{server_name}' 未配置或不在当前可用范围内"))
+                ToolError::denied(format!(
+                    "MCP server '{server_name}' 未配置或不在当前可用范围内"
+                ))
             })?;
             let result = runtime
                 .list_resource_templates(&server_name, cfg, cursor)
@@ -319,15 +331,17 @@ impl ToolHandler for ListMcpResourceTemplatesTool {
                     .list_all_resource_templates(server_name, cfg)
                     .await
                     .map_err(|e| {
-                        ToolError::new(format!("MCP resources/templates/list_all 失败: server={server_name} err={e}"))
+                        ToolError::new(format!(
+                            "MCP resources/templates/list_all 失败: server={server_name} err={e}"
+                        ))
                     })?;
                 all.insert(server_name.clone(), templates);
             }
             ListResourceTemplatesPayload::from_all_servers(all)
         };
 
-        let output =
-            serde_json::to_string_pretty(&payload).unwrap_or_else(|_| serde_json::json!(payload).to_string());
+        let output = serde_json::to_string_pretty(&payload)
+            .unwrap_or_else(|_| serde_json::json!(payload).to_string());
         emit_tool_result(ctx, call.id.as_str(), &output);
         Ok(ToolCallResult { content: output })
     }
@@ -376,7 +390,9 @@ impl ToolHandler for ReadMcpResourceTool {
         }
 
         let cfg = self.servers.get(&server_name).ok_or_else(|| {
-            ToolError::denied(format!("MCP server '{server_name}' 未配置或不在当前可用范围内"))
+            ToolError::denied(format!(
+                "MCP server '{server_name}' 未配置或不在当前可用范围内"
+            ))
         })?;
 
         let runtime = global_mcp_runtime();
@@ -391,10 +407,9 @@ impl ToolHandler for ReadMcpResourceTool {
             result,
         };
 
-        let output =
-            serde_json::to_string_pretty(&payload).unwrap_or_else(|_| serde_json::json!(payload).to_string());
+        let output = serde_json::to_string_pretty(&payload)
+            .unwrap_or_else(|_| serde_json::json!(payload).to_string());
         emit_tool_result(ctx, call.id.as_str(), &output);
         Ok(ToolCallResult { content: output })
     }
 }
-

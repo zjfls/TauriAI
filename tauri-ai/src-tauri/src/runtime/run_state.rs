@@ -180,7 +180,13 @@ impl RunState {
         self.abort_pending_approvals(conversation_id).await;
 
         // 2) Wait for run completion (if notifier exists)
-        if let Some(notify) = self.run_notifiers.read().await.get(conversation_id).cloned() {
+        if let Some(notify) = self
+            .run_notifiers
+            .read()
+            .await
+            .get(conversation_id)
+            .cloned()
+        {
             let _ = tokio::time::timeout(
                 std::time::Duration::from_millis(timeout_ms),
                 notify.notified(),
