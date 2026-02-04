@@ -317,6 +317,11 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
           dispatchShortcutEvent(actionId);
           return true;
         }
+        case 'chat.openWorkstudio': {
+          if (useUIStore.getState().activeView !== 'chat') return false;
+          dispatchShortcutEvent(actionId);
+          return true;
+        }
         case 'workstudio.fileSearch': {
           if (useUIStore.getState().activeView !== 'workstudio') return false;
           dispatchShortcutEvent(actionId);
@@ -397,6 +402,8 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
         case 'chat.toggleScrollNavigator':
           return useUIStore.getState().activeView === 'chat';
         case 'chat.toggleOutline':
+          return useUIStore.getState().activeView === 'chat';
+        case 'chat.openWorkstudio':
           return useUIStore.getState().activeView === 'chat';
         default:
           return true;

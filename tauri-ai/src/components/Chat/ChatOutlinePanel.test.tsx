@@ -9,36 +9,38 @@ describe('ChatOutlinePanel', () => {
     cleanup();
   });
 
-  it('默认收起，点击后展开显示列表', async () => {
+  it('默认收起，外部切换后显示列表', async () => {
     const user = userEvent.setup();
     const items: ChatOutlineItem[] = [
-      { messageId: 'm1', index: 1, preview: '第一条' },
-      { messageId: 'm2', index: 2, preview: '第二条' },
+      { messageId: 'm1', index: 1, preview: 'First request' },
+      { messageId: 'm2', index: 2, preview: 'Second request' },
     ];
-    const fullText: Record<string, string> = { m1: '第一条完整内容', m2: '第二条完整内容' };
+    const fullText: Record<string, string> = { m1: 'First full text', m2: 'Second full text' };
 
     const Wrapper = () => {
       const [open, setOpen] = useState(false);
       const [selected, setSelected] = useState<string | null>(null);
       return (
-        <ChatOutlinePanel
-          items={items}
-          selectedMessageId={selected}
-          selectedFullText={selected ? fullText[selected] : null}
-          isOpen={open}
-          onToggle={() => setOpen((v) => !v)}
-          onSelect={(id) => setSelected(id)}
-        />
+        <div>
+          <button type="button" onClick={() => setOpen((v) => !v)}>
+            toggle
+          </button>
+          <ChatOutlinePanel
+            items={items}
+            selectedMessageId={selected}
+            selectedFullText={selected ? fullText[selected] : null}
+            isOpen={open}
+            onToggle={() => setOpen((v) => !v)}
+            onSelect={(id) => setSelected(id)}
+          />
+        </div>
       );
     };
 
     render(<Wrapper />);
-    expect(screen.getByRole('button', { name: '打开消息目录' })).toBeInTheDocument();
-    expect(screen.queryByText('目录')).not.toBeInTheDocument();
+    expect(screen.queryByText('First request')).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: '打开消息目录' }));
-    expect(screen.getByText('目录')).toBeInTheDocument();
-    expect(screen.getByText('第一条')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'toggle' }));
+    expect(screen.getByText('First request')).toBeInTheDocument();
   });
 });
-

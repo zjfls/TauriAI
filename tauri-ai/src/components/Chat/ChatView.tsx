@@ -9,7 +9,7 @@ import { useShallow } from 'zustand/shallow';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
-import { Folder, ChevronDown, Shield } from 'lucide-react';
+import { Folder, ChevronDown, Shield, ListOrdered } from 'lucide-react';
 import { useSessionStore } from '../../stores/sessionStore';
 import { useConfigStore } from '../../stores/configStore';
 import { MessageList, type MessageListHandle } from './MessageList';
@@ -477,6 +477,16 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
   const [workstudioSecurityOpen, setWorkstudioSecurityOpen] = useState(false);
   const workstudioMenuRef = useRef<HTMLDivElement | null>(null);
 
+  const showSetWorkstudioMainFolderMenu = useMemo(() => {
+    const id = (workstudio?.id ?? '').trim();
+    const main = (workstudio?.mainFolder ?? '').trim();
+    if (!id || !main) return true;
+
+    const normalized = main.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '');
+    const suffix = `/.tauri-ai/workstudios/${id}`.replace(/\\/g, '/');
+    return normalized.toLowerCase().endsWith(suffix.toLowerCase());
+  }, [workstudio?.id, workstudio?.mainFolder]);
+
   const currentAgentForDisplay = useMemo((): Agent | null => {
     if (!agentName) return null;
     return getAgent(agentName) ?? null;
@@ -762,6 +772,18 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
     if (!ws) return;
     await openOrFocusWorkstudioWindow(`Workstudio: ${ws.mainFolder}`, { workstudioId: ws.id, mainFolder: ws.mainFolder });
   }, [ensureWorkstudio]);
+
+  // 快捷键：打开 Workstudio（仅作用于“当前聚焦 Pane”的 ChatView）
+  useEffect(() => {
+    const onShortcut = (event: Event) => {
+      if (!autoFocus) return;
+      const e = event as CustomEvent<{ action?: string }>;
+      if (e.detail?.action !== 'chat.openWorkstudio') return;
+      void openWorkstudioWindow();
+    };
+    window.addEventListener('tauri-ai:shortcut', onShortcut as EventListener);
+    return () => window.removeEventListener('tauri-ai:shortcut', onShortcut as EventListener);
+  }, [autoFocus, openWorkstudioWindow]);
 
   const handleSetWorkstudioMainFolder = useCallback(async () => {
     const ws = await ensureWorkstudio();
@@ -1385,72 +1407,92 @@ Guidelines:
               </button>
             )}
 
-            {workspaceEnabled && (
-              <div ref={workstudioMenuRef} className="relative flex min-w-0 items-center gap-1">
-                <WorkstudioSecurityModal
-                  isOpen={workstudioSecurityOpen}
-                  onClose={() => setWorkstudioSecurityOpen(false)}
-                  workstudio={workstudio}
-                />
-
-                <button
-                  type="button"
-                  onClick={() => setWorkstudioMenuOpen((v) => !v)}
-                  className="flex min-w-0 items-center gap-1 rounded border border-transparent px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
-                  title={workstudioLoading ? '加载中…' : workstudio?.mainFolder || 'Workstudio'}
-                  disabled={!session?.conversationId}
-                >
-                  <Folder size={14} className="shrink-0 text-gray-400" />
-                  <span className="max-w-[360px] truncate">
-                    {workstudioLoading ? '加载中…' : workstudio?.mainFolder ? workstudio.mainFolder : 'Workstudio'}
-                  </span>
-                  <ChevronDown
-                    size={14}
-                    className={workstudioMenuOpen ? 'shrink-0 rotate-180 transition-transform' : 'shrink-0 transition-transform'}
+            <div className="flex min-w-0 items-center gap-1">
+              {workspaceEnabled && (
+                <div ref={workstudioMenuRef} className="relative flex min-w-0 items-center gap-1">
+                  <WorkstudioSecurityModal
+                    isOpen={workstudioSecurityOpen}
+                    onClose={() => setWorkstudioSecurityOpen(false)}
+                    workstudio={workstudio}
                   />
-                </button>
 
-                {workstudioMenuOpen && (
-                  <div className="absolute left-0 top-full z-[200] mt-1 w-56 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900">
-                    <button
-                      type="button"
-                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
-                      onClick={() => {
-                        setWorkstudioMenuOpen(false);
-                        void openWorkstudioWindow();
-                      }}
-                    >
-                      <Folder size={14} className="text-gray-500" />
-                      <span>打开 Workstudio</span>
-                    </button>
+                  <button
+                    type="button"
+                    onClick={() => setWorkstudioMenuOpen((v) => !v)}
+                    className="flex min-w-0 items-center gap-1 rounded border border-transparent px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
+                    title={workstudioLoading ? '加载中…' : workstudio?.mainFolder || 'Workstudio'}
+                    disabled={!session?.conversationId}
+                  >
+                    <Folder size={14} className="shrink-0 text-gray-400" />
+                    <span className="max-w-[360px] truncate">
+                      {workstudioLoading ? '加载中…' : workstudio?.mainFolder ? workstudio.mainFolder : 'Workstudio'}
+                    </span>
+                    <ChevronDown
+                      size={14}
+                      className={workstudioMenuOpen ? 'shrink-0 rotate-180 transition-transform' : 'shrink-0 transition-transform'}
+                    />
+                  </button>
 
-                    <button
-                      type="button"
-                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
-                      onClick={() => {
-                        setWorkstudioMenuOpen(false);
-                        void handleSetWorkstudioMainFolder();
-                      }}
-                    >
-                      <Folder size={14} className="text-gray-500" />
-                      <span>设置主目录…</span>
-                    </button>
+                  {workstudioMenuOpen && (
+                    <div className="absolute left-0 top-full z-[200] mt-1 w-56 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900">
+                      <button
+                        type="button"
+                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+                        onClick={() => {
+                          setWorkstudioMenuOpen(false);
+                          void openWorkstudioWindow();
+                        }}
+                      >
+                        <Folder size={14} className="text-gray-500" />
+                        <span>打开 Workstudio</span>
+                      </button>
 
-                    <button
-                      type="button"
-                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
-                      onClick={() => {
-                        setWorkstudioMenuOpen(false);
-                        void handleOpenWorkstudioSecurity();
-                      }}
-                    >
-                      <Shield size={14} className="text-gray-500" />
-                      <span>编辑安全配置…</span>
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
+                      {showSetWorkstudioMainFolderMenu && (
+                        <button
+                          type="button"
+                          className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+                          onClick={() => {
+                            setWorkstudioMenuOpen(false);
+                            void handleSetWorkstudioMainFolder();
+                          }}
+                        >
+                          <Folder size={14} className="text-gray-500" />
+                          <span>设置主目录…</span>
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+                        onClick={() => {
+                          setWorkstudioMenuOpen(false);
+                          void handleOpenWorkstudioSecurity();
+                        }}
+                      >
+                        <Shield size={14} className="text-gray-500" />
+                        <span>编辑安全配置…</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <button
+                type="button"
+                onClick={() => setOutlineOpen((v) => !v)}
+                className={[
+                  'flex items-center gap-1 rounded border border-transparent px-2 py-1 text-xs text-gray-600 hover:bg-gray-100',
+                  'dark:text-gray-300 dark:hover:bg-gray-800',
+                  outlineOpen ? 'bg-gray-100 dark:bg-gray-800' : '',
+                ].join(' ')}
+                title={outlineOpen ? '隐藏消息目录' : '显示消息目录'}
+              >
+                <ListOrdered size={14} className="shrink-0 text-gray-400" />
+                <span className="rounded bg-gray-200 px-1.5 py-0.5 text-[10px] text-gray-700 dark:bg-gray-700 dark:text-gray-200">
+                  {outlineItems.length}
+                </span>
+              </button>
+            </div>
           </div>
 
           <div className="flex items-center gap-2">

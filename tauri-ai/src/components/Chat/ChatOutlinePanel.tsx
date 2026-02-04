@@ -23,29 +23,17 @@ export const ChatOutlinePanel: React.FC<{
   return (
     <div
       className={[
-        isOpen ? 'w-56' : 'w-7',
+        isOpen ? 'w-56' : 'w-0',
         'flex-shrink-0 overflow-hidden',
         'transition-[width] duration-200 ease-out',
-        isOpen ? 'border-r border-gray-200 dark:border-gray-800' : 'border-r border-transparent',
+        isOpen ? 'border-r border-gray-200 dark:border-gray-800' : 'border-r-0',
         isOpen ? 'bg-white/60 dark:bg-gray-900/40 backdrop-blur' : 'bg-transparent',
         'flex min-h-0 flex-col',
       ].join(' ')}
       aria-label="消息目录"
+      aria-hidden={!isOpen}
     >
-      {!isOpen ? (
-        <button
-          type="button"
-          onClick={onToggle}
-          className="flex h-full w-full flex-col items-center gap-2 px-1 py-2 text-gray-500 hover:bg-gray-100/70 dark:text-gray-400 dark:hover:bg-gray-800/40"
-          aria-label="打开消息目录"
-          title="打开消息目录"
-        >
-          <ListOrdered size={16} className="mt-1 shrink-0" />
-          <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-600 dark:bg-gray-800 dark:text-gray-300">
-            {items.length}
-          </span>
-        </button>
-      ) : (
+      {isOpen ? (
         <>
           <div className="flex items-center justify-between gap-2 border-b border-gray-200/70 px-3 py-2 text-xs text-gray-600 dark:border-gray-800 dark:text-gray-300">
             <div className="flex items-center gap-2">
@@ -113,7 +101,7 @@ export const ChatOutlinePanel: React.FC<{
             </div>
           </div>
         </>
-      )}
+      ) : null}
     </div>
   );
 };

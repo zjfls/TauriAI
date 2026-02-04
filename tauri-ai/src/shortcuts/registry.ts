@@ -63,8 +63,8 @@ export const SHORTCUT_ACTIONS: ShortcutActionDefinition[] = [
     title: '关闭当前会话',
     description: '关闭当前激活会话（类似关闭标签页）',
     category: '会话',
-    defaultMac: 'Cmd+W',
-    defaultWindows: 'Ctrl+W',
+    defaultMac: 'Cmd+Shift+W',
+    defaultWindows: 'Ctrl+Shift+W',
   },
   {
     id: 'session.next',
@@ -91,6 +91,15 @@ export const SHORTCUT_ACTIONS: ShortcutActionDefinition[] = [
     category: 'Chat',
     defaultMac: 'Escape',
     defaultWindows: 'Escape',
+    allowWhenTyping: true,
+  },
+  {
+    id: 'chat.openWorkstudio',
+    title: '打开 Workstudio',
+    description: '在聊天中打开/聚焦当前会话的 Workstudio（需要该会话启用 workspace）',
+    category: 'Chat',
+    defaultMac: 'Cmd+W',
+    defaultWindows: 'Ctrl+W',
     allowWhenTyping: true,
   },
   {
