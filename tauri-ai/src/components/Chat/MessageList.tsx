@@ -985,7 +985,7 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>((
 
        {/* Streaming message */}
        {streamingBlocks !== null && (
-         <div className="group flex gap-3 px-4 py-3">
+         <div className="group flex gap-3 py-3">
           {/* AI Avatar */}
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300">
             <Bot size={18} />

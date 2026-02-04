@@ -227,7 +227,7 @@ export const MessageItem = React.memo(function MessageItem({
   if (isError) {
     return (
       <div
-        className="group flex gap-3 px-4 py-3 flex-row"
+        className="group flex gap-3 py-3 flex-row"
         data-message-id={message.id}
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
@@ -285,8 +285,7 @@ export const MessageItem = React.memo(function MessageItem({
 
   return (
     <div
-      className={`group flex gap-3 px-4 py-3 ${isUser ? 'flex-row-reverse' : 'flex-row'
-        }`}
+      className={`group flex gap-3 py-3 ${isUser ? 'flex-row-reverse' : 'flex-row'}`}
       data-message-id={message.id}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
