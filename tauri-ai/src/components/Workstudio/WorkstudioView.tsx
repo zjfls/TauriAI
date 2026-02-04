@@ -1411,11 +1411,12 @@ export const WorkstudioView: React.FC = () => {
               </button>
               <button
                 type="button"
-                className="rounded border border-gray-200 px-2 py-0.5 text-xs text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                className="inline-flex items-center justify-center rounded border border-gray-200 px-2 py-0.5 text-xs text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
                 onClick={() => setTerminalOpen(false)}
                 title="关闭面板"
+                aria-label="关闭面板"
               >
-                关闭
+                <X size={12} />
               </button>
             </div>
           </div>
