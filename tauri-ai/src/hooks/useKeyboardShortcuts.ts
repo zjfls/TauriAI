@@ -307,6 +307,11 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
           await useSessionStore.getState().abortGeneration(activeSessionId);
           return true;
         }
+        case 'chat.toggleScrollNavigator': {
+          if (useUIStore.getState().activeView !== 'chat') return false;
+          dispatchShortcutEvent(actionId);
+          return true;
+        }
         case 'workstudio.fileSearch': {
           if (useUIStore.getState().activeView !== 'workstudio') return false;
           dispatchShortcutEvent(actionId);
@@ -384,6 +389,8 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
           const session = useSessionStore.getState().sessions.get(activeSessionId);
           return Boolean(session?.isGenerating);
         }
+        case 'chat.toggleScrollNavigator':
+          return useUIStore.getState().activeView === 'chat';
         default:
           return true;
       }

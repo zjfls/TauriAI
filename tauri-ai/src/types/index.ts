@@ -930,6 +930,7 @@ export type KeyboardShortcutActionId =
   | 'session.previous'
   | 'workstudio.fileSearch'
   | 'chat.abortGeneration'
+  | 'chat.toggleScrollNavigator'
   | 'document.save'
   | 'web.focusAddressBar'
   | 'web.reload';

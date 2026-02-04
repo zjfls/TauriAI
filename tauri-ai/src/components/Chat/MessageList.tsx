@@ -11,6 +11,7 @@ import { MessageBlocks } from './MessageBlocks';
 import { Bot, ChevronDown, ChevronUp, ChevronsDown, ChevronsUp } from 'lucide-react';
 import { isTauri } from '@tauri-apps/api/core';
 import { markChatOpenProfile } from '../../utils/chatOpenProfile';
+import { isEditableElement } from '../../shortcuts';
 import {
   consumeConversationScrollToBottomOnce,
   getConversationViewState,
@@ -43,6 +44,7 @@ const DEFAULT_VISIBLE_MESSAGES = DEFAULT_VISIBLE_TURNS * 2;
 const LOAD_MORE_PAGE_SIZE = 15;
 const LOAD_MORE_SCROLL_THRESHOLD = 80;
 const USER_INTENT_WINDOW_MS = 250;
+const SCROLL_NAV_HIDDEN_STORAGE_KEY = 'tauri-ai:chat:scroll_nav_hidden';
 
 type PendingRestore =
   | { mode: 'bottom' }
@@ -84,6 +86,32 @@ const MessageListInner: React.FC<MessageListProps> = ({
   const [isAtBottom, setIsAtBottom] = useState(true);
   // Track if user manually scrolled away
   const [userScrolledAway, setUserScrolledAway] = useState(false);
+
+  const [scrollNavHidden, setScrollNavHidden] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem(SCROLL_NAV_HIDDEN_STORAGE_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(SCROLL_NAV_HIDDEN_STORAGE_KEY, scrollNavHidden ? '1' : '0');
+    } catch {
+      // ignore
+    }
+  }, [scrollNavHidden]);
+
+  useEffect(() => {
+    const onShortcut = (event: Event) => {
+      const e = event as CustomEvent<{ action?: string }>;
+      if (e.detail?.action !== 'chat.toggleScrollNavigator') return;
+      setScrollNavHidden((v) => !v);
+    };
+    window.addEventListener('tauri-ai:shortcut', onShortcut as EventListener);
+    return () => window.removeEventListener('tauri-ai:shortcut', onShortcut as EventListener);
+  }, []);
 
   // Windowed rendering for long histories
   const [visibleCount, setVisibleCount] = useState(DEFAULT_VISIBLE_MESSAGES);
@@ -627,6 +655,34 @@ const MessageListInner: React.FC<MessageListProps> = ({
     scrollToRenderedMessageIndex(next, true);
   }, [getRenderedMessageElements, getTopVisibleMessageIndex, scrollToRenderedMessageIndex]);
 
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      if (isEditableElement(e.target)) return;
+
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.altKey) {
+          scrollToTop(true);
+          return;
+        }
+        scrollToPreviousMessage();
+        return;
+      }
+
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.altKey) {
+          scrollToBottom(true);
+          return;
+        }
+        scrollToNextMessage();
+      }
+    },
+    [scrollToBottom, scrollToNextMessage, scrollToPreviousMessage, scrollToTop]
+  );
+
   // “上一条消息”在顶部时：先触发一次 loadMore，再在 DOM 更新后滚到新增的上一条
   useLayoutEffect(() => {
     const pending = pendingNavAfterLoadMoreRef.current;
@@ -767,10 +823,21 @@ const MessageListInner: React.FC<MessageListProps> = ({
     <div className="relative flex-1 min-h-0">
       <div
         ref={containerRef}
-        className="h-full overflow-y-auto px-4 py-4 scrollbar-chat"
+        tabIndex={0}
+        role="region"
+        aria-label="聊天消息"
+        className="h-full overflow-y-auto px-4 py-4 scrollbar-chat rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500/30"
         onScroll={handleScroll}
+        onKeyDown={handleKeyDown}
         onDragOver={handleDragOver}
         onDrop={handleDrop}
+        onPointerDownCapture={() => {
+          try {
+            containerRef.current?.focus();
+          } catch {
+            // ignore
+          }
+        }}
       >
         <div ref={contentRef} className="min-h-full">
       {/* Empty state */}
@@ -831,48 +898,52 @@ const MessageListInner: React.FC<MessageListProps> = ({
       </div>
 
       {/* 快速滚动导航条（与当前 MessageList 绑定，避免多 Pane 下 fixed 定位错位） */}
-      <div className="absolute right-2 top-1/2 z-20 -translate-y-1/2">
-        <div className="flex flex-col gap-1 rounded-xl border border-gray-200 bg-white/85 p-1 shadow-sm backdrop-blur dark:border-gray-700 dark:bg-gray-900/55">
-          <button
-            type="button"
-            onClick={() => scrollToTop(true)}
-            className="flex h-9 w-9 items-center justify-center rounded-lg text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:text-gray-200 dark:hover:bg-gray-800"
-            title="到顶部"
-            aria-label="到顶部"
-          >
-            <ChevronsUp size={18} />
-          </button>
-          <button
-            type="button"
-            onClick={scrollToPreviousMessage}
-            className="flex h-9 w-9 items-center justify-center rounded-lg text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:text-gray-200 dark:hover:bg-gray-800"
-            title="到上一条消息"
-            aria-label="到上一条消息"
-          >
-            <ChevronUp size={18} />
-          </button>
-          <button
-            type="button"
-            onClick={scrollToNextMessage}
-            className="flex h-9 w-9 items-center justify-center rounded-lg text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:text-gray-200 dark:hover:bg-gray-800"
-            title="到下一条消息"
-            aria-label="到下一条消息"
-          >
-            <ChevronDown size={18} />
-          </button>
-          <button
-            type="button"
-            onClick={() => scrollToBottom(true)}
-            className={`flex h-9 w-9 items-center justify-center rounded-lg text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:text-gray-200 dark:hover:bg-gray-800 ${
-              userScrolledAway && streamingBlocks !== null ? 'bg-blue-50 text-blue-700 hover:bg-blue-100 dark:bg-blue-900/20 dark:text-blue-300 dark:hover:bg-blue-900/30' : ''
-            }`}
-            title="到底部"
-            aria-label="到底部"
-          >
-            <ChevronsDown size={18} />
-          </button>
+      {!scrollNavHidden && (
+        <div className="absolute right-1 top-1/2 z-20 -translate-y-1/2">
+          <div className="flex flex-col gap-0.5 rounded-lg border border-gray-200/70 bg-white/60 p-0.5 shadow-sm backdrop-blur-md dark:border-gray-700/60 dark:bg-gray-950/35">
+            <button
+              type="button"
+              onClick={() => scrollToTop(true)}
+              className="flex h-8 w-8 items-center justify-center rounded-md text-gray-700 hover:bg-gray-100/70 disabled:cursor-not-allowed disabled:opacity-40 dark:text-gray-200 dark:hover:bg-gray-800/60"
+              title="到顶部（Alt+↑）"
+              aria-label="到顶部"
+            >
+              <ChevronsUp size={16} />
+            </button>
+            <button
+              type="button"
+              onClick={scrollToPreviousMessage}
+              className="flex h-8 w-8 items-center justify-center rounded-md text-gray-700 hover:bg-gray-100/70 disabled:cursor-not-allowed disabled:opacity-40 dark:text-gray-200 dark:hover:bg-gray-800/60"
+              title="上一条消息（↑）"
+              aria-label="上一条消息"
+            >
+              <ChevronUp size={16} />
+            </button>
+            <button
+              type="button"
+              onClick={scrollToNextMessage}
+              className="flex h-8 w-8 items-center justify-center rounded-md text-gray-700 hover:bg-gray-100/70 disabled:cursor-not-allowed disabled:opacity-40 dark:text-gray-200 dark:hover:bg-gray-800/60"
+              title="下一条消息（↓）"
+              aria-label="下一条消息"
+            >
+              <ChevronDown size={16} />
+            </button>
+            <button
+              type="button"
+              onClick={() => scrollToBottom(true)}
+              className={`flex h-8 w-8 items-center justify-center rounded-md text-gray-700 hover:bg-gray-100/70 disabled:cursor-not-allowed disabled:opacity-40 dark:text-gray-200 dark:hover:bg-gray-800/60 ${
+                userScrolledAway && streamingBlocks !== null
+                  ? 'bg-blue-50/80 text-blue-700 hover:bg-blue-100/80 dark:bg-blue-900/20 dark:text-blue-300 dark:hover:bg-blue-900/30'
+                  : ''
+              }`}
+              title="到底部（Alt+↓）"
+              aria-label="到底部"
+            >
+              <ChevronsDown size={16} />
+            </button>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 };

@@ -94,6 +94,15 @@ export const SHORTCUT_ACTIONS: ShortcutActionDefinition[] = [
     allowWhenTyping: true,
   },
   {
+    id: 'chat.toggleScrollNavigator',
+    title: '显示/隐藏滚动导航条',
+    description: '切换聊天右侧的快速滚动导航条显示状态（更不遮挡内容）',
+    category: 'Chat',
+    defaultMac: 'Cmd+Option+Shift+H',
+    defaultWindows: 'Ctrl+Alt+Shift+H',
+    allowWhenTyping: true,
+  },
+  {
     id: 'workstudio.fileSearch',
     title: '文件搜索（Workstudio）',
     description: '打开 Workstudio 文件搜索面板（类似 VS Code 快速打开）',
