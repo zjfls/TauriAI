@@ -11,11 +11,13 @@ use tokio::time::Instant;
 use crate::ai_client::ToolCall;
 use crate::models::SandboxPolicy;
 use crate::runtime::events::RunEvent;
+use crate::runtime::tools::permissions::ToolPermission;
+use crate::runtime::tools::registry::{
+    ToolCallResult, ToolError, ToolExecutionContext, ToolHandler,
+};
 use crate::runtime::tools::sandbox::{
     dedupe_paths, effective_workspace_roots, is_path_under_any_root, normalize_root_for_join,
 };
-use crate::runtime::tools::permissions::ToolPermission;
-use crate::runtime::tools::registry::{ToolCallResult, ToolError, ToolExecutionContext, ToolHandler};
 use crate::runtime::tools::spec::ToolSpec;
 
 pub struct ShellCommandTool;
@@ -61,7 +63,12 @@ fn is_known_safe_command(command: &str) -> bool {
     }
 
     // Reject common shell metacharacters that enable redirection / chaining.
-    if cmd.contains('>') || cmd.contains('<') || cmd.contains('|') || cmd.contains('&') || cmd.contains(';') {
+    if cmd.contains('>')
+        || cmd.contains('<')
+        || cmd.contains('|')
+        || cmd.contains('&')
+        || cmd.contains(';')
+    {
         return false;
     }
 
@@ -69,7 +76,12 @@ fn is_known_safe_command(command: &str) -> bool {
     let first = parts.next().unwrap_or_default().to_ascii_lowercase();
     match first.as_str() {
         "ls" | "dir" | "pwd" | "whoami" | "cat" | "type" => true,
-        "git" => match parts.next().unwrap_or_default().to_ascii_lowercase().as_str() {
+        "git" => match parts
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str()
+        {
             "status" | "diff" | "log" | "show" => true,
             _ => false,
         },
@@ -100,9 +112,15 @@ fn build_shell_invocation(command: &str, login: bool) -> (String, Vec<String>) {
         }
 
         if login && std::path::Path::new("/bin/bash").exists() {
-            ("/bin/bash".to_string(), vec!["-lc".to_string(), command.to_string()])
+            (
+                "/bin/bash".to_string(),
+                vec!["-lc".to_string(), command.to_string()],
+            )
         } else {
-            ("/bin/sh".to_string(), vec!["-c".to_string(), command.to_string()])
+            (
+                "/bin/sh".to_string(),
+                vec!["-c".to_string(), command.to_string()],
+            )
         }
     }
 }
@@ -163,11 +181,6 @@ impl ToolHandler for ShellCommandTool {
 
         let policy = &ctx.sandbox_policy;
         // Chat mode expects the sandbox to enforce write restrictions; do not hard-block commands here.
-        if false && matches!(policy, SandboxPolicy::ReadOnly) && !is_known_safe_command(&args.command) {
-            return Err(ToolError::denied(
-                "read-only 策略下仅允许只读命令（建议优先使用 read_file/list_dir/rg 等工具）",
-            ));
-        }
 
         let (program, program_args) = build_shell_invocation(&args.command, args.login);
 
@@ -294,9 +307,10 @@ impl ToolHandler for ShellCommandTool {
 
         let mut output = String::new();
 
-        let deadline = args.timeout_ms.filter(|ms| *ms > 0).map(|ms| {
-            Instant::now() + std::time::Duration::from_millis(ms)
-        });
+        let deadline = args
+            .timeout_ms
+            .filter(|ms| *ms > 0)
+            .map(|ms| Instant::now() + std::time::Duration::from_millis(ms));
 
         loop {
             if let Some(d) = deadline {
@@ -310,14 +324,18 @@ impl ToolHandler for ShellCommandTool {
                 Ok(Some(status)) => {
                     // 退出后尽量再 drain 一小段时间，拿到剩余输出
                     loop {
-                        match tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await {
+                        match tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv())
+                            .await
+                        {
                             Ok(Some((_is_stderr, bytes))) => {
                                 let text = String::from_utf8_lossy(&bytes).to_string();
                                 output.push_str(&text);
                                 ctx.emitter.emit(RunEvent::BlockDelta {
                                     task_id: ctx.task_id.to_string(),
                                     turn_id: ctx.turn_id.to_string(),
-                                    assistant_message_id: Some(ctx.assistant_message_id.to_string()),
+                                    assistant_message_id: Some(
+                                        ctx.assistant_message_id.to_string(),
+                                    ),
                                     block_id: format!("tool_result:{}", call.id),
                                     block_type: "tool_result".to_string(),
                                     format: Some("plain".to_string()),
