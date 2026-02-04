@@ -199,6 +199,14 @@ export interface SessionState {
   // Session management
   sessions: Map<string, AgentSession>;
   activeSessionId: string | null;
+  /**
+   * 是否已完成过一次 `restoreSessionState()`（本窗口维度）。
+   *
+   * 说明：
+   * - 启动早期 sessions 可能暂时为空（等待 config/DB 读取），但工作区 split/tab 布局可能已从 localStorage 读入。
+   * - 若此时按“当前 sessionsMap”去清洗布局，会把持久化的 chat tabs 误删并写回，造成“分屏布局持久化没生效”的观感。
+   */
+  hydrated: boolean;
   // Pane/group management (VS Code-like)
   panes: SessionPane[];
   focusedPaneId: string | null;
@@ -283,6 +291,7 @@ const discardNextFinalizeByConversationId = new Set<string>();
 export const useSessionStore = create<SessionState>((set, get) => ({
   sessions: new Map<string, AgentSession>(),
   activeSessionId: null,
+  hydrated: false,
   panes: ensureAtLeastOnePane([]),
   focusedPaneId: null,
 
@@ -1975,7 +1984,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
     }
 
-    if (!stored) return;
+    if (!stored) {
+      set({ hydrated: true });
+      return;
+    }
 
     try {
       const canUseSharedWorkspaceTabs = true;
@@ -2161,6 +2173,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         panes,
         focusedPaneId,
         activeSessionId,
+        hydrated: true,
       });
 
       if (loadedFromLegacy) {
@@ -2183,6 +2196,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
     } catch (error) {
       console.error('Failed to restore session state:', error);
+      set({ hydrated: true });
     }
   },
 

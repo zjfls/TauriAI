@@ -68,7 +68,7 @@ const SortableTab: React.FC<{
         )}
       </span>
 
-      <span className="flex-1 min-w-0 truncate text-sm font-medium">{session.title}</span>
+      <span className="flex-1 min-w-0 truncate pr-20 text-sm font-medium">{session.title}</span>
 
       {session.apiType === 'responses' ? <span className="flex-shrink-0 text-[10px] text-gray-400">R</span> : null}
 

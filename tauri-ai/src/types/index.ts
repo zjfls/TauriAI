@@ -887,6 +887,8 @@ export interface GeneralSettings {
   autoStart: boolean;
   debugMode?: boolean;  // Enable debug mode to show raw HTTP messages
   debugSse?: boolean;   // Log raw SSE chunks during streaming (requires debug mode)
+  /** 是否在对话（task）结束后显示 Debug 按钮（默认开启） */
+  taskEndDebugButton?: boolean;
   showUsage?: boolean;  // Show token usage in messages
   theme?: Theme;        // UI theme preference (light/dark/system)
   pdfDebugMode?: boolean;  // Enable PDF debug mode to select page ranges

@@ -199,7 +199,7 @@ const SortableTab: React.FC<{
     >
       <span className="flex-shrink-0">{icon}</span>
 
-      <span className="flex-1 min-w-0 truncate text-sm font-medium">{tab.title}</span>
+      <span className="flex-1 min-w-0 truncate pr-20 text-sm font-medium">{tab.title}</span>
 
       {tab.kind === 'chat' && tab.session.apiType === 'responses' ? (
         <span className="flex-shrink-0 text-[10px] text-gray-400">R</span>

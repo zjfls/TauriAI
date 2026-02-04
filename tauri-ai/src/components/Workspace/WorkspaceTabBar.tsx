@@ -13,6 +13,7 @@ import {
   closestCenter,
   useSensor,
   useSensors,
+  type DragCancelEvent,
   type DragEndEvent,
   type DragStartEvent,
   type DragMoveEvent,
@@ -36,6 +37,8 @@ import {
   useWorkspaceTabStore,
   type WorkspaceTabId,
 } from '../../stores/workspaceTabStore';
+import { cursorPosition } from '@tauri-apps/api/window';
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { dockWorkspaceItemToWindow, findChatDockTargetAtCursor, openViewWindow } from '../../utils/viewWindow';
 import { WorkspaceTabContextMenu } from './WorkspaceTabContextMenu';
 
@@ -68,6 +71,7 @@ interface TabRenderItem {
 }
 
 const TEAR_OFF_THRESHOLD_PX = 48;
+const TEAR_OFF_WINDOW_THRESHOLD_PX = 8;
 
 const AgentSelector: React.FC<{
   agents: Agent[];
@@ -357,6 +361,100 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
   const lastDragPointRef = useRef<{ x: number; y: number } | null>(null);
 
+  const isCursorOutsideCurrentWindow = async (thresholdPx: number): Promise<boolean> => {
+    try {
+      const [cursor, pos, size] = await Promise.all([
+        cursorPosition().catch(() => null),
+        getCurrentWebviewWindow().outerPosition().catch(() => null),
+        getCurrentWebviewWindow().outerSize().catch(() => null),
+      ]);
+      if (!cursor || !pos || !size) return false;
+      const left = pos.x - thresholdPx;
+      const top = pos.y - thresholdPx;
+      const right = pos.x + size.width + thresholdPx;
+      const bottom = pos.y + size.height + thresholdPx;
+      return cursor.x < left || cursor.x > right || cursor.y < top || cursor.y > bottom;
+    } catch {
+      return false;
+    }
+  };
+
+  const tearOffTab = async (tabId: WorkspaceTabId) => {
+    const parsed = parseWorkspaceTabId(tabId);
+    if (parsed.kind === 'chat' && parsed.sessionId) {
+      const dockTarget = await findChatDockTargetAtCursor().catch(() => null);
+      if (dockTarget) {
+        try {
+          await useSessionStore
+            .getState()
+            .dockSessionToWindow(parsed.sessionId, dockTarget.targetLabel, dockTarget.placement);
+          return;
+        } catch (err) {
+          console.warn('Failed to dock chat tab via drag-drop, fallback to popout:', err);
+        }
+      }
+    }
+
+    if (parsed.kind === 'document') {
+      const docId = parsed.documentId;
+      const doc = docId ? documents.find((d) => d.id === docId) : undefined;
+      if (doc?.path) {
+        const dockTarget = await findChatDockTargetAtCursor().catch(() => null);
+        if (dockTarget) {
+          try {
+            const item = { kind: 'document' as const, title: doc.title, documentPath: doc.path };
+            await dockWorkspaceItemToWindow(item, dockTarget.targetLabel, dockTarget.placement);
+            useWorkspaceLayoutStore.getState().closeTabInLayout(tabId);
+            closeDocument(doc.id);
+            return;
+          } catch (err) {
+            console.warn('Failed to dock document tab via drag-drop, fallback to popout:', err);
+          }
+        }
+      }
+    }
+
+    if (parsed.kind === 'web') {
+      const wid = parsed.webTabId;
+      const tab = wid ? webTabs.find((t) => t.id === wid) : undefined;
+      if (tab) {
+        const dockTarget = await findChatDockTargetAtCursor().catch(() => null);
+        if (dockTarget) {
+          try {
+            const item = { kind: 'web' as const, title: tab.title, webUrl: tab.url };
+            await dockWorkspaceItemToWindow(item, dockTarget.targetLabel, dockTarget.placement);
+            useWorkspaceLayoutStore.getState().closeTabInLayout(tabId);
+            closeWebTab(tab.id);
+            return;
+          } catch (err) {
+            console.warn('Failed to dock web tab via drag-drop, fallback to popout:', err);
+          }
+        }
+      }
+    }
+
+    if (parsed.kind === 'terminal') {
+      const tid = parsed.terminalTabId;
+      const tab = tid ? terminalTabs.find((t) => t.id === tid) : undefined;
+      if (tab) {
+        const dockTarget = await findChatDockTargetAtCursor().catch(() => null);
+        if (dockTarget) {
+          try {
+            const item = { kind: 'terminal' as const, title: tab.title, terminalWorkdir: tab.workdir ?? undefined };
+            await dockWorkspaceItemToWindow(item, dockTarget.targetLabel, dockTarget.placement);
+            useWorkspaceLayoutStore.getState().closeTabInLayout(tabId);
+            await closeTerminalTab(tab.id);
+            return;
+          } catch (err) {
+            console.warn('Failed to dock terminal tab via drag-drop, fallback to popout:', err);
+          }
+        }
+      }
+    }
+
+    await popoutTab(tabId);
+  };
+
   const [contextMenu, setContextMenu] = useState<{
     visible: boolean;
     position: { x: number; y: number };
@@ -520,7 +618,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
 
     const rect = tabBarRef.current?.getBoundingClientRect();
     const p = lastDragPointRef.current;
-    const shouldTearOff =
+    const shouldTearOffByClientPoint =
       Boolean(rect && p) &&
       Boolean(
         rect &&
@@ -531,86 +629,42 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
             p.y > rect.bottom + TEAR_OFF_THRESHOLD_PX)
       );
 
+    // VS Code 风格兜底：拖拽离开窗口后可能无法持续收到 pointer move 更新，
+    // 这时 `client point` 会停在窗内，导致无法触发 tear-off。
+    const outsideWindow = shouldTearOffByClientPoint
+      ? false
+      : await isCursorOutsideCurrentWindow(TEAR_OFF_WINDOW_THRESHOLD_PX);
+    const shouldTearOff = shouldTearOffByClientPoint || outsideWindow;
+
     dragStartRef.current = null;
     lastDragPointRef.current = null;
 
     if (shouldTearOff) {
-      const parsed = parseWorkspaceTabId(activeId);
-      if (parsed.kind === 'chat' && parsed.sessionId) {
-        const dockTarget = await findChatDockTargetAtCursor().catch(() => null);
-        if (dockTarget) {
-          try {
-            await useSessionStore.getState().dockSessionToWindow(parsed.sessionId, dockTarget.targetLabel, dockTarget.placement);
-            return;
-          } catch (err) {
-            console.warn('Failed to dock chat tab via drag-drop, fallback to popout:', err);
-          }
-        }
-      }
-
-      if (parsed.kind === 'document') {
-        const docId = parsed.documentId;
-        const doc = docId ? documents.find((d) => d.id === docId) : undefined;
-        if (doc?.path) {
-          const dockTarget = await findChatDockTargetAtCursor().catch(() => null);
-          if (dockTarget) {
-            try {
-              const item = { kind: 'document' as const, title: doc.title, documentPath: doc.path };
-              await dockWorkspaceItemToWindow(item, dockTarget.targetLabel, dockTarget.placement);
-              useWorkspaceLayoutStore.getState().closeTabInLayout(activeId);
-              closeDocument(doc.id);
-              return;
-            } catch (err) {
-              console.warn('Failed to dock document tab via drag-drop, fallback to popout:', err);
-            }
-          }
-        }
-      }
-
-      if (parsed.kind === 'web') {
-        const wid = parsed.webTabId;
-        const tab = wid ? webTabs.find((t) => t.id === wid) : undefined;
-        if (tab) {
-          const dockTarget = await findChatDockTargetAtCursor().catch(() => null);
-          if (dockTarget) {
-            try {
-              const item = { kind: 'web' as const, title: tab.title, webUrl: tab.url };
-              await dockWorkspaceItemToWindow(item, dockTarget.targetLabel, dockTarget.placement);
-              useWorkspaceLayoutStore.getState().closeTabInLayout(activeId);
-              closeWebTab(tab.id);
-              return;
-            } catch (err) {
-              console.warn('Failed to dock web tab via drag-drop, fallback to popout:', err);
-            }
-          }
-        }
-      }
-
-      if (parsed.kind === 'terminal') {
-        const tid = parsed.terminalTabId;
-        const tab = tid ? terminalTabs.find((t) => t.id === tid) : undefined;
-        if (tab) {
-          const dockTarget = await findChatDockTargetAtCursor().catch(() => null);
-          if (dockTarget) {
-            try {
-              const item = { kind: 'terminal' as const, title: tab.title, terminalWorkdir: tab.workdir ?? undefined };
-              await dockWorkspaceItemToWindow(item, dockTarget.targetLabel, dockTarget.placement);
-              useWorkspaceLayoutStore.getState().closeTabInLayout(activeId);
-              await closeTerminalTab(tab.id);
-              return;
-            } catch (err) {
-              console.warn('Failed to dock terminal tab via drag-drop, fallback to popout:', err);
-            }
-          }
-        }
-      }
-
-      await popoutTab(activeId);
+      await tearOffTab(activeId);
       return;
     }
 
     if (overId && activeId !== overId) {
       reorderTabs(activeId, overId);
+    }
+  };
+
+  const handleDragCancel = async (e: DragCancelEvent) => {
+    const activeId = e.active.id as WorkspaceTabId;
+    const start = dragStartRef.current;
+    const point = lastDragPointRef.current;
+
+    dragStartRef.current = null;
+    lastDragPointRef.current = null;
+
+    const movedDist = start && point ? Math.hypot(point.x - start.x, point.y - start.y) : 0;
+    const lostFocus = typeof document !== 'undefined' ? !document.hasFocus() : false;
+    const outsideWindow = await isCursorOutsideCurrentWindow(TEAR_OFF_WINDOW_THRESHOLD_PX);
+
+    // 参考 VS Code：拖拽到窗口外导致 cancel 时，仍然视作“tear-off”。
+    // 同时加一个移动距离门槛，避免偶发 cancel 误触。
+    if (outsideWindow || (lostFocus && movedDist >= 24)) {
+      await tearOffTab(activeId);
     }
   };
 
@@ -687,6 +741,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
           onDragStart={handleDragStart}
           onDragMove={handleDragMove}
           onDragEnd={handleDragEnd}
+          onDragCancel={handleDragCancel}
         >
           <SortableContext items={items.map((i) => i.id)} strategy={horizontalListSortingStrategy}>
             <div

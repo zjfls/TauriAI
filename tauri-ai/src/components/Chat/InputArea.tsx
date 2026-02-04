@@ -4,7 +4,7 @@
  * Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.6
  */
 
-import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo } from 'react';
 import { Send, Square, Bot, Cpu, ChevronDown, Check, ImagePlus, Paperclip, FileText, Plug, File as FileIcon, Copy } from 'lucide-react';
 import { ContextUsageIndicator } from './ContextUsageIndicator';
 import { McpModal } from './McpModal';
@@ -1788,10 +1788,36 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
    */
   const adjustTextareaHeight = useCallback(() => {
     const textarea = textareaRef.current;
-    if (textarea) {
-      textarea.style.height = 'auto';
-      const newHeight = calculateTextareaHeight(textarea.scrollHeight);
-      textarea.style.height = `${newHeight}px`;
+    const overlay = textareaOverlayRef.current;
+    if (!textarea) return;
+
+    const prevScrollTop = textarea.scrollTop;
+    const prevScrollLeft = textarea.scrollLeft;
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const cursorAtEnd =
+      typeof start === 'number' &&
+      typeof end === 'number' &&
+      start === end &&
+      end === textarea.value.length;
+
+    textarea.style.height = 'auto';
+    const newHeight = calculateTextareaHeight(textarea.scrollHeight);
+    textarea.style.height = `${newHeight}px`;
+
+    // 调整高度过程中浏览器可能会重置滚动位置，导致 overlay 与光标所在位置不同步。
+    // 这里恢复滚动位置，并在光标位于末尾时确保滚动到底部，避免“输入了但看不到”。
+    textarea.scrollTop = prevScrollTop;
+    textarea.scrollLeft = prevScrollLeft;
+
+    const isFocused = typeof document !== 'undefined' && document.activeElement === textarea;
+    if (isFocused && cursorAtEnd) {
+      textarea.scrollTop = textarea.scrollHeight;
+    }
+
+    if (overlay) {
+      overlay.scrollTop = textarea.scrollTop;
+      overlay.scrollLeft = textarea.scrollLeft;
     }
   }, []);
 
@@ -1872,7 +1898,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
    * Auto-resize textarea based on content
    * Requirement 4.1: Auto-expand textarea height up to maximum limit
    */
-  useEffect(() => {
+  useLayoutEffect(() => {
     adjustTextareaHeight();
   }, [content, adjustTextareaHeight]);
 

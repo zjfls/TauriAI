@@ -83,6 +83,54 @@ function uint8ArrayToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+async function blobToPngBase64(blob: Blob): Promise<string> {
+  // Prefer FileReader: avoids large JS string concatenations for big images.
+  if (typeof FileReader !== 'undefined') {
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(reader.error ?? new Error('Failed to read blob'));
+      reader.onload = () => {
+        const res = reader.result;
+        if (typeof res === 'string') resolve(res);
+        else reject(new Error('Invalid FileReader result'));
+      };
+      reader.readAsDataURL(blob);
+    });
+    const idx = dataUrl.indexOf(',');
+    if (idx >= 0) return dataUrl.slice(idx + 1);
+    return dataUrl;
+  }
+
+  // Fallback: ArrayBuffer -> base64
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  return uint8ArrayToBase64(bytes);
+}
+
+function patchSvgForExport(svgText: string, width: number, height: number): string {
+  // Some WebViews fail to rasterize SVG with percentage dimensions or missing XML namespaces.
+  // Ensure root <svg> has explicit width/height and xmlns so it can be loaded as an image.
+  const w = Math.max(1, Math.round(width));
+  const h = Math.max(1, Math.round(height));
+  return svgText.replace(/<svg\b([^>]*)>/i, (_full, rawAttrs: string) => {
+    let attrs = rawAttrs ?? '';
+
+    // Remove any existing width/height (including percentage) to avoid "0x0" intrinsic size.
+    attrs = attrs.replace(/\swidth\s*=\s*"[^"]*"/i, '');
+    attrs = attrs.replace(/\sheight\s*=\s*"[^"]*"/i, '');
+
+    // Ensure namespaces for standalone serialization.
+    if (!/\sxmlns\s*=\s*"/i.test(attrs)) {
+      attrs += ' xmlns="http://www.w3.org/2000/svg"';
+    }
+    if (/\sxlink:href\s*=\s*"/i.test(svgText) && !/\sxmlns:xlink\s*=\s*"/i.test(attrs)) {
+      attrs += ' xmlns:xlink="http://www.w3.org/1999/xlink"';
+    }
+
+    attrs += ` width="${w}" height="${h}"`;
+    return `<svg${attrs}>`;
+  });
+}
+
 const isTauriRuntime = (): boolean => {
   if (typeof window === 'undefined') return false;
   const w = window as any;
@@ -478,7 +526,7 @@ const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferen
         setIsCopyingImage(true);
 
         const svgEl = (containerRef.current?.querySelector('svg') ?? null) as SVGSVGElement | null;
-        const svgSource = svgEl ? new XMLSerializer().serializeToString(svgEl) : svg;
+        const svgSourceRaw = svgEl ? new XMLSerializer().serializeToString(svgEl) : svg;
 
         let width = 0;
         let height = 0;
@@ -495,14 +543,14 @@ const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferen
         }
 
         if (!width || !height) {
-          const widthMatch = svgSource.match(/width=\"([\d.]+)(?:px)?\"/i);
-          const heightMatch = svgSource.match(/height=\"([\d.]+)(?:px)?\"/i);
+          const widthMatch = svgSourceRaw.match(/width=\"([\d.]+)(?:px)?\"/i);
+          const heightMatch = svgSourceRaw.match(/height=\"([\d.]+)(?:px)?\"/i);
           if (!width && widthMatch) width = Number.parseFloat(widthMatch[1]);
           if (!height && heightMatch) height = Number.parseFloat(heightMatch[1]);
         }
 
         if (!width || !height) {
-          const viewBoxMatch = svgSource.match(/viewBox=\"([^\"]+)\"/i);
+          const viewBoxMatch = svgSourceRaw.match(/viewBox=\"([^\"]+)\"/i);
           if (viewBoxMatch) {
             const parts = viewBoxMatch[1].trim().split(/\s+/).map((v) => Number.parseFloat(v));
             if (parts.length === 4) {
@@ -515,6 +563,7 @@ const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferen
         if (!Number.isFinite(width) || width <= 0) width = 800;
         if (!Number.isFinite(height) || height <= 0) height = 600;
 
+        const svgSource = patchSvgForExport(svgSourceRaw, width, height);
         const pngBlob = await svgStringToPngBlob(svgSource, width, height);
 
         // Prefer OS-native clipboard in Tauri to ensure pasting behaves like a screenshot (esp. macOS WKWebView).
@@ -523,9 +572,13 @@ const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferen
         if (isTauriRuntime()) {
           try {
             const { invoke } = await import('@tauri-apps/api/core');
-            const bytes = new Uint8Array(await pngBlob.arrayBuffer());
-            const pngBase64 = uint8ArrayToBase64(bytes);
-            await invoke('clipboard_write_png_base64', { pngBase64 });
+            const pngBase64 = await blobToPngBase64(pngBlob);
+            try {
+              await invoke('clipboard_write_png_base64', { pngBase64 });
+            } catch (err) {
+              // Compatibility fallback: accept snake_case key as well.
+              await invoke('clipboard_write_png_base64', { png_base64: pngBase64 } as any);
+            }
             copied = true;
           } catch (tauriErr) {
             console.warn('[Mermaid] Tauri clipboard image copy failed, fallback to Web API:', tauriErr);
@@ -607,7 +660,14 @@ const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferen
   return (
     <>
       <div className="group relative my-2 w-full">
-        <div className="absolute right-2 top-2 z-10 flex items-center gap-2">
+        <div
+          className={[
+            'absolute right-2 top-2 z-10 flex items-center gap-2',
+            'opacity-0 pointer-events-none transition-opacity',
+            'group-hover:opacity-100 group-hover:pointer-events-auto',
+            'group-focus-within:opacity-100 group-focus-within:pointer-events-auto',
+          ].join(' ')}
+        >
           <button
             type="button"
             className="flex items-center gap-1.5 rounded bg-white/90 dark:bg-gray-800/90 px-2.5 py-1 text-xs text-gray-700 dark:text-gray-200 shadow hover:bg-white dark:hover:bg-gray-800 transition-colors"

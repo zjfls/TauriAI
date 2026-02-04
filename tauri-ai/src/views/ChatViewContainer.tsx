@@ -37,6 +37,9 @@ const MemoChatView = React.memo(ChatView);
 MemoChatView.displayName = 'MemoChatView';
 
 const TEAR_OFF_THRESHOLD_PX = 48;
+// VS Code 风格：只要鼠标确实拖到了“窗体之外”，就应当支持把 tab 脱离为新窗口/停靠到其它窗口。
+// 这里用更小的阈值做“窗外”判定，避免用户必须把鼠标拖得很远才触发。
+const TEAR_OFF_WINDOW_THRESHOLD_PX = 8;
 
 type SplitPreview = {
   paneId: string;
@@ -160,6 +163,7 @@ const ChatViewContainerInner: React.FC = () => {
 
   const sessionsMap = useSessionStore((state) => state.sessions);
   const activeSessionId = useSessionStore((state) => state.activeSessionId);
+  const sessionsHydrated = useSessionStore((state) => state.hydrated);
   const switchSession = useSessionStore((state) => state.switchSession);
   const closeSession = useSessionStore((state) => state.closeSession);
 
@@ -264,10 +268,11 @@ const ChatViewContainerInner: React.FC = () => {
   }, [focusedPaneId, resolvedPanes]);
 
   useEffect(() => {
+    if (!sessionsHydrated) return;
     if (!resolvedFocusedPaneId) return;
     if (focusedPaneId === resolvedFocusedPaneId) return;
     setFocusedPane(resolvedFocusedPaneId);
-  }, [focusedPaneId, resolvedFocusedPaneId, setFocusedPane]);
+  }, [focusedPaneId, resolvedFocusedPaneId, sessionsHydrated, setFocusedPane]);
 
   const resolvedLayoutKey = useMemo(() => {
     return `${resolvedFocusedPaneId ?? ''}|${resolvedPanes
@@ -278,10 +283,11 @@ const ChatViewContainerInner: React.FC = () => {
     return `${focusedPaneId ?? ''}|${panes.map((p) => `${p.id}:${p.activeTabId ?? ''}:${p.tabIds.join(',')}:${p.weight}`).join('|')}`;
   }, [focusedPaneId, panes]);
   useEffect(() => {
+    if (!sessionsHydrated) return;
     if (!resolvedFocusedPaneId) return;
     if (resolvedLayoutKey === storedLayoutKey) return;
     replaceLayout({ panes: resolvedPanes, focusedPaneId: resolvedFocusedPaneId });
-  }, [replaceLayout, resolvedFocusedPaneId, resolvedLayoutKey, resolvedPanes, storedLayoutKey]);
+  }, [replaceLayout, resolvedFocusedPaneId, resolvedLayoutKey, resolvedPanes, sessionsHydrated, storedLayoutKey]);
 
   const visibleTabKey = useMemo(() => resolvedPanes.map((p) => p.activeTabId ?? '').join('|'), [resolvedPanes]);
   useEffect(() => {
@@ -662,6 +668,7 @@ const ChatViewContainerInner: React.FC = () => {
   const handleDragEnd = useCallback(
     (e: DragEndEvent) => {
       const activeId = String(e.active.id) as WorkspaceTabId;
+      const overIdRaw = e.over?.id;
       const point = lastDragPointRef.current;
 
       dragStartRef.current = null;
@@ -676,7 +683,7 @@ const ChatViewContainerInner: React.FC = () => {
       }
 
       const rect = containerRef.current?.getBoundingClientRect();
-      const shouldTearOff =
+      const shouldTearOffByClientPoint =
         Boolean(rect && point) &&
         Boolean(
           rect &&
@@ -687,66 +694,58 @@ const ChatViewContainerInner: React.FC = () => {
               point.y > rect.bottom + TEAR_OFF_THRESHOLD_PX)
         );
 
-        if (shouldTearOff) {
-          setActiveDragTabId(null);
-          setSplitPreview(null);
+      // 先把拖拽 UI 收起，避免异步判断期间 overlay 悬挂
+      setActiveDragTabId(null);
+      setSplitPreview(null);
 
+      if (shouldTearOffByClientPoint) {
+        tearOffTabToNewWindow(activeId);
+        return;
+      }
+
+      // 有些平台/环境下，拖拽离开窗口后 pointer move 事件不再更新，
+      // 导致 `client point` 仍停留在窗内，进而无法触发 tear-off。
+      // 参考 VS Code：在 drag end 时用“真实鼠标位置 vs 当前窗体”做一次兜底判断。
+      void (async () => {
+        const outsideWindow = await isCursorOutsideCurrentWindow(TEAR_OFF_WINDOW_THRESHOLD_PX);
+        if (outsideWindow) {
           tearOffTabToNewWindow(activeId);
           return;
         }
 
-      const overIdRaw = e.over?.id;
-      if (!overIdRaw) {
-        setActiveDragTabId(null);
-        setSplitPreview(null);
-        return;
-      }
+        if (!overIdRaw) return;
 
-      const overId = String(overIdRaw) as WorkspaceTabId | string;
-      const fromPaneId = tabToPaneId.get(activeId) ?? null;
+        const overId = String(overIdRaw) as WorkspaceTabId | string;
+        const fromPaneId = tabToPaneId.get(activeId) ?? null;
 
-      if (overId.startsWith('pane:')) {
-        const toPaneId = overId.slice('pane:'.length);
-        moveTabToPane(activeId, toPaneId);
-        setActiveDragTabId(null);
-        setSplitPreview(null);
-        return;
-      }
+        if (overId.startsWith('pane:')) {
+          const toPaneId = overId.slice('pane:'.length);
+          moveTabToPane(activeId, toPaneId);
+          return;
+        }
 
-      const toPaneId = tabToPaneId.get(overId as WorkspaceTabId) ?? null;
-      if (!toPaneId) {
-        setActiveDragTabId(null);
-        setSplitPreview(null);
-        return;
-      }
+        const toPaneId = tabToPaneId.get(overId as WorkspaceTabId) ?? null;
+        if (!toPaneId) return;
 
-      if (fromPaneId && fromPaneId === toPaneId) {
-        reorderTabInPane(toPaneId, activeId, overId as WorkspaceTabId);
-      } else {
+        if (fromPaneId && fromPaneId === toPaneId) {
+          reorderTabInPane(toPaneId, activeId, overId as WorkspaceTabId);
+          return;
+        }
+
         const targetPane = paneById.get(toPaneId);
         const index = targetPane ? targetPane.tabIds.indexOf(overId as WorkspaceTabId) : -1;
         moveTabToPane(activeId, toPaneId, index >= 0 ? index : undefined);
-      }
-
-      setActiveDragTabId(null);
-      setSplitPreview(null);
+      })();
     },
     [
-      closeDocument,
-      closeSession,
-      closeTabInLayout,
-      closeTerminalTab,
-      closeWebTab,
       computeSplitPreview,
-      documents,
+      isCursorOutsideCurrentWindow,
       moveTabToPane,
       paneById,
       reorderTabInPane,
-      sessionsById,
       splitTabToNewPane,
       tabToPaneId,
-      terminalTabs,
-      webTabs,
+      tearOffTabToNewWindow,
     ]
   );
 
@@ -786,7 +785,7 @@ const ChatViewContainerInner: React.FC = () => {
 
         const movedDist = start && point ? Math.hypot(point.x - start.x, point.y - start.y) : 0;
         const lostFocus = typeof document !== 'undefined' ? !document.hasFocus() : false;
-        const outsideWindow = await isCursorOutsideCurrentWindow(TEAR_OFF_THRESHOLD_PX);
+        const outsideWindow = await isCursorOutsideCurrentWindow(TEAR_OFF_WINDOW_THRESHOLD_PX);
 
         // 兼容：把 Tab 拖到其他应用窗口（可能导致 DnD cancel），依然要按“拖出窗体”处理。
         // 要求：确实发生了拖拽（移动距离够大），且出现了“明显外部”信号（失焦/游标在窗外/point 已在窗外）。

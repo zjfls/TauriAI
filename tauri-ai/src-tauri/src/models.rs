@@ -1118,6 +1118,10 @@ pub struct GeneralSettings {
     /// Debug: log raw SSE lines from providers (streaming only)
     #[serde(default)]
     pub debug_sse: bool,
+    /// Whether to show the "task end" Debug button in the message toolbar.
+    /// Default true: this toggle only affects UI visibility, not debug collection.
+    #[serde(default = "default_task_end_debug_button")]
+    pub task_end_debug_button: bool,
     /// Show token usage in messages
     #[serde(default)]
     pub show_usage: bool,
@@ -1144,6 +1148,7 @@ impl Default for GeneralSettings {
             manual_turn_retry: false,
             debug_mode: false,
             debug_sse: false,
+            task_end_debug_button: true,
             show_usage: true,
             ansi_render_mode: "color".to_string(),
             ansi_color_mode: "auto".to_string(),
@@ -1248,6 +1253,10 @@ fn default_ansi_render_mode() -> String {
 
 fn default_ansi_color_mode() -> String {
     "auto".to_string()
+}
+
+fn default_task_end_debug_button() -> bool {
+    true
 }
 
 // ============================================================================

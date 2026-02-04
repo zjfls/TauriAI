@@ -120,6 +120,15 @@ export const SettingsView: React.FC = () => {
     saveConfig(updatedConfig);
   };
 
+  const handleTaskEndDebugButtonChange = (taskEndDebugButton: boolean) => {
+    if (!config) return;
+    const updatedConfig: AppConfig = {
+      ...config,
+      general: { ...config.general, taskEndDebugButton },
+    };
+    saveConfig(updatedConfig);
+  };
+
   const handleShowUsageChange = (showUsage: boolean) => {
     if (!config) return;
     const updatedConfig: AppConfig = {
@@ -232,6 +241,7 @@ export const SettingsView: React.FC = () => {
             manualTurnRetry={config.general.manualTurnRetry ?? false}
             debugMode={config.general.debugMode ?? false}
             debugSse={config.general.debugSse ?? false}
+            taskEndDebugButton={config.general.taskEndDebugButton ?? true}
             openDevtoolsOnStart={config.general.openDevtoolsOnStart ?? false}
             showUsage={config.general.showUsage ?? true}
             pdfDebugMode={config.general.pdfDebugMode ?? false}
@@ -244,6 +254,7 @@ export const SettingsView: React.FC = () => {
             onManualTurnRetryChange={handleManualTurnRetryChange}
             onDebugModeChange={handleDebugModeChange}
             onDebugSseChange={handleDebugSseChange}
+            onTaskEndDebugButtonChange={handleTaskEndDebugButtonChange}
             onOpenDevtoolsOnStartChange={handleOpenDevtoolsOnStartChange}
             onShowUsageChange={handleShowUsageChange}
             onPdfDebugModeChange={handlePdfDebugModeChange}
@@ -354,6 +365,7 @@ interface GeneralSettingsProps {
   manualTurnRetry: boolean;
   debugMode: boolean;
   debugSse: boolean;
+  taskEndDebugButton: boolean;
   openDevtoolsOnStart: boolean;
   showUsage: boolean;
   pdfDebugMode: boolean;
@@ -366,6 +378,7 @@ interface GeneralSettingsProps {
   onManualTurnRetryChange: (value: boolean) => void;
   onDebugModeChange: (value: boolean) => void;
   onDebugSseChange: (value: boolean) => void;
+  onTaskEndDebugButtonChange: (value: boolean) => void;
   onOpenDevtoolsOnStartChange: (value: boolean) => void;
   onShowUsageChange: (value: boolean) => void;
   onPdfDebugModeChange: (value: boolean) => void;
@@ -381,6 +394,7 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
   manualTurnRetry,
   debugMode,
   debugSse,
+  taskEndDebugButton,
   openDevtoolsOnStart,
   showUsage,
   pdfDebugMode,
@@ -393,6 +407,7 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
   onManualTurnRetryChange,
   onDebugModeChange,
   onDebugSseChange,
+  onTaskEndDebugButtonChange,
   onOpenDevtoolsOnStartChange,
   onShowUsageChange,
   onPdfDebugModeChange,
@@ -690,6 +705,21 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
             className={`relative w-11 h-6 rounded-full transition-colors ${debugMode ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'}`}
           >
             <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${debugMode ? 'translate-x-5' : ''}`} />
+          </button>
+        </div>
+
+        <div className="flex items-center justify-between">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">任务结束 Debug 按钮</label>
+            <p className="text-xs text-gray-500">
+              开启后：每轮对话结束后，在消息底部显示 Debug 按钮（查看 Turn 状态/工具输出等；HTTP 调试仍需开启调试模式）
+            </p>
+          </div>
+          <button
+            onClick={() => onTaskEndDebugButtonChange(!taskEndDebugButton)}
+            className={`relative w-11 h-6 rounded-full transition-colors ${taskEndDebugButton ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'}`}
+          >
+            <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${taskEndDebugButton ? 'translate-x-5' : ''}`} />
           </button>
         </div>
 

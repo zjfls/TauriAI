@@ -198,6 +198,50 @@ const extractToolSummary = (toolName: string, rawArgs: string, parsedArgs: unkno
   }
 };
 
+type ToolRunStatusKind = 'running' | 'success' | 'error' | 'denied' | 'aborted';
+
+const detectToolRunStatus = (resultText?: string): { kind: ToolRunStatusKind; badge?: string } => {
+  if (!resultText) return { kind: 'running' };
+  const trimmed = resultText.trimStart();
+
+  if (trimmed.startsWith('TOOL_DENIED:')) return { kind: 'denied', badge: '已拒绝' };
+  if (trimmed.startsWith('TOOL_ABORTED:')) return { kind: 'aborted', badge: '已终止' };
+  if (trimmed.startsWith('TOOL_RESULT_MISSING:')) return { kind: 'error', badge: '结果缺失' };
+  if (trimmed.startsWith('TOOL_ERROR:')) return { kind: 'error', badge: '失败' };
+
+  const exitCodeFromSuffix = (() => {
+    // shell_command: non-zero exit code is appended as: "\n[exit_code=1]"
+    const m = trimmed.match(/\[exit_code=(-?\d+)\]\s*$/);
+    if (!m) return null;
+    const code = Number(m[1]);
+    return Number.isFinite(code) ? code : null;
+  })();
+  if (typeof exitCodeFromSuffix === 'number' && exitCodeFromSuffix !== 0) {
+    return { kind: 'error', badge: `exit_code=${exitCodeFromSuffix}` };
+  }
+
+  const exitCodeFromJson = (() => {
+    // exec_command / write_stdin: JSON string with { exit_code: number|null, ... }
+    if (trimmed.length > 200_000) return null;
+    const t = trimmed.trim();
+    if (!(t.startsWith('{') || t.startsWith('['))) return null;
+    try {
+      const parsed = JSON.parse(t) as any;
+      const raw = parsed && typeof parsed === 'object' ? (parsed.exit_code ?? parsed.exitCode) : null;
+      if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+      if (typeof raw === 'string' && raw.trim() !== '' && Number.isFinite(Number(raw))) return Number(raw);
+      return null;
+    } catch {
+      return null;
+    }
+  })();
+  if (typeof exitCodeFromJson === 'number' && exitCodeFromJson !== 0) {
+    return { kind: 'error', badge: `exit_code=${exitCodeFromJson}` };
+  }
+
+  return { kind: 'success' };
+};
+
 interface ThinkingBlockProps {
   text: string;
   isStreaming?: boolean;
@@ -719,6 +763,58 @@ const ToolRunBlock: React.FC<{
   autoCollapseEnabled,
   autoCollapseSeq,
 }) => {
+  const toolStatus = useMemo(() => detectToolRunStatus(resultText), [resultText]);
+  const tone = useMemo(() => {
+    switch (toolStatus.kind) {
+      case 'error':
+        return {
+          container: 'border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-900/20',
+          headerText: 'text-red-700 dark:text-red-300',
+          hoverBg: 'hover:bg-red-100 dark:hover:bg-red-900/30',
+          summaryText: 'text-red-700/70 dark:text-red-200/70',
+          pulse: 'bg-red-500',
+          badge: 'border border-red-200 bg-red-100 text-red-700 dark:border-red-800 dark:bg-red-900/30 dark:text-red-200',
+          detailBorder: 'border-red-200 dark:border-red-800',
+          detailLabel: 'text-red-700/80 dark:text-red-200/80',
+        };
+      case 'denied':
+        return {
+          container: 'border-orange-200 bg-orange-50 dark:border-orange-800 dark:bg-orange-900/20',
+          headerText: 'text-orange-800 dark:text-orange-300',
+          hoverBg: 'hover:bg-orange-100 dark:hover:bg-orange-900/30',
+          summaryText: 'text-orange-700/70 dark:text-orange-200/70',
+          pulse: 'bg-orange-500',
+          badge: 'border border-orange-200 bg-orange-100 text-orange-800 dark:border-orange-800 dark:bg-orange-900/30 dark:text-orange-200',
+          detailBorder: 'border-orange-200 dark:border-orange-800',
+          detailLabel: 'text-orange-700/80 dark:text-orange-200/80',
+        };
+      case 'aborted':
+        return {
+          container: 'border-yellow-200 bg-yellow-50 dark:border-yellow-800 dark:bg-yellow-900/20',
+          headerText: 'text-yellow-800 dark:text-yellow-300',
+          hoverBg: 'hover:bg-yellow-100 dark:hover:bg-yellow-900/30',
+          summaryText: 'text-yellow-700/70 dark:text-yellow-200/70',
+          pulse: 'bg-yellow-500',
+          badge: 'border border-yellow-200 bg-yellow-100 text-yellow-800 dark:border-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-200',
+          detailBorder: 'border-yellow-200 dark:border-yellow-800',
+          detailLabel: 'text-yellow-700/80 dark:text-yellow-200/80',
+        };
+      case 'running':
+      case 'success':
+      default:
+        return {
+          container: 'border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-900/30',
+          headerText: 'text-green-700 dark:text-green-300',
+          hoverBg: 'hover:bg-green-100 dark:hover:bg-green-900/50',
+          summaryText: 'text-green-700/70 dark:text-green-200/70',
+          pulse: 'bg-green-500',
+          badge: 'border border-green-200 bg-green-100 text-green-800 dark:border-green-800 dark:bg-green-900/30 dark:text-green-200',
+          detailBorder: 'border-green-200 dark:border-green-800',
+          detailLabel: 'text-green-700/80 dark:text-green-200/80',
+        };
+    }
+  }, [toolStatus.kind]);
+
   const resolvedDefaultExpanded = defaultExpanded ?? Boolean(isStreaming);
   const [isExpanded, setIsExpanded] = useState(Boolean(resolvedDefaultExpanded));
   const canAbort = Boolean(onAbortTool && callId && isStreaming);
@@ -754,24 +850,29 @@ const ToolRunBlock: React.FC<{
   const summary = useMemo(() => extractToolSummary(name, args, parsedArgs), [name, args, parsedArgs]);
 
   return (
-    <div className="mb-2 rounded-lg border border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-900/30">
-      <div className="flex items-center gap-2 px-3 py-2 text-left text-sm text-green-700 dark:text-green-300">
+    <div className={`mb-2 rounded-lg border ${tone.container}`}>
+      <div className={`flex items-center gap-2 px-3 py-2 text-left text-sm ${tone.headerText}`}>
         <button
           type="button"
           onClick={() => setIsExpanded(!isExpanded)}
-          className="flex min-w-0 flex-1 items-center gap-2 rounded py-0.5 text-left hover:bg-green-100 dark:hover:bg-green-900/50"
+          className={`flex min-w-0 flex-1 items-center gap-2 rounded py-0.5 text-left ${tone.hoverBg}`}
         >
           <Wrench size={16} className="shrink-0" />
           <span className="font-medium">工具：{name || 'unknown'}</span>
           {summary ? (
-            <span className="ml-2 max-w-[60%] truncate font-mono text-xs text-green-700/70 dark:text-green-200/70">
+            <span className={`ml-2 max-w-[60%] truncate font-mono text-xs ${tone.summaryText}`}>
               {summary}
             </span>
           ) : null}
           {isStreaming ? (
-            <span className="ml-1 inline-block h-2 w-2 animate-pulse rounded-full bg-green-500" />
+            <span className={`ml-1 inline-block h-2 w-2 animate-pulse rounded-full ${tone.pulse}`} />
           ) : null}
-          <span className="ml-auto">
+          <span className="ml-auto flex items-center gap-2">
+            {toolStatus.badge ? (
+              <span className={`rounded px-2 py-0.5 text-[10px] font-medium ${tone.badge}`}>
+                {toolStatus.badge}
+              </span>
+            ) : null}
             {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
           </span>
         </button>
@@ -780,7 +881,7 @@ const ToolRunBlock: React.FC<{
           <button
             type="button"
             onClick={() => callId && onAbortTool?.(callId)}
-            className="rounded border border-green-300 px-2 py-0.5 text-[10px] font-medium text-green-700 hover:bg-green-100 dark:border-green-700 dark:text-green-200 dark:hover:bg-green-900/40"
+            className={`rounded border px-2 py-0.5 text-[10px] font-medium ${tone.badge} ${tone.hoverBg}`}
             title="强制关闭当前工具（将终止本轮）"
           >
             强制关闭
@@ -789,11 +890,11 @@ const ToolRunBlock: React.FC<{
       </div>
 
       {isExpanded ? (
-        <div className="border-t border-green-200 px-3 py-2 dark:border-green-800">
+        <div className={`border-t px-3 py-2 ${tone.detailBorder}`}>
           {prettyArgs ? (
             <>
-              <div className="mb-1 text-xs font-medium text-green-700/80 dark:text-green-200/80">参数</div>
-              <pre className="mb-3 max-h-48 overflow-y-auto whitespace-pre-wrap break-words pr-2 text-sm text-green-900 dark:text-green-100">
+              <div className={`mb-1 text-xs font-medium ${tone.detailLabel}`}>参数</div>
+              <pre className="mb-3 max-h-48 overflow-y-auto whitespace-pre-wrap break-words pr-2 text-sm text-gray-800 dark:text-gray-100">
                 {prettyArgs}
               </pre>
             </>
@@ -801,7 +902,7 @@ const ToolRunBlock: React.FC<{
 
           {resultText ? (
             <>
-              <div className="mb-1 text-xs font-medium text-green-700/80 dark:text-green-200/80">输出</div>
+              <div className={`mb-1 text-xs font-medium ${tone.detailLabel}`}>输出</div>
               <pre className="h-48 overflow-y-auto whitespace-pre-wrap break-words pr-2 text-sm text-gray-800 dark:text-gray-100">
                 <AnsiText text={resultText} renderMode={ansiRenderMode} colorMode={ansiColorMode} />
               </pre>
@@ -827,6 +928,41 @@ const ToolResultBlock: React.FC<{
   autoCollapseSeq?: number;
 }> = ({ text, callId, isStreaming, onAbortTool, ansiRenderMode, ansiColorMode, defaultExpanded, autoCollapseEnabled, autoCollapseSeq }) => {
   if (!text) return null;
+  const toolStatus = useMemo(() => detectToolRunStatus(text), [text]);
+  const tone = useMemo(() => {
+    switch (toolStatus.kind) {
+      case 'error':
+        return {
+          container: 'border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-900/20',
+          headerText: 'text-red-700 dark:text-red-300',
+          hoverBg: 'hover:bg-red-100 dark:hover:bg-red-900/30',
+          badge: 'border border-red-200 bg-red-100 text-red-700 dark:border-red-800 dark:bg-red-900/30 dark:text-red-200',
+        };
+      case 'denied':
+        return {
+          container: 'border-orange-200 bg-orange-50 dark:border-orange-800 dark:bg-orange-900/20',
+          headerText: 'text-orange-800 dark:text-orange-300',
+          hoverBg: 'hover:bg-orange-100 dark:hover:bg-orange-900/30',
+          badge: 'border border-orange-200 bg-orange-100 text-orange-800 dark:border-orange-800 dark:bg-orange-900/30 dark:text-orange-200',
+        };
+      case 'aborted':
+        return {
+          container: 'border-yellow-200 bg-yellow-50 dark:border-yellow-800 dark:bg-yellow-900/20',
+          headerText: 'text-yellow-800 dark:text-yellow-300',
+          hoverBg: 'hover:bg-yellow-100 dark:hover:bg-yellow-900/30',
+          badge: 'border border-yellow-200 bg-yellow-100 text-yellow-800 dark:border-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-200',
+        };
+      case 'running':
+      case 'success':
+      default:
+        return {
+          container: 'border-green-200 bg-white dark:border-green-800 dark:bg-gray-900/40',
+          headerText: 'text-green-700 dark:text-green-300',
+          hoverBg: 'hover:bg-green-50 dark:hover:bg-green-900/20',
+          badge: 'border border-green-200 bg-green-100 text-green-800 dark:border-green-800 dark:bg-green-900/30 dark:text-green-200',
+        };
+    }
+  }, [toolStatus.kind]);
   const canAbort = Boolean(onAbortTool && callId && isStreaming);
   const resolvedDefaultExpanded = defaultExpanded ?? Boolean(isStreaming);
   const [isExpanded, setIsExpanded] = useState(Boolean(resolvedDefaultExpanded));
@@ -837,16 +973,21 @@ const ToolResultBlock: React.FC<{
   }, [autoCollapseSeq]);
 
   return (
-    <div className="mb-2 rounded-lg border border-green-200 bg-white px-3 py-2 text-sm text-gray-800 dark:border-green-800 dark:bg-gray-900/40 dark:text-gray-100">
-      <div className="mb-1 flex items-center gap-2 text-xs font-medium text-green-700 dark:text-green-300">
+    <div className={`mb-2 rounded-lg border px-3 py-2 text-sm text-gray-800 dark:text-gray-100 ${tone.container}`}>
+      <div className={`mb-1 flex items-center gap-2 text-xs font-medium ${tone.headerText}`}>
         <button
           type="button"
           onClick={() => setIsExpanded(!isExpanded)}
-          className="flex flex-1 items-center gap-2 rounded px-1 py-0.5 text-left hover:bg-green-50 dark:hover:bg-green-900/20"
+          className={`flex flex-1 items-center gap-2 rounded px-1 py-0.5 text-left ${tone.hoverBg}`}
         >
           <Wrench size={14} />
           <span>工具结果</span>
-          <span className="ml-auto">
+          <span className="ml-auto flex items-center gap-2">
+            {toolStatus.badge ? (
+              <span className={`rounded px-2 py-0.5 text-[10px] font-medium ${tone.badge}`}>
+                {toolStatus.badge}
+              </span>
+            ) : null}
             {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
           </span>
         </button>
@@ -855,7 +996,7 @@ const ToolResultBlock: React.FC<{
           <button
             type="button"
             onClick={() => callId && onAbortTool?.(callId)}
-            className="rounded border border-green-300 px-2 py-0.5 text-[10px] font-medium text-green-700 hover:bg-green-100 dark:border-green-700 dark:text-green-200 dark:hover:bg-green-900/40"
+            className={`rounded border px-2 py-0.5 text-[10px] font-medium ${tone.badge} ${tone.hoverBg}`}
             title="强制关闭当前工具（将终止本轮）"
           >
             强制关闭

@@ -17,6 +17,8 @@ interface DebugModalProps {
   turns?: MessageTurn[] | null;
   blocks?: MessageBlock[] | null;
   initialTurnId?: string | null;
+  /** 任务结束的错误原因（可选，用于在“暂无 HTTP 调试信息”时也能解释结束原因） */
+  errorMessage?: string | null;
   messageRole: 'user' | 'assistant' | 'error';
   conversationId?: string;
   messageId?: string;
@@ -333,6 +335,7 @@ export const DebugModal: React.FC<DebugModalProps> = ({
   turns,
   blocks,
   initialTurnId,
+  errorMessage,
   messageRole,
   conversationId,
   messageId,
@@ -345,6 +348,17 @@ export const DebugModal: React.FC<DebugModalProps> = ({
     () => (turns ?? []).slice().sort((a, b) => a.turnIndex - b.turnIndex),
     [turns]
   );
+  const finalTurn = sortedTurns.length > 0 ? sortedTurns[sortedTurns.length - 1]! : null;
+  const finalStatus = finalTurn?.status ?? (messageRole === 'error' ? 'failed' : null);
+  const finalStatusTitle = finalStatus === 'success' ? '成功' : finalStatus === 'failed' ? '失败' : finalStatus === 'aborted' ? '中止' : '未知';
+  const finalStatusClass =
+    finalStatus === 'success'
+      ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
+      : finalStatus === 'aborted'
+        ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300'
+        : finalStatus === 'failed'
+          ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'
+          : 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300';
   const [loadedTurnDebugInfo, setLoadedTurnDebugInfo] = useState<Record<string, DebugInfo | null>>(
     {}
   );
@@ -374,6 +388,23 @@ export const DebugModal: React.FC<DebugModalProps> = ({
   const effectiveDebugInfo =
     loadedForActive !== undefined ? loadedForActive : activeTurn?.debugInfo ?? debugInfo;
   const isLoadingDebug = Boolean(activeTurnId && loadingTurnId === activeTurnId);
+  const httpStatus = effectiveDebugInfo?.response?.status ?? null;
+  const providerFinishReason = useMemo(() => {
+    const body = effectiveDebugInfo?.response?.body as any;
+    if (!body || typeof body !== 'object') return null;
+
+    const direct = body.finish_reason ?? body.finishReason ?? body.stop_reason ?? body.stopReason;
+    if (typeof direct === 'string' && direct.trim().length > 0) return direct.trim();
+
+    const choices = Array.isArray(body.choices) ? body.choices : null;
+    const fromChoices = choices?.[0]?.finish_reason ?? choices?.[0]?.finishReason;
+    if (typeof fromChoices === 'string' && fromChoices.trim().length > 0) return fromChoices.trim();
+
+    const incompleteReason = body.incomplete_details?.reason ?? body.incompleteDetails?.reason;
+    if (typeof incompleteReason === 'string' && incompleteReason.trim().length > 0) return incompleteReason.trim();
+
+    return null;
+  }, [effectiveDebugInfo?.response?.body]);
 
   // Lazy-load per-turn debug info when needed (history initialization strips it by default).
   useEffect(() => {
@@ -537,6 +568,51 @@ export const DebugModal: React.FC<DebugModalProps> = ({
 
         {/* Content */}
         <div className="p-6 max-h-[calc(80vh-80px)] overflow-hidden">
+          {(finalStatus || errorMessage || conversationId || messageId) && (
+            <div className="mb-4 rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-700 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-200">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-medium text-gray-600 dark:text-gray-300">结束原因</span>
+                {finalStatus && (
+                  <span className={`inline-flex items-center rounded px-2 py-0.5 font-medium ${finalStatusClass}`}>
+                    {finalStatusTitle}
+                  </span>
+                )}
+                {finalTurn && (
+                  <span className="text-gray-500 dark:text-gray-400">
+                    最后 Turn：{finalTurn.turnIndex}
+                  </span>
+                )}
+                {finalTurn?.model && (
+                  <span className="text-gray-500 dark:text-gray-400">
+                    model: {finalTurn.model}
+                  </span>
+                )}
+                {providerFinishReason && (
+                  <span className="text-gray-500 dark:text-gray-400">
+                    finish_reason: {providerFinishReason}
+                  </span>
+                )}
+                {typeof httpStatus === 'number' && (
+                  <span className="text-gray-500 dark:text-gray-400">
+                    HTTP: {httpStatus}
+                  </span>
+                )}
+              </div>
+              {errorMessage && (
+                <div className="mt-2 rounded bg-red-50 px-2 py-1 text-red-700 dark:bg-red-900/20 dark:text-red-300">
+                  {errorMessage}
+                </div>
+              )}
+              {(conversationId || messageId) && (
+                <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-gray-500 dark:text-gray-400">
+                  {conversationId && <span>conversationId: {conversationId}</span>}
+                  {messageId && <span>messageId: {messageId}</span>}
+                  {finalTurn?.turnId && <span>turnId: {finalTurn.turnId}</span>}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Turn selector (multi-turn tasks) */}
           {sortedTurns.length > 1 && (
             <div className="mb-4 flex flex-wrap gap-2">
@@ -585,15 +661,15 @@ export const DebugModal: React.FC<DebugModalProps> = ({
           )}
 
           <div className="overflow-auto max-h-[calc(80vh-80px-72px)] space-y-4 pr-1">
-          {thinkingText && (
-            <CollapsibleSection title="思考过程" defaultExpanded={false}>
-              <TextViewer
-                text={thinkingText}
-                containerClassName="bg-purple-50 dark:bg-purple-900/30 text-purple-800 dark:text-purple-200"
-                maxHeightClassName="max-h-64"
-              />
-            </CollapsibleSection>
-          )}
+            {thinkingText && (
+              <CollapsibleSection title="思考过程" defaultExpanded={false}>
+                <TextViewer
+                  text={thinkingText}
+                  containerClassName="bg-purple-50 dark:bg-purple-900/30 text-purple-800 dark:text-purple-200"
+                  maxHeightClassName="max-h-64"
+                />
+              </CollapsibleSection>
+            )}
 
           {(toolCalls.length > 0 || toolResults.length > 0 || webSearchBlocks.length > 0) && (
             <CollapsibleSection title="工具执行" defaultExpanded={false}>
