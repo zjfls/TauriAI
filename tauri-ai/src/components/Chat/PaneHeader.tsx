@@ -50,7 +50,7 @@ const SortableTab: React.FC<{
         }
       }}
       className={[
-        'group flex items-center gap-2 px-3 py-2 min-w-[140px] max-w-[320px] select-none',
+        'group relative flex items-center gap-2 px-3 py-2 min-w-[140px] max-w-[320px] select-none',
         'border-b-2 transition-colors cursor-pointer',
         isActive
           ? 'border-blue-500 text-gray-900 dark:text-gray-50 bg-white dark:bg-gray-900'
@@ -70,15 +70,22 @@ const SortableTab: React.FC<{
 
       <span className="flex-1 min-w-0 truncate text-sm font-medium">{session.title}</span>
 
-      <span className="flex-shrink-0 flex items-center gap-1">
-        {session.apiType === 'responses' ? <span className="text-[10px] text-gray-400">R</span> : null}
+      {session.apiType === 'responses' ? <span className="flex-shrink-0 text-[10px] text-gray-400">R</span> : null}
+
+      <div
+        className={[
+          'absolute right-2 top-1/2 -translate-y-1/2',
+          'flex items-center gap-1 rounded bg-white/80 p-0.5 shadow-sm',
+          'dark:bg-gray-900/80',
+          'opacity-0 pointer-events-none transition-opacity',
+          'group-hover:opacity-100 group-hover:pointer-events-auto',
+          'group-focus-within:opacity-100 group-focus-within:pointer-events-auto',
+        ].join(' ')}
+      >
         <button
           type="button"
           className={[
-            'rounded p-0.5',
-            isActive
-              ? 'inline-flex text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800'
-              : 'hidden group-hover:inline-flex text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-800',
+            'rounded p-0.5 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800',
             'disabled:cursor-not-allowed disabled:text-gray-300 dark:disabled:text-gray-600 disabled:hover:bg-transparent',
           ].join(' ')}
           disabled={session.isGenerating || !session.conversationId}
@@ -102,13 +109,11 @@ const SortableTab: React.FC<{
         <button
           type="button"
           className={[
-            'rounded p-0.5',
-            isActive
-              ? 'inline-flex text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800'
-              : 'hidden group-hover:inline-flex text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-800',
+            'rounded p-0.5 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800',
             'disabled:cursor-not-allowed disabled:text-gray-300 dark:disabled:text-gray-600 disabled:hover:bg-transparent',
           ].join(' ')}
           disabled={session.isGenerating || !session.conversationId}
+          onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => {
             e.stopPropagation();
             void (async () => {
@@ -149,12 +154,8 @@ const SortableTab: React.FC<{
         </button>
         <button
           type="button"
-          className={[
-            'rounded p-0.5',
-            isActive
-              ? 'inline-flex text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800'
-              : 'hidden group-hover:inline-flex text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-800',
-          ].join(' ')}
+          className="rounded p-0.5 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800"
+          onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => {
             e.stopPropagation();
             onClose();
@@ -163,7 +164,7 @@ const SortableTab: React.FC<{
         >
           <X size={14} />
         </button>
-      </span>
+      </div>
     </div>
   );
 };
@@ -273,6 +274,7 @@ export const PaneHeader: React.FC<PaneHeaderProps> = ({
       className={[
         'flex items-center gap-1 border-b border-gray-200 dark:border-gray-800',
         'bg-white/70 dark:bg-gray-900/50 backdrop-blur',
+        'relative z-30',
       ].join(' ')}
     >
       <div
