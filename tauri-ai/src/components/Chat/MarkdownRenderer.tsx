@@ -73,6 +73,16 @@ function hashCode(str: string): string {
   return hash.toString(36);
 }
 
+function uint8ArrayToBase64(bytes: Uint8Array): string {
+  // Avoid stack overflow by chunking.
+  const chunkSize = 0x8000;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
 const isTauriRuntime = (): boolean => {
   if (typeof window === 'undefined') return false;
   const w = window as any;
@@ -488,13 +498,30 @@ const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferen
 
         const pngBlob = await svgStringToPngBlob(svgSource, width, height);
 
-        const clipboardWrite = (navigator.clipboard as any)?.write as undefined | ((data: any[]) => Promise<void>);
-        const ClipboardItemCtor = (window as any).ClipboardItem as any;
-        if (!clipboardWrite || !ClipboardItemCtor) {
-          throw new Error('Clipboard image API not supported');
+        // Prefer OS-native clipboard in Tauri to ensure pasting behaves like a screenshot (esp. macOS WKWebView).
+        let copied = false;
+
+        if (isTauriRuntime()) {
+          try {
+            const { invoke } = await import('@tauri-apps/api/core');
+            const bytes = new Uint8Array(await pngBlob.arrayBuffer());
+            const pngBase64 = uint8ArrayToBase64(bytes);
+            await invoke('clipboard_write_png_base64', { pngBase64 });
+            copied = true;
+          } catch (tauriErr) {
+            console.warn('[Mermaid] Tauri clipboard image copy failed, fallback to Web API:', tauriErr);
+          }
         }
 
-        await clipboardWrite([new ClipboardItemCtor({ 'image/png': pngBlob })]);
+        if (!copied) {
+          const clipboardWrite = (navigator.clipboard as any)?.write as undefined | ((data: any[]) => Promise<void>);
+          const ClipboardItemCtor = (window as any).ClipboardItem as any;
+          if (!clipboardWrite || !ClipboardItemCtor) {
+            throw new Error('Clipboard image API not supported');
+          }
+          await clipboardWrite([new ClipboardItemCtor({ 'image/png': pngBlob })]);
+          copied = true;
+        }
 
         setCopiedImage(true);
         window.setTimeout(() => setCopiedImage(false), 2000);

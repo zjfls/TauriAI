@@ -1,12 +1,11 @@
 import { create } from 'zustand';
-import { invoke, isTauri } from '@tauri-apps/api/core';
 import { useWorkspaceTabStore } from './workspaceTabStore';
+import { useTerminalSessionStore } from './terminalSessionStore';
 
 export type TerminalTab = {
   id: string;
   title: string;
   workdir?: string | null;
-  sessionId: number | null;
   createdAt: string;
   lastActiveAt: string;
 };
@@ -20,7 +19,6 @@ interface TerminalTabState {
   openTerminalTab: (opts?: { title?: string; workdir?: string; activate?: boolean }) => string;
   closeTerminalTab: (id: string) => Promise<void>;
   setActiveTerminalTab: (id: string | null) => void;
-  ensureTerminalSession: (id: string) => Promise<number | null>;
   clearAll: () => Promise<void>;
 }
 
@@ -36,7 +34,6 @@ export const useTerminalTabStore = create<TerminalTabState>((set, get) => ({
       id,
       title,
       workdir: opts?.workdir ?? null,
-      sessionId: null,
       createdAt: now,
       lastActiveAt: now,
     };
@@ -51,16 +48,9 @@ export const useTerminalTabStore = create<TerminalTabState>((set, get) => ({
   },
 
   closeTerminalTab: async (id) => {
-    const state = get();
-    const target = state.tabs.find((t) => t.id === id) ?? null;
-
-    if (target?.sessionId && isTauri()) {
-      try {
-        await invoke('workstudio_terminal_close', { workstudioId: id, sessionId: target.sessionId });
-      } catch {
-        // ignore
-      }
-    }
+    // Session 生命周期由统一的 terminalSessionStore 管理（scope 隔离）。
+    // 关闭 tab 时主动关闭后端 PTY，避免组件未挂载时遗留会话。
+    await useTerminalSessionStore.getState().closeSession({ kind: 'workspace_terminal', id });
 
     const nextTabs = get().tabs.filter((t) => t.id !== id);
     const nextActive =
@@ -76,24 +66,6 @@ export const useTerminalTabStore = create<TerminalTabState>((set, get) => ({
         t.id === id ? { ...t, lastActiveAt: new Date().toISOString() } : t
       ),
     }));
-  },
-
-  ensureTerminalSession: async (id) => {
-    const state = get();
-    const target = state.tabs.find((t) => t.id === id) ?? null;
-    if (!target) return null;
-    if (target.sessionId) return target.sessionId;
-    if (!isTauri()) return null;
-
-    const sessionId = await invoke<number>('workstudio_terminal_create', {
-      workstudioId: id,
-      workdir: target.workdir ?? undefined,
-    });
-
-    set((prev) => ({
-      tabs: prev.tabs.map((t) => (t.id === id ? { ...t, sessionId } : t)),
-    }));
-    return sessionId;
   },
 
   clearAll: async () => {

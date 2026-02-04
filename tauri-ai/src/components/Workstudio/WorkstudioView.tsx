@@ -4,9 +4,6 @@ import { listen } from '@tauri-apps/api/event';
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { openPath, revealItemInDir } from '@tauri-apps/plugin-opener';
 import Editor, { type OnMount } from '@monaco-editor/react';
-import { Terminal } from 'xterm';
-import { FitAddon } from '@xterm/addon-fit';
-import 'xterm/css/xterm.css';
 import {
   DndContext,
   DragOverlay,
@@ -29,9 +26,13 @@ import {
   FolderOpen,
   X,
 } from 'lucide-react';
-import type { Workstudio, WorkstudioUiState } from '../../types';
+import type { TerminalScope, Workstudio, WorkstudioUiState } from '../../types';
+import { SHORTCUT_ACTIONS, detectShortcutPlatform, normalizeKeybindingString } from '../../shortcuts';
+import { useConfigStore } from '../../stores/configStore';
+import { useTerminalSessionStore } from '../../stores/terminalSessionStore';
 import { getViewWindowParams } from '../../utils/viewWindow';
 import { setupMonaco } from '../../utils/monaco';
+import { TerminalSurface, type TerminalSurfaceHandle } from '../Terminal/TerminalSurface';
 
 type DirEntry = {
   name: string;
@@ -372,16 +373,38 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const openingPathsRef = useRef<Set<string>>(new Set());
   const filePaletteInputRef = useRef<HTMLInputElement | null>(null);
   const [terminalOpen, setTerminalOpen] = useState(false);
-  const [terminalSessionId, setTerminalSessionId] = useState<number | null>(null);
-  const terminalContainerRef = useRef<HTMLDivElement | null>(null);
-  const terminalRef = useRef<Terminal | null>(null);
-  const terminalFitRef = useRef<FitAddon | null>(null);
-  const terminalReadPokeRef = useRef<null | (() => void)>(null);
+  const terminalSurfaceRef = useRef<TerminalSurfaceHandle | null>(null);
+  const terminalScope: TerminalScope | null = useMemo(() => {
+    if (!workstudioId) return null;
+    return { kind: 'workstudio', id: workstudioId };
+  }, [workstudioId]);
+  const terminalSessionId = useTerminalSessionStore((s) => (terminalScope ? s.getSessionId(terminalScope) : null));
+
+  const keyboardShortcuts = useConfigStore((s) => s.config?.general?.keyboardShortcuts);
+  const shortcutPlatform = useMemo(() => detectShortcutPlatform(), []);
+  const fileSearchShortcutLabel = useMemo(() => {
+    const def = SHORTCUT_ACTIONS.find((a) => a.id === 'workstudio.fileSearch');
+    const userRaw =
+      shortcutPlatform === 'mac'
+        ? keyboardShortcuts?.mac?.['workstudio.fileSearch']
+        : keyboardShortcuts?.windows?.['workstudio.fileSearch'];
+    const raw = userRaw ?? (shortcutPlatform === 'mac' ? def?.defaultMac : def?.defaultWindows) ?? (shortcutPlatform === 'mac' ? 'Cmd+P' : 'Ctrl+P');
+    return normalizeKeybindingString(String(raw || ''), shortcutPlatform) ?? (shortcutPlatform === 'mac' ? 'Cmd+P' : 'Ctrl+P');
+  }, [keyboardShortcuts, shortcutPlatform]);
 
   const [ws, setWs] = useState<Workstudio | null>(null);
   const [wsError, setWsError] = useState<string | null>(null);
   const [wsLoading, setWsLoading] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+
+  const shouldShowOpenMainFolderAction = useMemo(() => {
+    if (!ws) return false;
+    // 仅在“系统默认工作区”（~/.tauri-ai/workstudios/<id>）时显示“打开文件夹为主工作区”入口：
+    // - 用户一旦手动设置主目录（主目录不再是系统默认目录），该入口就隐藏，减少干扰。
+    const main = normalizeFsPath(ws.mainFolder).toLowerCase();
+    const suffix = `/.tauri-ai/workstudios/${ws.id}`.toLowerCase();
+    return main.endsWith(suffix);
+  }, [ws]);
 
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(() => new Set());
   const [entriesByDir, setEntriesByDir] = useState<Record<string, DirEntry[]>>({});
@@ -1234,150 +1257,17 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     );
   }, [focusedGroupId]);
 
-  const ensureTerminalSession = useCallback(async () => {
-    if (!ws) return null;
-    if (terminalSessionId) return terminalSessionId;
-    const sid = await invoke<number>('workstudio_terminal_create', {
-      workstudioId: ws.id,
-      workdir: ws.mainFolder,
-    });
-    setTerminalSessionId(sid);
-    return sid;
-  }, [ws, terminalSessionId]);
+  const connectTerminal = useCallback(async () => {
+    if (!terminalScope) return;
+    await terminalSurfaceRef.current?.connect();
+    terminalSurfaceRef.current?.focus();
+  }, [terminalScope]);
 
   const closeTerminalSession = useCallback(async () => {
-    if (!ws) return;
-    if (!terminalSessionId) return;
-    try {
-      await invoke('workstudio_terminal_close', { workstudioId: ws.id, sessionId: terminalSessionId });
-    } finally {
-      setTerminalSessionId(null);
-      terminalRef.current?.reset();
-    }
-  }, [ws, terminalSessionId]);
-
-  useEffect(() => {
-    if (!ws) return;
-    if (!terminalContainerRef.current) return;
-    if (terminalRef.current) return;
-
-    const term = new Terminal({
-      cursorBlink: true,
-      scrollback: 3000,
-      convertEol: true,
-      fontSize: 12,
-      fontFamily:
-        'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
-      theme: document.documentElement.classList.contains('dark')
-        ? { background: '#0b0f19', foreground: '#e5e7eb' }
-        : { background: '#ffffff', foreground: '#111827' },
-    });
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-    term.open(terminalContainerRef.current);
-    fit.fit();
-    term.focus();
-
-    const onResize = () => {
-      try {
-        fit.fit();
-      } catch {
-        // ignore
-      }
-    };
-    window.addEventListener('resize', onResize);
-
-    terminalRef.current = term;
-    terminalFitRef.current = fit;
-
-    const disposeData = term.onData((data) => {
-      if (!ws) return;
-      void ensureTerminalSession().then((sid) => {
-        if (!sid) return;
-        terminalReadPokeRef.current?.();
-        return invoke('workstudio_terminal_write', { workstudioId: ws.id, sessionId: sid, chars: data });
-      });
-    });
-
-    return () => {
-      disposeData.dispose();
-      window.removeEventListener('resize', onResize);
-      term.dispose();
-      terminalRef.current = null;
-      terminalFitRef.current = null;
-    };
-  }, [ws, ensureTerminalSession]);
-
-  useEffect(() => {
-    if (!terminalOpen) return;
-    if (!ws) return;
-    void ensureTerminalSession().then(() => {
-      // Let layout settle (panel height -> fit)
-      window.setTimeout(() => {
-        try {
-          terminalFitRef.current?.fit();
-          terminalRef.current?.focus();
-        } catch {
-          // ignore
-        }
-      }, 30);
-    });
-  }, [terminalOpen, ws, ensureTerminalSession]);
-
-  useEffect(() => {
-    if (!terminalOpen) return;
-    if (!ws) return;
-    let cancelled = false;
-    let timer: number | null = null;
-    let lastHadOutput = false;
-
-    const schedule = (delayMs: number) => {
-      if (cancelled) return;
-      if (timer) window.clearTimeout(timer);
-      timer = window.setTimeout(tick, delayMs);
-    };
-
-    const tick = async () => {
-      if (cancelled) return;
-      try {
-        const sid = await ensureTerminalSession();
-        if (!sid) return;
-        const base64 = await invoke<string>('workstudio_terminal_read_base64', {
-          workstudioId: ws.id,
-          sessionId: sid,
-          // Backend no longer blocks stdin writes while waiting on reads,
-          // so we can afford a slightly longer wait to reduce polling overhead.
-          timeoutMs: 200,
-          maxBytes: 64 * 1024,
-        });
-        if (cancelled) return;
-        if (base64) {
-          const bytes = decodeBase64ToBytes(base64);
-          terminalRef.current?.write(bytes);
-          lastHadOutput = true;
-        } else {
-          lastHadOutput = false;
-        }
-      } catch {
-        // ignore
-      } finally {
-        // Adaptive polling:
-        // - When output is flowing, poll aggressively for responsiveness.
-        // - When idle, back off to reduce CPU usage.
-        schedule(lastHadOutput ? 30 : 120);
-      }
-    };
-
-    // Allow onData to "poke" the read loop for snappier echo/response.
-    terminalReadPokeRef.current = () => schedule(0);
-
-    timer = window.setTimeout(tick, 30);
-    return () => {
-      cancelled = true;
-      if (timer) window.clearTimeout(timer);
-      terminalReadPokeRef.current = null;
-    };
-  }, [terminalOpen, ws, ensureTerminalSession]);
+    if (!terminalScope) return;
+    await terminalSurfaceRef.current?.disconnect();
+    terminalSurfaceRef.current?.reset();
+  }, [terminalScope]);
 
   const handleEditorMountForGroup = useCallback(
     (groupId: string): OnMount =>
@@ -1722,24 +1612,31 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     await openFileAtPath(selected);
   }, [openFileAtPath]);
 
-  // Cmd/Ctrl+P: file search palette
+  // Workstudio 文件搜索（由全局快捷键系统分发：tauri-ai:shortcut）
   useEffect(() => {
+    const onShortcut = (event: Event) => {
+      const e = event as CustomEvent<{ action?: string }>;
+      if (e.detail?.action !== 'workstudio.fileSearch') return;
+      setFilePaletteOpen(true);
+      window.setTimeout(() => filePaletteInputRef.current?.focus(), 0);
+    };
+    window.addEventListener('tauri-ai:shortcut', onShortcut as EventListener);
+    return () => window.removeEventListener('tauri-ai:shortcut', onShortcut as EventListener);
+  }, []);
+
+  // Esc: close palette (local behavior)
+  useEffect(() => {
+    if (!filePaletteOpen) return;
     const onKeyDown = (e: KeyboardEvent) => {
-      const key = e.key.toLowerCase();
-      if ((e.metaKey || e.ctrlKey) && key === 'p') {
-        e.preventDefault();
-        setFilePaletteOpen(true);
-        window.setTimeout(() => filePaletteInputRef.current?.focus(), 0);
-      }
-      if (key === 'escape') {
-        setFilePaletteOpen(false);
-        setFilePaletteQuery('');
-        setFilePaletteResults([]);
-      }
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      setFilePaletteOpen(false);
+      setFilePaletteQuery('');
+      setFilePaletteResults([]);
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, []);
+  }, [filePaletteOpen]);
 
   useEffect(() => {
     if (!filePaletteOpen) return;
@@ -2427,7 +2324,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           <div className="absolute left-1/2 top-16 w-[720px] max-w-[92vw] -translate-x-1/2 rounded-2xl border border-gray-200 bg-white shadow-xl dark:border-gray-700 dark:bg-gray-900">
             <div className="border-b border-gray-200 px-4 py-3 dark:border-gray-700">
               <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">搜索文件</div>
-              <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">快捷键：Ctrl/Cmd + P</div>
+              <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">快捷键：{fileSearchShortcutLabel}</div>
             </div>
             <div className="p-4">
               <input
@@ -2518,16 +2415,18 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
               >
                 打开文件...
               </button>
-              <button
-                type="button"
-                className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
-                onClick={() => {
-                  setContextMenu(null);
-                  void openMainFolder();
-                }}
-              >
-                打开文件夹为主工作区...
-              </button>
+              {shouldShowOpenMainFolderAction && (
+                <button
+                  type="button"
+                  className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+                  onClick={() => {
+                    setContextMenu(null);
+                    void openMainFolder();
+                  }}
+                >
+                  打开文件夹为主工作区...
+                </button>
+              )}
               <button
                 type="button"
                 className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
@@ -2638,7 +2537,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
               <button
                 type="button"
                 className="rounded border border-gray-200 px-2 py-0.5 text-xs text-gray-600 hover:bg-gray-100 disabled:opacity-60 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-                onClick={() => void ensureTerminalSession()}
+                onClick={() => void connectTerminal()}
                 disabled={!terminalOpen}
                 title="初始化/重新连接"
               >
@@ -2665,7 +2564,21 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           </div>
 
           <div className="min-h-0 flex-1">
-            <div ref={terminalContainerRef} className="h-full w-full" />
+            {terminalScope ? (
+              <TerminalSurface
+                ref={terminalSurfaceRef}
+                scope={terminalScope}
+                workdir={ws.mainFolder}
+                isActive={terminalOpen}
+                autoConnect
+                className="h-full w-full bg-white dark:bg-gray-950"
+                closeOnUnmount={false}
+              />
+            ) : (
+              <div className="flex h-full items-center justify-center text-xs text-gray-500 dark:text-gray-400">
+                终端未就绪
+              </div>
+            )}
           </div>
         </div>
       )}

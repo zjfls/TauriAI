@@ -31,6 +31,8 @@ filetime = "0.2"
 notify = "6"
 walkdir = "2"
 dunce = "1"
+arboard = "3.6.1"
+image = { version = "0.25.8", default-features = false, features = ["png"] }
 
 # HTTP client with streaming support
 reqwest = { version = "0.12", features = ["stream", "json"] }

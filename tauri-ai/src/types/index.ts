@@ -24,6 +24,12 @@ export type Theme =
 export type AnsiRenderMode = 'color' | 'strip' | 'raw';
 export type AnsiColorMode = 'auto' | 'xterm' | 'vscode-dark' | 'vscode-light';
 
+// ---------------------------------------------------------------------------
+// Terminal (PTY) for UI
+// ---------------------------------------------------------------------------
+export type TerminalScopeKind = 'workstudio' | 'workspace_terminal';
+export type TerminalScope = { kind: TerminalScopeKind; id: string };
+
 // View types for navigation
 export type ActiveView =
   | 'chat'
@@ -889,6 +895,7 @@ export interface GeneralSettings {
   ansiColorMode?: AnsiColorMode;   // ANSI 16-color palette selection
   webSearchTool?: WebSearchToolSettings; // Local web search tool settings
   manualTurnRetry?: boolean; // When true: disable automatic turn retries, use manual retry button instead
+  keyboardShortcuts?: KeyboardShortcutsSettings; // Keyboard shortcuts (per-platform, configurable)
 }
 
 export type WebSearchProvider = 'tavily' | 'google' | 'brave';
@@ -906,6 +913,31 @@ export interface WebSearchToolSettings {
   // 通用设置
   minIntervalMs?: number;
   maxResults?: number;
+}
+
+// ============================================================================
+// Keyboard Shortcuts
+// ============================================================================
+
+export type KeyboardShortcutActionId =
+  | 'app.toggleSidebar'
+  | 'app.openSettings'
+  | 'app.openHistory'
+  | 'app.openDevtools'
+  | 'session.new'
+  | 'session.close'
+  | 'session.next'
+  | 'session.previous'
+  | 'workstudio.fileSearch'
+  | 'chat.abortGeneration'
+  | 'document.save'
+  | 'web.focusAddressBar'
+  | 'web.reload';
+
+export interface KeyboardShortcutsSettings {
+  enabled?: boolean;
+  mac?: Partial<Record<KeyboardShortcutActionId, string>>;
+  windows?: Partial<Record<KeyboardShortcutActionId, string>>;
 }
 
 /**

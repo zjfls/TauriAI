@@ -34,7 +34,10 @@ use commands::{
     workstudio_terminal_close, workstudio_terminal_create, workstudio_terminal_read,
     workstudio_terminal_read_base64,
     workstudio_terminal_write,
+    terminal_close, terminal_create, terminal_read, terminal_read_base64, terminal_write,
     retry_turn,
+    open_devtools_current_window,
+    clipboard_write_png_base64,
 };
 use runtime::RunState;
 use config::ConfigManager;
@@ -143,6 +146,9 @@ pub fn run() {
             let open_terminal_tab =
                 MenuItem::with_id(app, "open_terminal_tab", "打开终端标签", true, None::<&str>)?;
             let view_separator = PredefinedMenuItem::separator(app)?;
+            #[cfg(debug_assertions)]
+            let open_devtools =
+                MenuItem::with_id(app, "open_devtools", "打开开发者工具", true, Some("CmdOrCtrl+Alt+I"))?;
 
             // Find existing "File" submenu and insert at the top. If not found (e.g. Linux),
             // create one.
@@ -181,8 +187,18 @@ pub fn run() {
             }
 
             if let Some(view) = view_submenu {
+                #[cfg(debug_assertions)]
+                view.insert_items(&[&open_devtools], 0)?;
                 view.insert_items(&[&open_web_tab, &open_terminal_tab, &view_separator], 0)?;
             } else {
+                #[cfg(debug_assertions)]
+                let view = Submenu::with_items(
+                    app,
+                    "View",
+                    true,
+                    &[&open_devtools, &open_web_tab, &open_terminal_tab],
+                )?;
+                #[cfg(not(debug_assertions))]
                 let view = Submenu::with_items(app, "View", true, &[&open_web_tab, &open_terminal_tab])?;
                 // Insert after File submenu (best-effort). On macOS index 0 is app menu.
                 let pos = if cfg!(target_os = "macos") { 2 } else { 1 };
@@ -241,6 +257,19 @@ pub fn run() {
                         let _ = window.emit("menu:open_terminal_tab", ());
                     } else {
                         let _ = app.emit("menu:open_terminal_tab", ());
+                    }
+                }
+                "open_devtools" => {
+                    #[cfg(debug_assertions)]
+                    {
+                        let focused = app
+                            .webview_windows()
+                            .into_values()
+                            .find(|w| w.is_focused().unwrap_or(false));
+
+                        if let Some(window) = focused.or_else(|| app.get_webview_window("main")) {
+                            window.open_devtools();
+                        }
                     }
                 }
                 "test_window" => {
@@ -320,6 +349,12 @@ pub fn run() {
             workstudio_terminal_read,
             workstudio_terminal_read_base64,
             workstudio_terminal_close,
+            // Unified terminal (UI)
+            terminal_create,
+            terminal_write,
+            terminal_read,
+            terminal_read_base64,
+            terminal_close,
             // Workstudio state (UI persisted)
             get_workstudio_ui_state,
             set_workstudio_ui_state,
@@ -342,6 +377,10 @@ pub fn run() {
             save_app_config,
             test_connection,
             fetch_provider_models,
+            // Clipboard
+            clipboard_write_png_base64,
+            // DevTools
+            open_devtools_current_window,
             // MCP commands
             list_mcp_servers,
             list_mcp_sets,

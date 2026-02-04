@@ -139,6 +139,50 @@ html[data-theme="solarized"] {
   background: #3b82f6;
 }
 
+/* ChatView scrollbar - more visible than global */
+.scrollbar-chat {
+  scrollbar-gutter: stable;
+  scrollbar-width: auto;
+  scrollbar-color: #3b82f6 rgba(0, 0, 0, 0.06);
+}
+
+.scrollbar-chat::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+.scrollbar-chat::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: 999px;
+}
+
+.scrollbar-chat::-webkit-scrollbar-thumb {
+  background: rgba(59, 130, 246, 0.75);
+  border-radius: 999px;
+  border: 3px solid rgba(0, 0, 0, 0.06);
+}
+
+.scrollbar-chat::-webkit-scrollbar-thumb:hover {
+  background: rgba(37, 99, 235, 0.9);
+}
+
+.dark .scrollbar-chat {
+  scrollbar-color: #60a5fa rgba(255, 255, 255, 0.08);
+}
+
+.dark .scrollbar-chat::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.dark .scrollbar-chat::-webkit-scrollbar-thumb {
+  background: rgba(96, 165, 250, 0.75);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.dark .scrollbar-chat::-webkit-scrollbar-thumb:hover {
+  background: rgba(59, 130, 246, 0.9);
+}
+
 /* Disable text selection on drag regions */
 [data-tauri-drag-region] {
   -webkit-user-select: none;

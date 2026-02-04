@@ -1103,6 +1103,9 @@ impl Default for AppearanceSettings {
 pub struct GeneralSettings {
     pub language: String,
     pub auto_start: bool,
+    /// Keyboard shortcuts settings (per-platform overrides)
+    #[serde(default)]
+    pub keyboard_shortcuts: KeyboardShortcutsSettings,
     /// When enabled, disable automatic turn retries (use manual retry buttons instead).
     #[serde(default)]
     pub manual_turn_retry: bool,
@@ -1134,6 +1137,7 @@ impl Default for GeneralSettings {
         Self {
             language: "zh-CN".to_string(),
             auto_start: false,
+            keyboard_shortcuts: KeyboardShortcutsSettings::default(),
             manual_turn_retry: false,
             debug_mode: false,
             debug_sse: false,
@@ -1142,6 +1146,32 @@ impl Default for GeneralSettings {
             ansi_color_mode: "auto".to_string(),
             open_devtools_on_start: false,
             web_search_tool: WebSearchToolSettings::default(),
+        }
+    }
+}
+
+/// Keyboard shortcuts settings (per-platform overrides; defaults are defined in frontend)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyboardShortcutsSettings {
+    #[serde(default = "default_keyboard_shortcuts_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub mac: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub windows: std::collections::BTreeMap<String, String>,
+}
+
+fn default_keyboard_shortcuts_enabled() -> bool {
+    true
+}
+
+impl Default for KeyboardShortcutsSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            mac: std::collections::BTreeMap::new(),
+            windows: std::collections::BTreeMap::new(),
         }
     }
 }

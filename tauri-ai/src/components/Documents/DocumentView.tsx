@@ -221,15 +221,13 @@ export const DocumentView: React.FC<{ documentId?: string }> = ({ documentId }) 
 
   useEffect(() => {
     if (!activeDoc) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      const isCmdOrCtrl = event.metaKey || event.ctrlKey;
-      if (!isCmdOrCtrl) return;
-      if (event.key.toLowerCase() !== 's') return;
-      event.preventDefault();
+    const onShortcut = (event: Event) => {
+      const e = event as CustomEvent<{ action?: string }>;
+      if (e.detail?.action !== 'document.save') return;
       void handleSave();
     };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
+    window.addEventListener('tauri-ai:shortcut', onShortcut as EventListener);
+    return () => window.removeEventListener('tauri-ai:shortcut', onShortcut as EventListener);
   }, [activeDoc, handleSave]);
 
   if (!activeDoc) {

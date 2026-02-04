@@ -1,14 +1,17 @@
 /**
  * useKeyboardShortcuts Hook
- * Provides global keyboard shortcuts for session management
+ * Provides global keyboard shortcuts (configurable, cross-platform)
  * Requirements: 9.1, 9.2, 9.3, 9.4, 9.5
  */
 
 import { useEffect, useCallback, useState } from 'react';
+import { invoke, isTauri } from '@tauri-apps/api/core';
 import { useSessionStore } from '../stores/sessionStore';
 import { useConfigStore } from '../stores/configStore';
 import { useUIStore } from '../stores/uiStore';
 import { markChatOpenProfile, startChatOpenProfile } from '../utils/chatOpenProfile';
+import { detectShortcutPlatform, eventToKeybindingString, isEditableElement, normalizeKeybindingString } from '../shortcuts';
+import { SHORTCUT_ACTIONS } from '../shortcuts/registry';
 import type { AgentSession, AppConfig } from '../types';
 
 interface KeyboardShortcutsOptions {
@@ -30,11 +33,8 @@ interface SessionStoreState {
  * Hook to handle global keyboard shortcuts for session management
  * 
  * Shortcuts:
- * - Ctrl+T: Create new session
- * - Ctrl+W: Close current session
- * - Ctrl+Tab: Switch to next session
- * - Ctrl+Shift+Tab: Switch to previous session
- * - Ctrl+1-9: Switch to session at index
+ * - Configurable: see Settings -> 通用 -> 快捷键
+ * - 固定补充：Ctrl/Cmd + 1-9 切换当前 Pane 内的会话索引（不在设置里展开配置）
  */
 export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
   const { enabled = true, onNewSessionRequest } = options;
@@ -47,6 +47,36 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
   
   // Track if we're showing agent selector
   const [showAgentSelector, setShowAgentSelector] = useState(false);
+
+  // Active view (used to scope certain shortcuts)
+  useUIStore((s) => s.activeView);
+
+  const platform = detectShortcutPlatform();
+  const shortcutSettings = config?.general?.keyboardShortcuts;
+  const shortcutsEnabled = enabled && (shortcutSettings?.enabled ?? true);
+
+  const getEffectiveBinding = useCallback(
+    (actionId: string): string | null => {
+      const defaults = SHORTCUT_ACTIONS.find((a) => a.id === actionId);
+      if (!defaults) return null;
+
+      const userMap = platform === 'mac' ? shortcutSettings?.mac : shortcutSettings?.windows;
+      const raw = (userMap as any)?.[actionId] ?? (platform === 'mac' ? defaults.defaultMac : defaults.defaultWindows);
+      return normalizeKeybindingString(String(raw || ''), platform);
+    },
+    [platform, shortcutSettings]
+  );
+
+  const bindingToAction = useCallback((): Record<string, string> => {
+    const out: Record<string, string> = {};
+    for (const action of SHORTCUT_ACTIONS) {
+      const binding = getEffectiveBinding(action.id);
+      if (!binding) continue;
+      if (out[binding]) continue; // keep first, UI will show conflicts
+      out[binding] = action.id;
+    }
+    return out;
+  }, [getEffectiveBinding]);
   
   // Get ordered sessions in the focused pane (VS Code-like group behavior)
   const getOrderedSessions = useCallback((): AgentSession[] => {
@@ -219,69 +249,170 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
     }
   }, [getOrderedSessions]);
 
+  const dispatchShortcutEvent = useCallback((actionId: string) => {
+    try {
+      window.dispatchEvent(new CustomEvent('tauri-ai:shortcut', { detail: { action: actionId } }));
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const executeAction = useCallback(
+    async (actionId: string): Promise<boolean> => {
+      switch (actionId) {
+        case 'app.toggleSidebar': {
+          useUIStore.getState().toggleSidebar();
+          return true;
+        }
+        case 'app.openSettings': {
+          useUIStore.getState().setActiveView('settings');
+          return true;
+        }
+        case 'app.openHistory': {
+          useUIStore.getState().setActiveView('history');
+          return true;
+        }
+        case 'app.openDevtools': {
+          if (!isTauri()) return false;
+          try {
+            await invoke('open_devtools_current_window');
+            return true;
+          } catch {
+            return false;
+          }
+        }
+        case 'session.new': {
+          await handleCreateSession();
+          return true;
+        }
+        case 'session.close': {
+          await handleCloseSession();
+          return true;
+        }
+        case 'session.next': {
+          handleNextSession();
+          return true;
+        }
+        case 'session.previous': {
+          handlePreviousSession();
+          return true;
+        }
+        case 'chat.abortGeneration': {
+          const activeView = useUIStore.getState().activeView;
+          if (activeView !== 'chat') return false;
+          const activeSessionId = useSessionStore.getState().activeSessionId;
+          if (!activeSessionId) return false;
+          const session = useSessionStore.getState().sessions.get(activeSessionId);
+          if (!session?.isGenerating) return false;
+          await useSessionStore.getState().abortGeneration(activeSessionId);
+          return true;
+        }
+        case 'workstudio.fileSearch': {
+          if (useUIStore.getState().activeView !== 'workstudio') return false;
+          dispatchShortcutEvent(actionId);
+          return true;
+        }
+        case 'document.save': {
+          if (useUIStore.getState().activeView !== 'document') return false;
+          dispatchShortcutEvent(actionId);
+          return true;
+        }
+        case 'web.focusAddressBar':
+        case 'web.reload': {
+          if (useUIStore.getState().activeView !== 'web') return false;
+          dispatchShortcutEvent(actionId);
+          return true;
+        }
+        default:
+          return false;
+      }
+    },
+    [
+      dispatchShortcutEvent,
+      handleCloseSession,
+      handleCreateSession,
+      handleNextSession,
+      handlePreviousSession,
+    ]
+  );
+
   
   /**
    * Main keyboard event handler
    */
   const handleKeyDown = useCallback((event: KeyboardEvent) => {
-    // Check if Ctrl (or Cmd on Mac) is pressed
+    if (!shortcutsEnabled) return;
+
+    // 先处理：Ctrl/Cmd + 1-9 切换会话（固定规则）
     const isCtrlOrCmd = event.ctrlKey || event.metaKey;
-    
-    if (!isCtrlOrCmd) return;
-    
-    // Handle Ctrl+T: Create new session
-    if (event.key === 't' || event.key === 'T') {
-      event.preventDefault();
-      handleCreateSession();
+    if (isCtrlOrCmd) {
+      const numKey = parseInt(event.key, 10);
+      if (numKey >= 1 && numKey <= 9) {
+        event.preventDefault();
+        handleSwitchToIndex(numKey);
+        return;
+      }
+    }
+
+    const bindingMap = bindingToAction();
+    const binding = eventToKeybindingString(event, platform);
+    if (!binding) return;
+
+    const actionId = bindingMap[binding];
+    if (!actionId) return;
+
+    const def = SHORTCUT_ACTIONS.find((a) => a.id === actionId) || null;
+    if (def && !def.allowWhenTyping && isEditableElement(event.target)) {
       return;
     }
-    
-    // Handle Ctrl+W: Close current session
-    if (event.key === 'w' || event.key === 'W') {
+
+    const canHandleNow = (() => {
+      switch (actionId) {
+        case 'app.openDevtools':
+          return isTauri();
+        case 'workstudio.fileSearch':
+          return useUIStore.getState().activeView === 'workstudio';
+        case 'document.save':
+          return useUIStore.getState().activeView === 'document';
+        case 'web.focusAddressBar':
+        case 'web.reload':
+          return useUIStore.getState().activeView === 'web';
+        case 'chat.abortGeneration': {
+          if (useUIStore.getState().activeView !== 'chat') return false;
+          const activeSessionId = useSessionStore.getState().activeSessionId;
+          if (!activeSessionId) return false;
+          const session = useSessionStore.getState().sessions.get(activeSessionId);
+          return Boolean(session?.isGenerating);
+        }
+        default:
+          return true;
+      }
+    })();
+    if (!canHandleNow) return;
+
+    // 允许 Escape 在其他监听里继续用于关闭面板；abort 成功也不强制阻止默认行为。
+    if (binding !== 'Escape') {
       event.preventDefault();
-      handleCloseSession();
-      return;
     }
-    
-    // Handle Ctrl+Tab: Next session
-    if (event.key === 'Tab' && !event.shiftKey) {
-      event.preventDefault();
-      handleNextSession();
-      return;
-    }
-    
-    // Handle Ctrl+Shift+Tab: Previous session
-    if (event.key === 'Tab' && event.shiftKey) {
-      event.preventDefault();
-      handlePreviousSession();
-      return;
-    }
-    
-    // Handle Ctrl+1-9: Switch to session at index
-    const numKey = parseInt(event.key, 10);
-    if (numKey >= 1 && numKey <= 9) {
-      event.preventDefault();
-      handleSwitchToIndex(numKey);
-      return;
-    }
+    void executeAction(actionId);
   }, [
-    handleCreateSession,
-    handleCloseSession,
-    handleNextSession,
-    handlePreviousSession,
+    shortcutsEnabled,
+    bindingToAction,
+    executeAction,
+    platform,
     handleSwitchToIndex,
   ]);
   
   // Set up event listener
   useEffect(() => {
-    if (!enabled) return;
+    if (!shortcutsEnabled) return;
     
     window.addEventListener('keydown', handleKeyDown);
     
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [enabled, handleKeyDown]);
+  }, [shortcutsEnabled, handleKeyDown]);
   
   return {
     showAgentSelector,

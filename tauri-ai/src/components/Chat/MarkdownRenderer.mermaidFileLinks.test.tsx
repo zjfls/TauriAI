@@ -4,8 +4,8 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import mermaid from 'mermaid';
 
-const mockInvoke = vi.fn();
-const mockOpenOrFocusWorkstudioWindow = vi.fn();
+const mockInvoke = vi.hoisted(() => vi.fn());
+const mockOpenOrFocusWorkstudioWindow = vi.hoisted(() => vi.fn());
 
 vi.mock('mermaid', () => ({
   default: {
@@ -17,11 +17,11 @@ vi.mock('mermaid', () => ({
   },
 }));
 
-vi.mock('@tauri-apps/api/core', async () => ({
+vi.mock('@tauri-apps/api/core', () => ({
   invoke: mockInvoke,
 }));
 
-vi.mock('../../utils/viewWindow', async () => ({
+vi.mock('../../utils/viewWindow', () => ({
   openOrFocusWorkstudioWindow: mockOpenOrFocusWorkstudioWindow,
 }));
 

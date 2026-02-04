@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Globe, ExternalLink, Plus } from 'lucide-react';
 import { isTauri } from '@tauri-apps/api/core';
-import { openUrl } from '@tauri-apps/plugin-opener';
 import { useWebTabStore } from '../../stores/webTabStore';
 import { getViewWindowParams } from '../../utils/viewWindow';
+import { openExternalWebWindow } from '../../utils/externalWebWindow';
 
 const normalizeDisplayUrl = (url: string) => {
   const u = (url ?? '').trim();
@@ -18,6 +18,7 @@ export const WebView: React.FC = () => {
   const setActiveWebTab = useWebTabStore((s) => s.setActiveWebTab);
   const updateWebTab = useWebTabStore((s) => s.updateWebTab);
   const bootstrappedFromWindowParamsRef = useRef(false);
+  const addressInputRef = useRef<HTMLInputElement>(null);
 
   const activeTab = useMemo(() => {
     if (!activeTabId) return null;
@@ -25,6 +26,7 @@ export const WebView: React.FC = () => {
   }, [tabs, activeTabId]);
 
   const [address, setAddress] = useState('');
+  const [reloadSeq, setReloadSeq] = useState(0);
 
   useEffect(() => {
     if (bootstrappedFromWindowParamsRef.current) return;
@@ -46,6 +48,23 @@ export const WebView: React.FC = () => {
   useEffect(() => {
     setAddress(activeTab ? normalizeDisplayUrl(activeTab.url) : '');
   }, [activeTab?.id]);
+
+  useEffect(() => {
+    const onShortcut = (event: Event) => {
+      const e = event as CustomEvent<{ action?: string }>;
+      if (!e.detail?.action) return;
+      if (e.detail.action === 'web.focusAddressBar') {
+        addressInputRef.current?.focus();
+        addressInputRef.current?.select?.();
+      }
+      if (e.detail.action === 'web.reload') {
+        if (!activeTab) return;
+        setReloadSeq((n) => n + 1);
+      }
+    };
+    window.addEventListener('tauri-ai:shortcut', onShortcut as EventListener);
+    return () => window.removeEventListener('tauri-ai:shortcut', onShortcut as EventListener);
+  }, [activeTab]);
 
   const createTabAndOpen = () => {
     const input = address.trim();
@@ -89,6 +108,7 @@ export const WebView: React.FC = () => {
 
             <div className="mt-4 flex gap-2">
               <input
+                ref={addressInputRef}
                 value={address}
                 onChange={(e) => setAddress(e.target.value)}
                 onKeyDown={(e) => {
@@ -117,6 +137,7 @@ export const WebView: React.FC = () => {
         <Globe size={16} className="text-blue-600 dark:text-blue-300" />
 
         <input
+          ref={addressInputRef}
           value={address}
           onChange={(e) => setAddress(e.target.value)}
           onKeyDown={(e) => {
@@ -125,15 +146,6 @@ export const WebView: React.FC = () => {
           placeholder="https://example.com"
           className="min-w-0 flex-1 rounded-md border border-gray-200 bg-white px-3 py-1.5 text-sm text-gray-800 outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
         />
-
-        <button
-          type="button"
-          onClick={updateActiveUrl}
-          className="rounded-md border border-gray-300 bg-white px-2 py-1.5 text-xs text-gray-700 hover:bg-gray-100 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
-          title="加载"
-        >
-          加载
-        </button>
 
         <button
           type="button"
@@ -147,12 +159,12 @@ export const WebView: React.FC = () => {
         <button
           type="button"
           onClick={() => {
-            if (!isTauri()) return;
-            void openUrl(activeTab.url);
+            if (!activeTab.url || activeTab.url === 'about:blank') return;
+            openExternalWebWindow(activeTab.url, { title: activeTab.title });
           }}
           className="rounded-md border border-gray-300 bg-white px-2 py-1.5 text-xs text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
-          disabled={!isTauri() || !activeTab.url || activeTab.url === 'about:blank'}
-          title="在系统浏览器打开"
+          disabled={!activeTab.url || activeTab.url === 'about:blank' || !isTauri()}
+          title="在新窗口打开（顶层加载，绕过 iframe 限制）"
         >
           <ExternalLink size={12} />
         </button>
@@ -160,7 +172,7 @@ export const WebView: React.FC = () => {
 
       <div className="flex-1 overflow-hidden">
         <iframe
-          key={activeTab.id}
+          key={`${activeTab.id}:${reloadSeq}`}
           src={activeTab.url}
           title={activeTab.title}
           className="h-full w-full bg-white dark:bg-gray-900"
@@ -168,7 +180,7 @@ export const WebView: React.FC = () => {
       </div>
 
       <div className="border-t border-gray-200 bg-white px-4 py-2 text-xs text-gray-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400">
-        说明：部分网站可能禁止被嵌入（X-Frame-Options / frame-ancestors），若无法显示请点击右侧按钮在系统浏览器打开。
+        说明：部分网站可能禁止被 iframe 嵌入（X-Frame-Options / frame-ancestors），若无法显示请点右侧按钮在新窗口顶层打开。
       </div>
     </div>
   );

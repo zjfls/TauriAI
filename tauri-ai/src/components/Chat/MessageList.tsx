@@ -8,7 +8,7 @@ import React, { startTransition, useCallback, useEffect, useLayoutEffect, useMem
 import type { Message, MessageBlock, Action, MessageTurn } from '../../types';
 import { MessageItem } from './MessageItem';
 import { MessageBlocks } from './MessageBlocks';
-import { Bot, ArrowDown } from 'lucide-react';
+import { Bot, ChevronDown, ChevronUp, ChevronsDown, ChevronsUp } from 'lucide-react';
 import { isTauri } from '@tauri-apps/api/core';
 import { markChatOpenProfile } from '../../utils/chatOpenProfile';
 import {
@@ -77,6 +77,8 @@ const MessageListInner: React.FC<MessageListProps> = ({
   const lastUserIntentTsRef = useRef(0);
   const commitRafRef = useRef<number | null>(null);
   const pendingCommitRef = useRef<{ isAtBottom: boolean; userScrolledAway: boolean } | null>(null);
+  const suppressAutoLoadMoreRef = useRef(false);
+  const pendingNavAfterLoadMoreRef = useRef<null | { kind: 'prevMessage' }>(null);
 
   // Track if user is at bottom (should auto-scroll)
   const [isAtBottom, setIsAtBottom] = useState(true);
@@ -503,7 +505,11 @@ const MessageListInner: React.FC<MessageListProps> = ({
     }
 
     if (container.scrollTop < LOAD_MORE_SCROLL_THRESHOLD && startIndex > 0) {
-      loadMore();
+      if (suppressAutoLoadMoreRef.current) {
+        suppressAutoLoadMoreRef.current = false;
+      } else {
+        loadMore();
+      }
     }
   }, [
     checkIfAtBottom,
@@ -539,6 +545,101 @@ const MessageListInner: React.FC<MessageListProps> = ({
     },
     [scheduleCommitViewState]
   );
+
+  const scrollToTop = useCallback(
+    (smooth = true) => {
+      const container = containerRef.current;
+      if (!container) return;
+      suppressAutoLoadMoreRef.current = true;
+      // 这是明确的用户导航意图：关闭跟随输出
+      lastUserIntentTsRef.current = Date.now();
+      followOutputRef.current = false;
+      container.scrollTo({ top: 0, behavior: smooth ? 'smooth' : 'auto' });
+
+      const nextUserScrolledAway = streamingBlocks !== null;
+      setIsAtBottom(false);
+      if (nextUserScrolledAway !== userScrolledAway) setUserScrolledAway(nextUserScrolledAway);
+      scheduleCommitViewState({ isAtBottom: false, userScrolledAway: nextUserScrolledAway });
+    },
+    [scheduleCommitViewState, streamingBlocks, userScrolledAway]
+  );
+
+  const getRenderedMessageElements = useCallback((): HTMLElement[] => {
+    const container = containerRef.current;
+    if (!container) return [];
+    return Array.from(container.querySelectorAll<HTMLElement>('[data-message-id]')).filter((el) => Boolean(el.dataset.messageId));
+  }, []);
+
+  const getTopVisibleMessageIndex = useCallback((): number => {
+    const container = containerRef.current;
+    if (!container) return -1;
+    const containerTop = container.getBoundingClientRect().top;
+    const nodes = getRenderedMessageElements();
+    if (nodes.length === 0) return -1;
+    for (let i = 0; i < nodes.length; i += 1) {
+      const rect = nodes[i].getBoundingClientRect();
+      if (rect.bottom > containerTop + 1) return i;
+    }
+    return nodes.length - 1;
+  }, [getRenderedMessageElements]);
+
+  const scrollToRenderedMessageIndex = useCallback(
+    (index: number, smooth = true) => {
+      const container = containerRef.current;
+      if (!container) return;
+      const nodes = getRenderedMessageElements();
+      const el = nodes[index];
+      if (!el) return;
+
+      const containerRect = container.getBoundingClientRect();
+      const rect = el.getBoundingClientRect();
+      const delta = rect.top - containerRect.top;
+      const targetTop = Math.max(0, container.scrollTop + delta - 8);
+      if (Math.abs(targetTop - container.scrollTop) < 1) return;
+
+      suppressAutoLoadMoreRef.current = true;
+      lastUserIntentTsRef.current = Date.now();
+      followOutputRef.current = false;
+      container.scrollTo({ top: targetTop, behavior: smooth ? 'smooth' : 'auto' });
+    },
+    [getRenderedMessageElements]
+  );
+
+  const scrollToPreviousMessage = useCallback(() => {
+    const current = getTopVisibleMessageIndex();
+    if (current <= 0) {
+      if (startIndex > 0) {
+        pendingNavAfterLoadMoreRef.current = { kind: 'prevMessage' };
+        loadMore();
+        return;
+      }
+      scrollToTop(true);
+      return;
+    }
+    scrollToRenderedMessageIndex(current - 1, true);
+  }, [getTopVisibleMessageIndex, loadMore, scrollToRenderedMessageIndex, scrollToTop, startIndex]);
+
+  const scrollToNextMessage = useCallback(() => {
+    const current = getTopVisibleMessageIndex();
+    const nodes = getRenderedMessageElements();
+    if (nodes.length === 0) return;
+    const next = Math.min(nodes.length - 1, Math.max(0, current) + 1);
+    scrollToRenderedMessageIndex(next, true);
+  }, [getRenderedMessageElements, getTopVisibleMessageIndex, scrollToRenderedMessageIndex]);
+
+  // “上一条消息”在顶部时：先触发一次 loadMore，再在 DOM 更新后滚到新增的上一条
+  useLayoutEffect(() => {
+    const pending = pendingNavAfterLoadMoreRef.current;
+    if (!pending) return;
+    pendingNavAfterLoadMoreRef.current = null;
+
+    if (pending.kind === 'prevMessage') {
+      const current = getTopVisibleMessageIndex();
+      if (current > 0) {
+        scrollToRenderedMessageIndex(current - 1, true);
+      }
+    }
+  }, [getTopVisibleMessageIndex, scrollToRenderedMessageIndex, visibleCount]);
 
   // Note: avoid persisting on unmount by reading `container.scrollTop`, because the DOM might
   // already be detached/relayouted (can incorrectly report 0 and overwrite the last good state).
@@ -663,14 +764,15 @@ const MessageListInner: React.FC<MessageListProps> = ({
   );
 
   return (
-    <div
-      ref={containerRef}
-      className="flex-1 overflow-y-auto px-4 py-4"
-      onScroll={handleScroll}
-      onDragOver={handleDragOver}
-      onDrop={handleDrop}
-    >
-      <div ref={contentRef} className="min-h-full">
+    <div className="relative flex-1 min-h-0">
+      <div
+        ref={containerRef}
+        className="h-full overflow-y-auto px-4 py-4 scrollbar-chat"
+        onScroll={handleScroll}
+        onDragOver={handleDragOver}
+        onDrop={handleDrop}
+      >
+        <div ref={contentRef} className="min-h-full">
       {/* Empty state */}
       {messages.length === 0 && streamingBlocks === null && (
         <div className="flex h-full flex-col items-center justify-center text-gray-400">
@@ -725,17 +827,51 @@ const MessageListInner: React.FC<MessageListProps> = ({
 
       {/* Scroll anchor */}
       <div ref={bottomRef} />
+      </div>
+      </div>
 
-      {/* Scroll to bottom button - shown when user scrolled away */}
-      {userScrolledAway && streamingBlocks !== null && (
-        <button
-          onClick={() => scrollToBottom()}
-          className="fixed bottom-38 right-2 flex h-10 w-10 items-center justify-center rounded-full bg-blue-500 text-white shadow-lg transition-all hover:bg-blue-600"
-          title="滚动到底部"
-        >
-          <ArrowDown size={20} />
-        </button>
-      )}
+      {/* 快速滚动导航条（与当前 MessageList 绑定，避免多 Pane 下 fixed 定位错位） */}
+      <div className="absolute right-2 top-1/2 z-20 -translate-y-1/2">
+        <div className="flex flex-col gap-1 rounded-xl border border-gray-200 bg-white/85 p-1 shadow-sm backdrop-blur dark:border-gray-700 dark:bg-gray-900/55">
+          <button
+            type="button"
+            onClick={() => scrollToTop(true)}
+            className="flex h-9 w-9 items-center justify-center rounded-lg text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:text-gray-200 dark:hover:bg-gray-800"
+            title="到顶部"
+            aria-label="到顶部"
+          >
+            <ChevronsUp size={18} />
+          </button>
+          <button
+            type="button"
+            onClick={scrollToPreviousMessage}
+            className="flex h-9 w-9 items-center justify-center rounded-lg text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:text-gray-200 dark:hover:bg-gray-800"
+            title="到上一条消息"
+            aria-label="到上一条消息"
+          >
+            <ChevronUp size={18} />
+          </button>
+          <button
+            type="button"
+            onClick={scrollToNextMessage}
+            className="flex h-9 w-9 items-center justify-center rounded-lg text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:text-gray-200 dark:hover:bg-gray-800"
+            title="到下一条消息"
+            aria-label="到下一条消息"
+          >
+            <ChevronDown size={18} />
+          </button>
+          <button
+            type="button"
+            onClick={() => scrollToBottom(true)}
+            className={`flex h-9 w-9 items-center justify-center rounded-lg text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:text-gray-200 dark:hover:bg-gray-800 ${
+              userScrolledAway && streamingBlocks !== null ? 'bg-blue-50 text-blue-700 hover:bg-blue-100 dark:bg-blue-900/20 dark:text-blue-300 dark:hover:bg-blue-900/30' : ''
+            }`}
+            title="到底部"
+            aria-label="到底部"
+          >
+            <ChevronsDown size={18} />
+          </button>
+        </div>
       </div>
     </div>
   );

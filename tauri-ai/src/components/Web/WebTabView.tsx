@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { Globe, ExternalLink, Plus } from 'lucide-react';
 import { isTauri } from '@tauri-apps/api/core';
-import { openUrl } from '@tauri-apps/plugin-opener';
 import { useWebTabStore } from '../../stores/webTabStore';
 import { useWorkspaceLayoutStore } from '../../stores/workspaceLayoutStore';
 import { webTabId as toWorkspaceWebTabId } from '../../stores/workspaceTabStore';
+import { openExternalWebWindow } from '../../utils/externalWebWindow';
 
 const normalizeDisplayUrl = (url: string) => {
   const u = (url ?? '').trim();
@@ -70,15 +70,6 @@ export const WebTabView: React.FC<{ webTabId: string }> = ({ webTabId }) => {
 
         <button
           type="button"
-          onClick={updateActiveUrl}
-          className="rounded-md border border-gray-300 bg-white px-2 py-1.5 text-xs text-gray-700 hover:bg-gray-100 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
-          title="加载"
-        >
-          加载
-        </button>
-
-        <button
-          type="button"
           onClick={createTabAndOpen}
           className="rounded-md border border-gray-300 bg-white px-2 py-1.5 text-xs text-gray-700 hover:bg-gray-100 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
           title="新建网页标签"
@@ -89,12 +80,12 @@ export const WebTabView: React.FC<{ webTabId: string }> = ({ webTabId }) => {
         <button
           type="button"
           onClick={() => {
-            if (!isTauri()) return;
-            void openUrl(tab.url);
+            if (!tab.url || tab.url === 'about:blank') return;
+            openExternalWebWindow(tab.url, { title: tab.title });
           }}
           className="rounded-md border border-gray-300 bg-white px-2 py-1.5 text-xs text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
-          disabled={!isTauri() || !tab.url || tab.url === 'about:blank'}
-          title="在系统浏览器打开"
+          disabled={!tab.url || tab.url === 'about:blank' || !isTauri()}
+          title="在新窗口打开（顶层加载，绕过 iframe 限制）"
         >
           <ExternalLink size={12} />
         </button>
@@ -110,7 +101,7 @@ export const WebTabView: React.FC<{ webTabId: string }> = ({ webTabId }) => {
       </div>
 
       <div className="border-t border-gray-200 bg-white px-4 py-2 text-xs text-gray-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400">
-        说明：部分网站可能禁止被嵌入（X-Frame-Options / frame-ancestors），若无法显示请点右侧按钮在系统浏览器打开。
+        说明：部分网站可能禁止被 iframe 嵌入（X-Frame-Options / frame-ancestors），若无法显示请点右侧按钮在新窗口顶层打开。
       </div>
     </div>
   );

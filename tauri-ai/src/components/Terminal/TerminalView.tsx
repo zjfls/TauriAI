@@ -1,32 +1,22 @@
-import React, { useCallback, useEffect, useMemo, useRef } from 'react';
-import { invoke, isTauri } from '@tauri-apps/api/core';
-import { Terminal as XTerm } from 'xterm';
-import { FitAddon } from '@xterm/addon-fit';
-import 'xterm/css/xterm.css';
-import { Plus, TerminalSquare } from 'lucide-react';
+import React, { useEffect, useMemo, useRef } from 'react';
+import { isTauri } from '@tauri-apps/api/core';
+import { Plus, TerminalSquare, X } from 'lucide-react';
 import { useTerminalTabStore } from '../../stores/terminalTabStore';
 import { getViewWindowParams } from '../../utils/viewWindow';
-
-const decodeBase64ToBytes = (base64: string) => Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+import { TerminalSurface } from './TerminalSurface';
 
 export const TerminalView: React.FC = () => {
   const tabs = useTerminalTabStore((s) => s.tabs);
   const activeTabId = useTerminalTabStore((s) => s.activeTabId);
   const openTerminalTab = useTerminalTabStore((s) => s.openTerminalTab);
   const setActiveTerminalTab = useTerminalTabStore((s) => s.setActiveTerminalTab);
-  const ensureTerminalSession = useTerminalTabStore((s) => s.ensureTerminalSession);
+  const closeTerminalTab = useTerminalTabStore((s) => s.closeTerminalTab);
   const bootstrappedFromWindowParamsRef = useRef(false);
 
   const activeTab = useMemo(() => {
     if (!activeTabId) return null;
     return tabs.find((t) => t.id === activeTabId) ?? null;
   }, [tabs, activeTabId]);
-
-  const containerByIdRef = useRef(new Map<string, HTMLDivElement>());
-  const termByIdRef = useRef(new Map<string, XTerm>());
-  const fitByIdRef = useRef(new Map<string, FitAddon>());
-  const readLoopStopByIdRef = useRef(new Map<string, () => void>());
-  const mountedIdsRef = useRef(new Set<string>());
 
   const createTab = () => {
     const id = openTerminalTab();
@@ -53,163 +43,6 @@ export const TerminalView: React.FC = () => {
     });
     setActiveTerminalTab(id);
   }, [openTerminalTab, setActiveTerminalTab, tabs.length]);
-
-  const ensureTerminal = useCallback(
-    (tabId: string, el: HTMLDivElement) => {
-      if (termByIdRef.current.has(tabId)) return;
-
-      const term = new XTerm({
-        cursorBlink: true,
-        scrollback: 3000,
-        convertEol: true,
-        fontSize: 12,
-        fontFamily:
-          'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
-        theme: document.documentElement.classList.contains('dark')
-          ? { background: '#0b0f19', foreground: '#e5e7eb' }
-          : { background: '#ffffff', foreground: '#111827' },
-      });
-      const fit = new FitAddon();
-      term.loadAddon(fit);
-      term.open(el);
-      try {
-        fit.fit();
-      } catch {
-        // ignore
-      }
-
-      termByIdRef.current.set(tabId, term);
-      fitByIdRef.current.set(tabId, fit);
-
-      const disposeData = term.onData((data) => {
-        if (!isTauri()) return;
-        void ensureTerminalSession(tabId).then((sid) => {
-          if (!sid) return;
-          return invoke('workstudio_terminal_write', { workstudioId: tabId, sessionId: sid, chars: data });
-        });
-      });
-
-      // Poll output in background; keep timeouts short to reduce lock contention.
-      let cancelled = false;
-      let timer: number | null = null;
-
-      const tick = async () => {
-        if (cancelled) return;
-        try {
-          if (!isTauri()) return;
-          const sid = await ensureTerminalSession(tabId);
-          if (!sid) return;
-          const base64 = await invoke<string>('workstudio_terminal_read_base64', {
-            workstudioId: tabId,
-            sessionId: sid,
-            timeoutMs: 80,
-            maxBytes: 64 * 1024,
-          });
-          if (cancelled) return;
-          if (!base64) return;
-          const bytes = decodeBase64ToBytes(base64);
-          term.write(bytes);
-        } catch {
-          // ignore
-        } finally {
-          if (!cancelled) timer = window.setTimeout(tick, 250);
-        }
-      };
-
-      timer = window.setTimeout(tick, 50);
-
-      const stop = () => {
-        cancelled = true;
-        if (timer) window.clearTimeout(timer);
-        try {
-          disposeData.dispose();
-        } catch {
-          // ignore
-        }
-        try {
-          term.dispose();
-        } catch {
-          // ignore
-        }
-        termByIdRef.current.delete(tabId);
-        fitByIdRef.current.delete(tabId);
-      };
-
-      readLoopStopByIdRef.current.set(tabId, stop);
-    },
-    [ensureTerminalSession]
-  );
-
-  const setContainerRef = useCallback(
-    (tabId: string) => (el: HTMLDivElement | null) => {
-      if (el) {
-        containerByIdRef.current.set(tabId, el);
-        if (isTauri()) ensureTerminal(tabId, el);
-      } else {
-        containerByIdRef.current.delete(tabId);
-      }
-    },
-    [ensureTerminal]
-  );
-
-  // Fit active terminal on resize.
-  useEffect(() => {
-    if (!isTauri()) return;
-    const onResize = () => {
-      if (!activeTabId) return;
-      const fit = fitByIdRef.current.get(activeTabId);
-      if (!fit) return;
-      try {
-        fit.fit();
-      } catch {
-        // ignore
-      }
-    };
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
-  }, [activeTabId]);
-
-  // When switching active tab, focus & fit.
-  useEffect(() => {
-    if (!activeTabId) return;
-    const fit = fitByIdRef.current.get(activeTabId);
-    const term = termByIdRef.current.get(activeTabId);
-    if (!fit || !term) return;
-    window.setTimeout(() => {
-      try {
-        fit.fit();
-        term.focus();
-      } catch {
-        // ignore
-      }
-    }, 30);
-  }, [activeTabId]);
-
-  // Cleanup removed tabs (closed via workspace tab bar).
-  useEffect(() => {
-    const currentIds = new Set(tabs.map((t) => t.id));
-    for (const id of Array.from(mountedIdsRef.current)) {
-      if (currentIds.has(id)) continue;
-      mountedIdsRef.current.delete(id);
-      const stop = readLoopStopByIdRef.current.get(id);
-      if (stop) {
-        readLoopStopByIdRef.current.delete(id);
-        stop();
-      }
-    }
-  }, [tabs]);
-
-  // Cleanup on unmount.
-  useEffect(() => {
-    return () => {
-      for (const stop of readLoopStopByIdRef.current.values()) {
-        stop();
-      }
-      readLoopStopByIdRef.current.clear();
-      containerByIdRef.current.clear();
-      mountedIdsRef.current.clear();
-    };
-  }, []);
 
   if (!isTauri()) {
     return (
@@ -245,6 +78,44 @@ export const TerminalView: React.FC = () => {
         </button>
       </div>
 
+      {tabs.length > 0 && (
+        <div className="flex items-center gap-1 border-b border-gray-200 bg-white px-2 py-1 dark:border-gray-700 dark:bg-gray-800">
+          <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600">
+            {tabs.map((t) => {
+              const active = t.id === activeTabId;
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => setActiveTerminalTab(t.id)}
+                  className={[
+                    'group flex items-center gap-2 rounded px-2 py-1 text-xs',
+                    active
+                      ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
+                      : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700',
+                  ].join(' ')}
+                  title={t.title}
+                >
+                  <span className="max-w-[200px] truncate">{t.title}</span>
+                  <span
+                    className="rounded p-0.5 text-gray-400 hover:bg-gray-200 hover:text-gray-700 dark:hover:bg-gray-600 dark:hover:text-gray-200"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void closeTerminalTab(t.id);
+                    }}
+                    role="button"
+                    aria-label="close"
+                    title="关闭"
+                  >
+                    <X size={12} />
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {!activeTab ? (
         <div className="flex flex-1 items-center justify-center p-8">
           <div className="w-full max-w-xl rounded-xl border border-dashed border-gray-300 bg-white p-6 text-center text-gray-600 shadow-sm dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300">
@@ -263,14 +134,16 @@ export const TerminalView: React.FC = () => {
             return (
               <div
                 key={t.id}
-                ref={(el) => {
-                  if (el) {
-                    mountedIdsRef.current.add(t.id);
-                  }
-                  setContainerRef(t.id)(el);
-                }}
                 className={`absolute inset-0 ${cls}`}
-              />
+              >
+                <TerminalSurface
+                  scope={{ kind: 'workspace_terminal', id: t.id }}
+                  workdir={t.workdir ?? null}
+                  isActive={isActive}
+                  autoConnect={isActive}
+                  className="h-full w-full bg-white dark:bg-gray-900"
+                />
+              </div>
             );
           })}
         </div>

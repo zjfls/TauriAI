@@ -15,12 +15,15 @@ import { SkillsConfigForm } from './SkillsConfigForm';
 import { SecretInput } from './SecretInput';
 import { useConfigStore } from '../../stores/configStore';
 import { useUIStore } from '../../stores/uiStore';
+import { SHORTCUT_ACTIONS, detectShortcutPlatform, eventToKeybindingString, normalizeKeybindingString } from '../../shortcuts';
 import type {
   AppConfig,
   Theme,
   AnsiColorMode,
   AnsiRenderMode,
   WebSearchToolSettings,
+  KeyboardShortcutsSettings,
+  KeyboardShortcutActionId,
 } from '../../types';
 
 type SettingsTab = 'providers' | 'agents' | 'tools' | 'mcp' | 'skills' | 'security' | 'appearance' | 'general';
@@ -48,7 +51,7 @@ const TabButton: React.FC<TabButtonProps> = ({ icon, label, active, onClick }) =
 
 export const SettingsView: React.FC = () => {
   const [activeTab, setActiveTab] = useState<SettingsTab>('providers');
-  const { config, saveConfig } = useConfigStore();
+  const { config, saveConfig, saveConfigDebounced } = useConfigStore();
   const { theme, setTheme, setActiveView } = useUIStore();
 
   const tabs: { id: SettingsTab; icon: React.ReactNode; label: string }[] = [
@@ -162,6 +165,16 @@ export const SettingsView: React.FC = () => {
     saveConfig(updatedConfig);
   };
 
+  const handleKeyboardShortcutsChange = (keyboardShortcuts: KeyboardShortcutsSettings) => {
+    if (!config) return;
+    const updatedConfig: AppConfig = {
+      ...config,
+      general: { ...config.general, keyboardShortcuts },
+    };
+    // 快捷键编辑会频繁触发，使用 debounced 写入降低磁盘/后端压力
+    saveConfigDebounced(updatedConfig, 400);
+  };
+
   const handleOpenDevtoolsOnStartChange = (openDevtoolsOnStart: boolean) => {
     if (!config) return;
     const updatedConfig: AppConfig = {
@@ -225,6 +238,7 @@ export const SettingsView: React.FC = () => {
             ansiRenderMode={config.general.ansiRenderMode ?? 'color'}
             ansiColorMode={config.general.ansiColorMode ?? 'auto'}
             webSearchTool={config.general.webSearchTool}
+            keyboardShortcuts={config.general.keyboardShortcuts}
             onLanguageChange={handleLanguageChange}
             onAutoStartChange={handleAutoStartChange}
             onManualTurnRetryChange={handleManualTurnRetryChange}
@@ -236,6 +250,7 @@ export const SettingsView: React.FC = () => {
             onAnsiRenderModeChange={handleAnsiRenderModeChange}
             onAnsiColorModeChange={handleAnsiColorModeChange}
             onWebSearchToolChange={handleWebSearchToolChange}
+            onKeyboardShortcutsChange={handleKeyboardShortcutsChange}
           />
         );
       default:
@@ -345,6 +360,7 @@ interface GeneralSettingsProps {
   ansiRenderMode: AnsiRenderMode;
   ansiColorMode: AnsiColorMode;
   webSearchTool?: WebSearchToolSettings;
+  keyboardShortcuts?: KeyboardShortcutsSettings;
   onLanguageChange: (language: string) => void;
   onAutoStartChange: (value: boolean) => void;
   onManualTurnRetryChange: (value: boolean) => void;
@@ -356,6 +372,7 @@ interface GeneralSettingsProps {
   onAnsiRenderModeChange: (value: AnsiRenderMode) => void;
   onAnsiColorModeChange: (value: AnsiColorMode) => void;
   onWebSearchToolChange: (value: WebSearchToolSettings) => void;
+  onKeyboardShortcutsChange: (value: KeyboardShortcutsSettings) => void;
 }
 
 const GeneralSettings: React.FC<GeneralSettingsProps> = ({
@@ -370,6 +387,7 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
   ansiRenderMode,
   ansiColorMode,
   webSearchTool,
+  keyboardShortcuts,
   onLanguageChange,
   onAutoStartChange,
   onManualTurnRetryChange,
@@ -381,6 +399,7 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
   onAnsiRenderModeChange,
   onAnsiColorModeChange,
   onWebSearchToolChange,
+  onKeyboardShortcutsChange,
 }) => {
   const languageOptions = [
     { value: 'zh-CN', label: '简体中文' },
@@ -400,11 +419,102 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
     { value: 'xterm', label: 'xterm（经典）' },
   ];
 
+  const currentKeyboardShortcuts: KeyboardShortcutsSettings = keyboardShortcuts ?? {};
+  const keyboardShortcutsEnabled = currentKeyboardShortcuts.enabled ?? true;
+  const [editingShortcutPlatform, setEditingShortcutPlatform] = useState<'mac' | 'windows'>(() => detectShortcutPlatform());
+
+  const getShortcutMap = (platform: 'mac' | 'windows') => {
+    return (platform === 'mac' ? currentKeyboardShortcuts.mac : currentKeyboardShortcuts.windows) ?? {};
+  };
+
+  const setShortcutBinding = (platform: 'mac' | 'windows', actionId: KeyboardShortcutActionId, value: string | null) => {
+    const key = platform === 'mac' ? 'mac' : 'windows';
+    const prevMap = getShortcutMap(platform);
+    const nextMap: Record<string, string> = { ...prevMap };
+    if (value === null) {
+      delete nextMap[actionId];
+    } else {
+      nextMap[actionId] = value;
+    }
+    onKeyboardShortcutsChange({ ...currentKeyboardShortcuts, [key]: nextMap });
+  };
+
+  const bindingConflicts = (() => {
+    const map = new Map<string, KeyboardShortcutActionId[]>();
+    for (const def of SHORTCUT_ACTIONS) {
+      const user = (getShortcutMap(editingShortcutPlatform) as any)[def.id] as string | undefined;
+      const raw = user ?? (editingShortcutPlatform === 'mac' ? def.defaultMac : def.defaultWindows);
+      const norm = normalizeKeybindingString(String(raw || ''), editingShortcutPlatform);
+      if (!norm) continue;
+      const list = map.get(norm) ?? [];
+      list.push(def.id);
+      map.set(norm, list);
+    }
+    return map;
+  })();
+
+  const ShortcutRecorder: React.FC<{ actionId: KeyboardShortcutActionId }> = ({ actionId }) => {
+    const [recording, setRecording] = useState(false);
+    const def = SHORTCUT_ACTIONS.find((d) => d.id === actionId);
+    if (!def) return null;
+
+    const platform = editingShortcutPlatform;
+    const userValue = (getShortcutMap(platform) as any)[actionId] as string | undefined;
+    const raw = userValue ?? (platform === 'mac' ? def.defaultMac : def.defaultWindows);
+    const normalized = normalizeKeybindingString(String(raw || ''), platform) ?? '';
+    const conflict = normalized ? (bindingConflicts.get(normalized)?.length ?? 0) > 1 : false;
+
+    return (
+      <div className="flex items-center gap-2">
+        <input
+          value={recording ? '按下组合键…' : normalized}
+          placeholder="未设置"
+          readOnly
+          onFocus={() => setRecording(true)}
+          onBlur={() => setRecording(false)}
+          onKeyDown={(e) => {
+            if (!recording) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const binding = eventToKeybindingString(e.nativeEvent, platform);
+            if (!binding) return;
+            setShortcutBinding(platform, actionId, binding);
+            setRecording(false);
+          }}
+          className={`w-44 rounded-lg border px-2 py-1 text-sm font-mono outline-none ${
+            conflict
+              ? 'border-red-400 bg-red-50 dark:border-red-500/60 dark:bg-red-950/20'
+              : 'border-gray-300 bg-white dark:border-gray-700 dark:bg-gray-900'
+          }`}
+          title={recording ? '按下组合键进行录制' : normalized || '未设置'}
+        />
+        <button
+          type="button"
+          onClick={() => setShortcutBinding(platform, actionId, '')}
+          className="rounded-md border border-gray-300 bg-white px-2 py-1 text-xs text-gray-700 hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+          title="清除（禁用该快捷键）"
+        >
+          清除
+        </button>
+        <button
+          type="button"
+          onClick={() => setShortcutBinding(platform, actionId, null)}
+          className="rounded-md border border-gray-300 bg-white px-2 py-1 text-xs text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+          title="重置为默认值"
+          disabled={userValue === undefined}
+        >
+          重置
+        </button>
+      </div>
+    );
+  };
+
   const [sections, setSections] = useState({
     general: true,
     debug: true,
     display: true,
     webSearch: true,
+    shortcuts: true,
   });
 
   const toggleSection = (key: keyof typeof sections) => {
@@ -480,6 +590,89 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
             <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${manualTurnRetry ? 'translate-x-5' : ''}`} />
           </button>
         </div>
+      </SettingsSection>
+
+      <SettingsSection
+        title="快捷键"
+        open={sections.shortcuts}
+        onToggle={() => toggleSection('shortcuts')}
+      >
+        <div className="flex items-center justify-between">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">启用快捷键</label>
+            <p className="text-xs text-gray-500">关闭后：所有全局快捷键（含 Workstudio/Web/文档）不生效</p>
+          </div>
+          <button
+            onClick={() => onKeyboardShortcutsChange({ ...currentKeyboardShortcuts, enabled: !keyboardShortcutsEnabled })}
+            className={`relative w-11 h-6 rounded-full transition-colors ${keyboardShortcutsEnabled ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'}`}
+          >
+            <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${keyboardShortcutsEnabled ? 'translate-x-5' : ''}`} />
+          </button>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-gray-500">编辑目标平台：</span>
+          <button
+            type="button"
+            onClick={() => setEditingShortcutPlatform('mac')}
+            className={`rounded-lg px-3 py-1 text-xs font-medium transition-colors ${
+              editingShortcutPlatform === 'mac'
+                ? 'bg-blue-600 text-white'
+                : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-200'
+            }`}
+          >
+            macOS
+          </button>
+          <button
+            type="button"
+            onClick={() => setEditingShortcutPlatform('windows')}
+            className={`rounded-lg px-3 py-1 text-xs font-medium transition-colors ${
+              editingShortcutPlatform === 'windows'
+                ? 'bg-blue-600 text-white'
+                : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-200'
+            }`}
+          >
+            Windows / Linux
+          </button>
+        </div>
+
+        <div className="space-y-3">
+          {Object.entries(
+            SHORTCUT_ACTIONS.reduce<Record<string, typeof SHORTCUT_ACTIONS>>((acc, def) => {
+              const k = def.category;
+              if (!acc[k]) acc[k] = [];
+              acc[k].push(def);
+              return acc;
+            }, {} as Record<string, typeof SHORTCUT_ACTIONS>)
+          ).map(([category, defs]) => (
+            <div
+              key={category}
+              className="rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-900/30"
+            >
+              <div className="mb-2 text-xs font-semibold text-gray-600 dark:text-gray-300">{category}</div>
+              <div className="space-y-3">
+                {defs.map((def) => (
+                  <div key={def.id} className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium text-gray-800 dark:text-gray-100">{def.title}</div>
+                      <div className="text-xs text-gray-500 dark:text-gray-400">{def.description}</div>
+                      <div className="mt-1 text-[11px] text-gray-400">
+                        默认：{editingShortcutPlatform === 'mac' ? def.defaultMac : def.defaultWindows}
+                      </div>
+                    </div>
+                    <div className="shrink-0">
+                      <ShortcutRecorder actionId={def.id} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <p className="text-xs text-gray-500">
+          提示：会话快速切换仍支持 Ctrl/Cmd + 1-9（固定规则，不在这里展开配置）。
+        </p>
       </SettingsSection>
 
       <SettingsSection
