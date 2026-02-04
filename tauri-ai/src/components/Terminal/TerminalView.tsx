@@ -3,6 +3,7 @@ import { isTauri } from '@tauri-apps/api/core';
 import { Plus, TerminalSquare, X } from 'lucide-react';
 import { useTerminalTabStore } from '../../stores/terminalTabStore';
 import { getViewWindowParams } from '../../utils/viewWindow';
+import { resolveActiveWorkstudioMainFolder } from '../../utils/terminalWorkdir';
 import { TerminalSurface } from './TerminalSurface';
 
 export const TerminalView: React.FC = () => {
@@ -19,8 +20,11 @@ export const TerminalView: React.FC = () => {
   }, [tabs, activeTabId]);
 
   const createTab = () => {
-    const id = openTerminalTab();
-    setActiveTerminalTab(id);
+    void (async () => {
+      const workdir = await resolveActiveWorkstudioMainFolder();
+      const id = openTerminalTab({ workdir: workdir ?? undefined });
+      setActiveTerminalTab(id);
+    })();
   };
 
   useEffect(() => {

@@ -4,6 +4,7 @@ import { Plus, TerminalSquare } from 'lucide-react';
 import { useTerminalTabStore } from '../../stores/terminalTabStore';
 import { useWorkspaceLayoutStore } from '../../stores/workspaceLayoutStore';
 import { terminalTabId as toWorkspaceTerminalTabId } from '../../stores/workspaceTabStore';
+import { resolveActiveWorkstudioMainFolder } from '../../utils/terminalWorkdir';
 import { TerminalSurface } from './TerminalSurface';
 
 export const TerminalTabView: React.FC<{ terminalTabId: string; isActive?: boolean }> = ({
@@ -14,8 +15,11 @@ export const TerminalTabView: React.FC<{ terminalTabId: string; isActive?: boole
   const openTerminalTab = useTerminalTabStore((s) => s.openTerminalTab);
 
   const createTab = () => {
-    const id = openTerminalTab({ activate: true });
-    useWorkspaceLayoutStore.getState().openTabInFocusedPane(toWorkspaceTerminalTabId(id));
+    void (async () => {
+      const workdir = await resolveActiveWorkstudioMainFolder();
+      const id = openTerminalTab({ workdir: workdir ?? undefined, activate: true });
+      useWorkspaceLayoutStore.getState().openTabInFocusedPane(toWorkspaceTerminalTabId(id));
+    })();
   };
 
   if (!isTauri()) {

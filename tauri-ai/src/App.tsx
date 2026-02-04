@@ -24,6 +24,7 @@ import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { getViewDefinition } from './views/registry';
 import { ChatViewContainer } from './views/ChatViewContainer';
 import { getViewWindowParams } from './utils/viewWindow';
+import { resolveActiveWorkstudioMainFolder } from './utils/terminalWorkdir';
 import { getCurrentWindowLabelSafe, removeWindowPresence, writeWindowPresence } from './utils/windowPresence';
 import './App.css';
 
@@ -300,9 +301,16 @@ function App() {
     let unlisten: null | (() => void) = null;
 
     void listen('menu:open_terminal_tab', () => {
-      const id = useTerminalTabStore.getState().openTerminalTab({ title: '终端', activate: true });
-      useWorkspaceLayoutStore.getState().openTabInFocusedPane(terminalTabId(id));
-      useUIStore.getState().setActiveView('chat');
+      void (async () => {
+        const workdir = await resolveActiveWorkstudioMainFolder();
+        const id = useTerminalTabStore.getState().openTerminalTab({
+          title: '终端',
+          workdir: workdir ?? undefined,
+          activate: true,
+        });
+        useWorkspaceLayoutStore.getState().openTabInFocusedPane(terminalTabId(id));
+        useUIStore.getState().setActiveView('chat');
+      })();
     })
       .then((fn) => {
         if (disposed) {

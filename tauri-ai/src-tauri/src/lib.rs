@@ -131,10 +131,20 @@ pub fn run() {
             )?;
 
             // View: open web/terminal as tabs inside the workspace (not standalone windows).
-            let open_web_tab =
-                MenuItem::with_id(app, "open_web_tab", "打开网页标签", true, None::<&str>)?;
-            let open_terminal_tab =
-                MenuItem::with_id(app, "open_terminal_tab", "打开终端标签", true, None::<&str>)?;
+            let open_web_tab = MenuItem::with_id(
+                app,
+                "open_web_tab",
+                "打开网页标签",
+                true,
+                Some("CmdOrCtrl+Alt+W"),
+            )?;
+            let open_terminal_tab = MenuItem::with_id(
+                app,
+                "open_terminal_tab",
+                "打开终端标签",
+                true,
+                Some("CmdOrCtrl+Alt+T"),
+            )?;
             let view_separator = PredefinedMenuItem::separator(app)?;
             #[cfg(debug_assertions)]
             let open_devtools = MenuItem::with_id(
