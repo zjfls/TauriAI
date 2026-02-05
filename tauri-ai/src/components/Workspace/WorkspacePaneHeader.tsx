@@ -261,14 +261,18 @@ const SortableTab: React.FC<{
           onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => e.stopPropagation()}
           className={[
-            'flex-1 min-w-0 pr-20 text-sm font-medium',
+            'flex-1 min-w-0 pr-2 text-sm font-medium',
             'rounded border border-blue-300 bg-white/80 px-1 py-0.5',
             'outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-900/80 dark:border-blue-700',
           ].join(' ')}
         />
       ) : (
         <span
-          className="flex-1 min-w-0 truncate pr-20 text-sm font-medium"
+          className={[
+            'flex-1 min-w-0 truncate text-sm font-medium',
+            'pr-2 group-hover:pr-20 group-focus-within:pr-20',
+            'transition-[padding-right] duration-150',
+          ].join(' ')}
           onDoubleClick={(e) => {
             if (tab.kind !== 'chat') return;
             e.preventDefault();
