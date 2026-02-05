@@ -12,10 +12,13 @@ type DragGhostEntry = {
   lastPayloadKey: string;
   shown: boolean;
   ready: Promise<void>;
+  lastSize: { width: number; height: number } | null;
+  sizeFetchedAtMs: number;
 };
 
-const GHOST_SIZE = { width: 360, height: 34 };
+const GHOST_SIZE_FALLBACK = { width: 420, height: 240 };
 const GHOST_OFFSET = { x: 14, y: 18 };
+const GHOST_SIZE_REFRESH_MIN_INTERVAL_MS = 500;
 
 const entries = new Map<string, DragGhostEntry>();
 
@@ -26,6 +29,19 @@ const safeLabelPart = (raw: string) => raw.replace(/[^a-zA-Z0-9_:/-]/g, '_');
 const ghostLabelForSource = (sourceLabel: string) => `__tauriai_ghost__${safeLabelPart(sourceLabel)}`;
 
 const ghostWindowTitleForSource = (sourceLabel: string) => `[GHOST] TauriAI (${sourceLabel})`;
+
+const computeGhostSizeForSource = async (): Promise<{ width: number; height: number }> => {
+  try {
+    const size = await getCurrentWebviewWindow().outerSize().catch(() => null);
+    if (!size) return GHOST_SIZE_FALLBACK;
+    return {
+      width: Math.max(240, Math.floor(size.width / 5)),
+      height: Math.max(160, Math.floor(size.height / 5)),
+    };
+  } catch {
+    return GHOST_SIZE_FALLBACK;
+  }
+};
 
 const buildGhostUrl = (payload: DragGhostPayload) => {
   const params = new URLSearchParams();
@@ -68,6 +84,8 @@ const ensureEntry = async (sourceLabel: string, payload: DragGhostPayload): Prom
   const cached = entries.get(label);
   if (cached) return cached;
 
+  const ghostSize = await computeGhostSizeForSource();
+
   const existing = await WebviewWindow.getByLabel(label).catch(() => null);
   if (existing) {
     const ready = Promise.resolve()
@@ -79,6 +97,8 @@ const ensureEntry = async (sourceLabel: string, payload: DragGhostPayload): Prom
       lastPayloadKey: '',
       shown: false,
       ready,
+      lastSize: ghostSize,
+      sizeFetchedAtMs: Date.now(),
     };
     entries.set(label, entry);
     return entry;
@@ -96,15 +116,15 @@ const ensureEntry = async (sourceLabel: string, payload: DragGhostPayload): Prom
     resizable: false,
     focus: false,
     focusable: false,
-    width: GHOST_SIZE.width,
-    height: GHOST_SIZE.height,
+    width: ghostSize.width,
+    height: ghostSize.height,
   });
 
   const ready = (async () => {
     await waitCreated(win).catch(() => {});
     await Promise.all([
       win.setIgnoreCursorEvents(true).catch(() => {}),
-      win.setSize(new PhysicalSize(GHOST_SIZE.width, GHOST_SIZE.height)).catch(() => {}),
+      win.setSize(new PhysicalSize(ghostSize.width, ghostSize.height)).catch(() => {}),
     ]);
   })();
 
@@ -114,6 +134,8 @@ const ensureEntry = async (sourceLabel: string, payload: DragGhostPayload): Prom
     lastPayloadKey: '',
     shown: false,
     ready,
+    lastSize: ghostSize,
+    sizeFetchedAtMs: Date.now(),
   };
   entries.set(label, entry);
 
@@ -143,6 +165,12 @@ export const primeDragGhostWindow = async (payload: DragGhostPayload) => {
   const entry = await ensureEntry(sourceLabel, payload);
   if (!entry) return;
   await entry.ready.catch(() => {});
+
+  const nextSize = await computeGhostSizeForSource();
+  entry.lastSize = nextSize;
+  entry.sizeFetchedAtMs = Date.now();
+  await entry.win.setSize(new PhysicalSize(nextSize.width, nextSize.height)).catch(() => {});
+
   await entry.win.hide().catch(() => {});
   entry.shown = false;
 };
@@ -154,6 +182,19 @@ export const showAndMoveDragGhostWindow = async (payload: DragGhostPayload, curs
   if (!entry) return;
 
   await entry.ready.catch(() => {});
+
+  const now = Date.now();
+  if (now - entry.sizeFetchedAtMs >= GHOST_SIZE_REFRESH_MIN_INTERVAL_MS) {
+    entry.sizeFetchedAtMs = now;
+    const nextSize = await computeGhostSizeForSource();
+    const prev = entry.lastSize;
+    const changed =
+      !prev || Math.abs(nextSize.width - prev.width) > 2 || Math.abs(nextSize.height - prev.height) > 2;
+    if (changed) {
+      entry.lastSize = nextSize;
+      await entry.win.setSize(new PhysicalSize(nextSize.width, nextSize.height)).catch(() => {});
+    }
+  }
 
   const payloadKey = JSON.stringify({ title: (payload.title ?? '').trim() });
   if (payloadKey !== entry.lastPayloadKey) {
@@ -174,6 +215,11 @@ export const showAndMoveDragGhostWindow = async (payload: DragGhostPayload, curs
   if (!entry.shown) {
     await entry.win.show().catch(() => {});
     entry.shown = true;
+  }
+  try {
+    await getCurrentWebviewWindow().setFocus();
+  } catch {
+    // ignore
   }
   await entry.win
     .setPosition(new PhysicalPosition(cursor.x + GHOST_OFFSET.x, cursor.y + GHOST_OFFSET.y))
