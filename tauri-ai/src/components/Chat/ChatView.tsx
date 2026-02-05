@@ -342,13 +342,12 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
     return providers;
   }, [currentModel, config]);
 
-  // Chat 模式下：只有在会话绑定了 workstudio（即存在“项目/工作区”语义）时才展示 web search。
-  // 否则属于纯聊天场景，不需要引导模型频繁触发搜索与审批流程。
-  const hasWorkspaceForWebSearch = useMemo(() => Boolean(session?.workstudioId), [session?.workstudioId]);
-  const supportsWebSearch = useMemo(
-    () => availableWebSearchProviders.length > 0 && hasWorkspaceForWebSearch,
-    [availableWebSearchProviders, hasWorkspaceForWebSearch]
-  );
+  // 任何场景都应该允许 web search（只要能力可用）：
+  // - 模型支持 native web search，或
+  // - 用户配置了本地 web search provider（Tavily/Google/Brave）
+  //
+  // 仅当两者都不可用时，隐藏搜索菜单。
+  const supportsWebSearch = useMemo(() => availableWebSearchProviders.length > 0, [availableWebSearchProviders]);
 
   // 默认选择：仅在“未设置”时自动选一个；若用户显式选择了“不搜索”(null)则不覆盖。
   useEffect(() => {
