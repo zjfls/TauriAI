@@ -184,8 +184,33 @@ export function useDragGhostSession(options: UseDragGhostSessionOptions): DragGh
           return;
         }
 
+        const shouldRefreshBounds = now - boundsFetchAtRef.current >= boundsRefreshMinIntervalMs;
+        if ((!current.bounds || shouldRefreshBounds) && shouldRefreshBounds) {
+          boundsFetchAtRef.current = now;
+          const nextBounds = await fetchWindowBounds();
+          if (nextBounds) current.bounds = nextBounds;
+        }
+
+        const bounds = current.bounds;
+        const outsideByBounds = (() => {
+          if (!bounds) return false;
+          const left = bounds.x - thresholdPx;
+          const top = bounds.y - thresholdPx;
+          const right = bounds.x + bounds.width + thresholdPx;
+          const bottom = bounds.y + bounds.height + thresholdPx;
+          return (
+            effectiveCursor.x < left ||
+            effectiveCursor.x > right ||
+            effectiveCursor.y < top ||
+            effectiveCursor.y > bottom
+          );
+        })();
+
         if (mode === 'manual') {
-          const shouldShow = Boolean(current.manualVisible);
+          // manual 模式：调用方控制“应当显示”的时机（例如离开 tab strip），
+          // 但仍然需要兜底：当鼠标确实已经离开当前窗口时，即使未能及时收到 pointer move 更新，
+          // 也要让 ghost 可靠显示（否则 cancel 时延长跟踪没有意义）。
+          const shouldShow = Boolean(current.manualVisible) || outsideByBounds;
           if (shouldShow) {
             wasOutside = true;
             // eslint-disable-next-line no-console
@@ -193,6 +218,7 @@ export function useDragGhostSession(options: UseDragGhostSessionOptions): DragGh
               label: getDebugWindowLabel(),
               x: effectiveCursor.x,
               y: effectiveCursor.y,
+              outsideByBounds,
               title,
             });
             await showAndMoveDragGhostWindow({ title }, effectiveCursor);
@@ -207,24 +233,7 @@ export function useDragGhostSession(options: UseDragGhostSessionOptions): DragGh
           return;
         }
 
-        const shouldRefreshBounds = now - boundsFetchAtRef.current >= boundsRefreshMinIntervalMs;
-        if ((!current.bounds || shouldRefreshBounds) && shouldRefreshBounds) {
-          boundsFetchAtRef.current = now;
-          const nextBounds = await fetchWindowBounds();
-          if (nextBounds) current.bounds = nextBounds;
-        }
-
-        const bounds = current.bounds;
-        if (!bounds) return;
-
-        const left = bounds.x - thresholdPx;
-        const top = bounds.y - thresholdPx;
-        const right = bounds.x + bounds.width + thresholdPx;
-        const bottom = bounds.y + bounds.height + thresholdPx;
-        const outside =
-          effectiveCursor.x < left || effectiveCursor.x > right || effectiveCursor.y < top || effectiveCursor.y > bottom;
-
-        if (outside) {
+        if (outsideByBounds) {
           wasOutside = true;
           // eslint-disable-next-line no-console
           console.log('[dragGhost][show][window]', {

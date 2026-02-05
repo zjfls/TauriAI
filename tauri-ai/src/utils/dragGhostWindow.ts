@@ -215,11 +215,14 @@ export const showAndMoveDragGhostWindow = async (payload: DragGhostPayload, curs
   if (!entry.shown) {
     await entry.win.show().catch(() => {});
     entry.shown = true;
-  }
-  try {
-    await getCurrentWebviewWindow().setFocus();
-  } catch {
-    // ignore
+    // 仅在首次显示时尝试把焦点留在源窗口：
+    // - 频繁 setFocus 可能干扰跨窗口/跨应用拖拽（尤其在 macOS 上）
+    // - ghost 窗本身是不可聚焦的，因此这里不需要每次 tick 都抢焦点
+    try {
+      await getCurrentWebviewWindow().setFocus();
+    } catch {
+      // ignore
+    }
   }
   await entry.win
     .setPosition(new PhysicalPosition(cursor.x + GHOST_OFFSET.x, cursor.y + GHOST_OFFSET.y))
