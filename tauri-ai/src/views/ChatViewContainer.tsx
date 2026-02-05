@@ -25,6 +25,7 @@ import { useTerminalTabStore } from '../stores/terminalTabStore';
 import { useWebTabStore } from '../stores/webTabStore';
 import { type WorkspacePane, useWorkspaceLayoutStore } from '../stores/workspaceLayoutStore';
 import { chatTabId, parseWorkspaceTabId, type WorkspaceTabId } from '../stores/workspaceTabStore';
+import { useDragGhostSession } from '../hooks/useDragGhostSession';
 import { endChatOpenProfile, getActiveChatOpenProfile, markChatOpenProfile } from '../utils/chatOpenProfile';
 import {
   closeCurrentWindow,
@@ -451,6 +452,28 @@ const ChatViewContainerInner: React.FC = () => {
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
 
+  const { start: startDragGhost, stop: stopDragGhost, extend: extendDragGhost } = useDragGhostSession({
+    thresholdPx: TEAR_OFF_WINDOW_THRESHOLD_PX,
+    pollIntervalMs: 32,
+  });
+
+  const resolveDragGhostTitle = useCallback(
+    (tabId: WorkspaceTabId): string => {
+      const parsed = parseWorkspaceTabId(tabId);
+      if (parsed.kind === 'chat') {
+        return parsed.sessionId ? sessionsById.get(parsed.sessionId)?.title ?? '会话' : '会话';
+      }
+      if (parsed.kind === 'document') {
+        return parsed.documentId ? documents.find((d) => d.id === parsed.documentId)?.title ?? '文档' : '文档';
+      }
+      if (parsed.kind === 'web') {
+        return parsed.webTabId ? webTabs.find((t) => t.id === parsed.webTabId)?.title ?? '网页' : '网页';
+      }
+      return parsed.terminalTabId ? terminalTabs.find((t) => t.id === parsed.terminalTabId)?.title ?? '终端' : '终端';
+    },
+    [documents, sessionsById, terminalTabs, webTabs]
+  );
+
   const [activeDragTabId, setActiveDragTabId] = useState<WorkspaceTabId | null>(null);
   const [splitPreview, setSplitPreview] = useState<SplitPreview | null>(null);
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
@@ -657,6 +680,7 @@ const ChatViewContainerInner: React.FC = () => {
     setActiveDragTabId(activeId);
     setSplitPreview(null);
     dragCancelledByEscapeRef.current = false;
+    startDragGhost(resolveDragGhostTitle(activeId));
 
     const ev = e.activatorEvent as MouseEvent | PointerEvent | TouchEvent | null;
     if (ev && 'clientX' in ev) {
@@ -666,7 +690,7 @@ const ChatViewContainerInner: React.FC = () => {
       dragStartRef.current = null;
       lastDragPointRef.current = null;
     }
-  }, []);
+  }, [resolveDragGhostTitle, startDragGhost]);
 
   const handleDragMove = useCallback(
     (e: DragMoveEvent) => {
@@ -699,6 +723,7 @@ const ChatViewContainerInner: React.FC = () => {
         splitTabToNewPane(activeId, preview.direction, preview.paneId);
         setActiveDragTabId(null);
         setSplitPreview(null);
+        stopDragGhost();
         return;
       }
 
@@ -717,6 +742,7 @@ const ChatViewContainerInner: React.FC = () => {
       // 先把拖拽 UI 收起，避免异步判断期间 overlay 悬挂
       setActiveDragTabId(null);
       setSplitPreview(null);
+      stopDragGhost();
 
       if (shouldTearOffByClientPoint) {
         tearOffTabToNewWindow(activeId);
@@ -764,6 +790,7 @@ const ChatViewContainerInner: React.FC = () => {
       paneById,
       reorderTabInPane,
       splitTabToNewPane,
+      stopDragGhost,
       tabToPaneId,
       tearOffTabToNewWindow,
     ]
@@ -780,6 +807,14 @@ const ChatViewContainerInner: React.FC = () => {
 
       setActiveDragTabId(null);
       setSplitPreview(null);
+
+      // 重要：拖拽离开窗口/进入其它应用时，dnd-kit 往往会触发 cancel，导致 DOM overlay 立刻消失。
+      // 这里保持短时间的“窗外幽灵 tab”显示，让用户仍能看到拖拽对象。
+      if (!dragCancelledByEscapeRef.current) {
+        extendDragGhost(1200);
+      } else {
+        stopDragGhost();
+      }
 
       void (async () => {
         // Esc 取消：不触发“拖出窗口”逻辑
@@ -816,7 +851,7 @@ const ChatViewContainerInner: React.FC = () => {
         }
       })();
     },
-    [computeSplitPreview, isCursorOutsideCurrentWindow, splitTabToNewPane, tearOffTabToNewWindow]
+    [computeSplitPreview, extendDragGhost, isCursorOutsideCurrentWindow, splitTabToNewPane, stopDragGhost, tearOffTabToNewWindow]
   );
 
   const startResize = useCallback(
