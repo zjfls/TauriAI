@@ -39,6 +39,12 @@ export type UseDragGhostSessionOptions = {
   boundsRefreshMinIntervalMs?: number;
   /** window: 离开窗口边界才显示；manual: 由调用方决定显示时机 */
   mode?: 'window' | 'manual';
+  /**
+   * 仅在 `mode="manual"` 下生效：
+   * - `false`（默认）：完全由调用方的 `setVisible()` 控制显示/隐藏
+   * - `true`：当鼠标确实离开窗口边界时，也允许显示（兜底）
+   */
+  manualShowWhenCursorOutsideWindow?: boolean;
 };
 
 export type DragGhostSessionController = {
@@ -50,7 +56,13 @@ export type DragGhostSessionController = {
 };
 
 export function useDragGhostSession(options: UseDragGhostSessionOptions): DragGhostSessionController {
-  const { thresholdPx, pollIntervalMs = 32, boundsRefreshMinIntervalMs = 220, mode = 'window' } = options;
+  const {
+    thresholdPx,
+    pollIntervalMs = 32,
+    boundsRefreshMinIntervalMs = 220,
+    mode = 'window',
+    manualShowWhenCursorOutsideWindow = false,
+  } = options;
 
   const sessionRef = useRef<DragGhostSession | null>(null);
   const boundsFetchAtRef = useRef(0);
@@ -184,14 +196,15 @@ export function useDragGhostSession(options: UseDragGhostSessionOptions): DragGh
           return;
         }
 
-        const shouldRefreshBounds = now - boundsFetchAtRef.current >= boundsRefreshMinIntervalMs;
-        if ((!current.bounds || shouldRefreshBounds) && shouldRefreshBounds) {
+        const shouldMaintainBounds = mode === 'window' || (mode === 'manual' && manualShowWhenCursorOutsideWindow);
+        const shouldRefreshBounds = shouldMaintainBounds && now - boundsFetchAtRef.current >= boundsRefreshMinIntervalMs;
+        if (shouldRefreshBounds && (!current.bounds || shouldRefreshBounds)) {
           boundsFetchAtRef.current = now;
           const nextBounds = await fetchWindowBounds();
           if (nextBounds) current.bounds = nextBounds;
         }
 
-        const bounds = current.bounds;
+        const bounds = shouldMaintainBounds ? current.bounds : null;
         const outsideByBounds = (() => {
           if (!bounds) return false;
           const left = bounds.x - thresholdPx;
@@ -207,10 +220,9 @@ export function useDragGhostSession(options: UseDragGhostSessionOptions): DragGh
         })();
 
         if (mode === 'manual') {
-          // manual 模式：调用方控制“应当显示”的时机（例如离开 tab strip），
-          // 但仍然需要兜底：当鼠标确实已经离开当前窗口时，即使未能及时收到 pointer move 更新，
-          // 也要让 ghost 可靠显示（否则 cancel 时延长跟踪没有意义）。
-          const shouldShow = Boolean(current.manualVisible) || outsideByBounds;
+          // manual 模式：严格由调用方控制显示/隐藏（默认不做“离开窗口边界”的兜底）。
+          // 如需兜底，请显式开启 `manualShowWhenCursorOutsideWindow`。
+          const shouldShow = Boolean(current.manualVisible) || (manualShowWhenCursorOutsideWindow && outsideByBounds);
           if (shouldShow) {
             wasOutside = true;
             // eslint-disable-next-line no-console
@@ -218,7 +230,7 @@ export function useDragGhostSession(options: UseDragGhostSessionOptions): DragGh
               label: getDebugWindowLabel(),
               x: effectiveCursor.x,
               y: effectiveCursor.y,
-              outsideByBounds,
+              outsideByBounds: manualShowWhenCursorOutsideWindow ? outsideByBounds : undefined,
               title,
             });
             await showAndMoveDragGhostWindow({ title }, effectiveCursor);
