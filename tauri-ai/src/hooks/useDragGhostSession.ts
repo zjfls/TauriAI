@@ -1,11 +1,11 @@
 /**
  * useDragGhostSession Hook
- * 在拖拽过程中，当鼠标离开当前窗口边界时，使用 Tauri 的“幽灵窗口”在窗口外呈现拖拽标签。
+ * 拖拽开始即显示 ghost 窗口，停止即隐藏。
  *
  * 设计要点：
- * - 只在 Tauri 环境下启用（避免 Web 环境报错/无意义轮询）
- * - 高频只轮询 cursorPosition；窗口 bounds 优先缓存，降低 outerPosition/outerSize 调用开销
- * - dnd-kit 在拖拽离开窗口/进入其它应用时可能触发 cancel：允许短时间延长跟踪，保持窗外可见
+ * - 只在 Tauri 环境下启用
+ * - 高频轮询 cursorPosition，让 ghost 窗口持续跟随鼠标
+ * - 不再区分 mode：显示/隐藏只与 start/stop/extend 相关
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -13,8 +13,6 @@ import { isTauri } from '@tauri-apps/api/core';
 import { cursorPosition } from '@tauri-apps/api/window';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { hideDragGhostWindow, primeDragGhostWindow, showAndMoveDragGhostWindow } from '../utils/dragGhostWindow';
-
-type WindowBounds = { x: number; y: number; width: number; height: number };
 
 const getDebugWindowLabel = () => {
   try {
@@ -28,85 +26,62 @@ type DragGhostSession = {
   enabled: boolean;
   title: string;
   trackingUntilMs: number;
-  manualVisible?: boolean;
-  bounds: WindowBounds | null;
   lastCursor: { x: number; y: number } | null;
 };
 
 export type UseDragGhostSessionOptions = {
-  thresholdPx: number;
   pollIntervalMs?: number;
-  boundsRefreshMinIntervalMs?: number;
-  /** window: 离开窗口边界才显示；manual: 由调用方决定显示时机 */
-  mode?: 'window' | 'manual';
-  /**
-   * 仅在 `mode="manual"` 下生效：
-   * - `false`（默认）：完全由调用方的 `setVisible()` 控制显示/隐藏
-   * - `true`：当鼠标确实离开窗口边界时，也允许显示（兜底）
-   */
-  manualShowWhenCursorOutsideWindow?: boolean;
 };
 
 export type DragGhostSessionController = {
   start: (title: string) => void;
   setTitle: (title: string) => void;
-  setVisible: (visible: boolean) => void;
   stop: () => void;
+  /** 继续显示一段时间（常用于 dnd-kit cancel 后的短暂可见性） */
   extend: (ms: number) => void;
 };
 
-export function useDragGhostSession(options: UseDragGhostSessionOptions): DragGhostSessionController {
-  const {
-    thresholdPx,
-    pollIntervalMs = 32,
-    boundsRefreshMinIntervalMs = 220,
-    mode = 'window',
-    manualShowWhenCursorOutsideWindow = false,
-  } = options;
+export function useDragGhostSession(options: UseDragGhostSessionOptions = {}): DragGhostSessionController {
+  const { pollIntervalMs = 32 } = options;
 
   const sessionRef = useRef<DragGhostSession | null>(null);
-  const boundsFetchAtRef = useRef(0);
   const [sessionVersion, setSessionVersion] = useState(0);
 
-  const fetchWindowBounds = useCallback(async (): Promise<WindowBounds | null> => {
-    try {
-      const win = getCurrentWebviewWindow();
-      const [pos, size] = await Promise.all([win.outerPosition().catch(() => null), win.outerSize().catch(() => null)]);
-      if (!pos || !size) return null;
-      return { x: pos.x, y: pos.y, width: size.width, height: size.height };
-    } catch {
-      return null;
-    }
-  }, []);
+  const start = useCallback((title: string) => {
+    if (!isTauri()) return;
+    const trimmed = (title ?? '').trim();
+    if (!trimmed) return;
 
-  const start = useCallback(
-    (title: string) => {
-      if (!isTauri()) return;
-      const trimmed = (title ?? '').trim();
-      if (!trimmed) return;
-      // eslint-disable-next-line no-console
-      console.log('[dragGhost][start]', { label: getDebugWindowLabel(), mode, title: trimmed });
-      sessionRef.current = {
-        enabled: true,
-        title: trimmed,
-        trackingUntilMs: Number.POSITIVE_INFINITY,
-        bounds: sessionRef.current?.bounds ?? null,
-        lastCursor: null,
-      };
-      boundsFetchAtRef.current = 0;
-      setSessionVersion((v) => v + 1);
-    },
-    [mode]
-  );
+    // eslint-disable-next-line no-console
+    console.log('[dragGhost][start]', { label: getDebugWindowLabel(), title: trimmed });
+    sessionRef.current = {
+      enabled: true,
+      title: trimmed,
+      trackingUntilMs: Number.POSITIVE_INFINITY,
+      lastCursor: null,
+    };
+    setSessionVersion((v) => v + 1);
+
+    void primeDragGhostWindow({ title: trimmed || '文件' });
+
+    // 尽量立刻显示（避免等下一个 interval tick 才出现）
+    void (async () => {
+      const cursor = await cursorPosition().catch(() => null);
+      if (!cursor) return;
+      const current = sessionRef.current;
+      if (!current?.enabled) return;
+      current.lastCursor = cursor;
+      await showAndMoveDragGhostWindow({ title: current.title || '文件' }, cursor);
+    })();
+  }, []);
 
   const stop = useCallback(() => {
     // eslint-disable-next-line no-console
-    console.log('[dragGhost][stop]', { label: getDebugWindowLabel(), mode });
+    console.log('[dragGhost][stop]', { label: getDebugWindowLabel() });
     sessionRef.current = null;
-    boundsFetchAtRef.current = 0;
     setSessionVersion((v) => v + 1);
     void hideDragGhostWindow();
-  }, [mode]);
+  }, []);
 
   const setTitle = useCallback((title: string) => {
     const session = sessionRef.current;
@@ -115,19 +90,6 @@ export function useDragGhostSession(options: UseDragGhostSessionOptions): DragGh
     if (!trimmed) return;
     session.title = trimmed;
   }, []);
-
-  const setVisible = useCallback((visible: boolean) => {
-    const session = sessionRef.current;
-    if (!session) return;
-    session.manualVisible = Boolean(visible);
-    // eslint-disable-next-line no-console
-    console.log('[dragGhost][setVisible]', {
-      label: getDebugWindowLabel(),
-      mode,
-      visible: Boolean(visible),
-      title: session.title,
-    });
-  }, [mode]);
 
   const extend = useCallback((ms: number) => {
     const session = sessionRef.current;
@@ -149,7 +111,6 @@ export function useDragGhostSession(options: UseDragGhostSessionOptions): DragGh
 
     let disposed = false;
     let inFlight = false;
-    let wasOutside = false;
     let lastCursorNullAt = 0;
 
     const tick = async () => {
@@ -160,14 +121,9 @@ export function useDragGhostSession(options: UseDragGhostSessionOptions): DragGh
         const current = sessionRef.current;
         const now = Date.now();
         if (!current?.enabled) {
-          if (wasOutside) {
-            wasOutside = false;
-            await hideDragGhostWindow();
-          }
+          await hideDragGhostWindow();
           return;
         }
-
-        const title = current.title || '文件';
 
         if (now > current.trackingUntilMs) {
           stop();
@@ -176,94 +132,22 @@ export function useDragGhostSession(options: UseDragGhostSessionOptions): DragGh
 
         const cursor = await cursorPosition().catch((e) => {
           // eslint-disable-next-line no-console
-          console.log('[dragGhost][cursorPosition][ERR]', { label: getDebugWindowLabel(), mode, error: e });
+          console.log('[dragGhost][cursorPosition][ERR]', { label: getDebugWindowLabel(), error: e });
           return null;
         });
         if (cursor) current.lastCursor = cursor;
+
         const effectiveCursor = cursor ?? current.lastCursor;
         if (!effectiveCursor) {
           if (now - lastCursorNullAt > 800) {
             lastCursorNullAt = now;
             // eslint-disable-next-line no-console
-            console.log('[dragGhost][cursorPosition]=null', {
-              label: getDebugWindowLabel(),
-              mode,
-              manualVisible: Boolean(current.manualVisible),
-              hasLastCursor: Boolean(current.lastCursor),
-              title: current.title,
-            });
+            console.log('[dragGhost][cursorPosition]=null', { label: getDebugWindowLabel(), title: current.title });
           }
           return;
         }
 
-        const shouldMaintainBounds = mode === 'window' || (mode === 'manual' && manualShowWhenCursorOutsideWindow);
-        const shouldRefreshBounds = shouldMaintainBounds && now - boundsFetchAtRef.current >= boundsRefreshMinIntervalMs;
-        if (shouldRefreshBounds && (!current.bounds || shouldRefreshBounds)) {
-          boundsFetchAtRef.current = now;
-          const nextBounds = await fetchWindowBounds();
-          if (nextBounds) current.bounds = nextBounds;
-        }
-
-        const bounds = shouldMaintainBounds ? current.bounds : null;
-        const outsideByBounds = (() => {
-          if (!bounds) return false;
-          const left = bounds.x - thresholdPx;
-          const top = bounds.y - thresholdPx;
-          const right = bounds.x + bounds.width + thresholdPx;
-          const bottom = bounds.y + bounds.height + thresholdPx;
-          return (
-            effectiveCursor.x < left ||
-            effectiveCursor.x > right ||
-            effectiveCursor.y < top ||
-            effectiveCursor.y > bottom
-          );
-        })();
-
-        if (mode === 'manual') {
-          // manual 模式：严格由调用方控制显示/隐藏（默认不做“离开窗口边界”的兜底）。
-          // 如需兜底，请显式开启 `manualShowWhenCursorOutsideWindow`。
-          const shouldShow = Boolean(current.manualVisible) || (manualShowWhenCursorOutsideWindow && outsideByBounds);
-          if (shouldShow) {
-            wasOutside = true;
-            // eslint-disable-next-line no-console
-            console.log('[dragGhost][show][manual]', {
-              label: getDebugWindowLabel(),
-              x: effectiveCursor.x,
-              y: effectiveCursor.y,
-              outsideByBounds: manualShowWhenCursorOutsideWindow ? outsideByBounds : undefined,
-              title,
-            });
-            await showAndMoveDragGhostWindow({ title }, effectiveCursor);
-            return;
-          }
-          if (wasOutside) {
-            wasOutside = false;
-            // eslint-disable-next-line no-console
-            console.log('[dragGhost][hide][manual]', { label: getDebugWindowLabel() });
-            await hideDragGhostWindow();
-          }
-          return;
-        }
-
-        if (outsideByBounds) {
-          wasOutside = true;
-          // eslint-disable-next-line no-console
-          console.log('[dragGhost][show][window]', {
-            label: getDebugWindowLabel(),
-            x: effectiveCursor.x,
-            y: effectiveCursor.y,
-            title,
-          });
-          await showAndMoveDragGhostWindow({ title }, effectiveCursor);
-          return;
-        }
-
-        if (wasOutside) {
-          wasOutside = false;
-          // eslint-disable-next-line no-console
-          console.log('[dragGhost][hide][window]', { label: getDebugWindowLabel() });
-          await hideDragGhostWindow();
-        }
+        await showAndMoveDragGhostWindow({ title: current.title || '文件' }, effectiveCursor);
       } catch {
         // ignore
       } finally {
@@ -279,7 +163,8 @@ export function useDragGhostSession(options: UseDragGhostSessionOptions): DragGh
       window.clearInterval(interval);
       void hideDragGhostWindow();
     };
-  }, [boundsRefreshMinIntervalMs, fetchWindowBounds, mode, pollIntervalMs, sessionVersion, stop, thresholdPx]);
+  }, [pollIntervalMs, sessionVersion, stop]);
 
-  return { start, setTitle, setVisible, stop, extend };
+  return { start, setTitle, stop, extend };
 }
+
