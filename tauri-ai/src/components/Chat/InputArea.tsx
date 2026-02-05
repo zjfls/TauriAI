@@ -1382,9 +1382,9 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
             continue;
           }
 
-          // Check for images (Requirements: 3.1, 3.2 - consider supportsVision flag)
-          // Only accept images if model supports vision capability
-          if (item.type.startsWith('image/') && supportsVision) {
+          // Check for images (Requirements: 3.1, 3.2)
+          // NOTE: 视觉能力在 validatePasteFiles 中统一判断；这里先收集，避免“粘贴图片但不支持视觉时无反馈”。
+          if (item.type.startsWith('image/')) {
             imageFiles.push(file);
           }
           // Check for PDF files (Requirements: 1.1, 1.2, 3.4 - check MIME type and extension)
