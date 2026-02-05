@@ -17,6 +17,15 @@ export const DragGhostView = () => {
   const [title, setTitle] = useState<string>(initialTitle);
 
   useEffect(() => {
+    // 调试友好：让幽灵窗在窗口枚举/日志里一眼可辨。
+    const prev = document.title;
+    document.title = title ? `[GHOST] ${title}` : '[GHOST] Drag';
+    return () => {
+      document.title = prev;
+    };
+  }, [title]);
+
+  useEffect(() => {
     if (!isTauri()) return;
     let unlisten: null | (() => void) = null;
     void listen<DragGhostUpdatePayload>('drag-ghost:update', (event) => {
@@ -59,4 +68,3 @@ export const DragGhostView = () => {
     </div>
   );
 };
-
