@@ -266,8 +266,11 @@ const ChatViewContainerInner: React.FC = () => {
   }, [activeSessionId, panes, sessionsMap, validTabIds]);
 
   // Standalone "popout" window: when it becomes empty (all tabs closed), close the window itself.
-  // 说明：这类窗口通常通过 `openViewWindow(..., { noDefaultSession: true })` 创建，用完即走。
-  const { standalone: isStandaloneWindow, noDefaultSession } = useMemo(() => getViewWindowParams(), []);
+  // 说明：这类窗口通常通过“拖拽/弹出”产生，用完即走：
+  // - `noDefaultSession=1`：文档/网页/终端等 workspace 容器窗口
+  // - `conversationId!=null`：对话专用窗口（从主窗口拖出/弹出）
+  const { standalone: isStandaloneWindow, noDefaultSession, conversationId } = useMemo(() => getViewWindowParams(), []);
+  const shouldCloseOnEmpty = Boolean(noDefaultSession || conversationId);
   const hasEverHadTabsRef = useRef(false);
   const hasAnyTabsNow = useMemo(() => resolvedPanes.some((p) => p.tabIds.length > 0), [resolvedPanes]);
 
@@ -277,11 +280,11 @@ const ChatViewContainerInner: React.FC = () => {
 
   useEffect(() => {
     if (!isStandaloneWindow) return;
-    if (!noDefaultSession) return;
+    if (!shouldCloseOnEmpty) return;
     if (!hasEverHadTabsRef.current) return;
     if (hasAnyTabsNow) return;
     void closeCurrentWindow().catch(() => {});
-  }, [hasAnyTabsNow, isStandaloneWindow, noDefaultSession]);
+  }, [hasAnyTabsNow, isStandaloneWindow, shouldCloseOnEmpty]);
 
   const resolvedFocusedPaneId = useMemo(() => {
     if (focusedPaneId && resolvedPanes.some((p) => p.id === focusedPaneId)) return focusedPaneId;
