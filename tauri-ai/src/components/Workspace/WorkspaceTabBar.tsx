@@ -37,6 +37,7 @@ import {
   useWorkspaceTabStore,
   type WorkspaceTabId,
 } from '../../stores/workspaceTabStore';
+import { useDragGhostSession } from '../../hooks/useDragGhostSession';
 import { cursorPosition } from '@tauri-apps/api/window';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { dockWorkspaceItemToWindow, findChatDockTargetAtCursor, openViewWindow } from '../../utils/viewWindow';
@@ -358,8 +359,37 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
 
+  const { start: startDragGhost, stop: stopDragGhost, extend: extendDragGhost } = useDragGhostSession({
+    thresholdPx: TEAR_OFF_WINDOW_THRESHOLD_PX,
+    pollIntervalMs: 32,
+  });
+
+  const [activeDragTabId, setActiveDragTabId] = useState<WorkspaceTabId | null>(null);
+  const dragCancelledByEscapeRef = useRef(false);
+
+  useEffect(() => {
+    if (!activeDragTabId) return;
+    dragCancelledByEscapeRef.current = false;
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key !== 'Escape') return;
+      dragCancelledByEscapeRef.current = true;
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [activeDragTabId]);
+
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
   const lastDragPointRef = useRef<{ x: number; y: number } | null>(null);
+
+  const resolveDragGhostTitle = (tabId: WorkspaceTabId): string => {
+    const item = items.find((i) => i.id === tabId) ?? null;
+    if (item?.title) return item.title;
+    const parsed = parseWorkspaceTabId(tabId);
+    if (parsed.kind === 'chat') return '会话';
+    if (parsed.kind === 'document') return '文档';
+    if (parsed.kind === 'web') return '网页';
+    return '终端';
+  };
 
   const isCursorOutsideCurrentWindow = async (thresholdPx: number): Promise<boolean> => {
     try {
@@ -594,6 +624,10 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
   };
 
   const handleDragStart = (e: DragStartEvent) => {
+    const activeId = String(e.active.id) as WorkspaceTabId;
+    setActiveDragTabId(activeId);
+    startDragGhost(resolveDragGhostTitle(activeId));
+
     const ev = e.activatorEvent as MouseEvent | PointerEvent | null;
     if (ev && 'clientX' in ev) {
       dragStartRef.current = { x: ev.clientX, y: ev.clientY };
@@ -638,6 +672,8 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
 
     dragStartRef.current = null;
     lastDragPointRef.current = null;
+    setActiveDragTabId(null);
+    stopDragGhost();
 
     if (shouldTearOff) {
       await tearOffTab(activeId);
@@ -656,6 +692,13 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
 
     dragStartRef.current = null;
     lastDragPointRef.current = null;
+    setActiveDragTabId(null);
+
+    if (!dragCancelledByEscapeRef.current) {
+      extendDragGhost(1200);
+    } else {
+      stopDragGhost();
+    }
 
     const movedDist = start && point ? Math.hypot(point.x - start.x, point.y - start.y) : 0;
     const lostFocus = typeof document !== 'undefined' ? !document.hasFocus() : false;

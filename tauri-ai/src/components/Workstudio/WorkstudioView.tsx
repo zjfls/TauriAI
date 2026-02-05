@@ -33,7 +33,7 @@ import type { TerminalScope, Workstudio, WorkstudioUiState } from '../../types';
 import { SHORTCUT_ACTIONS, detectShortcutPlatform, normalizeKeybindingString } from '../../shortcuts';
 import { useConfigStore } from '../../stores/configStore';
 import { useTerminalSessionStore } from '../../stores/terminalSessionStore';
-import { hideDragGhostWindow, primeDragGhostWindow, showAndMoveDragGhostWindow } from '../../utils/dragGhostWindow';
+import { useDragGhostSession } from '../../hooks/useDragGhostSession';
 import { getViewWindowParams, openViewWindow } from '../../utils/viewWindow';
 import { setupMonaco } from '../../utils/monaco';
 import { TerminalSurface, type TerminalSurfaceHandle } from '../Terminal/TerminalSurface';
@@ -1548,12 +1548,10 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   };
 
   const [activeDragTabId, setActiveDragTabId] = useState<string | null>(null);
-  const dragGhostSessionRef = useRef<{
-    enabled: boolean;
-    title: string;
-    trackingUntilMs: number;
-  } | null>(null);
-  const [dragGhostSessionVersion, setDragGhostSessionVersion] = useState(0);
+  const { start: startDragGhost, stop: stopDragGhost, extend: extendDragGhost } = useDragGhostSession({
+    thresholdPx: TEAR_OFF_WINDOW_THRESHOLD_PX,
+    pollIntervalMs: 32,
+  });
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
   const lastDragPointRef = useRef<{ x: number; y: number } | null>(null);
   const dragCancelledByEscapeRef = useRef(false);
@@ -1587,104 +1585,6 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       return false;
     }
   }, []);
-
-  const startDragGhostSession = useCallback((tabId: string) => {
-    const parsed = parseTabKey(tabId);
-    const title = (() => {
-      if (!parsed) return basename(tabId) || '文件';
-      const file = openFilesRef.current.find((f) => f.id === parsed.fileId) ?? null;
-      return file?.title || basename(parsed.fileId) || '文件';
-    })();
-
-    dragGhostSessionRef.current = {
-      enabled: true,
-      title,
-      trackingUntilMs: Number.POSITIVE_INFINITY,
-    };
-    setDragGhostSessionVersion((v) => v + 1);
-  }, []);
-
-  const stopDragGhostSession = useCallback(() => {
-    dragGhostSessionRef.current = null;
-    setDragGhostSessionVersion((v) => v + 1);
-    void hideDragGhostWindow();
-  }, []);
-
-  const extendDragGhostTracking = useCallback((ms: number) => {
-    const session = dragGhostSessionRef.current;
-    if (!session) return;
-    session.trackingUntilMs = Date.now() + Math.max(0, ms);
-    setDragGhostSessionVersion((v) => v + 1);
-  }, []);
-
-  useEffect(() => {
-    const session = dragGhostSessionRef.current;
-    if (!session?.enabled) {
-      void hideDragGhostWindow();
-      return;
-    }
-
-    const title = session.title || '文件';
-    void primeDragGhostWindow({ title });
-
-    let disposed = false;
-    let inFlight = false;
-    let wasOutside = false;
-
-    const tick = async () => {
-      if (disposed) return;
-      if (inFlight) return;
-      inFlight = true;
-      try {
-        const current = dragGhostSessionRef.current;
-        const now = Date.now();
-        if (!current?.enabled || now > current.trackingUntilMs) {
-          if (wasOutside) {
-            wasOutside = false;
-            await hideDragGhostWindow();
-          }
-          return;
-        }
-
-        const [cursor, pos, size] = await Promise.all([
-          cursorPosition().catch(() => null),
-          getCurrentWebviewWindow().outerPosition().catch(() => null),
-          getCurrentWebviewWindow().outerSize().catch(() => null),
-        ]);
-        if (!cursor || !pos || !size) return;
-
-        const left = pos.x - TEAR_OFF_WINDOW_THRESHOLD_PX;
-        const top = pos.y - TEAR_OFF_WINDOW_THRESHOLD_PX;
-        const right = pos.x + size.width + TEAR_OFF_WINDOW_THRESHOLD_PX;
-        const bottom = pos.y + size.height + TEAR_OFF_WINDOW_THRESHOLD_PX;
-        const outside = cursor.x < left || cursor.x > right || cursor.y < top || cursor.y > bottom;
-
-        if (outside) {
-          wasOutside = true;
-          await showAndMoveDragGhostWindow({ title }, cursor);
-          return;
-        }
-
-        if (wasOutside) {
-          wasOutside = false;
-          await hideDragGhostWindow();
-        }
-      } catch {
-        // ignore
-      } finally {
-        inFlight = false;
-      }
-    };
-
-    void tick();
-    const interval = window.setInterval(() => void tick(), 32);
-
-    return () => {
-      disposed = true;
-      window.clearInterval(interval);
-      void hideDragGhostWindow();
-    };
-  }, [dragGhostSessionVersion]);
 
   const tearOffTabToNewWindow = useCallback(
     (tabId: string) => {
@@ -1774,7 +1674,14 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     setActiveDragTabId(activeId);
     setSplitPreview(null);
     dragCancelledByEscapeRef.current = false;
-    startDragGhostSession(activeId);
+
+    const parsed = parseTabKey(activeId);
+    const title = (() => {
+      if (!parsed) return basename(activeId) || '文件';
+      const file = openFilesRef.current.find((f) => f.id === parsed.fileId) ?? null;
+      return file?.title || basename(parsed.fileId) || '文件';
+    })();
+    startDragGhost(title);
 
     const ev = e.activatorEvent as MouseEvent | PointerEvent | TouchEvent | null;
     if (ev && 'clientX' in ev) {
@@ -1784,7 +1691,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       dragStartRef.current = null;
       lastDragPointRef.current = null;
     }
-  }, [startDragGhostSession]);
+  }, [startDragGhost]);
 
   const handleDragMove = useCallback(
     (e: DragMoveEvent) => {
@@ -1825,7 +1732,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         }
         setActiveDragTabId(null);
         setSplitPreview(null);
-        stopDragGhostSession();
+        stopDragGhost();
         return;
       }
 
@@ -1842,7 +1749,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       // 先把拖拽 UI 收起，避免异步判断期间 overlay 悬挂
       setActiveDragTabId(null);
       setSplitPreview(null);
-      stopDragGhostSession();
+      stopDragGhost();
 
       if (shouldTearOffByClientPoint) {
         tearOffTabToNewWindow(active);
@@ -1898,7 +1805,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       isCursorOutsideCurrentWindow,
       moveTab,
       splitTabToNewGroup,
-      stopDragGhostSession,
+      stopDragGhost,
       tearOffTabToNewWindow,
     ]
   );
@@ -1919,9 +1826,9 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       // 但我们仍希望“窗口外有可见的 tab 幽灵”，因此在 cancel 时短暂延长跟随窗口外的轮询。
       // Esc 取消则不延长，直接结束会话。
       if (!dragCancelledByEscapeRef.current) {
-        extendDragGhostTracking(1200);
+        extendDragGhost(1200);
       } else {
-        stopDragGhostSession();
+        stopDragGhost();
       }
 
       void (async () => {
@@ -1956,10 +1863,10 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     },
     [
       computeSplitPreview,
-      extendDragGhostTracking,
+      extendDragGhost,
       isCursorOutsideCurrentWindow,
       splitTabToNewGroup,
-      stopDragGhostSession,
+      stopDragGhost,
       tearOffTabToNewWindow,
     ]
   );
