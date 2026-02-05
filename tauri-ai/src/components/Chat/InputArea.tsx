@@ -2620,15 +2620,17 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
       </div>
 
       {/* Attachment menu + extra actions */}
-      <div className="mt-1 flex items-center justify-between text-xs">
-        <AttachmentMenu
-          onImageClick={() => fileInputRef.current?.click()}
-          onTextFileClick={() => textFileInputRef.current?.click()}
-          onPdfClick={() => pdfFileInputRef.current?.click()}
-          supportsVision={supportsVision}
-          disabled={disabled || isGenerating}
-        />
-        <ExtraActionsMenu onCloneConversation={onCloneConversation} disabled={disabled || isGenerating} />
+      <div className="mt-1 flex items-center text-xs">
+        <div className="flex items-center gap-3">
+          <AttachmentMenu
+            onImageClick={() => fileInputRef.current?.click()}
+            onTextFileClick={() => textFileInputRef.current?.click()}
+            onPdfClick={() => pdfFileInputRef.current?.click()}
+            supportsVision={supportsVision}
+            disabled={disabled || isGenerating}
+          />
+          <ExtraActionsMenu onCloneConversation={onCloneConversation} disabled={disabled || isGenerating} />
+        </div>
       </div>
 
       {/* MCP modal */}
