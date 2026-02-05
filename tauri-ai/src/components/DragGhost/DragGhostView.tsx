@@ -46,8 +46,9 @@ export const DragGhostView = () => {
     const prevBodyBg = document.body.style.backgroundColor;
     const prevBodyOverflow = document.body.style.overflow;
 
-    document.documentElement.style.backgroundColor = 'transparent';
-    document.body.style.backgroundColor = 'transparent';
+    // 调试用：让 ghost 窗口足够显眼（方便确认是否真的显示出来）
+    document.documentElement.style.backgroundColor = 'rgba(255, 0, 255, 0.22)';
+    document.body.style.backgroundColor = 'rgba(255, 0, 255, 0.22)';
     document.body.style.overflow = 'hidden';
 
     return () => {
@@ -58,11 +59,18 @@ export const DragGhostView = () => {
   }, []);
 
   return (
-    <div className="h-screen w-screen bg-transparent">
-      <div className="flex h-full w-full items-center justify-center p-0">
-        <div className="pointer-events-none flex max-w-full items-center gap-2 rounded-md border border-gray-200/70 bg-white/70 px-3 py-1 text-xs text-gray-900 shadow-md backdrop-blur-sm dark:border-gray-700/70 dark:bg-gray-900/60 dark:text-gray-100">
-          <FileText size={12} className="opacity-80" />
-          <span className="max-w-[320px] truncate">{title || '...'}</span>
+    <div className="h-screen w-screen p-3">
+      <div className="pointer-events-none flex h-full w-full items-center justify-center rounded-xl border-4 border-fuchsia-500/90 bg-fuchsia-500/20 shadow-2xl backdrop-blur-sm dark:border-fuchsia-300/80 dark:bg-fuchsia-900/30">
+        <div className="flex max-w-full items-center gap-3 px-4 py-3">
+          <FileText size={28} className="text-fuchsia-800/90 dark:text-fuchsia-200/90" />
+          <div className="min-w-0">
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-fuchsia-900/80 dark:text-fuchsia-100/80">
+              Drag Ghost (Debug)
+            </div>
+            <div className="mt-1 max-w-[72vw] truncate text-lg font-semibold text-gray-950 dark:text-gray-50">
+              {title || '...'}
+            </div>
+          </div>
         </div>
       </div>
     </div>

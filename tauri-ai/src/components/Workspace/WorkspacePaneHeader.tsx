@@ -27,6 +27,7 @@ interface WorkspacePaneHeaderProps {
   sessionsById: Map<string, AgentSession>;
   isFocused: boolean;
   canClosePane: boolean;
+  registerTabStripRef?: (paneId: string) => (el: HTMLDivElement | null) => void;
   onSelectTab: (tabId: WorkspaceTabId) => void;
   onCloseTab: (tabId: WorkspaceTabId) => void | Promise<void>;
   onClosePane: () => void;
@@ -365,6 +366,7 @@ export const WorkspacePaneHeader: React.FC<WorkspacePaneHeaderProps> = ({
   sessionsById,
   isFocused,
   canClosePane,
+  registerTabStripRef,
   onSelectTab,
   onCloseTab,
   onClosePane,
@@ -482,6 +484,7 @@ export const WorkspacePaneHeader: React.FC<WorkspacePaneHeaderProps> = ({
   );
 
   const { setNodeRef: setTabListRef } = useDroppable({ id: `pane:${paneId}` });
+  const tabStripRef = registerTabStripRef ? registerTabStripRef(paneId) : undefined;
 
   return (
     <div
@@ -492,7 +495,10 @@ export const WorkspacePaneHeader: React.FC<WorkspacePaneHeaderProps> = ({
       ].join(' ')}
     >
       <div
-        ref={setTabListRef}
+        ref={(el) => {
+          setTabListRef(el);
+          tabStripRef?.(el);
+        }}
         className="flex min-w-0 flex-1 items-center overflow-x-auto scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600"
       >
         <SortableContext items={tabIds} strategy={horizontalListSortingStrategy}>

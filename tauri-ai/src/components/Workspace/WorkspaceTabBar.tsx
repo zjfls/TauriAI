@@ -161,10 +161,11 @@ const AgentSelector: React.FC<{
 const SortableWorkspaceTab: React.FC<{
   item: TabRenderItem;
   isActive: boolean;
+  titleOverride?: string | null;
   onSelect: () => void;
   onClose: (e: React.MouseEvent) => void;
   onContextMenu: (e: React.MouseEvent) => void;
-}> = ({ item, isActive, onSelect, onClose, onContextMenu }) => {
+}> = ({ item, isActive, titleOverride, onSelect, onClose, onContextMenu }) => {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: item.id,
   });
@@ -219,7 +220,7 @@ const SortableWorkspaceTab: React.FC<{
       ].join(' ')}
       onClick={onSelect}
       onContextMenu={onContextMenu}
-      title={item.title}
+      title={titleOverride ?? item.title}
       {...attributes}
       {...listeners}
     >
@@ -359,12 +360,20 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
 
-  const { start: startDragGhost, stop: stopDragGhost, extend: extendDragGhost } = useDragGhostSession({
+  const {
+    start: startDragGhost,
+    setTitle: setDragGhostTitle,
+    setVisible: setDragGhostVisible,
+    stop: stopDragGhost,
+    extend: extendDragGhost,
+  } = useDragGhostSession({
     thresholdPx: TEAR_OFF_WINDOW_THRESHOLD_PX,
     pollIntervalMs: 32,
+    mode: 'manual',
   });
 
   const [activeDragTabId, setActiveDragTabId] = useState<WorkspaceTabId | null>(null);
+  const [activeDragDebugTitle, setActiveDragDebugTitle] = useState<string | null>(null);
   const dragCancelledByEscapeRef = useRef(false);
 
   useEffect(() => {
@@ -380,6 +389,8 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
 
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
   const lastDragPointRef = useRef<{ x: number; y: number } | null>(null);
+  const dragGhostBaseTitleRef = useRef<string | null>(null);
+  const dragGhostMarkedOutsideRef = useRef(false);
 
   const resolveDragGhostTitle = (tabId: WorkspaceTabId): string => {
     const item = items.find((i) => i.id === tabId) ?? null;
@@ -626,7 +637,12 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
   const handleDragStart = (e: DragStartEvent) => {
     const activeId = String(e.active.id) as WorkspaceTabId;
     setActiveDragTabId(activeId);
-    startDragGhost(resolveDragGhostTitle(activeId));
+    const baseTitle = resolveDragGhostTitle(activeId);
+    dragGhostBaseTitleRef.current = baseTitle;
+    dragGhostMarkedOutsideRef.current = false;
+    startDragGhost(`[TABBAR] ${baseTitle}`);
+    setDragGhostVisible(false);
+    setActiveDragDebugTitle(`[TABBAR] ${baseTitle}`);
 
     const ev = e.activatorEvent as MouseEvent | PointerEvent | null;
     if (ev && 'clientX' in ev) {
@@ -644,6 +660,31 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
       x: dragStartRef.current.x + e.delta.x,
       y: dragStartRef.current.y + e.delta.y,
     };
+
+    const baseTitle = dragGhostBaseTitleRef.current;
+    const rect = tabBarRef.current?.getBoundingClientRect();
+    const p = lastDragPointRef.current;
+    if (!baseTitle || !rect || !p) return;
+
+    const outsideTabBar =
+      p.x < rect.left - 2 || p.x > rect.right + 2 || p.y < rect.top - 2 || p.y > rect.bottom + 2;
+
+    if (outsideTabBar) {
+      setDragGhostVisible(true);
+      if (!dragGhostMarkedOutsideRef.current) {
+        dragGhostMarkedOutsideRef.current = true;
+        setDragGhostTitle(`[GHOST][TABBAR] ${baseTitle}`);
+        setActiveDragDebugTitle(`[GHOST][TABBAR] ${baseTitle}`);
+      }
+      return;
+    }
+
+    setDragGhostVisible(false);
+    if (dragGhostMarkedOutsideRef.current) {
+      dragGhostMarkedOutsideRef.current = false;
+      setDragGhostTitle(`[TABBAR] ${baseTitle}`);
+      setActiveDragDebugTitle(`[TABBAR] ${baseTitle}`);
+    }
   };
 
   const handleDragEnd = async (e: DragEndEvent) => {
@@ -672,7 +713,11 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
 
     dragStartRef.current = null;
     lastDragPointRef.current = null;
+    dragGhostBaseTitleRef.current = null;
+    dragGhostMarkedOutsideRef.current = false;
     setActiveDragTabId(null);
+    setActiveDragDebugTitle(null);
+    setDragGhostVisible(false);
     stopDragGhost();
 
     if (shouldTearOff) {
@@ -692,7 +737,11 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
 
     dragStartRef.current = null;
     lastDragPointRef.current = null;
+    dragGhostBaseTitleRef.current = null;
+    dragGhostMarkedOutsideRef.current = false;
     setActiveDragTabId(null);
+    setActiveDragDebugTitle(null);
+    setDragGhostVisible(false);
 
     if (!dragCancelledByEscapeRef.current) {
       extendDragGhost(1200);
@@ -796,6 +845,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
                   key={item.id}
                   item={item}
                   isActive={isTabActive(item)}
+                  titleOverride={item.id === activeDragTabId ? activeDragDebugTitle : null}
                   onSelect={() => handleSelectTab(item)}
                   onClose={(e) => {
                     e.stopPropagation();

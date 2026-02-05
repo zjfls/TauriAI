@@ -1548,14 +1548,32 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   };
 
   const [activeDragTabId, setActiveDragTabId] = useState<string | null>(null);
-  const { start: startDragGhost, stop: stopDragGhost, extend: extendDragGhost } = useDragGhostSession({
+  const {
+    start: startDragGhost,
+    setTitle: setDragGhostTitle,
+    setVisible: setDragGhostVisible,
+    stop: stopDragGhost,
+    extend: extendDragGhost,
+  } = useDragGhostSession({
     thresholdPx: TEAR_OFF_WINDOW_THRESHOLD_PX,
     pollIntervalMs: 32,
+    mode: 'manual',
   });
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
   const lastDragPointRef = useRef<{ x: number; y: number } | null>(null);
   const dragCancelledByEscapeRef = useRef(false);
   const [splitPreview, setSplitPreview] = useState<SplitPreview | null>(null);
+  const dragGhostBaseTitleRef = useRef<string | null>(null);
+  const dragGhostMarkedOutsideRef = useRef(false);
+  const activeDragGroupIdRef = useRef<string | null>(null);
+
+  const groupTabStripRefs = useRef(new Map<string, HTMLDivElement | null>());
+  const registerGroupTabStripRef = useCallback(
+    (groupId: string) => (el: HTMLDivElement | null) => {
+      groupTabStripRefs.current.set(groupId, el);
+    },
+    []
+  );
 
   useEffect(() => {
     if (!activeDragTabId) return;
@@ -1681,7 +1699,11 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       const file = openFilesRef.current.find((f) => f.id === parsed.fileId) ?? null;
       return file?.title || basename(parsed.fileId) || '文件';
     })();
-    startDragGhost(title);
+    dragGhostBaseTitleRef.current = title;
+    dragGhostMarkedOutsideRef.current = false;
+    activeDragGroupIdRef.current = parsed?.groupId ?? null;
+    startDragGhost(`[WS-TAB] ${title}`);
+    setDragGhostVisible(false);
 
     const ev = e.activatorEvent as MouseEvent | PointerEvent | TouchEvent | null;
     if (ev && 'clientX' in ev) {
@@ -1691,7 +1713,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       dragStartRef.current = null;
       lastDragPointRef.current = null;
     }
-  }, [startDragGhost]);
+  }, [setDragGhostVisible, startDragGhost]);
 
   const handleDragMove = useCallback(
     (e: DragMoveEvent) => {
@@ -1699,6 +1721,30 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       if (!start) return;
       const point = { x: start.x + e.delta.x, y: start.y + e.delta.y };
       lastDragPointRef.current = point;
+
+      const baseTitle = dragGhostBaseTitleRef.current;
+      const groupId = activeDragGroupIdRef.current;
+      const stripEl = groupId ? groupTabStripRefs.current.get(groupId) ?? null : null;
+      const rect = stripEl?.getBoundingClientRect() ?? null;
+
+      if (baseTitle && rect) {
+        const outsideTabBar =
+          point.x < rect.left - 2 || point.x > rect.right + 2 || point.y < rect.top - 2 || point.y > rect.bottom + 2;
+
+        if (outsideTabBar) {
+          setDragGhostVisible(true);
+          if (!dragGhostMarkedOutsideRef.current) {
+            dragGhostMarkedOutsideRef.current = true;
+            setDragGhostTitle(`[GHOST][WS] ${baseTitle}`);
+          }
+        } else {
+          setDragGhostVisible(false);
+          if (dragGhostMarkedOutsideRef.current) {
+            dragGhostMarkedOutsideRef.current = false;
+            setDragGhostTitle(`[WS-TAB] ${baseTitle}`);
+          }
+        }
+      }
       const next = computeSplitPreview(point);
       setSplitPreview((prev) => {
         if (!next && !prev) return prev;
@@ -1707,7 +1753,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         return next;
       });
     },
-    [computeSplitPreview]
+    [computeSplitPreview, setDragGhostTitle, setDragGhostVisible]
   );
 
   const handleDragEnd = useCallback(
@@ -1732,6 +1778,10 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         }
         setActiveDragTabId(null);
         setSplitPreview(null);
+        dragGhostBaseTitleRef.current = null;
+        dragGhostMarkedOutsideRef.current = false;
+        activeDragGroupIdRef.current = null;
+        setDragGhostVisible(false);
         stopDragGhost();
         return;
       }
@@ -1749,6 +1799,10 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       // 先把拖拽 UI 收起，避免异步判断期间 overlay 悬挂
       setActiveDragTabId(null);
       setSplitPreview(null);
+      dragGhostBaseTitleRef.current = null;
+      dragGhostMarkedOutsideRef.current = false;
+      activeDragGroupIdRef.current = null;
+      setDragGhostVisible(false);
       stopDragGhost();
 
       if (shouldTearOffByClientPoint) {
@@ -1804,6 +1858,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       computeSplitPreview,
       isCursorOutsideCurrentWindow,
       moveTab,
+      setDragGhostVisible,
       splitTabToNewGroup,
       stopDragGhost,
       tearOffTabToNewWindow,
@@ -1865,6 +1920,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       computeSplitPreview,
       extendDragGhost,
       isCursorOutsideCurrentWindow,
+      setDragGhostVisible,
       splitTabToNewGroup,
       stopDragGhost,
       tearOffTabToNewWindow,
@@ -2410,7 +2466,10 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                     onMouseDown={() => setFocusedGroupId(group.id)}
                   >
                     <GroupDropZone groupId={group.id}>
-                      <div className="flex items-center gap-1 overflow-x-auto border-b border-gray-200 bg-white px-2 py-1 dark:border-gray-800 dark:bg-gray-950">
+                      <div
+                        ref={registerGroupTabStripRef(group.id)}
+                        className="flex items-center gap-1 overflow-x-auto border-b border-gray-200 bg-white px-2 py-1 dark:border-gray-800 dark:bg-gray-950"
+                      >
                         <SortableContext items={sortableItems} strategy={horizontalListSortingStrategy}>
                           {group.openFileIds.length === 0 ? (
                             <div className="px-2 py-1 text-xs text-gray-400">未打开文件</div>

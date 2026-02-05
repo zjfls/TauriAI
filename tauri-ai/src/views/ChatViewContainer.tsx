@@ -59,6 +59,7 @@ const WorkspacePaneView: React.FC<{
   onSelectTab: (tabId: WorkspaceTabId) => void;
   onCloseTab: (tabId: WorkspaceTabId) => void;
   onClosePane: () => void;
+  registerPaneTabStripRef: (paneId: string) => (el: HTMLDivElement | null) => void;
   registerLayerRef: (tabId: WorkspaceTabId) => (el: HTMLDivElement | null) => void;
   registerPaneRootRef: (paneId: string) => (el: HTMLDivElement | null) => void;
   registerPaneBodyRef: (paneId: string) => (el: HTMLDivElement | null) => void;
@@ -71,6 +72,7 @@ const WorkspacePaneView: React.FC<{
   onSelectTab,
   onCloseTab,
   onClosePane,
+  registerPaneTabStripRef,
   registerLayerRef,
   registerPaneRootRef,
   registerPaneBodyRef,
@@ -125,6 +127,7 @@ const WorkspacePaneView: React.FC<{
         sessionsById={sessionsById}
         isFocused={isFocused}
         canClosePane={canClosePane}
+        registerTabStripRef={registerPaneTabStripRef}
         onSelectTab={onSelectTab}
         onCloseTab={onCloseTab}
         onClosePane={onClosePane}
@@ -455,10 +458,13 @@ const ChatViewContainerInner: React.FC = () => {
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
 
-  const { start: startDragGhost, stop: stopDragGhost, extend: extendDragGhost } = useDragGhostSession({
-    thresholdPx: TEAR_OFF_WINDOW_THRESHOLD_PX,
-    pollIntervalMs: 32,
-  });
+  const {
+    start: startDragGhost,
+    setTitle: setDragGhostTitle,
+    setVisible: setDragGhostVisible,
+    stop: stopDragGhost,
+    extend: extendDragGhost,
+  } = useDragGhostSession({ thresholdPx: TEAR_OFF_WINDOW_THRESHOLD_PX, pollIntervalMs: 32, mode: 'manual' });
 
   const resolveDragGhostTitle = useCallback(
     (tabId: WorkspaceTabId): string => {
@@ -483,6 +489,16 @@ const ChatViewContainerInner: React.FC = () => {
   const lastDragPointRef = useRef<{ x: number; y: number } | null>(null);
   const dragCancelledByEscapeRef = useRef(false);
   const [resizeOverlay, setResizeOverlay] = useState<{ x: number; ratio: number } | null>(null);
+  const paneTabStripRefs = useRef(new Map<string, HTMLDivElement | null>());
+  const dragGhostBaseTitleRef = useRef<string | null>(null);
+  const dragGhostMarkedOutsideRef = useRef(false);
+
+  const registerPaneTabStripRef = useCallback(
+    (paneId: string) => (el: HTMLDivElement | null) => {
+      paneTabStripRefs.current.set(paneId, el);
+    },
+    []
+  );
 
   useEffect(() => {
     if (!activeDragTabId) return;
@@ -683,7 +699,11 @@ const ChatViewContainerInner: React.FC = () => {
     setActiveDragTabId(activeId);
     setSplitPreview(null);
     dragCancelledByEscapeRef.current = false;
-    startDragGhost(resolveDragGhostTitle(activeId));
+    const baseTitle = resolveDragGhostTitle(activeId);
+    dragGhostBaseTitleRef.current = baseTitle;
+    dragGhostMarkedOutsideRef.current = false;
+    startDragGhost(`[PANE] ${baseTitle}`);
+    setDragGhostVisible(false);
 
     const ev = e.activatorEvent as MouseEvent | PointerEvent | TouchEvent | null;
     if (ev && 'clientX' in ev) {
@@ -693,7 +713,7 @@ const ChatViewContainerInner: React.FC = () => {
       dragStartRef.current = null;
       lastDragPointRef.current = null;
     }
-  }, [resolveDragGhostTitle, startDragGhost]);
+  }, [resolveDragGhostTitle, setDragGhostVisible, startDragGhost]);
 
   const handleDragMove = useCallback(
     (e: DragMoveEvent) => {
@@ -701,6 +721,31 @@ const ChatViewContainerInner: React.FC = () => {
       if (!start) return;
       const point = { x: start.x + e.delta.x, y: start.y + e.delta.y };
       lastDragPointRef.current = point;
+
+      const baseTitle = dragGhostBaseTitleRef.current;
+      if (baseTitle && activeDragTabId) {
+        const activePaneId = panes.find((p) => p.tabIds.includes(activeDragTabId))?.id ?? null;
+        const stripEl = activePaneId ? paneTabStripRefs.current.get(activePaneId) ?? null : null;
+        const rect = stripEl?.getBoundingClientRect() ?? null;
+        if (rect) {
+          const outsideTabBar =
+            point.x < rect.left - 2 || point.x > rect.right + 2 || point.y < rect.top - 2 || point.y > rect.bottom + 2;
+
+          if (outsideTabBar) {
+            setDragGhostVisible(true);
+            if (!dragGhostMarkedOutsideRef.current) {
+              dragGhostMarkedOutsideRef.current = true;
+              setDragGhostTitle(`[GHOST][PANE] ${baseTitle}`);
+            }
+          } else {
+            setDragGhostVisible(false);
+            if (dragGhostMarkedOutsideRef.current) {
+              dragGhostMarkedOutsideRef.current = false;
+              setDragGhostTitle(`[PANE] ${baseTitle}`);
+            }
+          }
+        }
+      }
       const next = computeSplitPreview(point);
       setSplitPreview((prev) => {
         if (!next && !prev) return prev;
@@ -709,7 +754,7 @@ const ChatViewContainerInner: React.FC = () => {
         return next;
       });
     },
-    [computeSplitPreview]
+    [activeDragTabId, computeSplitPreview, panes, setDragGhostTitle, setDragGhostVisible]
   );
 
   const handleDragEnd = useCallback(
@@ -726,6 +771,9 @@ const ChatViewContainerInner: React.FC = () => {
         splitTabToNewPane(activeId, preview.direction, preview.paneId);
         setActiveDragTabId(null);
         setSplitPreview(null);
+        dragGhostBaseTitleRef.current = null;
+        dragGhostMarkedOutsideRef.current = false;
+        setDragGhostVisible(false);
         stopDragGhost();
         return;
       }
@@ -745,6 +793,12 @@ const ChatViewContainerInner: React.FC = () => {
       // 先把拖拽 UI 收起，避免异步判断期间 overlay 悬挂
       setActiveDragTabId(null);
       setSplitPreview(null);
+      dragGhostBaseTitleRef.current = null;
+      dragGhostMarkedOutsideRef.current = false;
+      setDragGhostVisible(false);
+      dragGhostBaseTitleRef.current = null;
+      dragGhostMarkedOutsideRef.current = false;
+      setDragGhostVisible(false);
       stopDragGhost();
 
       if (shouldTearOffByClientPoint) {
@@ -792,6 +846,7 @@ const ChatViewContainerInner: React.FC = () => {
       moveTabToPane,
       paneById,
       reorderTabInPane,
+      setDragGhostVisible,
       splitTabToNewPane,
       stopDragGhost,
       tabToPaneId,
@@ -854,7 +909,15 @@ const ChatViewContainerInner: React.FC = () => {
         }
       })();
     },
-    [computeSplitPreview, extendDragGhost, isCursorOutsideCurrentWindow, splitTabToNewPane, stopDragGhost, tearOffTabToNewWindow]
+    [
+      computeSplitPreview,
+      extendDragGhost,
+      isCursorOutsideCurrentWindow,
+      setDragGhostVisible,
+      splitTabToNewPane,
+      stopDragGhost,
+      tearOffTabToNewWindow,
+    ]
   );
 
   const startResize = useCallback(
@@ -977,6 +1040,7 @@ const ChatViewContainerInner: React.FC = () => {
                 onSelectTab={(tabId) => selectTab(pane.id, tabId)}
                 onCloseTab={(tabId) => closeTab(tabId)}
                 onClosePane={() => closePaneAndMerge(pane.id)}
+                registerPaneTabStripRef={registerPaneTabStripRef}
                 registerLayerRef={registerLayerRef}
                 registerPaneRootRef={registerPaneRootRef}
                 registerPaneBodyRef={registerPaneBodyRef}
