@@ -117,7 +117,7 @@ const WorkspacePaneView: React.FC<{
         'bg-gray-50 dark:bg-gray-900',
         isFocused ? 'outline outline-1 outline-blue-500/30' : 'outline outline-1 outline-transparent',
       ].join(' ')}
-      style={{ flexGrow: pane.weight, flexBasis: 0 }}
+      style={{ flex: `${pane.weight} 1 0px` }}
       onPointerDownCapture={onFocus}
     >
       <WorkspacePaneHeader
