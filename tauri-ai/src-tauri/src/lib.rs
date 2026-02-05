@@ -16,16 +16,19 @@ pub mod workstudio_security;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use commands::{
-    abort_run, add_workstudio_folder, clipboard_write_png_base64, clone_conversation,
-    close_pty_session, create_conversation, create_skill, create_workstudio, delete_conversation,
-    delete_mcp_server, delete_mcp_set, delete_messages_from, ensure_workstudio_for_conversation,
-    ensure_conversation_file_indexes, fetch_provider_models, generate_title, get_app_config,
-    get_conversations, get_format_prompt, get_mermaid_svg_cache, get_messages, get_turn_debug_info,
-    get_workstudio,
-    get_workstudio_security_config, get_workstudio_ui_state, list_local_directory,
-    list_mcp_server_tools, list_mcp_servers, list_mcp_sets, list_pty_sessions, list_skills,
-    open_devtools_current_window, read_local_file_base64, remove_workstudio_folder,
+	use commands::{
+	    abort_run, add_workstudio_folder, clipboard_write_png_base64, clone_conversation,
+	    close_pty_session, create_conversation, create_skill, create_workstudio, delete_conversation,
+	    delete_mcp_server, delete_mcp_set, delete_messages_from, ensure_workstudio_for_conversation,
+	    ensure_conversation_file_indexes, fetch_provider_models, generate_title, get_app_config,
+	    get_conversations, get_format_prompt, get_mermaid_svg_cache, get_messages, get_turn_debug_info,
+	    close_invoking_window,
+	    debug_drag_ghost_create, debug_drag_ghost_destroy, debug_drag_ghost_move, drag_ghost_create,
+	    drag_ghost_destroy, drag_ghost_move,
+	    get_workstudio,
+	    get_workstudio_security_config, get_workstudio_ui_state, list_local_directory,
+	    list_mcp_server_tools, list_mcp_servers, list_mcp_sets, list_pty_sessions, list_skills,
+	    open_devtools_current_window, read_local_file_base64, remove_workstudio_folder,
     respond_approval, retry_turn, run_task, save_app_config, set_agent_mcp_set,
     set_mermaid_svg_cache, set_workstudio_main_folder, set_workstudio_security_config,
     set_workstudio_ui_state, terminal_close, terminal_create, terminal_read, terminal_read_base64,
@@ -40,6 +43,7 @@ use skills::installer::install_bundled_skills;
 use skills::watcher::{SkillsWatcher, SkillsWatcherState};
 use storage::Database;
 use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu};
+use tauri::{PhysicalPosition, PhysicalSize};
 use tauri::WebviewUrl;
 use tauri::{Emitter, Manager, Url};
 
@@ -155,6 +159,14 @@ pub fn run() {
                 true,
                 Some("CmdOrCtrl+Alt+I"),
             )?;
+            #[cfg(debug_assertions)]
+            let unit_test_ghost = MenuItem::with_id(
+                app,
+                "unit_test_ghost",
+                "单元测试：显示 Ghost 窗口",
+                true,
+                Some("CmdOrCtrl+Shift+G"),
+            )?;
 
             // Find existing "File" submenu and insert at the top. If not found (e.g. Linux),
             // create one.
@@ -199,7 +211,7 @@ pub fn run() {
 
             if let Some(view) = view_submenu {
                 #[cfg(debug_assertions)]
-                view.insert_items(&[&open_devtools], 0)?;
+                view.insert_items(&[&unit_test_ghost, &open_devtools], 0)?;
                 view.insert_items(&[&open_web_tab, &open_terminal_tab, &view_separator], 0)?;
             } else {
                 #[cfg(debug_assertions)]
@@ -207,7 +219,7 @@ pub fn run() {
                     app,
                     "View",
                     true,
-                    &[&open_devtools, &open_web_tab, &open_terminal_tab],
+                    &[&unit_test_ghost, &open_devtools, &open_web_tab, &open_terminal_tab],
                 )?;
                 #[cfg(not(debug_assertions))]
                 let view =
@@ -323,6 +335,127 @@ pub fn run() {
                             .build();
                     });
                 }
+                "unit_test_ghost" => {
+                    // Debug-only: create (or reuse) exactly one ghost window and center it in main window.
+                    #[cfg(debug_assertions)]
+                    {
+                        let handle = app.clone();
+                        std::thread::spawn(move || {
+                            const GHOST_LABEL: &str = "__tauriai_ghost__main";
+
+                            #[derive(Clone, serde::Serialize)]
+                            struct DragGhostUpdatePayload {
+                                title: String,
+                            }
+
+                            let main = match handle.get_webview_window("main") {
+                                Some(w) => w,
+                                None => return,
+                            };
+
+                            let (main_pos, main_size) = (
+                                main.outer_position().ok(),
+                                main.outer_size().ok(),
+                            );
+
+                            let (ghost_w, ghost_h) = if let Some(size) = main_size {
+                                let w = (size.width as i32 / 5).max(240);
+                                let h = (size.height as i32 / 5).max(160);
+                                (w, h)
+                            } else {
+                                (420, 240)
+                            };
+
+                            let (x, y) = if let (Some(pos), Some(size)) = (main_pos, main_size) {
+                                (
+                                    pos.x + ((size.width as i32 - ghost_w) / 2),
+                                    pos.y + ((size.height as i32 - ghost_h) / 2),
+                                )
+                            } else {
+                                (80, 80)
+                            };
+
+                            // Reuse existing ghost window if present.
+                            if let Some(ghost) = handle.get_webview_window(GHOST_LABEL) {
+                                let _ =
+                                    ghost.set_size(PhysicalSize::new(ghost_w as u32, ghost_h as u32));
+                                let _ = ghost.set_position(PhysicalPosition::new(x, y));
+                                let _ = ghost.show();
+                                let _ = ghost.set_focus();
+                                let _ = ghost.emit(
+                                    "drag-ghost:update",
+                                    DragGhostUpdatePayload {
+                                        title: "Unit Test Ghost (Menu)".to_string(),
+                                    },
+                                );
+                                return;
+                            }
+
+                            let url = if cfg!(debug_assertions) {
+                                handle
+                                    .config()
+                                    .build
+                                    .dev_url
+                                    .clone()
+                                    .and_then(|base| {
+                                        let base = base.as_str().trim_end_matches('/').to_string();
+                                        Url::parse(&format!(
+                                            "{base}/?view=drag-ghost&standalone=1&ghostTitle=Unit%20Test%20Ghost%20(Menu)"
+                                        ))
+                                        .ok()
+                                    })
+                                    .unwrap_or_else(|| {
+                                        Url::parse(
+                                            "tauri://localhost/?view=drag-ghost&standalone=1&ghostTitle=Unit%20Test%20Ghost%20(Menu)",
+                                        )
+                                        .expect("valid tauri url")
+                                    })
+                            } else {
+                                Url::parse(
+                                    "tauri://localhost/?view=drag-ghost&standalone=1&ghostTitle=Unit%20Test%20Ghost%20(Menu)",
+                                )
+                                .expect("valid tauri url")
+                            };
+
+                            let webview_url = match url.scheme() {
+                                "http" | "https" => WebviewUrl::External(url),
+                                _ => WebviewUrl::CustomProtocol(url),
+                            };
+
+                            let builder = tauri::WebviewWindowBuilder::new(
+                                &handle,
+                                GHOST_LABEL.to_string(),
+                                webview_url,
+                            )
+                            .title("[GHOST] Unit Test")
+                            .decorations(true)
+                            .always_on_top(true)
+                            .skip_taskbar(true)
+                            .resizable(false)
+                            .inner_size(ghost_w as f64, ghost_h as f64);
+
+                            if let Ok(ghost) = builder.build() {
+                                // Use physical coordinates/sizes to avoid DPI scale-factor mismatches.
+                                let _ = ghost
+                                    .set_size(PhysicalSize::new(ghost_w as u32, ghost_h as u32));
+                                let _ = ghost.set_position(PhysicalPosition::new(x, y));
+                                let _ = ghost.show();
+                                let _ = ghost.set_focus();
+                                let _ = ghost.emit(
+                                    "drag-ghost:update",
+                                    DragGhostUpdatePayload {
+                                        title: "Unit Test Ghost (Menu)".to_string(),
+                                    },
+                                );
+                                #[cfg(debug_assertions)]
+                                println!(
+                                    "[unit_test_ghost] created and centered at ({}, {}) size=({}, {})",
+                                    x, y, ghost_w, ghost_h
+                                );
+                            }
+                        });
+                    }
+                }
                 _ => {}
             }
         })
@@ -384,8 +517,18 @@ pub fn run() {
             fetch_provider_models,
             // Clipboard
             clipboard_write_png_base64,
-            // DevTools
-            open_devtools_current_window,
+	            // DevTools
+	            open_devtools_current_window,
+	            // Drag ghost
+	            drag_ghost_create,
+	            drag_ghost_destroy,
+	            drag_ghost_move,
+	            // Backward compatibility (old command names)
+	            debug_drag_ghost_create,
+	            debug_drag_ghost_destroy,
+	            debug_drag_ghost_move,
+	            // Window control
+	            close_invoking_window,
             // MCP commands
             list_mcp_servers,
             list_mcp_sets,

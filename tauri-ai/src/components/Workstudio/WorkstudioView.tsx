@@ -19,7 +19,7 @@ import {
   type DragStartEvent,
   type DragEndEvent,
 } from '@dnd-kit/core';
-import { SortableContext, arrayMove, useSortable, horizontalListSortingStrategy } from '@dnd-kit/sortable';
+import { SortableContext, useSortable, horizontalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import {
   ChevronDown,
@@ -33,6 +33,7 @@ import type { TerminalScope, Workstudio, WorkstudioUiState } from '../../types';
 import { SHORTCUT_ACTIONS, detectShortcutPlatform, normalizeKeybindingString } from '../../shortcuts';
 import { useConfigStore } from '../../stores/configStore';
 import { useTerminalSessionStore } from '../../stores/terminalSessionStore';
+import { type WindowPane, useWindowLayoutStore } from '../../stores/windowLayoutStore';
 import { useDragGhostSession } from '../../hooks/useDragGhostSession';
 import { getViewWindowParams, openViewWindow } from '../../utils/viewWindow';
 import { setupMonaco } from '../../utils/monaco';
@@ -58,56 +59,15 @@ type OpenFile = {
   base64?: string;  // raw bytes (for binary/pdf preview or external open)
 };
 
-type EditorGroup = {
-  id: string;
-  openFileIds: string[];
-  activeFileId: string | null;
-  weight: number;
-};
-
-const pruneEmptyGroups = (groups: EditorGroup[]) => {
-  if (groups.length <= 1) return groups;
-  const kept = groups.filter((g) => g.openFileIds.length > 0);
-  return kept.length > 0 ? kept : [groups[0]!];
-};
-
-const redistributeWeightOnRemove = (groups: EditorGroup[], removedIndex: number, removedWeight: number) => {
-  if (groups.length === 0) return groups;
-  const targetIndex = Math.min(removedIndex, groups.length - 1);
-  const target = groups[targetIndex];
-  if (!target) return groups;
-  const out = [...groups];
-  out[targetIndex] = { ...target, weight: (target.weight || 1) + removedWeight };
-  return out;
-};
-
-const normalizeGroupWeights = (groups: EditorGroup[]) => {
-  const sum = groups.reduce((acc, g) => acc + (g.weight || 1), 0);
-  if (sum <= 0) return groups.map((g) => ({ ...g, weight: 1 }));
-  return groups.map((g) => ({ ...g, weight: (g.weight || 1) / sum }));
-};
-
-const tabKey = (groupId: string, fileId: string) => `tab:${groupId}:${fileId}`;
-const parseTabKey = (id: string): { groupId: string; fileId: string } | null => {
-  if (!id.startsWith('tab:')) return null;
-  const rest = id.slice('tab:'.length);
-  const first = rest.indexOf(':');
-  if (first <= 0) return null;
-  const groupId = rest.slice(0, first);
-  const fileId = rest.slice(first + 1);
-  if (!groupId || !fileId) return null;
-  return { groupId, fileId };
-};
-
-const dropKey = (groupId: string) => `drop:${groupId}`;
-
 const TEAR_OFF_THRESHOLD_PX = 48;
 const TEAR_OFF_WINDOW_THRESHOLD_PX = 8;
 
-const GroupDropZone: React.FC<{ groupId: string; children: React.ReactNode }> = ({ groupId, children }) => {
-  const { setNodeRef } = useDroppable({ id: dropKey(groupId) });
+const paneDropId = (paneId: string) => `pane:${paneId}`;
+
+const PaneDropZone: React.FC<{ paneId: string; children: React.ReactNode }> = ({ paneId, children }) => {
+  const { setNodeRef } = useDroppable({ id: paneDropId(paneId) });
   return (
-    <div ref={setNodeRef} className="min-w-0">
+    <div ref={setNodeRef} className="flex min-w-0 flex-1 flex-col overflow-hidden">
       {children}
     </div>
   );
@@ -372,7 +332,7 @@ const isSubpath = (child: string, parent: string) => {
 export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ workstudioId: workstudioIdProp }) => {
   const { workstudioId: workstudioIdFromUrl, filePath, line, column, endLine, endColumn } = getViewWindowParams();
   const workstudioId = (workstudioIdProp ?? workstudioIdFromUrl ?? '').trim() || null;
-  const editorByGroupRef = useRef(
+  const editorByPaneRef = useRef(
     new Map<string, import('monaco-editor').editor.IStandaloneCodeEditor>()
   );
   const explorerContainerRef = useRef<HTMLDivElement | null>(null);
@@ -435,25 +395,27 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   }, [openFiles]);
   const [explorerSelectedFilePath, setExplorerSelectedFilePath] = useState<string | null>(null);
   const [uiStateRestored, setUiStateRestored] = useState(false);
-  const [groups, setGroups] = useState<EditorGroup[]>(() => [
-    { id: 'g-0', openFileIds: [], activeFileId: null, weight: 1 },
-  ]);
-  const groupsRef = useRef<EditorGroup[]>(groups);
-  useEffect(() => {
-    groupsRef.current = groups;
-  }, [groups]);
-  const [focusedGroupId, setFocusedGroupId] = useState<string>('g-0');
-  const focusedGroupIdRef = useRef<string>(focusedGroupId);
-  useEffect(() => {
-    focusedGroupIdRef.current = focusedGroupId;
-  }, [focusedGroupId]);
+
+  const panes = useWindowLayoutStore((s) => s.panes);
+  const focusedPaneId = useWindowLayoutStore((s) => s.focusedPaneId);
+  const setFocusedPane = useWindowLayoutStore((s) => s.setFocusedPane);
+  const setActiveTabInPane = useWindowLayoutStore((s) => s.setActiveTabInPane);
+  const closePaneAndMerge = useWindowLayoutStore((s) => s.closePaneAndMerge);
+  const reorderTabInPane = useWindowLayoutStore((s) => s.reorderTabInPane);
+  const moveTabToPane = useWindowLayoutStore((s) => s.moveTabToPane);
+  const splitTabToNewPane = useWindowLayoutStore((s) => s.splitTabToNewPane);
+  const setPaneWeights = useWindowLayoutStore((s) => s.setPaneWeights);
+  const closeTabInLayout = useWindowLayoutStore((s) => s.closeTabInLayout);
+  const replaceLayout = useWindowLayoutStore((s) => s.replaceLayout);
+  const fallbackPaneIdRef = useRef<string>(crypto.randomUUID());
+
   const [contextMenu, setContextMenu] = useState<
     | { visible: true; x: number; y: number; kind: 'root'; folder: string }
     | { visible: true; x: number; y: number; kind: 'blank' }
     | null
   >(null);
   const [tabMenu, setTabMenu] = useState<
-    | { visible: true; x: number; y: number; groupId: string; fileId: string; path: string }
+    | { visible: true; x: number; y: number; paneId: string; fileId: string; path: string }
     | null
   >(null);
 
@@ -463,61 +425,140 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const [filePaletteIndex, setFilePaletteIndex] = useState(0);
 
   const saveStateTimerRef = useRef<number | null>(null);
-  const groupRowRef = useRef<HTMLDivElement | null>(null);
-  const groupRootRefs = useRef<Map<string, HTMLDivElement>>(new Map());
-  const groupBodyRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const paneRowRef = useRef<HTMLDivElement | null>(null);
+  const paneRootRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const paneBodyRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const resizeRef = useRef<{
     dragging: boolean;
-    index: number;
+    leftPaneId: string;
+    rightPaneId: string;
     startX: number;
-    startLeft: number;
-    startRight: number;
-    containerWidth: number;
+    startLeftWidth: number;
+    totalWidth: number;
+    groupWeight: number;
+    prevUserSelect: string;
+    prevCursor: string;
   } | null>(null);
 
-  const focusedGroup = useMemo(
-    () => groups.find((g) => g.id === focusedGroupId) ?? groups[0],
-    [groups, focusedGroupId]
+  const validFileIds = useMemo(() => new Set(openFiles.map((f) => f.id)), [openFiles]);
+
+  const resolvedPanes = useMemo((): WindowPane[] => {
+    const base: WindowPane[] =
+      panes.length > 0
+        ? panes
+        : [
+            {
+              id: fallbackPaneIdRef.current,
+              tabIds: [],
+              activeTabId: null,
+              weight: 1,
+            } satisfies WindowPane,
+          ];
+
+    const assigned = new Set<string>();
+    const cleaned: WindowPane[] = base.map((p) => {
+      const filtered: string[] = [];
+      for (const tid of p.tabIds) {
+        if (!validFileIds.has(tid)) continue;
+        if (assigned.has(tid)) continue;
+        assigned.add(tid);
+        filtered.push(tid);
+      }
+      const rawActive = typeof p.activeTabId === 'string' ? p.activeTabId : null;
+      const active = rawActive && filtered.includes(rawActive) ? rawActive : filtered[0] ?? null;
+      return {
+        ...p,
+        tabIds: filtered,
+        activeTabId: active,
+        weight: Number.isFinite(p.weight) && p.weight > 0 ? p.weight : 1,
+      };
+    });
+
+    const nonEmpty = cleaned.filter((p) => p.tabIds.length > 0);
+    if (nonEmpty.length > 0) return nonEmpty;
+
+    if (openFiles.length > 0) {
+      const tabs = openFiles.map((f) => f.id);
+      return [
+        {
+          id: fallbackPaneIdRef.current,
+          tabIds: tabs,
+          activeTabId: tabs[0] ?? null,
+          weight: 1,
+        },
+      ];
+    }
+
+    return [
+      {
+        id: fallbackPaneIdRef.current,
+        tabIds: [],
+        activeTabId: null,
+        weight: 1,
+      },
+    ];
+  }, [openFiles, panes, validFileIds]);
+
+  const resolvedFocusedPaneId = useMemo(() => {
+    if (focusedPaneId && resolvedPanes.some((p) => p.id === focusedPaneId)) return focusedPaneId;
+    return resolvedPanes[0]?.id ?? null;
+  }, [focusedPaneId, resolvedPanes]);
+
+  useEffect(() => {
+    if (!uiStateRestored) return;
+    if (!resolvedFocusedPaneId) return;
+    if (focusedPaneId === resolvedFocusedPaneId) return;
+    setFocusedPane(resolvedFocusedPaneId);
+  }, [focusedPaneId, resolvedFocusedPaneId, setFocusedPane, uiStateRestored]);
+
+  const resolvedLayoutKey = useMemo(() => {
+    return `${resolvedFocusedPaneId ?? ''}|${resolvedPanes
+      .map((p) => `${p.id}:${p.activeTabId ?? ''}:${p.tabIds.join(',')}:${p.weight}`)
+      .join('|')}`;
+  }, [resolvedFocusedPaneId, resolvedPanes]);
+
+  const storedLayoutKey = useMemo(() => {
+    return `${focusedPaneId ?? ''}|${panes.map((p) => `${p.id}:${p.activeTabId ?? ''}:${p.tabIds.join(',')}:${p.weight}`).join('|')}`;
+  }, [focusedPaneId, panes]);
+
+  useEffect(() => {
+    if (!uiStateRestored) return;
+    if (!resolvedFocusedPaneId) return;
+    if (resolvedLayoutKey === storedLayoutKey) return;
+    replaceLayout({ panes: resolvedPanes, focusedPaneId: resolvedFocusedPaneId });
+  }, [replaceLayout, resolvedFocusedPaneId, resolvedLayoutKey, resolvedPanes, storedLayoutKey, uiStateRestored]);
+
+  const focusedPane = useMemo(
+    () => resolvedPanes.find((p) => p.id === resolvedFocusedPaneId) ?? resolvedPanes[0] ?? null,
+    [resolvedFocusedPaneId, resolvedPanes]
   );
-  const activeFilePathInFocusedGroup = useMemo(() => {
-    const activeId = focusedGroup?.activeFileId ?? null;
+
+  const activeFilePathInFocusedPane = useMemo(() => {
+    const activeId = focusedPane?.activeTabId ?? null;
     if (!activeId) return null;
     const raw = openFiles.find((f) => f.id === activeId)?.path ?? null;
     return raw ? normalizeFsPath(raw) : null;
-  }, [focusedGroup?.activeFileId, openFiles]);
+  }, [focusedPane?.activeTabId, openFiles]);
 
   useEffect(() => {
-    setExplorerSelectedFilePath(activeFilePathInFocusedGroup);
-  }, [activeFilePathInFocusedGroup]);
+    setExplorerSelectedFilePath(activeFilePathInFocusedPane);
+  }, [activeFilePathInFocusedPane]);
 
-  useEffect(() => {
-    const hasDup = groups.some((g) => new Set(g.openFileIds).size !== g.openFileIds.length);
-    if (!hasDup) return;
-    setGroups((prev) =>
-      prev.map((g) => {
-        const nextIds = Array.from(new Set(g.openFileIds));
-        const nextActive = g.activeFileId && nextIds.includes(g.activeFileId) ? g.activeFileId : nextIds[0] ?? null;
-        if (nextIds.length === g.openFileIds.length && nextActive === g.activeFileId) return g;
-        return { ...g, openFileIds: nextIds, activeFileId: nextActive };
-      })
-    );
-  }, [groups]);
-
-  // Monaco 编辑器在 flex 布局变化（拆分/关闭组/拖拽/分屏比例调整）时偶发不会自动重算尺寸，
+  // Monaco 编辑器在 flex 布局变化（拆分/关闭 Pane/拖拽/分屏比例调整）时偶发不会自动重算尺寸，
   // 导致右侧出现“白色死区”。这里在布局相关状态变化后，强制触发一次 layout。
   useEffect(() => {
-    const aliveGroupIds = new Set(groups.map((g) => g.id));
-    for (const key of editorByGroupRef.current.keys()) {
-      if (!aliveGroupIds.has(key)) {
-        editorByGroupRef.current.delete(key);
+    const alivePaneIds = new Set(resolvedPanes.map((p) => p.id));
+    for (const key of editorByPaneRef.current.keys()) {
+      if (!alivePaneIds.has(key)) {
+        editorByPaneRef.current.delete(key);
       }
     }
 
     let raf2: number | null = null;
     const raf1 = window.requestAnimationFrame(() => {
       raf2 = window.requestAnimationFrame(() => {
-        for (const [groupId, editor] of editorByGroupRef.current.entries()) {
-          if (!aliveGroupIds.has(groupId)) continue;
+        for (const [paneId, editor] of editorByPaneRef.current.entries()) {
+          if (!alivePaneIds.has(paneId)) continue;
           try {
             editor.layout();
           } catch {
@@ -531,7 +572,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       window.cancelAnimationFrame(raf1);
       if (raf2) window.cancelAnimationFrame(raf2);
     };
-  }, [groups, terminalOpen]);
+  }, [resolvedPanes, terminalOpen]);
   const rootFolders = useMemo(() => {
     if (!ws) return [];
     const out: string[] = [];
@@ -604,72 +645,58 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   );
 
   const openFileAtPath = useCallback(
-    async (path: string, opts?: { groupId?: string | null }): Promise<string | null> => {
+    async (path: string, opts?: { paneId?: string | null }): Promise<string | null> => {
       const normalizedPath = normalizeFsPath(path);
       if (!normalizedPath) return null;
       setExplorerSelectedFilePath(normalizedPath);
-      const requestedGroupId = opts?.groupId ?? focusedGroupIdRef.current;
-      const targetGroupId = groupsRef.current.some((g) => g.id === requestedGroupId)
-        ? requestedGroupId
-        : (groupsRef.current[0]?.id ?? 'g-0');
+      const state = useWindowLayoutStore.getState();
+      const requestedPaneId = opts?.paneId ?? state.focusedPaneId;
+      const targetPaneId =
+        requestedPaneId && state.panes.some((p) => p.id === requestedPaneId)
+          ? requestedPaneId
+          : (state.panes[0]?.id ?? fallbackPaneIdRef.current);
+
+      if (targetPaneId) {
+        state.setFocusedPane(targetPaneId);
+      }
 
       const existing = openFilesRef.current.find((f) => f.id === normalizedPath);
       if (existing) {
-        setGroups((prev) =>
-          prev.map((g) => {
-            if (g.id !== targetGroupId) return g;
-            const nextIds = g.openFileIds.includes(existing.id)
-              ? g.openFileIds
-              : [...g.openFileIds, existing.id];
-            return { ...g, openFileIds: nextIds, activeFileId: existing.id };
-          })
-        );
+        state.openTabInFocusedPane(existing.id);
         return existing.id;
       }
 
       if (openingPathsRef.current.has(normalizedPath)) {
-        // 如果同一路径正在打开中，也要确保它成为当前组的 active，
-        // 否则“跳转到行”逻辑可能因为 activeFileId 还没切换而一直失败。
-        setGroups((prev) =>
-          prev.map((g) => {
-            if (g.id !== targetGroupId) return g;
-            const nextIds = g.openFileIds.includes(normalizedPath) ? g.openFileIds : [...g.openFileIds, normalizedPath];
-            return { ...g, openFileIds: nextIds, activeFileId: normalizedPath };
-          })
-        );
+        // 如果同一路径正在打开中，也要确保它成为当前 Pane 的 active，
+        // 否则“跳转到行”逻辑可能因为 activeTabId 还没切换而一直失败。
+        state.openTabInFocusedPane(normalizedPath);
         return normalizedPath;
       }
       openingPathsRef.current.add(normalizedPath);
       try {
-      const file = await invoke<{ filename: string; mime: string; base64: string; size: number }>(
-        'read_local_file_base64',
-        { path: normalizedPath }
-      );
-      const id = normalizedPath;
-      const kind = fileKindFor(normalizedPath, file.mime);
-      const content = kind === 'text' ? decodeBase64ToUtf8(file.base64) : undefined;
-      const next: OpenFile = {
-        id,
-        title: file.filename,
-        path: normalizedPath,
-        kind,
-        mime: file.mime,
-        size: file.size,
-        content,
-        originalContent: content,
-        dirty: false,
-        dataUrl: kind === 'image' ? `data:${file.mime};base64,${file.base64}` : undefined,
-        base64: file.base64,
-      };
-      setOpenFiles((prev) => (prev.some((f) => f.id === id) ? prev : [...prev, next]));
-      setGroups((prev) =>
-        prev.map((g) => {
-          if (g.id !== targetGroupId) return g;
-          const openFileIds = g.openFileIds.includes(id) ? g.openFileIds : [...g.openFileIds, id];
-          return { ...g, openFileIds, activeFileId: id };
-        })
-      );
-      return id;
+        const file = await invoke<{ filename: string; mime: string; base64: string; size: number }>(
+          'read_local_file_base64',
+          { path: normalizedPath }
+        );
+        const id = normalizedPath;
+        const kind = fileKindFor(normalizedPath, file.mime);
+        const content = kind === 'text' ? decodeBase64ToUtf8(file.base64) : undefined;
+        const next: OpenFile = {
+          id,
+          title: file.filename,
+          path: normalizedPath,
+          kind,
+          mime: file.mime,
+          size: file.size,
+          content,
+          originalContent: content,
+          dirty: false,
+          dataUrl: kind === 'image' ? `data:${file.mime};base64,${file.base64}` : undefined,
+          base64: file.base64,
+        };
+        setOpenFiles((prev) => (prev.some((f) => f.id === id) ? prev : [...prev, next]));
+        state.openTabInFocusedPane(id);
+        return id;
       } finally {
         openingPathsRef.current.delete(normalizedPath);
       }
@@ -818,14 +845,15 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     [listDir, ws]
   );
 
-  const openLinkTarget = useCallback(async (target: LinkTarget, opts?: { groupId?: string | null }) => {
+  const openLinkTarget = useCallback(async (target: LinkTarget, opts?: { paneId?: string | null }) => {
     const seq = openLinkSeqRef.current + 1;
     openLinkSeqRef.current = seq;
-    const groupIdFromCaller = opts?.groupId ?? focusedGroupIdRef.current;
-    const groupId =
-      groupsRef.current.some((g) => g.id === groupIdFromCaller)
-        ? groupIdFromCaller
-        : (groupsRef.current[0]?.id ?? 'g-0');
+    const state = useWindowLayoutStore.getState();
+    const paneIdFromCaller = opts?.paneId ?? state.focusedPaneId;
+    const paneId =
+      paneIdFromCaller && state.panes.some((p) => p.id === paneIdFromCaller)
+        ? paneIdFromCaller
+        : (state.panes[0]?.id ?? fallbackPaneIdRef.current);
 
     const targetPath = target.filePath;
     if (!targetPath) return;
@@ -835,7 +863,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       workstudioId: workstudioId ?? null,
       wsId: ws?.id ?? null,
       uiStateRestored,
-      groupId,
+      paneId,
       target,
       visibility: typeof document !== 'undefined' ? document.visibilityState : null,
     });
@@ -881,17 +909,17 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       const rawLine = typeof target.line === 'number' ? target.line : null;
       if (!rawLine) return true;
 
-      const group = groupsRef.current.find((g) => g.id === groupId) ?? null;
-      if (openedFileId && (!group || group.activeFileId !== openedFileId)) return false;
+      const pane = useWindowLayoutStore.getState().panes.find((p) => p.id === paneId) ?? null;
+      if (openedFileId && (!pane || pane.activeTabId !== openedFileId)) return false;
 
-      const editor = editorByGroupRef.current.get(groupId);
+      const editor = editorByPaneRef.current.get(paneId);
       if (!editor) {
-        dbg('applySelection:no_editor', { seq, groupId, openedFileId, expectedPath });
+        dbg('applySelection:no_editor', { seq, paneId, openedFileId, expectedPath });
         return false;
       }
       const model = editor.getModel();
       if (!model) {
-        dbg('applySelection:no_model', { seq, groupId, openedFileId, expectedPath });
+        dbg('applySelection:no_model', { seq, paneId, openedFileId, expectedPath });
         return false;
       }
 
@@ -977,10 +1005,10 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         editor.setSelection(sel);
         editor.revealRangeInCenter(sel);
         editor.focus();
-        dbg('applySelection:ok', { seq, groupId, openedFileId, expectedPath, sel });
+        dbg('applySelection:ok', { seq, paneId, openedFileId, expectedPath, sel });
         return true;
       } catch {
-        dbg('applySelection:exception', { seq, groupId, openedFileId, expectedPath });
+        dbg('applySelection:exception', { seq, paneId, openedFileId, expectedPath });
         return false;
       }
     };
@@ -989,15 +1017,17 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       const startAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
       const timeoutMs = 2600;
 
-      // VS Code-like：在跳转时把目标组设为聚焦（确保 editor mount / focus 链路稳定）
-      if (focusedGroupIdRef.current !== groupId) setFocusedGroupId(groupId);
+      // VS Code-like：在跳转时把目标 Pane 设为聚焦（确保 editor mount / focus 链路稳定）
+      if (useWindowLayoutStore.getState().focusedPaneId !== paneId) {
+        useWindowLayoutStore.getState().setFocusedPane(paneId);
+      }
 
       while (openLinkSeqRef.current === seq) {
         const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
         if (now - startAt > timeoutMs) {
           dbg('applyWithWait:timeout', {
             seq,
-            groupId,
+            paneId,
             openedFileId,
             expectedPath,
             timeoutMs,
@@ -1017,14 +1047,14 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
     setOpenFromLinkError(null);
     try {
-      const openedId = await openFileAtPath(resolved, { groupId });
-      dbg('openLinkTarget:file_opened', { seq, openedId, resolved, groupId });
+      const openedId = await openFileAtPath(resolved, { paneId });
+      dbg('openLinkTarget:file_opened', { seq, openedId, resolved, paneId });
       void revealFileInExplorer(resolved, seq);
       await applyWithWait(openedId, resolved);
-      dbg('openLinkTarget:done', { seq, openedId, resolved, groupId });
+      dbg('openLinkTarget:done', { seq, openedId, resolved, paneId });
       return;
     } catch (error) {
-      dbg('openLinkTarget:primary_error', { seq, error: String(error), resolved, groupId, isAbs });
+      dbg('openLinkTarget:primary_error', { seq, error: String(error), resolved, paneId, isAbs });
       try {
         if (!ws?.id || isAbs) throw error;
 
@@ -1051,11 +1081,11 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         const best = pickBest();
         if (!best) throw error;
 
-        const openedId = await openFileAtPath(best, { groupId });
-        dbg('openLinkTarget:fallback_file_opened', { seq, openedId, best, groupId });
+        const openedId = await openFileAtPath(best, { paneId });
+        dbg('openLinkTarget:fallback_file_opened', { seq, openedId, best, paneId });
         void revealFileInExplorer(best, seq);
         await applyWithWait(openedId, normalizeFsPath(best));
-        dbg('openLinkTarget:fallback_done', { seq, openedId, best, groupId });
+        dbg('openLinkTarget:fallback_done', { seq, openedId, best, paneId });
         return;
       } catch (fallbackError) {
         console.error('open file from link failed:', fallbackError);
@@ -1166,87 +1196,72 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     };
   }, [dbg, openLinkTarget, workstudioId, ws?.mainFolder]);
 
-  const closeFileInGroup = useCallback((groupId: string, fileId: string) => {
-    setGroups((prev) => {
-      const nextGroupsPre = prev.map((g) => {
-        if (g.id !== groupId) return g;
-        const nextIds = g.openFileIds.filter((id) => id !== fileId);
-        const nextActive = g.activeFileId === fileId ? nextIds[0] ?? null : g.activeFileId;
-        return { ...g, openFileIds: nextIds, activeFileId: nextActive };
-      });
-
-      const removedIndex = nextGroupsPre.findIndex((g) => g.id === groupId);
-      const removedWeight =
-        removedIndex >= 0 && nextGroupsPre[removedIndex]?.openFileIds.length === 0
-          ? nextGroupsPre[removedIndex]!.weight || 1
-          : 0;
-      let nextGroups = pruneEmptyGroups(nextGroupsPre);
-      if (removedWeight > 0 && nextGroups.length < nextGroupsPre.length) {
-        nextGroups = redistributeWeightOnRemove(nextGroups, removedIndex, removedWeight);
-      }
-      nextGroups = normalizeGroupWeights(nextGroups);
-
+  const closeFileTab = useCallback(
+    (fileId: string) => {
+      closeTabInLayout(fileId);
       setOpenFiles((prevFiles) => {
-        const stillUsed = nextGroups.some((g) => g.openFileIds.includes(fileId));
-        return stillUsed ? prevFiles : prevFiles.filter((f) => f.id !== fileId);
+        const used = new Set(useWindowLayoutStore.getState().panes.flatMap((p) => p.tabIds));
+        return used.has(fileId) ? prevFiles : prevFiles.filter((f) => f.id !== fileId);
       });
-
-      // Keep focus on existing group.
-      if (!nextGroups.some((g) => g.id === focusedGroupId)) {
-        setFocusedGroupId(nextGroups[0]?.id ?? 'g-0');
-      }
-      return nextGroups;
-    });
-  }, [focusedGroupId]);
+    },
+    [closeTabInLayout]
+  );
 
   const startResize = useCallback(
-    (index: number, startClientX: number) => {
-      const container = groupRowRef.current;
-      if (!container) return;
-      const left = groups[index];
-      const right = groups[index + 1];
+    (leftPaneId: string, rightPaneId: string, startClientX: number) => {
+      const leftEl = paneRootRefs.current.get(leftPaneId);
+      const rightEl = paneRootRefs.current.get(rightPaneId);
+      if (!leftEl || !rightEl) return;
+      const state = useWindowLayoutStore.getState();
+      const left = state.panes.find((p) => p.id === leftPaneId) ?? null;
+      const right = state.panes.find((p) => p.id === rightPaneId) ?? null;
       if (!left || !right) return;
-      const rect = container.getBoundingClientRect();
+      const leftRect = leftEl.getBoundingClientRect();
+      const rightRect = rightEl.getBoundingClientRect();
+      const totalWidth = leftRect.width + rightRect.width;
+      if (!Number.isFinite(totalWidth) || totalWidth <= 0) return;
+      const startLeftWidth = leftRect.width;
+      const groupWeight = (left.weight || 1) + (right.weight || 1);
+      const prevUserSelect = document.body.style.userSelect;
+      const prevCursor = document.body.style.cursor;
+      document.body.style.userSelect = 'none';
+      document.body.style.cursor = 'col-resize';
       resizeRef.current = {
         dragging: true,
-        index,
+        leftPaneId,
+        rightPaneId,
         startX: startClientX,
-        startLeft: left.weight || 1,
-        startRight: right.weight || 1,
-        containerWidth: rect.width || 1,
+        startLeftWidth,
+        totalWidth,
+        groupWeight,
+        prevUserSelect,
+        prevCursor,
       };
     },
-    [groups]
+    []
   );
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
       if (!resizeRef.current?.dragging) return;
-      const { index, startX, startLeft, startRight, containerWidth } = resizeRef.current;
+      const { leftPaneId, rightPaneId, startX, startLeftWidth, totalWidth, groupWeight } = resizeRef.current;
       const dx = e.clientX - startX;
-      const delta = dx / containerWidth;
-      const min = 0.1;
-      let leftW = startLeft + delta;
-      let rightW = startRight - delta;
-      if (leftW < min) {
-        rightW -= min - leftW;
-        leftW = min;
-      }
-      if (rightW < min) {
-        leftW -= min - rightW;
-        rightW = min;
-      }
-      setGroups((prev) => {
-        if (!prev[index] || !prev[index + 1]) return prev;
-        const out = [...prev];
-        out[index] = { ...out[index]!, weight: leftW };
-        out[index + 1] = { ...out[index + 1]!, weight: rightW };
-        return normalizeGroupWeights(out);
-      });
+
+      const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
+      const ratio = clamp((startLeftWidth + dx) / totalWidth, 0.2, 0.8);
+      const leftW = groupWeight * ratio;
+      const rightW = groupWeight - leftW;
+
+      setPaneWeights([
+        { paneId: leftPaneId, weight: leftW },
+        { paneId: rightPaneId, weight: rightW },
+      ]);
     };
     const onUp = () => {
       if (!resizeRef.current) return;
-      resizeRef.current.dragging = false;
+      document.body.style.userSelect = resizeRef.current.prevUserSelect;
+      document.body.style.cursor = resizeRef.current.prevCursor;
+      useWindowLayoutStore.getState().saveLayout();
       resizeRef.current = null;
     };
     window.addEventListener('mousemove', onMove);
@@ -1255,7 +1270,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
     };
-  }, []);
+  }, [setPaneWeights]);
 
   const saveFile = useCallback(
     async (fileId: string, editor: import('monaco-editor').editor.IStandaloneCodeEditor | null) => {
@@ -1324,15 +1339,15 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
             );
           });
 
-          setGroups((prev) =>
-            prev.map((g) => {
-              const replaced = g.openFileIds.map((id) => (id === file.id ? normalizedPath : id));
-              const deduped = Array.from(new Set(replaced));
-              const active = g.activeFileId === file.id ? normalizedPath : g.activeFileId;
-              const nextActive = active && deduped.includes(active) ? active : deduped[0] ?? null;
-              return { ...g, openFileIds: deduped, activeFileId: nextActive };
-            })
-          );
+          const layout = useWindowLayoutStore.getState();
+          const nextPanes = layout.panes.map((p) => {
+            const replaced = p.tabIds.map((id) => (id === file.id ? normalizedPath : id));
+            const deduped = Array.from(new Set(replaced));
+            const active = p.activeTabId === file.id ? normalizedPath : p.activeTabId;
+            const nextActive = active && deduped.includes(active) ? active : deduped[0] ?? null;
+            return { ...p, tabIds: deduped, activeTabId: nextActive };
+          });
+          layout.replaceLayout({ panes: nextPanes, focusedPaneId: layout.focusedPaneId });
 
           return;
         }
@@ -1370,14 +1385,8 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     };
 
     setOpenFiles((prev) => (prev.some((f) => f.id === id) ? prev : [...prev, next]));
-    setGroups((prev) =>
-      prev.map((g) => {
-        if (g.id !== focusedGroupId) return g;
-        const openFileIds = g.openFileIds.includes(id) ? g.openFileIds : [...g.openFileIds, id];
-        return { ...g, openFileIds, activeFileId: id };
-      })
-    );
-  }, [focusedGroupId]);
+    useWindowLayoutStore.getState().openTabInFocusedPane(id);
+  }, []);
 
   const connectTerminal = useCallback(async () => {
     if (!terminalScope) return;
@@ -1391,18 +1400,18 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     terminalSurfaceRef.current?.reset();
   }, [terminalScope]);
 
-  const handleEditorMountForGroup = useCallback(
-    (groupId: string): OnMount =>
+  const handleEditorMountForPane = useCallback(
+    (paneId: string): OnMount =>
       (editor, monaco) => {
         setupMonaco(monaco);
-        editorByGroupRef.current.set(groupId, editor);
+        editorByPaneRef.current.set(paneId, editor);
 
         editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
-          const fileId = groupsRef.current.find((g) => g.id === groupId)?.activeFileId ?? null;
+          const fileId = useWindowLayoutStore.getState().panes.find((p) => p.id === paneId)?.activeTabId ?? null;
           if (!fileId) return;
           void saveFile(fileId, editor);
         });
-        editor.onDidFocusEditorWidget(() => setFocusedGroupId(groupId));
+        editor.onDidFocusEditorWidget(() => useWindowLayoutStore.getState().setFocusedPane(paneId));
       },
     [saveFile]
   );
@@ -1413,136 +1422,26 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
 
-  const moveTab = useCallback(
-    (fromGroupId: string, toGroupId: string, fileId: string, toIndex?: number) => {
-      setGroups((prev) => {
-        const fromIdx = prev.findIndex((g) => g.id === fromGroupId);
-        const toIdx = prev.findIndex((g) => g.id === toGroupId);
-        if (fromIdx < 0 || toIdx < 0) return prev;
-        const from = prev[fromIdx]!;
-        const to = prev[toIdx]!;
-        const nextFromIds = from.openFileIds.filter((id) => id !== fileId);
-        const nextToIds = to.openFileIds.includes(fileId)
-          ? to.openFileIds
-          : (() => {
-              const insertAt = typeof toIndex === 'number' ? Math.max(0, Math.min(toIndex, to.openFileIds.length)) : to.openFileIds.length;
-              const out = [...to.openFileIds];
-              out.splice(insertAt, 0, fileId);
-              return out;
-            })();
-        const nextFromActive = from.activeFileId === fileId ? nextFromIds[0] ?? null : from.activeFileId;
-        const nextToActive = fileId;
-        let out = [...prev];
-        out[fromIdx] = { ...from, openFileIds: nextFromIds, activeFileId: nextFromActive };
-        out[toIdx] = { ...to, openFileIds: nextToIds, activeFileId: nextToActive };
-
-        // Auto-close empty groups (except keep one).
-        const removedWeight =
-          out[fromIdx]?.openFileIds.length === 0 && out.length > 1 ? out[fromIdx]!.weight || 1 : 0;
-        const removedIndex = fromIdx;
-        out = pruneEmptyGroups(out);
-        if (removedWeight > 0 && out.length < prev.length) {
-          out = redistributeWeightOnRemove(out, removedIndex, removedWeight);
-        }
-        out = normalizeGroupWeights(out);
-        return out;
-      });
-      setFocusedGroupId(toGroupId);
+  const registerPaneRootRef = useCallback(
+    (paneId: string) => (el: HTMLDivElement | null) => {
+      const map = paneRootRefs.current;
+      if (el) map.set(paneId, el);
+      else map.delete(paneId);
     },
     []
   );
 
-  const registerGroupRootRef = useCallback(
-    (groupId: string) => (el: HTMLDivElement | null) => {
-      const map = groupRootRefs.current;
-      if (el) map.set(groupId, el);
-      else map.delete(groupId);
-    },
-    []
-  );
-
-  const registerGroupBodyRef = useCallback(
-    (groupId: string) => (el: HTMLDivElement | null) => {
-      const map = groupBodyRefs.current;
-      if (el) map.set(groupId, el);
-      else map.delete(groupId);
-    },
-    []
-  );
-
-  const splitTabToNewGroup = useCallback(
-    (args: { fromGroupId: string; fileId: string; targetGroupId: string; direction: 'left' | 'right' }) => {
-      const newId = `g-${crypto.randomUUID()}`;
-
-      setGroups((prev) => {
-        if (prev.length === 0) return prev;
-
-        let out: EditorGroup[] = prev.map((g) => ({
-          ...g,
-          openFileIds: [...g.openFileIds],
-        }));
-
-        const sourceIdx = out.findIndex((g) => g.id === args.fromGroupId);
-        const targetIdxBefore = out.findIndex((g) => g.id === args.targetGroupId);
-        if (targetIdxBefore < 0) return prev;
-
-        const source = sourceIdx >= 0 ? out[sourceIdx] : undefined;
-        // VS Code-like：如果从同一个组把“最后一个 tab”拖到边缘进行分屏，直接复制而不是移走，
-        // 否则会出现空组/分屏立刻被折叠的糟糕体验。
-        const shouldDuplicate =
-          args.fromGroupId === args.targetGroupId &&
-          source !== undefined &&
-          source.openFileIds.length === 1 &&
-          source.openFileIds[0] === args.fileId;
-
-        if (!shouldDuplicate && sourceIdx >= 0) {
-          const g = out[sourceIdx]!;
-          const nextIds = g.openFileIds.filter((id) => id !== args.fileId);
-          const nextActive = g.activeFileId === args.fileId ? nextIds[0] ?? null : g.activeFileId;
-          out[sourceIdx] = { ...g, openFileIds: nextIds, activeFileId: nextActive };
-
-          const removedWeight =
-            out[sourceIdx]!.openFileIds.length === 0 && out.length > 1 ? out[sourceIdx]!.weight || 1 : 0;
-          const removedIndex = sourceIdx;
-          out = pruneEmptyGroups(out);
-          if (removedWeight > 0 && out.length < prev.length) {
-            out = redistributeWeightOnRemove(out, removedIndex, removedWeight);
-          }
-        }
-
-        const targetIdx = out.findIndex((g) => g.id === args.targetGroupId);
-        if (targetIdx < 0) return normalizeGroupWeights(out);
-
-        const target = out[targetIdx]!;
-        const targetWeight = Number.isFinite(target.weight) && target.weight > 0 ? target.weight : 1;
-        const leftWeight = targetWeight / 2;
-        const rightWeight = targetWeight - leftWeight;
-
-        const newGroup: EditorGroup = {
-          id: newId,
-          openFileIds: [args.fileId],
-          activeFileId: args.fileId,
-          weight: args.direction === 'left' ? leftWeight : rightWeight,
-        };
-
-        out[targetIdx] = {
-          ...target,
-          weight: args.direction === 'left' ? rightWeight : leftWeight,
-        };
-
-        const insertAt = args.direction === 'left' ? targetIdx : targetIdx + 1;
-        const next = [...out];
-        next.splice(insertAt, 0, newGroup);
-        return normalizeGroupWeights(next);
-      });
-
-      setFocusedGroupId(newId);
+  const registerPaneBodyRef = useCallback(
+    (paneId: string) => (el: HTMLDivElement | null) => {
+      const map = paneBodyRefs.current;
+      if (el) map.set(paneId, el);
+      else map.delete(paneId);
     },
     []
   );
 
   type SplitPreview = {
-    groupId: string;
+    paneId: string;
     direction: 'left' | 'right';
     rect: { left: number; top: number; width: number; height: number };
   };
@@ -1568,6 +1467,20 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     return () => window.removeEventListener('keydown', onKeyDown, true);
   }, [activeDragTabId]);
 
+  const tabToPaneId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const p of resolvedPanes) {
+      for (const tid of p.tabIds) map.set(tid, p.id);
+    }
+    return map;
+  }, [resolvedPanes]);
+
+  const paneById = useMemo(() => {
+    const map = new Map<string, WindowPane>();
+    for (const p of resolvedPanes) map.set(p.id, p);
+    return map;
+  }, [resolvedPanes]);
+
   const isCursorOutsideCurrentWindow = useCallback(async (thresholdPx: number): Promise<boolean> => {
     try {
       const [cursor, pos, size] = await Promise.all([
@@ -1587,14 +1500,13 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   }, []);
 
   const tearOffTabToNewWindow = useCallback(
-    (tabId: string) => {
-      const parsed = parseTabKey(tabId);
-      if (!parsed) return;
+    (fileId: string) => {
+      const normalized = normalizeFsPath(fileId);
+      if (!normalized) return;
       if (!workstudioId) return;
 
-      const fileId = parsed.fileId;
-      const file = openFilesRef.current.find((f) => f.id === fileId) ?? null;
-      const title = file?.title || basename(fileId) || 'Workstudio';
+      const file = openFilesRef.current.find((f) => f.id === normalized) ?? null;
+      const title = file?.title || basename(normalized) || 'Workstudio';
 
       void (async () => {
         try {
@@ -1623,13 +1535,13 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
             label,
             workstudioId,
             noDefaultSession: true,
-            filePath: fileId,
+            filePath: normalized,
             window: bounds,
           });
 
           win.once('tauri://created', () => {
             void win.setFocus().catch(() => {});
-            closeFileInGroup(parsed.groupId, parsed.fileId);
+            closeFileTab(normalized);
           });
           win.once('tauri://error', (err) => {
             console.error('Failed to tear off workstudio tab:', (err as any)?.payload ?? err);
@@ -1641,26 +1553,26 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         }
       })();
     },
-    [closeFileInGroup, workstudioId]
+    [closeFileTab, workstudioId]
   );
 
   const computeSplitPreview = useCallback((point: { x: number; y: number }): SplitPreview | null => {
-    for (const [groupId, el] of groupBodyRefs.current) {
+    for (const [paneId, el] of paneBodyRefs.current) {
       const rect = el.getBoundingClientRect();
       if (point.x < rect.left || point.x > rect.right) continue;
       if (point.y < rect.top || point.y > rect.bottom) continue;
 
-      const edge = rect.width * 0.25;
-      if (rect.width > 160 && point.x <= rect.left + edge) {
+      const edge = Math.max(56, Math.min(140, Math.round(rect.width * 0.18)));
+      if (rect.width > 0 && point.x <= rect.left + edge) {
         return {
-          groupId,
+          paneId,
           direction: 'left',
           rect: { left: rect.left, top: rect.top, width: rect.width / 2, height: rect.height },
         };
       }
-      if (rect.width > 160 && point.x >= rect.right - edge) {
+      if (rect.width > 0 && point.x >= rect.right - edge) {
         return {
-          groupId,
+          paneId,
           direction: 'right',
           rect: { left: rect.left + rect.width / 2, top: rect.top, width: rect.width / 2, height: rect.height },
         };
@@ -1675,12 +1587,8 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     setSplitPreview(null);
     dragCancelledByEscapeRef.current = false;
 
-    const parsed = parseTabKey(activeId);
-    const title = (() => {
-      if (!parsed) return basename(activeId) || '文件';
-      const file = openFilesRef.current.find((f) => f.id === parsed.fileId) ?? null;
-      return file?.title || basename(parsed.fileId) || '文件';
-    })();
+    const file = openFilesRef.current.find((f) => f.id === activeId) ?? null;
+    const title = file?.title || basename(activeId) || '文件';
     startDragGhost(title);
 
     const ev = e.activatorEvent as MouseEvent | PointerEvent | TouchEvent | null;
@@ -1704,7 +1612,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       setSplitPreview((prev) => {
         if (!next && !prev) return prev;
         if (!next) return null;
-        if (prev && prev.groupId === next.groupId && prev.direction === next.direction) return prev;
+        if (prev && prev.paneId === next.paneId && prev.direction === next.direction) return prev;
         return next;
       });
     },
@@ -1722,15 +1630,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
       const preview = point ? computeSplitPreview(point) : null;
       if (preview) {
-        const a = parseTabKey(active);
-        if (a) {
-          splitTabToNewGroup({
-            fromGroupId: a.groupId,
-            fileId: a.fileId,
-            targetGroupId: preview.groupId,
-            direction: preview.direction,
-          });
-        }
+        splitTabToNewPane(active, preview.direction, preview.paneId);
         setActiveDragTabId(null);
         setSplitPreview(null);
         stopDragGhost();
@@ -1766,47 +1666,37 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           return;
         }
 
-        const a = parseTabKey(active);
-        if (!a || !over) {
+        if (!over) return;
+
+        if (over.startsWith('pane:')) {
+          const toPaneId = over.slice('pane:'.length);
+          moveTabToPane(active, toPaneId);
           return;
         }
 
-      if (over.startsWith('tab:')) {
-        const b = parseTabKey(over);
-        if (!b) {
-          return;
-        }
-        if (a.groupId === b.groupId) {
-          setGroups((prev) =>
-            prev.map((g) => {
-              if (g.id !== a.groupId) return g;
-              const oldIndex = g.openFileIds.indexOf(a.fileId);
-              const newIndex = g.openFileIds.indexOf(b.fileId);
-              if (oldIndex < 0 || newIndex < 0) return g;
-              return { ...g, openFileIds: arrayMove(g.openFileIds, oldIndex, newIndex) };
-            })
-          );
+        const toPaneId = tabToPaneId.get(over) ?? null;
+        if (!toPaneId) return;
+
+        const fromPaneId = tabToPaneId.get(active) ?? null;
+        if (fromPaneId && fromPaneId === toPaneId) {
+          reorderTabInPane(toPaneId, active, over);
           return;
         }
 
-        const toIndex = groupsRef.current.find((g) => g.id === b.groupId)?.openFileIds.indexOf(b.fileId);
-        moveTab(a.groupId, b.groupId, a.fileId, typeof toIndex === 'number' && toIndex >= 0 ? toIndex : undefined);
-        return;
-      }
-
-      if (over.startsWith('drop:')) {
-        const toGroupId = over.slice('drop:'.length);
-        if (toGroupId) moveTab(a.groupId, toGroupId, a.fileId);
-        return;
-      }
+        const targetPane = paneById.get(toPaneId);
+        const index = targetPane ? targetPane.tabIds.indexOf(over) : -1;
+        moveTabToPane(active, toPaneId, index >= 0 ? index : undefined);
       })();
     },
     [
       computeSplitPreview,
       isCursorOutsideCurrentWindow,
-      moveTab,
-      splitTabToNewGroup,
+      moveTabToPane,
+      paneById,
+      reorderTabInPane,
+      splitTabToNewPane,
       stopDragGhost,
+      tabToPaneId,
       tearOffTabToNewWindow,
     ]
   );
@@ -1831,15 +1721,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
         const preview = point ? computeSplitPreview(point) : null;
         if (preview) {
-          const a = parseTabKey(active);
-          if (a) {
-            splitTabToNewGroup({
-              fromGroupId: a.groupId,
-              fileId: a.fileId,
-              targetGroupId: preview.groupId,
-              direction: preview.direction,
-            });
-          }
+          splitTabToNewPane(active, preview.direction, preview.paneId);
           return;
         }
 
@@ -1858,7 +1740,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     [
       computeSplitPreview,
       isCursorOutsideCurrentWindow,
-      splitTabToNewGroup,
+      splitTabToNewPane,
       stopDragGhost,
       tearOffTabToNewWindow,
     ]
@@ -1971,6 +1853,18 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   useEffect(() => {
     if (!ws) return;
     setUiStateRestored(false);
+    setOpenFiles([]);
+    replaceLayout({
+      panes: [
+        {
+          id: fallbackPaneIdRef.current,
+          tabIds: [],
+          activeTabId: null,
+          weight: 1,
+        },
+      ],
+      focusedPaneId: fallbackPaneIdRef.current,
+    });
     let cancelled = false;
     (async () => {
       try {
@@ -1983,13 +1877,38 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         const legacyPaths = Array.isArray(state.openFiles)
           ? state.openFiles.map((p) => normalizeFsPath(String(p))).filter((p) => Boolean(p))
           : [];
+
+        const panesFromState = Array.isArray(state.panes) ? state.panes : [];
+        const panePaths = panesFromState
+          .flatMap((p) => (Array.isArray(p.tabIds) ? p.tabIds : []))
+          .map((p) => normalizeFsPath(String(p)))
+          .filter((p) => Boolean(p));
+
         const groupsFromState = Array.isArray(state.groups) ? state.groups : [];
         const groupPaths = groupsFromState
           .flatMap((g) => (Array.isArray(g.openFiles) ? g.openFiles : []))
           .map((p) => normalizeFsPath(String(p)))
           .filter((p) => Boolean(p));
-        const paths = groupsFromState.length ? Array.from(new Set(groupPaths)) : legacyPaths;
-        if (paths.length === 0) return;
+
+        const paths = panesFromState.length
+          ? Array.from(new Set(panePaths))
+          : groupsFromState.length
+            ? Array.from(new Set(groupPaths))
+            : legacyPaths;
+        if (paths.length === 0) {
+          replaceLayout({
+            panes: [
+              {
+                id: fallbackPaneIdRef.current,
+                tabIds: [],
+                activeTabId: null,
+                weight: 1,
+              },
+            ],
+            focusedPaneId: fallbackPaneIdRef.current,
+          });
+          return;
+        }
 
         const results = await Promise.all(
           paths.map(async (path) => {
@@ -2025,56 +1944,103 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         const files = results.filter((v): v is OpenFile => Boolean(v));
         if (files.length === 0) return;
 
-        setOpenFiles((prev) => {
-          const byId = new Map(prev.map((f) => [f.id, f] as const));
-          for (const f of files) {
-            if (!byId.has(f.id)) byId.set(f.id, f);
+        setOpenFiles(files);
+
+        const fileIdSet = new Set(files.map((f) => f.id));
+        const assigned = new Set<string>();
+        const appendUnique = (ids: string[]) => {
+          const out: string[] = [];
+          for (const id of ids) {
+            if (!fileIdSet.has(id)) continue;
+            if (assigned.has(id)) continue;
+            assigned.add(id);
+            out.push(id);
           }
-          return Array.from(byId.values());
-        });
+          return out;
+        };
 
-        if (groupsFromState.length) {
-          const nextGroups: EditorGroup[] = groupsFromState
-            .map((g, idx) => {
-              const openIds = Array.from(
-                new Set(
+        const nextPanes: WindowPane[] = (() => {
+          if (panesFromState.length) {
+            return panesFromState
+              .map((p, idx) => {
+                const id = typeof p.id === 'string' && p.id.trim() ? p.id.trim() : `p-${idx}`;
+                const tabIds = appendUnique(
+                  (Array.isArray(p.tabIds) ? p.tabIds : [])
+                    .map((v) => normalizeFsPath(String(v)))
+                    .filter((v) => Boolean(v))
+                );
+                const rawActive = typeof p.activeTabId === 'string' ? normalizeFsPath(p.activeTabId) : null;
+                const activeTabId = rawActive && tabIds.includes(rawActive) ? rawActive : tabIds[0] ?? null;
+                const weight = typeof p.weight === 'number' && Number.isFinite(p.weight) ? p.weight : 1;
+                return { id, tabIds, activeTabId, weight };
+              })
+              .filter((p) => p.tabIds.length > 0);
+          }
+
+          if (groupsFromState.length) {
+            return groupsFromState
+              .map((g, idx) => {
+                const id = `p-${idx}`;
+                const tabIds = appendUnique(
                   (Array.isArray(g.openFiles) ? g.openFiles : [])
-                    .map((p) => normalizeFsPath(String(p)))
-                    .filter((p) => Boolean(p))
-                    .filter((p) => files.some((f) => f.id === p))
-                )
-              );
-              const activeFromState = typeof g.activeFile === 'string' ? normalizeFsPath(g.activeFile) : null;
-              const active = activeFromState && openIds.includes(activeFromState) ? activeFromState : openIds[0] ?? null;
-              const weight = typeof g.weight === 'number' && Number.isFinite(g.weight) ? g.weight : 1;
-              return { id: `g-${idx}`, openFileIds: openIds, activeFileId: active, weight };
-            })
-            .filter((g) => g.openFileIds.length > 0);
+                    .map((v) => normalizeFsPath(String(v)))
+                    .filter((v) => Boolean(v))
+                );
+                const rawActive = typeof g.activeFile === 'string' ? normalizeFsPath(g.activeFile) : null;
+                const activeTabId = rawActive && tabIds.includes(rawActive) ? rawActive : tabIds[0] ?? null;
+                const weight = typeof g.weight === 'number' && Number.isFinite(g.weight) ? g.weight : 1;
+                return { id, tabIds, activeTabId, weight };
+              })
+              .filter((p) => p.tabIds.length > 0);
+          }
 
-          if (nextGroups.length) {
-            setGroups(normalizeGroupWeights(nextGroups));
-            const idx = typeof state.focusedGroupIndex === 'number' ? state.focusedGroupIndex : 0;
-            setFocusedGroupId(nextGroups[Math.min(Math.max(0, idx), nextGroups.length - 1)]!.id);
-          } else {
-          setGroups([{ id: 'g-0', openFileIds: files.map((f) => f.id), activeFileId: files[0].id, weight: 1 }]);
-          setFocusedGroupId('g-0');
-        }
-      } else if (state.splitOpen && (state.activeRightFile || state.activeLeftFile)) {
-        const openIds = files.map((f) => f.id);
-        const leftFromState = typeof state.activeLeftFile === 'string' ? normalizeFsPath(state.activeLeftFile) : null;
-        const rightFromState = typeof state.activeRightFile === 'string' ? normalizeFsPath(state.activeRightFile) : null;
-        const leftActive = leftFromState && openIds.includes(leftFromState) ? leftFromState : openIds[0] ?? null;
-        const rightActive = rightFromState && openIds.includes(rightFromState) ? rightFromState : openIds[0] ?? null;
-        setGroups([
-          { id: 'g-0', openFileIds: openIds, activeFileId: leftActive, weight: 1 },
-          { id: 'g-1', openFileIds: openIds, activeFileId: rightActive, weight: 1 },
-        ]);
-        setFocusedGroupId('g-0');
-      } else {
-        const leftFromState = typeof state.activeLeftFile === 'string' ? normalizeFsPath(state.activeLeftFile) : null;
-        setGroups([{ id: 'g-0', openFileIds: files.map((f) => f.id), activeFileId: leftFromState ?? files[0].id, weight: 1 }]);
-        setFocusedGroupId('g-0');
-      }
+          if (state.splitOpen && (state.activeRightFile || state.activeLeftFile)) {
+            const leftFromState = typeof state.activeLeftFile === 'string' ? normalizeFsPath(state.activeLeftFile) : null;
+            const rightFromState = typeof state.activeRightFile === 'string' ? normalizeFsPath(state.activeRightFile) : null;
+            const left = leftFromState && fileIdSet.has(leftFromState) ? leftFromState : files[0]!.id;
+            const right = rightFromState && fileIdSet.has(rightFromState) ? rightFromState : files[0]!.id;
+            const leftIds = appendUnique([left]);
+            const rightIds = appendUnique(right && right !== left ? [right] : []);
+            const out: WindowPane[] = [];
+            if (leftIds.length) out.push({ id: 'p-0', tabIds: leftIds, activeTabId: leftIds[0] ?? null, weight: 1 });
+            if (rightIds.length) out.push({ id: 'p-1', tabIds: rightIds, activeTabId: rightIds[0] ?? null, weight: 1 });
+            return out;
+          }
+
+          const all = appendUnique(files.map((f) => f.id));
+          return [
+            {
+              id: 'p-0',
+              tabIds: all,
+              activeTabId: all[0] ?? null,
+              weight: 1,
+            },
+          ];
+        })();
+
+        const focused = (() => {
+          const fromState = typeof state.focusedPaneId === 'string' ? state.focusedPaneId : null;
+          if (fromState && nextPanes.some((p) => p.id === fromState)) return fromState;
+          if (typeof state.focusedGroupIndex === 'number') {
+            const idx = Math.max(0, Math.min(nextPanes.length - 1, state.focusedGroupIndex));
+            return nextPanes[idx]?.id ?? nextPanes[0]?.id ?? null;
+          }
+          return nextPanes[0]?.id ?? null;
+        })();
+
+        replaceLayout({
+          panes: nextPanes.length
+            ? nextPanes
+            : [
+                {
+                  id: fallbackPaneIdRef.current,
+                  tabIds: [],
+                  activeTabId: null,
+                  weight: 1,
+                },
+              ],
+          focusedPaneId: focused ?? fallbackPaneIdRef.current,
+        });
 
         if (Array.isArray(state.expandedDirs) && state.expandedDirs.length) {
           const nextExpanded = new Set(state.expandedDirs);
@@ -2092,7 +2058,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     return () => {
       cancelled = true;
     };
-  }, [ws]);
+  }, [replaceLayout, ws]);
 
   useEffect(() => {
     if (!ws) return;
@@ -2101,12 +2067,15 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       const persistedOpenFiles = openFiles.filter((f) => !isUntitledPath(f.path));
       const state: WorkstudioUiState = {
         openFiles: Array.from(new Set(persistedOpenFiles.map((f) => f.path))),
-        groups: groups.map((g) => ({
-          openFiles: Array.from(new Set(g.openFileIds.filter((id) => !isUntitledPath(id)))),
-          activeFile: g.activeFileId && !isUntitledPath(g.activeFileId) ? g.activeFileId : undefined,
-          weight: g.weight,
-        })),
-        focusedGroupIndex: Math.max(0, groups.findIndex((g) => g.id === focusedGroupId)),
+        panes: resolvedPanes
+          .map((p) => ({
+            id: p.id,
+            tabIds: Array.from(new Set(p.tabIds.filter((id) => !isUntitledPath(id)))),
+            activeTabId: p.activeTabId && !isUntitledPath(p.activeTabId) ? p.activeTabId : undefined,
+            weight: p.weight,
+          }))
+          .filter((p) => p.tabIds.length > 0),
+        focusedPaneId: resolvedFocusedPaneId ?? undefined,
         expandedDirs: Array.from(expandedDirs),
       };
       void invoke('set_workstudio_ui_state', { workstudioId: ws.id, state }).catch(() => {});
@@ -2114,7 +2083,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     return () => {
       if (saveStateTimerRef.current) window.clearTimeout(saveStateTimerRef.current);
     };
-  }, [ws, openFiles, groups, focusedGroupId, expandedDirs]);
+  }, [ws, openFiles, resolvedPanes, resolvedFocusedPaneId, expandedDirs]);
 
   useEffect(() => {
     if (!ws) return;
@@ -2308,7 +2277,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-gray-50 dark:bg-gray-900">
-      <div className="flex flex-1 overflow-hidden">
+	      <div className="flex flex-1 overflow-hidden">
         <div className="flex w-[280px] flex-shrink-0 flex-col border-r border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-950">
           <div className="flex items-center justify-between border-b border-gray-200 px-3 py-2 dark:border-gray-800">
             <div className="min-w-0">
@@ -2339,12 +2308,12 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           </div>
         </div>
 
-        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+	        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
 	          <div className="flex items-center justify-between border-b border-gray-200 bg-white px-3 py-2 dark:border-gray-800 dark:bg-gray-950">
 	            <div className="min-w-0 text-xs text-gray-600 dark:text-gray-300">
-	              编辑组: {groups.length}{' '}
+	              窗格: {resolvedPanes.length}{' '}
 	              <span className="text-gray-400">
-	                （聚焦 {Math.max(1, groups.findIndex((g) => g.id === focusedGroupId) + 1)}）
+	                （聚焦 {Math.max(1, resolvedPanes.findIndex((p) => p.id === resolvedFocusedPaneId) + 1)}）
 	              </span>
 	            </div>
 	            <div className="flex items-center gap-2">
@@ -2369,255 +2338,215 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	            </div>
 	          )}
 
-          <DndContext
-            sensors={sensors}
-            collisionDetection={closestCenter}
-            onDragStart={handleDragStart}
-            onDragMove={handleDragMove}
-            onDragEnd={handleDragEnd}
-            onDragCancel={handleDragCancel}
-          >
-            <div ref={groupRowRef} className="flex min-h-0 flex-1 flex-row overflow-hidden">
-            {groups.map((group, idx) => {
-              const groupActive = group.activeFileId
-                ? openFiles.find((f) => f.id === group.activeFileId) ?? null
-                : null;
-              const isFocused = group.id === focusedGroupId;
-              const sortableItems = group.openFileIds.map((fileId) => tabKey(group.id, fileId));
-              return (
-                <React.Fragment key={group.id}>
-                  {idx > 0 && (
-                    <div
-                      className="w-1 cursor-col-resize bg-transparent hover:bg-blue-200/60 dark:hover:bg-blue-900/40"
-                      onMouseDown={(e) => startResize(idx - 1, e.clientX)}
-                      title="拖拽调整分屏比例"
-                    />
-                  )}
-                  <div
-                    ref={registerGroupRootRef(group.id)}
-                    className={[
-                      'flex min-w-0 flex-col overflow-hidden',
-                      isFocused ? 'bg-blue-50/30 dark:bg-blue-950/10' : '',
-                    ].join(' ')}
-                    style={{ flexGrow: group.weight, flexBasis: 0 }}
-                    onMouseDown={() => setFocusedGroupId(group.id)}
-                  >
-                    <GroupDropZone groupId={group.id}>
-                      <div
-                        className="flex items-center gap-1 overflow-x-auto border-b border-gray-200 bg-white px-2 py-1 dark:border-gray-800 dark:bg-gray-950"
-                      >
-                        <SortableContext items={sortableItems} strategy={horizontalListSortingStrategy}>
-                          {group.openFileIds.length === 0 ? (
-                            <div className="px-2 py-1 text-xs text-gray-400">未打开文件</div>
-                          ) : (
-                            group.openFileIds.map((fileId) => {
-                              const file = openFiles.find((f) => f.id === fileId);
-                              if (!file) return null;
-                              const active = file.id === group.activeFileId;
-                              const title = `${file.title}${file.dirty ? ' *' : ''}`;
-                              return (
-                                <SortableTab
-                                  key={`${group.id}:${file.id}`}
-                                  id={tabKey(group.id, file.id)}
-                                  active={active}
-                                  title={title}
-                                  onClick={() => {
-                                    setGroups((prev) =>
-                                      prev.map((g) =>
-                                        g.id === group.id ? { ...g, activeFileId: file.id } : g
-                                      )
-                                    );
-                                    setFocusedGroupId(group.id);
-                                  }}
-                                  onClose={() => closeFileInGroup(group.id, file.id)}
-                                  onContextMenu={(e) => {
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                    setTabMenu({ visible: true, x: e.clientX, y: e.clientY, groupId: group.id, fileId: file.id, path: file.path });
-                                  }}
-                                />
-                              );
-                            })
-                          )}
-                        </SortableContext>
+	          <DndContext
+	            sensors={sensors}
+	            collisionDetection={closestCenter}
+	            onDragStart={handleDragStart}
+	            onDragMove={handleDragMove}
+	            onDragEnd={handleDragEnd}
+	            onDragCancel={handleDragCancel}
+	          >
+	            <div ref={paneRowRef} className="flex min-h-0 flex-1 flex-row overflow-hidden">
+	              {resolvedPanes.map((pane, idx) => {
+	                const activeFileId =
+	                  pane.activeTabId && pane.tabIds.includes(pane.activeTabId)
+	                    ? pane.activeTabId
+	                    : pane.tabIds[0] ?? null;
+	                const activeFile = activeFileId ? openFiles.find((f) => f.id === activeFileId) ?? null : null;
+	                const isFocused = pane.id === resolvedFocusedPaneId;
+	                const leftPaneId = idx > 0 ? resolvedPanes[idx - 1]!.id : null;
+	                return (
+	                  <React.Fragment key={pane.id}>
+	                    {idx > 0 && leftPaneId && (
+	                      <div
+	                        className="w-1 cursor-col-resize bg-transparent hover:bg-blue-200/60 dark:hover:bg-blue-900/40"
+	                        onMouseDown={(e) => startResize(leftPaneId, pane.id, e.clientX)}
+	                        title="拖拽调整分屏比例"
+	                      />
+	                    )}
+	                    <div
+	                      ref={registerPaneRootRef(pane.id)}
+	                      className={[
+	                        'flex min-w-0 flex-col overflow-hidden',
+	                        isFocused ? 'bg-blue-50/30 dark:bg-blue-950/10' : '',
+	                      ].join(' ')}
+	                      style={{ flexGrow: pane.weight, flexBasis: 0 }}
+	                      onPointerDownCapture={() => setFocusedPane(pane.id)}
+	                    >
+	                      <PaneDropZone paneId={pane.id}>
+	                        <div className="flex items-center gap-1 overflow-x-auto border-b border-gray-200 bg-white px-2 py-1 dark:border-gray-800 dark:bg-gray-950">
+	                          <SortableContext items={pane.tabIds} strategy={horizontalListSortingStrategy}>
+	                            {pane.tabIds.length === 0 ? (
+	                              <div className="px-2 py-1 text-xs text-gray-400">未打开文件</div>
+	                            ) : (
+	                              pane.tabIds.map((fileId) => {
+	                                const file = openFiles.find((f) => f.id === fileId);
+	                                if (!file) return null;
+	                                const active = file.id === activeFileId;
+	                                const title = `${file.title}${file.dirty ? ' *' : ''}`;
+	                                return (
+	                                  <SortableTab
+	                                    key={`${pane.id}:${file.id}`}
+	                                    id={file.id}
+	                                    active={active}
+	                                    title={title}
+	                                    onClick={() => setActiveTabInPane(pane.id, file.id)}
+	                                    onClose={() => closeFileTab(file.id)}
+	                                    onContextMenu={(e) => {
+	                                      e.preventDefault();
+	                                      e.stopPropagation();
+	                                      setTabMenu({
+	                                        visible: true,
+	                                        x: e.clientX,
+	                                        y: e.clientY,
+	                                        paneId: pane.id,
+	                                        fileId: file.id,
+	                                        path: file.path,
+	                                      });
+	                                    }}
+	                                  />
+	                                );
+	                              })
+	                            )}
+	                          </SortableContext>
 
-                        <div className="ml-auto flex items-center gap-2 px-1">
-                      <button
-                        type="button"
-                        disabled={groups.length <= 1}
-                        className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 disabled:opacity-60 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-                        onClick={() => {
-                          setGroups((prev) => {
-                            const removedIndex = prev.findIndex((g) => g.id === group.id);
-                            if (removedIndex < 0) return prev;
+	                          <div className="ml-auto flex items-center gap-2 px-1">
+	                            <button
+	                              type="button"
+	                              disabled={resolvedPanes.length <= 1}
+	                              className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 disabled:opacity-60 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+	                              onClick={() => closePaneAndMerge(pane.id)}
+	                              title="关闭窗格"
+	                            >
+	                              关闭窗格
+	                            </button>
+	                          </div>
+	                        </div>
 
-                            const removedWeight = prev[removedIndex]?.weight || 1;
-                            let nextGroups = prev.filter((g) => g.id !== group.id);
-                            if (!nextGroups.length) {
-                              nextGroups = [
-                                { id: 'g-0', openFileIds: [], activeFileId: null, weight: 1 },
-                              ];
-                            } else {
-                              nextGroups = redistributeWeightOnRemove(
-                                nextGroups,
-                                removedIndex,
-                                removedWeight
-                              );
-                              nextGroups = normalizeGroupWeights(nextGroups);
-                            }
+	                        <div ref={registerPaneBodyRef(pane.id)} className="min-h-0 flex-1">
+	                          {activeFile ? (
+	                            activeFile.kind === 'text' ? (
+	                              <Editor
+	                                path={toMonacoModelPath(activeFile.path)}
+	                                language={languageForPath(activeFile.path)}
+	                                value={activeFile.content ?? ''}
+	                                onMount={handleEditorMountForPane(pane.id)}
+	                                onChange={(value) => {
+	                                  const nextValue = value ?? '';
+	                                  setOpenFiles((prev) =>
+	                                    prev.map((file) =>
+	                                      file.id === activeFile.id
+	                                        ? {
+	                                            ...file,
+	                                            content: nextValue,
+	                                            dirty: nextValue !== (file.originalContent ?? ''),
+	                                          }
+	                                        : file
+	                                    )
+	                                  );
+	                                }}
+	                                theme={editorTheme}
+	                                options={{
+	                                  minimap: { enabled: false },
+	                                  fontSize: 13,
+	                                  fontFamily:
+	                                    'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+	                                  lineNumbers: 'on',
+	                                  wordWrap: 'on',
+	                                  renderWhitespace: 'selection',
+	                                  automaticLayout: true,
+	                                  scrollBeyondLastLine: false,
+	                                }}
+	                              />
+	                            ) : (
+	                              <div className="flex h-full flex-col gap-3 p-4">
+	                                <div className="flex items-center justify-between">
+	                                  <div className="min-w-0">
+	                                    <div className="truncate text-sm font-medium text-gray-800 dark:text-gray-100">
+	                                      {activeFile.title}
+	                                    </div>
+	                                    <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+	                                      {activeFile.kind} · {activeFile.mime} · {activeFile.size} bytes
+	                                    </div>
+	                                  </div>
+	                                  <button
+	                                    type="button"
+	                                    className="rounded border border-gray-200 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+	                                    onClick={() => void openPath(activeFile.path)}
+	                                    title="在系统默认应用中打开"
+	                                  >
+	                                    在系统中打开
+	                                  </button>
+	                                </div>
 
-                            setOpenFiles((prevFiles) => {
-                              const used = new Set(nextGroups.flatMap((g) => g.openFileIds));
-                              return prevFiles.filter((f) => used.has(f.id));
-                            });
+	                                {activeFile.kind === 'image' && activeFile.dataUrl ? (
+	                                  <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-950">
+	                                    <img
+	                                      src={activeFile.dataUrl}
+	                                      alt={activeFile.title}
+	                                      className="max-h-[70vh] max-w-full rounded"
+	                                    />
+	                                  </div>
+	                                ) : activeFile.kind === 'pdf' && activeFile.base64 ? (
+	                                  <div className="min-h-0 flex-1 overflow-hidden rounded-lg border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-950">
+	                                    <iframe
+	                                      title={activeFile.title}
+	                                      className="h-full w-full"
+	                                      src={`data:application/pdf;base64,${activeFile.base64}`}
+	                                    />
+	                                  </div>
+	                                ) : (
+	                                  <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-gray-200 bg-white p-3 text-xs text-gray-700 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-200">
+	                                    <div className="font-medium">二进制预览（前 256 bytes）</div>
+	                                    <div className="mt-2 font-mono break-words">
+	                                      {activeFile.base64
+	                                        ? bytesToHexPreview(decodeBase64ToBytes(activeFile.base64), 256)
+	                                        : '(无数据)'}
+	                                    </div>
+	                                  </div>
+	                                )}
+	                              </div>
+	                            )
+	                          ) : (
+	                            <div className="flex h-full items-center justify-center text-sm text-gray-400">
+	                              在左侧 Explorer 里选择一个文件
+	                            </div>
+	                          )}
+	                        </div>
+	                      </PaneDropZone>
+	                    </div>
+	                  </React.Fragment>
+	                );
+	              })}
+	            </div>
 
-                            const fallback =
-                              nextGroups[Math.min(removedIndex, nextGroups.length - 1)]?.id ??
-                              nextGroups[0]?.id ??
-                              'g-0';
-                            setFocusedGroupId((curr) => {
-                              if (curr === group.id) return fallback;
-                              return nextGroups.some((g) => g.id === curr) ? curr : fallback;
-                            });
+	            <DragOverlay>
+	              {activeDragTabId ? (
+	                <div className="rounded-md border border-gray-200 bg-white px-3 py-2 text-sm text-gray-800 shadow-lg dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100">
+	                  {openFiles.find((f) => f.id === activeDragTabId)?.title ?? basename(activeDragTabId)}
+	                </div>
+	              ) : null}
+	            </DragOverlay>
 
-                            return nextGroups;
-                          });
-                        }}
-                        title="关闭编辑组"
-                      >
-                        关闭组
-                      </button>
-                        </div>
-                      </div>
-                    </GroupDropZone>
+	            {splitPreview && (
+	              <div
+	                className="pointer-events-none fixed z-[240]"
+	                style={{
+	                  left: `${splitPreview.rect.left}px`,
+	                  top: `${splitPreview.rect.top}px`,
+	                  width: `${splitPreview.rect.width}px`,
+	                  height: `${splitPreview.rect.height}px`,
+	                }}
+	              >
+	                <div className="h-full w-full rounded bg-blue-500/10 outline outline-2 outline-blue-500/40" />
+	                <div className="absolute left-2 top-2 rounded bg-blue-600 px-2 py-1 text-xs text-white shadow">
+	                  {splitPreview.direction === 'left' ? '分屏到左侧' : '分屏到右侧'}
+	                </div>
+	              </div>
+	            )}
+	          </DndContext>
 
-                  <div ref={registerGroupBodyRef(group.id)} className="min-h-0 flex-1">
-                    {groupActive ? (
-                      groupActive.kind === 'text' ? (
-                        <Editor
-                          path={toMonacoModelPath(groupActive.path)}
-                          language={languageForPath(groupActive.path)}
-                          value={groupActive.content ?? ''}
-                          onMount={handleEditorMountForGroup(group.id)}
-                          onChange={(value) => {
-                            const nextValue = value ?? '';
-                            setOpenFiles((prev) =>
-                              prev.map((file) =>
-                                file.id === groupActive.id
-                                  ? {
-                                      ...file,
-                                      content: nextValue,
-                                      dirty: nextValue !== (file.originalContent ?? ''),
-                                    }
-                                  : file
-                              )
-                            );
-                          }}
-                          theme={editorTheme}
-                          options={{
-                            minimap: { enabled: false },
-                            fontSize: 13,
-                            fontFamily:
-                              'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
-                            lineNumbers: 'on',
-                            wordWrap: 'on',
-                            renderWhitespace: 'selection',
-                            automaticLayout: true,
-                            scrollBeyondLastLine: false,
-                          }}
-                        />
-                      ) : (
-                        <div className="flex h-full flex-col gap-3 p-4">
-                          <div className="flex items-center justify-between">
-                            <div className="min-w-0">
-                              <div className="truncate text-sm font-medium text-gray-800 dark:text-gray-100">
-                                {groupActive.title}
-                              </div>
-                              <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-                                {groupActive.kind} · {groupActive.mime} · {groupActive.size} bytes
-                              </div>
-                            </div>
-                            <button
-                              type="button"
-                              className="rounded border border-gray-200 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
-                              onClick={() => void openPath(groupActive.path)}
-                              title="在系统默认应用中打开"
-                            >
-                              在系统中打开
-                            </button>
-                          </div>
-
-                          {groupActive.kind === 'image' && groupActive.dataUrl ? (
-                            <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-950">
-                              <img
-                                src={groupActive.dataUrl}
-                                alt={groupActive.title}
-                                className="max-h-[70vh] max-w-full rounded"
-                              />
-                            </div>
-                          ) : groupActive.kind === 'pdf' && groupActive.base64 ? (
-                            <div className="min-h-0 flex-1 overflow-hidden rounded-lg border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-950">
-                              <iframe
-                                title={groupActive.title}
-                                className="h-full w-full"
-                                src={`data:application/pdf;base64,${groupActive.base64}`}
-                              />
-                            </div>
-                          ) : (
-                            <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-gray-200 bg-white p-3 text-xs text-gray-700 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-200">
-                              <div className="font-medium">二进制预览（前 256 bytes）</div>
-                              <div className="mt-2 font-mono break-words">
-                                {groupActive.base64
-                                  ? bytesToHexPreview(decodeBase64ToBytes(groupActive.base64), 256)
-                                  : '(无数据)'}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      )
-                    ) : (
-                      <div className="flex h-full items-center justify-center text-sm text-gray-400">
-                        在左侧 Explorer 里选择一个文件
-                      </div>
-                    )}
-                  </div>
-                  </div>
-                </React.Fragment>
-              );
-            })}
-          </div>
-          <DragOverlay>
-            {activeDragTabId ? (
-              <div className="rounded-md border border-gray-200 bg-white px-3 py-2 text-sm text-gray-800 shadow-lg dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100">
-                {(() => {
-                  const parsed = parseTabKey(activeDragTabId);
-                  if (!parsed) return '文件';
-                  const file = openFiles.find((f) => f.id === parsed.fileId);
-                  return file?.title ?? basename(parsed.fileId);
-                })()}
-              </div>
-            ) : null}
-          </DragOverlay>
-
-          {splitPreview && (
-            <div
-              className="pointer-events-none fixed z-[240]"
-              style={{
-                left: `${splitPreview.rect.left}px`,
-                top: `${splitPreview.rect.top}px`,
-                width: `${splitPreview.rect.width}px`,
-                height: `${splitPreview.rect.height}px`,
-              }}
-            >
-              <div className="h-full w-full rounded bg-blue-500/10 outline outline-2 outline-blue-500/40" />
-              <div className="absolute left-2 top-2 rounded bg-blue-600 px-2 py-1 text-xs text-white shadow">
-                {splitPreview.direction === 'left' ? '分屏到左侧' : '分屏到右侧'}
-              </div>
-            </div>
-          )}
-          </DndContext>
-
-        </div>
+	        </div>
       </div>
 
       {filePaletteOpen && (
@@ -2889,66 +2818,62 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         </div>
       )}
 
-      {tabMenu && (
-        <div
-          className="fixed z-[220] min-w-[220px] rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900"
-          style={{ left: tabMenu.x, top: tabMenu.y }}
-          onMouseDown={(e) => e.stopPropagation()}
-        >
+	      {tabMenu && (
+	        <div
+	          className="fixed z-[220] min-w-[220px] rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900"
+	          style={{ left: tabMenu.x, top: tabMenu.y }}
+	          onMouseDown={(e) => e.stopPropagation()}
+	        >
 	          <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400 truncate" title={tabMenu.path}>
 	            {tabMenu.path}
 	          </div>
 	          <div className="py-1 text-sm">
-            <button
-              type="button"
-              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
-              onClick={() => {
-                const menu = tabMenu;
-                setTabMenu(null);
-                const g = groups.find((x) => x.id === menu.groupId);
-                if (!g) return;
-                for (const fid of g.openFileIds) {
-                  if (fid === menu.fileId) continue;
-                  closeFileInGroup(menu.groupId, fid);
-                }
-              }}
-            >
-              关闭其他
-            </button>
-            <button
-              type="button"
-              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
-              onClick={() => {
-                const menu = tabMenu;
-                setTabMenu(null);
-                const g = groups.find((x) => x.id === menu.groupId);
-                if (!g) return;
-                const idx = g.openFileIds.indexOf(menu.fileId);
-                if (idx <= 0) return;
-                for (const fid of g.openFileIds.slice(0, idx)) {
-                  closeFileInGroup(menu.groupId, fid);
-                }
-              }}
-            >
-              关闭左侧
-            </button>
-            <button
-              type="button"
-              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
-              onClick={() => {
-                const menu = tabMenu;
-                setTabMenu(null);
-                const g = groups.find((x) => x.id === menu.groupId);
-                if (!g) return;
-                const idx = g.openFileIds.indexOf(menu.fileId);
-                if (idx < 0 || idx >= g.openFileIds.length - 1) return;
-                for (const fid of g.openFileIds.slice(idx + 1)) {
-                  closeFileInGroup(menu.groupId, fid);
-                }
-              }}
-            >
-              关闭右侧
-            </button>
+	            <button
+	              type="button"
+	              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+	              onClick={() => {
+	                const menu = tabMenu;
+	                setTabMenu(null);
+	                const pane = paneById.get(menu.paneId);
+	                if (!pane) return;
+	                const toClose = pane.tabIds.filter((id) => id !== menu.fileId);
+	                for (const fid of toClose) closeFileTab(fid);
+	              }}
+	            >
+	              关闭其他
+	            </button>
+	            <button
+	              type="button"
+	              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+	              onClick={() => {
+	                const menu = tabMenu;
+	                setTabMenu(null);
+	                const pane = paneById.get(menu.paneId);
+	                if (!pane) return;
+	                const idx = pane.tabIds.indexOf(menu.fileId);
+	                if (idx <= 0) return;
+	                const toClose = pane.tabIds.slice(0, idx);
+	                for (const fid of toClose) closeFileTab(fid);
+	              }}
+	            >
+	              关闭左侧
+	            </button>
+	            <button
+	              type="button"
+	              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+	              onClick={() => {
+	                const menu = tabMenu;
+	                setTabMenu(null);
+	                const pane = paneById.get(menu.paneId);
+	                if (!pane) return;
+	                const idx = pane.tabIds.indexOf(menu.fileId);
+	                if (idx < 0 || idx >= pane.tabIds.length - 1) return;
+	                const toClose = pane.tabIds.slice(idx + 1);
+	                for (const fid of toClose) closeFileTab(fid);
+	              }}
+	            >
+	              关闭右侧
+	            </button>
 	            <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
 	            <button
 	              type="button"
@@ -2963,20 +2888,20 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	            >
 	              在系统中打开所在文件夹
 	            </button>
-            <button
-              type="button"
-              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
-              onClick={() => {
+	            <button
+	              type="button"
+	              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+	              onClick={() => {
                 const p = tabMenu.path;
                 setTabMenu(null);
                 void navigator.clipboard.writeText(p);
               }}
-            >
-              复制路径
-            </button>
-          </div>
-        </div>
-      )}
+	            >
+	              复制路径
+	            </button>
+	          </div>
+	        </div>
+	      )}
     </div>
   );
 };

@@ -31,7 +31,7 @@ import { useUIStore } from '../../stores/uiStore';
 import { useSessionStore } from '../../stores/sessionStore';
 import { useWebTabStore } from '../../stores/webTabStore';
 import { useTerminalTabStore } from '../../stores/terminalTabStore';
-import { useWorkspaceLayoutStore } from '../../stores/workspaceLayoutStore';
+import { useWindowLayoutStore } from '../../stores/windowLayoutStore';
 import {
   parseWorkspaceTabId,
   useWorkspaceTabStore,
@@ -50,7 +50,7 @@ interface WorkspaceTabBarProps {
   onTabClose: (sessionId: string) => Promise<void> | void;
   onNewSession: (agentName: string) => void | Promise<void>;
   onPopoutSession?: (sessionId: string) => void | Promise<void>;
-  /** 是否在顶部栏展示 tabs（多 Pane 模式下应关闭，改为每个 Pane 自己的 `WorkspacePaneHeader` 承载 tabs） */
+  /** 是否在顶部栏展示 tabs（多 Pane 模式下应关闭，改为每个 Pane 自己的 `WindowPaneHeader` 承载 tabs） */
   showChatTabs?: boolean;
 }
 
@@ -286,8 +286,8 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
     return map;
   }, [sessions]);
 
-  const workspacePanes = useWorkspaceLayoutStore((s) => s.panes);
-  const workspaceFocusedPaneId = useWorkspaceLayoutStore((s) => s.focusedPaneId);
+  const workspacePanes = useWindowLayoutStore((s) => s.panes);
+  const workspaceFocusedPaneId = useWindowLayoutStore((s) => s.focusedPaneId);
 
   const activeWorkspaceTabId = useMemo(() => {
     const panes = workspacePanes ?? [];
@@ -308,7 +308,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
   }, [sessions, documents, webTabs, terminalTabs, syncTabs]);
 
   const items = useMemo((): TabRenderItem[] => {
-    // Multi-pane 模式下：每个 Pane 自己有 `WorkspacePaneHeader` 承载 tab
+    // Multi-pane 模式下：每个 Pane 自己有 `WindowPaneHeader` 承载 tab
     // 这里仅保留右侧的 View 菜单与“新建会话”入口，避免顶部再出现重复的 tab 条。
     if (!showChatTabs) return [];
     const out: TabRenderItem[] = [];
@@ -435,7 +435,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
           try {
             const item = { kind: 'document' as const, title: doc.title, documentPath: doc.path };
             await dockWorkspaceItemToWindow(item, dockTarget.targetLabel, dockTarget.placement);
-            useWorkspaceLayoutStore.getState().closeTabInLayout(tabId);
+            useWindowLayoutStore.getState().closeTabInLayout(tabId);
             closeDocument(doc.id);
             return;
           } catch (err) {
@@ -454,7 +454,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
           try {
             const item = { kind: 'web' as const, title: tab.title, webUrl: tab.url };
             await dockWorkspaceItemToWindow(item, dockTarget.targetLabel, dockTarget.placement);
-            useWorkspaceLayoutStore.getState().closeTabInLayout(tabId);
+            useWindowLayoutStore.getState().closeTabInLayout(tabId);
             closeWebTab(tab.id);
             return;
           } catch (err) {
@@ -473,7 +473,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
           try {
             const item = { kind: 'terminal' as const, title: tab.title, terminalWorkdir: tab.workdir ?? undefined };
             await dockWorkspaceItemToWindow(item, dockTarget.targetLabel, dockTarget.placement);
-            useWorkspaceLayoutStore.getState().closeTabInLayout(tabId);
+            useWindowLayoutStore.getState().closeTabInLayout(tabId);
             await closeTerminalTab(tab.id);
             return;
           } catch (err) {
@@ -501,7 +501,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
       if (!session) return;
       if (onPopoutSession) {
         await onPopoutSession(session.id);
-        useWorkspaceLayoutStore.getState().closeTabInLayout(tabId);
+        useWindowLayoutStore.getState().closeTabInLayout(tabId);
       } else {
         const conversationId = session.conversationId ?? undefined;
         openViewWindow(
@@ -511,7 +511,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
             ? { conversationId, runMode: session.runMode, agentName: session.agentName }
             : undefined
         );
-        useWorkspaceLayoutStore.getState().closeTabInLayout(tabId);
+        useWindowLayoutStore.getState().closeTabInLayout(tabId);
         await onTabClose(session.id);
       }
       return;
@@ -527,7 +527,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
         const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
         const win = openViewWindow('chat', doc.title, { label, noDefaultSession: true });
         await dockWorkspaceItemToWindow(item, win, 'tab');
-        useWorkspaceLayoutStore.getState().closeTabInLayout(tabId);
+        useWindowLayoutStore.getState().closeTabInLayout(tabId);
         closeDocument(doc.id);
       } catch (err) {
         console.error('Failed to popout document tab:', err);
@@ -545,7 +545,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
         const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
         const win = openViewWindow('chat', tab.title || '网页', { label, noDefaultSession: true });
         await dockWorkspaceItemToWindow(item, win, 'tab');
-        useWorkspaceLayoutStore.getState().closeTabInLayout(tabId);
+        useWindowLayoutStore.getState().closeTabInLayout(tabId);
         closeWebTab(tab.id);
       } catch (err) {
         console.error('Failed to popout web tab:', err);
@@ -563,7 +563,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
         const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
         const win = openViewWindow('chat', tab.title || '终端', { label, noDefaultSession: true });
         await dockWorkspaceItemToWindow(item, win, 'tab');
-        useWorkspaceLayoutStore.getState().closeTabInLayout(tabId);
+        useWindowLayoutStore.getState().closeTabInLayout(tabId);
         await closeTerminalTab(tab.id);
       } catch (err) {
         console.error('Failed to popout terminal tab:', err);
@@ -573,7 +573,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
   };
 
   const closeTab = async (tabId: WorkspaceTabId) => {
-    useWorkspaceLayoutStore.getState().closeTabInLayout(tabId);
+    useWindowLayoutStore.getState().closeTabInLayout(tabId);
     const parsed = parseWorkspaceTabId(tabId);
     if (parsed.kind === 'chat') {
       const sid = parsed.sessionId;
@@ -739,7 +739,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
   };
 
   const activateWorkspaceTab = (tabId: WorkspaceTabId) => {
-    const layout = useWorkspaceLayoutStore.getState();
+    const layout = useWindowLayoutStore.getState();
     const existing = (layout.panes ?? []).find((p) => p.tabIds.includes(tabId)) ?? null;
     if (existing) {
       layout.setFocusedPane(existing.id);

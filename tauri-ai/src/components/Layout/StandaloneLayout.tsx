@@ -27,7 +27,7 @@ export const StandaloneLayout: React.FC<StandaloneLayoutProps> = ({ title, child
         </div>
         <button
           type="button"
-          onClick={() => closeCurrentWindow()}
+          onClick={() => void closeCurrentWindow()}
           className="rounded border border-gray-300 px-2 py-0.5 text-xs text-gray-600 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
           title="关闭窗口"
         >

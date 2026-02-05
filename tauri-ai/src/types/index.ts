@@ -881,6 +881,14 @@ export interface Workstudio {
  */
 export interface WorkstudioUiState {
   openFiles: string[];
+  /**
+   * WindowPane 体系（统一分屏布局）。
+   * - tabIds: 文件 path（normalize 后的绝对路径 or untitled:*）
+   */
+  panes?: { id?: string; tabIds: string[]; activeTabId?: string; weight?: number }[];
+  focusedPaneId?: string;
+
+  // Legacy: groups/split（保留读取能力，便于迁移）
   groups?: { openFiles: string[]; activeFile?: string; weight?: number }[];
   focusedGroupIndex?: number;
   expandedDirs?: string[];

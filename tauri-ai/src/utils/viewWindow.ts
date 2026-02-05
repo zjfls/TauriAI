@@ -1,6 +1,7 @@
 import { listen } from '@tauri-apps/api/event';
 import { WebviewWindow, getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { cursorPosition } from '@tauri-apps/api/window';
+import { invoke, isTauri } from '@tauri-apps/api/core';
 import type { ActiveView, RunMode } from '../types';
 import { upsertWindowRecord } from './windowLayout';
 
@@ -910,6 +911,14 @@ export const dockWorkspaceItemToWindow = async (
 };
 
 export const closeCurrentWindow = async () => {
-  const win = getCurrentWebviewWindow();
-  await win.close();
+  try {
+    if (!isTauri()) {
+      window.close();
+      return;
+    }
+    // 使用后端命令关闭，避免触发 core:window:* 的权限限制（例如 allow-destroy）。
+    await invoke('close_invoking_window');
+  } catch (error) {
+    console.warn('关闭窗口失败:', error);
+  }
 };

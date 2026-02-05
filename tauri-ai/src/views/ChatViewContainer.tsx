@@ -18,12 +18,12 @@ import { ChatView } from '../components/Chat/ChatView';
 import { DocumentView } from '../components/Documents/DocumentView';
 import { TerminalTabView } from '../components/Terminal/TerminalTabView';
 import { WebTabView } from '../components/Web/WebTabView';
-import { WorkspacePaneHeader } from '../components/Workspace/WorkspacePaneHeader';
+import { WindowPaneHeader } from '../components/WindowPane/WindowPaneHeader';
 import { useDocumentStore } from '../stores/documentStore';
 import { useSessionStore } from '../stores/sessionStore';
 import { useTerminalTabStore } from '../stores/terminalTabStore';
 import { useWebTabStore } from '../stores/webTabStore';
-import { type WorkspacePane, useWorkspaceLayoutStore } from '../stores/workspaceLayoutStore';
+import { type WindowPane, useWindowLayoutStore } from '../stores/windowLayoutStore';
 import { chatTabId, parseWorkspaceTabId, type WorkspaceTabId } from '../stores/workspaceTabStore';
 import { useDragGhostSession } from '../hooks/useDragGhostSession';
 import { endChatOpenProfile, getActiveChatOpenProfile, markChatOpenProfile } from '../utils/chatOpenProfile';
@@ -50,8 +50,13 @@ type SplitPreview = {
   rect: DOMRect;
 };
 
-const WorkspacePaneView: React.FC<{
-  pane: WorkspacePane;
+type WorkspaceWindowPane = Omit<WindowPane, 'tabIds' | 'activeTabId'> & {
+  tabIds: WorkspaceTabId[];
+  activeTabId: WorkspaceTabId | null;
+};
+
+const WindowPaneView: React.FC<{
+  pane: WorkspaceWindowPane;
   sessionsById: Map<string, AgentSession>;
   isFocused: boolean;
   canClosePane: boolean;
@@ -115,10 +120,10 @@ const WorkspacePaneView: React.FC<{
         'bg-gray-50 dark:bg-gray-900',
         isFocused ? 'outline outline-1 outline-blue-500/30' : 'outline outline-1 outline-transparent',
       ].join(' ')}
-      style={{ flexGrow: pane.weight, flexBasis: 0 }}
+      style={{ flexGrow: pane.weight, flexBasis: 0, flexShrink: 1, minWidth: 0 }}
       onPointerDownCapture={onFocus}
     >
-      <WorkspacePaneHeader
+      <WindowPaneHeader
         paneId={pane.id}
         tabIds={pane.tabIds}
         activeTabId={activeTabId}
@@ -151,18 +156,18 @@ const WorkspacePaneView: React.FC<{
 };
 
 const ChatViewContainerInner: React.FC = () => {
-  const panes = useWorkspaceLayoutStore((state) => state.panes);
-  const focusedPaneId = useWorkspaceLayoutStore((state) => state.focusedPaneId);
-  const setFocusedPane = useWorkspaceLayoutStore((state) => state.setFocusedPane);
-  const setActiveTabInPane = useWorkspaceLayoutStore((state) => state.setActiveTabInPane);
-  const closePaneAndMerge = useWorkspaceLayoutStore((state) => state.closePaneAndMerge);
-  const reorderTabInPane = useWorkspaceLayoutStore((state) => state.reorderTabInPane);
-  const moveTabToPane = useWorkspaceLayoutStore((state) => state.moveTabToPane);
-  const splitTabToNewPane = useWorkspaceLayoutStore((state) => state.splitTabToNewPane);
-  const setPaneWeights = useWorkspaceLayoutStore((state) => state.setPaneWeights);
-  const saveLayout = useWorkspaceLayoutStore((state) => state.saveLayout);
-  const closeTabInLayout = useWorkspaceLayoutStore((state) => state.closeTabInLayout);
-  const replaceLayout = useWorkspaceLayoutStore((state) => state.replaceLayout);
+  const panes = useWindowLayoutStore((state) => state.panes);
+  const focusedPaneId = useWindowLayoutStore((state) => state.focusedPaneId);
+  const setFocusedPane = useWindowLayoutStore((state) => state.setFocusedPane);
+  const setActiveTabInPane = useWindowLayoutStore((state) => state.setActiveTabInPane);
+  const closePaneAndMerge = useWindowLayoutStore((state) => state.closePaneAndMerge);
+  const reorderTabInPane = useWindowLayoutStore((state) => state.reorderTabInPane);
+  const moveTabToPane = useWindowLayoutStore((state) => state.moveTabToPane);
+  const splitTabToNewPane = useWindowLayoutStore((state) => state.splitTabToNewPane);
+  const setPaneWeights = useWindowLayoutStore((state) => state.setPaneWeights);
+  const saveLayout = useWindowLayoutStore((state) => state.saveLayout);
+  const closeTabInLayout = useWindowLayoutStore((state) => state.closeTabInLayout);
+  const replaceLayout = useWindowLayoutStore((state) => state.replaceLayout);
 
   const sessionsMap = useSessionStore((state) => state.sessions);
   const activeSessionId = useSessionStore((state) => state.activeSessionId);
@@ -200,8 +205,8 @@ const ChatViewContainerInner: React.FC = () => {
     return set;
   }, [documents, panes, sessionsMap, terminalTabs, webTabs]);
 
-  const resolvedPanes = useMemo((): WorkspacePane[] => {
-    const base =
+  const resolvedPanes = useMemo((): WorkspaceWindowPane[] => {
+    const base: WindowPane[] =
       panes.length > 0
         ? panes
         : [
@@ -210,19 +215,21 @@ const ChatViewContainerInner: React.FC = () => {
               tabIds: [],
               activeTabId: null,
               weight: 1,
-            } satisfies WorkspacePane,
+            } satisfies WindowPane,
           ];
 
     const assigned = new Set<WorkspaceTabId>();
-    const cleaned: WorkspacePane[] = base.map((p) => {
+    const cleaned: WorkspaceWindowPane[] = base.map((p) => {
       const filtered: WorkspaceTabId[] = [];
-      for (const tid of p.tabIds) {
+      for (const rawTid of p.tabIds) {
+        const tid = rawTid as WorkspaceTabId;
         if (!validTabIds.has(tid)) continue;
         if (assigned.has(tid)) continue;
         assigned.add(tid);
         filtered.push(tid);
       }
-      const active = p.activeTabId && filtered.includes(p.activeTabId) ? p.activeTabId : filtered[0] ?? null;
+      const rawActive = typeof p.activeTabId === 'string' ? (p.activeTabId as WorkspaceTabId) : null;
+      const active = rawActive && filtered.includes(rawActive) ? rawActive : filtered[0] ?? null;
       return {
         ...p,
         tabIds: filtered,
@@ -424,7 +431,7 @@ const ChatViewContainerInner: React.FC = () => {
   }, [resolvedPanes]);
 
   const paneById = useMemo(() => {
-    const map = new Map<string, WorkspacePane>();
+    const map = new Map<string, WorkspaceWindowPane>();
     for (const p of resolvedPanes) map.set(p.id, p);
     return map;
   }, [resolvedPanes]);
@@ -960,12 +967,21 @@ const ChatViewContainerInner: React.FC = () => {
       onDragEnd={handleDragEnd}
       onDragCancel={handleDragCancel}
     >
-      <div ref={containerRef} className="flex h-full w-full overflow-hidden">
+      <div 
+        ref={containerRef} 
+        className="flex h-full w-full overflow-hidden"
+        style={{ 
+          display: 'flex',
+          flexDirection: 'row',
+          alignItems: 'stretch',
+          justifyContent: 'flex-start'
+        }}
+      >
         {resolvedPanes.map((pane, idx) => {
           const next = resolvedPanes[idx + 1];
           return (
             <React.Fragment key={pane.id}>
-              <WorkspacePaneView
+              <WindowPaneView
                 pane={pane}
                 sessionsById={sessionsById}
                 isFocused={pane.id === resolvedFocusedPaneId}

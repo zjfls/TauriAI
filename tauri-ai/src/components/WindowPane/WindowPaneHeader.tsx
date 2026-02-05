@@ -20,7 +20,7 @@ import {
   type ChatWindowInfo,
 } from '../../utils/viewWindow';
 
-interface WorkspacePaneHeaderProps {
+interface WindowPaneHeaderProps {
   paneId: string;
   tabIds: WorkspaceTabId[];
   activeTabId: WorkspaceTabId | null;
@@ -363,7 +363,7 @@ const SortableTab: React.FC<{
   );
 };
 
-export const WorkspacePaneHeader: React.FC<WorkspacePaneHeaderProps> = ({
+export const WindowPaneHeader: React.FC<WindowPaneHeaderProps> = ({
   paneId,
   tabIds,
   activeTabId,
@@ -607,4 +607,4 @@ export const WorkspacePaneHeader: React.FC<WorkspacePaneHeaderProps> = ({
   );
 };
 
-export default WorkspacePaneHeader;
+export default WindowPaneHeader;

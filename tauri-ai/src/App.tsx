@@ -20,7 +20,7 @@ import { useDocumentStore } from './stores/documentStore';
 import { useWebTabStore } from './stores/webTabStore';
 import { useTerminalTabStore } from './stores/terminalTabStore';
 import { useUIStore } from './stores/uiStore';
-import { useWorkspaceLayoutStore } from './stores/workspaceLayoutStore';
+import { useWindowLayoutStore } from './stores/windowLayoutStore';
 import { docTabId, terminalTabId, webTabId } from './stores/workspaceTabStore';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { getViewDefinition } from './views/registry';
@@ -213,20 +213,28 @@ function App() {
       .catch(() => {});
 
     void win
-      .onCloseRequested(() => {
+      .onCloseRequested(async (event) => {
+        // 关键：`@tauri-apps/api` 的 `onCloseRequested` 默认会在 handler 结束后调用 `window.destroy()`，
+        // 这需要 `core:window:allow-destroy` 权限。我们这里统一 preventDefault，并改用后端命令 destroy 窗口，
+        // 避免权限报错导致“窗口无法关闭”。
+        event.preventDefault();
+
         // 主窗口关闭视为“应用退出”：保留窗口布局用于下次恢复，并打标记让其它窗口不要把自己从布局里删掉。
         if (label === 'main') {
           markAppClosing();
+          await invoke('close_invoking_window').catch(() => {});
           return;
         }
+
         // 单独关闭某个窗口：从“下次启动恢复列表”移除（但应用退出时不移除）。
         // 注意：整体退出时，非 main 窗口可能先于 main 收到 close 请求；若立刻删除会导致重启丢布局。
         // 这里做一个极短延迟后二次检查，避免退出竞态误删。
-        if (isAppClosingRecently()) return;
-        window.setTimeout(() => {
-          if (isAppClosingRecently()) return;
-          removeWindowRecord(label);
-        }, 500);
+        if (!isAppClosingRecently()) {
+          await new Promise<void>((resolve) => window.setTimeout(resolve, 500));
+          if (!isAppClosingRecently()) removeWindowRecord(label);
+        }
+
+        await invoke('close_invoking_window').catch(() => {});
       })
       .then((fn) => {
         unlistenClose = fn;
@@ -326,7 +334,7 @@ function App() {
           return;
         }
 
-        useWorkspaceLayoutStore.getState().openTabInFocusedPane(docTabId(docId));
+        useWindowLayoutStore.getState().openTabInFocusedPane(docTabId(docId));
         useUIStore.getState().setActiveView('chat');
       } catch (error) {
         console.error('Failed to open file:', error);
@@ -384,7 +392,7 @@ function App() {
         return;
       }
 
-      useWorkspaceLayoutStore.getState().openTabInFocusedPane(docTabId(docId));
+      useWindowLayoutStore.getState().openTabInFocusedPane(docTabId(docId));
       useUIStore.getState().setActiveView('chat');
     })
       .then((fn) => {
@@ -417,7 +425,7 @@ function App() {
 
     void listen('menu:open_web_tab', () => {
       const id = useWebTabStore.getState().openWebTab('about:blank', { title: '网页', activate: true });
-      useWorkspaceLayoutStore.getState().openTabInFocusedPane(webTabId(id));
+      useWindowLayoutStore.getState().openTabInFocusedPane(webTabId(id));
       useUIStore.getState().setActiveView('chat');
     })
       .then((fn) => {
@@ -456,7 +464,7 @@ function App() {
           workdir: workdir ?? undefined,
           activate: true,
         });
-        useWorkspaceLayoutStore.getState().openTabInFocusedPane(terminalTabId(id));
+        useWindowLayoutStore.getState().openTabInFocusedPane(terminalTabId(id));
         useUIStore.getState().setActiveView('chat');
       })();
     })
@@ -507,7 +515,7 @@ function App() {
             content,
           });
 
-          useWorkspaceLayoutStore.getState().openTabInFocusedPane(docTabId(docId));
+          useWindowLayoutStore.getState().openTabInFocusedPane(docTabId(docId));
           useUIStore.getState().setActiveView('chat');
         } catch (error) {
           console.error('Failed to open document in standalone window:', error);
@@ -522,7 +530,7 @@ function App() {
           title: webTitleOverride ?? undefined,
           activate: true,
         });
-        useWorkspaceLayoutStore.getState().openTabInFocusedPane(webTabId(wid));
+        useWindowLayoutStore.getState().openTabInFocusedPane(webTabId(wid));
         useUIStore.getState().setActiveView('chat');
         return;
       }
@@ -534,7 +542,7 @@ function App() {
           workdir: terminalWorkdirOverride ?? undefined,
           activate: true,
         });
-        useWorkspaceLayoutStore.getState().openTabInFocusedPane(terminalTabId(tid));
+        useWindowLayoutStore.getState().openTabInFocusedPane(terminalTabId(tid));
         useUIStore.getState().setActiveView('chat');
         return;
       }

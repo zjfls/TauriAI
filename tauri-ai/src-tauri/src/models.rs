@@ -505,6 +505,11 @@ fn default_workstudio_kind() -> String {
 #[serde(rename_all = "camelCase")]
 pub struct WorkstudioUiState {
     pub open_files: Vec<String>,
+    /// WindowPane 体系（统一分屏布局）。
+    #[serde(default)]
+    pub panes: Vec<WorkstudioUiPaneState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub focused_pane_id: Option<String>,
     /// 动态分屏：多个编辑组（每组有自己的标签页与激活文件）。
     #[serde(default)]
     pub groups: Vec<WorkstudioUiGroupState>,
@@ -521,6 +526,19 @@ pub struct WorkstudioUiState {
     pub active_right_file: Option<String>,
     #[serde(default)]
     pub split_open: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkstudioUiPaneState {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub tab_ids: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_tab_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub weight: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

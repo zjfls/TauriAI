@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Globe, ExternalLink, Plus } from 'lucide-react';
 import { isTauri } from '@tauri-apps/api/core';
 import { useWebTabStore } from '../../stores/webTabStore';
-import { useWorkspaceLayoutStore } from '../../stores/workspaceLayoutStore';
+import { useWindowLayoutStore } from '../../stores/windowLayoutStore';
 import { webTabId as toWorkspaceWebTabId } from '../../stores/workspaceTabStore';
 import { openExternalWebWindow } from '../../utils/externalWebWindow';
 
@@ -34,7 +34,7 @@ export const WebTabView: React.FC<{ webTabId: string }> = ({ webTabId }) => {
   const createTabAndOpen = () => {
     const input = address.trim();
     const id = openWebTab(input || 'about:blank', { activate: true });
-    useWorkspaceLayoutStore.getState().openTabInFocusedPane(toWorkspaceWebTabId(id));
+    useWindowLayoutStore.getState().openTabInFocusedPane(toWorkspaceWebTabId(id));
   };
 
   if (!tab) {

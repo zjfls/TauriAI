@@ -26,7 +26,7 @@ import { useDocumentStore } from './documentStore';
 import { useTerminalTabStore } from './terminalTabStore';
 import { useUIStore } from './uiStore';
 import { useWebTabStore } from './webTabStore';
-import { useWorkspaceLayoutStore } from './workspaceLayoutStore';
+import { useWindowLayoutStore } from './windowLayoutStore';
 import { chatTabId, docTabId, terminalTabId, useWorkspaceTabStore, webTabId, type WorkspaceTabId } from './workspaceTabStore';
 
 // Constants for persistence
@@ -445,7 +445,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     useWorkspaceTabStore.getState().upsertChatTab(sessionId);
 
     // Workspace panes: ensure the new session is visible as a tab in the focused pane.
-    useWorkspaceLayoutStore.getState().openTabInFocusedPane(chatTabId(sessionId));
+    useWindowLayoutStore.getState().openTabInFocusedPane(chatTabId(sessionId));
 
     // Save state after creating session
     get().saveSessionState();
@@ -2258,7 +2258,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           meta: { sessionId: session.id },
         });
         get().switchSession(session.id);
-        useWorkspaceLayoutStore.getState().openTabInFocusedPane(chatTabId(session.id));
+        useWindowLayoutStore.getState().openTabInFocusedPane(chatTabId(session.id));
         markChatOpenProfile('sessionStore:switchSession(done)', {
           conversationId,
           meta: { sessionId: session.id },
@@ -2407,7 +2407,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     useWorkspaceTabStore.getState().upsertChatTab(sessionId);
     markChatOpenProfile('sessionStore:upsertChatTab', { conversationId, meta: { sessionId } });
 
-    useWorkspaceLayoutStore.getState().openTabInFocusedPane(chatTabId(sessionId));
+    useWindowLayoutStore.getState().openTabInFocusedPane(chatTabId(sessionId));
 
     // Save state
     get().saveSessionState();
@@ -2937,7 +2937,7 @@ export const initStreamListeners = async () => {
           }
 
           const state = useSessionStore.getState();
-          const layout = useWorkspaceLayoutStore.getState();
+          const layout = useWindowLayoutStore.getState();
           const basePaneId = layout.focusedPaneId ?? layout.panes?.[0]?.id ?? null;
           const placement: ChatDockPlacement = payload.placement ?? 'tab';
 
@@ -2948,7 +2948,7 @@ export const initStreamListeners = async () => {
 
           if (placement !== 'tab' && basePaneId) {
             const direction = placement === 'split-left' ? 'left' : 'right';
-            useWorkspaceLayoutStore.getState().splitTabToNewPane(chatTabId(sessionId), direction, basePaneId);
+            useWindowLayoutStore.getState().splitTabToNewPane(chatTabId(sessionId), direction, basePaneId);
           }
 
           await emitToWindowLabel(payload.fromWindowLabel, 'chat:dock_ack', {
@@ -2980,7 +2980,7 @@ export const initStreamListeners = async () => {
             // ignore
           }
 
-          const layout = useWorkspaceLayoutStore.getState();
+          const layout = useWindowLayoutStore.getState();
           const basePaneId = layout.focusedPaneId ?? layout.panes?.[0]?.id ?? null;
           const placement: ChatDockPlacement = payload.placement ?? 'tab';
 
@@ -3029,10 +3029,10 @@ export const initStreamListeners = async () => {
           if (!tabId) throw new Error('无法创建目标 tab');
 
           if (placement === 'tab' || !basePaneId) {
-            useWorkspaceLayoutStore.getState().openTabInFocusedPane(tabId);
+            useWindowLayoutStore.getState().openTabInFocusedPane(tabId);
           } else {
             const direction = placement === 'split-left' ? 'left' : 'right';
-            useWorkspaceLayoutStore.getState().splitTabToNewPane(tabId, direction, basePaneId);
+            useWindowLayoutStore.getState().splitTabToNewPane(tabId, direction, basePaneId);
           }
 
           await emitToWindowLabel(payload.fromWindowLabel, 'workspace:dock_ack', {

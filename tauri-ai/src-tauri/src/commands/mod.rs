@@ -7,6 +7,7 @@ mod clipboard;
 mod config;
 mod conversation;
 mod devtools;
+mod drag_ghost;
 mod file;
 mod mcp;
 mod mermaid_cache;
@@ -15,6 +16,7 @@ mod run;
 mod skills;
 mod terminal;
 mod tools;
+mod window_control;
 mod workstudio;
 mod workstudio_security;
 mod workstudio_state;
@@ -29,6 +31,10 @@ pub use conversation::{
     update_conversation_metadata, update_conversation_title,
 };
 pub use devtools::open_devtools_current_window;
+pub use drag_ghost::{
+    debug_drag_ghost_create, debug_drag_ghost_destroy, debug_drag_ghost_move, drag_ghost_create,
+    drag_ghost_destroy, drag_ghost_move,
+};
 pub use file::{list_local_directory, read_local_file_base64, write_local_text_file};
 pub use mcp::{
     delete_mcp_server, delete_mcp_set, list_mcp_server_tools, list_mcp_servers, list_mcp_sets,
@@ -43,6 +49,7 @@ pub use terminal::{
     terminal_close, terminal_create, terminal_read, terminal_read_base64, terminal_write,
 };
 pub use tools::{close_pty_session, list_pty_sessions};
+pub use window_control::close_invoking_window;
 pub use workstudio::{
     add_workstudio_folder, create_workstudio, ensure_workstudio_for_conversation, get_workstudio,
     remove_workstudio_folder, set_workstudio_main_folder, workstudio_find_files,

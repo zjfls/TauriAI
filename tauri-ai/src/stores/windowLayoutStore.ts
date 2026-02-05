@@ -1,22 +1,24 @@
 import { create } from 'zustand';
 import { arrayMove } from '@dnd-kit/sortable';
-import type { WorkspaceTabId } from './workspaceTabStore';
 import { getWindowLabelForStorage, getWindowScopedStorageKey, isMainWindowLabel } from '../utils/windowStorage';
 
-export interface WorkspacePane {
+export type WindowTabId = string;
+
+export interface WindowPane {
   id: string;
-  tabIds: WorkspaceTabId[];
-  activeTabId: WorkspaceTabId | null;
+  tabIds: WindowTabId[];
+  activeTabId: WindowTabId | null;
   /** 用于横向分屏的宽度权重（flex-grow） */
   weight: number;
 }
 
-const STORAGE_KEY_PREFIX = 'tauri-ai:workspace-layout:v2';
-const LEGACY_STORAGE_KEY = 'tauri-ai:workspace-layout:v1';
+const STORAGE_KEY_PREFIX = 'tauri-ai:window-layout:v2';
+const LEGACY_STORAGE_KEY = 'tauri-ai:workspace-layout:v2';
+const LEGACY_GLOBAL_STORAGE_KEY = 'tauri-ai:workspace-layout:v1';
 
 const getStorageKey = (): string => getWindowScopedStorageKey(STORAGE_KEY_PREFIX);
 
-const normalizePaneWeights = (panes: WorkspacePane[]): WorkspacePane[] => {
+const normalizePaneWeights = (panes: WindowPane[]): WindowPane[] => {
   if (panes.length === 0) return panes;
   const sanitized = panes.map((p) => ({
     ...p,
@@ -27,7 +29,7 @@ const normalizePaneWeights = (panes: WorkspacePane[]): WorkspacePane[] => {
   return sanitized;
 };
 
-const ensureAtLeastOnePane = (panes: WorkspacePane[]): WorkspacePane[] => {
+const ensureAtLeastOnePane = (panes: WindowPane[]): WindowPane[] => {
   if (panes.length > 0) return panes;
   return [
     {
@@ -40,9 +42,9 @@ const ensureAtLeastOnePane = (panes: WorkspacePane[]): WorkspacePane[] => {
 };
 
 const compactEmptyPanes = (
-  panes: WorkspacePane[],
+  panes: WindowPane[],
   focusedPaneId: string | null
-): { panes: WorkspacePane[]; focusedPaneId: string | null } => {
+): { panes: WindowPane[]; focusedPaneId: string | null } => {
   let nextFocusedPaneId = focusedPaneId;
   let nextPanes = panes.map((p) => ({
     ...p,
@@ -85,27 +87,26 @@ const compactEmptyPanes = (
   return { panes: normalizePaneWeights(nextPanes), focusedPaneId: nextFocusedPaneId };
 };
 
-const isWorkspaceTabIdString = (s: unknown): s is WorkspaceTabId => {
-  return (
-    typeof s === 'string' &&
-    (s.startsWith('chat:') ||
-      s.startsWith('doc:') ||
-      s.startsWith('web:') ||
-      s.startsWith('term:'))
-  );
+const isWindowTabIdString = (s: unknown): s is WindowTabId => {
+  return typeof s === 'string';
 };
 
-const loadInitialLayout = (): { panes: WorkspacePane[]; focusedPaneId: string | null } => {
+const loadInitialLayout = (): { panes: WindowPane[]; focusedPaneId: string | null } => {
   try {
     const storage = typeof window !== 'undefined' ? window.localStorage : null;
     const key = getStorageKey();
     let raw = storage?.getItem(key);
 
+    // Migration: workspace v2 key -> window v2 key.
+    if (!raw) {
+      raw = storage?.getItem(getWindowScopedStorageKey(LEGACY_STORAGE_KEY));
+    }
+
     // Migration (main window): v1 global key -> v2 window-scoped key.
     if (!raw) {
       const label = getWindowLabelForStorage();
       if (isMainWindowLabel(label)) {
-        raw = storage?.getItem(LEGACY_STORAGE_KEY);
+        raw = storage?.getItem(LEGACY_GLOBAL_STORAGE_KEY);
       }
     }
 
@@ -123,14 +124,14 @@ const loadInitialLayout = (): { panes: WorkspacePane[]; focusedPaneId: string | 
       | null;
 
     const panesRaw = Array.isArray(parsed?.panes) ? parsed!.panes! : [];
-    const panes: WorkspacePane[] = panesRaw
-      .map((p): WorkspacePane | null => {
+    const panes: WindowPane[] = panesRaw
+      .map((p): WindowPane | null => {
         const id = typeof p.id === 'string' ? p.id : null;
         if (!id) return null;
 
-        const tabIds = Array.isArray(p.tabIds) ? p.tabIds.filter(isWorkspaceTabIdString) : [];
-        const rawActiveTabId = isWorkspaceTabIdString(p.activeTabId) ? p.activeTabId : null;
-        const fallbackActive: WorkspaceTabId | null = tabIds.length > 0 ? tabIds[0]! : null;
+        const tabIds = Array.isArray(p.tabIds) ? p.tabIds.filter(isWindowTabIdString) : [];
+        const rawActiveTabId = isWindowTabIdString(p.activeTabId) ? p.activeTabId : null;
+        const fallbackActive: WindowTabId | null = tabIds.length > 0 ? tabIds[0]! : null;
         const activeTabId = rawActiveTabId && tabIds.includes(rawActiveTabId) ? rawActiveTabId : fallbackActive;
         const weight = typeof p.weight === 'number' ? p.weight : 1;
 
@@ -141,7 +142,7 @@ const loadInitialLayout = (): { panes: WorkspacePane[]; focusedPaneId: string | 
           weight,
         };
       })
-      .filter((p): p is WorkspacePane => p !== null);
+      .filter((p): p is WindowPane => p !== null);
 
     const focusedPaneId = typeof parsed?.focusedPaneId === 'string' ? (parsed?.focusedPaneId as string) : null;
     const compacted = compactEmptyPanes(panes, focusedPaneId);
@@ -159,7 +160,7 @@ const loadInitialLayout = (): { panes: WorkspacePane[]; focusedPaneId: string | 
   }
 };
 
-const persistLayout = (next: { panes: WorkspacePane[]; focusedPaneId: string | null }) => {
+const persistLayout = (next: { panes: WindowPane[]; focusedPaneId: string | null }) => {
   try {
     if (typeof window === 'undefined') return;
     window.localStorage.setItem(
@@ -174,28 +175,28 @@ const persistLayout = (next: { panes: WorkspacePane[]; focusedPaneId: string | n
   }
 };
 
-const findPaneIndexByTabId = (panes: WorkspacePane[], tabId: WorkspaceTabId): number => {
+const findPaneIndexByTabId = (panes: WindowPane[], tabId: WindowTabId): number => {
   return panes.findIndex((p) => p.tabIds.includes(tabId));
 };
 
-interface WorkspaceLayoutState {
-  panes: WorkspacePane[];
+interface WindowLayoutState {
+  panes: WindowPane[];
   focusedPaneId: string | null;
 
   setFocusedPane: (paneId: string) => void;
-  setActiveTabInPane: (paneId: string, tabId: WorkspaceTabId) => void;
-  openTabInFocusedPane: (tabId: WorkspaceTabId, opts?: { activate?: boolean }) => void;
-  closeTabInLayout: (tabId: WorkspaceTabId) => void;
-  reorderTabInPane: (paneId: string, activeId: WorkspaceTabId, overId: WorkspaceTabId) => void;
-  moveTabToPane: (tabId: WorkspaceTabId, toPaneId: string, toIndex?: number) => void;
-  splitTabToNewPane: (tabId: WorkspaceTabId, direction: 'left' | 'right', targetPaneId: string) => void;
+  setActiveTabInPane: (paneId: string, tabId: WindowTabId) => void;
+  openTabInFocusedPane: (tabId: WindowTabId, opts?: { activate?: boolean }) => void;
+  closeTabInLayout: (tabId: WindowTabId) => void;
+  reorderTabInPane: (paneId: string, activeId: WindowTabId, overId: WindowTabId) => void;
+  moveTabToPane: (tabId: WindowTabId, toPaneId: string, toIndex?: number) => void;
+  splitTabToNewPane: (tabId: WindowTabId, direction: 'left' | 'right', targetPaneId: string) => void;
   closePaneAndMerge: (paneId: string) => void;
   setPaneWeights: (weights: Array<{ paneId: string; weight: number }>) => void;
   saveLayout: () => void;
-  replaceLayout: (next: { panes: WorkspacePane[]; focusedPaneId: string | null }) => void;
+  replaceLayout: (next: { panes: WindowPane[]; focusedPaneId: string | null }) => void;
 }
 
-export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>((set, get) => {
+export const useWindowLayoutStore = create<WindowLayoutState>((set, get) => {
   const initial = typeof window === 'undefined' ? { panes: ensureAtLeastOnePane([]), focusedPaneId: null } : loadInitialLayout();
 
   return {
@@ -370,7 +371,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>((set, get) =
         const newPaneWeight = Math.max(0.4, baseWeight / 2);
         target.weight = Math.max(0.4, baseWeight - newPaneWeight);
 
-        const newPane: WorkspacePane = {
+        const newPane: WindowPane = {
           id: crypto.randomUUID(),
           tabIds: [tabId],
           activeTabId: tabId,
@@ -391,7 +392,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>((set, get) =
         const basePanes = ensureAtLeastOnePane(state.panes ?? []);
         if (basePanes.length <= 1) return {};
 
-        const nextPanes: WorkspacePane[] = basePanes.map((p) => ({
+        const nextPanes: WindowPane[] = basePanes.map((p) => ({
           ...p,
           tabIds: [...p.tabIds],
         }));

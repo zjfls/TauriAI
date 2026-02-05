@@ -17,7 +17,6 @@ export const DragGhostView = () => {
   const [title, setTitle] = useState<string>(initialTitle);
 
   useEffect(() => {
-    // 调试友好：让幽灵窗在窗口枚举/日志里一眼可辨。
     const prev = document.title;
     document.title = title ? `[GHOST] ${title}` : '[GHOST] Drag';
     return () => {
@@ -42,30 +41,21 @@ export const DragGhostView = () => {
   }, []);
 
   useEffect(() => {
-    const prevHtmlBg = document.documentElement.style.backgroundColor;
-    const prevBodyBg = document.body.style.backgroundColor;
     const prevBodyOverflow = document.body.style.overflow;
-
-    // 调试用：让 ghost 窗口足够显眼（方便确认是否真的显示出来）
-    document.documentElement.style.backgroundColor = 'rgba(255, 0, 255, 0.22)';
-    document.body.style.backgroundColor = 'rgba(255, 0, 255, 0.22)';
     document.body.style.overflow = 'hidden';
-
     return () => {
-      document.documentElement.style.backgroundColor = prevHtmlBg;
-      document.body.style.backgroundColor = prevBodyBg;
       document.body.style.overflow = prevBodyOverflow;
     };
   }, []);
 
   return (
     <div className="h-screen w-screen p-3">
-      <div className="pointer-events-none flex h-full w-full items-center justify-center rounded-xl border-4 border-fuchsia-500/90 bg-fuchsia-500/20 shadow-2xl backdrop-blur-sm dark:border-fuchsia-300/80 dark:bg-fuchsia-900/30">
+      <div className="pointer-events-none flex h-full w-full items-center justify-center rounded-xl border border-gray-200/80 bg-white/90 shadow-xl backdrop-blur-sm dark:border-gray-700/80 dark:bg-gray-900/80">
         <div className="flex max-w-full items-center gap-3 px-4 py-3">
-          <FileText size={28} className="text-fuchsia-800/90 dark:text-fuchsia-200/90" />
+          <FileText size={24} className="text-gray-700 dark:text-gray-200" />
           <div className="min-w-0">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-fuchsia-900/80 dark:text-fuchsia-100/80">
-              Drag Ghost (Debug)
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+              Drag Ghost
             </div>
             <div className="mt-1 max-w-[72vw] truncate text-lg font-semibold text-gray-950 dark:text-gray-50">
               {title || '...'}

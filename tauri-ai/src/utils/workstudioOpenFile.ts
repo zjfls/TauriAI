@@ -3,7 +3,7 @@ import type { Workstudio } from '../types';
 import { useDocumentStore, type DocumentRevealTarget } from '../stores/documentStore';
 import { docTabId } from '../stores/workspaceTabStore';
 import { useUIStore } from '../stores/uiStore';
-import { useWorkspaceLayoutStore } from '../stores/workspaceLayoutStore';
+import { useWindowLayoutStore } from '../stores/windowLayoutStore';
 
 export type WorkstudioOpenFileTarget = {
   filePath: string;
@@ -104,7 +104,7 @@ export const openWorkstudioFileInWorkspace = async (opts: {
       useDocumentStore.getState().setRevealTarget(docId, reveal);
     }
 
-    useWorkspaceLayoutStore.getState().openTabInFocusedPane(docTabId(docId));
+    useWindowLayoutStore.getState().openTabInFocusedPane(docTabId(docId));
     useUIStore.getState().setActiveView('chat');
     return docId;
   };
@@ -128,4 +128,3 @@ export const openWorkstudioFileInWorkspace = async (opts: {
     return { resolvedPath: bestNormalized, docId };
   }
 };
-
