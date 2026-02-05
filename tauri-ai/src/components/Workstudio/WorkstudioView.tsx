@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { cursorPosition } from '@tauri-apps/api/window';
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { openPath, revealItemInDir } from '@tauri-apps/plugin-opener';
 import Editor, { type OnMount } from '@monaco-editor/react';
@@ -12,6 +14,7 @@ import {
   useDroppable,
   useSensor,
   useSensors,
+  type DragCancelEvent,
   type DragMoveEvent,
   type DragStartEvent,
   type DragEndEvent,
@@ -30,7 +33,7 @@ import type { TerminalScope, Workstudio, WorkstudioUiState } from '../../types';
 import { SHORTCUT_ACTIONS, detectShortcutPlatform, normalizeKeybindingString } from '../../shortcuts';
 import { useConfigStore } from '../../stores/configStore';
 import { useTerminalSessionStore } from '../../stores/terminalSessionStore';
-import { getViewWindowParams } from '../../utils/viewWindow';
+import { getViewWindowParams, openViewWindow } from '../../utils/viewWindow';
 import { setupMonaco } from '../../utils/monaco';
 import { TerminalSurface, type TerminalSurfaceHandle } from '../Terminal/TerminalSurface';
 
@@ -96,6 +99,9 @@ const parseTabKey = (id: string): { groupId: string; fileId: string } | null => 
 };
 
 const dropKey = (groupId: string) => `drop:${groupId}`;
+
+const TEAR_OFF_THRESHOLD_PX = 48;
+const TEAR_OFF_WINDOW_THRESHOLD_PX = 8;
 
 const GroupDropZone: React.FC<{ groupId: string; children: React.ReactNode }> = ({ groupId, children }) => {
   const { setNodeRef } = useDroppable({ id: dropKey(groupId) });
@@ -1543,7 +1549,95 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const [activeDragTabId, setActiveDragTabId] = useState<string | null>(null);
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
   const lastDragPointRef = useRef<{ x: number; y: number } | null>(null);
+  const dragCancelledByEscapeRef = useRef(false);
   const [splitPreview, setSplitPreview] = useState<SplitPreview | null>(null);
+
+  useEffect(() => {
+    if (!activeDragTabId) return;
+    dragCancelledByEscapeRef.current = false;
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key !== 'Escape') return;
+      dragCancelledByEscapeRef.current = true;
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [activeDragTabId]);
+
+  const isCursorOutsideCurrentWindow = useCallback(async (thresholdPx: number): Promise<boolean> => {
+    try {
+      const [cursor, pos, size] = await Promise.all([
+        cursorPosition().catch(() => null),
+        getCurrentWebviewWindow().outerPosition().catch(() => null),
+        getCurrentWebviewWindow().outerSize().catch(() => null),
+      ]);
+      if (!cursor || !pos || !size) return false;
+      const left = pos.x - thresholdPx;
+      const top = pos.y - thresholdPx;
+      const right = pos.x + size.width + thresholdPx;
+      const bottom = pos.y + size.height + thresholdPx;
+      return cursor.x < left || cursor.x > right || cursor.y < top || cursor.y > bottom;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const tearOffTabToNewWindow = useCallback(
+    (tabId: string) => {
+      const parsed = parseTabKey(tabId);
+      if (!parsed) return;
+      if (!workstudioId) return;
+
+      const fileId = parsed.fileId;
+      const file = openFilesRef.current.find((f) => f.id === fileId) ?? null;
+      const title = file?.title || basename(fileId) || 'Workstudio';
+
+      void (async () => {
+        try {
+          const [cursor, size] = await Promise.all([
+            cursorPosition().catch(() => null),
+            getCurrentWebviewWindow().outerSize().catch(() => null),
+          ]);
+
+          const width = Math.max(720, Math.floor(size?.width ?? 1100));
+          const height = Math.max(520, Math.floor(size?.height ?? 740));
+
+          const bounds =
+            cursor
+              ? {
+                  x: Math.floor(cursor.x - width * 0.25),
+                  y: Math.floor(cursor.y - 24),
+                  width,
+                  height,
+                }
+              : { width, height };
+
+          const label = `view-workstudio-${workstudioId}-tearoff-${Date.now()}-${Math.random()
+            .toString(16)
+            .slice(2)}`;
+          const win = openViewWindow('workstudio', title, {
+            label,
+            workstudioId,
+            noDefaultSession: true,
+            filePath: fileId,
+            window: bounds,
+          });
+
+          win.once('tauri://created', () => {
+            void win.setFocus().catch(() => {});
+            closeFileInGroup(parsed.groupId, parsed.fileId);
+          });
+          win.once('tauri://error', (err) => {
+            console.error('Failed to tear off workstudio tab:', (err as any)?.payload ?? err);
+            alert('打开新窗口失败，请检查窗口权限/配置');
+          });
+        } catch (err) {
+          console.error('Failed to tear off workstudio tab:', err);
+          alert('当前环境不支持打开新窗口');
+        }
+      })();
+    },
+    [closeFileInGroup, workstudioId]
+  );
 
   const computeSplitPreview = useCallback((point: { x: number; y: number }): SplitPreview | null => {
     for (const [groupId, el] of groupBodyRefs.current) {
@@ -1574,6 +1668,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     const activeId = String(e.active.id);
     setActiveDragTabId(activeId);
     setSplitPreview(null);
+    dragCancelledByEscapeRef.current = false;
 
     const ev = e.activatorEvent as MouseEvent | PointerEvent | TouchEvent | null;
     if (ev && 'clientX' in ev) {
@@ -1627,18 +1722,42 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         return;
       }
 
-      const a = parseTabKey(active);
-      if (!a || !over) {
-        setActiveDragTabId(null);
-        setSplitPreview(null);
+      const shouldTearOffByClientPoint =
+        Boolean(point) &&
+        Boolean(
+          point &&
+            (point.x < -TEAR_OFF_THRESHOLD_PX ||
+              point.x > window.innerWidth + TEAR_OFF_THRESHOLD_PX ||
+              point.y < -TEAR_OFF_THRESHOLD_PX ||
+              point.y > window.innerHeight + TEAR_OFF_THRESHOLD_PX)
+        );
+
+      // 先把拖拽 UI 收起，避免异步判断期间 overlay 悬挂
+      setActiveDragTabId(null);
+      setSplitPreview(null);
+
+      if (shouldTearOffByClientPoint) {
+        tearOffTabToNewWindow(active);
         return;
       }
+
+      // 某些平台/环境下，拖拽离开窗口后 pointer move 事件不再更新，
+      // 导致 `client point` 仍停留在窗内，进而无法触发 tear-off。
+      void (async () => {
+        const outsideWindow = await isCursorOutsideCurrentWindow(TEAR_OFF_WINDOW_THRESHOLD_PX);
+        if (outsideWindow) {
+          tearOffTabToNewWindow(active);
+          return;
+        }
+
+        const a = parseTabKey(active);
+        if (!a || !over) {
+          return;
+        }
 
       if (over.startsWith('tab:')) {
         const b = parseTabKey(over);
         if (!b) {
-          setActiveDragTabId(null);
-          setSplitPreview(null);
           return;
         }
         if (a.groupId === b.groupId) {
@@ -1651,30 +1770,67 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
               return { ...g, openFileIds: arrayMove(g.openFileIds, oldIndex, newIndex) };
             })
           );
-          setActiveDragTabId(null);
-          setSplitPreview(null);
           return;
         }
 
         const toIndex = groupsRef.current.find((g) => g.id === b.groupId)?.openFileIds.indexOf(b.fileId);
         moveTab(a.groupId, b.groupId, a.fileId, typeof toIndex === 'number' && toIndex >= 0 ? toIndex : undefined);
-        setActiveDragTabId(null);
-        setSplitPreview(null);
         return;
       }
 
       if (over.startsWith('drop:')) {
         const toGroupId = over.slice('drop:'.length);
         if (toGroupId) moveTab(a.groupId, toGroupId, a.fileId);
-        setActiveDragTabId(null);
-        setSplitPreview(null);
         return;
       }
+      })();
+    },
+    [computeSplitPreview, isCursorOutsideCurrentWindow, moveTab, splitTabToNewGroup, tearOffTabToNewWindow]
+  );
+
+  const handleDragCancel = useCallback(
+    (event: DragCancelEvent) => {
+      const active = String(event.active.id);
+      const start = dragStartRef.current;
+      const point = lastDragPointRef.current;
+
+      dragStartRef.current = null;
+      lastDragPointRef.current = null;
 
       setActiveDragTabId(null);
       setSplitPreview(null);
+
+      void (async () => {
+        // Esc 取消：不触发“拖出窗口”逻辑
+        if (dragCancelledByEscapeRef.current) return;
+
+        const preview = point ? computeSplitPreview(point) : null;
+        if (preview) {
+          const a = parseTabKey(active);
+          if (a) {
+            splitTabToNewGroup({
+              fromGroupId: a.groupId,
+              fileId: a.fileId,
+              targetGroupId: preview.groupId,
+              direction: preview.direction,
+            });
+          }
+          return;
+        }
+
+        const movedDist = start && point ? Math.hypot(point.x - start.x, point.y - start.y) : 0;
+        const lostFocus = typeof document !== 'undefined' ? !document.hasFocus() : false;
+        const outsideWindow = await isCursorOutsideCurrentWindow(TEAR_OFF_WINDOW_THRESHOLD_PX);
+
+        // 兼容：把 Tab 拖到其他应用窗口（可能导致 DnD cancel），依然要按“拖出窗体”处理。
+        // 要求：确实发生了拖拽（移动距离够大），且出现了“明显外部”信号（失焦/游标在窗外）。
+        const shouldTearOffOnCancel = movedDist >= 24 && (lostFocus || outsideWindow);
+        if (shouldTearOffOnCancel) {
+          tearOffTabToNewWindow(active);
+        }
+      })();
     },
-    [computeSplitPreview, moveTab, splitTabToNewGroup]
+    [computeSplitPreview, isCursorOutsideCurrentWindow, splitTabToNewGroup, tearOffTabToNewWindow]
   );
 
   const addFolder = useCallback(async () => {
@@ -2188,6 +2344,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
             onDragStart={handleDragStart}
             onDragMove={handleDragMove}
             onDragEnd={handleDragEnd}
+            onDragCancel={handleDragCancel}
           >
             <div ref={groupRowRef} className="flex min-h-0 flex-1 flex-row overflow-hidden">
             {groups.map((group, idx) => {
