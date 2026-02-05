@@ -838,8 +838,28 @@ export interface Conversation {
   messageCount?: number;
   /** Turn 数量（所有消息 meta.turns 的总和，用于展示“多 turn”规模） */
   turnCount?: number;
+  /** 最新消息时间（messages.createdAt 的最大值，用于判断文件索引是否过期） */
+  lastMessageAt?: string;
+  /** 基于文件/工具活动推断出的主绑定路径（尽量为相对 workstudio 根目录） */
+  primaryPath?: string;
+  /** 主绑定路径类型：file | folder | workspace */
+  primaryPathKind?: 'file' | 'folder' | 'workspace' | string;
+  /** 计算 primaryPath 使用的偏好：file | folder */
+  primaryPathPref?: 'file' | 'folder' | string;
+  /** 最近工具活动推断出的活跃路径（文件/目录） */
+  activeFiles?: ConversationActivePath[];
+  /** activeFiles 覆盖到的最新消息时间戳 */
+  activeFilesUpdatedAt?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ConversationActivePath {
+  path: string;
+  score: number;
+  /** file | dir */
+  kind: 'file' | 'dir' | string;
+  lastUsedAt?: string;
 }
 
 /**

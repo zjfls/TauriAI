@@ -12,6 +12,38 @@ import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import type { Conversation } from '../types';
 
+const CONVERSATION_TITLE_BROADCAST_KEY = 'tauri-ai:broadcast:conversation_title_updated';
+const CONVERSATION_TITLE_SYNC_FLAG = '__tauri_ai_conv_title_sync__';
+
+type ConversationTitleBroadcastPayload = {
+  ts: number;
+  conversationId: string;
+  title: string;
+};
+
+const safeParseJson = <T,>(raw: string | null): T | null => {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+};
+
+const broadcastConversationTitleUpdate = (conversationId: string, title: string) => {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    const payload: ConversationTitleBroadcastPayload = {
+      ts: Date.now(),
+      conversationId,
+      title,
+    };
+    localStorage.setItem(CONVERSATION_TITLE_BROADCAST_KEY, JSON.stringify(payload));
+  } catch {
+    // ignore
+  }
+};
+
 interface ConversationState {
   conversations: Conversation[];
   currentConversationId: string | null;
@@ -33,7 +65,7 @@ export const useConversationStore = create<ConversationState>((set) => ({
   loadConversations: async () => {
     try {
       const conversations = await invoke<Conversation[]>('get_conversations');
-      set({ conversations });
+      set({ conversations, error: null });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       set({ error: message });
@@ -47,6 +79,7 @@ export const useConversationStore = create<ConversationState>((set) => ({
         conversations: state.conversations.filter((c) => c.id !== id),
         currentConversationId:
           state.currentConversationId === id ? null : state.currentConversationId,
+        error: null,
       }));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -61,7 +94,18 @@ export const useConversationStore = create<ConversationState>((set) => ({
         conversations: state.conversations.map((c) =>
           c.id === id ? { ...c, title } : c
         ),
+        error: null,
       }));
+
+      // 同步更新当前窗口中已打开的 session 标题（tab 显示来自 sessionStore）
+      void import('./sessionStore')
+        .then(({ useSessionStore }) => {
+          useSessionStore.getState().syncConversationTitle(id, title);
+        })
+        .catch(() => {});
+
+      // 广播给其它窗口（通过 localStorage storage event）
+      broadcastConversationTitleUpdate(id, title);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       set({ error: message });
@@ -165,4 +209,29 @@ if (conversationStoreStormDebugEnabled) {
       console.groupEnd();
     }
   });
+}
+
+// -----------------------------------------------------------------------------
+// Cross-window sync: conversation title updates (storage event)
+// -----------------------------------------------------------------------------
+if (typeof window !== 'undefined') {
+  const w = window as any;
+  if (!w[CONVERSATION_TITLE_SYNC_FLAG]) {
+    w[CONVERSATION_TITLE_SYNC_FLAG] = true;
+
+    window.addEventListener('storage', (e: StorageEvent) => {
+      if (!e.key || e.key !== CONVERSATION_TITLE_BROADCAST_KEY) return;
+      const payload = safeParseJson<ConversationTitleBroadcastPayload>(e.newValue);
+      if (!payload) return;
+      if (!payload.conversationId || typeof payload.title !== 'string') return;
+
+      // Update list metadata (if loaded) + any open sessions in this window.
+      useConversationStore.getState().patchConversation(payload.conversationId, { title: payload.title });
+      void import('./sessionStore')
+        .then(({ useSessionStore }) => {
+          useSessionStore.getState().syncConversationTitle(payload.conversationId, payload.title);
+        })
+        .catch(() => {});
+    });
+  }
 }

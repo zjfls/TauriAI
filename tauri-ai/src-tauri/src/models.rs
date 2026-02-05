@@ -440,8 +440,42 @@ pub struct Conversation {
     /// - 仅用于展示；不参与持久化写入。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turn_count: Option<u32>,
+    /// Latest message timestamp for this conversation (denormalized for list display).
+    ///
+    /// 说明：
+    /// - 仅用于前端列表/概览展示；不参与持久化写入。
+    /// - 用于判断文件索引（active_files）是否覆盖到最新消息。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_message_at: Option<DateTime<Utc>>,
+    /// Primary bind path inferred from tool/file activity (relative to workstudio mainFolder when possible).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary_path: Option<String>,
+    /// Kind of primary path: file | folder | workspace
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary_path_kind: Option<String>,
+    /// Preference used when computing primary_path: file | folder
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary_path_pref: Option<String>,
+    /// Top active files/dirs inferred from recent tool usage.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_files: Option<Vec<ConversationActivePath>>,
+    /// The latest message timestamp covered by the stored active_files index.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_files_updated_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// A scored active path (file or directory) inferred from tool usage.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationActivePath {
+    pub path: String,
+    pub score: u32,
+    /// file | dir
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_used_at: Option<DateTime<Utc>>,
 }
 
 /// A workstudio (workspace) definition, bound to a main folder and optional additional folders.

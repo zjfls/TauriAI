@@ -303,13 +303,14 @@ export const PaneHeader: React.FC<PaneHeaderProps> = ({
             onClosePane();
           }}
           className={[
-            'flex-shrink-0 mx-1 rounded px-2 py-1 text-xs',
+            'flex-shrink-0 mx-1 rounded p-1.5',
             'text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800',
             isFocused ? 'opacity-100' : 'opacity-80',
           ].join(' ')}
           title="关闭分屏（合并到相邻 Pane）"
+          aria-label="关闭分屏（合并到相邻 Pane）"
         >
-          关闭 Pane
+          <X size={16} />
         </button>
       )}
 

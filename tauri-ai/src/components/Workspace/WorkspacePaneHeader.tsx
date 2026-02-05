@@ -68,8 +68,27 @@ const SortableTab: React.FC<{
   onClose: () => void;
   onOpenDockMenu: (session: AgentSession, anchorEl: HTMLElement) => void;
 }> = ({ tab, isActive, onSelect, onClose, onOpenDockMenu }) => {
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [draftTitle, setDraftTitle] = useState(tab.title);
+  const renameInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (isRenaming) return;
+    setDraftTitle(tab.title);
+  }, [isRenaming, tab.title]);
+
+  useEffect(() => {
+    if (!isRenaming) return;
+    const id = window.setTimeout(() => {
+      renameInputRef.current?.focus();
+      renameInputRef.current?.select();
+    }, 0);
+    return () => window.clearTimeout(id);
+  }, [isRenaming]);
+
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: tab.id,
+    disabled: isRenaming,
   });
 
   const style: React.CSSProperties = {
@@ -97,6 +116,29 @@ const SortableTab: React.FC<{
     if (tab.kind === 'document') return Boolean(tab.path);
     return true;
   })();
+
+  const commitRename = useCallback(async () => {
+    const next = draftTitle.trim();
+    setIsRenaming(false);
+
+    if (tab.kind !== 'chat') return;
+    if (!next) return;
+    if (next === tab.title) return;
+
+    const conversationId = tab.session.conversationId;
+    if (!conversationId) {
+      useSessionStore.getState().setSessionTitle(tab.session.id, next);
+      return;
+    }
+
+    const store = useConversationStore.getState();
+    store.clearError();
+    await store.updateConversationTitle(conversationId, next);
+    const err = useConversationStore.getState().error;
+    if (err) {
+      alert(`重命名失败：${err}`);
+    }
+  }, [draftTitle, tab]);
 
   const handlePopout = () => {
     void (async () => {
@@ -199,80 +241,119 @@ const SortableTab: React.FC<{
     >
       <span className="flex-shrink-0">{icon}</span>
 
-      <span className="flex-1 min-w-0 truncate pr-20 text-sm font-medium">{tab.title}</span>
+      {isRenaming && tab.kind === 'chat' ? (
+        <input
+          ref={renameInputRef}
+          value={draftTitle}
+          onChange={(e) => setDraftTitle(e.target.value)}
+          onBlur={() => void commitRename()}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              (e.target as HTMLInputElement).blur();
+            } else if (e.key === 'Escape') {
+              e.preventDefault();
+              setDraftTitle(tab.title);
+              setIsRenaming(false);
+            }
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+          className={[
+            'flex-1 min-w-0 pr-20 text-sm font-medium',
+            'rounded border border-blue-300 bg-white/80 px-1 py-0.5',
+            'outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-900/80 dark:border-blue-700',
+          ].join(' ')}
+        />
+      ) : (
+        <span
+          className="flex-1 min-w-0 truncate pr-20 text-sm font-medium"
+          onDoubleClick={(e) => {
+            if (tab.kind !== 'chat') return;
+            e.preventDefault();
+            e.stopPropagation();
+            setDraftTitle(tab.title);
+            setIsRenaming(true);
+          }}
+        >
+          {tab.title}
+        </span>
+      )}
 
       {tab.kind === 'chat' && tab.session.apiType === 'responses' ? (
         <span className="flex-shrink-0 text-[10px] text-gray-400">R</span>
       ) : null}
 
-      <div
-        className={[
-          'absolute right-2 top-1/2 -translate-y-1/2',
-          'flex items-center gap-1 rounded bg-white/80 p-0.5 shadow-sm',
-          'dark:bg-gray-900/80',
-          'opacity-0 pointer-events-none transition-opacity',
-          'group-hover:opacity-100 group-hover:pointer-events-auto',
-          'group-focus-within:opacity-100 group-focus-within:pointer-events-auto',
-        ].join(' ')}
-      >
-        {tab.kind === 'chat' ? (
+      {!isRenaming && (
+        <div
+          className={[
+            'absolute right-2 top-1/2 -translate-y-1/2',
+            'flex items-center gap-1 rounded bg-white/80 p-0.5 shadow-sm',
+            'dark:bg-gray-900/80',
+            'opacity-0 pointer-events-none transition-opacity',
+            'group-hover:opacity-100 group-hover:pointer-events-auto',
+            'group-focus-within:opacity-100 group-focus-within:pointer-events-auto',
+          ].join(' ')}
+        >
+          {tab.kind === 'chat' ? (
+            <button
+              type="button"
+              className={[
+                'rounded p-0.5 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800',
+                'disabled:cursor-not-allowed disabled:text-gray-300 dark:disabled:text-gray-600 disabled:hover:bg-transparent',
+              ].join(' ')}
+              disabled={!canDockChat}
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (tab.kind !== 'chat') return;
+                if (tab.session.isGenerating) {
+                  alert('流式生成中，暂不支持停靠');
+                  return;
+                }
+                if (!tab.session.conversationId) {
+                  alert('对话尚未初始化，无法停靠');
+                  return;
+                }
+                onOpenDockMenu(tab.session, e.currentTarget as HTMLElement);
+              }}
+              title="停靠到其它聊天窗口"
+            >
+              <Dock size={14} />
+            </button>
+          ) : null}
+
           <button
             type="button"
             className={[
               'rounded p-0.5 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800',
               'disabled:cursor-not-allowed disabled:text-gray-300 dark:disabled:text-gray-600 disabled:hover:bg-transparent',
             ].join(' ')}
-            disabled={!canDockChat}
+            disabled={!canPopout}
             onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => {
               e.stopPropagation();
-              if (tab.kind !== 'chat') return;
-              if (tab.session.isGenerating) {
-                alert('流式生成中，暂不支持停靠');
-                return;
-              }
-              if (!tab.session.conversationId) {
-                alert('对话尚未初始化，无法停靠');
-                return;
-              }
-              onOpenDockMenu(tab.session, e.currentTarget as HTMLElement);
+              handlePopout();
             }}
-            title="停靠到其它聊天窗口"
+            title="在新窗口打开"
           >
-            <Dock size={14} />
+            <ExternalLink size={14} />
           </button>
-        ) : null}
 
-        <button
-          type="button"
-          className={[
-            'rounded p-0.5 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800',
-            'disabled:cursor-not-allowed disabled:text-gray-300 dark:disabled:text-gray-600 disabled:hover:bg-transparent',
-          ].join(' ')}
-          disabled={!canPopout}
-          onPointerDown={(e) => e.stopPropagation()}
-          onClick={(e) => {
-            e.stopPropagation();
-            handlePopout();
-          }}
-          title="在新窗口打开"
-        >
-          <ExternalLink size={14} />
-        </button>
-
-        <button
-          type="button"
-          className="rounded p-0.5 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800"
-          onPointerDown={(e) => e.stopPropagation()}
-          onClick={(e) => {
-            e.stopPropagation();
-            onClose();
-          }}
-          title="关闭标签"
-        >
-          <X size={14} />
-        </button>
-      </div>
+          <button
+            type="button"
+            className="rounded p-0.5 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              onClose();
+            }}
+            title="关闭标签"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
     </div>
   );
 };
@@ -436,13 +517,14 @@ export const WorkspacePaneHeader: React.FC<WorkspacePaneHeaderProps> = ({
             onClosePane();
           }}
           className={[
-            'flex-shrink-0 mx-1 rounded px-2 py-1 text-xs',
+            'flex-shrink-0 mx-1 rounded p-1.5',
             'text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800',
             isFocused ? 'opacity-100' : 'opacity-80',
           ].join(' ')}
           title="关闭分屏（合并到相邻 Pane）"
+          aria-label="关闭分屏（合并到相邻 Pane）"
         >
-          关闭 Pane
+          <X size={16} />
         </button>
       )}
 

@@ -104,6 +104,11 @@ impl Database {
                 system_prompt_cache_key TEXT,
                 thinking_mode TEXT,
                 workstudio_id TEXT,
+                primary_path TEXT,
+                primary_path_kind TEXT,
+                primary_path_pref TEXT,
+                active_files TEXT,
+                active_files_updated_at TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )",
@@ -130,6 +135,11 @@ impl Database {
             "ALTER TABLE conversations ADD COLUMN workstudio_id TEXT",
             [],
         );
+        let _ = conn.execute("ALTER TABLE conversations ADD COLUMN primary_path TEXT", []);
+        let _ = conn.execute("ALTER TABLE conversations ADD COLUMN primary_path_kind TEXT", []);
+        let _ = conn.execute("ALTER TABLE conversations ADD COLUMN primary_path_pref TEXT", []);
+        let _ = conn.execute("ALTER TABLE conversations ADD COLUMN active_files TEXT", []);
+        let _ = conn.execute("ALTER TABLE conversations ADD COLUMN active_files_updated_at TEXT", []);
 
         // Create workstudios table
         conn.execute(
@@ -258,6 +268,12 @@ impl Database {
             workstudio_id: None,
             message_count: None,
             turn_count: None,
+            last_message_at: None,
+            primary_path: None,
+            primary_path_kind: None,
+            primary_path_pref: None,
+            active_files: None,
+            active_files_updated_at: None,
             created_at: now,
             updated_at: now,
         })
@@ -626,6 +642,12 @@ impl Database {
             workstudio_id,
             message_count: None,
             turn_count: None,
+            last_message_at: None,
+            primary_path: None,
+            primary_path_kind: None,
+            primary_path_pref: None,
+            active_files: None,
+            active_files_updated_at: None,
             created_at: now,
             updated_at: now,
         })
@@ -648,8 +670,14 @@ impl Database {
                c.system_prompt_cache_key,
                c.thinking_mode,
                c.workstudio_id,
+               c.primary_path,
+               c.primary_path_kind,
+               c.primary_path_pref,
+               c.active_files,
+               c.active_files_updated_at,
                c.created_at,
                c.updated_at,
+               (SELECT MAX(m.created_at) FROM messages m WHERE m.conversation_id = c.id) AS last_message_at,
                (SELECT COUNT(1) FROM messages m WHERE m.conversation_id = c.id) AS message_count,
                (
                  SELECT COALESCE(
@@ -675,14 +703,34 @@ impl Database {
                 let system_prompt_cache_key: Option<String> = row.get(5)?;
                 let thinking_mode_str: Option<String> = row.get(6)?;
                 let workstudio_id: Option<String> = row.get(7)?;
-                let created_at_str: String = row.get(8)?;
-                let updated_at_str: String = row.get(9)?;
-                let message_count_i64: i64 = row.get(10)?;
-                let turn_count_i64: i64 = row.get(11)?;
+                let primary_path: Option<String> = row.get(8)?;
+                let primary_path_kind: Option<String> = row.get(9)?;
+                let primary_path_pref: Option<String> = row.get(10)?;
+                let active_files_str: Option<String> = row.get(11)?;
+                let active_files_updated_at_str: Option<String> = row.get(12)?;
+                let created_at_str: String = row.get(13)?;
+                let updated_at_str: String = row.get(14)?;
+                let last_message_at_str: Option<String> = row.get(15)?;
+                let message_count_i64: i64 = row.get(16)?;
+                let turn_count_i64: i64 = row.get(17)?;
 
                 let thinking_mode: Option<serde_json::Value> = thinking_mode_str
                     .as_deref()
                     .and_then(|s| serde_json::from_str(s).ok());
+
+                let active_files = active_files_str
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str(s).ok());
+
+                let active_files_updated_at = active_files_updated_at_str
+                    .as_deref()
+                    .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                    .map(|dt| dt.with_timezone(&Utc));
+
+                let last_message_at = last_message_at_str
+                    .as_deref()
+                    .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                    .map(|dt| dt.with_timezone(&Utc));
 
                 Ok(Conversation {
                     id: row.get(0)?,
@@ -695,6 +743,12 @@ impl Database {
                     workstudio_id,
                     message_count: u32::try_from(message_count_i64).ok(),
                     turn_count: u32::try_from(turn_count_i64).ok(),
+                    last_message_at,
+                    primary_path,
+                    primary_path_kind,
+                    primary_path_pref,
+                    active_files,
+                    active_files_updated_at,
                     created_at: DateTime::parse_from_rfc3339(&created_at_str)
                         .map(|dt| dt.with_timezone(&Utc))
                         .unwrap_or_else(|_| Utc::now()),
@@ -716,7 +770,7 @@ impl Database {
             .map_err(|e| StorageError::Lock(e.to_string()))?;
 
         let mut stmt = conn.prepare(
-            "SELECT id, title, agent_name, model_ref, system_prompt, system_prompt_cache_key, thinking_mode, workstudio_id, created_at, updated_at 
+            "SELECT id, title, agent_name, model_ref, system_prompt, system_prompt_cache_key, thinking_mode, workstudio_id, primary_path, primary_path_kind, primary_path_pref, active_files, active_files_updated_at, created_at, updated_at 
              FROM conversations 
              WHERE id = ?1",
         )?;
@@ -728,12 +782,26 @@ impl Database {
             let system_prompt_cache_key: Option<String> = row.get(5)?;
             let thinking_mode_str: Option<String> = row.get(6)?;
             let workstudio_id: Option<String> = row.get(7)?;
-            let created_at_str: String = row.get(8)?;
-            let updated_at_str: String = row.get(9)?;
+            let primary_path: Option<String> = row.get(8)?;
+            let primary_path_kind: Option<String> = row.get(9)?;
+            let primary_path_pref: Option<String> = row.get(10)?;
+            let active_files_str: Option<String> = row.get(11)?;
+            let active_files_updated_at_str: Option<String> = row.get(12)?;
+            let created_at_str: String = row.get(13)?;
+            let updated_at_str: String = row.get(14)?;
 
             let thinking_mode: Option<serde_json::Value> = thinking_mode_str
                 .as_deref()
                 .and_then(|s| serde_json::from_str(s).ok());
+
+            let active_files = active_files_str
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok());
+
+            let active_files_updated_at = active_files_updated_at_str
+                .as_deref()
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.with_timezone(&Utc));
 
             Ok(Some(Conversation {
                 id: row.get(0)?,
@@ -746,6 +814,12 @@ impl Database {
                 workstudio_id,
                 message_count: None,
                 turn_count: None,
+                last_message_at: None,
+                primary_path,
+                primary_path_kind,
+                primary_path_pref,
+                active_files,
+                active_files_updated_at,
                 created_at: DateTime::parse_from_rfc3339(&created_at_str)
                     .map(|dt| dt.with_timezone(&Utc))
                     .unwrap_or_else(|_| Utc::now()),
@@ -865,6 +939,72 @@ impl Database {
                 "Conversation {id} not found"
             )));
         }
+
+        Ok(())
+    }
+
+    /// Get the latest message timestamp (created_at) for a conversation.
+    pub fn get_conversation_latest_message_at(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Option<DateTime<Utc>>, StorageError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Lock(e.to_string()))?;
+
+        let mut stmt = conn.prepare(
+            "SELECT created_at
+             FROM messages
+             WHERE conversation_id = ?1
+             ORDER BY created_at DESC
+             LIMIT 1",
+        )?;
+
+        let out: Option<String> = stmt
+            .query_row(params![conversation_id], |row| row.get(0))
+            .optional()?;
+
+        Ok(out
+            .as_deref()
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&Utc)))
+    }
+
+    /// Persist conversation file index fields without touching `updated_at`.
+    pub fn update_conversation_file_index(
+        &self,
+        conversation_id: &str,
+        primary_path: Option<&str>,
+        primary_path_kind: Option<&str>,
+        primary_path_pref: Option<&str>,
+        active_files_json: Option<&str>,
+        active_files_updated_at: Option<DateTime<Utc>>,
+    ) -> Result<(), StorageError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Lock(e.to_string()))?;
+
+        let updated_at_str = active_files_updated_at.map(|dt| dt.to_rfc3339());
+
+        conn.execute(
+            "UPDATE conversations
+             SET primary_path = ?1,
+                 primary_path_kind = ?2,
+                 primary_path_pref = ?3,
+                 active_files = ?4,
+                 active_files_updated_at = ?5
+             WHERE id = ?6",
+            params![
+                primary_path,
+                primary_path_kind,
+                primary_path_pref,
+                active_files_json,
+                updated_at_str,
+                conversation_id
+            ],
+        )?;
 
         Ok(())
     }
