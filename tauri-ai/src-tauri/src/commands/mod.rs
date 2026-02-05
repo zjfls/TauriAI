@@ -24,7 +24,8 @@ pub use clipboard::clipboard_write_png_base64;
 pub use config::{fetch_provider_models, get_app_config, save_app_config, test_connection};
 pub use conversation::{
     clone_conversation, create_conversation, delete_conversation, delete_messages_from,
-    generate_title, get_conversations, get_messages, get_turn_debug_info,
+    ensure_conversation_file_indexes, generate_title, get_conversations, get_messages,
+    get_turn_debug_info,
     update_conversation_metadata, update_conversation_title,
 };
 pub use devtools::open_devtools_current_window;

@@ -261,6 +261,11 @@ export interface SessionState {
   setSessionWebSearchProvider: (sessionId: string, provider: 'native' | 'tavily' | 'google' | 'brave' | null) => void;
   setSessionDraftContent: (sessionId: string, draftContent: string) => void;
 
+  // Title (conversation title shown in tab)
+  setSessionTitle: (sessionId: string, title: string) => void;
+  /** 当 conversation 标题在其它入口被修改时，同步更新当前窗口已打开的 session（按 conversationId 匹配） */
+  syncConversationTitle: (conversationId: string, title: string) => void;
+
   // Title generation
   generateTitle: (sessionId: string) => Promise<void>;
 
@@ -1875,6 +1880,38 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       draftPersistTimeout = null;
       void get().saveSessionState();
     }, DRAFT_PERSIST_DEBOUNCE_MS);
+  },
+
+  setSessionTitle: (sessionId: string, title: string) => {
+    const next = (title ?? '').trim();
+    if (!next) return;
+
+    set((state) => {
+      const newSessions = new Map(state.sessions);
+      const session = newSessions.get(sessionId);
+      if (!session) return {};
+      if (session.title === next) return {};
+      newSessions.set(sessionId, { ...session, title: next });
+      return { sessions: newSessions };
+    });
+  },
+
+  syncConversationTitle: (conversationId: string, title: string) => {
+    const cid = (conversationId ?? '').trim();
+    const next = (title ?? '').trim();
+    if (!cid || !next) return;
+
+    set((state) => {
+      let changed = false;
+      const newSessions = new Map(state.sessions);
+      for (const [sid, s] of newSessions.entries()) {
+        if (s.conversationId === cid && s.title !== next) {
+          newSessions.set(sid, { ...s, title: next });
+          changed = true;
+        }
+      }
+      return changed ? { sessions: newSessions } : {};
+    });
   },
 
   /**

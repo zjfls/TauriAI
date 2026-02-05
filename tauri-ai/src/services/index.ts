@@ -26,4 +26,7 @@ export {
   createConversation,
   deleteConversation,
   updateConversationTitle,
+  ensureConversationFileIndexes,
+  type BindPreference,
+  type ConversationFileIndexUpdate,
 } from './conversationService';

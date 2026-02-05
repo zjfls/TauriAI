@@ -5,7 +5,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
-import type { Conversation, DebugInfo, Message } from '../types';
+import type { Conversation, ConversationActivePath, DebugInfo, Message } from '../types';
 import { hydrateMessagesFromBackend } from '../utils/hydrateMessages';
 
 /**
@@ -90,4 +90,27 @@ export async function updateConversationTitle(
   title: string
 ): Promise<void> {
   return invoke('update_conversation_title', { conversationId, title });
+}
+
+export type BindPreference = 'file' | 'folder';
+
+export interface ConversationFileIndexUpdate {
+  conversationId: string;
+  primaryPath?: string | null;
+  primaryPathKind?: string | null;
+  primaryPathPref?: string | null;
+  activeFiles?: ConversationActivePath[] | null;
+  activeFilesUpdatedAt?: string | null;
+}
+
+export async function ensureConversationFileIndexes(
+  conversationIds: string[],
+  opts?: { preference?: BindPreference; maxMessages?: number; force?: boolean }
+): Promise<ConversationFileIndexUpdate[]> {
+  return invoke<ConversationFileIndexUpdate[]>('ensure_conversation_file_indexes', {
+    conversationIds,
+    preference: opts?.preference ?? 'file',
+    maxMessages: opts?.maxMessages ?? 200,
+    force: opts?.force ?? false,
+  });
 }
