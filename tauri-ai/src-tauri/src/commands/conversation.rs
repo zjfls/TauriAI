@@ -344,14 +344,10 @@ fn compute_primary_path(
     active: &[ConversationActivePath],
     preference: BindPreference,
 ) -> (Option<String>, String) {
-    let mut files: Vec<&ConversationActivePath> = active
-        .iter()
-        .filter(|p| p.kind == "file")
-        .collect();
-    let mut dirs: Vec<&ConversationActivePath> = active
-        .iter()
-        .filter(|p| p.kind == "dir")
-        .collect();
+    let mut files: Vec<&ConversationActivePath> =
+        active.iter().filter(|p| p.kind == "file").collect();
+    let mut dirs: Vec<&ConversationActivePath> =
+        active.iter().filter(|p| p.kind == "dir").collect();
 
     files.sort_by(|a, b| {
         b.score
@@ -667,7 +663,14 @@ pub async fn ensure_conversation_file_indexes(
             None => continue,
         };
 
-        let workstudio_id = (conv.workstudio_id.clone().unwrap_or_default()).trim().to_string();
+        let latest_msg_at = db
+            .get_conversation_latest_message_at(&conv.id)
+            .map_err(|e| e.to_string())?;
+        let fallback_index_at = latest_msg_at.unwrap_or(conv.updated_at);
+
+        let workstudio_id = (conv.workstudio_id.clone().unwrap_or_default())
+            .trim()
+            .to_string();
         if workstudio_id.is_empty() {
             out.push(ConversationFileIndexUpdate {
                 conversation_id: conv.id,
@@ -675,7 +678,7 @@ pub async fn ensure_conversation_file_indexes(
                 primary_path_kind: Some("workspace".to_string()),
                 primary_path_pref: Some(preference.as_str().to_string()),
                 active_files: None,
-                active_files_updated_at: None,
+                active_files_updated_at: Some(fallback_index_at),
             });
             continue;
         }
@@ -684,21 +687,51 @@ pub async fn ensure_conversation_file_indexes(
             .get_workstudio(&workstudio_id)
             .map_err(|e| e.to_string())?;
         let Some(ws) = ws else {
+            let active_index_at = Some(fallback_index_at);
+
+            let mut primary_kind = conv
+                .primary_path_kind
+                .clone()
+                .unwrap_or_else(|| "workspace".to_string());
+            let mut primary_path = conv.primary_path.clone();
+            if matches!(primary_kind.as_str(), "file" | "folder")
+                && primary_path.as_deref().unwrap_or("").trim().is_empty()
+            {
+                primary_kind = "workspace".to_string();
+                primary_path = None;
+            }
+
+            let active_files_json = conv.active_files.as_ref().and_then(|v| {
+                if v.is_empty() {
+                    None
+                } else {
+                    serde_json::to_string(v).ok()
+                }
+            });
+
+            // workstudio 缺失时无法重新计算相对路径；但为了避免前端自动索引循环，
+            // 仍然记录 active_files_updated_at（用于“已索引”的判断）。
+            db.update_conversation_file_index(
+                &conv.id,
+                primary_path.as_deref(),
+                Some(primary_kind.as_str()),
+                Some(preference.as_str()),
+                active_files_json.as_deref(),
+                active_index_at,
+            )
+            .map_err(|e| e.to_string())?;
+
             out.push(ConversationFileIndexUpdate {
                 conversation_id: conv.id,
-                primary_path: None,
-                primary_path_kind: Some("workspace".to_string()),
+                primary_path,
+                primary_path_kind: Some(primary_kind),
                 primary_path_pref: Some(preference.as_str().to_string()),
-                active_files: None,
-                active_files_updated_at: None,
+                active_files: conv.active_files.clone(),
+                active_files_updated_at: active_index_at,
             });
             continue;
         };
         let root = ws.main_folder.clone();
-
-        let latest_msg_at = db
-            .get_conversation_latest_message_at(&conv.id)
-            .map_err(|e| e.to_string())?;
 
         let stored_index_at = conv.active_files_updated_at;
         let mut need_recompute_active = force
@@ -755,12 +788,14 @@ pub async fn ensure_conversation_file_indexes(
 
             active_paths = map
                 .into_iter()
-                .map(|((kind, path), (score, last_used_at))| ConversationActivePath {
-                    path,
-                    score,
-                    kind,
-                    last_used_at,
-                })
+                .map(
+                    |((kind, path), (score, last_used_at))| ConversationActivePath {
+                        path,
+                        score,
+                        kind,
+                        last_used_at,
+                    },
+                )
                 .collect();
 
             active_paths.sort_by(|a, b| {
@@ -780,6 +815,12 @@ pub async fn ensure_conversation_file_indexes(
             }
         } else if let Some(stored) = conv.active_files.as_ref() {
             active_paths = stored.clone();
+        }
+
+        // 没有任何消息时，latest_msg_at 为 None；为了避免前端自动索引反复触发，
+        // 这里使用对话的 updated_at 作为一个稳定的“索引时间戳”占位。
+        if active_index_at.is_none() {
+            active_index_at = Some(conv.updated_at);
         }
 
         let (primary_path, primary_kind) = compute_primary_path(&active_paths, preference);
