@@ -1,6 +1,10 @@
 use std::collections::HashMap;
 use std::process::Stdio;
 
+// Windows: prevent console window flashing for short-lived child processes (cmd.exe /C ...).
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 use async_trait::async_trait;
 use serde::Deserialize;
 use tokio::io::AsyncReadExt;
@@ -186,6 +190,8 @@ impl ToolHandler for ShellCommandTool {
         let (program, program_args) = build_shell_invocation(&args.command, args.login);
 
         let mut cmd = Command::new(program);
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
         cmd.args(program_args);
         let mut resolved_workdir = args
             .workdir

@@ -33,6 +33,7 @@ import type { TerminalScope, Workstudio, WorkstudioUiState } from '../../types';
 import { SHORTCUT_ACTIONS, detectShortcutPlatform, normalizeKeybindingString } from '../../shortcuts';
 import { useConfigStore } from '../../stores/configStore';
 import { useTerminalSessionStore } from '../../stores/terminalSessionStore';
+import { hideDragGhostWindow, primeDragGhostWindow, showAndMoveDragGhostWindow } from '../../utils/dragGhostWindow';
 import { getViewWindowParams, openViewWindow } from '../../utils/viewWindow';
 import { setupMonaco } from '../../utils/monaco';
 import { TerminalSurface, type TerminalSurfaceHandle } from '../Terminal/TerminalSurface';
@@ -1550,53 +1551,18 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
   const lastDragPointRef = useRef<{ x: number; y: number } | null>(null);
   const dragCancelledByEscapeRef = useRef(false);
-  const dragTearOffTriggeredRef = useRef(false);
-  const dragMonitorTimerRef = useRef<number | null>(null);
   const [splitPreview, setSplitPreview] = useState<SplitPreview | null>(null);
 
   useEffect(() => {
     if (!activeDragTabId) return;
     dragCancelledByEscapeRef.current = false;
-    dragTearOffTriggeredRef.current = false;
-    if (dragMonitorTimerRef.current) window.clearInterval(dragMonitorTimerRef.current);
     const onKeyDown = (ev: KeyboardEvent) => {
       if (ev.key !== 'Escape') return;
       dragCancelledByEscapeRef.current = true;
     };
     window.addEventListener('keydown', onKeyDown, true);
-    // 在拖拽过程中轮询鼠标全局坐标，避免“鼠标移出窗体后 mouseup 事件不回传”导致 onDragEnd 不触发。
-    // 参考 VS Code：拖出窗体时立刻创建新窗口。
-    dragMonitorTimerRef.current = window.setInterval(() => {
-      if (!activeDragTabId) return;
-      if (dragTearOffTriggeredRef.current) return;
-
-      const start = dragStartRef.current;
-      const point = lastDragPointRef.current;
-      const movedDist = start && point ? Math.hypot(point.x - start.x, point.y - start.y) : 0;
-      if (movedDist < 24) return;
-
-      void (async () => {
-        const outside = await isCursorOutsideCurrentWindow(TEAR_OFF_WINDOW_THRESHOLD_PX);
-        if (!outside) return;
-        if (dragTearOffTriggeredRef.current) return;
-        dragTearOffTriggeredRef.current = true;
-        // 收起拖拽 UI（即使 mouseup 不回传，也能终止 overlay）
-        dragStartRef.current = null;
-        lastDragPointRef.current = null;
-        setActiveDragTabId(null);
-        setSplitPreview(null);
-        tearOffTabToNewWindow(activeDragTabId);
-      })();
-    }, 80);
     return () => window.removeEventListener('keydown', onKeyDown, true);
   }, [activeDragTabId]);
-
-  useEffect(() => {
-    return () => {
-      if (dragMonitorTimerRef.current) window.clearInterval(dragMonitorTimerRef.current);
-      dragMonitorTimerRef.current = null;
-    };
-  }, []);
 
   const isCursorOutsideCurrentWindow = useCallback(async (thresholdPx: number): Promise<boolean> => {
     try {
@@ -1615,6 +1581,72 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       return false;
     }
   }, []);
+
+  useEffect(() => {
+    if (!activeDragTabId) {
+      void hideDragGhostWindow();
+      return;
+    }
+
+    const title = (() => {
+      const parsed = parseTabKey(activeDragTabId);
+      if (!parsed) return null;
+      const file = openFilesRef.current.find((f) => f.id === parsed.fileId) ?? null;
+      return file?.title || basename(parsed.fileId) || '文件';
+    })();
+
+    if (title) {
+      void primeDragGhostWindow({ title });
+    }
+
+    let disposed = false;
+    let inFlight = false;
+    let wasOutside = false;
+
+    const tick = async () => {
+      if (disposed) return;
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const [cursor, pos, size] = await Promise.all([
+          cursorPosition().catch(() => null),
+          getCurrentWebviewWindow().outerPosition().catch(() => null),
+          getCurrentWebviewWindow().outerSize().catch(() => null),
+        ]);
+        if (!cursor || !pos || !size) return;
+
+        const left = pos.x - TEAR_OFF_WINDOW_THRESHOLD_PX;
+        const top = pos.y - TEAR_OFF_WINDOW_THRESHOLD_PX;
+        const right = pos.x + size.width + TEAR_OFF_WINDOW_THRESHOLD_PX;
+        const bottom = pos.y + size.height + TEAR_OFF_WINDOW_THRESHOLD_PX;
+        const outside = cursor.x < left || cursor.x > right || cursor.y < top || cursor.y > bottom;
+
+        if (outside) {
+          wasOutside = true;
+          await showAndMoveDragGhostWindow({ title: title || '文件' }, cursor);
+          return;
+        }
+
+        if (wasOutside) {
+          wasOutside = false;
+          await hideDragGhostWindow();
+        }
+      } catch {
+        // ignore
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    void tick();
+    const interval = window.setInterval(() => void tick(), 32);
+
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+      void hideDragGhostWindow();
+    };
+  }, [activeDragTabId]);
 
   const tearOffTabToNewWindow = useCallback(
     (tabId: string) => {
@@ -1704,7 +1736,6 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     setActiveDragTabId(activeId);
     setSplitPreview(null);
     dragCancelledByEscapeRef.current = false;
-    dragTearOffTriggeredRef.current = false;
 
     const ev = e.activatorEvent as MouseEvent | PointerEvent | TouchEvent | null;
     if (ev && 'clientX' in ev) {
@@ -1738,15 +1769,6 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       const active = String(event.active.id);
       const over = event.over ? String(event.over.id) : null;
 
-      // 在轮询触发 tear-off 后，drag end 可能仍然回调一次：直接忽略即可。
-      if (dragTearOffTriggeredRef.current) {
-        dragStartRef.current = null;
-        lastDragPointRef.current = null;
-        setActiveDragTabId(null);
-        setSplitPreview(null);
-        return;
-      }
-
       const point = lastDragPointRef.current;
       dragStartRef.current = null;
       lastDragPointRef.current = null;
@@ -1764,6 +1786,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         }
         setActiveDragTabId(null);
         setSplitPreview(null);
+        void hideDragGhostWindow();
         return;
       }
 
@@ -1780,6 +1803,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       // 先把拖拽 UI 收起，避免异步判断期间 overlay 悬挂
       setActiveDragTabId(null);
       setSplitPreview(null);
+      void hideDragGhostWindow();
 
       if (shouldTearOffByClientPoint) {
         tearOffTabToNewWindow(active);
@@ -1839,19 +1863,12 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       const start = dragStartRef.current;
       const point = lastDragPointRef.current;
 
-      if (dragTearOffTriggeredRef.current) {
-        dragStartRef.current = null;
-        lastDragPointRef.current = null;
-        setActiveDragTabId(null);
-        setSplitPreview(null);
-        return;
-      }
-
       dragStartRef.current = null;
       lastDragPointRef.current = null;
 
       setActiveDragTabId(null);
       setSplitPreview(null);
+      void hideDragGhostWindow();
 
       void (async () => {
         // Esc 取消：不触发“拖出窗口”逻辑

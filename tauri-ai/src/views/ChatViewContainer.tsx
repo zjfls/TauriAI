@@ -27,8 +27,10 @@ import { type WorkspacePane, useWorkspaceLayoutStore } from '../stores/workspace
 import { chatTabId, parseWorkspaceTabId, type WorkspaceTabId } from '../stores/workspaceTabStore';
 import { endChatOpenProfile, getActiveChatOpenProfile, markChatOpenProfile } from '../utils/chatOpenProfile';
 import {
+  closeCurrentWindow,
   dockWorkspaceItemToWindow,
   findChatDockTargetAtCursor,
+  getViewWindowParams,
   openOrFocusConversationChatWindow,
   openViewWindow,
 } from '../utils/viewWindow';
@@ -261,6 +263,24 @@ const ChatViewContainerInner: React.FC = () => {
       },
     ];
   }, [activeSessionId, panes, sessionsMap, validTabIds]);
+
+  // Standalone "popout" window: when it becomes empty (all tabs closed), close the window itself.
+  // 说明：这类窗口通常通过 `openViewWindow(..., { noDefaultSession: true })` 创建，用完即走。
+  const { standalone: isStandaloneWindow, noDefaultSession } = useMemo(() => getViewWindowParams(), []);
+  const hasEverHadTabsRef = useRef(false);
+  const hasAnyTabsNow = useMemo(() => resolvedPanes.some((p) => p.tabIds.length > 0), [resolvedPanes]);
+
+  useEffect(() => {
+    if (hasAnyTabsNow) hasEverHadTabsRef.current = true;
+  }, [hasAnyTabsNow]);
+
+  useEffect(() => {
+    if (!isStandaloneWindow) return;
+    if (!noDefaultSession) return;
+    if (!hasEverHadTabsRef.current) return;
+    if (hasAnyTabsNow) return;
+    void closeCurrentWindow().catch(() => {});
+  }, [hasAnyTabsNow, isStandaloneWindow, noDefaultSession]);
 
   const resolvedFocusedPaneId = useMemo(() => {
     if (focusedPaneId && resolvedPanes.some((p) => p.id === focusedPaneId)) return focusedPaneId;

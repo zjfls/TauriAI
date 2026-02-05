@@ -39,7 +39,9 @@ export type ActiveView =
   | 'workstudio'
   | 'web'
   | 'terminal'
-  | 'window_test';
+  | 'window_test'
+  // Internal / ephemeral views (should not appear in UI navigation)
+  | 'drag-ghost';
 
 // Format prompt types
 export type FormatPromptType = 'chat' | 'plain' | 'json' | 'none';

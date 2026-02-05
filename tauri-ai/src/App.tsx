@@ -12,6 +12,7 @@ import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { MainLayout } from './components/Layout/MainLayout';
 import { StandaloneLayout } from './components/Layout/StandaloneLayout';
 import { WorkstudioView } from './components/Workstudio/WorkstudioView';
+import { DragGhostView } from './components/DragGhost/DragGhostView';
 import { useConfigStore } from './stores/configStore';
 import { useConversationStore } from './stores/conversationStore';
 import { useSessionStore, initStreamListeners } from './stores/sessionStore';
@@ -58,7 +59,8 @@ function App() {
   // Standalone non-chat views should not start/restore chat sessions or stream listeners.
   // Otherwise opening a "文本/导图" window can create or mutate chat sessions unexpectedly.
   const isWorkstudioWindow = viewOverride === 'workstudio';
-  const shouldInitChatRuntime = !isWorkstudioWindow;
+  const isDragGhostWindow = viewOverride === 'drag-ghost';
+  const shouldInitChatRuntime = !isWorkstudioWindow && !isDragGhostWindow;
   
   // Session store for multi-agent workspace
   const restoreSessionState = useSessionStore((state) => state.restoreSessionState);
@@ -151,6 +153,7 @@ function App() {
   // ---------------------------------------------------------------------------
   useEffect(() => {
     if (!isTauri()) return;
+    if (isDragGhostWindow) return;
 
     clearAppClosingIfStale();
 
@@ -237,7 +240,7 @@ function App() {
       unlistenResized?.();
       unlistenClose?.();
     };
-  }, [isStandalone]);
+  }, [isStandalone, isDragGhostWindow]);
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -744,6 +747,10 @@ function App() {
     if (viewDef?.id === 'chat') return null;
     return viewDef?.render() ?? null;
   };
+
+  if (isDragGhostWindow) {
+    return <DragGhostView />;
+  }
 
   if (isWorkstudioWindow) {
     return (
