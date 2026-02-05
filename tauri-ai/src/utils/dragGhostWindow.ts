@@ -21,7 +21,11 @@ const entries = new Map<string, DragGhostEntry>();
 
 const safeLabelPart = (raw: string) => raw.replace(/[^a-zA-Z0-9_:/-]/g, '_');
 
-const ghostLabelForSource = (sourceLabel: string) => `drag-ghost-${safeLabelPart(sourceLabel)}`;
+// 调试友好：label 需要一眼能看出是“幽灵窗”，并且可追溯到来源窗口 label。
+// 注意：label 不能包含空格等特殊字符；这里做了安全过滤。
+const ghostLabelForSource = (sourceLabel: string) => `__tauriai_ghost__${safeLabelPart(sourceLabel)}`;
+
+const ghostWindowTitleForSource = (sourceLabel: string) => `[GHOST] TauriAI (${sourceLabel})`;
 
 const buildGhostUrl = (payload: DragGhostPayload) => {
   const params = new URLSearchParams();
@@ -82,7 +86,7 @@ const ensureEntry = async (sourceLabel: string, payload: DragGhostPayload): Prom
 
   const url = buildGhostUrl({ title });
   const win = new WebviewWindow(label, {
-    title: '',
+    title: ghostWindowTitleForSource(sourceLabel),
     url,
     visible: false,
     transparent: true,
@@ -156,6 +160,12 @@ export const showAndMoveDragGhostWindow = async (payload: DragGhostPayload, curs
     entry.lastPayloadKey = payloadKey;
     try {
       await getCurrentWebviewWindow().emitTo(entry.label, 'drag-ghost:update', { title: payload.title });
+    } catch {
+      // ignore
+    }
+    // 调试友好：同时更新原生窗口标题（即使无装饰，也便于枚举窗口/日志排查）
+    try {
+      await entry.win.setTitle(`${ghostWindowTitleForSource(sourceLabel)} :: ${payload.title}`);
     } catch {
       // ignore
     }
