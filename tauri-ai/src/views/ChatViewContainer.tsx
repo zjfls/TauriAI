@@ -513,6 +513,7 @@ const ChatViewContainerInner: React.FC = () => {
   const pinnedTabId = isDragGhostActive ? activeDragTabId : null;
   const dragGhostBaseTitleRef = useRef<string>('');
   const dragOriginTabStripRectRef = useRef<DOMRect | null>(null);
+  const dragGrabRef = useRef<{ ox: number; oy: number; w: number; h: number } | null>(null);
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
   const lastDragPointRef = useRef<{ x: number; y: number } | null>(null);
   const dragCancelledByEscapeRef = useRef(false);
@@ -761,6 +762,21 @@ const ChatViewContainerInner: React.FC = () => {
       dragStartRef.current = null;
       lastDragPointRef.current = null;
     }
+
+    // 记录“抓取点 offset”（非常关键：进入 ghost 模式时要保持鼠标与 tab 内抓取位置对齐）。
+    // 注意：进入 ghost 之前 tab 可能已经被 dnd-kit transform 影响，不能再用当时的 rect 去算 offset。
+    // 因此这里在 dragStart 就固定下来。
+    dragGrabRef.current = null;
+    const start = dragStartRef.current;
+    if (!start || !stripEl) return;
+    const escapeAttr = (v: string) => v.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const tabEl = stripEl.querySelector(`[data-workspace-tab-id="${escapeAttr(activeId)}"]`) as HTMLElement | null;
+    const tabRect = tabEl ? tabEl.getBoundingClientRect() : null;
+    if (!tabRect) return;
+    const ox = start.x - tabRect.left;
+    const oy = start.y - tabRect.top;
+    if (!Number.isFinite(ox) || !Number.isFinite(oy)) return;
+    dragGrabRef.current = { ox, oy, w: tabRect.width, h: tabRect.height };
   }, [resolveDragGhostTitle, tabToPaneId]);
 
   const handleDragMove = useCallback(
@@ -784,15 +800,28 @@ const ChatViewContainerInner: React.FC = () => {
           setIsDragGhostActive(true);
           const base = dragGhostBaseTitleRef.current || 'Tab';
 
-          const fromPaneId = activeDragTabId ? tabToPaneId.get(activeDragTabId) ?? null : null;
-          const stripEl = fromPaneId ? paneTabStripRefs.current.get(fromPaneId) : null;
-          const escapeAttr = (v: string) => v.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-          const tabEl =
-            stripEl && activeDragTabId
-              ? (stripEl.querySelector(`[data-workspace-tab-id="${escapeAttr(activeDragTabId)}"]`) as HTMLElement | null)
-              : null;
-          const tabRect = tabEl ? tabEl.getBoundingClientRect() : null;
-          startDragGhost(base, tabRect ? { anchorRect: tabRect, clientPoint: point } : { clientPoint: point });
+          const grab = dragGrabRef.current;
+          if (grab) {
+            // 用“当前鼠标点 + 固定 grab offset”构造一个虚拟 rect，确保 offset 恒定且不受 DOM transform 影响
+            const anchorRect = {
+              left: point.x - grab.ox,
+              top: point.y - grab.oy,
+              width: grab.w,
+              height: grab.h,
+            };
+            startDragGhost(base, { anchorRect, clientPoint: point });
+          } else {
+            // fallback：若没抓到初始 rect，就用实时 rect（可能会有轻微偏移）
+            const fromPaneId = activeDragTabId ? tabToPaneId.get(activeDragTabId) ?? null : null;
+            const stripEl = fromPaneId ? paneTabStripRefs.current.get(fromPaneId) : null;
+            const escapeAttr = (v: string) => v.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+            const tabEl =
+              stripEl && activeDragTabId
+                ? (stripEl.querySelector(`[data-workspace-tab-id="${escapeAttr(activeDragTabId)}"]`) as HTMLElement | null)
+                : null;
+            const tabRect = tabEl ? tabEl.getBoundingClientRect() : null;
+            startDragGhost(base, tabRect ? { anchorRect: tabRect, clientPoint: point } : { clientPoint: point });
+          }
         }
         moveDragGhostByClientPoint(point);
       } else if (dragGhostActiveRef.current) {
@@ -830,6 +859,7 @@ const ChatViewContainerInner: React.FC = () => {
 
       dragStartRef.current = null;
       lastDragPointRef.current = null;
+      dragGrabRef.current = null;
 
       const preview = point ? computeSplitPreview(point) : null;
       if (preview) {
@@ -935,6 +965,7 @@ const ChatViewContainerInner: React.FC = () => {
 
       dragStartRef.current = null;
       lastDragPointRef.current = null;
+      dragGrabRef.current = null;
 
       setActiveDragTabId(null);
       setSplitPreview(null);
