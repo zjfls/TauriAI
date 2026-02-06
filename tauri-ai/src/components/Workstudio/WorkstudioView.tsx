@@ -1,8 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { cursorPosition } from '@tauri-apps/api/window';
-import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { openPath, revealItemInDir } from '@tauri-apps/plugin-opener';
 import Editor, { type OnMount } from '@monaco-editor/react';
@@ -34,9 +32,8 @@ import { SHORTCUT_ACTIONS, detectShortcutPlatform, normalizeKeybindingString } f
 import { useConfigStore } from '../../stores/configStore';
 import { useTerminalSessionStore } from '../../stores/terminalSessionStore';
 import { type WindowPane, useWindowLayoutStore } from '../../stores/windowLayoutStore';
-import { useDragGhostSession } from '../../hooks/useDragGhostSession';
 import { useRemoteDragSplitPreview } from '../../hooks/useRemoteDragSplitPreview';
-import { computePopoutWindowBoundsAtCursor, getViewWindowParams, openViewWindow } from '../../utils/viewWindow';
+import { getViewWindowParams } from '../../utils/viewWindow';
 import { setupMonaco } from '../../utils/monaco';
 import { TerminalSurface, type TerminalSurfaceHandle } from '../Terminal/TerminalSurface';
 
@@ -59,10 +56,6 @@ type OpenFile = {
   dataUrl?: string; // for image preview
   base64?: string;  // raw bytes (for binary/pdf preview or external open)
 };
-
-const TEAR_OFF_THRESHOLD_PX = 48;
-const TEAR_OFF_WINDOW_THRESHOLD_PX = 8;
-const GHOST_ACTIVATE_THRESHOLD_PX = 2;
 
 const paneDropId = (paneId: string) => `pane:${paneId}`;
 
@@ -1459,15 +1452,6 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   };
 
   const [activeDragTabId, setActiveDragTabId] = useState<string | null>(null);
-  const {
-    start: startDragGhost,
-    moveByClientPoint: moveDragGhostByClientPoint,
-    stop: stopDragGhost,
-  } = useDragGhostSession({ pollIntervalMs: 32 });
-  const dragGhostActiveRef = useRef(false);
-  const [isDragGhostActive, setIsDragGhostActive] = useState(false);
-  const dragGhostBaseTitleRef = useRef<string>('');
-  const dragOriginTabStripRectRef = useRef<DOMRect | null>(null);
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
   const lastDragPointRef = useRef<{ x: number; y: number } | null>(null);
   const dragCancelledByEscapeRef = useRef(false);
@@ -1498,71 +1482,6 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     for (const p of resolvedPanes) map.set(p.id, p);
     return map;
   }, [resolvedPanes]);
-
-  const isCursorOutsideCurrentWindow = useCallback(async (thresholdPx: number): Promise<boolean> => {
-    try {
-      const [cursor, pos, size] = await Promise.all([
-        cursorPosition().catch(() => null),
-        getCurrentWebviewWindow().outerPosition().catch(() => null),
-        getCurrentWebviewWindow().outerSize().catch(() => null),
-      ]);
-      if (!cursor || !pos || !size) return false;
-      const left = pos.x - thresholdPx;
-      const top = pos.y - thresholdPx;
-      const right = pos.x + size.width + thresholdPx;
-      const bottom = pos.y + size.height + thresholdPx;
-      return cursor.x < left || cursor.x > right || cursor.y < top || cursor.y > bottom;
-    } catch {
-      return false;
-    }
-  }, []);
-
-  const tearOffTabToNewWindow = useCallback(
-    (fileId: string, clientPoint?: { x: number; y: number } | null) => {
-      const normalized = normalizeFsPath(fileId);
-      if (!normalized) return;
-      if (!workstudioId) return;
-
-      const file = openFilesRef.current.find((f) => f.id === normalized) ?? null;
-      const title = file?.title || basename(normalized) || 'Workstudio';
-
-      void (async () => {
-        try {
-          const bounds = await computePopoutWindowBoundsAtCursor({
-            clientPoint: clientPoint ?? null,
-            minWidth: 720,
-            minHeight: 520,
-            fallbackWidth: 1100,
-            fallbackHeight: 740,
-          });
-
-          const label = `view-workstudio-${workstudioId}-tearoff-${Date.now()}-${Math.random()
-            .toString(16)
-            .slice(2)}`;
-          const win = openViewWindow('workstudio', title, {
-            label,
-            workstudioId,
-            noDefaultSession: true,
-            filePath: normalized,
-            window: bounds,
-          });
-
-          win.once('tauri://created', () => {
-            void win.setFocus().catch(() => {});
-            closeFileTab(normalized);
-          });
-          win.once('tauri://error', (err) => {
-            console.error('Failed to tear off workstudio tab:', (err as any)?.payload ?? err);
-            alert('打开新窗口失败，请检查窗口权限/配置');
-          });
-        } catch (err) {
-          console.error('Failed to tear off workstudio tab:', err);
-          alert('当前环境不支持打开新窗口');
-        }
-      })();
-    },
-    [closeFileTab, workstudioId, computePopoutWindowBoundsAtCursor]
-  );
 
   const computeSplitPreview = useCallback((point: { x: number; y: number }): SplitPreview | null => {
     for (const [paneId, el] of paneBodyRefs.current) {
@@ -1595,20 +1514,39 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     onPreview: (p) => setRemoteSplitPreview(p),
   });
 
+  const getTabStripPaneAtPoint = useCallback((point: { x: number; y: number }): string | null => {
+    for (const [paneId, el] of paneTabStripRefs.current) {
+      const rect = el.getBoundingClientRect();
+      if (point.x < rect.left || point.x > rect.right) continue;
+      if (point.y < rect.top || point.y > rect.bottom) continue;
+      return paneId;
+    }
+    return null;
+  }, []);
+
+  // 仅当指针在 tab strip 区域时才参与“tab 排序”的碰撞检测。
+  // 这样可以避免在编辑器区域拖动时，tab 顺序被 dnd-kit 的排序预览/落点影响。
+  const collisionDetection = useCallback(
+    (args: any) => {
+      const p = args?.pointerCoordinates as { x: number; y: number } | null | undefined;
+      if (!p) return closestCenter(args);
+
+      const inTabStrip = Boolean(getTabStripPaneAtPoint(p));
+      if (inTabStrip) return closestCenter(args);
+
+      const droppableContainers = (args?.droppableContainers ?? []).filter((c: any) =>
+        String(c?.id ?? '').startsWith('pane:')
+      );
+      return closestCenter({ ...args, droppableContainers });
+    },
+    [getTabStripPaneAtPoint]
+  );
+
   const handleDragStart = useCallback((e: DragStartEvent) => {
     const activeId = String(e.active.id);
     setActiveDragTabId(activeId);
     setSplitPreview(null);
     dragCancelledByEscapeRef.current = false;
-
-    const file = openFilesRef.current.find((f) => f.id === activeId) ?? null;
-    const title = file?.title || basename(activeId) || '文件';
-    dragGhostActiveRef.current = false;
-    setIsDragGhostActive(false);
-    dragGhostBaseTitleRef.current = title;
-    const fromPaneId = tabToPaneId.get(activeId) ?? null;
-    const stripEl = fromPaneId ? paneTabStripRefs.current.get(fromPaneId) : null;
-    dragOriginTabStripRectRef.current = stripEl ? stripEl.getBoundingClientRect() : null;
 
     const ev = e.activatorEvent as MouseEvent | PointerEvent | TouchEvent | null;
     if (ev && 'clientX' in ev) {
@@ -1618,7 +1556,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       dragStartRef.current = null;
       lastDragPointRef.current = null;
     }
-  }, [tabToPaneId]);
+  }, []);
 
   const handleDragMove = useCallback(
     (e: DragMoveEvent) => {
@@ -1626,38 +1564,6 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       if (!start) return;
       const point = { x: start.x + e.delta.x, y: start.y + e.delta.y };
       lastDragPointRef.current = point;
-
-      const rect = dragOriginTabStripRectRef.current;
-      const outsideTabStrip =
-        !rect ||
-        point.x < rect.left - GHOST_ACTIVATE_THRESHOLD_PX ||
-        point.x > rect.right + GHOST_ACTIVATE_THRESHOLD_PX ||
-        point.y < rect.top - GHOST_ACTIVATE_THRESHOLD_PX ||
-        point.y > rect.bottom + GHOST_ACTIVATE_THRESHOLD_PX;
-
-      if (outsideTabStrip) {
-        if (!dragGhostActiveRef.current) {
-          dragGhostActiveRef.current = true;
-          setIsDragGhostActive(true);
-          const base = dragGhostBaseTitleRef.current || 'File';
-
-          const fromPaneId = tabToPaneId.get(activeDragTabId ?? '') ?? null;
-          const stripEl = fromPaneId ? paneTabStripRefs.current.get(fromPaneId) : null;
-          const escapeAttr = (v: string) => v.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-          const tabEl =
-            stripEl && activeDragTabId
-              ? (stripEl.querySelector(`[data-workspace-tab-id="${escapeAttr(activeDragTabId)}"]`) as HTMLElement | null)
-              : null;
-          const tabRect = tabEl ? tabEl.getBoundingClientRect() : null;
-
-          startDragGhost(base, tabRect ? { anchorRect: tabRect, clientPoint: point } : { clientPoint: point });
-        }
-        moveDragGhostByClientPoint(point);
-      } else if (dragGhostActiveRef.current) {
-        dragGhostActiveRef.current = false;
-        setIsDragGhostActive(false);
-        stopDragGhost();
-      }
 
       const next = computeSplitPreview(point);
       setSplitPreview((prev) => {
@@ -1667,7 +1573,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         return next;
       });
     },
-    [activeDragTabId, computeSplitPreview, moveDragGhostByClientPoint, startDragGhost, stopDragGhost, tabToPaneId]
+    [computeSplitPreview]
   );
 
   const handleDragEnd = useCallback(
@@ -1676,16 +1582,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       const over = event.over ? String(event.over.id) : null;
 
       const point = lastDragPointRef.current;
-      const originStripRect = dragOriginTabStripRectRef.current;
-      const desiredClientPoint = (() => {
-        if (!point) return null;
-        if (!originStripRect) return point;
-        const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
-        const x = clamp(point.x, originStripRect.left + 24, originStripRect.right - 24);
-        const yMid = originStripRect.top + originStripRect.height / 2;
-        const y = clamp(point.y, yMid, yMid);
-        return { x, y };
-      })();
+
       dragStartRef.current = null;
       lastDragPointRef.current = null;
 
@@ -1694,97 +1591,66 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         splitTabToNewPane(active, preview.direction, preview.paneId);
         setActiveDragTabId(null);
         setSplitPreview(null);
-        dragGhostActiveRef.current = false;
-        setIsDragGhostActive(false);
-        dragGhostBaseTitleRef.current = '';
-        dragOriginTabStripRectRef.current = null;
-        stopDragGhost();
         return;
       }
 
-      const shouldTearOffByClientPoint =
-        Boolean(point) &&
-        Boolean(
-          point &&
-            (point.x < -TEAR_OFF_THRESHOLD_PX ||
-              point.x > window.innerWidth + TEAR_OFF_THRESHOLD_PX ||
-              point.y < -TEAR_OFF_THRESHOLD_PX ||
-              point.y > window.innerHeight + TEAR_OFF_THRESHOLD_PX)
-        );
-
-      // 先把拖拽 UI 收起，避免异步判断期间 overlay 悬挂
+      // 收起拖拽 UI（Workstudio 不支持拖拽 tear-off / ghost window）
       setActiveDragTabId(null);
       setSplitPreview(null);
-      dragGhostActiveRef.current = false;
-      setIsDragGhostActive(false);
-      dragGhostBaseTitleRef.current = '';
-      dragOriginTabStripRectRef.current = null;
-      stopDragGhost();
 
-      if (shouldTearOffByClientPoint) {
-        tearOffTabToNewWindow(active, desiredClientPoint);
+      if (!over) return;
+
+      const fromPaneId = tabToPaneId.get(active) ?? null;
+      const tabStripPaneId = point ? getTabStripPaneAtPoint(point) : null;
+
+      // 1) drop 到 pane 区域：只在跨 pane 时才移动，避免同 pane 下“拖到编辑区”导致顺序变化
+      if (over.startsWith('pane:')) {
+        const toPaneId = over.slice('pane:'.length);
+        if (!toPaneId) return;
+        if (!fromPaneId || fromPaneId !== toPaneId) {
+          moveTabToPane(active, toPaneId);
+        }
         return;
       }
 
-      // 某些平台/环境下，拖拽离开窗口后 pointer move 事件不再更新，
-      // 导致 `client point` 仍停留在窗内，进而无法触发 tear-off。
-      void (async () => {
-        const outsideWindow = await isCursorOutsideCurrentWindow(TEAR_OFF_WINDOW_THRESHOLD_PX);
-        if (outsideWindow) {
-          tearOffTabToNewWindow(active, desiredClientPoint);
-          return;
-        }
+      // 2) drop 到某个 tab：仅当指针在 tab strip 内时才允许“改顺序”
+      const toPaneId = tabToPaneId.get(over) ?? null;
+      if (!toPaneId) return;
 
-        if (!over) return;
+      const isDroppingInTargetTabStrip = tabStripPaneId === toPaneId;
 
-        if (over.startsWith('pane:')) {
-          const toPaneId = over.slice('pane:'.length);
-          moveTabToPane(active, toPaneId);
-          return;
-        }
-
-        const toPaneId = tabToPaneId.get(over) ?? null;
-        if (!toPaneId) return;
-
-        const fromPaneId = tabToPaneId.get(active) ?? null;
-        if (fromPaneId && fromPaneId === toPaneId) {
+      if (fromPaneId && fromPaneId === toPaneId) {
+        if (isDroppingInTargetTabStrip) {
           reorderTabInPane(toPaneId, active, over);
-          return;
         }
+        return;
+      }
 
+      // 移动到另一个 pane：在 tab strip 上 drop 才按具体 index 插入，否则追加到末尾
+      if (isDroppingInTargetTabStrip) {
         const targetPane = paneById.get(toPaneId);
         const index = targetPane ? targetPane.tabIds.indexOf(over) : -1;
         moveTabToPane(active, toPaneId, index >= 0 ? index : undefined);
-      })();
+        return;
+      }
+
+      moveTabToPane(active, toPaneId);
     },
     [
       computeSplitPreview,
-      isCursorOutsideCurrentWindow,
+      getTabStripPaneAtPoint,
       moveTabToPane,
       paneById,
       reorderTabInPane,
       splitTabToNewPane,
-      stopDragGhost,
       tabToPaneId,
-      tearOffTabToNewWindow,
     ]
   );
 
   const handleDragCancel = useCallback(
     (event: DragCancelEvent) => {
       const active = String(event.active.id);
-      const start = dragStartRef.current;
       const point = lastDragPointRef.current;
-      const originStripRect = dragOriginTabStripRectRef.current;
-      const desiredClientPoint = (() => {
-        if (!point) return null;
-        if (!originStripRect) return point;
-        const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
-        const x = clamp(point.x, originStripRect.left + 24, originStripRect.right - 24);
-        const yMid = originStripRect.top + originStripRect.height / 2;
-        const y = clamp(point.y, yMid, yMid);
-        return { x, y };
-      })();
 
       dragStartRef.current = null;
       lastDragPointRef.current = null;
@@ -1792,41 +1658,15 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       setActiveDragTabId(null);
       setSplitPreview(null);
 
-      dragGhostActiveRef.current = false;
-      setIsDragGhostActive(false);
-      dragGhostBaseTitleRef.current = '';
-      dragOriginTabStripRectRef.current = null;
-      stopDragGhost();
+      // Esc 取消：不做任何额外动作
+      if (dragCancelledByEscapeRef.current) return;
 
-      void (async () => {
-        // Esc 取消：不触发“拖出窗口”逻辑
-        if (dragCancelledByEscapeRef.current) return;
-
-        const preview = point ? computeSplitPreview(point) : null;
-        if (preview) {
-          splitTabToNewPane(active, preview.direction, preview.paneId);
-          return;
-        }
-
-        const movedDist = start && point ? Math.hypot(point.x - start.x, point.y - start.y) : 0;
-        const lostFocus = typeof document !== 'undefined' ? !document.hasFocus() : false;
-        const outsideWindow = await isCursorOutsideCurrentWindow(TEAR_OFF_WINDOW_THRESHOLD_PX);
-
-        // 兼容：把 Tab 拖到其他应用窗口（可能导致 DnD cancel），依然要按“拖出窗体”处理。
-        // 要求：确实发生了拖拽（移动距离够大），且出现了“明显外部”信号（失焦/游标在窗外）。
-        const shouldTearOffOnCancel = movedDist >= 24 && (lostFocus || outsideWindow);
-        if (shouldTearOffOnCancel) {
-          tearOffTabToNewWindow(active, desiredClientPoint);
-        }
-      })();
+      const preview = point ? computeSplitPreview(point) : null;
+      if (preview) {
+        splitTabToNewPane(active, preview.direction, preview.paneId);
+      }
     },
-    [
-      computeSplitPreview,
-      isCursorOutsideCurrentWindow,
-      splitTabToNewPane,
-      stopDragGhost,
-      tearOffTabToNewWindow,
-    ]
+    [computeSplitPreview, splitTabToNewPane]
   );
 
   const addFolder = useCallback(async () => {
@@ -2423,7 +2263,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
 	          <DndContext
 	            sensors={sensors}
-	            collisionDetection={closestCenter}
+	            collisionDetection={collisionDetection}
 	            onDragStart={handleDragStart}
 	            onDragMove={handleDragMove}
 	            onDragEnd={handleDragEnd}
@@ -2607,7 +2447,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	            </div>
 
 	            <DragOverlay>
-	              {!isDragGhostActive && activeDragTabId ? (
+	              {activeDragTabId ? (
 	                <div className="rounded-md border border-gray-200 bg-white px-3 py-2 text-sm text-gray-800 shadow-lg dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100">
 	                  {openFiles.find((f) => f.id === activeDragTabId)?.title ?? basename(activeDragTabId)}
 	                </div>
