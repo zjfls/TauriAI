@@ -756,7 +756,7 @@ const ChatViewContainerInner: React.FC = () => {
               ? (stripEl.querySelector(`[data-workspace-tab-id="${escapeAttr(activeDragTabId)}"]`) as HTMLElement | null)
               : null;
           const tabRect = tabEl ? tabEl.getBoundingClientRect() : null;
-          startDragGhost(`【离开TabBar】${base}`, tabRect ? { anchorRect: tabRect, clientPoint: point } : { clientPoint: point });
+          startDragGhost(base, tabRect ? { anchorRect: tabRect, clientPoint: point } : { clientPoint: point });
         }
         moveDragGhostByClientPoint(point);
       } else if (dragGhostActiveRef.current) {

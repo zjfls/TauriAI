@@ -1652,7 +1652,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
               : null;
           const tabRect = tabEl ? tabEl.getBoundingClientRect() : null;
 
-          startDragGhost(`【离开TabBar】${base}`, tabRect ? { anchorRect: tabRect, clientPoint: point } : { clientPoint: point });
+          startDragGhost(base, tabRect ? { anchorRect: tabRect, clientPoint: point } : { clientPoint: point });
         }
         moveDragGhostByClientPoint(point);
       } else if (dragGhostActiveRef.current) {

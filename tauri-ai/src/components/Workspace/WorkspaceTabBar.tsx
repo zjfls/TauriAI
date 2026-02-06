@@ -666,7 +666,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
       if (!dragGhostActiveRef.current) {
         dragGhostActiveRef.current = true;
         const base = dragGhostBaseTitleRef.current || 'Tab';
-        startDragGhost(`【离开TabBar】${base}`);
+        startDragGhost(base);
       }
       moveDragGhostByClientPoint(point);
     } else if (dragGhostActiveRef.current) {
