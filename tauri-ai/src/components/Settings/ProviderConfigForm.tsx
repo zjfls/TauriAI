@@ -181,22 +181,24 @@ export const ProviderConfigForm: React.FC = () => {
     saveConfigDebounced({ ...config, providers: nextProviders });
   };
 
-  const toggleModelExpand = (modelName: string) => {
+  const makeModelKey = (providerName: string, index: number) => `${providerName}::${index}`;
+
+  const toggleModelExpand = (modelKey: string) => {
     const newExpanded = new Set(expandedModels);
-    if (newExpanded.has(modelName)) {
-      newExpanded.delete(modelName);
+    if (newExpanded.has(modelKey)) {
+      newExpanded.delete(modelKey);
     } else {
-      newExpanded.add(modelName);
+      newExpanded.add(modelKey);
     }
     setExpandedModels(newExpanded);
   };
 
-  const toggleAdvancedExpand = (modelName: string) => {
+  const toggleAdvancedExpand = (modelKey: string) => {
     const newExpanded = new Set(expandedAdvanced);
-    if (newExpanded.has(modelName)) {
-      newExpanded.delete(modelName);
+    if (newExpanded.has(modelKey)) {
+      newExpanded.delete(modelKey);
     } else {
-      newExpanded.add(modelName);
+      newExpanded.add(modelKey);
     }
     setExpandedAdvanced(newExpanded);
   };
@@ -226,6 +228,29 @@ export const ProviderConfigForm: React.FC = () => {
   const handleDeleteModel = (index: number) => {
     if (!config) return;
     if (!selectedProviderName) return;
+
+    // 展开状态使用 providerName::index 作为稳定 key；删除模型后需要把后续 index 左移。
+    const providerPrefix = `${selectedProviderName}::`;
+    const shiftKeysAfterDelete = (set: Set<string>): Set<string> => {
+      const next = new Set<string>();
+      for (const key of set) {
+        if (!key.startsWith(providerPrefix)) {
+          next.add(key);
+          continue;
+        }
+        const rawIdx = key.slice(providerPrefix.length);
+        const idx = Number.parseInt(rawIdx, 10);
+        if (!Number.isFinite(idx)) continue;
+        if (idx < index) next.add(key);
+        else if (idx > index) next.add(makeModelKey(selectedProviderName, idx - 1));
+        // idx === index: drop
+      }
+      return next;
+    };
+
+    setExpandedModels((prev) => shiftKeysAfterDelete(prev));
+    setExpandedAdvanced((prev) => shiftKeysAfterDelete(prev));
+
     const nextProviders = providers.map((p) =>
       p.name === selectedProviderName
         ? { ...p, models: p.models.filter((_, i) => i !== index) }
@@ -404,8 +429,8 @@ interface ProviderFormProps {
   onDuplicate: () => void;
   onDelete: () => void;
   onFieldChange: (field: keyof Provider, value: any) => void;
-  onToggleModelExpand: (modelName: string) => void;
-  onToggleAdvancedExpand: (modelName: string) => void;
+  onToggleModelExpand: (modelKey: string) => void;
+  onToggleAdvancedExpand: (modelKey: string) => void;
   onAddModel: () => void;
   onUpdateModel: (index: number, model: Model) => void;
   onDeleteModel: (index: number) => void;
@@ -442,6 +467,8 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
     { value: 'google', label: 'Google', description: 'Gemini' },
     { value: 'ollama', label: 'Ollama', description: '本地模型' },
   ];
+
+  const makeModelKey = (index: number) => `${provider.name}::${index}`;
 
   return (
     <div className="space-y-6">
@@ -536,13 +563,13 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
             <div className="px-4 py-3 text-sm text-gray-500">暂无模型</div>
           ) : (
             provider.models.map((model, index) => (
-              <div key={model.name} className="px-4 py-2">
+              <div key={makeModelKey(index)} className="px-4 py-2">
                 <div
                   className="flex items-center justify-between cursor-pointer"
-                  onClick={() => onToggleModelExpand(model.name)}
+                  onClick={() => onToggleModelExpand(makeModelKey(index))}
                 >
                   <div className="flex items-center gap-2">
-                    {expandedModels.has(model.name) ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                    {expandedModels.has(makeModelKey(index)) ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
                     <span className="text-sm font-medium">{model.name}</span>
                   </div>
                   {isEditing && (
@@ -554,7 +581,7 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
                     </button>
                   )}
                 </div>
-                {expandedModels.has(model.name) && (
+                {expandedModels.has(makeModelKey(index)) && (
                   <div className="mt-2 pl-6 space-y-3">
                     <div className="grid grid-cols-4 gap-3">
                       <div>
@@ -570,10 +597,10 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
                       <div className="flex items-end justify-end">
                         <button
                           type="button"
-                          onClick={() => onToggleAdvancedExpand(model.name)}
+                          onClick={() => onToggleAdvancedExpand(makeModelKey(index))}
                           className="inline-flex items-center gap-1 rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
                         >
-                          {expandedAdvanced.has(model.name) ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                          {expandedAdvanced.has(makeModelKey(index)) ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                           <span>高级</span>
                         </button>
                       </div>
@@ -664,7 +691,7 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
                       </label>
                     </div>
                     {/* Advanced Settings */}
-                    {expandedAdvanced.has(model.name) && (
+                    {expandedAdvanced.has(makeModelKey(index)) && (
                         <div className="pt-2 border-t border-gray-200 dark:border-gray-700">
                           <div className="mt-2 space-y-3">
                             <div className="grid grid-cols-4 gap-3">
