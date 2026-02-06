@@ -49,18 +49,27 @@ export const DragGhostView = () => {
   }, []);
 
   return (
-    <div className="h-screen w-screen p-3">
-      <div className="pointer-events-none flex h-full w-full items-center justify-center rounded-xl border border-gray-200/80 bg-white/90 shadow-xl backdrop-blur-sm dark:border-gray-700/80 dark:bg-gray-900/80">
-        <div className="flex max-w-full items-center gap-3 px-4 py-3">
-          <FileText size={24} className="text-gray-700 dark:text-gray-200" />
-          <div className="min-w-0">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
-              Drag Ghost
-            </div>
-            <div className="mt-1 max-w-[72vw] truncate text-lg font-semibold text-gray-950 dark:text-gray-50">
-              {title || '...'}
-            </div>
-          </div>
+    <div className="h-screen w-screen bg-transparent">
+      {/* 目标：让 ghost 看起来像“正在拖拽的 tab”，而不是一个独立卡片 */}
+      <div className="pointer-events-none h-full w-full select-none overflow-hidden">
+        <div
+          className={[
+            'flex h-full w-full items-center gap-2 px-3 py-2',
+            'rounded-md border border-gray-200/80 bg-white/95 shadow-lg backdrop-blur-sm',
+            'dark:border-gray-700/80 dark:bg-gray-900/90',
+          ].join(' ')}
+        >
+          <span className="flex-shrink-0">
+            <FileText size={16} className="text-gray-600 dark:text-gray-300" />
+          </span>
+
+          <span className="flex-1 min-w-0 truncate text-sm font-medium text-gray-900 dark:text-gray-50">
+            {title || '...'}
+          </span>
+
+          <span className="flex-shrink-0 text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
+            GHOST
+          </span>
         </div>
       </div>
     </div>
