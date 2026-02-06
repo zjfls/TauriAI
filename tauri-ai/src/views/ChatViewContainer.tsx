@@ -480,6 +480,53 @@ const ChatViewContainerInner: React.FC = () => {
     return null;
   }, []);
 
+  const getTabStripPaneAtPoint = useCallback((point: { x: number; y: number }): string | null => {
+    for (const [paneId, el] of paneTabStripRefs.current) {
+      const rect = el.getBoundingClientRect();
+      if (point.x < rect.left || point.x > rect.right) continue;
+      if (point.y < rect.top || point.y > rect.bottom) continue;
+      return paneId;
+    }
+    return null;
+  }, []);
+
+  // 仅当指针在 tab strip 区域时才参与“tab 排序”的碰撞检测。
+  // 这样可以避免在 pane body（非 tab 区域）拖动时，tab 顺序被 dnd-kit 的排序预览/落点影响。
+  const collisionDetection = useCallback(
+    (args: any) => {
+      const p = args?.pointerCoordinates as { x: number; y: number } | null | undefined;
+      if (!p) return closestCenter(args);
+
+      const inTabStrip = Boolean(getTabStripPaneAtPoint(p));
+      if (inTabStrip) {
+        // 在 tab strip 内：用“鼠标指针位置”来决定 over，而不是靠 active rect 与其它 tab rect 的相交。
+        // 这里通过把 collisionRect 替换成一个以 pointer 为中心的 0x0 rect，
+        // 让 closestCenter 实际上变成「离鼠标最近的 tab」。
+        const droppableContainers = (args?.droppableContainers ?? []).filter(
+          (c: any) => !String(c?.id ?? '').startsWith('pane:')
+        );
+        return closestCenter({
+          ...args,
+          droppableContainers,
+          collisionRect: {
+            left: p.x,
+            right: p.x,
+            top: p.y,
+            bottom: p.y,
+            width: 0,
+            height: 0,
+          },
+        });
+      }
+
+      const droppableContainers = (args?.droppableContainers ?? []).filter((c: any) =>
+        String(c?.id ?? '').startsWith('pane:')
+      );
+      return closestCenter({ ...args, droppableContainers });
+    },
+    [getTabStripPaneAtPoint]
+  );
+
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
 
   const {
@@ -1115,7 +1162,7 @@ const ChatViewContainerInner: React.FC = () => {
   return (
     <DndContext
       sensors={sensors}
-      collisionDetection={closestCenter}
+      collisionDetection={collisionDetection}
       onDragStart={handleDragStart}
       onDragMove={handleDragMove}
       onDragEnd={handleDragEnd}
