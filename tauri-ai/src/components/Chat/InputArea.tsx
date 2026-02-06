@@ -13,11 +13,13 @@ import { ThinkingSelector } from './ThinkingSelector';
 import { WebSearchToggle, type WebSearchProvider } from './WebSearchToggle';
 import { isSupportedTextFile, readTextFile, validateFileCount } from '../../utils/textFileUtils';
 import { isValidPdfFile, validatePdfSize, processPdfFile, MAX_PDF_SIZE } from '../../utils/pdfUtils';
-import type { ContextUsageBreakdown, Agent, ContentPart, PendingImage, PendingTextFile, PendingPdf, ApiProtocolType, ThinkingMode, ProviderType, RunMode, Workstudio } from '../../types';
+import type { ContextUsageBreakdown, Agent, ContentPart, PendingImage, PendingTextFile, PendingPdf, ApiProtocolType, ThinkingMode, ProviderType, RunMode, SkillEntry, SkillLoadOutcome, Workstudio } from '../../types';
 import { SUPPORTED_TEXT_EXTENSIONS, MAX_PDF_COUNT, MAX_TEXT_FILES } from '../../types';
 import { FILE_ERROR_MESSAGES } from '../../utils/textFileUtils';
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { useConfigStore } from '../../stores/configStore';
 
 // Constants for textarea sizing
 const MIN_TEXTAREA_HEIGHT = 40; // Minimum height in pixels
@@ -225,6 +227,29 @@ function findActiveAtQuery(text: string, cursor: number): { start: number; query
   if (query.startsWith('{ref:')) return null;
   if (/\s/.test(query)) return null;
   return { start: lastAt, query };
+}
+
+function isDollarMentionChar(ch: string): boolean {
+  return /^[A-Za-z0-9_-]$/.test(ch);
+}
+
+function findActiveDollarQuery(text: string, cursor: number): { start: number; query: string } | null {
+  if (cursor < 0 || cursor > text.length) return null;
+  const before = text.slice(0, cursor);
+  const lastDollar = before.lastIndexOf('$');
+  if (lastDollar < 0) return null;
+  // Ignore $$ (LaTeX block delimiter).
+  if (lastDollar > 0 && before[lastDollar - 1] === '$') return null;
+  const prev = lastDollar === 0 ? '' : before[lastDollar - 1];
+  // Avoid cases like "price$usd" or other identifier fragments.
+  if (prev && isDollarMentionChar(prev)) return null;
+
+  const rest = before.slice(lastDollar + 1);
+  if (!rest) return null;
+  // Only treat as an active query if the user is still typing a mention token.
+  // i.e. all characters from `$` to cursor must be mention chars.
+  if (rest && [...rest].some((ch) => !isDollarMentionChar(ch))) return null;
+  return { start: lastDollar, query: rest };
 }
 
 function base64ToUint8Array(base64: string): Uint8Array {
@@ -949,6 +974,12 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   const [atResults, setAtResults] = useState<{ uri: string; absPath: string; label: string }[]>([]);
   const [atIndex, setAtIndex] = useState(0);
   const atTimerRef = useRef<number | null>(null);
+  type DollarMentionResult =
+    | { kind: 'skill'; name: string; description?: string; insertText: string }
+    | { kind: 'mcp_server'; name: string; description?: string; insertText: string };
+  const [dollarQuery, setDollarQuery] = useState<{ start: number; query: string } | null>(null);
+  const [dollarResults, setDollarResults] = useState<DollarMentionResult[]>([]);
+  const [dollarIndex, setDollarIndex] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const textareaOverlayRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -2000,6 +2031,9 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
     setAtQuery(null);
     setAtResults([]);
     setAtIndex(0);
+    setDollarQuery(null);
+    setDollarResults([]);
+    setDollarIndex(0);
     setFileError(nextFileError);
     setPdfError(null);
 
@@ -2091,6 +2125,53 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
         }
       }
 
+      if (!atQuery && dollarQuery) {
+        if (e.key === 'ArrowDown') {
+          if (dollarResults.length === 0) return;
+          e.preventDefault();
+          setDollarIndex((v) => Math.min(v + 1, dollarResults.length - 1));
+          return;
+        }
+        if (e.key === 'ArrowUp') {
+          if (dollarResults.length === 0) return;
+          e.preventDefault();
+          setDollarIndex((v) => Math.max(v - 1, 0));
+          return;
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          setDollarQuery(null);
+          setDollarResults([]);
+          setDollarIndex(0);
+          return;
+        }
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          const chosen = dollarResults.length > 0 ? dollarResults[dollarIndex] : undefined;
+          if (!chosen) return;
+          const el = textareaRef.current;
+          const cursor = el?.selectionStart ?? content.length;
+          const token = chosen.insertText;
+          const nextContent = content.slice(0, dollarQuery.start) + token + ' ' + content.slice(cursor);
+          handleContentChange(nextContent);
+          setDollarQuery(null);
+          setDollarResults([]);
+          setDollarIndex(0);
+          window.setTimeout(() => {
+            const el2 = textareaRef.current;
+            if (!el2) return;
+            el2.focus();
+            const pos = dollarQuery.start + token.length + 1;
+            try {
+              el2.setSelectionRange(pos, pos);
+            } catch {
+              // ignore
+            }
+          }, 0);
+          return;
+        }
+      }
+
       if (e.key === 'Backspace' || e.key === 'Delete') {
         const el = textareaRef.current;
         if (el && el.selectionStart === el.selectionEnd) {
@@ -2127,6 +2208,9 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
       atQuery,
       atResults,
       atIndex,
+      dollarQuery,
+      dollarResults,
+      dollarIndex,
       content,
       handleContentChange,
       handleSend,
@@ -2143,19 +2227,24 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
    */
   const handleChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-      handleContentChange(e.target.value);
-      const cursor = e.target.selectionStart ?? e.target.value.length;
-      setAtQuery(findActiveAtQuery(e.target.value, cursor));
+      const nextValue = e.target.value;
+      handleContentChange(nextValue);
+      const cursor = e.target.selectionStart ?? nextValue.length;
+      const nextAt = workstudio?.id ? findActiveAtQuery(nextValue, cursor) : null;
+      setAtQuery(nextAt);
+      setDollarQuery(nextAt ? null : findActiveDollarQuery(nextValue, cursor));
     },
-    [handleContentChange]
+    [handleContentChange, workstudio?.id]
   );
 
   const handleSelectionChange = useCallback(() => {
     const el = textareaRef.current;
     if (!el) return;
     const cursor = el.selectionStart ?? content.length;
-    setAtQuery(findActiveAtQuery(content, cursor));
-  }, [content]);
+    const nextAt = workstudio?.id ? findActiveAtQuery(content, cursor) : null;
+    setAtQuery(nextAt);
+    setDollarQuery(nextAt ? null : findActiveDollarQuery(content, cursor));
+  }, [content, workstudio?.id]);
 
   const workspaceMentionsById = useMemo(() => {
     return new Map(workspaceMentions.map((m) => [m.id, m]));
@@ -2266,6 +2355,148 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
     if (!currentAgentName) return undefined;
     return agents.find((a) => a.name === currentAgentName);
   }, [agents, currentAgentName]);
+
+  const config = useConfigStore((state) => state.config);
+
+  // Skills catalog for `$skill` autocomplete (metadata only)
+  const [skillOutcomeForMentions, setSkillOutcomeForMentions] = useState<SkillLoadOutcome | null>(null);
+  useEffect(() => {
+    const skillSetName = currentAgent?.skillSet;
+    if (!skillSetName) {
+      setSkillOutcomeForMentions(null);
+      return;
+    }
+    if (!isTauri()) {
+      setSkillOutcomeForMentions(null);
+      return;
+    }
+
+    let cancelled = false;
+    let unlisten: UnlistenFn | null = null;
+
+    const load = async () => {
+      try {
+        const res = await invoke<[any, SkillLoadOutcome]>('list_skills', {
+          args: {
+            workstudioMainFolder: workstudio?.mainFolder || undefined,
+            includeContents: false,
+          },
+        });
+        if (cancelled) return;
+        setSkillOutcomeForMentions(res[1]);
+      } catch (e) {
+        if (cancelled) return;
+        setSkillOutcomeForMentions({ skills: [], errors: [String(e)] });
+      }
+    };
+
+    void load();
+    void listen('skills:changed', () => void load())
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [currentAgent?.skillSet, workstudio?.mainFolder]);
+
+  const availableSkillsForMentions = useMemo((): SkillEntry[] => {
+    const skillSetName = currentAgent?.skillSet;
+    if (!skillSetName) return [];
+    if (!config?.skills?.sets?.length) return [];
+    if (!skillOutcomeForMentions?.skills?.length) return [];
+
+    const set = config.skills.sets.find((s) => s.name === skillSetName);
+    if (!set || (set.enabled ?? true) === false) return [];
+
+    const disabledGlobal = new Set(config.skills.disabledSkills ?? []);
+    const disabledSet = new Set(set.disabledSkills ?? []);
+    const setSkills = set.skills ?? [];
+
+    const byName = new Map(skillOutcomeForMentions.skills.map((s) => [s.meta.name, s] as const));
+    const enabledNames =
+      setSkills.length === 0 && set.name === '标准skill集'
+        ? skillOutcomeForMentions.skills
+            .map((s) => s.meta.name)
+            .filter((n) => !disabledGlobal.has(n) && !disabledSet.has(n))
+        : setSkills.filter((n) => !disabledGlobal.has(n) && !disabledSet.has(n));
+
+    return enabledNames.map((n) => byName.get(n)).filter(Boolean) as SkillEntry[];
+  }, [config?.skills, currentAgent?.skillSet, skillOutcomeForMentions]);
+
+  const availableMcpServersForMentions = useMemo((): string[] => {
+    if (!config?.mcp?.servers?.length) return [];
+    const enabledServers = new Map(
+      config.mcp.servers.filter((s) => s.config?.enabled).map((s) => [s.name, s] as const)
+    );
+
+    const setName = currentAgent?.mcpSet;
+    if (setName && config?.mcp?.sets?.length) {
+      const set = config.mcp.sets.find((s) => s.name === setName);
+      if (!set) return [];
+      return (set.servers ?? [])
+        .filter((ss) => ss.enabled)
+        .map((ss) => ss.server)
+        .filter((name) => enabledServers.has(name));
+    }
+
+    // Unbound: allow explicit per-message selection of any enabled server.
+    return [...enabledServers.keys()];
+  }, [config?.mcp, currentAgent?.mcpSet]);
+
+  useEffect(() => {
+    if (!dollarQuery) {
+      setDollarResults([]);
+      setDollarIndex(0);
+      return;
+    }
+
+    const q = dollarQuery.query.trim();
+    if (!q) {
+      setDollarResults([]);
+      setDollarIndex(0);
+      return;
+    }
+
+    const qLower = q.toLowerCase();
+    const results: DollarMentionResult[] = [];
+
+    // Skills
+    for (const s of availableSkillsForMentions) {
+      const name = s.meta.name;
+      if (name.toLowerCase().startsWith(qLower)) {
+        results.push({
+          kind: 'skill',
+          name,
+          description: s.meta.description,
+          insertText: `$${name}`,
+        });
+      }
+    }
+
+    // MCP servers
+    for (const serverName of availableMcpServersForMentions) {
+      if (serverName.toLowerCase().startsWith(qLower)) {
+        results.push({
+          kind: 'mcp_server',
+          name: serverName,
+          description: 'MCP Server',
+          insertText: `[$${serverName}](mcp://${serverName})`,
+        });
+      }
+    }
+
+    results.sort((a, b) => {
+      if (a.kind !== b.kind) return a.kind === 'skill' ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+
+    setDollarResults(results.slice(0, 50));
+    setDollarIndex(0);
+  }, [dollarQuery, availableSkillsForMentions, availableMcpServersForMentions]);
 
   const [isMcpModalOpen, setIsMcpModalOpen] = useState(false);
   const hasMcpSetBinding = Boolean(currentAgent?.mcpSet);
@@ -2559,6 +2790,71 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
             </div>
           )}
 
+          {!atQuery && dollarQuery && (
+            <div className="absolute bottom-full mb-2 w-full rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-800">
+              <div className="max-h-56 overflow-auto py-1 text-sm">
+                {dollarResults.length === 0 ? (
+                  <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">
+                    {dollarQuery.query.trim()
+                      ? '未找到匹配的 Skill / MCP Server'
+                      : '继续输入名称以搜索（例如 $deep-learning 或 $github）'}
+                  </div>
+                ) : (
+                  dollarResults.map((r, idx) => (
+                    <button
+                      key={`${r.kind}:${r.name}`}
+                      type="button"
+                      className={[
+                        'flex w-full items-center gap-2 px-3 py-2 text-left',
+                        idx === dollarIndex
+                          ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
+                          : 'hover:bg-gray-50 dark:hover:bg-gray-700',
+                      ].join(' ')}
+                      onMouseDown={(ev) => ev.preventDefault()}
+                      onClick={() => {
+                        const el = textareaRef.current;
+                        const cursor = el?.selectionStart ?? content.length;
+                        const token = r.insertText;
+                        const nextContent =
+                          content.slice(0, dollarQuery.start) + token + ' ' + content.slice(cursor);
+                        handleContentChange(nextContent);
+                        setDollarQuery(null);
+                        setDollarResults([]);
+                        setDollarIndex(0);
+                        window.setTimeout(() => {
+                          const el2 = textareaRef.current;
+                          if (!el2) return;
+                          el2.focus();
+                          const pos = dollarQuery.start + token.length + 1;
+                          try {
+                            el2.setSelectionRange(pos, pos);
+                          } catch {
+                            // ignore
+                          }
+                        }, 0);
+                      }}
+                    >
+                      {r.kind === 'skill' ? (
+                        <FileText size={14} className="text-gray-500 dark:text-gray-400" />
+                      ) : (
+                        <Plug size={14} className="text-gray-500 dark:text-gray-400" />
+                      )}
+                      <span className="truncate">{r.name}</span>
+                      {r.description && (
+                        <span className="ml-auto truncate text-xs text-gray-500 dark:text-gray-400">
+                          {r.description}
+                        </span>
+                      )}
+                    </button>
+                  ))
+                )}
+              </div>
+              <div className="border-t border-gray-200 px-3 py-2 text-[11px] text-gray-500 dark:border-gray-700 dark:text-gray-400">
+                输入 <span className="font-mono">$</span> 搜索 Skills / MCP Servers，回车插入，Esc 关闭
+              </div>
+            </div>
+          )}
+
           <div className="rounded-lg border border-gray-300 bg-gray-50 px-2 py-2 text-gray-900 placeholder-gray-500 transition-colors focus-within:border-blue-500 focus-within:outline-none focus-within:ring-1 focus-within:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 dark:placeholder-gray-400 dark:focus-within:border-blue-400">
             <div className="relative">
               <div
@@ -2620,17 +2916,15 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
       </div>
 
       {/* Attachment menu + extra actions */}
-      <div className="mt-1 flex items-center text-xs">
-        <div className="flex items-center gap-3">
-          <AttachmentMenu
-            onImageClick={() => fileInputRef.current?.click()}
-            onTextFileClick={() => textFileInputRef.current?.click()}
-            onPdfClick={() => pdfFileInputRef.current?.click()}
-            supportsVision={supportsVision}
-            disabled={disabled || isGenerating}
-          />
-          <ExtraActionsMenu onCloneConversation={onCloneConversation} disabled={disabled || isGenerating} />
-        </div>
+      <div className="mt-1 flex items-center gap-3 text-xs">
+        <AttachmentMenu
+          onImageClick={() => fileInputRef.current?.click()}
+          onTextFileClick={() => textFileInputRef.current?.click()}
+          onPdfClick={() => pdfFileInputRef.current?.click()}
+          supportsVision={supportsVision}
+          disabled={disabled || isGenerating}
+        />
+        <ExtraActionsMenu onCloneConversation={onCloneConversation} disabled={disabled || isGenerating} />
       </div>
 
       {/* MCP modal */}

@@ -5,6 +5,7 @@ pub mod bundled_tools;
 pub mod commands;
 pub mod config;
 pub mod errors;
+pub mod mentions;
 pub mod models;
 pub mod prompts;
 pub mod runtime;

@@ -633,17 +633,112 @@ fn render_skills_section(skills: &[SkillEntry]) -> Option<String> {
     Some(lines.join("\n"))
 }
 
-fn find_skill_mentions(text: &str, skills: &[SkillEntry]) -> Vec<SkillEntry> {
-    // Mirror Codex TUI: only consider "$skill-name" explicit mentions.
+fn normalize_path_for_compare(path: &str) -> String {
+    let p = path.replace('\\', "/").trim_end_matches('/').to_string();
+    if cfg!(windows) {
+        p.to_ascii_lowercase()
+    } else {
+        p
+    }
+}
+
+fn is_ascii_mention_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'-'))
+}
+
+fn effective_mcp_server_slugs_lower(
+    config: &crate::models::AppConfig,
+    agent: &crate::models::Agent,
+    sandbox_policy: &crate::models::SandboxPolicy,
+) -> HashSet<String> {
+    if !sandbox_policy.has_full_network_access() {
+        return HashSet::new();
+    }
+    let Some(set_name) = agent
+        .mcp_set
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return HashSet::new();
+    };
+    let Some(mcp_set) = config.mcp.sets.iter().find(|s| s.name == set_name) else {
+        return HashSet::new();
+    };
+
+    let server_map: HashMap<String, crate::models::McpServerConfig> = config
+        .mcp
+        .servers
+        .iter()
+        .map(|e| (e.name.clone(), e.config.clone()))
+        .collect();
+
+    let mut out = HashSet::new();
+    for set_server in &mcp_set.servers {
+        if !set_server.enabled {
+            continue;
+        }
+        let Some(server_cfg) = server_map.get(&set_server.server) else {
+            continue;
+        };
+        if !server_cfg.enabled {
+            continue;
+        }
+        out.insert(set_server.server.to_ascii_lowercase());
+    }
+    out
+}
+
+fn find_skill_mentions(
+    text: &str,
+    skills: &[SkillEntry],
+    reserved_names_lower: &HashSet<String>,
+) -> Vec<SkillEntry> {
+    // Codex-like parsing:
+    // - `$name` mentions (with boundaries) for name matching
+    // - `[$name](path)` for explicit path matching
+    // - When a `$name` conflicts with an "App/MCP" name, do not treat it as a skill.
+    let mentions = crate::mentions::extract_tool_mentions(text);
+
+    let mention_skill_paths: HashSet<String> = mentions
+        .paths
+        .iter()
+        .filter(|path| {
+            !matches!(
+                crate::mentions::tool_kind_for_path(path),
+                crate::mentions::ToolMentionKind::App | crate::mentions::ToolMentionKind::Mcp
+            )
+        })
+        .map(|path| normalize_path_for_compare(crate::mentions::normalize_skill_path(path)))
+        .collect();
+
     let mut seen: HashSet<String> = HashSet::new();
     let mut matches: Vec<SkillEntry> = Vec::new();
     for skill in skills {
-        if seen.contains(&skill.meta.name) {
+        if !seen.insert(skill.meta.name.clone()) {
             continue;
         }
-        let needle = format!("${}", skill.meta.name);
-        if text.contains(&needle) {
-            seen.insert(skill.meta.name.clone());
+
+        let is_reserved = reserved_names_lower.contains(&skill.meta.name.to_ascii_lowercase());
+
+        let name_match = mentions.plain_names.contains(&skill.meta.name) && !is_reserved;
+
+        // Backward-compat / UX: allow `$<any name>` substring matching for skill names
+        // that cannot be represented as a Codex-style `$name` token (non [A-Za-z0-9_-]).
+        // (Still keep the Codex-like strict parsing for mention-safe names to avoid
+        // accidental prefix matches like `$alpha-skillx`.)
+        let legacy_name_match = !name_match
+            && !is_reserved
+            && !is_ascii_mention_name(&skill.meta.name)
+            && text.contains(&format!("${}", skill.meta.name));
+
+        let path_match =
+            mention_skill_paths.contains(&normalize_path_for_compare(&skill.meta.path));
+
+        if name_match || legacy_name_match || path_match {
             matches.push(skill.clone());
         }
     }
@@ -3331,6 +3426,34 @@ async fn run_task_inner(
         let mut mcp_tool_names: Vec<String> = Vec::new();
         let mut mcp_resource_tool_names: Vec<String> = Vec::new();
         if allow_mcp_exec {
+            // Codex-like `$` mention support:
+            // - If the user explicitly mentions one or more MCP servers in this message,
+            //   only inject tools from those servers.
+            // - Mention forms:
+            //   - `$server-name` (plain mention)
+            //   - `[$server-name](mcp://server-name)` (explicit path mention)
+            //   - `[$server-name](app://server-name)` (alias; keeps parity with Codex's `app://` links)
+            let tool_mentions = crate::mentions::extract_tool_mentions(&input.content);
+            let mut requested_servers_lower: HashSet<String> = HashSet::new();
+            for name in &tool_mentions.plain_names {
+                requested_servers_lower.insert(name.to_ascii_lowercase());
+            }
+            for path in &tool_mentions.paths {
+                match crate::mentions::tool_kind_for_path(path) {
+                    crate::mentions::ToolMentionKind::Mcp => {
+                        if let Some(id) = crate::mentions::mcp_id_from_path(path) {
+                            requested_servers_lower.insert(id.to_ascii_lowercase());
+                        }
+                    }
+                    crate::mentions::ToolMentionKind::App => {
+                        if let Some(id) = crate::mentions::app_id_from_path(path) {
+                            requested_servers_lower.insert(id.to_ascii_lowercase());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
             if let Some(set_name) = agent.mcp_set.as_deref().filter(|s| !s.trim().is_empty()) {
                 let server_map: HashMap<String, crate::models::McpServerConfig> = config
                     .mcp
@@ -3340,10 +3463,31 @@ async fn run_task_inner(
                     .collect();
 
                 if let Some(mcp_set) = config.mcp.sets.iter().find(|s| s.name == set_name) {
+                    // Only enable "mention filtering" when the user mentioned at least one *valid*
+                    // server in this set. This avoids accidentally disabling MCP when the user
+                    // mentioned a `$skill`.
+                    let available_in_set_lower: HashSet<String> = mcp_set
+                        .servers
+                        .iter()
+                        .filter(|s| s.enabled)
+                        .map(|s| s.server.to_ascii_lowercase())
+                        .collect();
+                    let requested_in_set_lower: HashSet<String> = requested_servers_lower
+                        .intersection(&available_in_set_lower)
+                        .cloned()
+                        .collect();
+                    let filter_by_mention = !requested_in_set_lower.is_empty();
+
                     let mut effective_servers: HashMap<String, crate::models::McpServerConfig> =
                         HashMap::new();
                     for set_server in &mcp_set.servers {
                         if !set_server.enabled {
+                            continue;
+                        }
+                        if filter_by_mention
+                            && !requested_in_set_lower
+                                .contains(&set_server.server.to_ascii_lowercase())
+                        {
                             continue;
                         }
                         let Some(server_cfg) = server_map.get(&set_server.server) else {
@@ -3416,6 +3560,105 @@ async fn run_task_inner(
                                 servers: Arc::clone(&servers),
                             },
                         ));
+                        registry.register(Arc::new(
+                            crate::runtime::tools::handlers::mcp_resource::ReadMcpResourceTool {
+                                servers,
+                            },
+                        ));
+
+                        mcp_resource_tool_names.push("list_mcp_resources".to_string());
+                        mcp_resource_tool_names.push("list_mcp_resource_templates".to_string());
+                        mcp_resource_tool_names.push("read_mcp_resource".to_string());
+                        enable_mcp_resource_tool_prompt = true;
+                    }
+                }
+            } else if !requested_servers_lower.is_empty() {
+                // No MCP set binding: allow explicit per-message selection by `$server` mention.
+                // This mirrors Codex's "mention to enable" gating while keeping our existing
+                // per-agent binding model as the default.
+                let server_map: HashMap<String, crate::models::McpServerConfig> = config
+                    .mcp
+                    .servers
+                    .iter()
+                    .map(|e| (e.name.clone(), e.config.clone()))
+                    .collect();
+
+                let mut effective_servers: HashMap<String, crate::models::McpServerConfig> =
+                    HashMap::new();
+                // Only consider valid server mentions; ignore unrelated `$...` tokens.
+                let enabled_server_names_lower: HashSet<String> = server_map
+                    .iter()
+                    .filter_map(|(name, cfg)| cfg.enabled.then_some(name.to_ascii_lowercase()))
+                    .collect();
+                let requested_enabled_lower: HashSet<String> = requested_servers_lower
+                    .intersection(&enabled_server_names_lower)
+                    .cloned()
+                    .collect();
+                if requested_enabled_lower.is_empty() {
+                    // No valid server mentioned; skip MCP injection.
+                    // (The agent is unbound, so there is no default server set to fall back to.)
+                    // Note: do not treat `$skill` as server selection.
+                    //
+                    // Keep this branch conservative: we only enable MCP when explicitly requested.
+                    //
+                    // - If you want to use MCP without mentioning servers each time, bind an MCP Set on the agent.
+                    //
+                    // This matches Codex's spirit.
+                    //
+                    // (Also prevents startup overhead by avoiding list_tools calls.)
+                    //
+                    // Return to tool building.
+                    //
+                    // (No-op)
+                } else {
+                    for (server_name, server_cfg) in &server_map {
+                        if !server_cfg.enabled {
+                            continue;
+                        }
+                        if !requested_enabled_lower.contains(&server_name.to_ascii_lowercase()) {
+                            continue;
+                        }
+                        effective_servers.insert(server_name.clone(), server_cfg.clone());
+
+                        let tools = match global_mcp_runtime()
+                            .list_tools(server_name, server_cfg)
+                            .await
+                        {
+                            Ok(t) => t,
+                            Err(err) => {
+                                eprintln!("[MCP] 列工具失败: server={} err={}", server_name, err);
+                                continue;
+                            }
+                        };
+
+                        for tool in tools {
+                            let tool_name = tool.name.as_ref().to_string();
+                            let qualified = qualify_mcp_tool_name(server_name, &tool_name);
+                            mcp_tool_names.push(qualified.clone());
+                            registry.register(Arc::new(
+                                crate::runtime::tools::handlers::mcp::McpToolHandler {
+                                    qualified_name: qualified,
+                                    server_name: server_name.clone(),
+                                    tool_name,
+                                    tool,
+                                    server_config: server_cfg.clone(),
+                                },
+                            ));
+                        }
+                    }
+
+                    if !effective_servers.is_empty() {
+                        let servers = Arc::new(effective_servers);
+                        registry.register(Arc::new(
+                            crate::runtime::tools::handlers::mcp_resource::ListMcpResourcesTool {
+                                servers: Arc::clone(&servers),
+                            },
+                        ));
+                        registry.register(Arc::new(
+                        crate::runtime::tools::handlers::mcp_resource::ListMcpResourceTemplatesTool {
+                            servers: Arc::clone(&servers),
+                        },
+                    ));
                         registry.register(Arc::new(
                             crate::runtime::tools::handlers::mcp_resource::ReadMcpResourceTool {
                                 servers,
@@ -3725,7 +3968,10 @@ async fn run_task_inner(
     // - Do NOT cache this (depends on the current input).
     // - Keep system prompt as a single message by appending the skill blocks.
     if !enabled_skills_meta.is_empty() {
-        let mentioned = find_skill_mentions(&input.content, &enabled_skills_meta);
+        let reserved_names_lower =
+            effective_mcp_server_slugs_lower(&config, agent, &sandbox_policy);
+        let mentioned =
+            find_skill_mentions(&input.content, &enabled_skills_meta, &reserved_names_lower);
         if !mentioned.is_empty() {
             let mentioned_names: HashSet<String> =
                 mentioned.into_iter().map(|s| s.meta.name).collect();
