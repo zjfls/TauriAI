@@ -90,6 +90,7 @@ export function useDragGhostSession(options: UseDragGhostSessionOptions = {}): D
     if (!readyRef.current) return;
     const cur = sessionRef.current;
     if (!cur?.enabled) return;
+    if (followActiveRef.current) return;
     if (inFlightRef.current) return;
 
     dbgRef.current.flushes += 1;
@@ -159,6 +160,7 @@ export function useDragGhostSession(options: UseDragGhostSessionOptions = {}): D
       pointerMoveHandlerRef.current = (e: PointerEvent) => {
         const cur = sessionRef.current;
         if (!cur?.enabled) return;
+        if (followActiveRef.current) return;
         if (!Number.isFinite(e.clientX) || !Number.isFinite(e.clientY)) return;
         lastClientAtRef.current = Date.now();
         pendingClientRef.current = { x: e.clientX, y: e.clientY };
@@ -183,10 +185,20 @@ export function useDragGhostSession(options: UseDragGhostSessionOptions = {}): D
 
     void (async () => {
       try {
-        await createDragGhostWindow({ title: trimmed || '文件' });
-        readyRef.current = true;
-        // Scheme A：后端自己轮询全局鼠标并移动 ghost（Windows 上更稳，且可跨窗口拖拽）。
         const anchorRect = opts?.anchorRect;
+        await createDragGhostWindow({
+          title: trimmed || '文件',
+          width: anchorRect?.width,
+          height: anchorRect?.height,
+        });
+        readyRef.current = true;
+
+        // 先用 clientPoint 做一次“立即定位”，确保 ghost 在第一帧就出现在鼠标附近（尤其是 mac 调试时）。
+        if (opts?.clientPoint) {
+          await moveDragGhostWindowClient(opts.clientPoint);
+        }
+
+        // Scheme A：后端自己轮询全局鼠标并移动 ghost（Windows 上更稳，且可跨窗口拖拽）。
         const clientPoint = opts?.clientPoint;
         const followPayload =
           anchorRect && clientPoint
@@ -210,6 +222,13 @@ export function useDragGhostSession(options: UseDragGhostSessionOptions = {}): D
         }
 
         if (followActiveRef.current) {
+          // 后端跟随模式：不再推送前端 client move，避免两条路径同时移动导致抖动
+          if (pointerMoveHandlerRef.current) {
+            window.removeEventListener('pointermove', pointerMoveHandlerRef.current, { capture: true } as any);
+            pointerMoveHandlerRef.current = null;
+            // eslint-disable-next-line no-console
+            console.log('[dragGhost][pointermove][off][follow]');
+          }
           // 后端跟随模式不需要前端 move loop
           return;
         }
@@ -262,6 +281,7 @@ export function useDragGhostSession(options: UseDragGhostSessionOptions = {}): D
       if (!isTauri()) return;
       const cur = sessionRef.current;
       if (!cur?.enabled) return;
+      if (followActiveRef.current) return;
       if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return;
       lastClientAtRef.current = Date.now();
       pendingClientRef.current = point;

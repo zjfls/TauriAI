@@ -956,6 +956,7 @@ export type KeyboardShortcutActionId =
   | 'app.openHistory'
   | 'app.openDevtools'
   | 'session.new'
+  | 'session.clone'
   | 'session.close'
   | 'session.next'
   | 'session.previous'

@@ -461,7 +461,8 @@ const ChatViewContainerInner: React.FC = () => {
       if (!Number.isFinite(width) || width <= 0) continue;
       // 分屏触发区不要太“像素级”：降低拖到边缘才能分屏的门槛。
       // 这里用“固定最小值 + 按宽度比例 + 上限”做一个更宽松的边缘判定区。
-      const edge = Math.max(56, Math.min(140, Math.round(rect.width * 0.18)));
+      // 可分屏的边缘区域：加宽 50%，提升可用性
+      const edge = Math.max(56, Math.min(210, Math.round(rect.width * 0.27)));
       const distLeft = point.x - rect.left;
       const distRight = rect.right - point.x;
       if (distLeft <= edge) {

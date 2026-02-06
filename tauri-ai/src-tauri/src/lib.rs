@@ -152,6 +152,25 @@ pub fn run() {
                 Some("CmdOrCtrl+N"),
             )?;
 
+            // Session/app actions (moved from top-right toolbar to system menu bar)
+            let new_session =
+                MenuItem::with_id(app, "new_session", "新建会话", true, Some("CmdOrCtrl+T"))?;
+            let clone_session = MenuItem::with_id(
+                app,
+                "clone_session",
+                "克隆当前对话",
+                true,
+                Some("CmdOrCtrl+Shift+D"),
+            )?;
+            let open_settings = MenuItem::with_id(
+                app,
+                "open_settings",
+                "设置…",
+                true,
+                Some("CmdOrCtrl+,"),
+            )?;
+            let session_separator = PredefinedMenuItem::separator(app)?;
+
             let separator = PredefinedMenuItem::separator(app)?;
             let test_window = MenuItem::with_id(
                 app,
@@ -255,10 +274,71 @@ pub fn run() {
                 menu.insert(&view, pos)?;
             }
 
+            // Find existing "Session" submenu (if any) and insert our actions; otherwise create one.
+            let mut session_submenu: Option<Submenu<_>> = None;
+            for item in menu.items().unwrap_or_default() {
+                if let MenuItemKind::Submenu(submenu) = item {
+                    if let Ok(text) = submenu.text() {
+                        if text == "Session" || text == "会话" {
+                            session_submenu = Some(submenu);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if let Some(session) = session_submenu {
+                session.insert_items(
+                    &[
+                        &new_session,
+                        &clone_session,
+                        &session_separator,
+                        &open_settings,
+                    ],
+                    0,
+                )?;
+            } else {
+                let session = Submenu::with_items(
+                    app,
+                    "会话",
+                    true,
+                    &[
+                        &new_session,
+                        &clone_session,
+                        &session_separator,
+                        &open_settings,
+                    ],
+                )?;
+                // Insert after View submenu. On macOS index 0 is the app menu.
+                let pos = if cfg!(target_os = "macos") { 3 } else { 2 };
+                menu.insert(&session, pos)?;
+            }
+
             Ok(menu)
         })
         .on_menu_event(|app, event| {
             match event.id().as_ref() {
+                "new_session" => {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.emit("menu:new_session", ());
+                    } else {
+                        let _ = app.emit("menu:new_session", ());
+                    }
+                }
+                "clone_session" => {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.emit("menu:clone_session", ());
+                    } else {
+                        let _ = app.emit("menu:clone_session", ());
+                    }
+                }
+                "open_settings" => {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.emit("menu:open_settings", ());
+                    } else {
+                        let _ = app.emit("menu:open_settings", ());
+                    }
+                }
                 "new_richtxt" => {
                     // Send event to create a new .tauri.richtxt file
                     let focused = app

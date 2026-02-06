@@ -3,6 +3,8 @@ import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 
 export type DragGhostPayload = {
   title: string;
+  width?: number;
+  height?: number;
 };
 
 const getSourceLabel = () => {
@@ -41,12 +43,12 @@ export const createDragGhostWindow = async (payload: DragGhostPayload) => {
 
   if (!isTauri()) return;
   // eslint-disable-next-line no-console
-  console.log('[dragGhost][create]', { sourceLabel, title });
+  console.log('[dragGhost][create]', { sourceLabel, title, width: payload.width, height: payload.height });
   await invokeDragGhostWithFallback(
     'drag_ghost_create',
     'debug_drag_ghost_create',
-    { title, source_label: sourceLabel },
-    { sourceLabel, title }
+    { title, source_label: sourceLabel, width: payload.width, height: payload.height },
+    { sourceLabel, title, width: payload.width, height: payload.height }
   );
 };
 

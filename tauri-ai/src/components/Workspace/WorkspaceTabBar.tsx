@@ -40,6 +40,7 @@ import {
 import { useDragGhostSession } from '../../hooks/useDragGhostSession';
 import { cursorPosition } from '@tauri-apps/api/window';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { isTauri } from '@tauri-apps/api/core';
 import { computePopoutWindowBoundsAtCursor, dockWorkspaceItemToWindow, findChatDockTargetAtCursor, openViewWindow } from '../../utils/viewWindow';
 import { WorkspaceTabContextMenu } from './WorkspaceTabContextMenu';
 
@@ -73,7 +74,6 @@ interface TabRenderItem {
 
 const TEAR_OFF_THRESHOLD_PX = 48;
 const TEAR_OFF_WINDOW_THRESHOLD_PX = 8;
-const GHOST_ACTIVATE_THRESHOLD_PX = 2;
 
 const AgentSelector: React.FC<{
   agents: Agent[];
@@ -655,8 +655,8 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
     const activeId = String(e.active.id) as WorkspaceTabId;
     setActiveDragTabId(activeId);
 
-    dragGhostActiveRef.current = false;
     dragGhostBaseTitleRef.current = resolveDragGhostTitle(activeId);
+    dragGhostActiveRef.current = false;
 
     const ev = e.activatorEvent as MouseEvent | PointerEvent | null;
     if (ev && 'clientX' in ev) {
@@ -665,6 +665,20 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
     } else {
       dragStartRef.current = null;
       lastDragPointRef.current = null;
+    }
+
+    // 需求：拖拽一开始就显示 ghost（窗口内外一致，不依赖“离开 tabBar”判断）
+    const point = dragStartRef.current;
+    if (point) {
+      const base = dragGhostBaseTitleRef.current || 'Tab';
+      const escapeAttr = (v: string) => v.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      const tabEl = tabBarRef.current
+        ? ((tabBarRef.current.querySelector(`[data-workspace-tab-id="${escapeAttr(activeId)}"]`)) as HTMLElement | null)
+        : null;
+      const tabRect = tabEl ? tabEl.getBoundingClientRect() : null;
+      dragGhostActiveRef.current = true;
+      startDragGhost(base, tabRect ? { anchorRect: tabRect, clientPoint: point } : { clientPoint: point });
+      moveDragGhostByClientPoint(point);
     }
   };
 
@@ -677,31 +691,9 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
     };
     lastDragPointRef.current = point;
 
-    const rect = tabBarRef.current?.getBoundingClientRect() ?? null;
-    const outsideTabBar =
-      !rect ||
-      point.x < rect.left - GHOST_ACTIVATE_THRESHOLD_PX ||
-      point.x > rect.right + GHOST_ACTIVATE_THRESHOLD_PX ||
-      point.y < rect.top - GHOST_ACTIVATE_THRESHOLD_PX ||
-      point.y > rect.bottom + GHOST_ACTIVATE_THRESHOLD_PX;
-
-    if (outsideTabBar) {
-      if (!dragGhostActiveRef.current) {
-        dragGhostActiveRef.current = true;
-        const base = dragGhostBaseTitleRef.current || 'Tab';
-        const escapeAttr = (v: string) => v.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-        const tabEl = tabBarRef.current
-          ? ((activeDragTabId
-              ? tabBarRef.current.querySelector(`[data-workspace-tab-id="${escapeAttr(activeDragTabId)}"]`)
-              : null) as HTMLElement | null)
-          : null;
-        const tabRect = tabEl ? tabEl.getBoundingClientRect() : null;
-        startDragGhost(base, tabRect ? { anchorRect: tabRect, clientPoint: point } : { clientPoint: point });
-      }
+    // ghost 已在 dragStart 时创建，这里只做位置更新即可
+    if (dragGhostActiveRef.current) {
       moveDragGhostByClientPoint(point);
-    } else if (dragGhostActiveRef.current) {
-      dragGhostActiveRef.current = false;
-      stopDragGhost();
     }
   };
 
@@ -916,7 +908,8 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
               {[
                 { id: 'chat' as const, label: '聊天', icon: <MessageSquare size={14} /> },
                 { id: 'history' as const, label: '历史', icon: <History size={14} /> },
-                { id: 'settings' as const, label: '设置', icon: <Settings size={14} /> },
+                // Tauri 下“设置/新建会话”移到系统菜单栏，避免与右上角重复
+                ...(isTauri() ? [] : [{ id: 'settings' as const, label: '设置', icon: <Settings size={14} /> }]),
               ].map((item) => (
                 <button
                   key={item.id}
@@ -940,28 +933,32 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
           )}
         </div>
 
-        <button
-          ref={newSessionButtonRef}
-          onClick={handleNewSessionClick}
-          className="flex items-center gap-1 px-2 py-1.5 rounded-md text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-gray-800 dark:hover:text-gray-200 transition-colors"
-          title="新建会话"
-        >
-          <Plus size={16} />
-          {agents.length > 1 && (
-            <ChevronDown
-              size={12}
-              className={`transition-transform ${showAgentSelector ? 'rotate-180' : ''}`}
-            />
-          )}
-        </button>
+        {!isTauri() && (
+          <>
+            <button
+              ref={newSessionButtonRef}
+              onClick={handleNewSessionClick}
+              className="flex items-center gap-1 px-2 py-1.5 rounded-md text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-gray-800 dark:hover:text-gray-200 transition-colors"
+              title="新建会话"
+            >
+              <Plus size={16} />
+              {agents.length > 1 && (
+                <ChevronDown
+                  size={12}
+                  className={`transition-transform ${showAgentSelector ? 'rotate-180' : ''}`}
+                />
+              )}
+            </button>
 
-        {showAgentSelector && (
-          <AgentSelector
-            agents={agents}
-            onSelect={(agentName) => onNewSession(agentName)}
-            onClose={() => setShowAgentSelector(false)}
-            buttonRef={newSessionButtonRef}
-          />
+            {showAgentSelector && (
+              <AgentSelector
+                agents={agents}
+                onSelect={(agentName) => onNewSession(agentName)}
+                onClose={() => setShowAgentSelector(false)}
+                buttonRef={newSessionButtonRef}
+              />
+            )}
+          </>
         )}
       </div>
 

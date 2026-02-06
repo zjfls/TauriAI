@@ -281,6 +281,19 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
           await handleCreateSession();
           return true;
         }
+        case 'session.clone': {
+          const activeView = useUIStore.getState().activeView;
+          if (activeView !== 'chat') return false;
+          const activeSessionId = useSessionStore.getState().activeSessionId;
+          if (!activeSessionId) return false;
+          try {
+            await useSessionStore.getState().cloneConversation(activeSessionId);
+            return true;
+          } catch (e) {
+            console.error('Failed to clone conversation:', e);
+            return false;
+          }
+        }
         case 'session.close': {
           await handleCloseSession();
           return true;

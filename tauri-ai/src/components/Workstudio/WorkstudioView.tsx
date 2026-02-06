@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { openPath, revealItemInDir } from '@tauri-apps/plugin-opener';
@@ -33,6 +33,7 @@ import { useConfigStore } from '../../stores/configStore';
 import { useTerminalSessionStore } from '../../stores/terminalSessionStore';
 import { type WindowPane, useWindowLayoutStore } from '../../stores/windowLayoutStore';
 import { useRemoteDragSplitPreview } from '../../hooks/useRemoteDragSplitPreview';
+import { useDragGhostSession } from '../../hooks/useDragGhostSession';
 import { getViewWindowParams } from '../../utils/viewWindow';
 import { setupMonaco } from '../../utils/monaco';
 import { TerminalSurface, type TerminalSurfaceHandle } from '../Terminal/TerminalSurface';
@@ -72,13 +73,15 @@ const SortableTab: React.FC<{
   id: string;
   active: boolean;
   title: string;
+  pinnedWhileDragging?: boolean;
   onClick: () => void;
   onClose: () => void;
   onContextMenu?: (e: React.MouseEvent) => void;
-}> = ({ id, active, title, onClick, onClose, onContextMenu }) => {
+}> = ({ id, active, title, pinnedWhileDragging, onClick, onClose, onContextMenu }) => {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
+  const effectiveTransform = pinnedWhileDragging && isDragging ? null : transform;
   const style: React.CSSProperties = {
-    transform: CSS.Transform.toString(transform),
+    transform: CSS.Transform.toString(effectiveTransform),
     transition,
     opacity: isDragging ? 0.6 : 1,
   };
@@ -90,6 +93,7 @@ const SortableTab: React.FC<{
       type="button"
       onClick={onClick}
       onContextMenu={onContextMenu}
+      data-workstudio-tab-id={id}
       className={[
         'group flex items-center gap-2 rounded px-2 py-1 text-xs',
         active
@@ -1455,8 +1459,12 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
   const lastDragPointRef = useRef<{ x: number; y: number } | null>(null);
   const dragCancelledByEscapeRef = useRef(false);
+  const dragGhostActiveRef = useRef(false);
+  const [pinActiveTabWhileDragging, setPinActiveTabWhileDragging] = useState(false);
   const [splitPreview, setSplitPreview] = useState<SplitPreview | null>(null);
   const [remoteSplitPreview, setRemoteSplitPreview] = useState<SplitPreview | null>(null);
+
+  const dragGhost = useDragGhostSession({ pollIntervalMs: 16 });
 
   useEffect(() => {
     if (!activeDragTabId) return;
@@ -1489,7 +1497,8 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       if (point.x < rect.left || point.x > rect.right) continue;
       if (point.y < rect.top || point.y > rect.bottom) continue;
 
-      const edge = Math.max(56, Math.min(140, Math.round(rect.width * 0.18)));
+      // 可分屏的边缘区域：加宽 50%，提升可用性
+      const edge = Math.max(56, Math.min(210, Math.round(rect.width * 0.27)));
       if (rect.width > 0 && point.x <= rect.left + edge) {
         return {
           paneId,
@@ -1547,6 +1556,8 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     setActiveDragTabId(activeId);
     setSplitPreview(null);
     dragCancelledByEscapeRef.current = false;
+    dragGhostActiveRef.current = false;
+    setPinActiveTabWhileDragging(false);
 
     const ev = e.activatorEvent as MouseEvent | PointerEvent | TouchEvent | null;
     if (ev && 'clientX' in ev) {
@@ -1555,6 +1566,20 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     } else {
       dragStartRef.current = null;
       lastDragPointRef.current = null;
+    }
+
+    // Workstudio：拖拽开始就显示 ghost window（不做 tear-off / 不新建窗口）
+    const point = dragStartRef.current;
+    if (point && isTauri()) {
+      const title = openFilesRef.current.find((f) => f.id === activeId)?.title ?? basename(activeId);
+      const escapeAttr = (v: string) => v.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      const tabEl = document.querySelector(
+        `[data-workstudio-tab-id="${escapeAttr(activeId)}"]`
+      ) as HTMLElement | null;
+      const tabRect = tabEl?.getBoundingClientRect() ?? null;
+      dragGhostActiveRef.current = true;
+      dragGhost.start(title, tabRect ? { anchorRect: tabRect, clientPoint: point } : { clientPoint: point });
+      dragGhost.moveByClientPoint(point);
     }
   }, []);
 
@@ -1565,6 +1590,15 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       const point = { x: start.x + e.delta.x, y: start.y + e.delta.y };
       lastDragPointRef.current = point;
 
+      if (dragGhostActiveRef.current) dragGhost.moveByClientPoint(point);
+
+      // 指针不在任何 tab strip 时：固定“被拖拽的 tab”停在 tab 栏位置（ghost 负责跟随）
+      const tabStripPaneId = getTabStripPaneAtPoint(point);
+      setPinActiveTabWhileDragging((prev) => {
+        const next = !tabStripPaneId;
+        return prev === next ? prev : next;
+      });
+
       const next = computeSplitPreview(point);
       setSplitPreview((prev) => {
         if (!next && !prev) return prev;
@@ -1573,7 +1607,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         return next;
       });
     },
-    [computeSplitPreview]
+    [computeSplitPreview, dragGhost, getTabStripPaneAtPoint]
   );
 
   const handleDragEnd = useCallback(
@@ -1585,6 +1619,11 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
       dragStartRef.current = null;
       lastDragPointRef.current = null;
+      setPinActiveTabWhileDragging(false);
+      if (dragGhostActiveRef.current) {
+        dragGhostActiveRef.current = false;
+        dragGhost.stop();
+      }
 
       const preview = point ? computeSplitPreview(point) : null;
       if (preview) {
@@ -1638,6 +1677,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     },
     [
       computeSplitPreview,
+      dragGhost,
       getTabStripPaneAtPoint,
       moveTabToPane,
       paneById,
@@ -1657,6 +1697,11 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
       setActiveDragTabId(null);
       setSplitPreview(null);
+      setPinActiveTabWhileDragging(false);
+      if (dragGhostActiveRef.current) {
+        dragGhostActiveRef.current = false;
+        dragGhost.stop();
+      }
 
       // Esc 取消：不做任何额外动作
       if (dragCancelledByEscapeRef.current) return;
@@ -1666,7 +1711,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         splitTabToNewPane(active, preview.direction, preview.paneId);
       }
     },
-    [computeSplitPreview, splitTabToNewPane]
+    [computeSplitPreview, dragGhost, splitTabToNewPane]
   );
 
   const addFolder = useCallback(async () => {
@@ -2316,6 +2361,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	                                    id={file.id}
 	                                    active={active}
 	                                    title={title}
+	                                    pinnedWhileDragging={pinActiveTabWhileDragging && activeDragTabId === file.id}
 	                                    onClick={() => setActiveTabInPane(pane.id, file.id)}
 	                                    onClose={() => closeFileTab(file.id)}
 	                                    onContextMenu={(e) => {
@@ -2446,13 +2492,15 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	              })}
 	            </div>
 
-	            <DragOverlay>
-	              {activeDragTabId ? (
-	                <div className="rounded-md border border-gray-200 bg-white px-3 py-2 text-sm text-gray-800 shadow-lg dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100">
-	                  {openFiles.find((f) => f.id === activeDragTabId)?.title ?? basename(activeDragTabId)}
-	                </div>
-	              ) : null}
-	            </DragOverlay>
+	            {!isTauri() && (
+	              <DragOverlay>
+	                {activeDragTabId ? (
+	                  <div className="rounded-md border border-gray-200 bg-white px-3 py-2 text-sm text-gray-800 shadow-lg dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100">
+	                    {openFiles.find((f) => f.id === activeDragTabId)?.title ?? basename(activeDragTabId)}
+	                  </div>
+	                ) : null}
+	              </DragOverlay>
+	            )}
 
 	            {splitPreview && (
 	              <div

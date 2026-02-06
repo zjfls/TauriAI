@@ -50,6 +50,14 @@ export const SHORTCUT_ACTIONS: ShortcutActionDefinition[] = [
     defaultWindows: 'Ctrl+T',
   },
   {
+    id: 'session.clone',
+    title: '克隆当前对话',
+    description: '克隆当前会话对应的对话（生成一个新会话并打开）',
+    category: '会话',
+    defaultMac: 'Cmd+Shift+D',
+    defaultWindows: 'Ctrl+Shift+D',
+  },
+  {
     id: 'session.close',
     title: '关闭当前会话',
     description: '关闭当前激活会话（类似关闭标签页）',

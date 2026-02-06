@@ -6,6 +6,11 @@ use std::sync::{
 use std::thread::JoinHandle;
 use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize, Url, WebviewUrl};
 
+#[cfg(target_os = "macos")]
+use core_graphics::event::CGEvent;
+#[cfg(target_os = "macos")]
+use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+
 #[derive(Debug, Clone, Serialize)]
 struct DragGhostUpdatePayload {
     title: String,
@@ -67,6 +72,8 @@ pub fn drag_ghost_create(
     app: tauri::AppHandle,
     title: String,
     source_label: Option<String>,
+    width: Option<f64>,
+    height: Option<f64>,
 ) -> Result<(), String> {
     let title = title.trim().to_string();
     if title.is_empty() {
@@ -83,8 +90,13 @@ pub fn drag_ghost_create(
 
     let source_pos = source.outer_position().ok();
     let source_size = source.outer_size().ok();
+    let scale = source.scale_factor().unwrap_or(1.0);
 
-    let (ghost_w, ghost_h) = if let Some(size) = source_size {
+    let (ghost_w, ghost_h) = if let (Some(w), Some(h)) = (width, height) {
+        let wp = (w.max(80.0).min(1600.0) * scale).round() as i32;
+        let hp = (h.max(20.0).min(500.0) * scale).round() as i32;
+        (wp.max(40), hp.max(20))
+    } else if let Some(size) = source_size {
         let w = (size.width as i32 / 5).max(240);
         let h = (size.height as i32 / 5).max(160);
         (w, h)
@@ -112,9 +124,7 @@ pub fn drag_ghost_create(
         ghost
             .set_position(PhysicalPosition::new(x, y))
             .map_err(|e| e.to_string())?;
-        ghost
-            .set_title(&format!("[GHOST] {}", title))
-            .map_err(|e| e.to_string())?;
+        let _ = ghost.set_title(&format!("[GHOST] {}", title));
         ghost
             .set_focusable(false)
             .map_err(|e| e.to_string())?;
@@ -232,6 +242,15 @@ fn get_cursor_pos_windows() -> Option<(i32, i32)> {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn get_cursor_pos_macos(source: &CGEventSource) -> Option<(i32, i32)> {
+    // 注意：CoreGraphics 的“屏幕坐标”与 Winit/Tauri 一致（原点在主屏幕左上角，y 轴向下）。
+    // 参考 tray-icon 的实现说明：Core graphics screen coordinates match winit.
+    let event = CGEvent::new(source.clone()).ok()?;
+    let p = event.location();
+    Some((p.x.round() as i32, p.y.round() as i32))
+}
+
 #[tauri::command]
 pub fn drag_ghost_follow_start(
     app: tauri::AppHandle,
@@ -240,6 +259,16 @@ pub fn drag_ghost_follow_start(
     width: Option<f64>,
     height: Option<f64>,
 ) -> Result<(), String> {
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    {
+        let _ = app;
+        let _ = offset_x;
+        let _ = offset_y;
+        let _ = width;
+        let _ = height;
+        return Err("drag_ghost_follow_start is only supported on Windows/macOS".to_string());
+    }
+
     let ghost_label = ghost_label_for_source("main");
     let ghost = app
         .get_webview_window(&ghost_label)
@@ -283,10 +312,17 @@ pub fn drag_ghost_follow_start(
         // Target 120Hz-ish; adjust if needed.
         let tick = std::time::Duration::from_millis(8);
 
+        #[cfg(target_os = "macos")]
+        let source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState).ok();
+
         while !stop2.load(Ordering::Relaxed) {
             #[cfg(windows)]
             let pos = get_cursor_pos_windows();
-            #[cfg(not(windows))]
+            #[cfg(target_os = "macos")]
+            let pos = source
+                .as_ref()
+                .and_then(|s| get_cursor_pos_macos(s));
+            #[cfg(all(not(windows), not(target_os = "macos")))]
             let pos: Option<(i32, i32)> = None;
 
             if let Some((x, y)) = pos {
@@ -374,8 +410,10 @@ pub fn debug_drag_ghost_create(
     app: tauri::AppHandle,
     title: String,
     source_label: Option<String>,
+    width: Option<f64>,
+    height: Option<f64>,
 ) -> Result<(), String> {
-    drag_ghost_create(app, title, source_label)
+    drag_ghost_create(app, title, source_label, width, height)
 }
 
 #[tauri::command]

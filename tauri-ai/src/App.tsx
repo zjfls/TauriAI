@@ -321,6 +321,73 @@ function App() {
   }, [isStandalone]);
 
   /**
+   * Menu: Session -> New/Clone/Settings
+   * These are emitted from Rust and always routed to the main window.
+   */
+  useEffect(() => {
+    if (!isTauri()) return;
+    if (!shouldInitChatRuntime) return;
+
+    let disposed = false;
+    let unlistenNew: null | (() => void) = null;
+    let unlistenClone: null | (() => void) = null;
+    let unlistenSettings: null | (() => void) = null;
+
+    void listen('menu:new_session', () => {
+      const agents = config?.agents ?? [];
+      if (agents.length === 0) return;
+      const agentName = config?.defaultAgent ?? agents[0]!.name;
+      void createSession(agentName).catch((e) => console.error('menu:new_session failed:', e));
+      useUIStore.getState().setActiveView('chat');
+    })
+      .then((fn) => {
+        if (disposed) {
+          fn();
+          return;
+        }
+        unlistenNew = fn;
+      })
+      .catch(() => {});
+
+    void listen('menu:clone_session', () => {
+      const activeSessionId = useSessionStore.getState().activeSessionId;
+      if (!activeSessionId) return;
+      void useSessionStore
+        .getState()
+        .cloneConversation(activeSessionId)
+        .catch((e) => console.error('menu:clone_session failed:', e));
+      useUIStore.getState().setActiveView('chat');
+    })
+      .then((fn) => {
+        if (disposed) {
+          fn();
+          return;
+        }
+        unlistenClone = fn;
+      })
+      .catch(() => {});
+
+    void listen('menu:open_settings', () => {
+      useUIStore.getState().setActiveView('settings');
+    })
+      .then((fn) => {
+        if (disposed) {
+          fn();
+          return;
+        }
+        unlistenSettings = fn;
+      })
+      .catch(() => {});
+
+    return () => {
+      disposed = true;
+      unlistenNew?.();
+      unlistenClone?.();
+      unlistenSettings?.();
+    };
+  }, [config, createSession, shouldInitChatRuntime]);
+
+  /**
    * Menu: File -> Open File...
    * The native menu event is emitted from Rust as `menu:open_file`.
    */
