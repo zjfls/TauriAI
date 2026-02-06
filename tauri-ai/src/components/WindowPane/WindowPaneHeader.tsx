@@ -271,8 +271,8 @@ const SortableTab: React.FC<{
         <span
           className={[
             'flex-1 min-w-0 truncate text-sm font-medium',
-            'pr-2 group-hover:pr-20 group-focus-within:pr-20',
-            'transition-[padding-right] duration-150',
+            // 固定预留右侧操作区空间，避免 hover 时 padding 变化导致 tab 宽度抖动/变长
+            'pr-20',
           ].join(' ')}
           onDoubleClick={(e) => {
             if (tab.kind !== 'chat') return;
