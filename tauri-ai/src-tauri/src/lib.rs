@@ -22,7 +22,7 @@ use tokio::sync::Mutex;
 	    delete_mcp_server, delete_mcp_set, delete_messages_from, ensure_workstudio_for_conversation,
 	    ensure_conversation_file_indexes, fetch_provider_models, generate_title, get_app_config,
 	    get_conversations, get_format_prompt, get_mermaid_svg_cache, get_messages, get_turn_debug_info,
-	    close_invoking_window,
+	    close_invoking_window, hide_invoking_window,
 	    debug_drag_ghost_create, debug_drag_ghost_destroy, debug_drag_ghost_move, drag_ghost_create,
 	    drag_ghost_destroy, drag_ghost_follow_start, drag_ghost_follow_stop, drag_ghost_move,
 	    drag_ghost_move_client,
@@ -103,12 +103,13 @@ fn schedule_set_dev_window_icons(app: &tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         // dev 模式下可能会在 ready 后再次设置窗口图标；这里延迟覆盖一次，确保任务栏/Alt-Tab 用 DEV 图标。
         tokio::time::sleep(Duration::from_millis(450)).await;
+        let handle2 = handle.clone();
         let _ = handle.run_on_main_thread(move || {
             let icon = match tauri::image::Image::from_path(&path) {
                 Ok(i) => i.to_owned(),
                 Err(_) => return,
             };
-            for (_label, w) in handle.webview_windows() {
+            for (_label, w) in handle2.webview_windows() {
                 let _ = w.set_icon(icon.clone());
             }
         });
@@ -559,6 +560,7 @@ pub fn run() {
 	            debug_drag_ghost_move,
 	            // Window control
 	            close_invoking_window,
+	            hide_invoking_window,
             // MCP commands
             list_mcp_servers,
             list_mcp_sets,

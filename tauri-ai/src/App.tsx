@@ -31,7 +31,6 @@ import { getCurrentWindowLabelSafe, removeWindowPresence, writeWindowPresence } 
 import {
   clearAppClosingIfStale,
   isAppClosingRecently,
-  markAppClosing,
   readWindowLayout,
   removeWindowRecord,
   upsertWindowRecord,
@@ -251,10 +250,9 @@ function App() {
         // 避免权限报错导致“窗口无法关闭”。
         event.preventDefault();
 
-        // 主窗口关闭视为“应用退出”：保留窗口布局用于下次恢复，并打标记让其它窗口不要把自己从布局里删掉。
+        // 主窗口 close(X)：隐藏到系统托盘，不销毁任何资源（避免会话/对话重建）。
         if (label === 'main') {
-          markAppClosing();
-          await invoke('close_invoking_window').catch(() => {});
+          await invoke('hide_invoking_window').catch(() => {});
           return;
         }
 

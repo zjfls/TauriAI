@@ -120,17 +120,6 @@ fn show_window<R: Runtime>(app: &AppHandle<R>) {
         let _ = window.set_focus();
         return;
     }
-
-    // 兜底：如果主窗口不存在（极少数情况下可能被销毁/未初始化完成），尝试重建它。
-    let _ = tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
-        .title("tauri-ai")
-        .build()
-        .and_then(|w| {
-            let _ = w.show();
-            let _ = w.unminimize();
-            let _ = w.set_focus();
-            Ok(())
-        });
 }
 
 /// 保存应用状态并退出

@@ -4,3 +4,8 @@ pub fn close_invoking_window(window: tauri::WebviewWindow) -> Result<(), String>
     // if the frontend is listening to close events).
     window.destroy().map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+pub fn hide_invoking_window(window: tauri::WebviewWindow) -> Result<(), String> {
+    window.hide().map_err(|e| e.to_string())
+}

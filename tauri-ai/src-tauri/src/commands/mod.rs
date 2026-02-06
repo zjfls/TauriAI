@@ -50,7 +50,7 @@ pub use terminal::{
     terminal_close, terminal_create, terminal_read, terminal_read_base64, terminal_write,
 };
 pub use tools::{close_pty_session, list_pty_sessions};
-pub use window_control::close_invoking_window;
+pub use window_control::{close_invoking_window, hide_invoking_window};
 pub use workstudio::{
     add_workstudio_folder, create_workstudio, ensure_workstudio_for_conversation, get_workstudio,
     remove_workstudio_folder, set_workstudio_main_folder, workstudio_find_files,
