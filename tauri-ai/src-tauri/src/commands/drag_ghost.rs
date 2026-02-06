@@ -6,11 +6,6 @@ use std::sync::{
 use std::thread::JoinHandle;
 use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize, Url, WebviewUrl};
 
-#[cfg(target_os = "macos")]
-use core_foundation_sys::base::{CFRelease, CFTypeRef};
-#[cfg(target_os = "macos")]
-use core_graphics::{geometry::CGPoint, sys::CGEventRef, sys::CGEventSourceRef};
-
 #[derive(Debug, Clone, Serialize)]
 struct DragGhostUpdatePayload {
     title: String,
@@ -24,9 +19,6 @@ struct DragGhostFollowState {
     offset_y: i32,
     w: u32,
     h: u32,
-    cursor_scale: f64,
-    cursor_dx: f64,
-    cursor_dy: f64,
 }
 
 fn follow_state() -> &'static Mutex<DragGhostFollowState> {
@@ -263,29 +255,7 @@ fn get_cursor_pos_windows() -> Option<(i32, i32)> {
     }
 }
 
-#[cfg(target_os = "macos")]
-#[link(name = "CoreGraphics", kind = "framework")]
-extern "C" {
-    fn CGEventCreate(source: CGEventSourceRef) -> CGEventRef;
-    fn CGEventGetLocation(event: CGEventRef) -> CGPoint;
-}
-
-#[cfg(target_os = "macos")]
-fn get_cursor_pos_macos() -> Option<(i32, i32)> {
-    // 关键点：
-    // - 用 `CGEventCreate(NULL)` 获取“当前”全局鼠标位置（不要用自建 event source；某些 state 下会返回 0,0）
-    // - `CGEventGetLocation` 返回 global display coordinates（通常就是我们要喂给 winit/tauri 的屏幕坐标）
-    unsafe {
-        let event = CGEventCreate(std::ptr::null_mut());
-        if event.is_null() {
-            return None;
-        }
-        let p = CGEventGetLocation(event);
-        CFRelease(event as CFTypeRef);
-        Some((p.x.round() as i32, p.y.round() as i32))
-    }
-}
-
+#[cfg(windows)]
 #[tauri::command]
 pub fn drag_ghost_follow_start(
     app: tauri::AppHandle,
@@ -297,16 +267,6 @@ pub fn drag_ghost_follow_start(
     width: Option<f64>,
     height: Option<f64>,
 ) -> Result<(), String> {
-    #[cfg(all(not(windows), not(target_os = "macos")))]
-    {
-        let _ = app;
-        let _ = offset_x;
-        let _ = offset_y;
-        let _ = width;
-        let _ = height;
-        return Err("drag_ghost_follow_start is only supported on Windows/macOS".to_string());
-    }
-
     let ghost_label = ghost_label_for_source("main");
     let ghost = app
         .get_webview_window(&ghost_label)
@@ -357,64 +317,6 @@ pub fn drag_ghost_follow_start(
     // corrected = observed * k + d
     // 目标：让后端 follow 的 cursor 坐标对齐到 tauri/winit 的物理屏幕坐标系。
     // -----------------------------------------------------------------------
-    let mut cursor_scale = 1.0_f64;
-    let mut cursor_dx = 0.0_f64;
-    let mut cursor_dy = 0.0_f64;
-
-    if let (Some(source), Some(cx), Some(cy)) = (source.as_ref(), client_x, client_y) {
-        if cx.is_finite() && cy.is_finite() {
-            let s = source.scale_factor().ok().filter(|v| v.is_finite() && *v > 0.0).unwrap_or(scale);
-            if let Ok(inner) = source.inner_position() {
-                let expected_x = inner.x as f64 + cx * s;
-                let expected_y = inner.y as f64 + cy * s;
-
-                // Read observed cursor once (best-effort). If unavailable, keep defaults.
-                #[cfg(windows)]
-                let observed = get_cursor_pos_windows().map(|(x, y)| (x as f64, y as f64));
-                #[cfg(target_os = "macos")]
-                let observed = get_cursor_pos_macos().map(|(x, y)| (x as f64, y as f64));
-                #[cfg(all(not(windows), not(target_os = "macos")))]
-                let observed: Option<(f64, f64)> = None;
-
-                if let Some((ox, oy)) = observed {
-                    // Estimate scale factor (k) if it looks like a points<->pixels mismatch.
-                    // Keep it conservative to avoid amplifying noise.
-                    let mut ks: Vec<f64> = Vec::new();
-                    if ox.abs() > 1.0 {
-                        let rx = expected_x / ox;
-                        if rx.is_finite() && rx > 0.25 && rx < 4.0 {
-                            ks.push(rx);
-                        }
-                    }
-                    if oy.abs() > 1.0 {
-                        let ry = expected_y / oy;
-                        if ry.is_finite() && ry > 0.25 && ry < 4.0 {
-                            ks.push(ry);
-                        }
-                    }
-                    if !ks.is_empty() {
-                        let avg = ks.iter().sum::<f64>() / ks.len() as f64;
-                        // Round to common scale factors if close (1.0 / 2.0)
-                        cursor_scale = if (avg - 2.0).abs() < 0.15 {
-                            2.0
-                        } else if (avg - 1.0).abs() < 0.15 {
-                            1.0
-                        } else {
-                            avg
-                        };
-                    }
-
-                    cursor_dx = expected_x - ox * cursor_scale;
-                    cursor_dy = expected_y - oy * cursor_scale;
-                    println!(
-                        "[drag_ghost_follow_start][calib] expected=({:.1},{:.1}) observed=({:.1},{:.1}) k={:.3} d=({:.1},{:.1})",
-                        expected_x, expected_y, ox, oy, cursor_scale, cursor_dx, cursor_dy
-                    );
-                }
-            }
-        }
-    }
-
     let join = std::thread::spawn(move || {
         // Target 120Hz-ish; adjust if needed.
         let tick = std::time::Duration::from_millis(8);
@@ -422,20 +324,13 @@ pub fn drag_ghost_follow_start(
         while !stop2.load(Ordering::Relaxed) {
             #[cfg(windows)]
             let pos = get_cursor_pos_windows();
-            #[cfg(target_os = "macos")]
-            let pos = get_cursor_pos_macos();
-            #[cfg(all(not(windows), not(target_os = "macos")))]
+            #[cfg(not(windows))]
             let pos: Option<(i32, i32)> = None;
 
             if let Some((x, y)) = pos {
-                let corrected_x = (x as f64) * cursor_scale + cursor_dx;
-                let corrected_y = (y as f64) * cursor_scale + cursor_dy;
                 // If this ever errors (e.g. window destroyed), just stop.
                 if ghost2
-                    .set_position(PhysicalPosition::new(
-                        corrected_x.round() as i32 - oxp,
-                        corrected_y.round() as i32 - oyp,
-                    ))
+                    .set_position(PhysicalPosition::new(x - oxp, y - oyp))
                     .is_err()
                 {
                     break;
@@ -456,11 +351,33 @@ pub fn drag_ghost_follow_start(
     st.offset_y = oyp;
     st.w = wp;
     st.h = hp;
-    st.cursor_scale = cursor_scale;
-    st.cursor_dx = cursor_dx;
-    st.cursor_dy = cursor_dy;
     println!("[drag_ghost_follow_start] ok label={}", ghost_label);
     Ok(())
+}
+
+#[cfg(not(windows))]
+#[tauri::command]
+pub fn drag_ghost_follow_start(
+    app: tauri::AppHandle,
+    source_label: Option<String>,
+    client_x: Option<f64>,
+    client_y: Option<f64>,
+    offset_x: Option<f64>,
+    offset_y: Option<f64>,
+    width: Option<f64>,
+    height: Option<f64>,
+) -> Result<(), String> {
+    let _ = app;
+    let _ = offset_x;
+    let _ = offset_y;
+    let _ = width;
+    let _ = height;
+    let _ = source_label;
+    let _ = client_x;
+    let _ = client_y;
+    // macOS 上后端 follow 模式的坐标系容易与 winit/tauri 不一致，导致 ghost 跳变/漂移。
+    // 这里直接禁用后端 follow，统一走前端 pointermove + cursorPosition 轮询（跨平台一致，且更可控）。
+    Err("drag_ghost_follow_start is disabled on this platform; use client/cursor polling".to_string())
 }
 
 #[tauri::command]
@@ -479,9 +396,6 @@ pub fn drag_ghost_follow_stop() -> Result<(), String> {
     st.offset_y = 0;
     st.w = 0;
     st.h = 0;
-    st.cursor_scale = 1.0;
-    st.cursor_dx = 0.0;
-    st.cursor_dy = 0.0;
     println!("[drag_ghost_follow_stop] ok");
     Ok(())
 }
