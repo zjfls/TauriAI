@@ -227,7 +227,7 @@ const SortableWorkspaceTab: React.FC<{
       {...listeners}
     >
       {icon}
-      <span className="flex-1 min-w-0 text-sm font-medium truncate flex items-center gap-1">
+      <span className="flex-1 min-w-0 pr-5 text-sm font-medium truncate flex items-center gap-1">
         {item.title}
         {badge}
       </span>
@@ -235,10 +235,12 @@ const SortableWorkspaceTab: React.FC<{
       <button
         onClick={onClose}
         className={[
-          'flex-shrink-0 p-0.5 rounded transition-colors',
+          // 绝对定位：避免 hover 时按钮出现导致 tab 宽度变化（布局抖动）
+          'absolute right-2 top-1/2 -translate-y-1/2',
+          'p-0.5 rounded transition-opacity transition-colors',
           isActive
-            ? 'inline-flex hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
-            : 'hidden group-hover:inline-flex hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300',
+            ? 'inline-flex opacity-100 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
+            : 'inline-flex opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300',
         ].join(' ')}
         title="关闭标签"
       >
