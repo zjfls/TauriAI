@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { getGlobalCursorClientPoint } from '../utils/globalCursor';
+import { getViewWindowParams } from '../utils/viewWindow';
 
 type DragGhostBroadcast = {
   ts: number;
   title?: string;
   sourceLabel?: string;
+  scope?: 'chat' | 'workstudio' | string;
+  view?: string | null;
 };
 
 export const DRAG_GHOST_BROADCAST_KEY = 'tauriai.dragGhost.active';
@@ -48,6 +51,12 @@ export function useRemoteDragSplitPreview<TPreview>(options: UseRemoteDragSplitP
   const lastActiveRef = useRef(false);
   const computePreviewRef = useRef(computePreview);
   const onPreviewRef = useRef(onPreview);
+  const scopeRef = useRef<'chat' | 'workstudio'>('chat');
+
+  useEffect(() => {
+    const params = getViewWindowParams();
+    scopeRef.current = params.view === 'workstudio' ? 'workstudio' : 'chat';
+  }, []);
 
   // 避免 computePreview/onPreview 引用变化导致 effect 反复重建（会触发 preview 清空 -> 产生闪烁）
   useEffect(() => {
@@ -62,8 +71,14 @@ export function useRemoteDragSplitPreview<TPreview>(options: UseRemoteDragSplitP
     if (typeof window === 'undefined') return;
     const refresh = () => {
       const b = readBroadcast();
-      const ok = Boolean(b && Date.now() - b.ts <= ttlMs);
-      setActive(ok);
+      const ttlOk = Boolean(b && Date.now() - b.ts <= ttlMs);
+      const scopeOk = (() => {
+        if (!b) return false;
+        // Backward-compat: old payloads had no `scope`, treat as `chat`
+        const sourceScope = (b.scope ?? 'chat') as any;
+        return sourceScope === scopeRef.current;
+      })();
+      setActive(Boolean(ttlOk && scopeOk));
     };
     refresh();
 

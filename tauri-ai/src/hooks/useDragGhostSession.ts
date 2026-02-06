@@ -20,6 +20,7 @@ import {
   stopDragGhostFollow,
 } from '../utils/dragGhostWindow';
 import { DRAG_GHOST_BROADCAST_KEY } from './useRemoteDragSplitPreview';
+import { getViewWindowParams } from '../utils/viewWindow';
 
 type DragGhostSession = {
   enabled: boolean;
@@ -68,9 +69,11 @@ export function useDragGhostSession(options: UseDragGhostSessionOptions = {}): D
   const setBroadcast = useCallback((title: string) => {
     try {
       const sourceLabel = getCurrentWebviewWindow()?.label;
+      const params = getViewWindowParams();
+      const scope = params.view === 'workstudio' ? 'workstudio' : 'chat';
       window.localStorage.setItem(
         DRAG_GHOST_BROADCAST_KEY,
-        JSON.stringify({ ts: Date.now(), title, sourceLabel })
+        JSON.stringify({ ts: Date.now(), title, sourceLabel, scope, view: params.view ?? null })
       );
     } catch {
       // ignore
