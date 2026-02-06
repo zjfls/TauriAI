@@ -60,6 +60,7 @@ type WorkspaceWindowPane = Omit<WindowPane, 'tabIds' | 'activeTabId'> & {
 
 const WindowPaneView: React.FC<{
   pane: WorkspaceWindowPane;
+  pinnedTabId?: WorkspaceTabId | null;
   sessionsById: Map<string, AgentSession>;
   isFocused: boolean;
   canClosePane: boolean;
@@ -73,6 +74,7 @@ const WindowPaneView: React.FC<{
   registerPaneBodyRef: (paneId: string) => (el: HTMLDivElement | null) => void;
 }> = ({
   pane,
+  pinnedTabId,
   sessionsById,
   isFocused,
   canClosePane,
@@ -132,6 +134,7 @@ const WindowPaneView: React.FC<{
         paneId={pane.id}
         tabIds={pane.tabIds}
         activeTabId={activeTabId}
+        pinnedTabId={pinnedTabId}
         sessionsById={sessionsById}
         isFocused={isFocused}
         canClosePane={canClosePane}
@@ -507,6 +510,7 @@ const ChatViewContainerInner: React.FC = () => {
   const [remoteSplitPreview, setRemoteSplitPreview] = useState<SplitPreview | null>(null);
   const dragGhostActiveRef = useRef(false);
   const [isDragGhostActive, setIsDragGhostActive] = useState(false);
+  const pinnedTabId = isDragGhostActive ? activeDragTabId : null;
   const dragGhostBaseTitleRef = useRef<string>('');
   const dragOriginTabStripRectRef = useRef<DOMRect | null>(null);
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
@@ -1102,6 +1106,7 @@ const ChatViewContainerInner: React.FC = () => {
             <React.Fragment key={pane.id}>
               <WindowPaneView
                 pane={pane}
+                pinnedTabId={pinnedTabId}
                 sessionsById={sessionsById}
                 isFocused={pane.id === resolvedFocusedPaneId}
                 canClosePane={canClosePane}

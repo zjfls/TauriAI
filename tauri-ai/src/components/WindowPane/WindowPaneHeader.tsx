@@ -24,6 +24,8 @@ interface WindowPaneHeaderProps {
   paneId: string;
   tabIds: WorkspaceTabId[];
   activeTabId: WorkspaceTabId | null;
+  /** 当指针离开 tab strip 时，固定被拖拽 tab 的位置（由 ghost window 跟随鼠标）。 */
+  pinnedTabId?: WorkspaceTabId | null;
   sessionsById: Map<string, AgentSession>;
   isFocused: boolean;
   canClosePane: boolean;
@@ -65,10 +67,11 @@ type TabViewModel =
 const SortableTab: React.FC<{
   tab: TabViewModel;
   isActive: boolean;
+  pinnedWhileDragging?: boolean;
   onSelect: () => void;
   onClose: () => void;
   onOpenDockMenu: (session: AgentSession, anchorEl: HTMLElement) => void;
-}> = ({ tab, isActive, onSelect, onClose, onOpenDockMenu }) => {
+}> = ({ tab, isActive, pinnedWhileDragging, onSelect, onClose, onOpenDockMenu }) => {
   const [isRenaming, setIsRenaming] = useState(false);
   const [draftTitle, setDraftTitle] = useState(tab.title);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
@@ -92,8 +95,9 @@ const SortableTab: React.FC<{
     disabled: isRenaming,
   });
 
+  const effectiveTransform = pinnedWhileDragging && isDragging ? null : transform;
   const style: React.CSSProperties = {
-    transform: CSS.Transform.toString(transform),
+    transform: CSS.Transform.toString(effectiveTransform),
     transition,
     opacity: isDragging ? 0.5 : 1,
   };
@@ -368,6 +372,7 @@ export const WindowPaneHeader: React.FC<WindowPaneHeaderProps> = ({
   paneId,
   tabIds,
   activeTabId,
+  pinnedTabId,
   sessionsById,
   isFocused,
   canClosePane,
@@ -512,6 +517,7 @@ export const WindowPaneHeader: React.FC<WindowPaneHeaderProps> = ({
               key={t.id}
               tab={t}
               isActive={t.id === activeTabId}
+              pinnedWhileDragging={Boolean(pinnedTabId && pinnedTabId === t.id)}
               onSelect={() => onSelectTab(t.id)}
               onClose={() => void onCloseTab(t.id)}
               onOpenDockMenu={openDockMenu}
