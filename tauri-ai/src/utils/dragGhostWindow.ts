@@ -5,6 +5,8 @@ export type DragGhostPayload = {
   title: string;
   width?: number;
   height?: number;
+  offsetX?: number;
+  offsetY?: number;
 };
 
 const getSourceLabel = () => {
@@ -43,12 +45,26 @@ export const createDragGhostWindow = async (payload: DragGhostPayload) => {
 
   if (!isTauri()) return;
   // eslint-disable-next-line no-console
-  console.log('[dragGhost][create]', { sourceLabel, title, width: payload.width, height: payload.height });
+  console.log('[dragGhost][create]', {
+    sourceLabel,
+    title,
+    width: payload.width,
+    height: payload.height,
+    offsetX: payload.offsetX,
+    offsetY: payload.offsetY,
+  });
   await invokeDragGhostWithFallback(
     'drag_ghost_create',
     'debug_drag_ghost_create',
-    { title, source_label: sourceLabel, width: payload.width, height: payload.height },
-    { sourceLabel, title, width: payload.width, height: payload.height }
+    {
+      title,
+      source_label: sourceLabel,
+      width: payload.width,
+      height: payload.height,
+      offset_x: payload.offsetX,
+      offset_y: payload.offsetY,
+    },
+    { sourceLabel, title, width: payload.width, height: payload.height, offsetX: payload.offsetX, offsetY: payload.offsetY }
   );
 };
 

@@ -77,6 +77,8 @@ pub fn drag_ghost_create(
     source_label: Option<String>,
     width: Option<f64>,
     height: Option<f64>,
+    offset_x: Option<f64>,
+    offset_y: Option<f64>,
 ) -> Result<(), String> {
     let title = title.trim().to_string();
     if title.is_empty() {
@@ -115,6 +117,20 @@ pub fn drag_ghost_create(
     } else {
         (80, 80)
     };
+
+    // Store offsets/sizing into follow state so both "client move" and "follow" use the same anchor.
+    {
+        let ox_css = offset_x.unwrap_or(14.0).max(-4096.0).min(4096.0);
+        let oy_css = offset_y.unwrap_or(18.0).max(-4096.0).min(4096.0);
+        let oxp = (ox_css * scale).round() as i32;
+        let oyp = (oy_css * scale).round() as i32;
+        if let Ok(mut st) = follow_state().lock() {
+            st.offset_x = oxp;
+            st.offset_y = oyp;
+            st.w = ghost_w.max(1) as u32;
+            st.h = ghost_h.max(1) as u32;
+        }
+    }
 
     if let Some(ghost) = app.get_webview_window(&ghost_label) {
         println!(
@@ -175,11 +191,13 @@ pub fn drag_ghost_move(
         .get_webview_window(&ghost_label)
         .ok_or_else(|| format!("ghost window not found: {}", ghost_label))?;
 
-    const OFFSET_X: i32 = 14;
-    const OFFSET_Y: i32 = 18;
+    let (oxp, oyp) = follow_state()
+        .lock()
+        .map(|st| (st.offset_x, st.offset_y))
+        .unwrap_or((14, 18));
 
     ghost
-        .set_position(PhysicalPosition::new(x + OFFSET_X, y + OFFSET_Y))
+        .set_position(PhysicalPosition::new(x - oxp, y - oyp))
         .map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -507,8 +525,10 @@ pub fn debug_drag_ghost_create(
     source_label: Option<String>,
     width: Option<f64>,
     height: Option<f64>,
+    offset_x: Option<f64>,
+    offset_y: Option<f64>,
 ) -> Result<(), String> {
-    drag_ghost_create(app, title, source_label, width, height)
+    drag_ghost_create(app, title, source_label, width, height, offset_x, offset_y)
 }
 
 #[tauri::command]

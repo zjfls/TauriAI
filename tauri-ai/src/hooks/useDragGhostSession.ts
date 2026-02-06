@@ -186,20 +186,22 @@ export function useDragGhostSession(options: UseDragGhostSessionOptions = {}): D
     void (async () => {
       try {
         const anchorRect = opts?.anchorRect;
+        const clientPoint = opts?.clientPoint;
         await createDragGhostWindow({
           title: trimmed || '文件',
           width: anchorRect?.width,
           height: anchorRect?.height,
+          offsetX: anchorRect && clientPoint ? clientPoint.x - anchorRect.left : undefined,
+          offsetY: anchorRect && clientPoint ? clientPoint.y - anchorRect.top : undefined,
         });
         readyRef.current = true;
 
         // 先用 clientPoint 做一次“立即定位”，确保 ghost 在第一帧就出现在鼠标附近（尤其是 mac 调试时）。
-        if (opts?.clientPoint) {
-          await moveDragGhostWindowClient(opts.clientPoint);
+        if (clientPoint) {
+          await moveDragGhostWindowClient(clientPoint);
         }
 
         // Scheme A：后端自己轮询全局鼠标并移动 ghost（Windows 上更稳，且可跨窗口拖拽）。
-        const clientPoint = opts?.clientPoint;
         const followPayload =
           anchorRect && clientPoint
             ? {
