@@ -92,6 +92,29 @@ fn get_database_path() -> std::path::PathBuf {
     home_dir.join(".tauri-ai").join("data.db")
 }
 
+#[cfg(all(debug_assertions, target_os = "windows"))]
+fn schedule_set_dev_window_icons(app: &tauri::AppHandle) {
+    use std::time::Duration;
+
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("icons-dev")
+        .join("icon.png");
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        // dev 模式下可能会在 ready 后再次设置窗口图标；这里延迟覆盖一次，确保任务栏/Alt-Tab 用 DEV 图标。
+        tokio::time::sleep(Duration::from_millis(450)).await;
+        let _ = handle.run_on_main_thread(move || {
+            let icon = match tauri::image::Image::from_path(&path) {
+                Ok(i) => i.to_owned(),
+                Err(_) => return,
+            };
+            for (_label, w) in handle.webview_windows() {
+                let _ = w.set_icon(icon.clone());
+            }
+        });
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     println!("[Backend] TauriAI starting...");
@@ -634,6 +657,10 @@ pub fn run() {
             // 说明：这不会影响 build 产物图标；仅在开发运行时生效。
             #[cfg(all(debug_assertions, target_os = "macos"))]
             schedule_set_dev_dock_icon(app.handle());
+
+            // DEV: Windows 下确保窗口图标（任务栏/Alt-Tab）使用 DEV 图标，而不是默认绿图标。
+            #[cfg(all(debug_assertions, target_os = "windows"))]
+            schedule_set_dev_window_icons(app.handle());
 
             // Main 窗口初始化（图标 / DevTools 等）
             if let Some(window) = app.get_webview_window("main") {
