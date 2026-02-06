@@ -46,6 +46,17 @@ export function useRemoteDragSplitPreview<TPreview>(options: UseRemoteDragSplitP
 
   const [active, setActive] = useState(false);
   const lastActiveRef = useRef(false);
+  const computePreviewRef = useRef(computePreview);
+  const onPreviewRef = useRef(onPreview);
+
+  // 避免 computePreview/onPreview 引用变化导致 effect 反复重建（会触发 preview 清空 -> 产生闪烁）
+  useEffect(() => {
+    computePreviewRef.current = computePreview;
+  }, [computePreview]);
+
+  useEffect(() => {
+    onPreviewRef.current = onPreview;
+  }, [onPreview]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -71,22 +82,46 @@ export function useRemoteDragSplitPreview<TPreview>(options: UseRemoteDragSplitP
 
   useEffect(() => {
     if (!enabled || !active) {
-      if (lastActiveRef.current) onPreview(null);
+      if (lastActiveRef.current) onPreviewRef.current(null);
       lastActiveRef.current = false;
       return;
     }
 
     lastActiveRef.current = true;
     let disposed = false;
+    let inFlight = false;
+    let lastNonNullPreview: TPreview | null = null;
+    let lastNonNullAt = 0;
+    const NULL_HOLD_MS = 160;
 
     const tick = async () => {
+      if (inFlight) return;
+      inFlight = true;
       const point = await getGlobalCursorClientPoint();
-      if (disposed) return;
-      if (!point) {
-        onPreview(null);
-        return;
+      try {
+        if (disposed) return;
+
+        const next = point ? computePreviewRef.current(point) : null;
+        const now = Date.now();
+
+        if (next) {
+          lastNonNullPreview = next;
+          lastNonNullAt = now;
+          onPreviewRef.current(next);
+          return;
+        }
+
+        // 抖动保护：短时间内拿不到坐标/预览为空时，保留上一次的非空预览，避免闪烁
+        if (lastNonNullPreview && now - lastNonNullAt <= NULL_HOLD_MS) {
+          onPreviewRef.current(lastNonNullPreview);
+          return;
+        }
+
+        lastNonNullPreview = null;
+        onPreviewRef.current(null);
+      } finally {
+        inFlight = false;
       }
-      onPreview(computePreview(point));
     };
 
     void tick();
@@ -94,8 +129,7 @@ export function useRemoteDragSplitPreview<TPreview>(options: UseRemoteDragSplitP
     return () => {
       disposed = true;
       window.clearInterval(t);
-      onPreview(null);
+      onPreviewRef.current(null);
     };
-  }, [active, enabled, computePreview, onPreview, pollMs]);
+  }, [active, enabled, pollMs]);
 }
-
