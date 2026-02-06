@@ -3288,7 +3288,15 @@ async fn run_task_inner(
     let (tool_orchestrator, tools, allowed_tool_names) = if !tools_enabled {
         (None, None, None)
     } else {
-        // ToolSet：Agent 可以绑定不同工具集合；未配置则默认 allow_all（由权限再做过滤）。
+        // ToolSet：Agent 可以绑定不同工具集合。
+        // - 若未绑定 toolset：默认只暴露 `web_search`（若本次 run 启用了 web_search），避免把本地工具“默认”下发给模型。
+        //   真实执行层仍会再按 sandbox_policy 做权限校验（防止前端/模型绕过）。
+        let toolset_is_unbound = agent
+            .toolset
+            .as_deref()
+            .map(|s| s.trim().is_empty())
+            .unwrap_or(true);
+
         let mut toolset = match agent.toolset.as_deref().filter(|s| !s.trim().is_empty()) {
             Some(name) => match config.tools.toolsets.iter().find(|t| t.name == name) {
                 Some(ts) => super::tools::spec::ToolSet::allow_list(name, ts.tools.clone())
@@ -3296,7 +3304,7 @@ async fn run_task_inner(
                 // 安全优先：引用了不存在的 toolset 时，默认 deny_all，避免“悄悄变成 allow_all”
                 None => super::tools::spec::ToolSet::deny_all(name),
             },
-            None => super::tools::spec::ToolSet::allow_all(),
+            None => super::tools::spec::ToolSet::allow_list("__unbound__", Vec::new()),
         };
 
         // 权限策略：不再使用全局开关；改为由安全策略（sandbox_policy）决定是否暴露高危工具。
@@ -3489,7 +3497,9 @@ async fn run_task_inner(
 
         // 如果 agent 使用 allow_list toolset，需要把 MCP 工具名也显式加入 allow_list，
         // 否则 orchestrator 会把它们过滤掉（即使 registry 已注册）。
+        // 但“未绑定 toolset”的默认模式只允许 web_search：不应把 MCP 工具自动加进来。
         if matches!(toolset.mode, super::tools::spec::ToolSetMode::AllowList)
+            && !toolset_is_unbound
             && (!mcp_tool_names.is_empty() || !mcp_resource_tool_names.is_empty())
         {
             toolset.tools.extend(mcp_tool_names);
