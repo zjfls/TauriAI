@@ -6,7 +6,7 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager, Runtime,
 };
-use tokio::sync::Mutex;
+use tokio::sync::Mutex as TokioMutex;
 
 use crate::config::ConfigManager;
 use crate::storage::Database;
@@ -106,6 +106,7 @@ fn toggle_window_visibility<R: Runtime>(app: &AppHandle<R>) {
             let _ = window.hide();
         } else {
             let _ = window.show();
+            let _ = window.unminimize();
             let _ = window.set_focus();
         }
     }
@@ -115,8 +116,21 @@ fn toggle_window_visibility<R: Runtime>(app: &AppHandle<R>) {
 fn show_window<R: Runtime>(app: &AppHandle<R>) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
+        let _ = window.unminimize();
         let _ = window.set_focus();
+        return;
     }
+
+    // 兜底：如果主窗口不存在（极少数情况下可能被销毁/未初始化完成），尝试重建它。
+    let _ = tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
+        .title("tauri-ai")
+        .build()
+        .and_then(|w| {
+            let _ = w.show();
+            let _ = w.unminimize();
+            let _ = w.set_focus();
+            Ok(())
+        });
 }
 
 /// 保存应用状态并退出
@@ -136,7 +150,7 @@ fn save_state_and_exit<R: Runtime>(app: &AppHandle<R>) {
 
     // 数据库使用 SQLite，写入操作是即时的，不需要额外的保存步骤
     // 但我们可以确保数据库连接正确关闭
-    if let Some(database) = app.try_state::<Arc<Mutex<Database>>>() {
+    if let Some(database) = app.try_state::<Arc<TokioMutex<Database>>>() {
         // 数据库状态存在，Rust 的 Drop trait 会在退出时自动关闭连接
         // 这里只是确认数据库状态可访问
         let _ = database;
@@ -181,7 +195,7 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     };
 
     // 构建托盘图标
-    let _tray = TrayIconBuilder::new()
+    let tray = TrayIconBuilder::new()
         .icon(icon)
         .menu(&menu)
         .tooltip("TauriAI")
@@ -210,6 +224,10 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
             }
         })
         .build(app)?;
+
+    // 重要：不能让 tray handle 被 drop，否则回调可能失效（Windows 上可能表现为“菜单能点但没反应”）。
+    // 这里用 mem::forget 保活（托盘只创建一次，泄漏量可忽略）。
+    std::mem::forget(tray);
 
     Ok(())
 }

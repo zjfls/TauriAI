@@ -54,20 +54,20 @@ export const DragGhostView = () => {
       <div className="pointer-events-none h-full w-full select-none overflow-hidden">
         <div
           className={[
-            'flex h-full w-full items-center gap-2 px-3 py-2',
-            'rounded-md border border-gray-200/80 bg-white/95 shadow-lg backdrop-blur-sm',
+            'flex h-full w-full items-center gap-2 px-3 py-1',
+            'rounded border border-gray-200/80 bg-white/95 shadow-md backdrop-blur-sm',
             'dark:border-gray-700/80 dark:bg-gray-900/90',
           ].join(' ')}
         >
           <span className="flex-shrink-0">
-            <FileText size={16} className="text-gray-600 dark:text-gray-300" />
+            <FileText size={14} className="text-gray-600 dark:text-gray-300" />
           </span>
 
-          <span className="flex-1 min-w-0 truncate text-sm font-medium text-gray-900 dark:text-gray-50">
+          <span className="flex-1 min-w-0 truncate text-[13px] font-medium leading-4 text-gray-900 dark:text-gray-50">
             {title || '...'}
           </span>
 
-          <span className="flex-shrink-0 text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
+          <span className="flex-shrink-0 text-[9px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
             GHOST
           </span>
         </div>
