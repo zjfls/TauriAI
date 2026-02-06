@@ -635,8 +635,7 @@ pub fn run() {
             #[cfg(all(debug_assertions, target_os = "macos"))]
             schedule_set_dev_dock_icon(app.handle());
 
-            // 设置窗口关闭事件处理
-            // 满足需求 9.4: 点击关闭按钮时隐藏窗口而非退出
+            // Main 窗口初始化（图标 / DevTools 等）
             if let Some(window) = app.get_webview_window("main") {
                 // DEV: 让任务栏/Alt-Tab/窗口图标与托盘一致（使用 `src-tauri/icons-dev/icon.png`）。
                 #[cfg(all(debug_assertions, target_os = "windows"))]
@@ -671,19 +670,18 @@ pub fn run() {
                         window.open_devtools();
                     }
                 }
-
-                let window_clone = window.clone();
-                window.on_window_event(move |event| {
-                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                        // 阻止默认的关闭行为
-                        api.prevent_close();
-                        // 隐藏窗口而非关闭
-                        let _ = window_clone.hide();
-                    }
-                });
             }
 
             Ok(())
+        })
+        // 点击主窗口 close(X) 时只隐藏到托盘，不真正退出/销毁资源；可快速恢复。
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
