@@ -24,15 +24,13 @@ fn strip_data_url_prefix(input: &str) -> &str {
 /// Why: WebView clipboard APIs are inconsistent (especially on macOS WKWebView).
 /// This uses OS-native clipboard so paste behaves like a screenshot in other apps and in our input box.
 #[tauri::command]
-pub async fn clipboard_write_png_base64(app: tauri::AppHandle, png_base64: String) -> Result<(), String> {
+pub async fn clipboard_write_png_base64(png_base64: String) -> Result<(), String> {
     let trimmed = png_base64.trim();
     if trimmed.is_empty() {
         return Err("图片数据为空".to_string());
     }
 
     let base64_data = strip_data_url_prefix(trimmed).trim();
-    // Keep an owned copy for optional HTML/text representations (avoid capturing a borrowed ref).
-    let base64_data_owned = base64_data.to_string();
 
     // Decode base64 -> PNG bytes.
     let png_bytes = base64::engine::general_purpose::STANDARD
@@ -58,52 +56,34 @@ pub async fn clipboard_write_png_base64(app: tauri::AppHandle, png_base64: Strin
     // - 提供 file:// URL 作为兜底，有些应用会把它当作可粘贴附件来源。
     #[cfg(target_os = "macos")]
     {
-        use objc2::rc::autoreleasepool;
-        use objc2::AnyThread;
-        use objc2::MainThreadMarker;
-        use objc2_app_kit::{
-            NSPasteboard, NSPasteboardTypeFileURL, NSPasteboardTypeHTML, NSPasteboardTypePNG,
-            NSPasteboardTypeString, NSPasteboardTypeTIFF, NSPasteboardTypeURL, NSImage,
-        };
-        use objc2_foundation::{NSMutableArray, NSData, NSString, NSURL};
         use uuid::Uuid;
 
-        // Write a temp png file to provide a file-url representation.
-        let tmp_path = std::env::temp_dir()
-            .join(format!("tauri-ai-clipboard-{}.png", Uuid::new_v4()));
-        std::fs::write(&tmp_path, &png_bytes)
-            .map_err(|e| format!("写入临时图片失败: {e}"))?;
-        let tmp_path_str = tmp_path
-            .to_str()
-            .ok_or_else(|| "临时图片路径包含非法字符，无法写入剪贴板".to_string())?
-            .to_string();
-
-        // Inline HTML (data URL) only for reasonably small PNGs.
+        let tmp_path = std::env::temp_dir().join(format!("tauri-ai-clipboard-{}.png", Uuid::new_v4()));
         let html = if png_bytes.len() <= MAX_INLINE_DATA_URL_PNG_BYTES {
-            format!(
-                "<img src=\"data:image/png;base64,{}\" alt=\"image\" />",
-                base64_data_owned
-            )
+            format!("<img src=\"data:image/png;base64,{}\" alt=\"image\" />", base64_data)
         } else {
-            // Keep HTML small; let apps fall back to PNG/TIFF/file-url.
             "<span>[image]</span>".to_string()
         };
 
-        let plain = if png_bytes.len() <= MAX_INLINE_DATA_URL_PNG_BYTES {
-            "（已复制图片：可粘贴到支持图片的应用；纯文本输入框可能只显示此提示）".to_string()
-        } else {
-            "（已复制图片；图片较大，已提供 file:// 兜底）".to_string()
-        };
+        // Do the pasteboard write synchronously (no run_on_main_thread).
+        // Reason: In some cases, scheduling to the main thread returns Ok but the clipboard never changes.
+        // NSPasteboard can be written from a background thread, and this path is simpler to debug.
+        tokio::task::spawn_blocking(move || -> Result<(), String> {
+            use objc2::rc::autoreleasepool;
+            use objc2::AnyThread;
+            use objc2_app_kit::{
+                NSPasteboard, NSPasteboardTypeFileURL, NSPasteboardTypeHTML, NSPasteboardTypePNG,
+                NSPasteboardTypeString, NSPasteboardTypeTIFF, NSPasteboardTypeURL, NSImage,
+            };
+            use objc2_foundation::{NSMutableArray, NSData, NSString, NSURL};
 
-        let png_bytes_for_main = png_bytes.clone();
-        let tmp_path_str_for_main = tmp_path_str.clone();
-        let html_for_main = html.clone();
-        let plain_for_main = plain.clone();
+            std::fs::write(&tmp_path, &png_bytes).map_err(|e| format!("写入临时图片失败: {e}"))?;
+            let tmp_path_str = tmp_path
+                .to_str()
+                .ok_or_else(|| "临时图片路径包含非法字符，无法写入剪贴板".to_string())?
+                .to_string();
 
-        app.run_on_main_thread(move || {
-            autoreleasepool(|_pool| {
-                // 与 Tauri 内部实现对齐：不做主线程检查（避免某些情况下误判）。
-                let _mtm = unsafe { MainThreadMarker::new_unchecked() };
+            autoreleasepool(|_pool| -> Result<(), String> {
                 let pb = NSPasteboard::generalPasteboard();
 
                 let ty_png = unsafe { NSPasteboardTypePNG };
@@ -113,7 +93,6 @@ pub async fn clipboard_write_png_base64(app: tauri::AppHandle, png_base64: Strin
                 let ty_file_url = unsafe { NSPasteboardTypeFileURL };
                 let ty_url = unsafe { NSPasteboardTypeURL };
 
-                // Clear and declare types to ensure multiple representations are available.
                 pb.clearContents();
                 let types = NSMutableArray::array();
                 types.addObject(ty_png);
@@ -126,32 +105,38 @@ pub async fn clipboard_write_png_base64(app: tauri::AppHandle, png_base64: Strin
                     pb.declareTypes_owner(types.as_ref(), None);
                 }
 
-                let png_data = NSData::with_bytes(&png_bytes_for_main);
-                let _ = pb.setData_forType(Some(&png_data), ty_png);
+                let png_data = NSData::with_bytes(&png_bytes);
+                let ok_png = pb.setData_forType(Some(&png_data), ty_png);
+                if !ok_png {
+                    return Err("写入剪贴板失败（PNG）".to_string());
+                }
 
-                // Also provide TIFF; some apps prioritize it.
                 if let Some(img) = NSImage::initWithData(NSImage::alloc(), &png_data) {
                     if let Some(tiff) = img.TIFFRepresentation() {
                         let _ = pb.setData_forType(Some(&tiff), ty_tiff);
                     }
                 }
 
-                let html_ns = NSString::from_str(&html_for_main);
+                let html_ns = NSString::from_str(&html);
                 let _ = pb.setString_forType(&html_ns, ty_html);
 
-                let plain_ns = NSString::from_str(&plain_for_main);
-                let _ = pb.setString_forType(&plain_ns, ty_string);
-
-                // file:// URL representation (best-effort)
-                let path_ns = NSString::from_str(&tmp_path_str_for_main);
+                // Plain text: use file:// URL if possible so pasting into text inputs yields something useful.
+                let path_ns = NSString::from_str(&tmp_path_str);
                 let url = NSURL::fileURLWithPath(&path_ns);
                 if let Some(url_str) = url.absoluteString() {
                     let _ = pb.setString_forType(&url_str, ty_file_url);
                     let _ = pb.setString_forType(&url_str, ty_url);
+                    let _ = pb.setString_forType(&url_str, ty_string);
+                } else {
+                    let plain_ns = NSString::from_str(&tmp_path_str);
+                    let _ = pb.setString_forType(&plain_ns, ty_string);
                 }
-            });
+
+                Ok(())
+            })
         })
-        .map_err(|e| format!("写入剪贴板失败: {e}"))?;
+        .await
+        .map_err(|e| format!("写入剪贴板任务失败: {e}"))??;
 
         return Ok(());
     }

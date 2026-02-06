@@ -120,7 +120,7 @@ const WindowPaneView: React.FC<{
         'bg-gray-50 dark:bg-gray-900',
         isFocused ? 'outline outline-1 outline-blue-500/30' : 'outline outline-1 outline-transparent',
       ].join(' ')}
-      style={{ flexGrow: pane.weight, flexBasis: 0, flexShrink: 1, minWidth: 0 }}
+      style={{ flex: `${pane.weight} 1 0px`, minWidth: 0 }}
       onPointerDownCapture={onFocus}
     >
       <WindowPaneHeader
