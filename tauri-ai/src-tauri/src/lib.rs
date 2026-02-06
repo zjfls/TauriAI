@@ -580,6 +580,17 @@ pub fn run() {
             // 设置窗口关闭事件处理
             // 满足需求 9.4: 点击关闭按钮时隐藏窗口而非退出
             if let Some(window) = app.get_webview_window("main") {
+                // DEV: 让任务栏/Alt-Tab/窗口图标与托盘一致（使用 `src-tauri/icons-dev/icon.png`）。
+                #[cfg(all(debug_assertions, target_os = "windows"))]
+                {
+                    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("icons-dev")
+                        .join("icon.png");
+                    if let Ok(icon) = tauri::image::Image::from_path(&path) {
+                        let _ = window.set_icon(icon.to_owned());
+                    }
+                }
+
                 // 在开发模式下可通过通用设置 / 环境变量打开 DevTools（默认关闭）
                 #[cfg(debug_assertions)]
                 {
