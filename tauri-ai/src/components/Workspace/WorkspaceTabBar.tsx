@@ -212,6 +212,7 @@ const SortableWorkspaceTab: React.FC<{
     <div
       ref={setNodeRef}
       style={style}
+      data-workspace-tab-id={item.id}
       className={[
         'group relative flex items-center gap-2 px-3 py-2 min-w-[140px] max-w-[320px]',
         'cursor-pointer select-none transition-colors duration-150 border-b-2',
@@ -666,7 +667,14 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
       if (!dragGhostActiveRef.current) {
         dragGhostActiveRef.current = true;
         const base = dragGhostBaseTitleRef.current || 'Tab';
-        startDragGhost(base);
+        const escapeAttr = (v: string) => v.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        const tabEl = tabBarRef.current
+          ? ((activeDragTabId
+              ? tabBarRef.current.querySelector(`[data-workspace-tab-id="${escapeAttr(activeDragTabId)}"]`)
+              : null) as HTMLElement | null)
+          : null;
+        const tabRect = tabEl ? tabEl.getBoundingClientRect() : null;
+        startDragGhost(base, tabRect ? { anchorRect: tabRect, clientPoint: point } : { clientPoint: point });
       }
       moveDragGhostByClientPoint(point);
     } else if (dragGhostActiveRef.current) {

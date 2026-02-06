@@ -272,7 +272,8 @@ pub fn drag_ghost_follow_start(
 
     // Keep sane limits, but allow a bit larger for debugging/visibility.
     let ww = width.unwrap_or(260.0).max(120.0).min(1600.0);
-    let hh = height.unwrap_or(44.0).max(32.0).min(300.0);
+    // tab bar 在部分主题下高度会小于 32px，不能用 32 作为下限，否则 ghost 会显著“偏高”
+    let hh = height.unwrap_or(44.0).max(20.0).min(300.0);
     let (wp, hp) = ((ww * scale).round() as u32, (hh * scale).round() as u32);
 
     // Apply size immediately (best-effort)
