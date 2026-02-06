@@ -7,9 +7,9 @@ use std::thread::JoinHandle;
 use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize, Url, WebviewUrl};
 
 #[cfg(target_os = "macos")]
-use core_graphics::event::CGEvent;
+use core_foundation_sys::base::{CFRelease, CFTypeRef};
 #[cfg(target_os = "macos")]
-use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+use core_graphics::{geometry::CGPoint, sys::CGEventRef, sys::CGEventSourceRef};
 
 #[derive(Debug, Clone, Serialize)]
 struct DragGhostUpdatePayload {
@@ -243,12 +243,26 @@ fn get_cursor_pos_windows() -> Option<(i32, i32)> {
 }
 
 #[cfg(target_os = "macos")]
-fn get_cursor_pos_macos(source: &CGEventSource) -> Option<(i32, i32)> {
-    // 注意：CoreGraphics 的“屏幕坐标”与 Winit/Tauri 一致（原点在主屏幕左上角，y 轴向下）。
-    // 参考 tray-icon 的实现说明：Core graphics screen coordinates match winit.
-    let event = CGEvent::new(source.clone()).ok()?;
-    let p = event.location();
-    Some((p.x.round() as i32, p.y.round() as i32))
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGEventCreate(source: CGEventSourceRef) -> CGEventRef;
+    fn CGEventGetLocation(event: CGEventRef) -> CGPoint;
+}
+
+#[cfg(target_os = "macos")]
+fn get_cursor_pos_macos() -> Option<(i32, i32)> {
+    // 关键点：
+    // - 用 `CGEventCreate(NULL)` 获取“当前”全局鼠标位置（不要用自建 event source；某些 state 下会返回 0,0）
+    // - `CGEventGetLocation` 返回 global display coordinates（通常就是我们要喂给 winit/tauri 的屏幕坐标）
+    unsafe {
+        let event = CGEventCreate(std::ptr::null_mut());
+        if event.is_null() {
+            return None;
+        }
+        let p = CGEventGetLocation(event);
+        CFRelease(event as CFTypeRef);
+        Some((p.x.round() as i32, p.y.round() as i32))
+    }
 }
 
 #[tauri::command]
@@ -312,16 +326,11 @@ pub fn drag_ghost_follow_start(
         // Target 120Hz-ish; adjust if needed.
         let tick = std::time::Duration::from_millis(8);
 
-        #[cfg(target_os = "macos")]
-        let source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState).ok();
-
         while !stop2.load(Ordering::Relaxed) {
             #[cfg(windows)]
             let pos = get_cursor_pos_windows();
             #[cfg(target_os = "macos")]
-            let pos = source
-                .as_ref()
-                .and_then(|s| get_cursor_pos_macos(s));
+            let pos = get_cursor_pos_macos();
             #[cfg(all(not(windows), not(target_os = "macos")))]
             let pos: Option<(i32, i32)> = None;
 
