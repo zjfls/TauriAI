@@ -10,6 +10,7 @@
 import { useCallback, useRef } from 'react';
 import { isTauri } from '@tauri-apps/api/core';
 import { cursorPosition } from '@tauri-apps/api/window';
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import {
   createDragGhostWindow,
   destroyDragGhostWindow,
@@ -18,6 +19,7 @@ import {
   startDragGhostFollow,
   stopDragGhostFollow,
 } from '../utils/dragGhostWindow';
+import { DRAG_GHOST_BROADCAST_KEY } from './useRemoteDragSplitPreview';
 
 type DragGhostSession = {
   enabled: boolean;
@@ -61,6 +63,27 @@ export function useDragGhostSession(options: UseDragGhostSessionOptions = {}): D
     flushes: 0,
   });
   const followActiveRef = useRef(false);
+  const broadcastTimerRef = useRef<number | null>(null);
+
+  const setBroadcast = useCallback((title: string) => {
+    try {
+      const sourceLabel = getCurrentWebviewWindow()?.label;
+      window.localStorage.setItem(
+        DRAG_GHOST_BROADCAST_KEY,
+        JSON.stringify({ ts: Date.now(), title, sourceLabel })
+      );
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const clearBroadcast = useCallback(() => {
+    try {
+      window.localStorage.removeItem(DRAG_GHOST_BROADCAST_KEY);
+    } catch {
+      // ignore
+    }
+  }, []);
 
   const flushPendingClientMove = useCallback(() => {
     if (!isTauri()) return;
@@ -110,6 +133,13 @@ export function useDragGhostSession(options: UseDragGhostSessionOptions = {}): D
       title: trimmed,
     };
     sessionRef.current = session;
+
+    setBroadcast(trimmed);
+    if (broadcastTimerRef.current != null) {
+      window.clearInterval(broadcastTimerRef.current);
+      broadcastTimerRef.current = null;
+    }
+    broadcastTimerRef.current = window.setInterval(() => setBroadcast(trimmed), 250);
 
     // 关键：先确保 ghost window 已创建/复用，再开始高频 move。
     // 否则第一波 move 可能全部失败，用户观感是“ghost 不跟手/不跟随”。
@@ -225,7 +255,7 @@ export function useDragGhostSession(options: UseDragGhostSessionOptions = {}): D
         console.log('[dragGhost][session][start][ERR]', err);
       }
     })();
-  }, [flushPendingClientMove, pollIntervalMs]);
+  }, [flushPendingClientMove, pollIntervalMs, setBroadcast]);
 
   const moveByClientPoint = useCallback(
     (point: { x: number; y: number }) => {
@@ -245,6 +275,11 @@ export function useDragGhostSession(options: UseDragGhostSessionOptions = {}): D
     lastCursorRef.current = null;
     pendingClientRef.current = null;
     readyRef.current = false;
+    if (broadcastTimerRef.current != null) {
+      window.clearInterval(broadcastTimerRef.current);
+      broadcastTimerRef.current = null;
+    }
+    clearBroadcast();
     if (pointerMoveHandlerRef.current) {
       window.removeEventListener('pointermove', pointerMoveHandlerRef.current, { capture: true } as any);
       pointerMoveHandlerRef.current = null;
@@ -260,7 +295,7 @@ export function useDragGhostSession(options: UseDragGhostSessionOptions = {}): D
       intervalRef.current = null;
     }
     void destroyDragGhostWindow();
-  }, []);
+  }, [clearBroadcast]);
 
   const setTitle = useCallback((title: string) => {
     const session = sessionRef.current;

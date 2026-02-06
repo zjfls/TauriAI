@@ -35,6 +35,7 @@ import { useConfigStore } from '../../stores/configStore';
 import { useTerminalSessionStore } from '../../stores/terminalSessionStore';
 import { type WindowPane, useWindowLayoutStore } from '../../stores/windowLayoutStore';
 import { useDragGhostSession } from '../../hooks/useDragGhostSession';
+import { useRemoteDragSplitPreview } from '../../hooks/useRemoteDragSplitPreview';
 import { getViewWindowParams, openViewWindow } from '../../utils/viewWindow';
 import { setupMonaco } from '../../utils/monaco';
 import { TerminalSurface, type TerminalSurfaceHandle } from '../Terminal/TerminalSurface';
@@ -1471,6 +1472,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const lastDragPointRef = useRef<{ x: number; y: number } | null>(null);
   const dragCancelledByEscapeRef = useRef(false);
   const [splitPreview, setSplitPreview] = useState<SplitPreview | null>(null);
+  const [remoteSplitPreview, setRemoteSplitPreview] = useState<SplitPreview | null>(null);
 
   useEffect(() => {
     if (!activeDragTabId) return;
@@ -1596,6 +1598,12 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     }
     return null;
   }, []);
+
+  useRemoteDragSplitPreview<SplitPreview>({
+    enabled: !activeDragTabId,
+    computePreview: computeSplitPreview,
+    onPreview: (p) => setRemoteSplitPreview(p),
+  });
 
   const handleDragStart = useCallback((e: DragStartEvent) => {
     const activeId = String(e.active.id);
@@ -2609,6 +2617,23 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	                <div className="h-full w-full rounded bg-blue-500/10 outline outline-2 outline-blue-500/40" />
 	                <div className="absolute left-2 top-2 rounded bg-blue-600 px-2 py-1 text-xs text-white shadow">
 	                  {splitPreview.direction === 'left' ? '分屏到左侧' : '分屏到右侧'}
+	                </div>
+	              </div>
+	            )}
+
+	            {!splitPreview && remoteSplitPreview && (
+	              <div
+	                className="pointer-events-none fixed z-[235]"
+	                style={{
+	                  left: `${remoteSplitPreview.rect.left}px`,
+	                  top: `${remoteSplitPreview.rect.top}px`,
+	                  width: `${remoteSplitPreview.rect.width}px`,
+	                  height: `${remoteSplitPreview.rect.height}px`,
+	                }}
+	              >
+	                <div className="h-full w-full rounded bg-blue-500/10 outline outline-2 outline-blue-500/40" />
+	                <div className="absolute left-2 top-2 rounded bg-blue-600 px-2 py-1 text-xs text-white shadow">
+	                  {remoteSplitPreview.direction === 'left' ? '分屏到左侧' : '分屏到右侧'}
 	                </div>
 	              </div>
 	            )}
