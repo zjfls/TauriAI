@@ -30,6 +30,7 @@ import { useRemoteDragSplitPreview } from '../hooks/useRemoteDragSplitPreview';
 import { endChatOpenProfile, getActiveChatOpenProfile, markChatOpenProfile } from '../utils/chatOpenProfile';
 import {
   closeCurrentWindow,
+  computePopoutWindowBoundsAtCursor,
   dockWorkspaceItemToWindow,
   findChatDockTargetAtCursor,
   getViewWindowParams,
@@ -547,7 +548,7 @@ const ChatViewContainerInner: React.FC = () => {
   }, []);
 
   const tearOffTabToNewWindow = useCallback(
-    (tabId: WorkspaceTabId) => {
+    (tabId: WorkspaceTabId, clientPoint?: { x: number; y: number } | null) => {
       const parsed = parseWorkspaceTabId(tabId);
       if (parsed.kind === 'chat') {
         const session = parsed.sessionId ? sessionsById.get(parsed.sessionId) : undefined;
@@ -572,9 +573,15 @@ const ChatViewContainerInner: React.FC = () => {
           }
 
           try {
+            const bounds = await computePopoutWindowBoundsAtCursor({
+              clientPoint: clientPoint ?? null,
+              minWidth: 900,
+              minHeight: 700,
+            });
             const { win, isExisting } = await openOrFocusConversationChatWindow(session.conversationId!, session.title, {
               runMode: session.runMode,
               agentName: session.agentName,
+              window: bounds,
             });
             if (isExisting) {
               closeTabInLayout(tabId);
@@ -621,8 +628,13 @@ const ChatViewContainerInner: React.FC = () => {
           }
 
           try {
+            const bounds = await computePopoutWindowBoundsAtCursor({
+              clientPoint: clientPoint ?? null,
+              minWidth: 900,
+              minHeight: 700,
+            });
             const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-            const win = openViewWindow('chat', doc.title, { label, noDefaultSession: true });
+            const win = openViewWindow('chat', doc.title, { label, noDefaultSession: true, window: bounds });
             await dockWorkspaceItemToWindow(item, win, 'tab');
             closeTabInLayout(tabId);
             closeDocument(doc.id);
@@ -653,8 +665,13 @@ const ChatViewContainerInner: React.FC = () => {
           }
 
           try {
+            const bounds = await computePopoutWindowBoundsAtCursor({
+              clientPoint: clientPoint ?? null,
+              minWidth: 900,
+              minHeight: 700,
+            });
             const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-            const win = openViewWindow('chat', tab.title || '网页', { label, noDefaultSession: true });
+            const win = openViewWindow('chat', tab.title || '网页', { label, noDefaultSession: true, window: bounds });
             await dockWorkspaceItemToWindow(item, win, 'tab');
             closeTabInLayout(tabId);
             closeWebTab(tab.id);
@@ -684,8 +701,13 @@ const ChatViewContainerInner: React.FC = () => {
         }
 
         try {
+          const bounds = await computePopoutWindowBoundsAtCursor({
+            clientPoint: clientPoint ?? null,
+            minWidth: 900,
+            minHeight: 700,
+          });
           const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-          const win = openViewWindow('chat', tab.title || '终端', { label, noDefaultSession: true });
+          const win = openViewWindow('chat', tab.title || '终端', { label, noDefaultSession: true, window: bounds });
           await dockWorkspaceItemToWindow(item, win, 'tab');
           closeTabInLayout(tabId);
           void closeTerminalTab(tab.id);
@@ -704,6 +726,7 @@ const ChatViewContainerInner: React.FC = () => {
       dockWorkspaceItemToWindow,
       documents,
       findChatDockTargetAtCursor,
+      computePopoutWindowBoundsAtCursor,
       openOrFocusConversationChatWindow,
       openViewWindow,
       sessionsById,
@@ -789,6 +812,16 @@ const ChatViewContainerInner: React.FC = () => {
       const activeId = String(e.active.id) as WorkspaceTabId;
       const overIdRaw = e.over?.id;
       const point = lastDragPointRef.current;
+      const originStripRect = dragOriginTabStripRectRef.current;
+      const desiredClientPoint = (() => {
+        if (!point) return null;
+        if (!originStripRect) return point;
+        const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
+        const x = clamp(point.x, originStripRect.left + 24, originStripRect.right - 24);
+        const yMid = originStripRect.top + originStripRect.height / 2;
+        const y = clamp(point.y, yMid, yMid);
+        return { x, y };
+      })();
 
       dragStartRef.current = null;
       lastDragPointRef.current = null;
@@ -828,7 +861,7 @@ const ChatViewContainerInner: React.FC = () => {
       stopDragGhost();
 
       if (shouldTearOffByClientPoint) {
-        tearOffTabToNewWindow(activeId);
+        tearOffTabToNewWindow(activeId, desiredClientPoint);
         return;
       }
 
@@ -838,7 +871,7 @@ const ChatViewContainerInner: React.FC = () => {
       void (async () => {
         const outsideWindow = await isCursorOutsideCurrentWindow(TEAR_OFF_WINDOW_THRESHOLD_PX);
         if (outsideWindow) {
-          tearOffTabToNewWindow(activeId);
+          tearOffTabToNewWindow(activeId, desiredClientPoint);
           return;
         }
 
@@ -884,6 +917,16 @@ const ChatViewContainerInner: React.FC = () => {
       const activeId = String(e.active.id) as WorkspaceTabId;
       const start = dragStartRef.current;
       const point = lastDragPointRef.current;
+      const originStripRect = dragOriginTabStripRectRef.current;
+      const desiredClientPoint = (() => {
+        if (!point) return null;
+        if (!originStripRect) return point;
+        const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
+        const x = clamp(point.x, originStripRect.left + 24, originStripRect.right - 24);
+        const yMid = originStripRect.top + originStripRect.height / 2;
+        const y = clamp(point.y, yMid, yMid);
+        return { x, y };
+      })();
 
       dragStartRef.current = null;
       lastDragPointRef.current = null;
@@ -927,7 +970,7 @@ const ChatViewContainerInner: React.FC = () => {
         const shouldTearOffOnCancel = movedDist >= 24 && (outsideContainer || lostFocus || outsideWindow);
 
         if (shouldTearOffOnCancel) {
-          tearOffTabToNewWindow(activeId);
+          tearOffTabToNewWindow(activeId, desiredClientPoint);
         }
       })();
     },

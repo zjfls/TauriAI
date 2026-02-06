@@ -36,7 +36,7 @@ import { useTerminalSessionStore } from '../../stores/terminalSessionStore';
 import { type WindowPane, useWindowLayoutStore } from '../../stores/windowLayoutStore';
 import { useDragGhostSession } from '../../hooks/useDragGhostSession';
 import { useRemoteDragSplitPreview } from '../../hooks/useRemoteDragSplitPreview';
-import { getViewWindowParams, openViewWindow } from '../../utils/viewWindow';
+import { computePopoutWindowBoundsAtCursor, getViewWindowParams, openViewWindow } from '../../utils/viewWindow';
 import { setupMonaco } from '../../utils/monaco';
 import { TerminalSurface, type TerminalSurfaceHandle } from '../Terminal/TerminalSurface';
 
@@ -1518,7 +1518,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   }, []);
 
   const tearOffTabToNewWindow = useCallback(
-    (fileId: string) => {
+    (fileId: string, clientPoint?: { x: number; y: number } | null) => {
       const normalized = normalizeFsPath(fileId);
       if (!normalized) return;
       if (!workstudioId) return;
@@ -1528,23 +1528,13 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
       void (async () => {
         try {
-          const [cursor, size] = await Promise.all([
-            cursorPosition().catch(() => null),
-            getCurrentWebviewWindow().outerSize().catch(() => null),
-          ]);
-
-          const width = Math.max(720, Math.floor(size?.width ?? 1100));
-          const height = Math.max(520, Math.floor(size?.height ?? 740));
-
-          const bounds =
-            cursor
-              ? {
-                  x: Math.floor(cursor.x - width * 0.25),
-                  y: Math.floor(cursor.y - 24),
-                  width,
-                  height,
-                }
-              : { width, height };
+          const bounds = await computePopoutWindowBoundsAtCursor({
+            clientPoint: clientPoint ?? null,
+            minWidth: 720,
+            minHeight: 520,
+            fallbackWidth: 1100,
+            fallbackHeight: 740,
+          });
 
           const label = `view-workstudio-${workstudioId}-tearoff-${Date.now()}-${Math.random()
             .toString(16)
@@ -1571,7 +1561,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         }
       })();
     },
-    [closeFileTab, workstudioId]
+    [closeFileTab, workstudioId, computePopoutWindowBoundsAtCursor]
   );
 
   const computeSplitPreview = useCallback((point: { x: number; y: number }): SplitPreview | null => {
@@ -1686,6 +1676,16 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       const over = event.over ? String(event.over.id) : null;
 
       const point = lastDragPointRef.current;
+      const originStripRect = dragOriginTabStripRectRef.current;
+      const desiredClientPoint = (() => {
+        if (!point) return null;
+        if (!originStripRect) return point;
+        const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
+        const x = clamp(point.x, originStripRect.left + 24, originStripRect.right - 24);
+        const yMid = originStripRect.top + originStripRect.height / 2;
+        const y = clamp(point.y, yMid, yMid);
+        return { x, y };
+      })();
       dragStartRef.current = null;
       lastDragPointRef.current = null;
 
@@ -1722,7 +1722,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       stopDragGhost();
 
       if (shouldTearOffByClientPoint) {
-        tearOffTabToNewWindow(active);
+        tearOffTabToNewWindow(active, desiredClientPoint);
         return;
       }
 
@@ -1731,7 +1731,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       void (async () => {
         const outsideWindow = await isCursorOutsideCurrentWindow(TEAR_OFF_WINDOW_THRESHOLD_PX);
         if (outsideWindow) {
-          tearOffTabToNewWindow(active);
+          tearOffTabToNewWindow(active, desiredClientPoint);
           return;
         }
 
@@ -1775,6 +1775,16 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       const active = String(event.active.id);
       const start = dragStartRef.current;
       const point = lastDragPointRef.current;
+      const originStripRect = dragOriginTabStripRectRef.current;
+      const desiredClientPoint = (() => {
+        if (!point) return null;
+        if (!originStripRect) return point;
+        const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
+        const x = clamp(point.x, originStripRect.left + 24, originStripRect.right - 24);
+        const yMid = originStripRect.top + originStripRect.height / 2;
+        const y = clamp(point.y, yMid, yMid);
+        return { x, y };
+      })();
 
       dragStartRef.current = null;
       lastDragPointRef.current = null;
@@ -1806,7 +1816,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         // 要求：确实发生了拖拽（移动距离够大），且出现了“明显外部”信号（失焦/游标在窗外）。
         const shouldTearOffOnCancel = movedDist >= 24 && (lostFocus || outsideWindow);
         if (shouldTearOffOnCancel) {
-          tearOffTabToNewWindow(active);
+          tearOffTabToNewWindow(active, desiredClientPoint);
         }
       })();
     },

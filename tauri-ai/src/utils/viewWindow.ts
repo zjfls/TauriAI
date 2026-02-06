@@ -63,9 +63,63 @@ export type WorkspaceDockAckPayload = {
 };
 
 type PhysicalRect = { x: number; y: number; width: number; height: number };
+type PhysicalPoint = { x: number; y: number };
 
 const pointInRect = (p: { x: number; y: number }, r: PhysicalRect) => {
   return p.x >= r.x && p.y >= r.y && p.x <= r.x + r.width && p.y <= r.y + r.height;
+};
+
+export const computePopoutWindowBoundsAtCursor = async (opts?: {
+  clientPoint?: { x: number; y: number } | null;
+  minWidth?: number;
+  minHeight?: number;
+  fallbackWidth?: number;
+  fallbackHeight?: number;
+  fallbackOffsetPx?: { x: number; y: number };
+}): Promise<{ x?: number; y?: number; width: number; height: number }> => {
+  const minWidth = Math.max(240, Math.floor(opts?.minWidth ?? 720));
+  const minHeight = Math.max(160, Math.floor(opts?.minHeight ?? 520));
+  const fallbackWidth = Math.max(minWidth, Math.floor(opts?.fallbackWidth ?? 900));
+  const fallbackHeight = Math.max(minHeight, Math.floor(opts?.fallbackHeight ?? 700));
+
+  try {
+    const win = getCurrentWebviewWindow();
+    const [cursor, outerSize] = await Promise.all([cursorPosition().catch(() => null), win.outerSize().catch(() => null)]);
+
+    const width = Math.max(minWidth, Math.floor(outerSize?.width ?? fallbackWidth));
+    const height = Math.max(minHeight, Math.floor(outerSize?.height ?? fallbackHeight));
+    if (!cursor) return { width, height };
+
+    const clientPoint = opts?.clientPoint ?? null;
+    if (clientPoint) {
+      const [outerPos, innerPos, scaleFactor] = await Promise.all([
+        win.outerPosition().catch(() => null),
+        win.innerPosition().catch(() => null),
+        win.scaleFactor().catch(() => 1),
+      ]);
+
+      if (outerPos && innerPos && Number.isFinite(scaleFactor) && scaleFactor > 0) {
+        const decoOffset: PhysicalPoint = { x: outerPos.x - innerPos.x, y: outerPos.y - innerPos.y };
+        const clientX = Math.round(clientPoint.x * scaleFactor);
+        const clientY = Math.round(clientPoint.y * scaleFactor);
+        const innerX = Math.round(cursor.x - clientX);
+        const innerY = Math.round(cursor.y - clientY);
+        const x = Math.round(innerX + decoOffset.x);
+        const y = Math.round(innerY + decoOffset.y);
+        return { x, y, width, height };
+      }
+    }
+
+    const off = opts?.fallbackOffsetPx ?? { x: Math.round(width * 0.25), y: 24 };
+    return {
+      x: Math.round(cursor.x - off.x),
+      y: Math.round(cursor.y - off.y),
+      width,
+      height,
+    };
+  } catch {
+    return { width: fallbackWidth, height: fallbackHeight };
+  }
 };
 
 const workstudioOpenSeqByLabel = new Map<string, number>();
@@ -620,7 +674,7 @@ export const openOrFocusViewWindow = async (
 export const openOrFocusConversationChatWindow = async (
   conversationId: string,
   title: string,
-  opts?: { runMode?: RunMode; agentName?: string }
+  opts?: { runMode?: RunMode; agentName?: string; window?: { x?: number; y?: number; width?: number; height?: number } }
 ) => {
   const label = `view-chat-${conversationId}`;
   try {
@@ -638,6 +692,7 @@ export const openOrFocusConversationChatWindow = async (
     label,
     runMode: opts?.runMode,
     agentName: opts?.agentName,
+    window: opts?.window,
   });
   return { win, isExisting: false as const, label };
 };

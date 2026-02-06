@@ -40,7 +40,7 @@ import {
 import { useDragGhostSession } from '../../hooks/useDragGhostSession';
 import { cursorPosition } from '@tauri-apps/api/window';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
-import { dockWorkspaceItemToWindow, findChatDockTargetAtCursor, openViewWindow } from '../../utils/viewWindow';
+import { computePopoutWindowBoundsAtCursor, dockWorkspaceItemToWindow, findChatDockTargetAtCursor, openViewWindow } from '../../utils/viewWindow';
 import { WorkspaceTabContextMenu } from './WorkspaceTabContextMenu';
 
 interface WorkspaceTabBarProps {
@@ -415,7 +415,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
     }
   };
 
-  const tearOffTab = async (tabId: WorkspaceTabId) => {
+  const tearOffTab = async (tabId: WorkspaceTabId, clientPoint?: { x: number; y: number } | null) => {
     const parsed = parseWorkspaceTabId(tabId);
     if (parsed.kind === 'chat' && parsed.sessionId) {
       const dockTarget = await findChatDockTargetAtCursor().catch(() => null);
@@ -488,7 +488,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
       }
     }
 
-    await popoutTab(tabId);
+    await popoutTab(tabId, clientPoint);
   };
 
   const [contextMenu, setContextMenu] = useState<{
@@ -499,7 +499,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
 
   const closeContextMenu = () => setContextMenu(null);
 
-  const popoutTab = async (tabId: WorkspaceTabId) => {
+  const popoutTab = async (tabId: WorkspaceTabId, clientPoint?: { x: number; y: number } | null) => {
     const parsed = parseWorkspaceTabId(tabId);
     if (parsed.kind === 'chat') {
       const session = parsed.sessionId ? sessionsById.get(parsed.sessionId) : undefined;
@@ -509,12 +509,17 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
         useWindowLayoutStore.getState().closeTabInLayout(tabId);
       } else {
         const conversationId = session.conversationId ?? undefined;
+        const bounds = await computePopoutWindowBoundsAtCursor({
+          clientPoint: clientPoint ?? null,
+          minWidth: 900,
+          minHeight: 700,
+        });
         openViewWindow(
           'chat',
           session.title,
           conversationId
-            ? { conversationId, runMode: session.runMode, agentName: session.agentName }
-            : undefined
+            ? { conversationId, runMode: session.runMode, agentName: session.agentName, window: bounds }
+            : { window: bounds }
         );
         useWindowLayoutStore.getState().closeTabInLayout(tabId);
         await onTabClose(session.id);
@@ -528,9 +533,14 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
       if (!doc) return;
       if (!doc.path) return;
       try {
+        const bounds = await computePopoutWindowBoundsAtCursor({
+          clientPoint: clientPoint ?? null,
+          minWidth: 900,
+          minHeight: 700,
+        });
         const item = { kind: 'document' as const, title: doc.title, documentPath: doc.path };
         const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-        const win = openViewWindow('chat', doc.title, { label, noDefaultSession: true });
+        const win = openViewWindow('chat', doc.title, { label, noDefaultSession: true, window: bounds });
         await dockWorkspaceItemToWindow(item, win, 'tab');
         useWindowLayoutStore.getState().closeTabInLayout(tabId);
         closeDocument(doc.id);
@@ -546,9 +556,14 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
       const tab = wid ? webTabs.find((t) => t.id === wid) : undefined;
       if (!tab) return;
       try {
+        const bounds = await computePopoutWindowBoundsAtCursor({
+          clientPoint: clientPoint ?? null,
+          minWidth: 900,
+          minHeight: 700,
+        });
         const item = { kind: 'web' as const, title: tab.title, webUrl: tab.url };
         const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-        const win = openViewWindow('chat', tab.title || '网页', { label, noDefaultSession: true });
+        const win = openViewWindow('chat', tab.title || '网页', { label, noDefaultSession: true, window: bounds });
         await dockWorkspaceItemToWindow(item, win, 'tab');
         useWindowLayoutStore.getState().closeTabInLayout(tabId);
         closeWebTab(tab.id);
@@ -564,9 +579,14 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
       const tab = tid ? terminalTabs.find((t) => t.id === tid) : undefined;
       if (!tab) return;
       try {
+        const bounds = await computePopoutWindowBoundsAtCursor({
+          clientPoint: clientPoint ?? null,
+          minWidth: 900,
+          minHeight: 700,
+        });
         const item = { kind: 'terminal' as const, title: tab.title, terminalWorkdir: tab.workdir ?? undefined };
         const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-        const win = openViewWindow('chat', tab.title || '终端', { label, noDefaultSession: true });
+        const win = openViewWindow('chat', tab.title || '终端', { label, noDefaultSession: true, window: bounds });
         await dockWorkspaceItemToWindow(item, win, 'tab');
         useWindowLayoutStore.getState().closeTabInLayout(tabId);
         await closeTerminalTab(tab.id);
@@ -689,6 +709,15 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
 
     const rect = tabBarRef.current?.getBoundingClientRect();
     const p = lastDragPointRef.current;
+    const desiredClientPoint = (() => {
+      if (!p) return null;
+      if (!rect) return p;
+      const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
+      const x = clamp(p.x, rect.left + 24, rect.right - 24);
+      const yMid = rect.top + rect.height / 2;
+      const y = clamp(p.y, yMid, yMid);
+      return { x, y };
+    })();
     const shouldTearOffByClientPoint =
       Boolean(rect && p) &&
       Boolean(
@@ -715,7 +744,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
     stopDragGhost();
 
     if (shouldTearOff) {
-      await tearOffTab(activeId);
+      await tearOffTab(activeId, desiredClientPoint);
       return;
     }
 
@@ -728,6 +757,16 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
     const activeId = e.active.id as WorkspaceTabId;
     const start = dragStartRef.current;
     const point = lastDragPointRef.current;
+    const rect = tabBarRef.current?.getBoundingClientRect();
+    const desiredClientPoint = (() => {
+      if (!point) return null;
+      if (!rect) return point;
+      const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
+      const x = clamp(point.x, rect.left + 24, rect.right - 24);
+      const yMid = rect.top + rect.height / 2;
+      const y = clamp(point.y, yMid, yMid);
+      return { x, y };
+    })();
 
     dragStartRef.current = null;
     lastDragPointRef.current = null;
@@ -746,7 +785,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
     // 参考 VS Code：拖拽到窗口外导致 cancel 时，仍然视作“tear-off”。
     // 同时加一个移动距离门槛，避免偶发 cancel 误触。
     if (outsideWindow || (lostFocus && movedDist >= 24)) {
-      await tearOffTab(activeId);
+      await tearOffTab(activeId, desiredClientPoint);
     }
   };
 
