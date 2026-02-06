@@ -1,9 +1,25 @@
 use serde::Serialize;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex, OnceLock,
+};
+use std::thread::JoinHandle;
 use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize, Url, WebviewUrl};
 
 #[derive(Debug, Clone, Serialize)]
 struct DragGhostUpdatePayload {
     title: String,
+}
+
+#[derive(Default)]
+struct DragGhostFollowState {
+    stop: Option<Arc<AtomicBool>>,
+    join: Option<JoinHandle<()>>,
+}
+
+fn follow_state() -> &'static Mutex<DragGhostFollowState> {
+    static STATE: OnceLock<Mutex<DragGhostFollowState>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(DragGhostFollowState::default()))
 }
 
 fn safe_label_part(raw: &str) -> String {
@@ -182,11 +198,124 @@ pub fn drag_ghost_move_client(
     drag_ghost_move(app, Some(source.label().to_string()), x, y)
 }
 
+// ---------------------------------------------------------------------------
+// Scheme A: backend-follow mode (Windows-first)
+// ---------------------------------------------------------------------------
+
+#[cfg(windows)]
+#[repr(C)]
+struct POINT {
+    x: i32,
+    y: i32,
+}
+
+#[cfg(windows)]
+#[link(name = "user32")]
+extern "system" {
+    fn GetCursorPos(lp_point: *mut POINT) -> i32;
+}
+
+#[cfg(windows)]
+fn get_cursor_pos_windows() -> Option<(i32, i32)> {
+    unsafe {
+        let mut p = POINT { x: 0, y: 0 };
+        let ok = GetCursorPos(&mut p as *mut POINT);
+        if ok != 0 {
+            Some((p.x, p.y))
+        } else {
+            None
+        }
+    }
+}
+
+#[tauri::command]
+pub fn drag_ghost_follow_start(
+    app: tauri::AppHandle,
+    _payload: Option<serde_json::Value>,
+) -> Result<(), String> {
+    let ghost_label = ghost_label_for_source("main");
+    let ghost = app
+        .get_webview_window(&ghost_label)
+        .ok_or_else(|| format!("ghost window not found: {}", ghost_label))?;
+
+    // already running?
+    {
+        let st = follow_state().lock().map_err(|_| "follow state poisoned".to_string())?;
+        if st.stop.is_some() {
+            return Ok(());
+        }
+    }
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop2 = stop.clone();
+    let app2 = app.clone();
+
+    // Keep a clone for the worker; methods are Send on Windows builds.
+    let ghost2 = ghost.clone();
+
+    let join = std::thread::spawn(move || {
+        const OFFSET_X: i32 = 14;
+        const OFFSET_Y: i32 = 18;
+
+        // Target 120Hz-ish; adjust if needed.
+        let tick = std::time::Duration::from_millis(8);
+
+        while !stop2.load(Ordering::Relaxed) {
+            #[cfg(windows)]
+            let pos = get_cursor_pos_windows();
+            #[cfg(not(windows))]
+            let pos: Option<(i32, i32)> = None;
+
+            if let Some((x, y)) = pos {
+                // If this ever errors (e.g. window destroyed), just stop.
+                if ghost2
+                    .set_position(PhysicalPosition::new(x + OFFSET_X, y + OFFSET_Y))
+                    .is_err()
+                {
+                    break;
+                }
+            } else {
+                // If we cannot read cursor pos, yield a bit longer.
+                std::thread::sleep(std::time::Duration::from_millis(16));
+                continue;
+            }
+            std::thread::sleep(tick);
+        }
+
+        let _ = app2; // keep handle alive
+    });
+
+    let mut st = follow_state().lock().map_err(|_| "follow state poisoned".to_string())?;
+    st.stop = Some(stop);
+    st.join = Some(join);
+    println!("[drag_ghost_follow_start] ok label={}", ghost_label);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn drag_ghost_follow_stop(_payload: Option<serde_json::Value>) -> Result<(), String> {
+    let mut st = follow_state().lock().map_err(|_| "follow state poisoned".to_string())?;
+    if let Some(stop) = st.stop.take() {
+        stop.store(true, Ordering::Relaxed);
+    }
+    if let Some(join) = st.join.take() {
+        // Avoid blocking caller thread; join in background.
+        std::thread::spawn(move || {
+            let _ = join.join();
+        });
+    }
+    println!("[drag_ghost_follow_stop] ok");
+    Ok(())
+}
+
 #[tauri::command]
 pub fn drag_ghost_destroy(
     app: tauri::AppHandle,
     source_label: Option<String>,
 ) -> Result<(), String> {
+    // best-effort stop follow loop first
+    let _ = drag_ghost_follow_stop(None);
+
     let source_label = source_label.unwrap_or_else(|| "main".to_string());
     let source = app
         .get_webview_window(&source_label)

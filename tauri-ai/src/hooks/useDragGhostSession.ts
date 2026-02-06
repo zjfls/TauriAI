@@ -15,6 +15,8 @@ import {
   destroyDragGhostWindow,
   moveDragGhostWindow,
   moveDragGhostWindowClient,
+  startDragGhostFollow,
+  stopDragGhostFollow,
 } from '../utils/dragGhostWindow';
 
 type DragGhostSession = {
@@ -46,6 +48,13 @@ export function useDragGhostSession(options: UseDragGhostSessionOptions = {}): D
   const readyRef = useRef(false);
   const pendingClientRef = useRef<{ x: number; y: number } | null>(null);
   const lastClientAtRef = useRef(0);
+  const pointerMoveHandlerRef = useRef<((e: PointerEvent) => void) | null>(null);
+  const dbgRef = useRef({
+    lastLogAt: 0,
+    pointerMoves: 0,
+    flushes: 0,
+  });
+  const followActiveRef = useRef(false);
 
   const flushPendingClientMove = useCallback(() => {
     if (!isTauri()) return;
@@ -53,6 +62,21 @@ export function useDragGhostSession(options: UseDragGhostSessionOptions = {}): D
     const cur = sessionRef.current;
     if (!cur?.enabled) return;
     if (inFlightRef.current) return;
+
+    dbgRef.current.flushes += 1;
+    const now = Date.now();
+    if (now - dbgRef.current.lastLogAt > 400) {
+      dbgRef.current.lastLogAt = now;
+      // eslint-disable-next-line no-console
+      console.log('[dragGhost][flush]', {
+        enabled: Boolean(cur?.enabled),
+        ready: readyRef.current,
+        inFlight: inFlightRef.current,
+        pending: Boolean(pendingClientRef.current),
+        pointerMoves: dbgRef.current.pointerMoves,
+        flushes: dbgRef.current.flushes,
+      });
+    }
 
     const point = pendingClientRef.current;
     if (!point) return;
@@ -93,15 +117,53 @@ export function useDragGhostSession(options: UseDragGhostSessionOptions = {}): D
     inFlightRef.current = false;
     readyRef.current = false;
 
+    // 拖拽期间：用全局 pointermove 持续推送 client 坐标（比 cursorPosition 更稳定）。
+    // 这样即便 dnd-kit 的 onDragMove 在某些边界条件下不触发，也能保持 ghost 跟随。
+    if (!pointerMoveHandlerRef.current) {
+      pointerMoveHandlerRef.current = (e: PointerEvent) => {
+        const cur = sessionRef.current;
+        if (!cur?.enabled) return;
+        if (!Number.isFinite(e.clientX) || !Number.isFinite(e.clientY)) return;
+        lastClientAtRef.current = Date.now();
+        pendingClientRef.current = { x: e.clientX, y: e.clientY };
+        dbgRef.current.pointerMoves += 1;
+        const now = Date.now();
+        if (now - dbgRef.current.lastLogAt > 400) {
+          dbgRef.current.lastLogAt = now;
+          // eslint-disable-next-line no-console
+          console.log('[dragGhost][pointermove]', {
+            x: e.clientX,
+            y: e.clientY,
+            pointerMoves: dbgRef.current.pointerMoves,
+            flushes: dbgRef.current.flushes,
+          });
+        }
+        flushPendingClientMove();
+      };
+      window.addEventListener('pointermove', pointerMoveHandlerRef.current, { capture: true });
+      // eslint-disable-next-line no-console
+      console.log('[dragGhost][pointermove][on]');
+    }
+
     void (async () => {
       try {
         await createDragGhostWindow({ title: trimmed || '文件' });
         readyRef.current = true;
-        flushPendingClientMove();
+        // Scheme A：后端自己轮询全局鼠标并移动 ghost（Windows 上更稳，且可跨窗口拖拽）。
+        followActiveRef.current = await startDragGhostFollow();
+        if (!followActiveRef.current) {
+          flushPendingClientMove();
+        }
         const current = sessionRef.current;
         if (!current || current !== session || !current.enabled) {
           // drag 已结束/被替换：避免 create 结束较晚导致 ghost 残留在屏幕上
           await destroyDragGhostWindow();
+          if (followActiveRef.current) await stopDragGhostFollow();
+          return;
+        }
+
+        if (followActiveRef.current) {
+          // 后端跟随模式不需要前端 move loop
           return;
         }
 
@@ -166,6 +228,16 @@ export function useDragGhostSession(options: UseDragGhostSessionOptions = {}): D
     lastCursorRef.current = null;
     pendingClientRef.current = null;
     readyRef.current = false;
+    if (pointerMoveHandlerRef.current) {
+      window.removeEventListener('pointermove', pointerMoveHandlerRef.current, { capture: true } as any);
+      pointerMoveHandlerRef.current = null;
+      // eslint-disable-next-line no-console
+      console.log('[dragGhost][pointermove][off]');
+    }
+    if (followActiveRef.current) {
+      followActiveRef.current = false;
+      void stopDragGhostFollow();
+    }
     if (intervalRef.current != null) {
       window.clearInterval(intervalRef.current);
       intervalRef.current = null;

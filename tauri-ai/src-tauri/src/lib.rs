@@ -24,7 +24,8 @@ use tokio::sync::Mutex;
 	    get_conversations, get_format_prompt, get_mermaid_svg_cache, get_messages, get_turn_debug_info,
 	    close_invoking_window,
 	    debug_drag_ghost_create, debug_drag_ghost_destroy, debug_drag_ghost_move, drag_ghost_create,
-	    drag_ghost_destroy, drag_ghost_move, drag_ghost_move_client,
+	    drag_ghost_destroy, drag_ghost_follow_start, drag_ghost_follow_stop, drag_ghost_move,
+	    drag_ghost_move_client,
 	    get_workstudio,
 	    get_workstudio_security_config, get_workstudio_ui_state, list_local_directory,
 	    list_mcp_server_tools, list_mcp_servers, list_mcp_sets, list_pty_sessions, list_skills,
@@ -525,6 +526,8 @@ pub fn run() {
 	            // Drag ghost
 	            drag_ghost_create,
 	            drag_ghost_destroy,
+	            drag_ghost_follow_start,
+	            drag_ghost_follow_stop,
 	            drag_ghost_move,
 	            drag_ghost_move_client,
 	            // Backward compatibility (old command names)

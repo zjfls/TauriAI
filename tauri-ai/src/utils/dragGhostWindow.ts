@@ -86,3 +86,29 @@ export const destroyDragGhostWindow = async () => {
     { sourceLabel }
   );
 };
+
+export const startDragGhostFollow = async () => {
+  if (!isTauri()) return false;
+  try {
+    await invoke('drag_ghost_follow_start', {});
+    // eslint-disable-next-line no-console
+    console.log('[dragGhost][follow][start]');
+    return true;
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.log('[dragGhost][follow][start][ERR]', e);
+    return false;
+  }
+};
+
+export const stopDragGhostFollow = async () => {
+  if (!isTauri()) return;
+  try {
+    await invoke('drag_ghost_follow_stop', {});
+    // eslint-disable-next-line no-console
+    console.log('[dragGhost][follow][stop]');
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.log('[dragGhost][follow][stop][ERR]', e);
+  }
+};
