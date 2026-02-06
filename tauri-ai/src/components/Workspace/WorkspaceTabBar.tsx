@@ -73,6 +73,7 @@ interface TabRenderItem {
 
 const TEAR_OFF_THRESHOLD_PX = 48;
 const TEAR_OFF_WINDOW_THRESHOLD_PX = 8;
+const GHOST_ACTIVATE_THRESHOLD_PX = 2;
 
 const AgentSelector: React.FC<{
   agents: Agent[];
@@ -362,10 +363,13 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
 
   const {
     start: startDragGhost,
+    moveByClientPoint: moveDragGhostByClientPoint,
     stop: stopDragGhost,
   } = useDragGhostSession({ pollIntervalMs: 32 });
 
   const [activeDragTabId, setActiveDragTabId] = useState<WorkspaceTabId | null>(null);
+  const dragGhostActiveRef = useRef(false);
+  const dragGhostBaseTitleRef = useRef<string>('');
   const dragCancelledByEscapeRef = useRef(false);
 
   useEffect(() => {
@@ -627,7 +631,9 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
   const handleDragStart = (e: DragStartEvent) => {
     const activeId = String(e.active.id) as WorkspaceTabId;
     setActiveDragTabId(activeId);
-    startDragGhost(resolveDragGhostTitle(activeId));
+
+    dragGhostActiveRef.current = false;
+    dragGhostBaseTitleRef.current = resolveDragGhostTitle(activeId);
 
     const ev = e.activatorEvent as MouseEvent | PointerEvent | null;
     if (ev && 'clientX' in ev) {
@@ -640,11 +646,33 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
   };
 
   const handleDragMove = (e: DragMoveEvent) => {
-    if (!dragStartRef.current) return;
-    lastDragPointRef.current = {
-      x: dragStartRef.current.x + e.delta.x,
-      y: dragStartRef.current.y + e.delta.y,
+    const start = dragStartRef.current;
+    if (!start) return;
+    const point = {
+      x: start.x + e.delta.x,
+      y: start.y + e.delta.y,
     };
+    lastDragPointRef.current = point;
+
+    const rect = tabBarRef.current?.getBoundingClientRect() ?? null;
+    const outsideTabBar =
+      !rect ||
+      point.x < rect.left - GHOST_ACTIVATE_THRESHOLD_PX ||
+      point.x > rect.right + GHOST_ACTIVATE_THRESHOLD_PX ||
+      point.y < rect.top - GHOST_ACTIVATE_THRESHOLD_PX ||
+      point.y > rect.bottom + GHOST_ACTIVATE_THRESHOLD_PX;
+
+    if (outsideTabBar) {
+      if (!dragGhostActiveRef.current) {
+        dragGhostActiveRef.current = true;
+        const base = dragGhostBaseTitleRef.current || 'Tab';
+        startDragGhost(`【离开TabBar】${base}`);
+      }
+      moveDragGhostByClientPoint(point);
+    } else if (dragGhostActiveRef.current) {
+      dragGhostActiveRef.current = false;
+      stopDragGhost();
+    }
   };
 
   const handleDragEnd = async (e: DragEndEvent) => {
@@ -674,6 +702,8 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
     dragStartRef.current = null;
     lastDragPointRef.current = null;
     setActiveDragTabId(null);
+    dragGhostActiveRef.current = false;
+    dragGhostBaseTitleRef.current = '';
     stopDragGhost();
 
     if (shouldTearOff) {
@@ -694,6 +724,8 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
     dragStartRef.current = null;
     lastDragPointRef.current = null;
     setActiveDragTabId(null);
+    dragGhostActiveRef.current = false;
+    dragGhostBaseTitleRef.current = '';
     stopDragGhost();
 
     // Esc 取消：不触发“拖出窗口”逻辑

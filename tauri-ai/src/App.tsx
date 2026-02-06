@@ -43,6 +43,9 @@ function App() {
   const loadConversations = useConversationStore((state) => state.loadConversations);
   const { activeView, setActiveView } = useUIStore();
 
+  const currentWindowLabel = getCurrentWindowLabelSafe();
+  const isGhostLabel = currentWindowLabel.startsWith('__tauriai_ghost__');
+
   const windowParams = getViewWindowParams();
   const viewOverride = windowParams.view;
   const isStandalone = windowParams.standalone;
@@ -59,7 +62,7 @@ function App() {
   // Standalone non-chat views should not start/restore chat sessions or stream listeners.
   // Otherwise opening a "文本/导图" window can create or mutate chat sessions unexpectedly.
   const isWorkstudioWindow = viewOverride === 'workstudio';
-  const isDragGhostWindow = viewOverride === 'drag-ghost';
+  const isDragGhostWindow = viewOverride === 'drag-ghost' || isGhostLabel;
   const shouldInitChatRuntime = !isWorkstudioWindow && !isDragGhostWindow;
   
   // Session store for multi-agent workspace
@@ -151,6 +154,35 @@ function App() {
   // - 记录当前窗口（label + view params + bounds）
   // - 主窗口启动时按记录恢复其它窗口
   // ---------------------------------------------------------------------------
+  useEffect(() => {
+    if (!isTauri()) return;
+    if (!isDragGhostWindow) return;
+
+    const win = getCurrentWebviewWindow();
+    let disposed = false;
+    let unlistenClose: null | (() => void) = null;
+
+    // Ghost window 不做持久化，但必须可关闭；否则 always-on-top 很容易给人“窗口创建卡住”的错觉。
+    void win
+      .onCloseRequested(async (event) => {
+        event.preventDefault();
+        await invoke('close_invoking_window').catch(() => {});
+      })
+      .then((fn) => {
+        if (disposed) {
+          fn();
+          return;
+        }
+        unlistenClose = fn;
+      })
+      .catch(() => {});
+
+    return () => {
+      disposed = true;
+      unlistenClose?.();
+    };
+  }, [isDragGhostWindow]);
+
   useEffect(() => {
     if (!isTauri()) return;
     if (isDragGhostWindow) return;
@@ -583,8 +615,9 @@ function App() {
   /**
    * Initialize stores on app load
    * Requirements: 5.1, 5.2
-   */
+  */
   useEffect(() => {
+    if (isDragGhostWindow) return;
     console.log('Initializing app...');
     // Initialize chat stream listeners only for chat-capable windows.
     if (shouldInitChatRuntime) {
@@ -604,9 +637,9 @@ function App() {
         })
         .catch((err) => {
           console.error('Failed to load conversations:', err);
-        });
+      });
     }
-  }, [loadConfig, loadConversations, shouldInitChatRuntime]);
+  }, [loadConfig, loadConversations, shouldInitChatRuntime, isDragGhostWindow]);
 
   /**
    * Restore session state after config is loaded

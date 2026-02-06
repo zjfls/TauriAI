@@ -61,6 +61,7 @@ type OpenFile = {
 
 const TEAR_OFF_THRESHOLD_PX = 48;
 const TEAR_OFF_WINDOW_THRESHOLD_PX = 8;
+const GHOST_ACTIVATE_THRESHOLD_PX = 2;
 
 const paneDropId = (paneId: string) => `pane:${paneId}`;
 
@@ -427,6 +428,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const saveStateTimerRef = useRef<number | null>(null);
   const paneRowRef = useRef<HTMLDivElement | null>(null);
   const paneRootRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const paneTabStripRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const paneBodyRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const resizeRef = useRef<{
     dragging: boolean;
@@ -1431,6 +1433,15 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     []
   );
 
+  const registerPaneTabStripRef = useCallback(
+    (paneId: string) => (el: HTMLDivElement | null) => {
+      const map = paneTabStripRefs.current;
+      if (el) map.set(paneId, el);
+      else map.delete(paneId);
+    },
+    []
+  );
+
   const registerPaneBodyRef = useCallback(
     (paneId: string) => (el: HTMLDivElement | null) => {
       const map = paneBodyRefs.current;
@@ -1449,8 +1460,12 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const [activeDragTabId, setActiveDragTabId] = useState<string | null>(null);
   const {
     start: startDragGhost,
+    moveByClientPoint: moveDragGhostByClientPoint,
     stop: stopDragGhost,
   } = useDragGhostSession({ pollIntervalMs: 32 });
+  const dragGhostActiveRef = useRef(false);
+  const dragGhostBaseTitleRef = useRef<string>('');
+  const dragOriginTabStripRectRef = useRef<DOMRect | null>(null);
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
   const lastDragPointRef = useRef<{ x: number; y: number } | null>(null);
   const dragCancelledByEscapeRef = useRef(false);
@@ -1589,7 +1604,11 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
     const file = openFilesRef.current.find((f) => f.id === activeId) ?? null;
     const title = file?.title || basename(activeId) || '文件';
-    startDragGhost(title);
+    dragGhostActiveRef.current = false;
+    dragGhostBaseTitleRef.current = title;
+    const fromPaneId = tabToPaneId.get(activeId) ?? null;
+    const stripEl = fromPaneId ? paneTabStripRefs.current.get(fromPaneId) : null;
+    dragOriginTabStripRectRef.current = stripEl ? stripEl.getBoundingClientRect() : null;
 
     const ev = e.activatorEvent as MouseEvent | PointerEvent | TouchEvent | null;
     if (ev && 'clientX' in ev) {
@@ -1599,7 +1618,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       dragStartRef.current = null;
       lastDragPointRef.current = null;
     }
-  }, [startDragGhost]);
+  }, [tabToPaneId]);
 
   const handleDragMove = useCallback(
     (e: DragMoveEvent) => {
@@ -1607,6 +1626,26 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       if (!start) return;
       const point = { x: start.x + e.delta.x, y: start.y + e.delta.y };
       lastDragPointRef.current = point;
+
+      const rect = dragOriginTabStripRectRef.current;
+      const outsideTabStrip =
+        !rect ||
+        point.x < rect.left - GHOST_ACTIVATE_THRESHOLD_PX ||
+        point.x > rect.right + GHOST_ACTIVATE_THRESHOLD_PX ||
+        point.y < rect.top - GHOST_ACTIVATE_THRESHOLD_PX ||
+        point.y > rect.bottom + GHOST_ACTIVATE_THRESHOLD_PX;
+
+      if (outsideTabStrip) {
+        if (!dragGhostActiveRef.current) {
+          dragGhostActiveRef.current = true;
+          const base = dragGhostBaseTitleRef.current || 'File';
+          startDragGhost(`【离开TabBar】${base}`);
+        }
+        moveDragGhostByClientPoint(point);
+      } else if (dragGhostActiveRef.current) {
+        dragGhostActiveRef.current = false;
+        stopDragGhost();
+      }
 
       const next = computeSplitPreview(point);
       setSplitPreview((prev) => {
@@ -1616,7 +1655,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         return next;
       });
     },
-    [computeSplitPreview]
+    [computeSplitPreview, moveDragGhostByClientPoint, startDragGhost, stopDragGhost]
   );
 
   const handleDragEnd = useCallback(
@@ -1633,6 +1672,9 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         splitTabToNewPane(active, preview.direction, preview.paneId);
         setActiveDragTabId(null);
         setSplitPreview(null);
+        dragGhostActiveRef.current = false;
+        dragGhostBaseTitleRef.current = '';
+        dragOriginTabStripRectRef.current = null;
         stopDragGhost();
         return;
       }
@@ -1650,6 +1692,9 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       // 先把拖拽 UI 收起，避免异步判断期间 overlay 悬挂
       setActiveDragTabId(null);
       setSplitPreview(null);
+      dragGhostActiveRef.current = false;
+      dragGhostBaseTitleRef.current = '';
+      dragOriginTabStripRectRef.current = null;
       stopDragGhost();
 
       if (shouldTearOffByClientPoint) {
@@ -1713,6 +1758,9 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       setActiveDragTabId(null);
       setSplitPreview(null);
 
+      dragGhostActiveRef.current = false;
+      dragGhostBaseTitleRef.current = '';
+      dragOriginTabStripRectRef.current = null;
       stopDragGhost();
 
       void (async () => {
@@ -2374,7 +2422,10 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	                      onPointerDownCapture={() => setFocusedPane(pane.id)}
 	                    >
 	                      <PaneDropZone paneId={pane.id}>
-	                        <div className="flex items-center gap-1 overflow-x-auto border-b border-gray-200 bg-white px-2 py-1 dark:border-gray-800 dark:bg-gray-950">
+	                        <div
+	                          ref={registerPaneTabStripRef(pane.id)}
+	                          className="flex items-center gap-1 overflow-x-auto border-b border-gray-200 bg-white px-2 py-1 dark:border-gray-800 dark:bg-gray-950"
+	                        >
 	                          <SortableContext items={pane.tabIds} strategy={horizontalListSortingStrategy}>
 	                            {pane.tabIds.length === 0 ? (
 	                              <div className="px-2 py-1 text-xs text-gray-400">未打开文件</div>

@@ -33,7 +33,7 @@ pub use conversation::{
 pub use devtools::open_devtools_current_window;
 pub use drag_ghost::{
     debug_drag_ghost_create, debug_drag_ghost_destroy, debug_drag_ghost_move, drag_ghost_create,
-    drag_ghost_destroy, drag_ghost_move,
+    drag_ghost_destroy, drag_ghost_move, drag_ghost_move_client,
 };
 pub use file::{list_local_directory, read_local_file_base64, write_local_text_file};
 pub use mcp::{

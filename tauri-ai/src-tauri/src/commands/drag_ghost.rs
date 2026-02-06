@@ -1,4 +1,10 @@
-use tauri::{Manager, PhysicalPosition, PhysicalSize, Url, WebviewUrl};
+use serde::Serialize;
+use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize, Url, WebviewUrl};
+
+#[derive(Debug, Clone, Serialize)]
+struct DragGhostUpdatePayload {
+    title: String,
+}
 
 fn safe_label_part(raw: &str) -> String {
     raw.chars()
@@ -10,39 +16,30 @@ fn safe_label_part(raw: &str) -> String {
 }
 
 fn ghost_label_for_source(source_label: &str) -> String {
-    format!("__tauriai_ghost__{}", safe_label_part(source_label))
+    // 关键策略：Windows 上在拖拽/菜单回调期间动态创建 WebviewWindow 可能卡死在 `builder.build()`。
+    // 因此 ghost 窗口改为“启动时预创建一个单例”，运行期只做 show/move/update。
+    // 这里始终返回同一个 label，避免多窗口创建带来的不稳定性。
+    let _ = source_label;
+    "__tauriai_ghost__global".to_string()
 }
 
-fn build_ghost_url(handle: &tauri::AppHandle, title: &str) -> Url {
-    // 注意：不要引入额外依赖。这里做最小 URL encoding（空格 -> %20）。
-    // 其它字符若有问题，后续再按需增强。
-    let encoded_title = title.replace(' ', "%20");
-
+fn build_ghost_webview_url(handle: &tauri::AppHandle, title: &str) -> WebviewUrl {
+    // Dev: prefer the dev server so we can iterate quickly.
     if cfg!(debug_assertions) {
-        handle
-            .config()
-            .build
-            .dev_url
-            .clone()
-            .and_then(|base| {
-                let base = base.as_str().trim_end_matches('/').to_string();
-                Url::parse(&format!(
-                    "{base}/?view=drag-ghost&standalone=1&ghostTitle={encoded_title}"
-                ))
-                .ok()
-            })
-            .unwrap_or_else(|| {
-                Url::parse(&format!(
-                    "tauri://localhost/?view=drag-ghost&standalone=1&ghostTitle={encoded_title}"
-                ))
-                .expect("valid tauri url")
-            })
-    } else {
-        Url::parse(&format!(
-            "tauri://localhost/?view=drag-ghost&standalone=1&ghostTitle={encoded_title}"
-        ))
-        .expect("valid tauri url")
+        let encoded_title = urlencoding::encode(title).to_string();
+        if let Some(base) = handle.config().build.dev_url.clone() {
+            let base = base.as_str().trim_end_matches('/').to_string();
+            if let Ok(url) = Url::parse(&format!(
+                "{base}/?view=drag-ghost&standalone=1&ghostTitle={encoded_title}"
+            )) {
+                return WebviewUrl::External(url);
+            }
+        }
     }
+
+    // Build: do NOT rely on query params; some runtimes are picky about `App(path?query)` and may render blank.
+    // We'll detect ghost windows by label prefix on the frontend side.
+    WebviewUrl::App("index.html".into())
 }
 
 #[tauri::command]
@@ -64,10 +61,8 @@ pub fn drag_ghost_create(
 
     let ghost_label = ghost_label_for_source(source.label().as_ref());
 
-    let (source_pos, source_size) = (
-        source.outer_position().ok(),
-        source.outer_size().ok(),
-    );
+    let source_pos = source.outer_position().ok();
+    let source_size = source.outer_size().ok();
 
     let (ghost_w, ghost_h) = if let Some(size) = source_size {
         let w = (size.width as i32 / 5).max(240);
@@ -87,47 +82,42 @@ pub fn drag_ghost_create(
     };
 
     if let Some(ghost) = app.get_webview_window(&ghost_label) {
-        let _ = ghost.set_size(PhysicalSize::new(ghost_w as u32, ghost_h as u32));
-        let _ = ghost.set_position(PhysicalPosition::new(x, y));
-        let _ = ghost.set_title(&format!("[GHOST] {}", title));
-        let _ = ghost.set_ignore_cursor_events(true);
-        let _ = ghost.show();
-        #[cfg(debug_assertions)]
         println!(
-            "[debug_drag_ghost_create] reused label={} centered=({}, {}) size=({}, {})",
-            ghost_label, x, y, ghost_w, ghost_h
+            "[drag_ghost_create] reuse label={} title={} pos=({}, {}) size=({}, {})",
+            ghost_label, title, x, y, ghost_w, ghost_h
         );
+        ghost
+            .set_size(PhysicalSize::new(ghost_w as u32, ghost_h as u32))
+            .map_err(|e| e.to_string())?;
+        ghost
+            .set_position(PhysicalPosition::new(x, y))
+            .map_err(|e| e.to_string())?;
+        ghost
+            .set_title(&format!("[GHOST] {}", title))
+            .map_err(|e| e.to_string())?;
+        ghost
+            .set_focusable(false)
+            .map_err(|e| e.to_string())?;
+        ghost
+            // 关键：ghost 必须“鼠标穿透”，否则会抢占拖拽事件，导致拖拽中断或 move 不再触发。
+            .set_ignore_cursor_events(true)
+            .map_err(|e| e.to_string())?;
+        ghost.show().map_err(|e| e.to_string())?;
+        let _ = source.set_focus();
+        let _ = ghost.emit(
+            "drag-ghost:update",
+            DragGhostUpdatePayload {
+                title: title.clone(),
+            },
+        );
+
         return Ok(());
     }
 
-    let url = build_ghost_url(&app, &title);
-    let webview_url = match url.scheme() {
-        "http" | "https" => WebviewUrl::External(url),
-        _ => WebviewUrl::CustomProtocol(url),
-    };
-
-    let builder = tauri::WebviewWindowBuilder::new(&app, ghost_label.clone(), webview_url)
-        .title(&format!("[GHOST] {}", title))
-        .decorations(cfg!(debug_assertions))
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .resizable(false)
-        // 先用逻辑尺寸创建，随后再用 physical 尺寸修正（避免 DPI 不一致）。
-        .inner_size(ghost_w as f64, ghost_h as f64);
-
-    let ghost = builder.build().map_err(|e| e.to_string())?;
-    let _ = ghost.set_size(PhysicalSize::new(ghost_w as u32, ghost_h as u32));
-    let _ = ghost.set_position(PhysicalPosition::new(x, y));
-    let _ = ghost.set_ignore_cursor_events(true);
-    let _ = ghost.show();
-
-    #[cfg(debug_assertions)]
-    println!(
-        "[debug_drag_ghost_create] created label={} centered=({}, {}) size=({}, {})",
-        ghost_label, x, y, ghost_w, ghost_h
-    );
-
-    Ok(())
+    Err(format!(
+        "ghost window not initialized (label={}); please restart app",
+        ghost_label
+    ))
 }
 
 #[tauri::command]
@@ -152,12 +142,44 @@ pub fn drag_ghost_move(
         .get_webview_window(&ghost_label)
         .ok_or_else(|| format!("ghost window not found: {}", ghost_label))?;
 
-    // 轻微偏移，避免挡住鼠标指针
     const OFFSET_X: i32 = 14;
     const OFFSET_Y: i32 = 18;
 
-    let _ = ghost.set_position(PhysicalPosition::new(x + OFFSET_X, y + OFFSET_Y));
+    ghost
+        .set_position(PhysicalPosition::new(x + OFFSET_X, y + OFFSET_Y))
+        .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Move ghost window using a client-space cursor position (CSS pixels).
+///
+/// This avoids relying on `cursorPosition()` JS polling, which may stop updating
+/// in some drag scenarios. We convert to physical screen coordinates using the
+/// source window's `inner_position` + `scale_factor`.
+#[tauri::command]
+pub fn drag_ghost_move_client(
+    app: tauri::AppHandle,
+    source_label: Option<String>,
+    client_x: f64,
+    client_y: f64,
+) -> Result<(), String> {
+    if !client_x.is_finite() || !client_y.is_finite() {
+        return Ok(());
+    }
+
+    let source_label = source_label.unwrap_or_else(|| "main".to_string());
+    let source = app
+        .get_webview_window(&source_label)
+        .or_else(|| app.get_webview_window("main"))
+        .ok_or_else(|| "main window not found".to_string())?;
+
+    let scale = source.scale_factor().map_err(|e| e.to_string())?;
+    let inner = source.inner_position().map_err(|e| e.to_string())?;
+
+    let x = inner.x + (client_x * scale).round() as i32;
+    let y = inner.y + (client_y * scale).round() as i32;
+
+    drag_ghost_move(app, Some(source.label().to_string()), x, y)
 }
 
 #[tauri::command]
@@ -177,9 +199,9 @@ pub fn drag_ghost_destroy(
     };
 
     if let Some(ghost) = app.get_webview_window(&ghost_label) {
-        let _ = ghost.close();
+        let _ = ghost.hide();
         #[cfg(debug_assertions)]
-        println!("[debug_drag_ghost_destroy] closed label={}", ghost_label);
+        println!("[drag_ghost_destroy] hide label={}", ghost_label);
     }
 
     Ok(())

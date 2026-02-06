@@ -24,7 +24,7 @@ use tokio::sync::Mutex;
 	    get_conversations, get_format_prompt, get_mermaid_svg_cache, get_messages, get_turn_debug_info,
 	    close_invoking_window,
 	    debug_drag_ghost_create, debug_drag_ghost_destroy, debug_drag_ghost_move, drag_ghost_create,
-	    drag_ghost_destroy, drag_ghost_move,
+	    drag_ghost_destroy, drag_ghost_move, drag_ghost_move_client,
 	    get_workstudio,
 	    get_workstudio_security_config, get_workstudio_ui_state, list_local_directory,
 	    list_mcp_server_tools, list_mcp_servers, list_mcp_sets, list_pty_sessions, list_skills,
@@ -301,38 +301,48 @@ pub fn run() {
                     // On Windows, window creation can deadlock inside event handlers; use a new thread.
                     let handle = app.clone();
                     std::thread::spawn(move || {
-                        let label =
-                            format!("view-window-test-{}", chrono::Utc::now().timestamp_millis());
+                        // 在 menu handler 外创建，再切回主线程真正 build（对齐 tao/wry 的线程模型）。
+                        let handle2 = handle.clone();
+                        let _ = handle.run_on_main_thread(move || {
+                            let label = format!(
+                                "view-window-test-{}",
+                                chrono::Utc::now().timestamp_millis()
+                            );
 
-                        let url = if cfg!(debug_assertions) {
-                            handle
-                                .config()
-                                .build
-                                .dev_url
-                                .clone()
-                                .and_then(|base| {
-                                    let base = base.as_str().trim_end_matches('/').to_string();
-                                    Url::parse(&format!("{base}/?view=window_test&standalone=1"))
-                                        .ok()
-                                })
-                                .unwrap_or_else(|| {
-                                    Url::parse("tauri://localhost/?view=window_test&standalone=1")
-                                        .expect("valid tauri url")
-                                })
-                        } else {
-                            Url::parse("tauri://localhost/?view=window_test&standalone=1")
-                                .expect("valid tauri url")
-                        };
+                            // Build 下不要把 query 拼进 `WebviewUrl::App("index.html?...")`，否则会导致 asset 查找失败/白屏。
+                            // 改为 App(index.html) + initialization_script 注入参数给前端读取。
+                            let injected = r#"window.__TAURIAI_VIEW_PARAMS__={"view":"window_test","standalone":true};"#;
 
-                        let webview_url = match url.scheme() {
-                            "http" | "https" => WebviewUrl::External(url),
-                            _ => WebviewUrl::CustomProtocol(url),
-                        };
+                            let (webview_url, init_script) = if cfg!(debug_assertions) {
+                                match handle2
+                                    .config()
+                                    .build
+                                    .dev_url
+                                    .clone()
+                                    .and_then(|base| {
+                                        let base =
+                                            base.as_str().trim_end_matches('/').to_string();
+                                        Url::parse(&format!("{base}/?view=window_test&standalone=1"))
+                                            .ok()
+                                    })
+                                    .map(WebviewUrl::External)
+                                {
+                                    Some(url) => (url, None::<String>),
+                                    None => (WebviewUrl::App("index.html".into()), Some(injected.to_string())),
+                                }
+                            } else {
+                                (WebviewUrl::App("index.html".into()), Some(injected.to_string()))
+                            };
 
-                        let _ = tauri::WebviewWindowBuilder::new(&handle, label, webview_url)
-                            .title("Window Test")
-                            .inner_size(1170.0, 910.0)
-                            .build();
+                            let mut builder =
+                                tauri::WebviewWindowBuilder::new(&handle2, label, webview_url)
+                                    .title("Window Test")
+                                    .inner_size(1170.0, 910.0);
+                            if let Some(init_script) = init_script {
+                                builder = builder.initialization_script(&init_script);
+                            }
+                            let _ = builder.build();
+                        });
                     });
                 }
                 "unit_test_ghost" => {
@@ -341,6 +351,8 @@ pub fn run() {
                     {
                         let handle = app.clone();
                         std::thread::spawn(move || {
+                            let handle2 = handle.clone();
+                            let _ = handle.run_on_main_thread(move || {
                             const GHOST_LABEL: &str = "__tauriai_ghost__main";
 
                             #[derive(Clone, serde::Serialize)]
@@ -348,7 +360,7 @@ pub fn run() {
                                 title: String,
                             }
 
-                            let main = match handle.get_webview_window("main") {
+                            let main = match handle2.get_webview_window("main") {
                                 Some(w) => w,
                                 None => return,
                             };
@@ -376,7 +388,7 @@ pub fn run() {
                             };
 
                             // Reuse existing ghost window if present.
-                            if let Some(ghost) = handle.get_webview_window(GHOST_LABEL) {
+                            if let Some(ghost) = handle2.get_webview_window(GHOST_LABEL) {
                                 let _ =
                                     ghost.set_size(PhysicalSize::new(ghost_w as u32, ghost_h as u32));
                                 let _ = ghost.set_position(PhysicalPosition::new(x, y));
@@ -391,8 +403,8 @@ pub fn run() {
                                 return;
                             }
 
-                            let url = if cfg!(debug_assertions) {
-                                handle
+                            let webview_url = if cfg!(debug_assertions) {
+                                handle2
                                     .config()
                                     .build
                                     .dev_url
@@ -404,26 +416,16 @@ pub fn run() {
                                         ))
                                         .ok()
                                     })
+                                    .map(WebviewUrl::External)
                                     .unwrap_or_else(|| {
-                                        Url::parse(
-                                            "tauri://localhost/?view=drag-ghost&standalone=1&ghostTitle=Unit%20Test%20Ghost%20(Menu)",
-                                        )
-                                        .expect("valid tauri url")
+                                        WebviewUrl::App("index.html".into())
                                     })
                             } else {
-                                Url::parse(
-                                    "tauri://localhost/?view=drag-ghost&standalone=1&ghostTitle=Unit%20Test%20Ghost%20(Menu)",
-                                )
-                                .expect("valid tauri url")
-                            };
-
-                            let webview_url = match url.scheme() {
-                                "http" | "https" => WebviewUrl::External(url),
-                                _ => WebviewUrl::CustomProtocol(url),
+                                WebviewUrl::App("index.html".into())
                             };
 
                             let builder = tauri::WebviewWindowBuilder::new(
-                                &handle,
+                                &handle2,
                                 GHOST_LABEL.to_string(),
                                 webview_url,
                             )
@@ -453,6 +455,7 @@ pub fn run() {
                                     x, y, ghost_w, ghost_h
                                 );
                             }
+                            });
                         });
                     }
                 }
@@ -523,6 +526,7 @@ pub fn run() {
 	            drag_ghost_create,
 	            drag_ghost_destroy,
 	            drag_ghost_move,
+	            drag_ghost_move_client,
 	            // Backward compatibility (old command names)
 	            debug_drag_ghost_create,
 	            debug_drag_ghost_destroy,
@@ -555,6 +559,57 @@ pub fn run() {
         .setup(|app| {
             // Skills watcher for realtime refresh
             app.manage(SkillsWatcherState(SkillsWatcher::new(app.handle().clone())));
+
+            // 预创建单例 Ghost 窗口（避免运行期 `builder.build()` 偶发卡死导致“窗口创建了但没内容/卡住”）。
+            // 运行期只做 show/move/update，不再动态创建。
+            {
+                let handle = app.handle().clone();
+                let handle2 = handle.clone();
+                let _ = handle.run_on_main_thread(move || {
+                    const GHOST_LABEL: &str = "__tauriai_ghost__global";
+                    if handle2.get_webview_window(GHOST_LABEL).is_some() {
+                        return;
+                    }
+
+                    // Build 下不要依赖 query；ghost 视图由 label 前缀识别。
+                    let webview_url = if cfg!(debug_assertions) {
+                        handle2
+                            .config()
+                            .build
+                            .dev_url
+                            .clone()
+                            .and_then(|base| {
+                                let base = base.as_str().trim_end_matches('/').to_string();
+                                Url::parse(&format!("{base}/?view=drag-ghost&standalone=1")).ok()
+                            })
+                            .map(WebviewUrl::External)
+                            .unwrap_or_else(|| WebviewUrl::App("index.html".into()))
+                    } else {
+                        WebviewUrl::App("index.html".into())
+                    };
+
+                    println!("[ghost][precreate] start label={}", GHOST_LABEL);
+                    match tauri::WebviewWindowBuilder::new(&handle2, GHOST_LABEL, webview_url)
+                        .title("[GHOST] precreated")
+                        .decorations(false)
+                        .always_on_top(true)
+                        .skip_taskbar(true)
+                        .resizable(false)
+                        .visible(false)
+                        .focused(false)
+                        .focusable(false)
+                        .build()
+                    {
+                        Ok(w) => {
+                            let _ = w.set_ignore_cursor_events(true);
+                            println!("[ghost][precreate] ok label={}", GHOST_LABEL);
+                        }
+                        Err(e) => {
+                            println!("[ghost][precreate] err label={} err={}", GHOST_LABEL, e);
+                        }
+                    }
+                });
+            }
 
             // Install bundled (repo/system) skills into app skills dir (~/.tauri-ai/skills)
             if let Ok(resource_dir) = app.path().resource_dir() {

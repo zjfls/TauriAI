@@ -68,7 +68,7 @@ export const WindowTestView: React.FC = () => {
             type="button"
             onClick={() => {
               const label = `view-window_test-${Date.now()}`;
-              openWindowWithDiagnostics(label, 'Window Test', '/?view=window_test&standalone=1');
+              openWindowWithDiagnostics(label, 'Window Test', '/index.html?view=window_test&standalone=1');
             }}
             className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
           >
@@ -85,7 +85,7 @@ export const WindowTestView: React.FC = () => {
                 openWindowWithDiagnostics(
                   label,
                   `Workstudio: ${ws.mainFolder}`,
-                  `/?view=workstudio&standalone=1&workstudioId=${encodeURIComponent(ws.id)}`
+                  `/index.html?view=workstudio&standalone=1&workstudioId=${encodeURIComponent(ws.id)}`
                 );
               } finally {
                 setWorkstudioLoading(false);

@@ -250,6 +250,36 @@ export const getViewWindowParams = (): ViewWindowParams => {
       endColumn: null,
     };
   }
+
+  // 优先读取后端窗口创建时注入的参数（避免 production 下依赖 query 路由）。
+  try {
+    const injected = (window as any).__TAURIAI_VIEW_PARAMS__ as unknown;
+    if (injected && typeof injected === 'object') {
+      const p = injected as Partial<ViewWindowParams>;
+      return {
+        view: (p.view ?? null) as ActiveView | null,
+        standalone: Boolean(p.standalone),
+        noDefaultSession: Boolean(p.noDefaultSession),
+        conversationId: p.conversationId ?? null,
+        runMode: p.runMode ?? null,
+        agentName: p.agentName ?? null,
+        documentPath: p.documentPath ?? null,
+        workstudioId: p.workstudioId ?? null,
+        webUrl: p.webUrl ?? null,
+        webTitle: p.webTitle ?? null,
+        terminalWorkdir: p.terminalWorkdir ?? null,
+        terminalTitle: p.terminalTitle ?? null,
+        filePath: p.filePath ?? null,
+        line: typeof p.line === 'number' && Number.isFinite(p.line) ? p.line : null,
+        column: typeof p.column === 'number' && Number.isFinite(p.column) ? p.column : null,
+        endLine: typeof p.endLine === 'number' && Number.isFinite(p.endLine) ? p.endLine : null,
+        endColumn: typeof p.endColumn === 'number' && Number.isFinite(p.endColumn) ? p.endColumn : null,
+      };
+    }
+  } catch {
+    // ignore
+  }
+
   const params = new URLSearchParams(window.location.search);
   const view = params.get('view') as ActiveView | null;
   const standalone = params.get('standalone') === '1';
@@ -365,7 +395,9 @@ export const openViewWindow = (
   if (typeof opts?.endColumn === 'number') {
     params.set('endColumn', String(opts.endColumn));
   }
-  const url = `/?${params.toString()}`;
+  // 注意：在 Tauri production（asset protocol）下，`/?query` 可能不会稳定映射到 `index.html`，
+  // 导致“新窗口白屏/无内容”。显式使用 `index.html` 更稳。
+  const url = `/index.html?${params.toString()}`;
 
   try {
     upsertWindowRecord({
@@ -416,9 +448,13 @@ export const openViewWindow = (
       ? { x: Math.floor(opts.window.x), y: Math.floor(opts.window.y) }
       : {}),
   });
-  // 在一些环境中，新窗口创建失败不会 throw，而是触发 `tauri://error` 事件。
-  // 这里做一个低成本的诊断日志，方便排查“看起来没反应”的问题。
+
+  // 诊断日志（默认开启）：窗口创建的真实结果只会通过事件反映出来（很多时候不会 throw）。
   try {
+    win.once('tauri://created', () => {
+      // eslint-disable-next-line no-console
+      console.log('[openViewWindow] tauri://created', { label, view, url });
+    });
     win.once('tauri://error', (e) => {
       console.error('[openViewWindow] tauri://error', { label, view, url, payload: (e as any)?.payload });
     });
@@ -512,7 +548,8 @@ export const openOrFocusViewWindow = async (
   if (typeof opts?.endColumn === 'number') {
     params.set('endColumn', String(opts.endColumn));
   }
-  const url = `/?${params.toString()}`;
+  // 注意：同 openViewWindow，显式指向 `index.html` 避免 production 下 `/?query` 白屏。
+  const url = `/index.html?${params.toString()}`;
 
   try {
     upsertWindowRecord({
@@ -554,7 +591,7 @@ export const openOrFocusViewWindow = async (
     // ignore
   }
 
-  return new WebviewWindow(label, {
+  const win = new WebviewWindow(label, {
     title,
     url,
     width: Math.max(240, Math.floor(opts?.window?.width ?? 900)),
@@ -563,6 +600,21 @@ export const openOrFocusViewWindow = async (
       ? { x: Math.floor(opts.window.x), y: Math.floor(opts.window.y) }
       : {}),
   });
+
+  // 诊断日志（默认开启）
+  try {
+    win.once('tauri://created', () => {
+      // eslint-disable-next-line no-console
+      console.log('[openOrFocusViewWindow] tauri://created', { label, view, url });
+    });
+    win.once('tauri://error', (e) => {
+      console.error('[openOrFocusViewWindow] tauri://error', { label, view, url, payload: (e as any)?.payload });
+    });
+  } catch {
+    // ignore
+  }
+
+  return win;
 };
 
 export const openOrFocusConversationChatWindow = async (

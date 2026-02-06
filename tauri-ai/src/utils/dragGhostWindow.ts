@@ -40,10 +40,12 @@ export const createDragGhostWindow = async (payload: DragGhostPayload) => {
   if (!title) return;
 
   if (!isTauri()) return;
+  // eslint-disable-next-line no-console
+  console.log('[dragGhost][create]', { sourceLabel, title });
   await invokeDragGhostWithFallback(
     'drag_ghost_create',
     'debug_drag_ghost_create',
-    { title, sourceLabel },
+    { title, source_label: sourceLabel },
     { sourceLabel, title }
   );
 };
@@ -55,19 +57,32 @@ export const moveDragGhostWindow = async (cursor: { x: number; y: number }) => {
   await invokeDragGhostWithFallback(
     'drag_ghost_move',
     'debug_drag_ghost_move',
-    { sourceLabel, x: Math.round(cursor.x), y: Math.round(cursor.y) },
+    { source_label: sourceLabel, x: Math.round(cursor.x), y: Math.round(cursor.y) },
     { sourceLabel, cursor }
   );
+};
+
+export const moveDragGhostWindowClient = async (client: { x: number; y: number }) => {
+  const sourceLabel = getSourceLabel();
+  if (!sourceLabel) return;
+  if (!isTauri()) return;
+  try {
+    await invoke('drag_ghost_move_client', { source_label: sourceLabel, client_x: client.x, client_y: client.y });
+  } catch {
+    // ignore: fallback to cursorPosition polling
+  }
 };
 
 export const destroyDragGhostWindow = async () => {
   const sourceLabel = getSourceLabel();
   if (!sourceLabel) return;
   if (!isTauri()) return;
+  // eslint-disable-next-line no-console
+  console.log('[dragGhost][destroy]', { sourceLabel });
   await invokeDragGhostWithFallback(
     'drag_ghost_destroy',
     'debug_drag_ghost_destroy',
-    { sourceLabel },
+    { source_label: sourceLabel },
     { sourceLabel }
   );
 };
