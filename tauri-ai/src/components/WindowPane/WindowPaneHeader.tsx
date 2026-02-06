@@ -222,6 +222,7 @@ const SortableTab: React.FC<{
     <div
       ref={setNodeRef}
       style={style}
+      data-workspace-tab-id={tab.id}
       onClick={onSelect}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {

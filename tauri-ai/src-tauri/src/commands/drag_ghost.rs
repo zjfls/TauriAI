@@ -15,6 +15,10 @@ struct DragGhostUpdatePayload {
 struct DragGhostFollowState {
     stop: Option<Arc<AtomicBool>>,
     join: Option<JoinHandle<()>>,
+    offset_x: i32,
+    offset_y: i32,
+    w: u32,
+    h: u32,
 }
 
 fn follow_state() -> &'static Mutex<DragGhostFollowState> {
@@ -231,7 +235,10 @@ fn get_cursor_pos_windows() -> Option<(i32, i32)> {
 #[tauri::command]
 pub fn drag_ghost_follow_start(
     app: tauri::AppHandle,
-    _payload: Option<serde_json::Value>,
+    offset_x: Option<f64>,
+    offset_y: Option<f64>,
+    width: Option<f64>,
+    height: Option<f64>,
 ) -> Result<(), String> {
     let ghost_label = ghost_label_for_source("main");
     let ghost = app
@@ -248,15 +255,30 @@ pub fn drag_ghost_follow_start(
 
     let stop = Arc::new(AtomicBool::new(false));
     let stop2 = stop.clone();
-    let app2 = app.clone();
 
     // Keep a clone for the worker; methods are Send on Windows builds.
     let ghost2 = ghost.clone();
 
-    let join = std::thread::spawn(move || {
-        const OFFSET_X: i32 = 14;
-        const OFFSET_Y: i32 = 18;
+    // Derive scale + physical sizes from main window (best-effort).
+    let main = app.get_webview_window("main").or_else(|| app.get_webview_window(&ghost_label));
+    let scale = main
+        .as_ref()
+        .and_then(|w| w.scale_factor().ok())
+        .unwrap_or(1.0);
 
+    let ox = offset_x.unwrap_or(14.0).max(-4096.0).min(4096.0);
+    let oy = offset_y.unwrap_or(18.0).max(-4096.0).min(4096.0);
+    let (oxp, oyp) = ((ox * scale).round() as i32, (oy * scale).round() as i32);
+
+    // Keep sane limits, but allow a bit larger for debugging/visibility.
+    let ww = width.unwrap_or(260.0).max(120.0).min(1600.0);
+    let hh = height.unwrap_or(44.0).max(32.0).min(300.0);
+    let (wp, hp) = ((ww * scale).round() as u32, (hh * scale).round() as u32);
+
+    // Apply size immediately (best-effort)
+    let _ = ghost.set_size(PhysicalSize::new(wp, hp));
+
+    let join = std::thread::spawn(move || {
         // Target 120Hz-ish; adjust if needed.
         let tick = std::time::Duration::from_millis(8);
 
@@ -269,7 +291,7 @@ pub fn drag_ghost_follow_start(
             if let Some((x, y)) = pos {
                 // If this ever errors (e.g. window destroyed), just stop.
                 if ghost2
-                    .set_position(PhysicalPosition::new(x + OFFSET_X, y + OFFSET_Y))
+                    .set_position(PhysicalPosition::new(x - oxp, y - oyp))
                     .is_err()
                 {
                     break;
@@ -281,19 +303,21 @@ pub fn drag_ghost_follow_start(
             }
             std::thread::sleep(tick);
         }
-
-        let _ = app2; // keep handle alive
     });
 
     let mut st = follow_state().lock().map_err(|_| "follow state poisoned".to_string())?;
     st.stop = Some(stop);
     st.join = Some(join);
+    st.offset_x = oxp;
+    st.offset_y = oyp;
+    st.w = wp;
+    st.h = hp;
     println!("[drag_ghost_follow_start] ok label={}", ghost_label);
     Ok(())
 }
 
 #[tauri::command]
-pub fn drag_ghost_follow_stop(_payload: Option<serde_json::Value>) -> Result<(), String> {
+pub fn drag_ghost_follow_stop() -> Result<(), String> {
     let mut st = follow_state().lock().map_err(|_| "follow state poisoned".to_string())?;
     if let Some(stop) = st.stop.take() {
         stop.store(true, Ordering::Relaxed);
@@ -304,6 +328,10 @@ pub fn drag_ghost_follow_stop(_payload: Option<serde_json::Value>) -> Result<(),
             let _ = join.join();
         });
     }
+    st.offset_x = 0;
+    st.offset_y = 0;
+    st.w = 0;
+    st.h = 0;
     println!("[drag_ghost_follow_stop] ok");
     Ok(())
 }
@@ -314,7 +342,7 @@ pub fn drag_ghost_destroy(
     source_label: Option<String>,
 ) -> Result<(), String> {
     // best-effort stop follow loop first
-    let _ = drag_ghost_follow_stop(None);
+    let _ = drag_ghost_follow_stop();
 
     let source_label = source_label.unwrap_or_else(|| "main".to_string());
     let source = app

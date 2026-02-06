@@ -1464,6 +1464,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     stop: stopDragGhost,
   } = useDragGhostSession({ pollIntervalMs: 32 });
   const dragGhostActiveRef = useRef(false);
+  const [isDragGhostActive, setIsDragGhostActive] = useState(false);
   const dragGhostBaseTitleRef = useRef<string>('');
   const dragOriginTabStripRectRef = useRef<DOMRect | null>(null);
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
@@ -1605,6 +1606,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     const file = openFilesRef.current.find((f) => f.id === activeId) ?? null;
     const title = file?.title || basename(activeId) || '文件';
     dragGhostActiveRef.current = false;
+    setIsDragGhostActive(false);
     dragGhostBaseTitleRef.current = title;
     const fromPaneId = tabToPaneId.get(activeId) ?? null;
     const stripEl = fromPaneId ? paneTabStripRefs.current.get(fromPaneId) : null;
@@ -1638,12 +1640,24 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       if (outsideTabStrip) {
         if (!dragGhostActiveRef.current) {
           dragGhostActiveRef.current = true;
+          setIsDragGhostActive(true);
           const base = dragGhostBaseTitleRef.current || 'File';
-          startDragGhost(`【离开TabBar】${base}`);
+
+          const fromPaneId = tabToPaneId.get(activeDragTabId ?? '') ?? null;
+          const stripEl = fromPaneId ? paneTabStripRefs.current.get(fromPaneId) : null;
+          const escapeAttr = (v: string) => v.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+          const tabEl =
+            stripEl && activeDragTabId
+              ? (stripEl.querySelector(`[data-workspace-tab-id="${escapeAttr(activeDragTabId)}"]`) as HTMLElement | null)
+              : null;
+          const tabRect = tabEl ? tabEl.getBoundingClientRect() : null;
+
+          startDragGhost(`【离开TabBar】${base}`, tabRect ? { anchorRect: tabRect, clientPoint: point } : { clientPoint: point });
         }
         moveDragGhostByClientPoint(point);
       } else if (dragGhostActiveRef.current) {
         dragGhostActiveRef.current = false;
+        setIsDragGhostActive(false);
         stopDragGhost();
       }
 
@@ -1655,7 +1669,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         return next;
       });
     },
-    [computeSplitPreview, moveDragGhostByClientPoint, startDragGhost, stopDragGhost]
+    [activeDragTabId, computeSplitPreview, moveDragGhostByClientPoint, startDragGhost, stopDragGhost, tabToPaneId]
   );
 
   const handleDragEnd = useCallback(
@@ -1673,6 +1687,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         setActiveDragTabId(null);
         setSplitPreview(null);
         dragGhostActiveRef.current = false;
+        setIsDragGhostActive(false);
         dragGhostBaseTitleRef.current = '';
         dragOriginTabStripRectRef.current = null;
         stopDragGhost();
@@ -1693,6 +1708,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       setActiveDragTabId(null);
       setSplitPreview(null);
       dragGhostActiveRef.current = false;
+      setIsDragGhostActive(false);
       dragGhostBaseTitleRef.current = '';
       dragOriginTabStripRectRef.current = null;
       stopDragGhost();
@@ -1759,6 +1775,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       setSplitPreview(null);
 
       dragGhostActiveRef.current = false;
+      setIsDragGhostActive(false);
       dragGhostBaseTitleRef.current = '';
       dragOriginTabStripRectRef.current = null;
       stopDragGhost();
@@ -2572,7 +2589,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	            </div>
 
 	            <DragOverlay>
-	              {activeDragTabId ? (
+	              {!isDragGhostActive && activeDragTabId ? (
 	                <div className="rounded-md border border-gray-200 bg-white px-3 py-2 text-sm text-gray-800 shadow-lg dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100">
 	                  {openFiles.find((f) => f.id === activeDragTabId)?.title ?? basename(activeDragTabId)}
 	                </div>

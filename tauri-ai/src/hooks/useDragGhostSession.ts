@@ -29,7 +29,13 @@ export type UseDragGhostSessionOptions = {
 };
 
 export type DragGhostSessionController = {
-  start: (title: string) => void;
+  start: (
+    title: string,
+    opts?: {
+      anchorRect?: { left: number; top: number; width: number; height: number };
+      clientPoint?: { x: number; y: number };
+    }
+  ) => void;
   /** 推送 client-space 指针位置（来自 dnd-kit 的 clientX/Y） */
   moveByClientPoint: (point: { x: number; y: number }) => void;
   setTitle: (title: string) => void;
@@ -94,7 +100,7 @@ export function useDragGhostSession(options: UseDragGhostSessionOptions = {}): D
     })();
   }, []);
 
-  const start = useCallback((title: string) => {
+  const start = useCallback((title: string, opts?: { anchorRect?: { left: number; top: number; width: number; height: number }; clientPoint?: { x: number; y: number } }) => {
     if (!isTauri()) return;
     const trimmed = (title ?? '').trim();
     if (!trimmed) return;
@@ -150,7 +156,18 @@ export function useDragGhostSession(options: UseDragGhostSessionOptions = {}): D
         await createDragGhostWindow({ title: trimmed || '文件' });
         readyRef.current = true;
         // Scheme A：后端自己轮询全局鼠标并移动 ghost（Windows 上更稳，且可跨窗口拖拽）。
-        followActiveRef.current = await startDragGhostFollow();
+        const anchorRect = opts?.anchorRect;
+        const clientPoint = opts?.clientPoint;
+        const followPayload =
+          anchorRect && clientPoint
+            ? {
+                offsetX: clientPoint.x - anchorRect.left,
+                offsetY: clientPoint.y - anchorRect.top,
+                width: anchorRect.width,
+                height: anchorRect.height,
+              }
+            : null;
+        followActiveRef.current = await startDragGhostFollow(followPayload ?? undefined);
         if (!followActiveRef.current) {
           flushPendingClientMove();
         }
