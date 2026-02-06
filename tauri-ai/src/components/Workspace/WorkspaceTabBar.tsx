@@ -163,16 +163,18 @@ const SortableWorkspaceTab: React.FC<{
   item: TabRenderItem;
   isActive: boolean;
   titleOverride?: string | null;
+  pinnedWhileDragging?: boolean;
   onSelect: () => void;
   onClose: (e: React.MouseEvent) => void;
   onContextMenu: (e: React.MouseEvent) => void;
-}> = ({ item, isActive, titleOverride, onSelect, onClose, onContextMenu }) => {
+}> = ({ item, isActive, titleOverride, pinnedWhileDragging, onSelect, onClose, onContextMenu }) => {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: item.id,
   });
 
+  const effectiveTransform = pinnedWhileDragging && isDragging ? null : transform;
   const style: React.CSSProperties = {
-    transform: CSS.Transform.toString(transform),
+    transform: CSS.Transform.toString(effectiveTransform),
     transition,
     opacity: isDragging ? 0.5 : 1,
   };
@@ -374,6 +376,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
   const dragGhostActiveRef = useRef(false);
   const dragGhostBaseTitleRef = useRef<string>('');
   const dragCancelledByEscapeRef = useRef(false);
+  const [pinActiveTabWhileDragging, setPinActiveTabWhileDragging] = useState(false);
 
   useEffect(() => {
     if (!activeDragTabId) return;
@@ -657,6 +660,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
 
     dragGhostBaseTitleRef.current = resolveDragGhostTitle(activeId);
     dragGhostActiveRef.current = false;
+    setPinActiveTabWhileDragging(false);
 
     const ev = e.activatorEvent as MouseEvent | PointerEvent | null;
     if (ev && 'clientX' in ev) {
@@ -690,6 +694,16 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
       y: start.y + e.delta.y,
     };
     lastDragPointRef.current = point;
+
+    // 指针不在 tab 栏区域时：固定“被拖拽的 tab”停在 tab 栏位置（ghost 负责跟随）。
+    const rect = tabBarRef.current?.getBoundingClientRect() ?? null;
+    const outsideTabBar =
+      !rect ||
+      point.x < rect.left ||
+      point.x > rect.right ||
+      point.y < rect.top ||
+      point.y > rect.bottom;
+    setPinActiveTabWhileDragging((prev) => (prev === outsideTabBar ? prev : outsideTabBar));
 
     // ghost 已在 dragStart 时创建，这里只做位置更新即可
     if (dragGhostActiveRef.current) {
@@ -735,6 +749,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
     setActiveDragTabId(null);
     dragGhostActiveRef.current = false;
     dragGhostBaseTitleRef.current = '';
+    setPinActiveTabWhileDragging(false);
     stopDragGhost();
 
     if (shouldTearOff) {
@@ -767,6 +782,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
     setActiveDragTabId(null);
     dragGhostActiveRef.current = false;
     dragGhostBaseTitleRef.current = '';
+    setPinActiveTabWhileDragging(false);
     stopDragGhost();
 
     // Esc 取消：不触发“拖出窗口”逻辑
@@ -868,6 +884,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
                   key={item.id}
                   item={item}
                   isActive={isTabActive(item)}
+                  pinnedWhileDragging={pinActiveTabWhileDragging && activeDragTabId === item.id}
                   onSelect={() => handleSelectTab(item)}
                   onClose={(e) => {
                     e.stopPropagation();
