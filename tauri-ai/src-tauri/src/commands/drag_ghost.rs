@@ -6,6 +6,13 @@ use std::sync::{
 use std::thread::JoinHandle;
 use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize, Url, WebviewUrl};
 
+#[cfg(target_os = "macos")]
+use objc2::MainThreadMarker;
+#[cfg(target_os = "macos")]
+use objc2_app_kit::{NSEvent, NSWindow};
+#[cfg(target_os = "macos")]
+use objc2_foundation::NSPoint;
+
 #[derive(Debug, Clone, Serialize)]
 struct DragGhostUpdatePayload {
     title: String,
@@ -229,20 +236,20 @@ pub fn drag_ghost_move_client(
 // Scheme A: backend-follow mode (Windows-first)
 // ---------------------------------------------------------------------------
 
-#[cfg(windows)]
+#[cfg(target_os = "windows")]
 #[repr(C)]
 struct POINT {
     x: i32,
     y: i32,
 }
 
-#[cfg(windows)]
+#[cfg(target_os = "windows")]
 #[link(name = "user32")]
 extern "system" {
     fn GetCursorPos(lp_point: *mut POINT) -> i32;
 }
 
-#[cfg(windows)]
+#[cfg(target_os = "windows")]
 fn get_cursor_pos_windows() -> Option<(i32, i32)> {
     unsafe {
         let mut p = POINT { x: 0, y: 0 };
@@ -255,7 +262,7 @@ fn get_cursor_pos_windows() -> Option<(i32, i32)> {
     }
 }
 
-#[cfg(windows)]
+#[cfg(target_os = "windows")]
 #[tauri::command]
 pub fn drag_ghost_follow_start(
     app: tauri::AppHandle,
@@ -355,7 +362,7 @@ pub fn drag_ghost_follow_start(
     Ok(())
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 #[tauri::command]
 pub fn drag_ghost_follow_start(
     app: tauri::AppHandle,
@@ -367,17 +374,102 @@ pub fn drag_ghost_follow_start(
     width: Option<f64>,
     height: Option<f64>,
 ) -> Result<(), String> {
-    let _ = app;
-    let _ = offset_x;
-    let _ = offset_y;
-    let _ = width;
-    let _ = height;
-    let _ = source_label;
-    let _ = client_x;
-    let _ = client_y;
-    // macOS 上后端 follow 模式的坐标系容易与 winit/tauri 不一致，导致 ghost 跳变/漂移。
-    // 这里直接禁用后端 follow，统一走前端 pointermove + cursorPosition 轮询（跨平台一致，且更可控）。
-    Err("drag_ghost_follow_start is disabled on this platform; use client/cursor polling".to_string())
+    let ghost_label = ghost_label_for_source("main");
+    let ghost = app
+        .get_webview_window(&ghost_label)
+        .ok_or_else(|| format!("ghost window not found: {}", ghost_label))?;
+
+    // already running?
+    {
+        let st = follow_state().lock().map_err(|_| "follow state poisoned".to_string())?;
+        if st.stop.is_some() {
+            return Ok(());
+        }
+    }
+
+    // macOS：改用 AppKit 坐标系（points, origin bottom-left），避免 CoreGraphics/winit 坐标差导致跳变。
+    // - cursor: NSEvent::mouseLocation()  (points, bottom-left)
+    // - move:   NSWindow::setFrameTopLeftPoint (expects top-left point in same coordinate system)
+    // 计算：
+    //   topLeftX = cursor.x - offsetX
+    //   topLeftY = cursor.y + offsetY   (因为 offsetY 是从 top 向下，屏幕坐标 y 向上)
+
+    let ns_window_ptr = ghost.ns_window().map_err(|e| e.to_string())?;
+    if ns_window_ptr.is_null() {
+        return Err("ns_window is null".to_string());
+    }
+    // `run_on_main_thread` requires `Send` captures; raw pointers are not `Send`.
+    // Store as integer and cast back inside the main-thread closure.
+    let ns_window_ptr = ns_window_ptr as usize;
+
+    let ox = offset_x.unwrap_or(14.0).max(-4096.0).min(4096.0);
+    let oy = offset_y.unwrap_or(18.0).max(-4096.0).min(4096.0);
+
+    // Save offsets in follow state (for debug / other paths)
+    if let Ok(mut st) = follow_state().lock() {
+        st.offset_x = ox.round() as i32;
+        st.offset_y = oy.round() as i32;
+        let _ = (width, height, source_label, client_x, client_y);
+    }
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop2 = stop.clone();
+
+    // Prime: position once immediately on main thread.
+    {
+        let ns_window_ptr = ns_window_ptr;
+        let ox = ox;
+        let oy = oy;
+        let _ = app.run_on_main_thread(move || {
+            let mtm = unsafe { MainThreadMarker::new_unchecked() };
+            let _ = mtm;
+            let ns_window: &NSWindow = unsafe { &*(ns_window_ptr as *mut std::ffi::c_void).cast() };
+            let cur = NSEvent::mouseLocation();
+            let top_left = NSPoint::new(cur.x - ox, cur.y + oy);
+            ns_window.setFrameTopLeftPoint(top_left);
+        });
+    }
+
+    let handle = app.clone();
+    let join = std::thread::spawn(move || {
+        let tick = std::time::Duration::from_millis(16); // 60fps-ish; smooth enough, avoids main-thread queue pressure
+
+        while !stop2.load(Ordering::Relaxed) {
+            let ns_window_ptr = ns_window_ptr;
+            let ox = ox;
+            let oy = oy;
+            let _ = handle.run_on_main_thread(move || {
+                let mtm = unsafe { MainThreadMarker::new_unchecked() };
+                let _ = mtm;
+                let ns_window: &NSWindow = unsafe { &*(ns_window_ptr as *mut std::ffi::c_void).cast() };
+                let cur = NSEvent::mouseLocation();
+                let top_left = NSPoint::new(cur.x - ox, cur.y + oy);
+                ns_window.setFrameTopLeftPoint(top_left);
+            });
+            std::thread::sleep(tick);
+        }
+    });
+
+    let mut st = follow_state().lock().map_err(|_| "follow state poisoned".to_string())?;
+    st.stop = Some(stop);
+    st.join = Some(join);
+    println!("[drag_ghost_follow_start][mac] ok label={}", ghost_label);
+    Ok(())
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+#[tauri::command]
+pub fn drag_ghost_follow_start(
+    _app: tauri::AppHandle,
+    _source_label: Option<String>,
+    _client_x: Option<f64>,
+    _client_y: Option<f64>,
+    _offset_x: Option<f64>,
+    _offset_y: Option<f64>,
+    _width: Option<f64>,
+    _height: Option<f64>,
+) -> Result<(), String> {
+    Err("drag_ghost_follow_start is only supported on Windows/macOS".to_string())
 }
 
 #[tauri::command]

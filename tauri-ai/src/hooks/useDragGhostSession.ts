@@ -196,11 +196,6 @@ export function useDragGhostSession(options: UseDragGhostSessionOptions = {}): D
         });
         readyRef.current = true;
 
-        // 先用 clientPoint 做一次“立即定位”，确保 ghost 在第一帧就出现在鼠标附近（尤其是 mac 调试时）。
-        if (clientPoint) {
-          await moveDragGhostWindowClient(clientPoint);
-        }
-
         // Scheme A：后端自己轮询全局鼠标并移动 ghost（Windows 上更稳，且可跨窗口拖拽）。
         const followPayload =
           anchorRect && clientPoint
@@ -215,6 +210,10 @@ export function useDragGhostSession(options: UseDragGhostSessionOptions = {}): D
             : null;
         followActiveRef.current = await startDragGhostFollow(followPayload ?? undefined);
         if (!followActiveRef.current) {
+          // 仅当未启用后端跟随时，才用 clientPoint 立即定位（避免在 mac 上“切换路径”造成跳变）。
+          if (clientPoint) {
+            await moveDragGhostWindowClient(clientPoint);
+          }
           flushPendingClientMove();
         }
         const current = sessionRef.current;
