@@ -207,6 +207,8 @@ export function useDragGhostSession(options: UseDragGhostSessionOptions = {}): D
                 offsetY: clientPoint.y - anchorRect.top,
                 width: anchorRect.width,
                 height: anchorRect.height,
+                clientX: clientPoint.x,
+                clientY: clientPoint.y,
               }
             : null;
         followActiveRef.current = await startDragGhostFollow(followPayload ?? undefined);

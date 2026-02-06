@@ -24,6 +24,9 @@ struct DragGhostFollowState {
     offset_y: i32,
     w: u32,
     h: u32,
+    cursor_scale: f64,
+    cursor_dx: f64,
+    cursor_dy: f64,
 }
 
 fn follow_state() -> &'static Mutex<DragGhostFollowState> {
@@ -268,6 +271,9 @@ fn get_cursor_pos_macos() -> Option<(i32, i32)> {
 #[tauri::command]
 pub fn drag_ghost_follow_start(
     app: tauri::AppHandle,
+    source_label: Option<String>,
+    client_x: Option<f64>,
+    client_y: Option<f64>,
     offset_x: Option<f64>,
     offset_y: Option<f64>,
     width: Option<f64>,
@@ -303,7 +309,12 @@ pub fn drag_ghost_follow_start(
     let ghost2 = ghost.clone();
 
     // Derive scale + physical sizes from main window (best-effort).
-    let main = app.get_webview_window("main").or_else(|| app.get_webview_window(&ghost_label));
+    let source_label = source_label.unwrap_or_else(|| "main".to_string());
+    let source = app
+        .get_webview_window(&source_label)
+        .or_else(|| app.get_webview_window("main"));
+
+    let main = source.clone().or_else(|| app.get_webview_window(&ghost_label));
     let scale = main
         .as_ref()
         .and_then(|w| w.scale_factor().ok())
@@ -322,6 +333,70 @@ pub fn drag_ghost_follow_start(
     // Apply size immediately (best-effort)
     let _ = ghost.set_size(PhysicalSize::new(wp, hp));
 
+    // -----------------------------------------------------------------------
+    // macOS 校准：不同 API 可能返回不同坐标系（points vs pixels / 多屏幕原点）。
+    // 这里用「前端 client 点 -> 后端物理坐标」作为 ground truth，推导一个线性校正：
+    // corrected = observed * k + d
+    // 目标：让后端 follow 的 cursor 坐标对齐到 tauri/winit 的物理屏幕坐标系。
+    // -----------------------------------------------------------------------
+    let mut cursor_scale = 1.0_f64;
+    let mut cursor_dx = 0.0_f64;
+    let mut cursor_dy = 0.0_f64;
+
+    if let (Some(source), Some(cx), Some(cy)) = (source.as_ref(), client_x, client_y) {
+        if cx.is_finite() && cy.is_finite() {
+            let s = source.scale_factor().ok().filter(|v| v.is_finite() && *v > 0.0).unwrap_or(scale);
+            if let Ok(inner) = source.inner_position() {
+                let expected_x = inner.x as f64 + cx * s;
+                let expected_y = inner.y as f64 + cy * s;
+
+                // Read observed cursor once (best-effort). If unavailable, keep defaults.
+                #[cfg(windows)]
+                let observed = get_cursor_pos_windows().map(|(x, y)| (x as f64, y as f64));
+                #[cfg(target_os = "macos")]
+                let observed = get_cursor_pos_macos().map(|(x, y)| (x as f64, y as f64));
+                #[cfg(all(not(windows), not(target_os = "macos")))]
+                let observed: Option<(f64, f64)> = None;
+
+                if let Some((ox, oy)) = observed {
+                    // Estimate scale factor (k) if it looks like a points<->pixels mismatch.
+                    // Keep it conservative to avoid amplifying noise.
+                    let mut ks: Vec<f64> = Vec::new();
+                    if ox.abs() > 1.0 {
+                        let rx = expected_x / ox;
+                        if rx.is_finite() && rx > 0.25 && rx < 4.0 {
+                            ks.push(rx);
+                        }
+                    }
+                    if oy.abs() > 1.0 {
+                        let ry = expected_y / oy;
+                        if ry.is_finite() && ry > 0.25 && ry < 4.0 {
+                            ks.push(ry);
+                        }
+                    }
+                    if !ks.is_empty() {
+                        let avg = ks.iter().sum::<f64>() / ks.len() as f64;
+                        // Round to common scale factors if close (1.0 / 2.0)
+                        cursor_scale = if (avg - 2.0).abs() < 0.15 {
+                            2.0
+                        } else if (avg - 1.0).abs() < 0.15 {
+                            1.0
+                        } else {
+                            avg
+                        };
+                    }
+
+                    cursor_dx = expected_x - ox * cursor_scale;
+                    cursor_dy = expected_y - oy * cursor_scale;
+                    println!(
+                        "[drag_ghost_follow_start][calib] expected=({:.1},{:.1}) observed=({:.1},{:.1}) k={:.3} d=({:.1},{:.1})",
+                        expected_x, expected_y, ox, oy, cursor_scale, cursor_dx, cursor_dy
+                    );
+                }
+            }
+        }
+    }
+
     let join = std::thread::spawn(move || {
         // Target 120Hz-ish; adjust if needed.
         let tick = std::time::Duration::from_millis(8);
@@ -335,9 +410,14 @@ pub fn drag_ghost_follow_start(
             let pos: Option<(i32, i32)> = None;
 
             if let Some((x, y)) = pos {
+                let corrected_x = (x as f64) * cursor_scale + cursor_dx;
+                let corrected_y = (y as f64) * cursor_scale + cursor_dy;
                 // If this ever errors (e.g. window destroyed), just stop.
                 if ghost2
-                    .set_position(PhysicalPosition::new(x - oxp, y - oyp))
+                    .set_position(PhysicalPosition::new(
+                        corrected_x.round() as i32 - oxp,
+                        corrected_y.round() as i32 - oyp,
+                    ))
                     .is_err()
                 {
                     break;
@@ -358,6 +438,9 @@ pub fn drag_ghost_follow_start(
     st.offset_y = oyp;
     st.w = wp;
     st.h = hp;
+    st.cursor_scale = cursor_scale;
+    st.cursor_dx = cursor_dx;
+    st.cursor_dy = cursor_dy;
     println!("[drag_ghost_follow_start] ok label={}", ghost_label);
     Ok(())
 }
@@ -378,6 +461,9 @@ pub fn drag_ghost_follow_stop() -> Result<(), String> {
     st.offset_y = 0;
     st.w = 0;
     st.h = 0;
+    st.cursor_scale = 1.0;
+    st.cursor_dx = 0.0;
+    st.cursor_dy = 0.0;
     println!("[drag_ghost_follow_stop] ok");
     Ok(())
 }

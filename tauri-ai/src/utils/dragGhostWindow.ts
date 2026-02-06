@@ -90,11 +90,14 @@ export const destroyDragGhostWindow = async () => {
 };
 
 export const startDragGhostFollow = async (
-  opts?: { offsetX: number; offsetY: number; width: number; height: number }
+  opts?: { offsetX: number; offsetY: number; width: number; height: number; clientX?: number; clientY?: number }
 ) => {
   if (!isTauri()) return false;
   try {
     await invoke('drag_ghost_follow_start', {
+      source_label: getSourceLabel(),
+      client_x: opts?.clientX,
+      client_y: opts?.clientY,
       offset_x: opts?.offsetX,
       offset_y: opts?.offsetY,
       width: opts?.width,
