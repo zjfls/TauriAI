@@ -60,7 +60,7 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
           if (!a || typeof a !== "object") continue;
           const name = String((a as any).name ?? "").trim();
           if (!name) continue;
-          const displayName = String((a as any).displayName ?? name).trim();
+          const displayName = String((a as any).displayName ?? (a as any).display_name ?? name).trim();
           next[name] = displayName || name;
         }
         setAgentLabels(next);
@@ -249,12 +249,6 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
       ) : null}
 
       <div ref={listRef} className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-3 space-y-3">
-        {messages.length === 0 ? (
-          <div className="text-sm text-white/60">
-            请输入一条消息开始对话。若提示“未配置模型”，请到 Settings 配置 Provider/Model。
-          </div>
-        ) : null}
-
         {messages.map((m) => (
           <div
             key={m.id}
