@@ -579,11 +579,17 @@ impl AiClient for OpenAiResponsesClient {
             stream: false,
         };
 
-        let response = self
+        let req = self
             .client
             .post(format!("{api_base}/responses"))
             .header("Authorization", format!("Bearer {api_key}"))
-            .header("Content-Type", "application/json")
+            .header("Content-Type", "application/json");
+
+        // iOS/Android：规避部分代理服务返回错误 Content-Encoding 导致的解压失败。
+        #[cfg(any(target_os = "ios", target_os = "android"))]
+        let req = req.header("Accept-Encoding", "identity");
+
+        let response = req
             .json(&request)
             .send()
             .await
@@ -597,10 +603,15 @@ impl AiClient for OpenAiResponsesClient {
             return Err(AiError::RequestFailed(error_text));
         }
 
-        let responses_response: ResponsesResponse = response
-            .json()
+        let bytes = response
+            .bytes()
             .await
             .map_err(|e| AiError::InvalidResponse(e.to_string()))?;
+        let responses_response: ResponsesResponse = serde_json::from_slice(&bytes).map_err(|e| {
+            let snippet = String::from_utf8_lossy(&bytes);
+            let snippet = snippet.chars().take(800).collect::<String>();
+            AiError::InvalidResponse(format!("{}；响应体（截断）：{}", e, snippet))
+        })?;
 
         // Extract text from output
         let mut result = String::new();

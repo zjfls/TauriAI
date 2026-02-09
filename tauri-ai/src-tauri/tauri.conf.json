@@ -5,9 +5,9 @@
   "identifier": "com.ai.tauri-ai",
   "build": {
     "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:1420",
+    "devUrl": "http://localhost:1425",
     "beforeBuildCommand": "npm run build",
-    "frontendDist": "../dist"
+    "frontendDist": "../dist/desktop"
   },
   "app": {
     "windows": [

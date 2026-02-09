@@ -7,15 +7,25 @@
 //!
 //! 当前阶段先落地“统一事件流”（`run:event`）承载上述概念，Chat 只是最简单的 `TaskKind::Chat`。
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod approvals;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod context_manager;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod emitter;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod events;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod mcp;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod run_state;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod task_runner;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod text;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod tools;
 pub mod types;
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use run_state::RunState;

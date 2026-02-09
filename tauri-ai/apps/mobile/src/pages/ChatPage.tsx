@@ -1,0 +1,283 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Plus, SendHorizontal } from "lucide-react";
+import { isTauriRuntime, tauriInvoke, tauriListen, type UnlistenFn } from "../lib/tauri";
+import { clsx } from "../lib/clsx";
+import { useLayoutSize } from "../lib/breakpoints";
+import { Button } from "../ui/Button";
+import { Input } from "../ui/Input";
+import type { ChatMessage } from "../types/chat";
+import { useConversationStore } from "../stores/conversationStore";
+
+type MobileChatStreamPayload = {
+  streamId: string;
+  conversationId: string;
+  assistantMessageId: string;
+  kind: "delta" | "thinking" | "done" | "error" | "canceled";
+  delta?: string;
+  content?: string;
+  thinking?: string;
+  error?: string;
+};
+
+export function ChatPage({ onNewConversation }: { onNewConversation?: () => void }) {
+  const layout = useLayoutSize();
+  const { conversations, activeConversationId, appendMessage, appendMessageDelta, setMessageContent } =
+    useConversationStore();
+  const conversation = useMemo(() => {
+    const c =
+      (activeConversationId && conversations.find((x) => x.id === activeConversationId)) ||
+      conversations[0];
+    return c;
+  }, [activeConversationId, conversations]);
+
+  const [input, setInput] = useState("");
+  const [sending, setSending] = useState(false);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const [fallbackAgentName, setFallbackAgentName] = useState<string>("");
+  const unlistenRef = useRef<UnlistenFn | null>(null);
+  const activeStreamRef = useRef<{
+    streamId: string;
+    conversationId: string;
+    assistantMessageId: string;
+  } | null>(null);
+
+  const messages = conversation?.messages ?? [];
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    if (fallbackAgentName) return;
+    tauriInvoke<any>("get_app_config")
+      .then((cfg) => {
+        const def = String(cfg?.defaultAgent ?? "").trim();
+        if (def) setFallbackAgentName(def);
+      })
+      .catch(() => {
+        // ignore
+      });
+  }, [fallbackAgentName]);
+
+  const scrollToBottom = () => {
+    const el = listRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  };
+
+  const cleanupStream = async (cancelBackend: boolean) => {
+    const active = activeStreamRef.current;
+    activeStreamRef.current = null;
+    const unlisten = unlistenRef.current;
+    unlistenRef.current = null;
+    if (unlisten) unlisten();
+    if (cancelBackend && active && isTauriRuntime()) {
+      try {
+        await tauriInvoke<void>("mobile_chat_stream_cancel", { streamId: active.streamId });
+      } catch {
+        // ignore
+      }
+    }
+  };
+
+  // 切换会话/卸载页面时：取消正在进行的流式输出，避免 token 串到别的对话。
+  useEffect(() => {
+    return () => {
+      void cleanupStream(true);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversation?.id]);
+
+  const send = async () => {
+    if (!conversation) return;
+    const content = input.trim();
+    if (!content) return;
+    if (sending) return;
+
+    let assistantMessageId: string | null = null;
+
+    const userMessage: ChatMessage = {
+      id: `m_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+      role: "user",
+      content,
+      createdAt: Date.now(),
+    };
+    appendMessage(conversation.id, userMessage);
+    setInput("");
+    setSending(true);
+    queueMicrotask(scrollToBottom);
+
+    try {
+      if (!isTauriRuntime()) {
+        appendMessage(conversation.id, {
+          id: `m_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+          role: "assistant",
+          content: "当前在浏览器预览模式，无法调用 Tauri 后端。请在 App 内运行。",
+          createdAt: Date.now(),
+        });
+        return;
+      }
+
+      // 创建一个 assistant 占位消息，后续流式 token 会追加到它上面。
+      assistantMessageId = `m_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+      appendMessage(conversation.id, {
+        id: assistantMessageId,
+        role: "assistant",
+        content: "",
+        createdAt: Date.now(),
+      });
+
+      const history = [...messages, userMessage].slice(-40).map((m) => ({
+        role: m.role,
+        content: m.content,
+      }));
+
+      const streamId = `s_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+      await cleanupStream(true);
+
+      unlistenRef.current = await tauriListen<MobileChatStreamPayload>(
+        "mobile_chat_stream",
+        (p) => {
+          if (!p || p.streamId !== streamId) return;
+          if (p.conversationId !== conversation.id) return;
+          if (assistantMessageId && p.assistantMessageId !== assistantMessageId) return;
+
+          if (p.kind === "delta" || p.kind === "thinking") {
+            if (p.delta && assistantMessageId) {
+              appendMessageDelta(conversation.id, assistantMessageId, p.delta);
+            }
+            queueMicrotask(scrollToBottom);
+            return;
+          }
+
+          if (p.kind === "done") {
+            const final = p.content ?? "";
+            if (assistantMessageId) setMessageContent(conversation.id, assistantMessageId, final);
+            setSending(false);
+            void cleanupStream(false);
+            queueMicrotask(scrollToBottom);
+            return;
+          }
+
+          if (p.kind === "canceled") {
+            setSending(false);
+            void cleanupStream(false);
+            return;
+          }
+
+          if (p.kind === "error") {
+            if (assistantMessageId) {
+              setMessageContent(
+                conversation.id,
+                assistantMessageId,
+                `请求失败：${p.error ? String(p.error) : "未知错误"}`,
+              );
+            }
+            setSending(false);
+            void cleanupStream(false);
+          }
+        },
+      );
+
+      activeStreamRef.current = {
+        streamId,
+        conversationId: conversation.id,
+        assistantMessageId: assistantMessageId ?? "",
+      };
+
+      await tauriInvoke<void>("mobile_chat_stream_start", {
+        streamId,
+        conversationId: conversation.id,
+        assistantMessageId: assistantMessageId!,
+        messages: history,
+        agentName: conversation.agentName || fallbackAgentName || null,
+      });
+
+      // 后续由 event 推送更新；这里不再等待完整响应。
+    } catch (e) {
+      if (assistantMessageId) {
+        setMessageContent(conversation.id, assistantMessageId, `请求失败：${String(e)}`);
+      } else {
+        appendMessage(conversation.id, {
+          id: `m_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+          role: "assistant",
+          content: `请求失败：${String(e)}`,
+          createdAt: Date.now(),
+        });
+      }
+    } finally {
+      // sending 的关闭由 done/error/canceled 事件驱动；这里兜底，防止 start 之前抛错导致卡住。
+      if (activeStreamRef.current == null) {
+        setSending(false);
+        queueMicrotask(scrollToBottom);
+      }
+    }
+  };
+
+  return (
+    <div className="h-full flex flex-col overflow-x-hidden">
+      {layout === "compact" ? (
+        <div className="h-12 border-b border-white/10 bg-white/5 flex items-center justify-between px-3">
+          <div className="min-w-0">
+            <div className="text-sm font-medium truncate">{conversation?.title ?? "Chat"}</div>
+            <div className="text-[11px] text-white/60 truncate">
+              {conversation?.agentName || fallbackAgentName
+                ? `Agent: ${conversation?.agentName || fallbackAgentName}`
+                : "Agent: 未选择"}
+            </div>
+          </div>
+          {onNewConversation ? (
+            <Button size="sm" variant="ghost" onClick={onNewConversation} title="新建对话">
+              <Plus size={16} />
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+
+      <div ref={listRef} className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-3 space-y-3">
+        {messages.length === 0 ? (
+          <div className="text-sm text-white/60">
+            请输入一条消息开始对话。若提示“未配置模型”，请到 Settings 配置 Provider/Model。
+          </div>
+        ) : null}
+
+        {messages.map((m) => (
+          <div
+            key={m.id}
+            className={clsx("flex", m.role === "user" ? "justify-end" : "justify-start")}
+          >
+            <div
+              className={clsx(
+                "max-w-[85%] rounded-2xl px-3 py-2 text-sm whitespace-pre-wrap break-words border",
+                m.role === "user"
+                  ? "bg-indigo-500/20 border-indigo-400/30"
+                  : "bg-white/5 border-white/10",
+              )}
+            >
+              {m.content}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="safe-bottom border-t border-white/10 bg-[#0b1220] p-2">
+        <div className="flex items-end gap-2">
+          <div className="flex-1 min-w-0">
+            <Input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder={sending ? "发送中…" : "输入消息…"}
+              disabled={sending}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  void send();
+                }
+              }}
+            />
+          </div>
+          <Button onClick={() => void send()} disabled={sending || !input.trim()}>
+            <SendHorizontal size={18} />
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}

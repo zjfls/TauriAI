@@ -554,11 +554,18 @@ impl OpenAiBaseClient {
             reasoning_effort,
         };
 
-        let response = self
+        let req = self
             .client
             .post(format!("{api_base}/chat/completions"))
             .header("Authorization", format!("Bearer {api_key}"))
-            .header("Content-Type", "application/json")
+            .header("Content-Type", "application/json");
+
+        // iOS/Android 上部分代理服务会返回错误的 Content-Encoding，导致 reqwest 解压失败
+        //（常见表现：`error decoding response body`）。移动端强制使用 identity 编码规避。
+        #[cfg(any(target_os = "ios", target_os = "android"))]
+        let req = req.header("Accept-Encoding", "identity");
+
+        let response = req
             .json(&request)
             .send()
             .await
@@ -572,10 +579,15 @@ impl OpenAiBaseClient {
             return Err(AiError::RequestFailed(error_text));
         }
 
-        let completion: ChatCompletionResponse = response
-            .json()
+        let bytes = response
+            .bytes()
             .await
             .map_err(|e| AiError::InvalidResponse(e.to_string()))?;
+        let completion: ChatCompletionResponse = serde_json::from_slice(&bytes).map_err(|e| {
+            let snippet = String::from_utf8_lossy(&bytes);
+            let snippet = snippet.chars().take(800).collect::<String>();
+            AiError::InvalidResponse(format!("{}；响应体（截断）：{}", e, snippet))
+        })?;
 
         completion
             .choices

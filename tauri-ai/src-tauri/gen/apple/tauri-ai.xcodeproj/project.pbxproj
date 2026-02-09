@@ -1,0 +1,705 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		135B18777AFDB431174EB361 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = C7850D33F8DBD5EE19864BF8 /* LaunchScreen.storyboard */; };
+		201E2344B9DCBAAA06D2288A /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BD4942576930DBC695E1DE8E /* Metal.framework */; };
+		40C804CE45E1A112952E6038 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 5564CD17947947A6B8D3C273 /* Assets.xcassets */; };
+		57F82EB40E3787BC0F65BE7B /* MetalKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 85DD455AC5775FE9984822DB /* MetalKit.framework */; };
+		5F74880819A199D8480883B9 /* QuartzCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 89DC94B98FE4C3DEB1C3484E /* QuartzCore.framework */; };
+		64789DF2AD1BFEA3C77A5BAD /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7E07D0AD00F93E77862B7301 /* UIKit.framework */; };
+		7B12B8FE0E2BFECD5236D6BC /* main.mm in Sources */ = {isa = PBXBuildFile; fileRef = D0A942D5F701D271020339B2 /* main.mm */; };
+		A275C4B7543E0CEA3DE8CD01 /* libapp.a in Frameworks */ = {isa = PBXBuildFile; fileRef = A569691C6F399F8EB3D1D9FD /* libapp.a */; };
+		A6CF60737C20824EF6EF1F88 /* libapp.a in Resources */ = {isa = PBXBuildFile; fileRef = BAC9D8EB69ADF8773A1C8346 /* libapp.a */; };
+		CC8BF30A36132DB34D3D9A01 /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AC63D7F05136F1B3DAA47D43 /* WebKit.framework */; };
+		DDB8383DB48657D89A3019D0 /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2CB08A5474282A52D4B40213 /* CoreGraphics.framework */; };
+		E553965CFBD4EBF5F59C6326 /* assets in Resources */ = {isa = PBXBuildFile; fileRef = CC985D9BB64E518DC27D2060 /* assets */; };
+		F7B13F6DA8C3F28746773D98 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 598C9E260BF19126D6FEA9C5 /* Security.framework */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		00960615C0F6BC3F93DF87BD /* tools.rs */ = {isa = PBXFileReference; path = tools.rs; sourceTree = "<group>"; };
+		0D723F52F5C5AE1E9D775FE1 /* registry.rs */ = {isa = PBXFileReference; path = registry.rs; sourceTree = "<group>"; };
+		15836B335F1F6498ACE3D67A /* file.rs */ = {isa = PBXFileReference; path = file.rs; sourceTree = "<group>"; };
+		1847C763ECE0B67B3DA8713F /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
+		1D78C2179246B04CDE30FF88 /* devtools.rs */ = {isa = PBXFileReference; path = devtools.rs; sourceTree = "<group>"; };
+		1F676420DBAB0B6B85A14E04 /* loader.rs */ = {isa = PBXFileReference; path = loader.rs; sourceTree = "<group>"; };
+		23661957D8233308DE1D7AFF /* mcp.rs */ = {isa = PBXFileReference; path = mcp.rs; sourceTree = "<group>"; };
+		2B871090A525D2466BA96E49 /* workstudio_security.rs */ = {isa = PBXFileReference; path = workstudio_security.rs; sourceTree = "<group>"; };
+		2C83A8A5511E853AFA7E1896 /* clipboard.rs */ = {isa = PBXFileReference; path = clipboard.rs; sourceTree = "<group>"; };
+		2CB08A5474282A52D4B40213 /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
+		2D0DD1841C050CE8F158A00F /* mentions.rs */ = {isa = PBXFileReference; path = mentions.rs; sourceTree = "<group>"; };
+		316CF54B8A265FC969A36110 /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
+		323AFDFC1572FE74CB76E68C /* watcher.rs */ = {isa = PBXFileReference; path = watcher.rs; sourceTree = "<group>"; };
+		325AE04AF8EDBFD16B601706 /* types.rs */ = {isa = PBXFileReference; path = types.rs; sourceTree = "<group>"; };
+		35B320EB8A2581EC358FBCC6 /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
+		38160EA026AFB87C9C24A7A2 /* services.rs */ = {isa = PBXFileReference; path = services.rs; sourceTree = "<group>"; };
+		3F521E85184D51B45DA16563 /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
+		46E7BF8F728BDA565BE44D5D /* window_control.rs */ = {isa = PBXFileReference; path = window_control.rs; sourceTree = "<group>"; };
+		472B367360940586A56B962F /* apply_patch.rs */ = {isa = PBXFileReference; path = apply_patch.rs; sourceTree = "<group>"; };
+		48E72C79E6BB54057945F715 /* permissions.rs */ = {isa = PBXFileReference; path = permissions.rs; sourceTree = "<group>"; };
+		49E369201F872009111BDCEB /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		502875A45D43C2BA10897C72 /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
+		542F7E9FFB20DF5D1E207A9B /* spec.rs */ = {isa = PBXFileReference; path = spec.rs; sourceTree = "<group>"; };
+		5564CD17947947A6B8D3C273 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		55C68D6B3C700CAA8439DF6A /* bindings.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bindings.h; sourceTree = "<group>"; };
+		57E4AFB7DD4657BDE229AF4E /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
+		598C9E260BF19126D6FEA9C5 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
+		5AA1BEF7587BAB8C4A1D4ECE /* run_state.rs */ = {isa = PBXFileReference; path = run_state.rs; sourceTree = "<group>"; };
+		5C3755782616632DEAF8794B /* workstudio_state.rs */ = {isa = PBXFileReference; path = workstudio_state.rs; sourceTree = "<group>"; };
+		61F361CADE19FAE4AA9A8A8B /* config.rs */ = {isa = PBXFileReference; path = config.rs; sourceTree = "<group>"; };
+		6445751386B212D62CD2212A /* terminal.rs */ = {isa = PBXFileReference; path = terminal.rs; sourceTree = "<group>"; };
+		67B879EBB5683B7D75D53267 /* file_tools.rs */ = {isa = PBXFileReference; path = file_tools.rs; sourceTree = "<group>"; };
+		6E35104416AC6A8A4C5D6CCE /* shell.rs */ = {isa = PBXFileReference; path = shell.rs; sourceTree = "<group>"; };
+		6F4B8BFA05B0846EC3CD82E3 /* emitter.rs */ = {isa = PBXFileReference; path = emitter.rs; sourceTree = "<group>"; };
+		6F6DF875E0008338F92A49B4 /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
+		6F9025542673CC13569198C6 /* pty.rs */ = {isa = PBXFileReference; path = pty.rs; sourceTree = "<group>"; };
+		7036D08C72FD59AC884CFA21 /* workstudio_terminal.rs */ = {isa = PBXFileReference; path = workstudio_terminal.rs; sourceTree = "<group>"; };
+		74C1E5BC0CB91591F6CC8B37 /* approvals.rs */ = {isa = PBXFileReference; path = approvals.rs; sourceTree = "<group>"; };
+		79135FC90B88EE234D5A7B3D /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
+		7A7D61645864FDED3D9EEAC2 /* drag_ghost.rs */ = {isa = PBXFileReference; path = drag_ghost.rs; sourceTree = "<group>"; };
+		7E07D0AD00F93E77862B7301 /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
+		80405A290B97B8A77C1075B7 /* tauri-ai_iOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = "tauri-ai_iOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		82CDF4838B2D602233E9E5CD /* bundled_tools.rs */ = {isa = PBXFileReference; path = bundled_tools.rs; sourceTree = "<group>"; };
+		8546AFF367392C19144F48EA /* workstudio_security.rs */ = {isa = PBXFileReference; path = workstudio_security.rs; sourceTree = "<group>"; };
+		85DD455AC5775FE9984822DB /* MetalKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = System/Library/Frameworks/MetalKit.framework; sourceTree = SDKROOT; };
+		86420A1016B01DD586D3108B /* prompts.rs */ = {isa = PBXFileReference; path = prompts.rs; sourceTree = "<group>"; };
+		87684707ACC84942C287D99C /* mcp.rs */ = {isa = PBXFileReference; path = mcp.rs; sourceTree = "<group>"; };
+		89DC94B98FE4C3DEB1C3484E /* QuartzCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuartzCore.framework; path = System/Library/Frameworks/QuartzCore.framework; sourceTree = SDKROOT; };
+		8E8D63EC205D69B1ACFC9549 /* skills.rs */ = {isa = PBXFileReference; path = skills.rs; sourceTree = "<group>"; };
+		93C207D1CE415066011D7EFF /* errors.rs */ = {isa = PBXFileReference; path = errors.rs; sourceTree = "<group>"; };
+		953A77D8CA18E0F7FA283345 /* openai.rs */ = {isa = PBXFileReference; path = openai.rs; sourceTree = "<group>"; };
+		97715A8DB9E4CF400E1B7441 /* workstudio.rs */ = {isa = PBXFileReference; path = workstudio.rs; sourceTree = "<group>"; };
+		99171FB099A5CACCC3776283 /* lib.rs */ = {isa = PBXFileReference; path = lib.rs; sourceTree = "<group>"; };
+		9B46EA7DF14FBD5433AF1120 /* factory.rs */ = {isa = PBXFileReference; path = factory.rs; sourceTree = "<group>"; };
+		9C2036371B2F5E7F069D1DB4 /* tray.rs */ = {isa = PBXFileReference; path = tray.rs; sourceTree = "<group>"; };
+		A272BABC3425C3CDA39A4D37 /* task_runner.rs */ = {isa = PBXFileReference; path = task_runner.rs; sourceTree = "<group>"; };
+		A569691C6F399F8EB3D1D9FD /* libapp.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libapp.a; sourceTree = "<group>"; };
+		A57A91A4ED495B66D83150E6 /* openai_responses.rs */ = {isa = PBXFileReference; path = openai_responses.rs; sourceTree = "<group>"; };
+		A5F8FF557996CA9BAF805863 /* tauri-ai_iOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "tauri-ai_iOS.entitlements"; sourceTree = "<group>"; };
+		AC63D7F05136F1B3DAA47D43 /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
+		B435EF7042068BD6D98C2CC5 /* google.rs */ = {isa = PBXFileReference; path = google.rs; sourceTree = "<group>"; };
+		B5B77B31EBEA7280A4FEA9F7 /* content_converter.rs */ = {isa = PBXFileReference; path = content_converter.rs; sourceTree = "<group>"; };
+		BAA61EB77AC0A5D9E37013BF /* utf8_stream.rs */ = {isa = PBXFileReference; path = utf8_stream.rs; sourceTree = "<group>"; };
+		BAC9D8EB69ADF8773A1C8346 /* libapp.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libapp.a; sourceTree = "<group>"; };
+		BD4942576930DBC695E1DE8E /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
+		C074359C498CC808DB1E4827 /* mermaid_cache.rs */ = {isa = PBXFileReference; path = mermaid_cache.rs; sourceTree = "<group>"; };
+		C0D94051D35C37948700AF26 /* traits.rs */ = {isa = PBXFileReference; path = traits.rs; sourceTree = "<group>"; };
+		C4F351B44588BBB98176CB2F /* models.rs */ = {isa = PBXFileReference; path = models.rs; sourceTree = "<group>"; };
+		C7850D33F8DBD5EE19864BF8 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
+		C8B1DCCC3F477360F973A601 /* text.rs */ = {isa = PBXFileReference; path = text.rs; sourceTree = "<group>"; };
+		CC985D9BB64E518DC27D2060 /* assets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = assets; sourceTree = SOURCE_ROOT; };
+		CFD62C522942F59760D0B82F /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
+		D0A942D5F701D271020339B2 /* main.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = main.mm; sourceTree = "<group>"; };
+		D48CD5CB53E641FD715F7998 /* prompts.rs */ = {isa = PBXFileReference; path = prompts.rs; sourceTree = "<group>"; };
+		DE5E5D25DD9E057265E8BCD7 /* ollama.rs */ = {isa = PBXFileReference; path = ollama.rs; sourceTree = "<group>"; };
+		E041185CF2982AA23E021D92 /* mcp_resource.rs */ = {isa = PBXFileReference; path = mcp_resource.rs; sourceTree = "<group>"; };
+		E58B7CCFA67E90066B689C0F /* conversation.rs */ = {isa = PBXFileReference; path = conversation.rs; sourceTree = "<group>"; };
+		E6A8E69219929DA49F82BAFE /* web_search.rs */ = {isa = PBXFileReference; path = web_search.rs; sourceTree = "<group>"; };
+		EA68C3766AF5A9318A537F82 /* orchestrator.rs */ = {isa = PBXFileReference; path = orchestrator.rs; sourceTree = "<group>"; };
+		EDD2939555AEF33B5FE778A0 /* anthropic.rs */ = {isa = PBXFileReference; path = anthropic.rs; sourceTree = "<group>"; };
+		EE2844CEEAFE20A6F8EC29EA /* run.rs */ = {isa = PBXFileReference; path = run.rs; sourceTree = "<group>"; };
+		F064E33ACDDA289E43385BDF /* builtin.rs */ = {isa = PBXFileReference; path = builtin.rs; sourceTree = "<group>"; };
+		F523F34FCA09AD4C01386A70 /* chat.rs */ = {isa = PBXFileReference; path = chat.rs; sourceTree = "<group>"; };
+		F7503F6CA8EA0D7D0B92E2DF /* events.rs */ = {isa = PBXFileReference; path = events.rs; sourceTree = "<group>"; };
+		F9590605552B5E6386C79A51 /* main.rs */ = {isa = PBXFileReference; path = main.rs; sourceTree = "<group>"; };
+		F9D8B8AAEA215A7EEA8B965D /* installer.rs */ = {isa = PBXFileReference; path = installer.rs; sourceTree = "<group>"; };
+		FAAEE11F13AD9E8EC731CB70 /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
+		FBD020DE9187E9125EE0173A /* context_manager.rs */ = {isa = PBXFileReference; path = context_manager.rs; sourceTree = "<group>"; };
+		FCD158A3851B1AC54E49250F /* sandbox.rs */ = {isa = PBXFileReference; path = sandbox.rs; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		8A4991FBD0745881B4D8CB73 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A275C4B7543E0CEA3DE8CD01 /* libapp.a in Frameworks */,
+				DDB8383DB48657D89A3019D0 /* CoreGraphics.framework in Frameworks */,
+				201E2344B9DCBAAA06D2288A /* Metal.framework in Frameworks */,
+				57F82EB40E3787BC0F65BE7B /* MetalKit.framework in Frameworks */,
+				5F74880819A199D8480883B9 /* QuartzCore.framework in Frameworks */,
+				F7B13F6DA8C3F28746773D98 /* Security.framework in Frameworks */,
+				64789DF2AD1BFEA3C77A5BAD /* UIKit.framework in Frameworks */,
+				CC8BF30A36132DB34D3D9A01 /* WebKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		08A6B588684FA03D329AE63C /* bindings */ = {
+			isa = PBXGroup;
+			children = (
+				55C68D6B3C700CAA8439DF6A /* bindings.h */,
+			);
+			path = bindings;
+			sourceTree = "<group>";
+		};
+		29E20F93E850C6FE3FBAB058 /* ai_client */ = {
+			isa = PBXGroup;
+			children = (
+				EDD2939555AEF33B5FE778A0 /* anthropic.rs */,
+				B5B77B31EBEA7280A4FEA9F7 /* content_converter.rs */,
+				9B46EA7DF14FBD5433AF1120 /* factory.rs */,
+				B435EF7042068BD6D98C2CC5 /* google.rs */,
+				CFD62C522942F59760D0B82F /* mod.rs */,
+				DE5E5D25DD9E057265E8BCD7 /* ollama.rs */,
+				A57A91A4ED495B66D83150E6 /* openai_responses.rs */,
+				953A77D8CA18E0F7FA283345 /* openai.rs */,
+				C0D94051D35C37948700AF26 /* traits.rs */,
+				BAA61EB77AC0A5D9E37013BF /* utf8_stream.rs */,
+			);
+			path = ai_client;
+			sourceTree = "<group>";
+		};
+		3E54FD1D6C44A2453CAD012D /* commands */ = {
+			isa = PBXGroup;
+			children = (
+				2C83A8A5511E853AFA7E1896 /* clipboard.rs */,
+				61F361CADE19FAE4AA9A8A8B /* config.rs */,
+				E58B7CCFA67E90066B689C0F /* conversation.rs */,
+				1D78C2179246B04CDE30FF88 /* devtools.rs */,
+				7A7D61645864FDED3D9EEAC2 /* drag_ghost.rs */,
+				15836B335F1F6498ACE3D67A /* file.rs */,
+				23661957D8233308DE1D7AFF /* mcp.rs */,
+				C074359C498CC808DB1E4827 /* mermaid_cache.rs */,
+				3F521E85184D51B45DA16563 /* mod.rs */,
+				86420A1016B01DD586D3108B /* prompts.rs */,
+				EE2844CEEAFE20A6F8EC29EA /* run.rs */,
+				8E8D63EC205D69B1ACFC9549 /* skills.rs */,
+				6445751386B212D62CD2212A /* terminal.rs */,
+				00960615C0F6BC3F93DF87BD /* tools.rs */,
+				46E7BF8F728BDA565BE44D5D /* window_control.rs */,
+				8546AFF367392C19144F48EA /* workstudio_security.rs */,
+				5C3755782616632DEAF8794B /* workstudio_state.rs */,
+				7036D08C72FD59AC884CFA21 /* workstudio_terminal.rs */,
+				97715A8DB9E4CF400E1B7441 /* workstudio.rs */,
+			);
+			path = commands;
+			sourceTree = "<group>";
+		};
+		40B2FC9DF6877E76BE618EF7 /* runtime */ = {
+			isa = PBXGroup;
+			children = (
+				74C1E5BC0CB91591F6CC8B37 /* approvals.rs */,
+				FBD020DE9187E9125EE0173A /* context_manager.rs */,
+				6F4B8BFA05B0846EC3CD82E3 /* emitter.rs */,
+				F7503F6CA8EA0D7D0B92E2DF /* events.rs */,
+				35B320EB8A2581EC358FBCC6 /* mod.rs */,
+				5AA1BEF7587BAB8C4A1D4ECE /* run_state.rs */,
+				A272BABC3425C3CDA39A4D37 /* task_runner.rs */,
+				C8B1DCCC3F477360F973A601 /* text.rs */,
+				325AE04AF8EDBFD16B601706 /* types.rs */,
+				B4DF42EB5F228F7B1FD290A1 /* mcp */,
+				965CF39731DB82B759FE247E /* tools */,
+			);
+			path = runtime;
+			sourceTree = "<group>";
+		};
+		6351CE758D054B37A3CBFCD4 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				80405A290B97B8A77C1075B7 /* tauri-ai_iOS.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		6D94B2F954D5D1FEED3AA4F3 /* Externals */ = {
+			isa = PBXGroup;
+			children = (
+				79774DE850BEFD16BCC5557E /* arm64 */,
+			);
+			path = Externals;
+			sourceTree = "<group>";
+		};
+		76AFA5694D42DB78D6B8C1CB /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				2CB08A5474282A52D4B40213 /* CoreGraphics.framework */,
+				A569691C6F399F8EB3D1D9FD /* libapp.a */,
+				BD4942576930DBC695E1DE8E /* Metal.framework */,
+				85DD455AC5775FE9984822DB /* MetalKit.framework */,
+				89DC94B98FE4C3DEB1C3484E /* QuartzCore.framework */,
+				598C9E260BF19126D6FEA9C5 /* Security.framework */,
+				7E07D0AD00F93E77862B7301 /* UIKit.framework */,
+				AC63D7F05136F1B3DAA47D43 /* WebKit.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		79774DE850BEFD16BCC5557E /* arm64 */ = {
+			isa = PBXGroup;
+			children = (
+				C97522B809E50698D2EA91F1 /* debug */,
+			);
+			path = arm64;
+			sourceTree = "<group>";
+		};
+		8000C01C1BAB5EC12FF91979 /* src */ = {
+			isa = PBXGroup;
+			children = (
+				82CDF4838B2D602233E9E5CD /* bundled_tools.rs */,
+				93C207D1CE415066011D7EFF /* errors.rs */,
+				99171FB099A5CACCC3776283 /* lib.rs */,
+				F9590605552B5E6386C79A51 /* main.rs */,
+				2D0DD1841C050CE8F158A00F /* mentions.rs */,
+				C4F351B44588BBB98176CB2F /* models.rs */,
+				D48CD5CB53E641FD715F7998 /* prompts.rs */,
+				9C2036371B2F5E7F069D1DB4 /* tray.rs */,
+				2B871090A525D2466BA96E49 /* workstudio_security.rs */,
+				DE34FF3255059BA725CB63B8 /* agents */,
+				29E20F93E850C6FE3FBAB058 /* ai_client */,
+				3E54FD1D6C44A2453CAD012D /* commands */,
+				DACA95729890A7BF27741128 /* config */,
+				40B2FC9DF6877E76BE618EF7 /* runtime */,
+				CC54CE501126F68E9D3E985E /* skills */,
+				D35D330D7DDDBD16F5D1863E /* storage */,
+			);
+			name = src;
+			path = ../../src;
+			sourceTree = "<group>";
+		};
+		961E045A595B178D3209F358 /* tauri-ai */ = {
+			isa = PBXGroup;
+			children = (
+				D0A942D5F701D271020339B2 /* main.mm */,
+				08A6B588684FA03D329AE63C /* bindings */,
+			);
+			path = "tauri-ai";
+			sourceTree = "<group>";
+		};
+		965CF39731DB82B759FE247E /* tools */ = {
+			isa = PBXGroup;
+			children = (
+				1847C763ECE0B67B3DA8713F /* mod.rs */,
+				EA68C3766AF5A9318A537F82 /* orchestrator.rs */,
+				48E72C79E6BB54057945F715 /* permissions.rs */,
+				0D723F52F5C5AE1E9D775FE1 /* registry.rs */,
+				FCD158A3851B1AC54E49250F /* sandbox.rs */,
+				38160EA026AFB87C9C24A7A2 /* services.rs */,
+				542F7E9FFB20DF5D1E207A9B /* spec.rs */,
+				B3642371F19B46D190134CE8 /* handlers */,
+			);
+			path = tools;
+			sourceTree = "<group>";
+		};
+		AC709676FC46B884F413FC3F = {
+			isa = PBXGroup;
+			children = (
+				CC985D9BB64E518DC27D2060 /* assets */,
+				5564CD17947947A6B8D3C273 /* Assets.xcassets */,
+				C7850D33F8DBD5EE19864BF8 /* LaunchScreen.storyboard */,
+				6D94B2F954D5D1FEED3AA4F3 /* Externals */,
+				FA827822B127DBC531F5AE39 /* Sources */,
+				8000C01C1BAB5EC12FF91979 /* src */,
+				CF94B2148CC10BB125C3AF2F /* tauri-ai_iOS */,
+				76AFA5694D42DB78D6B8C1CB /* Frameworks */,
+				6351CE758D054B37A3CBFCD4 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		B3642371F19B46D190134CE8 /* handlers */ = {
+			isa = PBXGroup;
+			children = (
+				472B367360940586A56B962F /* apply_patch.rs */,
+				F064E33ACDDA289E43385BDF /* builtin.rs */,
+				67B879EBB5683B7D75D53267 /* file_tools.rs */,
+				E041185CF2982AA23E021D92 /* mcp_resource.rs */,
+				87684707ACC84942C287D99C /* mcp.rs */,
+				79135FC90B88EE234D5A7B3D /* mod.rs */,
+				6F9025542673CC13569198C6 /* pty.rs */,
+				6E35104416AC6A8A4C5D6CCE /* shell.rs */,
+				E6A8E69219929DA49F82BAFE /* web_search.rs */,
+			);
+			path = handlers;
+			sourceTree = "<group>";
+		};
+		B4DF42EB5F228F7B1FD290A1 /* mcp */ = {
+			isa = PBXGroup;
+			children = (
+				FAAEE11F13AD9E8EC731CB70 /* mod.rs */,
+			);
+			path = mcp;
+			sourceTree = "<group>";
+		};
+		C97522B809E50698D2EA91F1 /* debug */ = {
+			isa = PBXGroup;
+			children = (
+				BAC9D8EB69ADF8773A1C8346 /* libapp.a */,
+			);
+			path = debug;
+			sourceTree = "<group>";
+		};
+		CC54CE501126F68E9D3E985E /* skills */ = {
+			isa = PBXGroup;
+			children = (
+				F9D8B8AAEA215A7EEA8B965D /* installer.rs */,
+				1F676420DBAB0B6B85A14E04 /* loader.rs */,
+				6F6DF875E0008338F92A49B4 /* mod.rs */,
+				323AFDFC1572FE74CB76E68C /* watcher.rs */,
+			);
+			path = skills;
+			sourceTree = "<group>";
+		};
+		CF94B2148CC10BB125C3AF2F /* tauri-ai_iOS */ = {
+			isa = PBXGroup;
+			children = (
+				49E369201F872009111BDCEB /* Info.plist */,
+				A5F8FF557996CA9BAF805863 /* tauri-ai_iOS.entitlements */,
+			);
+			path = "tauri-ai_iOS";
+			sourceTree = "<group>";
+		};
+		D35D330D7DDDBD16F5D1863E /* storage */ = {
+			isa = PBXGroup;
+			children = (
+				57E4AFB7DD4657BDE229AF4E /* mod.rs */,
+			);
+			path = storage;
+			sourceTree = "<group>";
+		};
+		DACA95729890A7BF27741128 /* config */ = {
+			isa = PBXGroup;
+			children = (
+				316CF54B8A265FC969A36110 /* mod.rs */,
+			);
+			path = config;
+			sourceTree = "<group>";
+		};
+		DE34FF3255059BA725CB63B8 /* agents */ = {
+			isa = PBXGroup;
+			children = (
+				F523F34FCA09AD4C01386A70 /* chat.rs */,
+				502875A45D43C2BA10897C72 /* mod.rs */,
+			);
+			path = agents;
+			sourceTree = "<group>";
+		};
+		FA827822B127DBC531F5AE39 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				961E045A595B178D3209F358 /* tauri-ai */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		"TEMP_0A0B9B1A-A955-4725-9FBA-7A82E69B55B7" /* x86_64 */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = x86_64;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		67D69C62584BA867AB63A042 /* tauri-ai_iOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 20EFD52AED810EF7B9A04376 /* Build configuration list for PBXNativeTarget "tauri-ai_iOS" */;
+			buildPhases = (
+				C08BEB9BA90F7F130BCE344E /* Build Rust Code */,
+				92287BE2C7A54CAE095C1091 /* Sources */,
+				76310DFFDC7AD7126EF88B34 /* Resources */,
+				8A4991FBD0745881B4D8CB73 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "tauri-ai_iOS";
+			packageProductDependencies = (
+			);
+			productName = "tauri-ai_iOS";
+			productReference = 80405A290B97B8A77C1075B7 /* tauri-ai_iOS.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A0CEE242129F8E6E73B42C98 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+			};
+			buildConfigurationList = EE78319C28570B1C09F8DCD1 /* Build configuration list for PBXProject "tauri-ai" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = AC709676FC46B884F413FC3F;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				67D69C62584BA867AB63A042 /* tauri-ai_iOS */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		76310DFFDC7AD7126EF88B34 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				40C804CE45E1A112952E6038 /* Assets.xcassets in Resources */,
+				135B18777AFDB431174EB361 /* LaunchScreen.storyboard in Resources */,
+				E553965CFBD4EBF5F59C6326 /* assets in Resources */,
+				A6CF60737C20824EF6EF1F88 /* libapp.a in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		C08BEB9BA90F7F130BCE344E /* Build Rust Code */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Build Rust Code";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(SRCROOT)/Externals/x86_64/${CONFIGURATION}/libapp.a",
+				"$(SRCROOT)/Externals/arm64/${CONFIGURATION}/libapp.a",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "npm run -- tauri ios xcode-script -v --platform ${PLATFORM_DISPLAY_NAME:?} --sdk-root ${SDKROOT:?} --framework-search-paths \"${FRAMEWORK_SEARCH_PATHS:?}\" --header-search-paths \"${HEADER_SEARCH_PATHS:?}\" --gcc-preprocessor-definitions \"${GCC_PREPROCESSOR_DEFINITIONS:-}\" --configuration ${CONFIGURATION:?} ${FORCE_COLOR} ${ARCHS:?}";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		92287BE2C7A54CAE095C1091 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				7B12B8FE0E2BFECD5236D6BC /* main.mm in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		0F3F0667AE513CA8869357B2 /* release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = release;
+		};
+		5763FAC7C40C94292D44049A /* debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = debug;
+		};
+		D814117333B1758D3DD73E16 /* release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				ARCHS = (
+					arm64,
+				);
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "tauri-ai_iOS/tauri-ai_iOS.entitlements";
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				ENABLE_BITCODE = NO;
+				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\".\"",
+				);
+				INFOPLIST_FILE = "tauri-ai_iOS/Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DT_TOOLCHAIN_DIR)/usr/lib/swift/$(PLATFORM_NAME) $(DT_TOOLCHAIN_DIR)/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DT_TOOLCHAIN_DIR)/usr/lib/swift/$(PLATFORM_NAME) $(DT_TOOLCHAIN_DIR)/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = com.ai.tauri-ai;
+				PRODUCT_NAME = "tauri-ai";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALID_ARCHS = arm64;
+			};
+			name = release;
+		};
+		DF4BBB4F4D8F0D5B82A31FF0 /* debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				ARCHS = (
+					arm64,
+				);
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "tauri-ai_iOS/tauri-ai_iOS.entitlements";
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				ENABLE_BITCODE = NO;
+				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\".\"",
+				);
+				INFOPLIST_FILE = "tauri-ai_iOS/Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DT_TOOLCHAIN_DIR)/usr/lib/swift/$(PLATFORM_NAME) $(DT_TOOLCHAIN_DIR)/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DT_TOOLCHAIN_DIR)/usr/lib/swift/$(PLATFORM_NAME) $(DT_TOOLCHAIN_DIR)/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = com.ai.tauri-ai;
+				PRODUCT_NAME = "tauri-ai";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALID_ARCHS = arm64;
+			};
+			name = debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		20EFD52AED810EF7B9A04376 /* Build configuration list for PBXNativeTarget "tauri-ai_iOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DF4BBB4F4D8F0D5B82A31FF0 /* debug */,
+				D814117333B1758D3DD73E16 /* release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = debug;
+		};
+		EE78319C28570B1C09F8DCD1 /* Build configuration list for PBXProject "tauri-ai" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5763FAC7C40C94292D44049A /* debug */,
+				0F3F0667AE513CA8869357B2 /* release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = A0CEE242129F8E6E73B42C98 /* Project object */;
+}

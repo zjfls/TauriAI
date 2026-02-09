@@ -1,6 +1,7 @@
 // Module declarations
 pub mod agents;
 pub mod ai_client;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod bundled_tools;
 pub mod commands;
 pub mod config;
@@ -9,45 +10,17 @@ pub mod mentions;
 pub mod models;
 pub mod prompts;
 pub mod runtime;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod skills;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod storage;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod tray;
 pub mod workstudio_security;
 
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
-	use commands::{
-	    abort_run, add_workstudio_folder, clipboard_write_png_base64, clone_conversation,
-	    close_pty_session, create_conversation, create_skill, create_workstudio, delete_conversation,
-	    delete_mcp_server, delete_mcp_set, delete_messages_from, ensure_workstudio_for_conversation,
-	    ensure_conversation_file_indexes, fetch_provider_models, generate_title, get_app_config,
-	    get_conversations, get_format_prompt, get_mermaid_svg_cache, get_messages, get_turn_debug_info,
-	    close_invoking_window, hide_invoking_window,
-	    debug_drag_ghost_create, debug_drag_ghost_destroy, debug_drag_ghost_move, drag_ghost_create,
-	    drag_ghost_destroy, drag_ghost_follow_start, drag_ghost_follow_stop, drag_ghost_move,
-	    drag_ghost_move_client,
-	    get_workstudio,
-	    get_workstudio_security_config, get_workstudio_ui_state, list_local_directory,
-	    list_mcp_server_tools, list_mcp_servers, list_mcp_sets, list_pty_sessions, list_skills,
-	    open_devtools_current_window, read_local_file_base64, remove_workstudio_folder,
-    respond_approval, retry_turn, run_task, save_app_config, set_agent_mcp_set,
-    set_mermaid_svg_cache, set_workstudio_main_folder, set_workstudio_security_config,
-    set_workstudio_ui_state, terminal_close, terminal_create, terminal_read, terminal_read_base64,
-    terminal_write, test_connection, test_mcp_server, update_conversation_metadata,
-    update_conversation_title, upsert_mcp_server, upsert_mcp_set, workstudio_find_files,
-    workstudio_terminal_close, workstudio_terminal_create, workstudio_terminal_read,
-    workstudio_terminal_read_base64, workstudio_terminal_write, write_local_text_file,
-};
 use config::ConfigManager;
-use runtime::RunState;
-use skills::installer::install_bundled_skills;
-use skills::watcher::{SkillsWatcher, SkillsWatcherState};
-use storage::Database;
-use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu};
-use tauri::{PhysicalPosition, PhysicalSize};
-use tauri::WebviewUrl;
-use tauri::{Emitter, Manager, Url};
 
 #[cfg(all(debug_assertions, target_os = "macos"))]
 fn schedule_set_dev_dock_icon(app: &tauri::AppHandle) {
@@ -88,6 +61,7 @@ fn schedule_set_dev_dock_icon(app: &tauri::AppHandle) {
 }
 
 /// Get the default database path (~/.tauri-ai/data.db)
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn get_database_path() -> std::path::PathBuf {
     let home_dir = dirs::home_dir().expect("Failed to get home directory");
     home_dir.join(".tauri-ai").join("data.db")
@@ -117,8 +91,17 @@ fn schedule_set_dev_window_icons(app: &tauri::AppHandle) {
     });
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn run_desktop() {
+    use crate::commands::*;
+    use crate::runtime::RunState;
+    use crate::skills::installer::install_bundled_skills;
+    use crate::skills::watcher::{SkillsWatcher, SkillsWatcherState};
+    use crate::storage::Database;
+    use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu};
+    use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize, Url, WebviewUrl};
+    use tokio::sync::Mutex;
+
     println!("[Backend] TauriAI starting...");
 
     // Initialize database
@@ -795,4 +778,44 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn run_mobile() {
+    use crate::commands::{
+        fetch_provider_models, get_app_config, mobile_chat, mobile_chat_stream_cancel,
+        mobile_chat_stream_start, save_app_config, test_connection,
+    };
+    use tauri::Manager;
+
+    println!("[Backend] TauriAI starting... (mobile)");
+
+    tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![
+            get_app_config,
+            save_app_config,
+            test_connection,
+            fetch_provider_models,
+            mobile_chat,
+            mobile_chat_stream_start,
+            mobile_chat_stream_cancel,
+        ])
+        .setup(|app| {
+            let config_dir = app.path().app_config_dir()?;
+            std::fs::create_dir_all(&config_dir)?;
+            let config_path = config_dir.join("config.json");
+            app.manage(Arc::new(ConfigManager::with_path(config_path)));
+            Ok(())
+        })
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
+
+#[cfg_attr(any(target_os = "android", target_os = "ios"), tauri::mobile_entry_point)]
+pub fn run() {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    run_desktop();
+
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    run_mobile();
 }

@@ -3,60 +3,97 @@
 //! This module contains all Tauri command handlers that bridge
 //! the frontend and backend functionality.
 
-mod clipboard;
 mod config;
+mod mobile_chat;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+mod clipboard;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod conversation;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod devtools;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod drag_ghost;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod file;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod mcp;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod mermaid_cache;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod prompts;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod run;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod skills;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod terminal;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod tools;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod window_control;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod workstudio;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod workstudio_security;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod workstudio_state;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod workstudio_terminal;
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use clipboard::clipboard_write_png_base64;
 pub use config::{fetch_provider_models, get_app_config, save_app_config, test_connection};
+pub use mobile_chat::{mobile_chat, mobile_chat_stream_cancel, mobile_chat_stream_start};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use conversation::{
     clone_conversation, create_conversation, delete_conversation, delete_messages_from,
     ensure_conversation_file_indexes, generate_title, get_conversations, get_messages,
     get_turn_debug_info,
     update_conversation_metadata, update_conversation_title,
 };
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use devtools::open_devtools_current_window;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use drag_ghost::{
     debug_drag_ghost_create, debug_drag_ghost_destroy, debug_drag_ghost_move, drag_ghost_create,
     drag_ghost_destroy, drag_ghost_follow_start, drag_ghost_follow_stop, drag_ghost_move,
     drag_ghost_move_client,
 };
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use file::{list_local_directory, read_local_file_base64, write_local_text_file};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use mcp::{
     delete_mcp_server, delete_mcp_set, list_mcp_server_tools, list_mcp_servers, list_mcp_sets,
     set_agent_mcp_set, test_mcp_server, upsert_mcp_server, upsert_mcp_set,
 };
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use mermaid_cache::{get_mermaid_svg_cache, set_mermaid_svg_cache};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use prompts::get_format_prompt;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use run::respond_approval;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use run::{abort_run, retry_turn, run_task};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use skills::{create_skill, list_skills};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use terminal::{
     terminal_close, terminal_create, terminal_read, terminal_read_base64, terminal_write,
 };
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use tools::{close_pty_session, list_pty_sessions};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use window_control::{close_invoking_window, hide_invoking_window};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use workstudio::{
     add_workstudio_folder, create_workstudio, ensure_workstudio_for_conversation, get_workstudio,
     remove_workstudio_folder, set_workstudio_main_folder, workstudio_find_files,
 };
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use workstudio_security::{get_workstudio_security_config, set_workstudio_security_config};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use workstudio_state::{get_workstudio_ui_state, set_workstudio_ui_state};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use workstudio_terminal::{
     workstudio_terminal_close, workstudio_terminal_create, workstudio_terminal_read,
     workstudio_terminal_read_base64, workstudio_terminal_write,
