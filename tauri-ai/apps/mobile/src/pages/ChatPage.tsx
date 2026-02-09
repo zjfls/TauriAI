@@ -45,7 +45,8 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
   } | null>(null);
 
   const messages = conversation?.messages ?? [];
-  const renderMode = useMemo(() => loadChatRenderMode(), []);
+  // 读取渲染模式（默认 rich）。不做 memo，方便 Settings 修改后即时生效。
+  const renderMode = loadChatRenderMode();
 
   useEffect(() => {
     if (!isTauriRuntime()) return;

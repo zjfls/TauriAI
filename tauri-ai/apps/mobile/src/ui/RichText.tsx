@@ -82,7 +82,10 @@ const mdComponents: Components = {
 };
 
 export function RichText({ content, className }: { content: string; className?: string }) {
-  const text = typeof content === "string" ? content : String(content ?? "");
+  const raw = typeof content === "string" ? content : String(content ?? "");
+  // 兼容模型常用的 LaTeX 分隔符：\( \) / \[ \]
+  // 备注：Markdown 会把 "\[" 当作转义，导致只显示 "["，所以必须在 Markdown 解析前归一化。
+  const text = normalizeLatexDelimiters(raw);
   return (
     <div className={clsx("max-w-full overflow-x-hidden break-words", className)}>
       <ReactMarkdown
@@ -95,4 +98,41 @@ export function RichText({ content, className }: { content: string; className?: 
       </ReactMarkdown>
     </div>
   );
+}
+
+function normalizeLatexDelimiters(input: string): string {
+  if (!input) return "";
+
+  const lines = input.split("\n");
+  let inFence = false;
+  const out: string[] = [];
+
+  for (const line of lines) {
+    // 粗略识别 fenced code block；保留 fences 内内容原样，避免把示例代码里的 \[ 也替换掉。
+    if (line.trimStart().startsWith("```")) {
+      inFence = !inFence;
+      out.push(line);
+      continue;
+    }
+
+    if (inFence) {
+      out.push(line);
+      continue;
+    }
+
+    out.push(
+      line
+        // 兼容不同转义层级："\[" 或 "\\["。
+        .replace(/\\\\\[/g, "$$")
+        .replace(/\\\[/g, "$$")
+        .replace(/\\\\\]/g, "$$")
+        .replace(/\\\]/g, "$$")
+        .replace(/\\\\\(/g, "$")
+        .replace(/\\\(/g, "$")
+        .replace(/\\\\\)/g, "$")
+        .replace(/\\\)/g, "$")
+    );
+  }
+
+  return out.join("\n");
 }
