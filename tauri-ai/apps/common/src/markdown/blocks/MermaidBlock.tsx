@@ -265,27 +265,34 @@ export function MermaidBlock({ code, mode = "desktop", onLinkClickHref }: Mermai
 
       {isFullscreen && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80"
+          className={[
+            "fixed inset-0 z-50 flex items-center justify-center bg-black/80",
+            mode === "mobile" ? "safe-top safe-bottom" : "",
+          ].join(" ")}
           onClick={() => setIsFullscreen(false)}
         >
+          <div className="absolute top-3 right-3 z-20">
+            <button
+              type="button"
+              className="h-10 min-w-10 px-4 bg-white/95 text-gray-800 rounded-lg shadow hover:bg-white transition-colors"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setIsFullscreen(false);
+              }}
+            >
+              关闭
+            </button>
+          </div>
+
           <div
             className="w-[92vw] h-[85vh] mt-10 overflow-auto bg-white dark:bg-gray-800 rounded-lg p-4"
             onClick={(e) => e.stopPropagation()}
             onClickCapture={handleSvgClickCapture}
             dangerouslySetInnerHTML={{ __html: svg }}
           />
-          <div className="absolute top-4 right-4">
-            <button
-              type="button"
-              className="px-4 py-2 bg-white dark:bg-gray-700 rounded shadow hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors"
-              onClick={() => setIsFullscreen(false)}
-            >
-              关闭
-            </button>
-          </div>
         </div>
       )}
     </>
   );
 }
-
