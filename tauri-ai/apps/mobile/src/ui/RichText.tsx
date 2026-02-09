@@ -1,7 +1,11 @@
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
 import { clsx } from "../lib/clsx";
+
+import "katex/dist/katex.min.css";
 
 const mdComponents: Components = {
   p: ({ children }) => <p className="my-1 leading-relaxed break-words">{children}</p>,
@@ -82,7 +86,8 @@ export function RichText({ content, className }: { content: string; className?: 
   return (
     <div className={clsx("max-w-full overflow-x-hidden break-words", className)}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkBreaks]}
+        remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]}
+        rehypePlugins={[rehypeKatex]}
         components={mdComponents}
         skipHtml
       >
