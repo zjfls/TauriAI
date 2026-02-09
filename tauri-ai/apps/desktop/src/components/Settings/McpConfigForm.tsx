@@ -163,6 +163,7 @@ export const McpConfigForm: React.FC = () => {
   const [testResult, setTestResult] = useState<McpTestResult | null>(null);
   const [toolPreviewServer, setToolPreviewServer] = useState<string | null>(null);
   const [toolPreview, setToolPreview] = useState<McpToolInfo[] | null>(null);
+  // UI-only collapsed state. IMPORTANT: key it by stable UI key (not server.name, which is editable).
   const [collapsedByServer, setCollapsedByServer] = useState<Record<string, boolean>>({});
   const [importJsonText, setImportJsonText] = useState<string>(exampleClaudeMcpServersJson);
   const [importMode, setImportMode] = useState<ImportMode>('merge_overwrite');
@@ -556,11 +557,12 @@ export const McpConfigForm: React.FC = () => {
   };
 
   const deleteServer = (name: string) => {
+    const uiKey = serverUiKeyByNameRef.current.get(name);
     serverUiKeyByNameRef.current.delete(name);
     setCollapsedByServer((prev) => {
-      if (!(name in prev)) return prev;
+      if (!uiKey || !(uiKey in prev)) return prev;
       const next = { ...prev };
-      delete next[name];
+      delete next[uiKey];
       return next;
     });
     const servers = mcp.servers.filter((s) => s.name !== name);
@@ -725,9 +727,10 @@ export const McpConfigForm: React.FC = () => {
         ) : (
           <div className="space-y-3">
             {mcp.servers.map((server) => {
-              const collapsed = collapsedByServer[server.name] ?? false;
+              const serverUiKey = getServerUiKey(server.name);
+              const collapsed = collapsedByServer[serverUiKey] ?? false;
               const toggleCollapsed = () =>
-                setCollapsedByServer((prev) => ({ ...prev, [server.name]: !(prev[server.name] ?? false) }));
+                setCollapsedByServer((prev) => ({ ...prev, [serverUiKey]: !(prev[serverUiKey] ?? false) }));
 
               const transportSummary =
                 server.config.transport.transport === 'stdio'
@@ -736,7 +739,7 @@ export const McpConfigForm: React.FC = () => {
 
               return (
                 <div
-                  key={getServerUiKey(server.name)}
+                  key={serverUiKey}
                   className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 space-y-3"
                 >
                   <div className="flex items-center justify-between gap-2">
