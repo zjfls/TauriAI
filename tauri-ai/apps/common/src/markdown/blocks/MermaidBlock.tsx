@@ -266,26 +266,26 @@ export function MermaidBlock({ code, mode = "desktop", onLinkClickHref }: Mermai
           ].join(" ")}
           onClick={() => setIsFullscreen(false)}
         >
-          <div className="absolute top-3 right-3 z-20">
-            <button
-              type="button"
-              className="h-10 min-w-10 px-4 bg-white/95 text-gray-800 rounded-lg shadow hover:bg-white transition-colors"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setIsFullscreen(false);
-              }}
-            >
-              关闭
-            </button>
-          </div>
-
           <div
-            className="w-[92vw] h-[85vh] mt-10 overflow-auto bg-white dark:bg-gray-800 rounded-lg p-4"
+            className="w-[92vw] h-[85vh] mt-10 overflow-auto bg-white dark:bg-gray-800 rounded-lg"
             onClick={(e) => e.stopPropagation()}
             onClickCapture={handleSvgClickCapture}
-            dangerouslySetInnerHTML={{ __html: svg }}
-          />
+          >
+            <div className="sticky top-0 z-20 flex justify-end border-b border-black/10 bg-white/95 px-2 py-2 text-gray-800 backdrop-blur dark:border-white/10 dark:bg-gray-800/95 dark:text-gray-100">
+              <button
+                type="button"
+                className="h-10 min-w-10 px-4 rounded-lg border border-black/10 bg-white shadow-sm hover:bg-gray-50 active:bg-gray-100 transition-colors dark:border-white/10 dark:bg-white/10 dark:hover:bg-white/15"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setIsFullscreen(false);
+                }}
+              >
+                关闭
+              </button>
+            </div>
+            <div className="p-4" dangerouslySetInnerHTML={{ __html: svg }} />
+          </div>
         </div>
       )}
     </>
