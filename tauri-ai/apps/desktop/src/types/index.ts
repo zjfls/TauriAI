@@ -1014,6 +1014,17 @@ export type McpServerTransportConfig =
       bearerTokenEnvVar?: string;
       httpHeaders?: Record<string, string>;
       envHttpHeaders?: Record<string, string>;
+    }
+  | {
+      /**
+       * SSE transport: 连接 `url`（GET text/event-stream），等待 `event: endpoint` 下发 POST 地址，
+       * 然后通过 HTTP POST 发送 JSON-RPC；响应从 SSE stream 回来。
+       */
+      transport: 'sse';
+      url: string;
+      bearerTokenEnvVar?: string;
+      httpHeaders?: Record<string, string>;
+      envHttpHeaders?: Record<string, string>;
     };
 
 export interface McpServerConfig {

@@ -907,53 +907,56 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
         <div className="flex-1" />
       )}
 
-      {/* New session button */}
-      <div className="relative flex-shrink-0 px-2 flex items-center gap-2">
-        {/* View menu (replaces left sidebar) */}
-        <div className="relative" ref={viewMenuRef}>
-          <button
-            type="button"
-            onClick={() => setShowViewMenu((v) => !v)}
-            className="flex items-center gap-1 px-2 py-1.5 rounded-md text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-gray-800 dark:hover:text-gray-200 transition-colors"
-            title="视图"
-          >
-            <Menu size={16} />
-          </button>
+	      {/* New session button */}
+	      <div className="relative flex-shrink-0 px-2 flex items-center gap-2">
+	        {!isTauri() && (
+	          <>
+	            {/* View menu (replaces left sidebar). Desktop(Tauri) 下统一交给系统菜单栏 View。 */}
+	            <div className="relative" ref={viewMenuRef}>
+	              <button
+	                type="button"
+	                onClick={() => setShowViewMenu((v) => !v)}
+	                className="flex items-center gap-1 px-2 py-1.5 rounded-md text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-gray-800 dark:hover:text-gray-200 transition-colors"
+	                title="视图"
+	              >
+	                <Menu size={16} />
+	              </button>
 
-          {showViewMenu && (
-            <div className="absolute right-0 top-[calc(100%+6px)] w-40 rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-800 z-[120] overflow-hidden">
-              {[
-                { id: 'chat' as const, label: '聊天', icon: <MessageSquare size={14} /> },
-                { id: 'history' as const, label: '历史', icon: <History size={14} /> },
-                // Tauri 下“设置/新建会话”移到系统菜单栏，避免与右上角重复
-                ...(isTauri() ? [] : [{ id: 'settings' as const, label: '设置', icon: <Settings size={14} /> }]),
-              ].map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => {
-                    setActiveView(item.id);
-                    setShowViewMenu(false);
-                  }}
-                  className={[
-                    'flex w-full items-center gap-2 px-3 py-2 text-sm text-left transition-colors',
-                    activeView === item.id
-                      ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
-                      : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700',
-                  ].join(' ')}
-                >
-                  <span className="text-gray-500 dark:text-gray-300">{item.icon}</span>
-                  <span className="flex-1">{item.label}</span>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
+	              {showViewMenu && (
+	                <div className="absolute right-0 top-[calc(100%+6px)] w-40 rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-800 z-[120] overflow-hidden">
+	                  {[
+	                    { id: 'chat' as const, label: '聊天', icon: <MessageSquare size={14} /> },
+	                    { id: 'history' as const, label: '历史', icon: <History size={14} /> },
+	                    { id: 'settings' as const, label: '设置', icon: <Settings size={14} /> },
+	                  ].map((item) => (
+	                    <button
+	                      key={item.id}
+	                      type="button"
+	                      onClick={() => {
+	                        setActiveView(item.id);
+	                        setShowViewMenu(false);
+	                      }}
+	                      className={[
+	                        'flex w-full items-center gap-2 px-3 py-2 text-sm text-left transition-colors',
+	                        activeView === item.id
+	                          ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
+	                          : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700',
+	                      ].join(' ')}
+	                    >
+	                      <span className="text-gray-500 dark:text-gray-300">{item.icon}</span>
+	                      <span className="flex-1">{item.label}</span>
+	                    </button>
+	                  ))}
+	                </div>
+	              )}
+	            </div>
+	          </>
+	        )}
 
-        {!isTauri() && (
-          <>
-            <button
-              ref={newSessionButtonRef}
+	        {!isTauri() && (
+	          <>
+	            <button
+	              ref={newSessionButtonRef}
               onClick={handleNewSessionClick}
               className="flex items-center gap-1 px-2 py-1.5 rounded-md text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-gray-800 dark:hover:text-gray-200 transition-colors"
               title="新建会话"

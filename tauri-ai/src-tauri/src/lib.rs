@@ -92,13 +92,250 @@ fn schedule_set_dev_window_icons(app: &tauri::AppHandle) {
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    config: &crate::models::AppConfig,
+) -> tauri::Result<tauri::menu::Menu<R>> {
+    use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu};
+
+    // Start from Tauri's default menu (macOS has one by default).
+    // Then inject our entries into File/View/Session submenus.
+    let menu = Menu::default(app)?;
+
+    // Prepare agent list for "新建会话（按 Agent）"
+    let mut enabled_agents: Vec<_> = config.agents.iter().filter(|a| a.enabled).collect();
+    let effective_default_agent = if !config.default_agent.is_empty() {
+        config.default_agent.as_str()
+    } else {
+        enabled_agents
+            .first()
+            .map(|a| a.name.as_str())
+            .unwrap_or_default()
+    };
+    if !config.default_agent.is_empty() {
+        if let Some(pos) = enabled_agents
+            .iter()
+            .position(|a| a.name == config.default_agent)
+        {
+            let default_agent = enabled_agents.remove(pos);
+            enabled_agents.insert(0, default_agent);
+        }
+    }
+    let has_agents = !enabled_agents.is_empty();
+
+    let open_file = MenuItem::with_id(app, "open_file", "打开文件…", true, Some("CmdOrCtrl+O"))?;
+
+    let new_richtxt = MenuItem::with_id(
+        app,
+        "new_richtxt",
+        "新建 .tauri.richtxt",
+        true,
+        Some("CmdOrCtrl+N"),
+    )?;
+
+    // Session/app actions (moved from top-right toolbar to system menu bar)
+    // 只保留“按 Agent 新建会话”，并把快捷键绑定到默认 Agent 的菜单项。
+    let new_session_by_agent: Submenu<R> = if has_agents {
+        let mut items: Vec<MenuItem<R>> = Vec::new();
+        for agent in &enabled_agents {
+            let mut label = agent.display_name.clone();
+            let is_default = agent.name == effective_default_agent;
+            if is_default {
+                label = format!("{label}（默认）");
+            }
+            let encoded = urlencoding::encode(&agent.name);
+            let id = format!("new_session_agent:{encoded}");
+            let accelerator = if is_default {
+                Some("CmdOrCtrl+T")
+            } else {
+                None::<&str>
+            };
+            items.push(MenuItem::with_id(app, id, label, true, accelerator)?);
+        }
+        let item_refs: Vec<&dyn tauri::menu::IsMenuItem<R>> = items.iter().map(|i| i as _).collect();
+        Submenu::with_items(app, "新建会话（按 Agent）", true, &item_refs)?
+    } else {
+        let empty =
+            MenuItem::with_id(app, "new_session_agent_empty", "（未配置 Agent）", false, None::<&str>)?;
+        Submenu::with_items(app, "新建会话（按 Agent）", false, &[&empty])?
+    };
+
+    let open_settings =
+        MenuItem::with_id(app, "open_settings", "设置…", true, Some("CmdOrCtrl+,"))?;
+
+    let separator = PredefinedMenuItem::separator(app)?;
+    let test_window = MenuItem::with_id(
+        app,
+        "test_window",
+        "测试多窗口",
+        true,
+        Some("CmdOrCtrl+Shift+N"),
+    )?;
+
+    // View: switch main content view (history, chat, etc.)
+    let open_history_accelerator: Option<&str> = if cfg!(target_os = "macos") {
+        Some("Cmd+Y")
+    } else {
+        Some("Ctrl+H")
+    };
+    let open_history =
+        MenuItem::with_id(app, "open_history", "历史", true, open_history_accelerator)?;
+    let view_history_separator = PredefinedMenuItem::separator(app)?;
+
+    // View: open web/terminal as tabs inside the workspace (not standalone windows).
+    let open_web_tab = MenuItem::with_id(
+        app,
+        "open_web_tab",
+        "打开网页标签",
+        true,
+        Some("CmdOrCtrl+Alt+W"),
+    )?;
+    let open_terminal_tab = MenuItem::with_id(
+        app,
+        "open_terminal_tab",
+        "打开终端标签",
+        true,
+        Some("CmdOrCtrl+Alt+T"),
+    )?;
+    let view_separator = PredefinedMenuItem::separator(app)?;
+    #[cfg(debug_assertions)]
+    let open_devtools = MenuItem::with_id(
+        app,
+        "open_devtools",
+        "打开开发者工具",
+        true,
+        Some("CmdOrCtrl+Alt+I"),
+    )?;
+    #[cfg(debug_assertions)]
+    let unit_test_ghost = MenuItem::with_id(
+        app,
+        "unit_test_ghost",
+        "单元测试：显示 Ghost 窗口",
+        true,
+        Some("CmdOrCtrl+Shift+G"),
+    )?;
+
+    // Find existing "File" submenu and insert at the top. If not found (e.g. Linux), create one.
+    let mut file_submenu: Option<Submenu<R>> = None;
+    for item in menu.items().unwrap_or_default() {
+        if let MenuItemKind::Submenu(submenu) = item {
+            if let Ok(text) = submenu.text() {
+                if text == "File" || text == "文件" {
+                    file_submenu = Some(submenu);
+                    break;
+                }
+            }
+        }
+    }
+
+    if let Some(file) = file_submenu {
+        file.insert_items(&[&new_richtxt, &open_file, &test_window, &separator], 0)?;
+    } else {
+        let file = Submenu::with_items(app, "File", true, &[&new_richtxt, &open_file, &test_window])?;
+        // On macOS, index 0 is the app menu. Insert after it.
+        let pos = if cfg!(target_os = "macos") { 1 } else { 0 };
+        menu.insert(&file, pos)?;
+    }
+
+    // Find existing "View" submenu and insert our actions at the top. If not found, create one.
+    let mut view_submenu: Option<Submenu<R>> = None;
+    for item in menu.items().unwrap_or_default() {
+        if let MenuItemKind::Submenu(submenu) = item {
+            if let Ok(text) = submenu.text() {
+                if text == "View" || text == "视图" {
+                    view_submenu = Some(submenu);
+                    break;
+                }
+            }
+        }
+    }
+
+    if let Some(view) = view_submenu {
+        #[cfg(debug_assertions)]
+        view.insert_items(&[&unit_test_ghost, &open_devtools], 0)?;
+        view.insert_items(
+            &[
+                &open_history,
+                &open_settings,
+                &view_history_separator,
+                &open_web_tab,
+                &open_terminal_tab,
+                &view_separator,
+            ],
+            0,
+        )?;
+    } else {
+        #[cfg(debug_assertions)]
+        let view = Submenu::with_items(
+            app,
+            "View",
+            true,
+            &[
+                &open_history,
+                &open_settings,
+                &view_history_separator,
+                &open_web_tab,
+                &open_terminal_tab,
+                &view_separator,
+                &unit_test_ghost,
+                &open_devtools,
+            ],
+        )?;
+        #[cfg(not(debug_assertions))]
+        let view = Submenu::with_items(
+            app,
+            "View",
+            true,
+            &[
+                &open_history,
+                &open_settings,
+                &view_history_separator,
+                &open_web_tab,
+                &open_terminal_tab,
+            ],
+        )?;
+        // Insert after File submenu (best-effort). On macOS index 0 is app menu.
+        let pos = if cfg!(target_os = "macos") { 2 } else { 1 };
+        menu.insert(&view, pos)?;
+    }
+
+    // Find existing "Session" submenu (if any) and insert our actions; otherwise create one.
+    let mut session_submenu: Option<Submenu<R>> = None;
+    for item in menu.items().unwrap_or_default() {
+        if let MenuItemKind::Submenu(submenu) = item {
+            if let Ok(text) = submenu.text() {
+                if text == "Session" || text == "会话" {
+                    session_submenu = Some(submenu);
+                    break;
+                }
+            }
+        }
+    }
+
+    if let Some(session) = session_submenu {
+        session.insert_items(&[&new_session_by_agent], 0)?;
+    } else {
+        let session = Submenu::with_items(
+            app,
+            "会话",
+            true,
+            &[&new_session_by_agent],
+        )?;
+        // Insert after View submenu. On macOS index 0 is the app menu.
+        let pos = if cfg!(target_os = "macos") { 3 } else { 2 };
+        menu.insert(&session, pos)?;
+    }
+
+    Ok(menu)
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn run_desktop() {
     use crate::commands::*;
     use crate::runtime::RunState;
     use crate::skills::installer::install_bundled_skills;
     use crate::skills::watcher::{SkillsWatcher, SkillsWatcherState};
     use crate::storage::Database;
-    use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu};
     use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize, Url, WebviewUrl};
     use tokio::sync::Mutex;
 
@@ -115,217 +352,46 @@ fn run_desktop() {
     let config_manager = ConfigManager::new().expect("Failed to initialize config manager");
     let config_manager = Arc::new(config_manager);
 
-    // Initialize run state (shared runtime controls: abort/wait)
-    let run_state = Arc::new(RunState::new());
+	    // Initialize run state (shared runtime controls: abort/wait)
+	    let run_state = Arc::new(RunState::new());
+	    let config_manager_for_menu = config_manager.clone();
 
-    tauri::Builder::default()
-        .menu(|app| {
-            // Start from Tauri's default menu (macOS has one by default).
-            // Then inject our "Open File" entry into the File submenu.
-            let menu = Menu::default(app)?;
-
-            let open_file =
-                MenuItem::with_id(app, "open_file", "打开文件…", true, Some("CmdOrCtrl+O"))?;
-
-            let new_richtxt = MenuItem::with_id(
-                app,
-                "new_richtxt",
-                "新建 .tauri.richtxt",
-                true,
-                Some("CmdOrCtrl+N"),
-            )?;
-
-            // Session/app actions (moved from top-right toolbar to system menu bar)
-            let new_session =
-                MenuItem::with_id(app, "new_session", "新建会话", true, Some("CmdOrCtrl+T"))?;
-            let clone_session = MenuItem::with_id(
-                app,
-                "clone_session",
-                "克隆当前对话",
-                true,
-                Some("CmdOrCtrl+Shift+D"),
-            )?;
-            let open_settings = MenuItem::with_id(
-                app,
-                "open_settings",
-                "设置…",
-                true,
-                Some("CmdOrCtrl+,"),
-            )?;
-            let session_separator = PredefinedMenuItem::separator(app)?;
-
-            let separator = PredefinedMenuItem::separator(app)?;
-            let test_window = MenuItem::with_id(
-                app,
-                "test_window",
-                "测试多窗口",
-                true,
-                Some("CmdOrCtrl+Shift+N"),
-            )?;
-
-            // View: open web/terminal as tabs inside the workspace (not standalone windows).
-            let open_web_tab = MenuItem::with_id(
-                app,
-                "open_web_tab",
-                "打开网页标签",
-                true,
-                Some("CmdOrCtrl+Alt+W"),
-            )?;
-            let open_terminal_tab = MenuItem::with_id(
-                app,
-                "open_terminal_tab",
-                "打开终端标签",
-                true,
-                Some("CmdOrCtrl+Alt+T"),
-            )?;
-            let view_separator = PredefinedMenuItem::separator(app)?;
-            #[cfg(debug_assertions)]
-            let open_devtools = MenuItem::with_id(
-                app,
-                "open_devtools",
-                "打开开发者工具",
-                true,
-                Some("CmdOrCtrl+Alt+I"),
-            )?;
-            #[cfg(debug_assertions)]
-            let unit_test_ghost = MenuItem::with_id(
-                app,
-                "unit_test_ghost",
-                "单元测试：显示 Ghost 窗口",
-                true,
-                Some("CmdOrCtrl+Shift+G"),
-            )?;
-
-            // Find existing "File" submenu and insert at the top. If not found (e.g. Linux),
-            // create one.
-            let mut file_submenu: Option<Submenu<_>> = None;
-            for item in menu.items().unwrap_or_default() {
-                if let MenuItemKind::Submenu(submenu) = item {
-                    if let Ok(text) = submenu.text() {
-                        if text == "File" || text == "文件" {
-                            file_submenu = Some(submenu);
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if let Some(file) = file_submenu {
-                file.insert_items(&[&new_richtxt, &open_file, &test_window, &separator], 0)?;
-            } else {
-                let file = Submenu::with_items(
-                    app,
-                    "File",
-                    true,
-                    &[&new_richtxt, &open_file, &test_window],
-                )?;
-                // On macOS, index 0 is the app menu. Insert after it.
-                let pos = if cfg!(target_os = "macos") { 1 } else { 0 };
-                menu.insert(&file, pos)?;
-            }
-
-            // Find existing "View" submenu and insert our actions at the top. If not found, create one.
-            let mut view_submenu: Option<Submenu<_>> = None;
-            for item in menu.items().unwrap_or_default() {
-                if let MenuItemKind::Submenu(submenu) = item {
-                    if let Ok(text) = submenu.text() {
-                        if text == "View" || text == "视图" {
-                            view_submenu = Some(submenu);
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if let Some(view) = view_submenu {
-                #[cfg(debug_assertions)]
-                view.insert_items(&[&unit_test_ghost, &open_devtools], 0)?;
-                view.insert_items(&[&open_web_tab, &open_terminal_tab, &view_separator], 0)?;
-            } else {
-                #[cfg(debug_assertions)]
-                let view = Submenu::with_items(
-                    app,
-                    "View",
-                    true,
-                    &[&unit_test_ghost, &open_devtools, &open_web_tab, &open_terminal_tab],
-                )?;
-                #[cfg(not(debug_assertions))]
-                let view =
-                    Submenu::with_items(app, "View", true, &[&open_web_tab, &open_terminal_tab])?;
-                // Insert after File submenu (best-effort). On macOS index 0 is app menu.
-                let pos = if cfg!(target_os = "macos") { 2 } else { 1 };
-                menu.insert(&view, pos)?;
-            }
-
-            // Find existing "Session" submenu (if any) and insert our actions; otherwise create one.
-            let mut session_submenu: Option<Submenu<_>> = None;
-            for item in menu.items().unwrap_or_default() {
-                if let MenuItemKind::Submenu(submenu) = item {
-                    if let Ok(text) = submenu.text() {
-                        if text == "Session" || text == "会话" {
-                            session_submenu = Some(submenu);
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if let Some(session) = session_submenu {
-                session.insert_items(
-                    &[
-                        &new_session,
-                        &clone_session,
-                        &session_separator,
-                        &open_settings,
-                    ],
-                    0,
-                )?;
-            } else {
-                let session = Submenu::with_items(
-                    app,
-                    "会话",
-                    true,
-                    &[
-                        &new_session,
-                        &clone_session,
-                        &session_separator,
-                        &open_settings,
-                    ],
-                )?;
-                // Insert after View submenu. On macOS index 0 is the app menu.
-                let pos = if cfg!(target_os = "macos") { 3 } else { 2 };
-                menu.insert(&session, pos)?;
-            }
-
-            Ok(menu)
-        })
+	    tauri::Builder::default()
+	        .menu(move |app| {
+	            let config = config_manager_for_menu.ensure_default().unwrap_or_default();
+	            build_desktop_menu(app, &config)
+	        })
         .on_menu_event(|app, event| {
             match event.id().as_ref() {
-                "new_session" => {
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.emit("menu:new_session", ());
-                    } else {
-                        let _ = app.emit("menu:new_session", ());
-                    }
-                }
-                "clone_session" => {
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.emit("menu:clone_session", ());
-                    } else {
-                        let _ = app.emit("menu:clone_session", ());
-                    }
-                }
                 "open_settings" => {
                     if let Some(window) = app.get_webview_window("main") {
                         let _ = window.emit("menu:open_settings", ());
                     } else {
-                        let _ = app.emit("menu:open_settings", ());
-                    }
-                }
-                "new_richtxt" => {
-                    // Send event to create a new .tauri.richtxt file
-                    let focused = app
-                        .webview_windows()
+	                        let _ = app.emit("menu:open_settings", ());
+	                    }
+	                }
+	                "open_history" => {
+	                    if let Some(window) = app.get_webview_window("main") {
+	                        let _ = window.emit("menu:open_history", ());
+	                    } else {
+	                        let _ = app.emit("menu:open_history", ());
+	                    }
+	                }
+	                id if id.starts_with("new_session_agent:") => {
+	                    let raw = id.trim_start_matches("new_session_agent:");
+	                    let agent_name = urlencoding::decode(raw)
+	                        .map(|s| s.into_owned())
+	                        .unwrap_or_else(|_| raw.to_string());
+	                    if let Some(window) = app.get_webview_window("main") {
+	                        let _ = window.emit("menu:new_session_agent", agent_name);
+	                    } else {
+	                        let _ = app.emit("menu:new_session_agent", agent_name);
+	                    }
+	                }
+	                "new_richtxt" => {
+	                    // Send event to create a new .tauri.richtxt file
+	                    let focused = app
+	                        .webview_windows()
                         .into_values()
                         .find(|w| w.is_focused().unwrap_or(false));
 

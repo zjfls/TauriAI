@@ -22,8 +22,19 @@ pub async fn get_app_config(
 pub async fn save_app_config(
     config: AppConfig,
     config_manager: tauri::State<'_, Arc<ConfigManager>>,
+    app: tauri::AppHandle,
 ) -> Result<(), String> {
-    config_manager.save(&config).map_err(|e| e.to_string())
+    config_manager.save(&config).map_err(|e| e.to_string())?;
+
+    // Desktop: keep native menu in sync with latest agent config (new session by agent).
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        if let Ok(menu) = crate::build_desktop_menu(&app, &config) {
+            let _ = app.set_menu(menu);
+        }
+    }
+
+    Ok(())
 }
 
 /// Test result for connection testing

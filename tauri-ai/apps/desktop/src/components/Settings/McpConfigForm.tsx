@@ -5,7 +5,7 @@
 
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { ChevronDown, Plus, Trash2, RefreshCw } from 'lucide-react';
+import { ChevronDown, Plus, Trash2, RefreshCw, Loader2 } from 'lucide-react';
 import { useConfigStore } from '../../stores/configStore';
 import type {
   AppConfig,
@@ -18,6 +18,16 @@ import type {
 type McpToolInfo = { name: string; description?: string; inputSchema: unknown };
 type McpTestResult = { success: boolean; message: string; tools: McpToolInfo[] };
 type ImportMode = 'merge_overwrite' | 'merge_skip' | 'replace';
+
+const formatError = (e: unknown): string => {
+  if (e instanceof Error) return e.message;
+  if (typeof e === 'string') return e;
+  try {
+    return JSON.stringify(e);
+  } catch {
+    return String(e);
+  }
+};
 
 const defaultStdioTransport = (): McpServerTransportConfig => ({
   transport: 'stdio',
@@ -287,8 +297,8 @@ export const McpConfigForm: React.FC = () => {
           ? Object.fromEntries(Object.entries(envHttpHeadersRaw).map(([k, v]) => [k, String(v)]))
           : undefined;
 
-        // "http" or "sse" or "streamable-http" => map to our streamable_http transport
-        if (type === 'http' || type === 'sse' || type === 'streamable_http' || type === 'streamable') {
+        // legacy: "http" / "streamable-http" => streamable_http
+        if (type === 'http' || type === 'streamable_http' || type === 'streamable') {
           servers.push({
             name,
             config: {
@@ -297,6 +307,25 @@ export const McpConfigForm: React.FC = () => {
               disabledTools,
               transport: {
                 transport: 'streamable_http',
+                url,
+                httpHeaders,
+                envHttpHeaders,
+              },
+            },
+          });
+          continue;
+        }
+
+        // legacy: "sse" => sse transport（注意：不是 streamable_http）
+        if (type === 'sse') {
+          servers.push({
+            name,
+            config: {
+              enabled,
+              enabledTools,
+              disabledTools,
+              transport: {
+                transport: 'sse',
                 url,
                 httpHeaders,
                 envHttpHeaders,
@@ -330,7 +359,7 @@ export const McpConfigForm: React.FC = () => {
 
         if (!name || !cfg || !transportRaw || !transportType) continue;
 
-        if (transportType !== 'stdio' && transportType !== 'streamable_http') {
+        if (transportType !== 'stdio' && transportType !== 'streamable_http' && transportType !== 'sse') {
           warnings.push(`server '${name}': 忽略未知 transport='${transportType}'`);
           continue;
         }
@@ -345,17 +374,29 @@ export const McpConfigForm: React.FC = () => {
                 envVars: Array.isArray(transportRaw.envVars) ? transportRaw.envVars.map(String) : [],
                 cwd: transportRaw.cwd ? String(transportRaw.cwd) : undefined,
               }
-            : {
-                transport: 'streamable_http',
-                url: String(transportRaw.url ?? ''),
-                bearerTokenEnvVar: transportRaw.bearerTokenEnvVar ? String(transportRaw.bearerTokenEnvVar) : undefined,
-                httpHeaders: transportRaw.httpHeaders
-                  ? (transportRaw.httpHeaders as Record<string, string>)
-                  : undefined,
-                envHttpHeaders: transportRaw.envHttpHeaders
-                  ? (transportRaw.envHttpHeaders as Record<string, string>)
-                  : undefined,
-              };
+            : transportType === 'streamable_http'
+              ? {
+                  transport: 'streamable_http',
+                  url: String(transportRaw.url ?? ''),
+                  bearerTokenEnvVar: transportRaw.bearerTokenEnvVar ? String(transportRaw.bearerTokenEnvVar) : undefined,
+                  httpHeaders: transportRaw.httpHeaders
+                    ? (transportRaw.httpHeaders as Record<string, string>)
+                    : undefined,
+                  envHttpHeaders: transportRaw.envHttpHeaders
+                    ? (transportRaw.envHttpHeaders as Record<string, string>)
+                    : undefined,
+                }
+              : {
+                  transport: 'sse',
+                  url: String(transportRaw.url ?? ''),
+                  bearerTokenEnvVar: transportRaw.bearerTokenEnvVar ? String(transportRaw.bearerTokenEnvVar) : undefined,
+                  httpHeaders: transportRaw.httpHeaders
+                    ? (transportRaw.httpHeaders as Record<string, string>)
+                    : undefined,
+                  envHttpHeaders: transportRaw.envHttpHeaders
+                    ? (transportRaw.envHttpHeaders as Record<string, string>)
+                    : undefined,
+                };
 
         servers.push({
           name,
@@ -571,30 +612,39 @@ export const McpConfigForm: React.FC = () => {
     updateMcp({ ...mcp, sets: mcp.sets.filter((s) => s.name !== name) });
   };
 
+  const isRemoteTransport = (
+    t: McpServerTransportConfig
+  ): t is Extract<McpServerTransportConfig, { transport: 'streamable_http' | 'sse' }> =>
+    t.transport === 'streamable_http' || t.transport === 'sse';
+
   const testServer = async (name: string) => {
+    setActiveTab('diag');
     setTestingServer(name);
     setTestResult(null);
+    setToolPreview(null);
     try {
       await flushConfigSaves();
       const res = await invoke<McpTestResult>('test_mcp_server', { serverName: name });
       setTestResult(res);
     } catch (e) {
-      setTestResult({ success: false, message: String(e), tools: [] });
+      setTestResult({ success: false, message: formatError(e), tools: [] });
     } finally {
       setTestingServer(null);
     }
   };
 
   const previewTools = async (name: string) => {
+    setActiveTab('diag');
     setToolPreviewServer(name);
     setToolPreview(null);
+    setTestResult(null);
     try {
       await flushConfigSaves();
       const tools = await invoke<McpToolInfo[]>('list_mcp_server_tools', { serverName: name });
       setToolPreview(tools);
     } catch (e) {
       setToolPreview([]);
-      setTestResult({ success: false, message: String(e), tools: [] });
+      setTestResult({ success: false, message: formatError(e), tools: [] });
     } finally {
       setToolPreviewServer(null);
     }
@@ -723,23 +773,37 @@ export const McpConfigForm: React.FC = () => {
                       </label>
                     </div>
                     <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => previewTools(server.name)}
-                        className="px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700 rounded-lg flex items-center gap-1"
-                        title="拉取 tools/list"
-                      >
-                        <RefreshCw size={16} />
-                        工具
-                      </button>
-                      <button
-                        onClick={() => testServer(server.name)}
-                        disabled={testingServer === server.name}
-                        className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 rounded-lg flex items-center gap-1 disabled:opacity-60"
-                        title="测试连接"
-                      >
-                        <RefreshCw size={16} />
-                        测试
-                      </button>
+	                      <button
+	                        onClick={() => previewTools(server.name)}
+	                        disabled={toolPreviewServer === server.name || testingServer === server.name}
+	                        className="px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700 rounded-lg flex items-center gap-1 disabled:opacity-60"
+	                        title="拉取 tools/list"
+	                      >
+	                        {toolPreviewServer === server.name ? (
+	                          <Loader2 size={16} className="animate-spin" />
+	                        ) : (
+	                          <RefreshCw size={16} />
+	                        )}
+	                        工具
+	                      </button>
+	                      <button
+	                        onClick={() => testServer(server.name)}
+	                        disabled={testingServer === server.name || toolPreviewServer === server.name}
+	                        className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 rounded-lg flex items-center gap-1 disabled:opacity-60"
+	                        title="测试连接"
+	                      >
+	                        {testingServer === server.name ? (
+	                          <>
+	                            <Loader2 size={16} className="animate-spin" />
+	                            测试中…
+	                          </>
+	                        ) : (
+	                          <>
+	                            <RefreshCw size={16} />
+	                            测试
+	                          </>
+	                        )}
+	                      </button>
                       <button
                         onClick={() => deleteServer(server.name)}
                         className="px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg flex items-center gap-1"
@@ -769,12 +833,20 @@ export const McpConfigForm: React.FC = () => {
                         const t = e.target.value as McpServerTransportConfig['transport'];
                         if (t === 'stdio') {
                           upsertServer({ ...server, config: { ...server.config, transport: defaultStdioTransport() } });
-                        } else {
+                        } else if (t === 'streamable_http') {
                           upsertServer({
                             ...server,
                             config: {
                               ...server.config,
                               transport: { transport: 'streamable_http', url: '' },
+                            },
+                          });
+                        } else {
+                          upsertServer({
+                            ...server,
+                            config: {
+                              ...server.config,
+                              transport: { transport: 'sse', url: '' },
                             },
                           });
                         }
@@ -783,6 +855,7 @@ export const McpConfigForm: React.FC = () => {
                     >
                       <option value="stdio">stdio</option>
                       <option value="streamable_http">streamable_http</option>
+                      <option value="sse">sse</option>
                     </select>
                   </div>
 
@@ -965,19 +1038,21 @@ export const McpConfigForm: React.FC = () => {
                 ) : (
                   <div className="space-y-3">
                     <div className="space-y-1">
-                      <label className="block text-xs text-gray-500">url</label>
+                      <label className="block text-xs text-gray-500">
+                        url{server.config.transport.transport === 'sse' ? '（SSE endpoint）' : ''}
+                      </label>
                       <input
                         className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm"
                         value={server.config.transport.url}
                         onChange={(e) => {
                           const t = server.config.transport;
-                          if (t.transport !== 'streamable_http') return;
+                          if (!isRemoteTransport(t)) return;
                           upsertServer({
                             ...server,
                             config: {
                               ...server.config,
                               transport: {
-                                transport: 'streamable_http',
+                                transport: t.transport,
                                 url: e.target.value,
                                 bearerTokenEnvVar: t.bearerTokenEnvVar,
                                 httpHeaders: t.httpHeaders,
@@ -996,14 +1071,14 @@ export const McpConfigForm: React.FC = () => {
                         value={server.config.transport.bearerTokenEnvVar ?? ''}
                         onChange={(e) => {
                           const t = server.config.transport;
-                          if (t.transport !== 'streamable_http') return;
+                          if (!isRemoteTransport(t)) return;
                           const v = e.target.value.trim();
                           upsertServer({
                             ...server,
                             config: {
                               ...server.config,
                               transport: {
-                                transport: 'streamable_http',
+                                transport: t.transport,
                                 url: t.url,
                                 bearerTokenEnvVar: v ? v : undefined,
                                 httpHeaders: t.httpHeaders,
@@ -1024,14 +1099,14 @@ export const McpConfigForm: React.FC = () => {
                           value={joinKeyValueLines(server.config.transport.httpHeaders)}
                           onChange={(e) => {
                             const t = server.config.transport;
-                            if (t.transport !== 'streamable_http') return;
+                            if (!isRemoteTransport(t)) return;
                             const httpHeaders = parseKeyValueLines(e.target.value);
                             upsertServer({
                               ...server,
                               config: {
                                 ...server.config,
                                 transport: {
-                                  transport: 'streamable_http',
+                                  transport: t.transport,
                                   url: t.url,
                                   bearerTokenEnvVar: t.bearerTokenEnvVar,
                                   httpHeaders,
@@ -1049,14 +1124,14 @@ export const McpConfigForm: React.FC = () => {
                           value={joinKeyValueLines(server.config.transport.envHttpHeaders)}
                           onChange={(e) => {
                             const t = server.config.transport;
-                            if (t.transport !== 'streamable_http') return;
+                            if (!isRemoteTransport(t)) return;
                             const envHttpHeaders = parseKeyValueLines(e.target.value);
                             upsertServer({
                               ...server,
                               config: {
                                 ...server.config,
                                 transport: {
-                                  transport: 'streamable_http',
+                                  transport: t.transport,
                                   url: t.url,
                                   bearerTokenEnvVar: t.bearerTokenEnvVar,
                                   httpHeaders: t.httpHeaders,
@@ -1342,8 +1417,8 @@ export const McpConfigForm: React.FC = () => {
       )}
 
       {/* Diagnostics */}
-      {activeTab === 'diag' && (
-        <section className="space-y-2">
+	      {activeTab === 'diag' && (
+	        <section className="space-y-2">
           <div className="flex items-center justify-between">
             <h3 className="text-base font-semibold text-gray-800 dark:text-white">调试</h3>
             <button
@@ -1357,11 +1432,18 @@ export const McpConfigForm: React.FC = () => {
             </button>
           </div>
 
-          {!testResult && !toolPreview && (
-            <div className="text-sm text-gray-500 dark:text-gray-400">
-              在 Servers 页点击“测试/工具”后，这里会显示结果。
-            </div>
-          )}
+	          {(testingServer || toolPreviewServer) && (
+	            <div className="text-sm text-gray-600 dark:text-gray-300 flex items-center gap-2">
+	              <Loader2 size={16} className="animate-spin" />
+	              {testingServer ? `正在测试连接：${testingServer}` : `正在拉取工具：${toolPreviewServer}`}
+	            </div>
+	          )}
+
+	          {!testResult && !toolPreview && (
+	            <div className="text-sm text-gray-500 dark:text-gray-400">
+	              在 Servers 页点击“测试/工具”后，这里会显示结果。
+	            </div>
+	          )}
 
           {testResult && (
             <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3">
