@@ -708,6 +708,7 @@ fn run_desktop() {
             upsert_mcp_set,
             delete_mcp_set,
             set_agent_mcp_set,
+            warmup_mcp_servers,
             // Skills commands
             list_skills,
             create_skill,

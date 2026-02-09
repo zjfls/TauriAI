@@ -382,6 +382,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       thinkingMode,
     }).catch(console.error);
 
+    // Session 启动阶段：预热 MCP（Codex-like），避免首次消息触发工具注入时再去拉 tools/list。
+    // Best-effort：不阻塞会话创建流程。
+    invoke('warmup_mcp_servers').catch((e) => console.warn('warmup_mcp_servers failed:', e));
+
     let resolvedWorkstudioId: string | null = null;
     if (workspaceEnabled) {
       try {
@@ -2212,6 +2216,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         activeSessionId,
         hydrated: true,
       });
+
+      // App/session 启动阶段：预热 MCP（Codex-like），让后续 tool 注入走缓存而不是每次请求 tools/list。
+      // Best-effort：不阻塞 UI hydration。
+      invoke('warmup_mcp_servers').catch((e) => console.warn('warmup_mcp_servers failed:', e));
 
       if (loadedFromLegacy) {
         try {

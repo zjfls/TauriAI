@@ -1,7 +1,9 @@
 //! MCP (Model Context Protocol) commands for TauriAI
 
 use std::sync::Arc;
+use std::time::Instant;
 
+use futures::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
 
 use crate::config::ConfigManager;
@@ -24,6 +26,24 @@ pub struct McpTestResult {
     pub message: String,
     #[serde(default)]
     pub tools: Vec<McpToolInfo>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpWarmupServerResult {
+    pub server_name: String,
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools_count: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpWarmupResult {
+    pub duration_ms: u64,
+    pub servers: Vec<McpWarmupServerResult>,
 }
 
 #[tauri::command]
@@ -104,6 +124,63 @@ pub async fn test_mcp_server(
             tools: Vec::new(),
         }),
     }
+}
+
+#[tauri::command]
+pub async fn warmup_mcp_servers(
+    force_refresh: Option<bool>,
+    config_manager: tauri::State<'_, Arc<ConfigManager>>,
+) -> Result<McpWarmupResult, String> {
+    let started_at = Instant::now();
+    let force_refresh = force_refresh.unwrap_or(false);
+
+    let config = config_manager.ensure_default().map_err(|e| e.to_string())?;
+    let enabled_servers = config
+        .mcp
+        .servers
+        .into_iter()
+        .filter(|entry| entry.config.enabled)
+        .collect::<Vec<_>>();
+
+    let results: Vec<McpWarmupServerResult> = stream::iter(enabled_servers)
+        .map(|entry| async move {
+            let server_name = entry.name;
+            let cfg = entry.config;
+
+            let tools = if force_refresh {
+                global_mcp_runtime()
+                    .list_tools(&server_name, &cfg)
+                    .await
+            } else {
+                global_mcp_runtime()
+                    .list_tools_cached(&server_name, &cfg)
+                    .await
+            };
+
+            match tools {
+                Ok(tools) => McpWarmupServerResult {
+                    server_name,
+                    success: true,
+                    error: None,
+                    tools_count: Some(tools.len()),
+                },
+                Err(err) => McpWarmupServerResult {
+                    server_name,
+                    success: false,
+                    error: Some(err),
+                    tools_count: None,
+                },
+            }
+        })
+        // 并发预热，但保持输出顺序与配置一致，避免 UI/日志乱序。
+        .buffered(4)
+        .collect()
+        .await;
+
+    Ok(McpWarmupResult {
+        duration_ms: started_at.elapsed().as_millis() as u64,
+        servers: results,
+    })
 }
 
 #[tauri::command]

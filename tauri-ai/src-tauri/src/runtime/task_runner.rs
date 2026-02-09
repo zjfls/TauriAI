@@ -3499,7 +3499,7 @@ async fn run_task_inner(
                         effective_servers.insert(set_server.server.clone(), server_cfg.clone());
 
                         let tools = match global_mcp_runtime()
-                            .list_tools(&set_server.server, server_cfg)
+                            .list_tools_cached(&set_server.server, server_cfg)
                             .await
                         {
                             Ok(t) => t,
@@ -3621,7 +3621,7 @@ async fn run_task_inner(
                         effective_servers.insert(server_name.clone(), server_cfg.clone());
 
                         let tools = match global_mcp_runtime()
-                            .list_tools(server_name, server_cfg)
+                            .list_tools_cached(server_name, server_cfg)
                             .await
                         {
                             Ok(t) => t,

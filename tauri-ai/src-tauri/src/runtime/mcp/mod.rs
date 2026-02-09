@@ -41,6 +41,13 @@ pub struct McpServerRuntimeStatus {
 pub struct McpRuntime {
     clients: RwLock<HashMap<String, Arc<McpClient>>>,
     status: RwLock<HashMap<String, McpServerRuntimeStatus>>,
+    tools_cache: RwLock<HashMap<String, McpToolsSnapshot>>,
+}
+
+#[derive(Debug, Clone)]
+struct McpToolsSnapshot {
+    cfg: McpServerConfig,
+    tools: Vec<Tool>,
 }
 
 impl Default for McpRuntime {
@@ -48,6 +55,7 @@ impl Default for McpRuntime {
         Self {
             clients: RwLock::new(HashMap::new()),
             status: RwLock::new(HashMap::new()),
+            tools_cache: RwLock::new(HashMap::new()),
         }
     }
 }
@@ -65,6 +73,24 @@ impl McpRuntime {
         self.status.read().await.clone()
     }
 
+    /// List tools with an in-memory cache (keyed by server name + config).
+    ///
+    /// Notes:
+    /// - Cache is invalidated automatically when the server config changes.
+    /// - On cache miss, this falls back to a real `tools/list` call.
+    pub async fn list_tools_cached(
+        &self,
+        server_name: &str,
+        cfg: &McpServerConfig,
+    ) -> Result<Vec<Tool>, String> {
+        if let Some(snapshot) = self.tools_cache.read().await.get(server_name) {
+            if &snapshot.cfg == cfg {
+                return Ok(snapshot.tools.clone());
+            }
+        }
+        self.list_tools(server_name, cfg).await
+    }
+
     pub async fn list_tools(
         &self,
         server_name: &str,
@@ -78,6 +104,14 @@ impl McpRuntime {
 
         let tools = client.list_tools(timeout).await?;
         let tools = filter_tools(tools, &cfg.enabled_tools, &cfg.disabled_tools);
+
+        self.tools_cache.write().await.insert(
+            server_name.to_string(),
+            McpToolsSnapshot {
+                cfg: cfg.clone(),
+                tools: tools.clone(),
+            },
+        );
 
         self.status.write().await.insert(
             server_name.to_string(),
@@ -211,6 +245,9 @@ impl McpRuntime {
         }
         w.insert(server_name.to_string(), client.clone());
         drop(w);
+
+        // Clear tool snapshot cache for this server since the config changed.
+        self.tools_cache.write().await.remove(server_name);
 
         // Reset status snapshot so diagnostics reflect the new config.
         self.status.write().await.insert(

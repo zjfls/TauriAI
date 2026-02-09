@@ -7,6 +7,7 @@ TauriAI-thinking-context.code-workspace
 
 # Codex desktop state
 .codex/
+.codex_cli_upstream/
 
 # Local scratch (e.g. vendored references)
 .tmp/
