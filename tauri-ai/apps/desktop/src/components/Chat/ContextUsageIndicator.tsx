@@ -5,7 +5,7 @@
  * - Click: Opens detailed context breakdown modal
  */
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   X,
   FileText,
@@ -15,6 +15,8 @@ import {
   BookOpen,
   Sparkles,
   Copy,
+  MoreHorizontal,
+  Hash,
   ChevronDown,
   ChevronRight,
 } from 'lucide-react';
@@ -213,6 +215,17 @@ const MessageGroupsViewer: React.FC<{
   type TabKey = 'used' | 'trimmed' | 'failed';
   const [tab, setTab] = useState<TabKey>('used');
   const includeThinking = Boolean(groups.includeThinking);
+  const [actionMenuForMessageId, setActionMenuForMessageId] = useState<string | null>(null);
+  const [tokenEstimates, setTokenEstimates] = useState<
+    Record<string, { content: number; thinking: number; total: number; updatedAt: number }>
+  >({});
+
+  useEffect(() => {
+    if (!actionMenuForMessageId) return;
+    const onGlobalPointerDown = () => setActionMenuForMessageId(null);
+    window.addEventListener('pointerdown', onGlobalPointerDown);
+    return () => window.removeEventListener('pointerdown', onGlobalPointerDown);
+  }, [actionMenuForMessageId]);
 
   const list = useMemo(() => {
     if (tab === 'trimmed') return groups.trimmed ?? [];
@@ -268,6 +281,14 @@ const MessageGroupsViewer: React.FC<{
             const thinking = includeThinking ? (m.thinking ?? '') : '';
             const hasParts = Array.isArray(m.contentParts) && m.contentParts.length > 0;
             const hasBlocks = Array.isArray(m.blocks) && m.blocks.length > 0;
+            const estimate = tokenEstimates[m.id];
+            const estimateTitle = estimate
+              ? `估算 token: content ${estimate.content} + thinking ${estimate.thinking} = ${estimate.total}`
+              : undefined;
+            const copyPayload =
+              includeThinking && thinking.trim()
+                ? `${content}\n\n[thinking]\n${thinking}`
+                : content;
 
             return (
               <details
@@ -279,6 +300,15 @@ const MessageGroupsViewer: React.FC<{
                     <div className="min-w-0">
                       <div className="text-xs font-medium text-gray-800 dark:text-gray-100">
                         {idx + 1}. {roleAbbrev(m.role)}/{status} {shortId(m.id)}
+                        {estimate ? (
+                          <span
+                            className="ml-2 inline-flex items-center gap-1 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-normal text-gray-600 dark:bg-gray-900/40 dark:text-gray-300"
+                            title={estimateTitle}
+                          >
+                            <Hash size={12} />
+                            ≈{estimate.total}
+                          </span>
+                        ) : null}
                       </div>
                       <div className="mt-0.5 text-[11px] text-gray-500 dark:text-gray-400 truncate">
                         {normalizeOneLine(content, 120) || '（空内容）'}
@@ -287,41 +317,102 @@ const MessageGroupsViewer: React.FC<{
                       </div>
                     </div>
                     <div className="flex items-center gap-1">
-                      <button
-                        type="button"
-                        className="inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700"
-                        onClick={(e) => {
+                      <div
+                        className="relative"
+                        onPointerDown={(e) => {
                           e.preventDefault();
                           e.stopPropagation();
-                          const payload =
-                            includeThinking && thinking.trim()
-                              ? `${content}\n\n[thinking]\n${thinking}`
-                              : content;
-                          void navigator.clipboard.writeText(payload);
                         }}
-                        title="复制（含 thinking）"
                       >
-                        <Copy size={12} />
-                        复制
-                      </button>
-                      <button
-                        type="button"
-                        className="inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          void navigator.clipboard.writeText(JSON.stringify(m, null, 2));
-                        }}
-                        title="复制原始 JSON（真实发送前的消息对象）"
-                      >
-                        <Copy size={12} />
-                        JSON
-                      </button>
+                        <button
+                          type="button"
+                          className="inline-flex items-center justify-center rounded px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setActionMenuForMessageId((prev) => (prev === m.id ? null : m.id));
+                          }}
+                          title="更多操作"
+                          aria-label="更多操作"
+                        >
+                          <MoreHorizontal size={14} />
+                        </button>
+
+                        {actionMenuForMessageId === m.id ? (
+                          <div
+                            className="absolute right-0 top-full z-20 mt-1 w-40 overflow-hidden rounded-md border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-800"
+                            onPointerDown={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                            }}
+                          >
+                            <button
+                              type="button"
+                              className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-gray-700 hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-gray-700/50"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                void navigator.clipboard.writeText(copyPayload);
+                                setActionMenuForMessageId(null);
+                              }}
+                              title="复制（含 thinking）"
+                            >
+                              <Copy size={14} />
+                              复制
+                            </button>
+                            <button
+                              type="button"
+                              className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-gray-700 hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-gray-700/50"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                void navigator.clipboard.writeText(JSON.stringify(m, null, 2));
+                                setActionMenuForMessageId(null);
+                              }}
+                              title="复制原始 JSON（真实发送前的消息对象）"
+                            >
+                              <Copy size={14} />
+                              JSON
+                            </button>
+                            <button
+                              type="button"
+                              className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-gray-700 hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-gray-700/50"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                const contentTokens = countTokens(content || '');
+                                const thinkingTokens =
+                                  includeThinking && thinking.trim() ? countTokens(thinking) : 0;
+                                const total = contentTokens + thinkingTokens;
+                                setTokenEstimates((prev) => ({
+                                  ...prev,
+                                  [m.id]: {
+                                    content: contentTokens,
+                                    thinking: thinkingTokens,
+                                    total,
+                                    updatedAt: Date.now(),
+                                  },
+                                }));
+                                setActionMenuForMessageId(null);
+                              }}
+                              title="估算 token（使用本地 tokenizer）"
+                            >
+                              <Hash size={14} />
+                              估算 token
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
                     </div>
                   </div>
                 </summary>
 
                 <div className="mt-2 space-y-2">
+                  {estimate ? (
+                    <div className="text-[11px] text-gray-500 dark:text-gray-400" title={estimateTitle}>
+                      估算 token：content {estimate.content} + thinking {estimate.thinking} = {estimate.total}
+                    </div>
+                  ) : null}
                   <div className="rounded bg-gray-50 p-2 text-xs text-gray-800 dark:bg-gray-900/40 dark:text-gray-100">
                     <div className="mb-1 text-[11px] text-gray-500 dark:text-gray-400">content</div>
                     <pre className="max-h-[40vh] overflow-auto whitespace-pre-wrap break-words">{content || '（空）'}</pre>
