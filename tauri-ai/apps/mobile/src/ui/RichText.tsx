@@ -1,5 +1,6 @@
 import { type Components } from "react-markdown";
 import { CommonMarkdown } from "../../../common/src/markdown/CommonMarkdown";
+import { MermaidBlock } from "../../../common/src/markdown/blocks/MermaidBlock";
 import { clsx } from "../lib/clsx";
 
 const mdComponents: Components = {
@@ -43,11 +44,7 @@ const mdComponents: Components = {
   td: ({ children }) => (
     <td className="border border-white/10 px-2 py-1 text-xs align-top break-words">{children}</td>
   ),
-  pre: ({ children }) => (
-    <pre className="my-2 rounded-lg bg-black/30 border border-white/10 p-2 overflow-x-hidden whitespace-pre-wrap break-words text-xs leading-relaxed">
-      {children}
-    </pre>
-  ),
+  pre: ({ children }) => <>{children}</>,
   code: (props) => {
     const { inline, className, children, ...rest } = props as {
       inline?: boolean;
@@ -68,10 +65,21 @@ const mdComponents: Components = {
         </code>
       );
     }
+
+    const match = /language-(\w+)/.exec(className || "");
+    const language = match?.[1] || "";
+    const codeStr = String(children ?? "").replace(/\n$/, "");
+
+    if (language === "mermaid") {
+      return <MermaidBlock code={codeStr} mode="mobile" />;
+    }
+
     return (
-      <code className={clsx("break-words", className)} {...rest}>
-        {children}
-      </code>
+      <pre className="my-2 max-w-full rounded-lg bg-black/30 border border-white/10 p-2 overflow-x-hidden whitespace-pre-wrap break-words text-xs leading-relaxed">
+        <code className={clsx("break-words", className)} {...rest}>
+          {codeStr}
+        </code>
+      </pre>
     );
   },
 };
