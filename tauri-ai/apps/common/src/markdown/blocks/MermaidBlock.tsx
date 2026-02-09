@@ -95,28 +95,23 @@ async function setMermaidSvgCacheToDisk(key: string, svg: string): Promise<void>
 }
 
 function makeSvgResponsive(svgText: string): string {
-  // Only attempt if viewBox exists; otherwise keep width/height to avoid 0x0 rendering.
-  if (!/viewBox\s*=\s*"/i.test(svgText)) return svgText;
-
+  // iOS WebView 对 `height:auto` 的 SVG 处理不稳定（可能导致高度变成 0）。
+  // 这里仅做最小增强：保持 width/height 原样，添加 max-width 与 display:block。
   return svgText.replace(/<svg\b([^>]*)>/i, (_full, rawAttrs: string) => {
     let attrs = rawAttrs ?? "";
-
-    // Remove explicit width/height so CSS can fit container.
-    attrs = attrs.replace(/\swidth\s*=\s*"[^"]*"/gi, "");
-    attrs = attrs.replace(/\sheight\s*=\s*"[^"]*"/gi, "");
 
     if (!/\spreserveAspectRatio\s*=\s*"/i.test(attrs)) {
       attrs += ' preserveAspectRatio="xMidYMid meet"';
     }
 
-    // Merge/append style.
+    const styleAppend = "max-width:100%;display:block;";
     const styleMatch = attrs.match(/\sstyle\s*=\s*"([^"]*)"/i);
     if (styleMatch) {
       const existing = styleMatch[1];
-      const next = `${existing};max-width:100%;height:auto;`.replace(/;;+/g, ";");
+      const next = `${existing};${styleAppend}`.replace(/;;+/g, ";");
       attrs = attrs.replace(/\sstyle\s*=\s*"([^"]*)"/i, ` style="${next}"`);
     } else {
-      attrs += ' style="max-width:100%;height:auto;"';
+      attrs += ` style="${styleAppend}"`;
     }
 
     return `<svg${attrs}>`;
@@ -244,7 +239,7 @@ export function MermaidBlock({ code, mode = "desktop", onLinkClickHref }: Mermai
 
   const containerClassName =
     mode === "mobile"
-      ? "w-full overflow-x-hidden rounded-lg bg-gray-100 dark:bg-gray-700/50 p-4 flex justify-center [&_svg]:max-w-full [&_svg]:h-auto"
+      ? "w-full overflow-x-hidden rounded-lg bg-gray-100 dark:bg-gray-700/50 p-4 flex justify-center [&_svg]:max-w-full [&_svg]:block"
       : "w-full overflow-x-auto rounded-lg bg-gray-100 dark:bg-gray-700/50 p-4 cursor-zoom-in flex justify-center [&_svg]:max-w-none";
 
   return (

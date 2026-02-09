@@ -12,6 +12,11 @@ export function Input({ className, ...rest }: Props) {
         "h-10 w-full rounded-md bg-white/5 border border-white/10 px-3 text-[16px] leading-5 outline-none focus:border-indigo-400",
         className,
       )}
+      // iOS 默认会开启“首字母自动大写”（尤其是文本输入场景）。
+      // 移动端聊天/配置更偏“代码/命令行”输入，统一禁用。
+      autoCapitalize={rest.autoCapitalize ?? "none"}
+      autoCorrect={rest.autoCorrect ?? "off"}
+      spellCheck={rest.spellCheck ?? false}
       {...rest}
     />
   );
