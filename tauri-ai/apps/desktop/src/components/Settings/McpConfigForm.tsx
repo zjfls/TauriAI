@@ -161,6 +161,7 @@ export const McpConfigForm: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'servers' | 'sets' | 'diag' | 'import'>('servers');
   const [testingServer, setTestingServer] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<McpTestResult | null>(null);
+  const [diagServerName, setDiagServerName] = useState<string | null>(null);
   const [toolPreviewServer, setToolPreviewServer] = useState<string | null>(null);
   const [toolPreview, setToolPreview] = useState<McpToolInfo[] | null>(null);
   // UI-only collapsed state. IMPORTANT: key it by stable UI key (not server.name, which is editable).
@@ -619,8 +620,36 @@ export const McpConfigForm: React.FC = () => {
   ): t is Extract<McpServerTransportConfig, { transport: 'streamable_http' | 'sse' }> =>
     t.transport === 'streamable_http' || t.transport === 'sse';
 
+  const sseDeprecatedMigration = useMemo(() => {
+    if (!diagServerName || !testResult || testResult.success) return null;
+    const entry = mcp.servers.find((s) => s.name === diagServerName);
+    if (!entry) return null;
+    const t = entry.config.transport;
+    if (t.transport !== 'sse') return null;
+
+    const msg = testResult.message || '';
+    const isDeprecated =
+      /sse transport is deprecated/i.test(msg) || /deprecated in favor of streamable http/i.test(msg);
+    if (!isDeprecated) return null;
+
+    const endpointMatch = msg.match(/\"endpoint\"\\s*:\\s*\"([^\"]+)\"/i);
+    const endpoint = endpointMatch?.[1] ?? '/mcp';
+
+    let nextUrl = '';
+    try {
+      nextUrl = new URL(endpoint, t.url).toString();
+    } catch {
+      // heuristic fallback
+      nextUrl = t.url.replace(/\/sse\/?$/i, '/mcp');
+    }
+    if (!nextUrl) return null;
+
+    return { entry, nextUrl };
+  }, [diagServerName, mcp.servers, testResult]);
+
   const testServer = async (name: string) => {
     setActiveTab('diag');
+    setDiagServerName(name);
     setTestingServer(name);
     setTestResult(null);
     setToolPreview(null);
@@ -635,8 +664,33 @@ export const McpConfigForm: React.FC = () => {
     }
   };
 
+  const migrateSseToStreamableHttpAndRetest = async () => {
+    const info = sseDeprecatedMigration;
+    if (!info) return;
+    const { entry, nextUrl } = info;
+    const t = entry.config.transport;
+    if (t.transport !== 'sse') return;
+
+    upsertServer({
+      ...entry,
+      config: {
+        ...entry.config,
+        transport: {
+          transport: 'streamable_http',
+          url: nextUrl,
+          bearerTokenEnvVar: t.bearerTokenEnvVar,
+          httpHeaders: t.httpHeaders,
+          envHttpHeaders: t.envHttpHeaders,
+        },
+      },
+    });
+
+    await testServer(entry.name);
+  };
+
   const previewTools = async (name: string) => {
     setActiveTab('diag');
+    setDiagServerName(name);
     setToolPreviewServer(name);
     setToolPreview(null);
     setTestResult(null);
@@ -1456,6 +1510,19 @@ export const McpConfigForm: React.FC = () => {
                 </span>
                 <span className="ml-2 text-gray-700 dark:text-gray-300">{testResult.message}</span>
               </div>
+              {sseDeprecatedMigration ? (
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-600 dark:text-gray-300">
+                  <span>检测到 SSE 已弃用，建议切换为 streamable_http：</span>
+                  <span className="font-mono break-all">{sseDeprecatedMigration.nextUrl}</span>
+                  <button
+                    type="button"
+                    onClick={migrateSseToStreamableHttpAndRetest}
+                    className="rounded bg-blue-600 px-2 py-1 text-white hover:bg-blue-700"
+                  >
+                    一键切换并重试
+                  </button>
+                </div>
+              ) : null}
               {testResult.tools.length > 0 && (
                 <div className="mt-2 text-xs text-gray-600 dark:text-gray-300">
                   tools: {testResult.tools.map((t) => t.name).join(', ')}

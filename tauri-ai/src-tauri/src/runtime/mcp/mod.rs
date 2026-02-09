@@ -190,15 +190,37 @@ impl McpRuntime {
             ));
         }
 
+        // IMPORTANT:
+        // - server_name 是稳定 key，但 cfg 是可编辑的（transport/url/headers/timeout 等）。
+        // - 不能无条件复用旧 client，否则 UI 改配置后仍会用旧连接，表现为“怎么改都不生效/一直超时”。
         if let Some(existing) = self.clients.read().await.get(server_name).cloned() {
-            return Ok(existing);
+            if &existing.cfg == cfg {
+                return Ok(existing);
+            }
         }
 
         let client = Arc::new(McpClient::new(server_name, cfg).await?);
-        self.clients
-            .write()
-            .await
-            .insert(server_name.to_string(), client.clone());
+
+        // Re-check under write lock (避免并发重复创建)。
+        let mut w = self.clients.write().await;
+        if let Some(existing) = w.get(server_name).cloned() {
+            if &existing.cfg == cfg {
+                return Ok(existing);
+            }
+        }
+        w.insert(server_name.to_string(), client.clone());
+        drop(w);
+
+        // Reset status snapshot so diagnostics reflect the new config.
+        self.status.write().await.insert(
+            server_name.to_string(),
+            McpServerRuntimeStatus {
+                ready: false,
+                last_error: Some("MCP 配置已更新，将按新配置重新初始化".to_string()),
+                last_tools_count: None,
+            },
+        );
+
         Ok(client)
     }
 }
@@ -643,18 +665,25 @@ impl Worker for SseClientWorker {
                     }
                 };
 
-                let resp = match resp.error_for_status() {
-                    Ok(r) => r,
-                    Err(e) => {
-                        println!("[MCP][SSE] HTTP 状态异常，{retry_interval:?} 后重试: {e}");
-                        tokio::select! {
-                            _ = ct.cancelled() => return Ok(()),
-                            _ = tokio::time::sleep(retry_interval) => {}
-                        }
-                        retry_interval = (retry_interval * 2).min(max_retry_interval);
-                        continue;
+                let status = resp.status();
+                if !status.is_success() {
+                    let body = resp.text().await.unwrap_or_default();
+
+                    // 4xx 通常是配置/鉴权错误，重试没有意义；直接让 worker 失败并把原因上抛到 UI。
+                    if status.is_client_error() {
+                        return Err(SseTransportError::HttpStatus { status, body });
                     }
-                };
+
+                    println!(
+                        "[MCP][SSE] HTTP 状态异常，{retry_interval:?} 后重试: {status} {body}"
+                    );
+                    tokio::select! {
+                        _ = ct.cancelled() => return Ok(()),
+                        _ = tokio::time::sleep(retry_interval) => {}
+                    }
+                    retry_interval = (retry_interval * 2).min(max_retry_interval);
+                    continue;
+                }
 
                 retry_interval = Duration::from_millis(1000);
 

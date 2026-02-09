@@ -1365,7 +1365,7 @@ impl Default for ToolsSettings {
 // MCP (Model Context Protocol)
 // ============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "transport", rename_all = "snake_case")]
 pub enum McpServerTransportConfig {
     /// Stdio transport: spawn a local process and talk JSON-RPC via stdin/stdout.
@@ -1395,7 +1395,9 @@ pub enum McpServerTransportConfig {
     /// SSE transport: connect to `url` via Server-Sent Events (GET), then POST JSON-RPC to the
     /// `event: endpoint` provided by the server.
     ///
-    /// 典型例子：DeepWiki 的 `https://mcp.deepwiki.com/sse`（这是 SSE endpoint，而不是 streamable_http）。
+    /// 注意：DeepWiki 的 SSE 传输已弃用（`/sse` 会返回 410），请改用 streamable_http 的 `/mcp`：
+    /// - transport: streamable_http
+    /// - url: https://mcp.deepwiki.com/mcp
     #[serde(rename_all = "camelCase")]
     Sse {
         url: String,
@@ -1408,7 +1410,7 @@ pub enum McpServerTransportConfig {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct McpServerConfig {
     pub transport: McpServerTransportConfig,
