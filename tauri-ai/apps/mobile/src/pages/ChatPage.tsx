@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Plus, SendHorizontal } from "lucide-react";
 import { isTauriRuntime, tauriInvoke, tauriListen, type UnlistenFn } from "../lib/tauri";
 import { clsx } from "../lib/clsx";
@@ -37,6 +37,7 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
   const listRef = useRef<HTMLDivElement | null>(null);
   const [fallbackAgentName, setFallbackAgentName] = useState<string>("");
   const [agentLabels, setAgentLabels] = useState<Record<string, string>>({});
+  const [appConfig, setAppConfig] = useState<any | null>(null);
   const unlistenRef = useRef<UnlistenFn | null>(null);
   const activeStreamRef = useRef<{
     streamId: string;
@@ -48,31 +49,100 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
   // 读取渲染模式（默认 rich）。不做 memo，方便 Settings 修改后即时生效。
   const renderMode = loadChatRenderMode();
 
-  useEffect(() => {
+  const loadConfig = useCallback(async () => {
     if (!isTauriRuntime()) return;
-    if (fallbackAgentName && Object.keys(agentLabels).length > 0) return;
-    tauriInvoke<any>("get_app_config")
-      .then((cfg) => {
-        const def = String(cfg?.defaultAgent ?? "").trim();
-        if (def) setFallbackAgentName(def);
-        const next: Record<string, string> = {};
-        const list: any[] = Array.isArray(cfg?.agents) ? cfg.agents : [];
-        for (const a of list) {
-          if (!a || typeof a !== "object") continue;
-          const name = String((a as any).name ?? "").trim();
-          if (!name) continue;
-          const displayName = String((a as any).displayName ?? (a as any).display_name ?? name).trim();
-          next[name] = displayName || name;
-        }
-        setAgentLabels(next);
-      })
-      .catch(() => {
-        // ignore
-      });
-  }, [fallbackAgentName, agentLabels]);
+    try {
+      const cfg = await tauriInvoke<any>("get_app_config");
+      setAppConfig(cfg ?? null);
+
+      const def = String(cfg?.defaultAgent ?? cfg?.default_agent ?? "").trim();
+      if (def) setFallbackAgentName(def);
+
+      const next: Record<string, string> = {};
+      const list: any[] = Array.isArray(cfg?.agents) ? cfg.agents : [];
+      for (const a of list) {
+        if (!a || typeof a !== "object") continue;
+        const name = String((a as any).name ?? "").trim();
+        if (!name) continue;
+        const displayName = String((a as any).displayName ?? (a as any).display_name ?? name).trim();
+        next[name] = displayName || name;
+      }
+      setAgentLabels(next);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadConfig();
+  }, [loadConfig]);
+
+  // 从设置页返回时刷新一次配置，确保 Agent/Model 展示与后端一致。
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState === "visible") void loadConfig();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [loadConfig]);
 
   const activeAgentName = conversation?.agentName || fallbackAgentName || "";
   const activeAgentLabel = activeAgentName ? agentLabels[activeAgentName] || activeAgentName : "";
+
+  const activeModelName = useMemo(() => {
+    const cfg = appConfig;
+    if (!cfg || typeof cfg !== "object") return "";
+
+    const parseModelRef = (modelRef: unknown): { provider: string; model: string } | null => {
+      const v = String(modelRef ?? "").trim();
+      if (!v) return null;
+      const idx = v.indexOf("/");
+      if (idx <= 0) return null;
+      const provider = v.slice(0, idx).trim();
+      const model = v.slice(idx + 1).trim();
+      if (!provider || !model) return null;
+      return { provider, model };
+    };
+
+    const agents: any[] = Array.isArray(cfg.agents) ? cfg.agents : [];
+    const providers: any[] = Array.isArray(cfg.providers) ? cfg.providers : [];
+
+    const agentName = activeAgentName.trim();
+    if (agentName) {
+      const agent = agents.find((a) => a && typeof a === "object" && a.enabled !== false && String(a.name) === agentName);
+      const ref = parseModelRef(agent?.modelRef ?? agent?.model_ref);
+      if (ref) return ref.model;
+    }
+
+    const ref1 = parseModelRef(cfg.currentModelRef ?? cfg.current_model_ref);
+    if (ref1) return ref1.model;
+
+    const currentAgent = String(cfg.currentAgent ?? cfg.current_agent ?? "").trim();
+    if (currentAgent) {
+      const agent = agents.find((a) => a && typeof a === "object" && a.enabled !== false && String(a.name) === currentAgent);
+      const ref = parseModelRef(agent?.modelRef ?? agent?.model_ref);
+      if (ref) return ref.model;
+    }
+
+    const defAgent = String(cfg.defaultAgent ?? cfg.default_agent ?? "").trim();
+    if (defAgent) {
+      const agent = agents.find((a) => a && typeof a === "object" && a.enabled !== false && String(a.name) === defAgent);
+      const ref = parseModelRef(agent?.modelRef ?? agent?.model_ref);
+      if (ref) return ref.model;
+    }
+
+    for (const p of providers) {
+      if (!p || typeof p !== "object") continue;
+      if (p.enabled === false) continue;
+      const models: any[] = Array.isArray(p.models) ? p.models : [];
+      const m = models[0];
+      const providerName = String(p.name ?? "").trim();
+      const modelName = String(m?.name ?? "").trim();
+      if (providerName && modelName) return modelName;
+    }
+
+    return "";
+  }, [appConfig, activeAgentName]);
 
   const scrollToBottom = () => {
     const el = listRef.current;
@@ -237,7 +307,9 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
             <div className="min-w-0">
               <div className="text-sm font-medium truncate">{conversation?.title ?? "Chat"}</div>
               <div className="text-[11px] text-white/60 truncate">
-                {activeAgentLabel ? `Agent: ${activeAgentLabel}` : "Agent: 未选择"}
+                {activeAgentLabel
+                  ? `Agent: ${activeAgentLabel}${activeModelName ? ` · ${activeModelName}` : ""}`
+                  : "Agent: 未选择"}
               </div>
             </div>
             {onNewConversation ? (
