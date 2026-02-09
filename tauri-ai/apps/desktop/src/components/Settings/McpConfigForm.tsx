@@ -172,6 +172,16 @@ export const McpConfigForm: React.FC = () => {
   const [diagServerName, setDiagServerName] = useState<string | null>(null);
   const [toolPreviewServer, setToolPreviewServer] = useState<string | null>(null);
   const [toolPreview, setToolPreview] = useState<McpToolInfo[] | null>(null);
+  const [inlineDiagByServerKey, setInlineDiagByServerKey] = useState<
+    Record<
+      string,
+      {
+        lastTest?: McpTestResult;
+        lastTools?: McpToolInfo[];
+        lastToolsSource?: 'test' | 'tools';
+      }
+    >
+  >({});
   // UI-only collapsed state. IMPORTANT: key it by stable UI key (not server.name, which is editable).
   const [collapsedByServer, setCollapsedByServer] = useState<Record<string, boolean>>({});
   const [importJsonText, setImportJsonText] = useState<string>(exampleClaudeMcpServersJson);
@@ -655,18 +665,24 @@ export const McpConfigForm: React.FC = () => {
     return { entry, nextUrl };
   }, [diagServerName, mcp.servers, testResult]);
 
-  const testServer = async (name: string) => {
-    setActiveTab('diag');
+  const testServer = async (name: string, serverUiKey: string) => {
     setDiagServerName(name);
     setTestingServer(name);
-    setTestResult(null);
-    setToolPreview(null);
     try {
       await flushConfigSaves();
       const res = await invoke<McpTestResult>('test_mcp_server', { serverName: name });
       setTestResult(res);
+      setInlineDiagByServerKey((prev) => ({
+        ...prev,
+        [serverUiKey]: { lastTest: res, lastTools: res.tools ?? [], lastToolsSource: 'test' },
+      }));
     } catch (e) {
-      setTestResult({ success: false, message: formatError(e), tools: [] });
+      const err = { success: false, message: formatError(e), tools: [] };
+      setTestResult(err);
+      setInlineDiagByServerKey((prev) => ({
+        ...prev,
+        [serverUiKey]: { lastTest: err, lastTools: [], lastToolsSource: 'test' },
+      }));
     } finally {
       setTestingServer(null);
     }
@@ -693,22 +709,28 @@ export const McpConfigForm: React.FC = () => {
       },
     });
 
-    await testServer(entry.name);
+    await testServer(entry.name, getServerUiKey(entry.name));
   };
 
-  const previewTools = async (name: string) => {
-    setActiveTab('diag');
+  const previewTools = async (name: string, serverUiKey: string) => {
     setDiagServerName(name);
     setToolPreviewServer(name);
-    setToolPreview(null);
-    setTestResult(null);
     try {
       await flushConfigSaves();
       const tools = await invoke<McpToolInfo[]>('list_mcp_server_tools', { serverName: name });
       setToolPreview(tools);
+      setInlineDiagByServerKey((prev) => ({
+        ...prev,
+        [serverUiKey]: { ...prev[serverUiKey], lastTools: tools, lastToolsSource: 'tools' },
+      }));
     } catch (e) {
+      const err = { success: false, message: formatError(e), tools: [] };
       setToolPreview([]);
-      setTestResult({ success: false, message: formatError(e), tools: [] });
+      setTestResult(err);
+      setInlineDiagByServerKey((prev) => ({
+        ...prev,
+        [serverUiKey]: { ...prev[serverUiKey], lastTest: err },
+      }));
     } finally {
       setToolPreviewServer(null);
     }
@@ -793,6 +815,7 @@ export const McpConfigForm: React.FC = () => {
               const collapsed = collapsedByServer[serverUiKey] ?? false;
               const toggleCollapsed = () =>
                 setCollapsedByServer((prev) => ({ ...prev, [serverUiKey]: !(prev[serverUiKey] ?? false) }));
+              const inlineDiag = inlineDiagByServerKey[serverUiKey];
 
               const transportSummary =
                 server.config.transport.transport === 'stdio'
@@ -838,37 +861,37 @@ export const McpConfigForm: React.FC = () => {
                       </label>
                     </div>
                     <div className="flex items-center gap-2">
-	                      <button
-	                        onClick={() => previewTools(server.name)}
-	                        disabled={toolPreviewServer === server.name || testingServer === server.name}
-	                        className="px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700 rounded-lg flex items-center gap-1 disabled:opacity-60"
-	                        title="拉取 tools/list"
-	                      >
-	                        {toolPreviewServer === server.name ? (
-	                          <Loader2 size={16} className="animate-spin" />
-	                        ) : (
-	                          <RefreshCw size={16} />
-	                        )}
-	                        工具
-	                      </button>
-	                      <button
-	                        onClick={() => testServer(server.name)}
-	                        disabled={testingServer === server.name || toolPreviewServer === server.name}
-	                        className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 rounded-lg flex items-center gap-1 disabled:opacity-60"
-	                        title="测试连接"
-	                      >
-	                        {testingServer === server.name ? (
-	                          <>
-	                            <Loader2 size={16} className="animate-spin" />
-	                            测试中…
-	                          </>
-	                        ) : (
-	                          <>
-	                            <RefreshCw size={16} />
-	                            测试
-	                          </>
-	                        )}
-	                      </button>
+                      <button
+                        onClick={() => previewTools(server.name, serverUiKey)}
+                        disabled={toolPreviewServer === server.name || testingServer === server.name}
+                        className="px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700 rounded-lg flex items-center gap-1 disabled:opacity-60"
+                        title="拉取 tools/list"
+                      >
+                        {toolPreviewServer === server.name ? (
+                          <Loader2 size={16} className="animate-spin" />
+                        ) : (
+                          <RefreshCw size={16} />
+                        )}
+                        工具
+                      </button>
+                      <button
+                        onClick={() => testServer(server.name, serverUiKey)}
+                        disabled={testingServer === server.name || toolPreviewServer === server.name}
+                        className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 rounded-lg flex items-center gap-1 disabled:opacity-60"
+                        title="测试连接（initialize + tools/list）"
+                      >
+                        {testingServer === server.name ? (
+                          <>
+                            <Loader2 size={16} className="animate-spin" />
+                            测试中…
+                          </>
+                        ) : (
+                          <>
+                            <RefreshCw size={16} />
+                            测试
+                          </>
+                        )}
+                      </button>
                       <button
                         onClick={() => deleteServer(server.name)}
                         className="px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg flex items-center gap-1"
@@ -1252,6 +1275,74 @@ export const McpConfigForm: React.FC = () => {
                     />
                   </div>
                 </div>
+
+                {inlineDiag && (inlineDiag.lastTest || inlineDiag.lastTools) && (
+                  <div
+                    className={[
+                      'rounded-lg border p-3',
+                      inlineDiag.lastTest
+                        ? inlineDiag.lastTest.success
+                          ? 'border-green-200 bg-green-50 text-green-700 dark:border-green-900/40 dark:bg-green-900/20 dark:text-green-200'
+                          : 'border-red-200 bg-red-50 text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-200'
+                        : 'border-gray-200 bg-gray-50 text-gray-700 dark:border-gray-700 dark:bg-gray-900/30 dark:text-gray-200',
+                    ].join(' ')}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="text-sm">
+                        {inlineDiag.lastTest ? (
+                          <>
+                            <span className="font-medium">
+                              {inlineDiag.lastTest.success ? '连接成功' : '连接失败'}
+                            </span>
+                            <span className="ml-2 break-all">{inlineDiag.lastTest.message}</span>
+                          </>
+                        ) : (
+                          <span className="font-medium">已拉取 tools/list</span>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        className="text-xs rounded px-2 py-1 bg-white/70 hover:bg-white dark:bg-black/10 dark:hover:bg-black/20"
+                        onClick={() =>
+                          setInlineDiagByServerKey((prev) => {
+                            if (!(serverUiKey in prev)) return prev;
+                            const next = { ...prev };
+                            delete next[serverUiKey];
+                            return next;
+                          })
+                        }
+                        title="清除该 server 的最近结果"
+                      >
+                        清除
+                      </button>
+                    </div>
+
+                    {inlineDiag.lastTools?.length ? (
+                      <div className="mt-2">
+                        <div className="text-xs opacity-80">
+                          tools/list：{inlineDiag.lastTools.length} 个
+                          {inlineDiag.lastToolsSource
+                            ? `（来源：${inlineDiag.lastToolsSource === 'test' ? '测试' : '工具'}）`
+                            : ''}
+                        </div>
+                        <div className="mt-1 max-h-40 overflow-auto text-xs">
+                          <ul className="list-disc ml-4">
+                            {inlineDiag.lastTools.map((t) => (
+                              <li key={t.name}>
+                                <span className="font-mono">{t.name}</span>
+                                {t.description ? ` - ${t.description}` : ''}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      </div>
+                    ) : inlineDiag.lastTest?.success ? (
+                      <div className="mt-2 text-xs opacity-80">
+                        tools/list 为空（常见原因：你在 enabledTools 里填了白名单但名字不匹配，或 server 本身不提供 tools）。
+                      </div>
+                    ) : null}
+                  </div>
+                )}
                     </div>
                   )}
                 </div>
