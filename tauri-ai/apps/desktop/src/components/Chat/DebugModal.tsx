@@ -4,7 +4,7 @@
  */
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { X, ChevronDown, ChevronRight, Copy, Check } from 'lucide-react';
+import { X, ChevronDown, ChevronRight, Copy, Check, ChevronLeft } from 'lucide-react';
 import type { DebugInfo, MessageBlock, MessageTurn, AnsiColorMode, AnsiRenderMode } from '../../types';
 import { useConfigStore } from '../../stores/configStore';
 import { getTurnDebugInfo } from '../../services/conversationService';
@@ -76,6 +76,30 @@ type SseUsage = {
   reasoning_tokens?: number;
 };
 
+type ProviderEndReasonKind =
+  | 'stop'
+  | 'length'
+  | 'tool_calls'
+  | 'content_filter'
+  | 'timeout'
+  | 'cancelled'
+  | 'incomplete'
+  | 'unknown';
+
+type ProviderEndReason = {
+  raw: string;
+  source: string;
+  kind: ProviderEndReasonKind;
+  zh: string;
+};
+
+type ApiErrorInfo = {
+  message: string;
+  type?: string;
+  code?: string;
+  status?: number;
+};
+
 // Check if response body contains SSE info
 interface SseResponseBody {
   _sseInfo?: {
@@ -92,6 +116,111 @@ interface SseResponseBody {
 
 const isSseResponseBody = (data: unknown): data is SseResponseBody => {
   return typeof data === 'object' && data !== null && '_sseInfo' in data;
+};
+
+const normalizeProviderEndReasonKind = (raw: string, source: string): ProviderEndReason => {
+  const lower = raw.trim().toLowerCase();
+
+  const mk = (kind: ProviderEndReasonKind, zh: string): ProviderEndReason => ({
+    raw: raw.trim(),
+    source,
+    kind,
+    zh,
+  });
+
+  if (!lower) return mk('unknown', '未知（空值）');
+
+  // Provider-specific but common conventions:
+  // - OpenAI: stop/length/content_filter/tool_calls
+  // - Anthropic: end_turn/max_tokens/tool_use
+  // - Gemini/others: STOP/MAX_TOKENS/SAFETY/...
+  if (lower === 'stop' || lower === 'end_turn' || lower === 'end' || lower === 'finished') {
+    return mk('stop', '正常停止（模型主动结束/命中 stop 条件）');
+  }
+  if (
+    lower === 'length' ||
+    lower === 'max_tokens' ||
+    lower === 'max_output_tokens' ||
+    lower === 'max_output' ||
+    lower.includes('max_tokens') ||
+    lower.includes('max_output')
+  ) {
+    return mk('length', '达到最大输出长度/Token 上限（被截断）');
+  }
+  if (
+    lower === 'tool_calls' ||
+    lower === 'tool_use' ||
+    lower === 'function_call' ||
+    lower.includes('tool')
+  ) {
+    return mk('tool_calls', '需要调用工具（模型请求 tool/function call）');
+  }
+  if (
+    lower === 'content_filter' ||
+    lower === 'safety' ||
+    lower === 'blocked' ||
+    lower.includes('filter') ||
+    lower.includes('safety')
+  ) {
+    return mk('content_filter', '被安全策略/内容过滤拦截');
+  }
+  if (lower === 'timeout' || lower.includes('timeout')) {
+    return mk('timeout', '请求超时');
+  }
+  if (
+    lower === 'cancelled' ||
+    lower === 'canceled' ||
+    lower.includes('cancel') ||
+    lower.includes('abort')
+  ) {
+    return mk('cancelled', '请求被取消/中止');
+  }
+
+  // Some providers expose `incomplete_details.reason`
+  if (source.includes('incomplete')) {
+    return mk('incomplete', '响应不完整（incomplete）');
+  }
+
+  return mk('unknown', '未知（提供方未标准化或未收录的原因）');
+};
+
+const extractApiErrorInfo = (body: any, httpStatus: number | null): ApiErrorInfo | null => {
+  if (!body || typeof body !== 'object') return null;
+
+  // Common patterns
+  const candidate =
+    body.error ??
+    body.err ??
+    body.errors?.[0] ??
+    body.response?.error ??
+    body.data?.error ??
+    null;
+
+  const pickString = (v: any): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null);
+
+  if (candidate && typeof candidate === 'object') {
+    const message =
+      pickString(candidate.message) ??
+      pickString(candidate.msg) ??
+      pickString(candidate.error?.message) ??
+      pickString(body.message) ??
+      pickString(body.msg) ??
+      null;
+    const type = pickString(candidate.type) ?? pickString(candidate.error?.type) ?? undefined;
+    const code = pickString(candidate.code) ?? pickString(candidate.error?.code) ?? undefined;
+
+    if (message) {
+      return { message, type, code, status: typeof httpStatus === 'number' ? httpStatus : undefined };
+    }
+  }
+
+  // Some APIs return a top-level message string
+  const topMessage = pickString(body.message) ?? pickString(body.msg) ?? null;
+  if (topMessage && (typeof httpStatus === 'number' ? httpStatus >= 400 : true)) {
+    return { message: topMessage, status: typeof httpStatus === 'number' ? httpStatus : undefined };
+  }
+
+  return null;
 };
 
 const JsonViewer: React.FC<JsonViewerProps> = ({ data, label }) => {
@@ -112,7 +241,7 @@ const JsonViewer: React.FC<JsonViewerProps> = ({ data, label }) => {
         </div>
       )}
       <div className="relative group">
-        <pre className="text-xs bg-gray-50 dark:bg-gray-800 p-3 rounded-lg overflow-auto max-h-64 text-gray-800 dark:text-gray-200">
+        <pre className="text-xs bg-gray-50 dark:bg-gray-800 p-3 rounded-lg overflow-auto max-h-[50vh] text-gray-800 dark:text-gray-200">
           {jsonString}
         </pre>
         <button
@@ -365,6 +494,7 @@ export const DebugModal: React.FC<DebugModalProps> = ({
   const [loadingTurnId, setLoadingTurnId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadErrorTurnId, setLoadErrorTurnId] = useState<string | null>(null);
+  const TURNS_PER_PAGE = 8;
   const [activeTurnId, setActiveTurnId] = useState<string | null>(
     sortedTurns.length > 0
       ? (initialTurnId && sortedTurns.some((t) => t.turnId === initialTurnId)
@@ -372,6 +502,7 @@ export const DebugModal: React.FC<DebugModalProps> = ({
         : sortedTurns[0].turnId)
       : (initialTurnId ?? null)
   );
+  const [turnPage, setTurnPage] = useState(0);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -384,27 +515,113 @@ export const DebugModal: React.FC<DebugModalProps> = ({
   const activeTurn = activeTurnId
     ? sortedTurns.find((t) => t.turnId === activeTurnId) ?? null
     : null;
+  const activeTurnPos = useMemo(() => {
+    if (!activeTurnId) return -1;
+    return sortedTurns.findIndex((t) => t.turnId === activeTurnId);
+  }, [sortedTurns, activeTurnId]);
+
+  const turnPageCount = useMemo(() => {
+    if (sortedTurns.length <= 0) return 0;
+    return Math.max(1, Math.ceil(sortedTurns.length / TURNS_PER_PAGE));
+  }, [sortedTurns.length]);
+
+  // Keep pagination in sync with active turn.
+  useEffect(() => {
+    if (!isOpen) return;
+    if (sortedTurns.length <= TURNS_PER_PAGE) {
+      setTurnPage(0);
+      return;
+    }
+    if (activeTurnPos < 0) return;
+    const nextPage = Math.floor(activeTurnPos / TURNS_PER_PAGE);
+    setTurnPage((prev) => (prev === nextPage ? prev : nextPage));
+  }, [isOpen, sortedTurns.length, activeTurnPos]);
+
+  // Clamp when turns change (e.g. retry adds turns).
+  useEffect(() => {
+    if (!isOpen) return;
+    if (turnPageCount <= 0) return;
+    setTurnPage((prev) => Math.min(Math.max(prev, 0), turnPageCount - 1));
+  }, [isOpen, turnPageCount]);
+
+  const pagedTurns = useMemo(() => {
+    if (sortedTurns.length <= TURNS_PER_PAGE) return sortedTurns;
+    const start = turnPage * TURNS_PER_PAGE;
+    const end = Math.min(sortedTurns.length, start + TURNS_PER_PAGE);
+    return sortedTurns.slice(start, end);
+  }, [sortedTurns, turnPage]);
   const loadedForActive = activeTurnId ? loadedTurnDebugInfo[activeTurnId] : undefined;
   const effectiveDebugInfo =
     loadedForActive !== undefined ? loadedForActive : activeTurn?.debugInfo ?? debugInfo;
   const isLoadingDebug = Boolean(activeTurnId && loadingTurnId === activeTurnId);
   const httpStatus = effectiveDebugInfo?.response?.status ?? null;
-  const providerFinishReason = useMemo(() => {
+  const providerEndReason = useMemo<ProviderEndReason | null>(() => {
     const body = effectiveDebugInfo?.response?.body as any;
     if (!body || typeof body !== 'object') return null;
 
-    const direct = body.finish_reason ?? body.finishReason ?? body.stop_reason ?? body.stopReason;
-    if (typeof direct === 'string' && direct.trim().length > 0) return direct.trim();
+    const candidates: Array<{ raw: any; source: string }> = [
+      { raw: body.finish_reason ?? body.finishReason, source: 'body.finish_reason' },
+      { raw: body.stop_reason ?? body.stopReason, source: 'body.stop_reason' },
+      { raw: body.choices?.[0]?.finish_reason ?? body.choices?.[0]?.finishReason, source: 'choices[0].finish_reason' },
+      { raw: body.incomplete_details?.reason ?? body.incompleteDetails?.reason, source: 'incomplete_details.reason' },
+    ];
 
-    const choices = Array.isArray(body.choices) ? body.choices : null;
-    const fromChoices = choices?.[0]?.finish_reason ?? choices?.[0]?.finishReason;
-    if (typeof fromChoices === 'string' && fromChoices.trim().length > 0) return fromChoices.trim();
-
-    const incompleteReason = body.incomplete_details?.reason ?? body.incompleteDetails?.reason;
-    if (typeof incompleteReason === 'string' && incompleteReason.trim().length > 0) return incompleteReason.trim();
+    for (const c of candidates) {
+      if (typeof c.raw === 'string' && c.raw.trim().length > 0) {
+        return normalizeProviderEndReasonKind(c.raw, c.source);
+      }
+    }
 
     return null;
   }, [effectiveDebugInfo?.response?.body]);
+  const providerFinishReason = providerEndReason?.raw ?? null;
+  const providerFinishReasonZh = providerEndReason?.zh ?? null;
+  const providerFinishReasonSource = providerEndReason?.source ?? null;
+
+  const apiErrorInfo = useMemo(
+    () => extractApiErrorInfo(effectiveDebugInfo?.response?.body as any, httpStatus),
+    [effectiveDebugInfo?.response?.body, httpStatus]
+  );
+
+  const endReasonSummary = useMemo(() => {
+    const parts: string[] = [];
+
+    if (finalStatus === 'success') {
+      if (providerFinishReasonZh && providerFinishReason) {
+        parts.push(`${providerFinishReasonZh}（${providerFinishReason}）`);
+      } else if (providerFinishReason) {
+        parts.push(`模型结束：${providerFinishReason}`);
+      }
+    } else if (finalStatus === 'aborted') {
+      parts.push('任务中止');
+    } else if (finalStatus === 'failed') {
+      parts.push('任务失败');
+    }
+
+    if (apiErrorInfo?.message) {
+      const extra: string[] = [];
+      if (apiErrorInfo.type) extra.push(`type=${apiErrorInfo.type}`);
+      if (apiErrorInfo.code) extra.push(`code=${apiErrorInfo.code}`);
+      parts.push(`API 错误：${apiErrorInfo.message}${extra.length ? `（${extra.join(', ')}）` : ''}`);
+    } else if ((finalStatus === 'failed' || finalStatus === 'aborted') && errorMessage) {
+      parts.push(errorMessage);
+    }
+
+    if (typeof httpStatus === 'number') parts.push(`HTTP ${httpStatus}`);
+    if (providerFinishReasonSource && providerFinishReason) parts.push(`来源 ${providerFinishReasonSource}`);
+
+    return parts.filter(Boolean).join('；') || null;
+  }, [
+    finalStatus,
+    providerFinishReason,
+    providerFinishReasonZh,
+    providerFinishReasonSource,
+    apiErrorInfo?.message,
+    apiErrorInfo?.type,
+    apiErrorInfo?.code,
+    httpStatus,
+    errorMessage,
+  ]);
 
   // Lazy-load per-turn debug info when needed (history initialization strips it by default).
   useEffect(() => {
@@ -598,6 +815,11 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                   </span>
                 )}
               </div>
+              {endReasonSummary && (
+                <div className="mt-1 text-[11px] text-gray-600 dark:text-gray-300">
+                  {endReasonSummary}
+                </div>
+              )}
               {errorMessage && (
                 <div className="mt-2 rounded bg-red-50 px-2 py-1 text-red-700 dark:bg-red-900/20 dark:text-red-300">
                   {errorMessage}
@@ -615,37 +837,70 @@ export const DebugModal: React.FC<DebugModalProps> = ({
 
           {/* Turn selector (multi-turn tasks) */}
           {sortedTurns.length > 1 && (
-            <div className="mb-4 flex flex-wrap gap-2">
-              {sortedTurns.map((t) => {
-                const isActive = t.turnId === activeTurnId;
-                const status = t.status || 'success';
-                const statusClass =
-                  status === 'success'
-                    ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
-                    : status === 'aborted'
-                      ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300'
-                      : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300';
-                const statusTitle = status === 'success' ? '成功' : status === 'failed' ? '失败' : '中止';
+            <div className="mb-4">
+              {sortedTurns.length > TURNS_PER_PAGE && (
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <div className="text-xs text-gray-500 dark:text-gray-400">
+                    Turn 分页：第 {turnPage + 1}/{turnPageCount} 页（共 {sortedTurns.length}）
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setTurnPage((p) => Math.max(0, p - 1))}
+                      disabled={turnPage <= 0}
+                      className="inline-flex items-center justify-center rounded border border-gray-200 bg-white p-1 text-gray-600 disabled:opacity-40 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-300"
+                      title="上一页"
+                    >
+                      <ChevronLeft size={16} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTurnPage((p) => Math.min(turnPageCount - 1, p + 1))}
+                      disabled={turnPage >= turnPageCount - 1}
+                      className="inline-flex items-center justify-center rounded border border-gray-200 bg-white p-1 text-gray-600 disabled:opacity-40 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-300"
+                      title="下一页"
+                    >
+                      <ChevronRight size={16} />
+                    </button>
+                  </div>
+                </div>
+              )}
 
-                return (
-                  <button
-                    key={t.turnId}
-                    onClick={() => setActiveTurnId(t.turnId)}
-                    className={`flex items-center gap-2 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-                      isActive
-                        ? 'bg-gray-200 text-gray-900 dark:bg-gray-800 dark:text-gray-100'
-                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-900/40 dark:text-gray-300 dark:hover:bg-gray-800'
-                    }`}
-                    title={t.model ? `model: ${t.model}` : undefined}
-                  >
-                    <span>Turn {t.turnIndex}</span>
-                    <span className={`inline-flex items-center gap-1 rounded px-2 py-0.5 ${statusClass}`} title={statusTitle}>
-                      {status === 'success' ? <Check size={12} /> : status === 'failed' ? <X size={12} /> : null}
-                      {status === 'aborted' ? <span>aborted</span> : null}
-                    </span>
-                  </button>
-                );
-              })}
+              <div className="flex flex-nowrap items-center gap-2 overflow-x-auto pb-1">
+                {(sortedTurns.length > TURNS_PER_PAGE ? pagedTurns : sortedTurns).map((t) => {
+                  const isActive = t.turnId === activeTurnId;
+                  const status = t.status || 'success';
+                  const statusClass =
+                    status === 'success'
+                      ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
+                      : status === 'aborted'
+                        ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300'
+                        : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300';
+                  const statusTitle = status === 'success' ? '成功' : status === 'failed' ? '失败' : '中止';
+
+                  return (
+                    <button
+                      key={t.turnId}
+                      onClick={() => setActiveTurnId(t.turnId)}
+                      className={`flex items-center gap-2 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                        isActive
+                          ? 'bg-gray-200 text-gray-900 dark:bg-gray-800 dark:text-gray-100'
+                          : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-900/40 dark:text-gray-300 dark:hover:bg-gray-800'
+                      }`}
+                      title={t.model ? `model: ${t.model}` : undefined}
+                    >
+                      <span>Turn {t.turnIndex}</span>
+                      <span
+                        className={`inline-flex items-center gap-1 rounded px-2 py-0.5 ${statusClass}`}
+                        title={statusTitle}
+                      >
+                        {status === 'success' ? <Check size={12} /> : status === 'failed' ? <X size={12} /> : null}
+                        {status === 'aborted' ? <span>aborted</span> : null}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           )}
 
@@ -772,32 +1027,8 @@ export const DebugModal: React.FC<DebugModalProps> = ({
               </p>
             </div>
           ) : (
-            <>
-              {/* Request Section */}
-              {effectiveDebugInfo.request && (
-                <CollapsibleSection title="HTTP 请求">
-                  <div className="space-y-4">
-                    <div className="flex items-center gap-2 text-sm">
-                      <span className="px-2 py-1 bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded font-medium">
-                        {effectiveDebugInfo.request.method}
-                      </span>
-                      <span className="text-gray-800 dark:text-gray-200 break-all">
-                        {effectiveDebugInfo.request.url}
-                      </span>
-                    </div>
-
-                    <CollapsibleSection title="请求头" defaultExpanded={false}>
-                      <HeadersViewer headers={effectiveDebugInfo.request.headers} />
-                    </CollapsibleSection>
-
-                    <CollapsibleSection title="请求体">
-                      <JsonViewer data={effectiveDebugInfo.request.body} />
-                    </CollapsibleSection>
-                  </div>
-                </CollapsibleSection>
-              )}
-
-              {/* Response Section */}
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+              {/* Response first: avoid being pushed down by long request bodies */}
               {effectiveDebugInfo.response && (
                 <CollapsibleSection title="HTTP 响应">
                   <div className="space-y-4">
@@ -830,7 +1061,30 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                   </div>
                 </CollapsibleSection>
               )}
-            </>
+
+              {effectiveDebugInfo.request && (
+                <CollapsibleSection title="HTTP 请求">
+                  <div className="space-y-4">
+                    <div className="flex items-center gap-2 text-sm">
+                      <span className="px-2 py-1 bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded font-medium">
+                        {effectiveDebugInfo.request.method}
+                      </span>
+                      <span className="text-gray-800 dark:text-gray-200 break-all">
+                        {effectiveDebugInfo.request.url}
+                      </span>
+                    </div>
+
+                    <CollapsibleSection title="请求头" defaultExpanded={false}>
+                      <HeadersViewer headers={effectiveDebugInfo.request.headers} />
+                    </CollapsibleSection>
+
+                    <CollapsibleSection title="请求体">
+                      <JsonViewer data={effectiveDebugInfo.request.body} />
+                    </CollapsibleSection>
+                  </div>
+                </CollapsibleSection>
+              )}
+            </div>
           )}
           </div>
         </div>

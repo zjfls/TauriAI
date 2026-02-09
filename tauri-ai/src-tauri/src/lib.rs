@@ -70,6 +70,7 @@ fn get_database_path() -> std::path::PathBuf {
 #[cfg(all(debug_assertions, target_os = "windows"))]
 fn schedule_set_dev_window_icons(app: &tauri::AppHandle) {
     use std::time::Duration;
+    use tauri::Manager;
 
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("icons-dev")

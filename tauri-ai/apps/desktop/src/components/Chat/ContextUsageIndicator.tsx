@@ -18,7 +18,7 @@ import {
   ChevronDown,
   ChevronRight,
 } from 'lucide-react';
-import type { ContextUsageBreakdown, Message } from '../../types';
+import type { ContextMessageGroups, ContextUsageBreakdown, Message } from '../../types';
 import { countTokens } from '../../utils/tokenizer';
 
 interface ContextUsageIndicatorProps {
@@ -50,6 +50,70 @@ const normalizeOneLine = (text: string, maxLen = 120): string => {
   return oneLine.length > maxLen ? `${oneLine.slice(0, maxLen)}…` : oneLine;
 };
 
+const extractTextFromContentParts = (message: Message): string => {
+  const parts = message.contentParts ?? [];
+  if (!Array.isArray(parts) || parts.length === 0) return '';
+
+  const chunks: string[] = [];
+  for (const p of parts as any[]) {
+    if (!p || typeof p !== 'object') continue;
+    if (p.type === 'text' && typeof p.text === 'string' && p.text.trim()) {
+      chunks.push(p.text);
+      continue;
+    }
+    if (p.type === 'image' && typeof p.url === 'string') {
+      chunks.push(`[image] ${p.url}`);
+      continue;
+    }
+    if (p.type === 'image_url' && typeof p.image_url?.url === 'string') {
+      chunks.push(`[image_url] ${p.image_url.url}`);
+      continue;
+    }
+    if (typeof p.type === 'string') {
+      chunks.push(`[${p.type}]`);
+    }
+  }
+  return chunks.join('\n');
+};
+
+const extractTextFromBlocks = (message: Message): string => {
+  const blocks = message.blocks ?? [];
+  if (!Array.isArray(blocks) || blocks.length === 0) return '';
+
+  const chunks: string[] = [];
+  for (const b of blocks as any[]) {
+    if (!b || typeof b !== 'object') continue;
+    const t = typeof b.type === 'string' ? b.type : 'unknown';
+    const text =
+      typeof b.text === 'string'
+        ? b.text
+        : typeof b.content === 'string'
+          ? b.content
+          : typeof b.markdown === 'string'
+            ? b.markdown
+            : null;
+    if (text && text.trim()) {
+      chunks.push(text);
+    } else {
+      chunks.push(`[block:${t}]`);
+    }
+  }
+  return chunks.join('\n');
+};
+
+const getMessageEffectiveContentText = (message: Message): string => {
+  const direct = typeof message.content === 'string' ? message.content : '';
+  if (direct.trim()) return direct;
+
+  const fromParts = extractTextFromContentParts(message);
+  if (fromParts.trim()) return fromParts;
+
+  const fromBlocks = extractTextFromBlocks(message);
+  if (fromBlocks.trim()) return fromBlocks;
+
+  return '';
+};
+
 const roleAbbrev = (role: Message['role']): string => {
   switch (role) {
     case 'user':
@@ -63,6 +127,30 @@ const roleAbbrev = (role: Message['role']): string => {
     default:
       return String(role);
   }
+};
+
+const contentPartsSummary = (message: Message): string => {
+  const parts = message.contentParts ?? [];
+  if (!Array.isArray(parts) || parts.length === 0) return '';
+  const counts = new Map<string, number>();
+  for (const p of parts as any[]) {
+    const t = typeof p?.type === 'string' ? p.type : 'unknown';
+    counts.set(t, (counts.get(t) ?? 0) + 1);
+  }
+  const items = Array.from(counts.entries()).map(([k, v]) => `${k}:${v}`);
+  return `附件 ${parts.length}${items.length ? `（${items.join(', ')}）` : ''}`;
+};
+
+const blocksSummary = (message: Message): string => {
+  const blocks = message.blocks ?? [];
+  if (!Array.isArray(blocks) || blocks.length === 0) return '';
+  const counts = new Map<string, number>();
+  for (const b of blocks as any[]) {
+    const t = typeof b?.type === 'string' ? b.type : 'unknown';
+    counts.set(t, (counts.get(t) ?? 0) + 1);
+  }
+  const items = Array.from(counts.entries()).map(([k, v]) => `${k}:${v}`);
+  return `blocks ${blocks.length}${items.length ? `（${items.join(', ')}）` : ''}`;
 };
 
 const buildMessageGroupsText = (usage: ContextUsageBreakdown): string => {
@@ -94,9 +182,11 @@ const buildMessageGroupsText = (usage: ContextUsageBreakdown): string => {
     for (const m of shown) {
       const status = m.status ?? 'success';
       const partsCount = Array.isArray(m.contentParts) ? m.contentParts.length : 0;
-      const extra = partsCount > 0 ? ` parts:${partsCount}` : '';
+      const blocksCount = Array.isArray(m.blocks) ? m.blocks.length : 0;
+      const extra =
+        partsCount > 0 || blocksCount > 0 ? ` parts:${partsCount} blocks:${blocksCount}` : '';
 
-      const preview = normalizeOneLine(m.content || '', 160);
+      const preview = normalizeOneLine(getMessageEffectiveContentText(m) || '', 160);
       const thinkingText = includeThinking ? m.thinking || '' : '';
       const thinkingPreview =
         includeThinking && thinkingText.trim()
@@ -114,6 +204,161 @@ const buildMessageGroupsText = (usage: ContextUsageBreakdown): string => {
   renderList('Failed(失败消息)', groups.failed, 20);
 
   return lines.join('\n');
+};
+
+const MessageGroupsViewer: React.FC<{
+  groups: ContextMessageGroups;
+  contextLimit: number;
+}> = ({ groups, contextLimit }) => {
+  type TabKey = 'used' | 'trimmed' | 'failed';
+  const [tab, setTab] = useState<TabKey>('used');
+  const includeThinking = Boolean(groups.includeThinking);
+
+  const list = useMemo(() => {
+    if (tab === 'trimmed') return groups.trimmed ?? [];
+    if (tab === 'failed') return groups.failed ?? [];
+    return groups.used ?? [];
+  }, [groups.failed, groups.trimmed, groups.used, tab]);
+
+  const headerLine = useMemo(() => {
+    const limitStr = contextLimit > 0 ? String(contextLimit) : '未知';
+    return `消息上限: ${groups.messageLimit}  |  将发送: ${groups.used.length}  |  已裁剪: ${groups.trimmed.length}  |  失败(不发送): ${groups.failed.length}  |  包含 thinking: ${includeThinking ? '是' : '否'}  |  context window: ${limitStr}`;
+  }, [contextLimit, groups.failed.length, groups.messageLimit, groups.trimmed.length, groups.used.length, includeThinking]);
+
+  const TabButton: React.FC<{ k: TabKey; label: string }> = ({ k, label }) => {
+    const active = tab === k;
+    return (
+      <button
+        type="button"
+        onClick={() => setTab(k)}
+        className={`rounded px-2 py-1 text-xs transition-colors ${
+          active
+            ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-200'
+            : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-900/40 dark:text-gray-300 dark:hover:bg-gray-800'
+        }`}
+      >
+        {label}
+      </button>
+    );
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="text-[11px] text-gray-600 dark:text-gray-300 whitespace-pre-wrap">
+        {headerLine}
+      </div>
+
+      <div className="flex flex-wrap gap-1">
+        <TabButton k="used" label={`将发送 (${groups.used.length})`} />
+        <TabButton k="trimmed" label={`已裁剪 (${groups.trimmed.length})`} />
+        <TabButton k="failed" label={`失败 (${groups.failed.length})`} />
+      </div>
+
+      <div className="max-h-64 overflow-auto space-y-2 pr-1">
+        {list.length === 0 ? (
+          <div className="rounded border border-gray-200 bg-white p-2 text-xs text-gray-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400">
+            （空）
+          </div>
+        ) : (
+          list.map((m, idx) => {
+            const status = m.status ?? 'success';
+            const partsSummary = contentPartsSummary(m);
+            const blocksInfo = blocksSummary(m);
+            const content = getMessageEffectiveContentText(m);
+            const thinking = includeThinking ? (m.thinking ?? '') : '';
+            const hasParts = Array.isArray(m.contentParts) && m.contentParts.length > 0;
+            const hasBlocks = Array.isArray(m.blocks) && m.blocks.length > 0;
+
+            return (
+              <details
+                key={`${m.id}:${idx}`}
+                className="rounded border border-gray-200 bg-white p-2 dark:border-gray-700 dark:bg-gray-800"
+              >
+                <summary className="list-none cursor-pointer select-none">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="text-xs font-medium text-gray-800 dark:text-gray-100">
+                        {idx + 1}. {roleAbbrev(m.role)}/{status} {shortId(m.id)}
+                      </div>
+                      <div className="mt-0.5 text-[11px] text-gray-500 dark:text-gray-400 truncate">
+                        {normalizeOneLine(content, 120) || '（空内容）'}
+                        {partsSummary ? `  ·  ${partsSummary}` : ''}
+                        {blocksInfo ? `  ·  ${blocksInfo}` : ''}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          const payload =
+                            includeThinking && thinking.trim()
+                              ? `${content}\n\n[thinking]\n${thinking}`
+                              : content;
+                          void navigator.clipboard.writeText(payload);
+                        }}
+                        title="复制（含 thinking）"
+                      >
+                        <Copy size={12} />
+                        复制
+                      </button>
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          void navigator.clipboard.writeText(JSON.stringify(m, null, 2));
+                        }}
+                        title="复制原始 JSON（真实发送前的消息对象）"
+                      >
+                        <Copy size={12} />
+                        JSON
+                      </button>
+                    </div>
+                  </div>
+                </summary>
+
+                <div className="mt-2 space-y-2">
+                  <div className="rounded bg-gray-50 p-2 text-xs text-gray-800 dark:bg-gray-900/40 dark:text-gray-100">
+                    <div className="mb-1 text-[11px] text-gray-500 dark:text-gray-400">content</div>
+                    <pre className="max-h-[40vh] overflow-auto whitespace-pre-wrap break-words">{content || '（空）'}</pre>
+                  </div>
+                  {includeThinking && thinking.trim() ? (
+                    <div className="rounded bg-purple-50 p-2 text-xs text-purple-900 dark:bg-purple-900/20 dark:text-purple-100">
+                      <div className="mb-1 text-[11px] text-purple-700 dark:text-purple-200">thinking</div>
+                      <pre className="max-h-[40vh] overflow-auto whitespace-pre-wrap break-words">{thinking}</pre>
+                    </div>
+                  ) : null}
+                  {hasParts ? (
+                    <div className="rounded bg-gray-50 p-2 text-xs text-gray-800 dark:bg-gray-900/40 dark:text-gray-100">
+                      <div className="mb-1 text-[11px] text-gray-500 dark:text-gray-400">contentParts</div>
+                      <pre className="max-h-[40vh] overflow-auto whitespace-pre-wrap break-words">
+                        {JSON.stringify(m.contentParts, null, 2)}
+                      </pre>
+                    </div>
+                  ) : null}
+                  {hasBlocks ? (
+                    <div className="rounded bg-gray-50 p-2 text-xs text-gray-800 dark:bg-gray-900/40 dark:text-gray-100">
+                      <div className="mb-1 text-[11px] text-gray-500 dark:text-gray-400">blocks</div>
+                      <pre className="max-h-[40vh] overflow-auto whitespace-pre-wrap break-words">
+                        {JSON.stringify(m.blocks, null, 2)}
+                      </pre>
+                    </div>
+                  ) : null}
+                  {partsSummary ? (
+                    <div className="text-[11px] text-gray-500 dark:text-gray-400">{partsSummary}</div>
+                  ) : null}
+                </div>
+              </details>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
 };
 
 interface CircularProgressProps {
@@ -397,9 +642,15 @@ const DetailModal: React.FC<DetailModalProps> = ({ usage, isOpen, onClose }) => 
                     </button>
                   </div>
                 </div>
-                <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-gray-50 p-2 text-xs text-gray-800 dark:bg-gray-900/40 dark:text-gray-100">
-                  {detail.text}
-                </pre>
+                {detail.key === 'messages-list' && usage.messageGroups ? (
+                  <div className="mt-2">
+                    <MessageGroupsViewer groups={usage.messageGroups} contextLimit={usage.limit || 0} />
+                  </div>
+                ) : (
+                  <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-gray-50 p-2 text-xs text-gray-800 dark:bg-gray-900/40 dark:text-gray-100">
+                    {detail.text}
+                  </pre>
+                )}
               </div>
             ))}
           </div>

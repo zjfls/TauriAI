@@ -4180,6 +4180,7 @@ async fn run_task_inner(
                 || !blocks.is_empty()
                 || !turns.is_empty()
             {
+                let usage_for_meta = turns.iter().rev().find_map(|t| t.usage.clone());
                 let assistant_message = Message {
                     id: assistant_message_id.clone(),
                     conversation_id: input.conversation_id.clone(),
@@ -4199,6 +4200,7 @@ async fn run_task_inner(
                             Some(blocks)
                         },
                         turns: if turns.is_empty() { None } else { Some(turns) },
+                        usage: usage_for_meta,
                         ..Default::default()
                     }),
                     created_at: chrono::Utc::now(),
@@ -4240,6 +4242,7 @@ async fn run_task_inner(
                 || !blocks.is_empty()
                 || !turns.is_empty()
             {
+                let usage_for_meta = usage.clone().or_else(|| turns.iter().rev().find_map(|t| t.usage.clone()));
                 let assistant_message = Message {
                     id: assistant_message_id.clone(),
                     conversation_id: input.conversation_id.clone(),
@@ -4259,6 +4262,7 @@ async fn run_task_inner(
                             Some(blocks)
                         },
                         turns: if turns.is_empty() { None } else { Some(turns) },
+                        usage: usage_for_meta,
                         ..Default::default()
                     }),
                     created_at: chrono::Utc::now(),
@@ -4307,6 +4311,7 @@ async fn run_task_inner(
                 || !blocks.is_empty()
                 || !turns.is_empty()
             {
+                let usage_for_meta = turns.iter().rev().find_map(|t| t.usage.clone());
                 let assistant_message = Message {
                     id: assistant_message_id.clone(),
                     conversation_id: input.conversation_id.clone(),
@@ -4326,6 +4331,7 @@ async fn run_task_inner(
                             Some(blocks)
                         },
                         turns: if turns.is_empty() { None } else { Some(turns) },
+                        usage: usage_for_meta,
                         ..Default::default()
                     }),
                     created_at: chrono::Utc::now(),

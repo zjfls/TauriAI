@@ -9,6 +9,13 @@ export function hydrateMessageFromBackend(message: Message): Message {
 
   const blocks = (message as any).blocks ?? meta?.blocks;
   const rawTurns = (message as any).turns ?? meta?.turns;
+  const usageFromTurns = Array.isArray(rawTurns)
+    ? rawTurns
+        .slice()
+        .reverse()
+        .find((t: any) => t?.usage)?.usage
+    : undefined;
+  const usage = (message as any).usage ?? meta?.usage ?? usageFromTurns;
 
   // Default behavior: do NOT keep debugInfo inline for history initialization.
   // DebugInfo can be large; we load it on demand when the user clicks "Debug".
@@ -41,6 +48,7 @@ export function hydrateMessageFromBackend(message: Message): Message {
     meta: (sanitizedMeta ?? message.meta) as any,
     blocks: blocks ?? message.blocks,
     turns: turns ?? message.turns,
+    usage: usage ?? (message as any).usage,
   };
 }
 

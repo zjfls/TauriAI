@@ -175,6 +175,14 @@ pub struct MessageMeta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turns: Option<Vec<MessageTurn>>,
 
+    /// Token usage for the message (usually from the final model call of the task).
+    ///
+    /// NOTE:
+    /// - We persist it inside `meta` for DB compatibility (no schema migration needed).
+    /// - Frontend will lift it to `message.usage` when hydrating history.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<crate::ai_client::TokenUsage>,
+
     /// Context compaction metadata (e.g. normal compact summary snapshots).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_compaction: Option<ContextCompactionMeta>,
