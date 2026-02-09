@@ -34,6 +34,7 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
   const [sending, setSending] = useState(false);
   const listRef = useRef<HTMLDivElement | null>(null);
   const [fallbackAgentName, setFallbackAgentName] = useState<string>("");
+  const [agentLabels, setAgentLabels] = useState<Record<string, string>>({});
   const unlistenRef = useRef<UnlistenFn | null>(null);
   const activeStreamRef = useRef<{
     streamId: string;
@@ -45,16 +46,29 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
-    if (fallbackAgentName) return;
+    if (fallbackAgentName && Object.keys(agentLabels).length > 0) return;
     tauriInvoke<any>("get_app_config")
       .then((cfg) => {
         const def = String(cfg?.defaultAgent ?? "").trim();
         if (def) setFallbackAgentName(def);
+        const next: Record<string, string> = {};
+        const list: any[] = Array.isArray(cfg?.agents) ? cfg.agents : [];
+        for (const a of list) {
+          if (!a || typeof a !== "object") continue;
+          const name = String((a as any).name ?? "").trim();
+          if (!name) continue;
+          const displayName = String((a as any).displayName ?? name).trim();
+          next[name] = displayName || name;
+        }
+        setAgentLabels(next);
       })
       .catch(() => {
         // ignore
       });
-  }, [fallbackAgentName]);
+  }, [fallbackAgentName, agentLabels]);
+
+  const activeAgentName = conversation?.agentName || fallbackAgentName || "";
+  const activeAgentLabel = activeAgentName ? agentLabels[activeAgentName] || activeAgentName : "";
 
   const scrollToBottom = () => {
     const el = listRef.current;
@@ -214,20 +228,20 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
   return (
     <div className="h-full flex flex-col overflow-x-hidden">
       {layout === "compact" ? (
-        <div className="h-12 border-b border-white/10 bg-white/5 flex items-center justify-between px-3">
-          <div className="min-w-0">
-            <div className="text-sm font-medium truncate">{conversation?.title ?? "Chat"}</div>
-            <div className="text-[11px] text-white/60 truncate">
-              {conversation?.agentName || fallbackAgentName
-                ? `Agent: ${conversation?.agentName || fallbackAgentName}`
-                : "Agent: 未选择"}
+        <div className="safe-top border-b border-white/10 bg-white/5">
+          <div className="h-12 flex items-center justify-between px-3">
+            <div className="min-w-0">
+              <div className="text-sm font-medium truncate">{conversation?.title ?? "Chat"}</div>
+              <div className="text-[11px] text-white/60 truncate">
+                {activeAgentLabel ? `Agent: ${activeAgentLabel}` : "Agent: 未选择"}
+              </div>
             </div>
+            {onNewConversation ? (
+              <Button size="sm" variant="ghost" onClick={onNewConversation} title="新建对话">
+                <Plus size={16} />
+              </Button>
+            ) : null}
           </div>
-          {onNewConversation ? (
-            <Button size="sm" variant="ghost" onClick={onNewConversation} title="新建对话">
-              <Plus size={16} />
-            </Button>
-          ) : null}
         </div>
       ) : null}
 

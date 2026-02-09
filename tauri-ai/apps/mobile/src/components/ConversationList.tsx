@@ -18,11 +18,13 @@ export function ConversationList({
 }) {
   return (
     <div className="h-full flex flex-col overflow-x-hidden">
-      <div className="h-12 flex items-center justify-between px-3 border-b border-white/10">
-        <div className="text-sm text-white/80">会话</div>
-        <Button size="sm" variant="ghost" onClick={onCreate}>
-          <Plus size={16} />
-        </Button>
+      <div className="safe-top border-b border-white/10">
+        <div className="h-12 flex items-center justify-between px-3">
+          <div className="text-sm text-white/80">会话</div>
+          <Button size="sm" variant="ghost" onClick={onCreate} title="新建对话">
+            <Plus size={16} />
+          </Button>
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto overflow-x-hidden">
