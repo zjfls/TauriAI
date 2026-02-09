@@ -36,11 +36,19 @@ const defaultStdioTransport = (): McpServerTransportConfig => ({
   envVars: [],
 });
 
+// Default timeouts (ms)
+// - startupTimeoutMs: initialize + tools/list + resources/list
+// - toolTimeoutMs: tools/call + resources/read
+const DEFAULT_STARTUP_TIMEOUT_MS = 10_000;
+const DEFAULT_TOOL_TIMEOUT_MS = 6_000;
+
 const defaultServerEntry = (): McpServerEntry => ({
   name: `mcp_${Date.now()}`,
   config: {
     transport: defaultStdioTransport(),
     enabled: true,
+    startupTimeoutMs: DEFAULT_STARTUP_TIMEOUT_MS,
+    toolTimeoutMs: DEFAULT_TOOL_TIMEOUT_MS,
     enabledTools: [],
     disabledTools: [],
   },
@@ -918,37 +926,49 @@ export const McpConfigForm: React.FC = () => {
 
                   <div className="space-y-1">
                     <label className="block text-xs text-gray-500">Timeout（ms）</label>
-                    <div className="flex gap-2">
-                      <input
-                        type="number"
-                        className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm"
-                        placeholder="startupTimeoutMs"
-                        value={server.config.startupTimeoutMs ?? ''}
-                        onChange={(e) =>
-                          upsertServer({
-                            ...server,
-                            config: {
-                              ...server.config,
-                              startupTimeoutMs: e.target.value ? Number(e.target.value) : undefined,
-                            },
-                          })
-                        }
-                      />
-                      <input
-                        type="number"
-                        className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm"
-                        placeholder="toolTimeoutMs"
-                        value={server.config.toolTimeoutMs ?? ''}
-                        onChange={(e) =>
-                          upsertServer({
-                            ...server,
-                            config: {
-                              ...server.config,
-                              toolTimeoutMs: e.target.value ? Number(e.target.value) : undefined,
-                            },
-                          })
-                        }
-                      />
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="space-y-1">
+                        <div className="text-[11px] text-gray-500">
+                          启动/列工具（startupTimeoutMs，默认 {DEFAULT_STARTUP_TIMEOUT_MS}）
+                        </div>
+                        <input
+                          type="number"
+                          className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm"
+                          placeholder={String(DEFAULT_STARTUP_TIMEOUT_MS)}
+                          value={server.config.startupTimeoutMs ?? ''}
+                          onChange={(e) =>
+                            upsertServer({
+                              ...server,
+                              config: {
+                                ...server.config,
+                                startupTimeoutMs: e.target.value ? Number(e.target.value) : undefined,
+                              },
+                            })
+                          }
+                          title="用于 initialize + tools/list + resources/list 等启动阶段请求"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <div className="text-[11px] text-gray-500">
+                          工具调用（toolTimeoutMs，默认 {DEFAULT_TOOL_TIMEOUT_MS}）
+                        </div>
+                        <input
+                          type="number"
+                          className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm"
+                          placeholder={String(DEFAULT_TOOL_TIMEOUT_MS)}
+                          value={server.config.toolTimeoutMs ?? ''}
+                          onChange={(e) =>
+                            upsertServer({
+                              ...server,
+                              config: {
+                                ...server.config,
+                                toolTimeoutMs: e.target.value ? Number(e.target.value) : undefined,
+                              },
+                            })
+                          }
+                          title="用于 tools/call + resources/read 等工具执行阶段请求"
+                        />
+                      </div>
                     </div>
                   </div>
                 </div>

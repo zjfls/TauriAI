@@ -28,7 +28,8 @@ use tokio::time;
 use crate::models::{McpServerConfig, McpServerTransportConfig};
 
 const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
-const DEFAULT_TOOL_TIMEOUT: Duration = Duration::from_secs(60);
+// tools/call 默认超时（对应前端 toolTimeoutMs 默认值）
+const DEFAULT_TOOL_TIMEOUT: Duration = Duration::from_millis(6000);
 
 #[derive(Debug, Clone, Default)]
 pub struct McpServerRuntimeStatus {
