@@ -1,26 +1,19 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import ReactMarkdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import jsx from 'react-syntax-highlighter/dist/esm/languages/prism/jsx';
 import tsx from 'react-syntax-highlighter/dist/esm/languages/prism/tsx';
 import typescript from 'react-syntax-highlighter/dist/esm/languages/prism/typescript';
-import remarkGfm from 'remark-gfm';
-import remarkGemoji from 'remark-gemoji';
-import remarkMath from 'remark-math';
-import rehypeKatex from 'rehype-katex';
-import rehypeRaw from 'rehype-raw';
-import DOMPurify from 'dompurify';
 import mermaid from 'mermaid';
 import { Copy, Check, FileCode2, Image as ImageIcon } from 'lucide-react';
 import { MathBlock } from './MathBlock';
-import 'katex/dist/katex.min.css';
 import type { Workstudio } from '../../types';
 import type { ParsedFileReference } from '../../utils/fileReference';
 import { parseFileReferenceToken } from '../../utils/fileReference';
 import { useWebTabStore } from '../../stores/webTabStore';
 import { useWindowLayoutStore } from '../../stores/windowLayoutStore';
 import { webTabId as toWorkspaceWebTabId } from '../../stores/workspaceTabStore';
+import { CommonMarkdown } from '../../../../common/src/markdown/CommonMarkdown';
 
 // Initialize mermaid with math support
 mermaid.initialize({
@@ -787,115 +780,6 @@ const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferen
 });
 
 // ============================================================================
-// Content Protection Utilities
-// ============================================================================
-
-interface ProtectedContent {
-  text: string;
-  blocks: Map<string, string>;
-}
-
-// Protect LaTeX and Mermaid content before DOMPurify processing
-// This prevents DOMPurify from escaping < > & inside these expressions
-// Also normalizes \[...\] and \(...\) to $$...$$ and $...$ format
-function protectContent(content: string): ProtectedContent {
-  const blocks = new Map<string, string>();
-  let counter = 0;
-  let result = content;
-
-  // Generate unique placeholder that won't conflict with content
-  const generatePlaceholder = () => `%%PROTECTED_BLOCK_${counter++}_${Date.now()}%%`;
-
-  // Protect mermaid code blocks first (before LaTeX, as they may contain arrows)
-  // Match ```mermaid ... ``` code blocks
-  result = result.replace(/```mermaid\s*([\s\S]*?)```/g, (match) => {
-    const placeholder = generatePlaceholder();
-    blocks.set(placeholder, match);
-    return placeholder;
-  });
-
-  // Protect plot/mafs code blocks (avoid 'math' which conflicts with remarkMath)
-  result = result.replace(/```(?:plot|mafs|json\s+mafs)\s*([\s\S]*?)```/g, (match) => {
-    const placeholder = generatePlaceholder();
-    blocks.set(placeholder, match);
-    return placeholder;
-  });
-
-  // Protect all other fenced code blocks (avoid DOMPurify escaping `<` / `>` inside code)
-  // NOTE: Mermaid/plot blocks have already been replaced above, so they won't match here.
-  result = result.replace(/```[^\n]*\s*[\s\S]*?```/g, (match) => {
-    const placeholder = generatePlaceholder();
-    blocks.set(placeholder, match);
-    return placeholder;
-  });
-
-  // Protect inline code spans (avoid DOMPurify escaping `<` / `>` inside `...`)
-  // This intentionally targets the common single-backtick form.
-  result = result.replace(/`[^`\n]+`/g, (match) => {
-    const placeholder = generatePlaceholder();
-    blocks.set(placeholder, match);
-    return placeholder;
-  });
-
-  // Protect and normalize block math: $$...$$ (including multiline)
-  result = result.replace(/\$\$([\s\S]*?)\$\$/g, (match) => {
-    const placeholder = generatePlaceholder();
-    blocks.set(placeholder, match);
-    return placeholder;
-  });
-
-  // Protect and normalize \[...\] block math -> convert to $$...$$
-  result = result.replace(/\\\[([\s\S]*?)\\\]/g, (_, inner) => {
-    const placeholder = generatePlaceholder();
-    const normalized = `$$${inner}$$`;
-    blocks.set(placeholder, normalized);
-    return placeholder;
-  });
-
-  // Protect and normalize \(...\) inline math -> convert to $...$
-  result = result.replace(/\\\(([\s\S]*?)\\\)/g, (_, inner) => {
-    const placeholder = generatePlaceholder();
-    const normalized = `$${inner}$`;
-    blocks.set(placeholder, normalized);
-    return placeholder;
-  });
-
-  // Protect inline math: $...$ (non-greedy, single line)
-  // Be careful not to match currency like "$5 and $10"
-  result = result.replace(/\$([^\$\n]+?)\$/g, (match, inner) => {
-    // Skip if it looks like currency (just a number)
-    if (/^\d+(\.\d+)?$/.test(inner.trim())) {
-      return match;
-    }
-    const placeholder = generatePlaceholder();
-    blocks.set(placeholder, match);
-    return placeholder;
-  });
-
-  return { text: result, blocks };
-}
-
-// Restore protected content after DOMPurify processing
-function restoreContent(content: string, blocks: Map<string, string>): string {
-  let result = content;
-  blocks.forEach((original, placeholder) => {
-    // Replace all occurrences (use global regex)
-    const escaped = placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    // IMPORTANT: Use a replacer function so `$` in the original content (e.g. `$$` math fences)
-    // is not treated as a replacement pattern and accidentally rewritten (e.g. `$$` -> `$`).
-    result = result.replace(new RegExp(escaped, 'g'), () => original);
-
-    // Also handle HTML-escaped version (e.g., &amp; instead of &)
-    const htmlEscaped = placeholder.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    if (htmlEscaped !== placeholder) {
-      const escapedHtml = htmlEscaped.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      result = result.replace(new RegExp(escapedHtml, 'g'), () => original);
-    }
-  });
-  return result;
-}
-
-// ============================================================================
 // Main MarkdownRenderer Component
 // ============================================================================
 
@@ -1068,26 +952,6 @@ export const MarkdownRenderer = React.memo(function MarkdownRendererImpl({ conte
     },
     [openFilePath, openFileReference]
   );
-
-  // Process content: protect LaTeX & Mermaid -> sanitize -> restore
-  const processed = useMemo(() => {
-    // Step 1: Protect LaTeX and Mermaid content from DOMPurify (also normalizes delimiters)
-    const { text: protected_, blocks } = protectContent(content);
-
-    // Step 2: Sanitize with DOMPurify (LaTeX and Mermaid are now protected)
-    const sanitized = DOMPurify.sanitize(protected_, {
-      ADD_TAGS: ['details', 'summary', 'kbd', 'mark', 'sub', 'sup'],
-      ADD_ATTR: ['open'],
-    });
-
-    // Step 3: Restore protected content
-    let result = restoreContent(sanitized, blocks);
-
-    // Step 4: Decode &amp; for any remaining LaTeX (alignment in matrices)
-    result = result.replace(/&amp;/g, '&');
-
-    return result;
-  }, [content]);
 
   // Memoize components object to prevent recreation on each render
 	  const components = useMemo(() => ({
@@ -1275,21 +1139,9 @@ export const MarkdownRenderer = React.memo(function MarkdownRendererImpl({ conte
     ),
   }), [conversationId, openFileReference, tryOpenFileReferenceToken, workstudioId]);
 
-  // KaTeX options: don't throw on error, show red text for errors
-  const katexOptions = useMemo(() => ({
-    throwOnError: false,
-    errorColor: '#cc0000',
-  }), []);
-
   return (
     <div className="prose prose-sm max-w-none dark:prose-invert prose-pre:bg-transparent prose-pre:p-0">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath, remarkGemoji]}
-        rehypePlugins={[[rehypeKatex, katexOptions], rehypeRaw]}
-        components={components}
-      >
-        {processed}
-      </ReactMarkdown>
+      <CommonMarkdown content={content} components={components} />
     </div>
   );
 });

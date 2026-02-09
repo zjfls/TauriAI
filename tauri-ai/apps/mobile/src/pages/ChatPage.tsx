@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Plus, SendHorizontal } from "lucide-react";
 import { isTauriRuntime, tauriInvoke, tauriListen, type UnlistenFn } from "../lib/tauri";
 import { clsx } from "../lib/clsx";
 import { useLayoutSize } from "../lib/breakpoints";
+import { loadChatRenderMode } from "../lib/chatRenderPrefs";
 import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
+import { RichText } from "../ui/RichText";
 import type { ChatMessage } from "../types/chat";
 import { useConversationStore } from "../stores/conversationStore";
 
@@ -34,6 +36,7 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
   const [sending, setSending] = useState(false);
   const listRef = useRef<HTMLDivElement | null>(null);
   const [fallbackAgentName, setFallbackAgentName] = useState<string>("");
+  const [agentLabels, setAgentLabels] = useState<Record<string, string>>({});
   const unlistenRef = useRef<UnlistenFn | null>(null);
   const activeStreamRef = useRef<{
     streamId: string;
@@ -42,19 +45,47 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
   } | null>(null);
 
   const messages = conversation?.messages ?? [];
+  // 读取渲染模式（默认 rich）。不做 memo，方便 Settings 修改后即时生效。
+  const renderMode = loadChatRenderMode();
+
+  const loadConfig = useCallback(async () => {
+    if (!isTauriRuntime()) return;
+    try {
+      const cfg = await tauriInvoke<any>("get_app_config");
+
+      const def = String(cfg?.defaultAgent ?? cfg?.default_agent ?? "").trim();
+      if (def) setFallbackAgentName(def);
+
+      const next: Record<string, string> = {};
+      const list: any[] = Array.isArray(cfg?.agents) ? cfg.agents : [];
+      for (const a of list) {
+        if (!a || typeof a !== "object") continue;
+        const name = String((a as any).name ?? "").trim();
+        if (!name) continue;
+        const displayName = String((a as any).displayName ?? (a as any).display_name ?? name).trim();
+        next[name] = displayName || name;
+      }
+      setAgentLabels(next);
+    } catch {
+      // ignore
+    }
+  }, []);
 
   useEffect(() => {
-    if (!isTauriRuntime()) return;
-    if (fallbackAgentName) return;
-    tauriInvoke<any>("get_app_config")
-      .then((cfg) => {
-        const def = String(cfg?.defaultAgent ?? "").trim();
-        if (def) setFallbackAgentName(def);
-      })
-      .catch(() => {
-        // ignore
-      });
-  }, [fallbackAgentName]);
+    void loadConfig();
+  }, [loadConfig]);
+
+  // 从设置页返回时刷新一次配置，确保 Agent/Model 展示与后端一致。
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState === "visible") void loadConfig();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [loadConfig]);
+
+  const activeAgentName = conversation?.agentName || fallbackAgentName || "";
+  const activeAgentLabel = activeAgentName ? agentLabels[activeAgentName] || activeAgentName : "";
 
   const scrollToBottom = () => {
     const el = listRef.current;
@@ -214,30 +245,24 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
   return (
     <div className="h-full flex flex-col overflow-x-hidden">
       {layout === "compact" ? (
-        <div className="h-12 border-b border-white/10 bg-white/5 flex items-center justify-between px-3">
-          <div className="min-w-0">
-            <div className="text-sm font-medium truncate">{conversation?.title ?? "Chat"}</div>
-            <div className="text-[11px] text-white/60 truncate">
-              {conversation?.agentName || fallbackAgentName
-                ? `Agent: ${conversation?.agentName || fallbackAgentName}`
-                : "Agent: 未选择"}
+        <div className="safe-top border-b border-white/10 bg-white/5">
+          <div className="h-12 flex items-center justify-between px-3">
+            <div className="min-w-0">
+              <div className="text-sm font-medium truncate">{conversation?.title ?? "Chat"}</div>
+              <div className="text-[11px] text-white/60 truncate">
+                {activeAgentLabel ? `Agent: ${activeAgentLabel}` : "Agent: 未选择"}
+              </div>
             </div>
+            {onNewConversation ? (
+              <Button size="sm" variant="ghost" onClick={onNewConversation} title="新建对话">
+                <Plus size={16} />
+              </Button>
+            ) : null}
           </div>
-          {onNewConversation ? (
-            <Button size="sm" variant="ghost" onClick={onNewConversation} title="新建对话">
-              <Plus size={16} />
-            </Button>
-          ) : null}
         </div>
       ) : null}
 
       <div ref={listRef} className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-3 space-y-3">
-        {messages.length === 0 ? (
-          <div className="text-sm text-white/60">
-            请输入一条消息开始对话。若提示“未配置模型”，请到 Settings 配置 Provider/Model。
-          </div>
-        ) : null}
-
         {messages.map((m) => (
           <div
             key={m.id}
@@ -245,13 +270,17 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
           >
             <div
               className={clsx(
-                "max-w-[85%] rounded-2xl px-3 py-2 text-sm whitespace-pre-wrap break-words border",
+                "max-w-[85%] rounded-2xl px-3 py-2 text-sm break-words border overflow-x-hidden",
                 m.role === "user"
                   ? "bg-indigo-500/20 border-indigo-400/30"
                   : "bg-white/5 border-white/10",
               )}
             >
-              {m.content}
+              {renderMode === "rich" ? (
+                <RichText content={m.content} />
+              ) : (
+                <div className="whitespace-pre-wrap break-words">{m.content}</div>
+              )}
             </div>
           </div>
         ))}

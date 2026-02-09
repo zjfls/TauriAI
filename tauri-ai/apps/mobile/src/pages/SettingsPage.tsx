@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { isTauriRuntime, tauriInvoke } from "../lib/tauri";
 import { Bot, Palette, Plug, Server, Shield, Sliders, Sparkles, Wrench } from "lucide-react";
 import { Button } from "../ui/Button";
@@ -7,6 +7,7 @@ import { ModelPickerModal } from "../ui/ModelPickerModal";
 import { SecretInput } from "../ui/SecretInput";
 import { Select } from "../ui/Select";
 import { Spinner } from "../ui/Spinner";
+import { loadChatRenderMode, saveChatRenderMode, type ChatRenderMode } from "../lib/chatRenderPrefs";
 
 type ProviderType =
   | "openai"
@@ -122,6 +123,7 @@ export function SettingsPage() {
   const [status, setStatus] = useState<string>("未加载");
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [chatRenderMode, setChatRenderMode] = useState<ChatRenderMode>(() => loadChatRenderMode());
 
   type SettingsTab =
     | "providers"
@@ -186,6 +188,10 @@ export function SettingsPage() {
     }
   }, [view]);
 
+  useEffect(() => {
+    saveChatRenderMode(chatRenderMode);
+  }, [chatRenderMode]);
+
   const modelRefOptions = useMemo(() => {
     const out: Array<{ value: string; label: string }> = [];
     for (const p of providers) {
@@ -214,6 +220,13 @@ export function SettingsPage() {
     () => agents.find((a) => a.name === activeAgentName) ?? agents[0],
     [agents, activeAgentName],
   );
+
+  const agentLabel = useCallback((a: AgentDraft) => {
+    const base = (a.displayName || a.name).trim() || a.name;
+    const ref = parseModelRef(a.modelRef);
+    const modelName = ref?.model ?? "";
+    return modelName ? `${base} · ${modelName}` : base;
+  }, []);
 
   const load = async () => {
     if (!isTauriRuntime()) {
@@ -438,6 +451,23 @@ export function SettingsPage() {
                 <span className="text-sm truncate">{t.label}</span>
               </button>
             ))}
+          </div>
+
+          <div className="rounded-lg border border-white/10 bg-white/5 p-3 space-y-2">
+            <div className="text-sm font-medium text-white/90">聊天渲染</div>
+            <div className="space-y-2">
+              <label className="text-xs text-white/70">文本显示</label>
+              <Select
+                value={chatRenderMode}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setChatRenderMode(v === "plain" ? "plain" : "rich");
+                }}
+              >
+                <option value="rich">富文本（Markdown）</option>
+                <option value="plain">纯文本</option>
+              </Select>
+            </div>
           </div>
         </>
       ) : (
@@ -720,7 +750,7 @@ export function SettingsPage() {
                 .filter((a) => a.enabled !== false)
                 .map((a) => (
                   <option key={a.name} value={a.name}>
-                    {a.displayName || a.name}
+                    {agentLabel(a)}
                   </option>
                 ))}
             </Select>
@@ -734,7 +764,7 @@ export function SettingsPage() {
               {agents.length === 0 ? <option value="">（暂无 Agent）</option> : null}
               {agents.map((a) => (
                 <option key={a.name} value={a.name}>
-                  {a.displayName || a.name}
+                  {agentLabel(a)}
                 </option>
               ))}
             </Select>
@@ -791,7 +821,7 @@ export function SettingsPage() {
 
           {activeAgent ? (
             <div className="rounded-lg border border-white/10 bg-[#0b1220] p-3">
-              <div className="text-sm font-medium">{activeAgent.displayName || activeAgent.name}</div>
+              <div className="text-sm font-medium">{agentLabel(activeAgent)}</div>
 
               <div className="grid grid-cols-1 gap-2 mt-3">
                 <label className="text-xs text-white/70">Name</label>
