@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { isTauriRuntime, tauriInvoke } from "../lib/tauri";
 import { Bot, Palette, Plug, Server, Shield, Sliders, Sparkles, Wrench } from "lucide-react";
 import { Button } from "../ui/Button";
@@ -220,6 +220,13 @@ export function SettingsPage() {
     () => agents.find((a) => a.name === activeAgentName) ?? agents[0],
     [agents, activeAgentName],
   );
+
+  const agentLabel = useCallback((a: AgentDraft) => {
+    const base = (a.displayName || a.name).trim() || a.name;
+    const ref = parseModelRef(a.modelRef);
+    const modelName = ref?.model ?? "";
+    return modelName ? `${base} · ${modelName}` : base;
+  }, []);
 
   const load = async () => {
     if (!isTauriRuntime()) {
@@ -743,7 +750,7 @@ export function SettingsPage() {
                 .filter((a) => a.enabled !== false)
                 .map((a) => (
                   <option key={a.name} value={a.name}>
-                    {a.displayName || a.name}
+                    {agentLabel(a)}
                   </option>
                 ))}
             </Select>
@@ -757,7 +764,7 @@ export function SettingsPage() {
               {agents.length === 0 ? <option value="">（暂无 Agent）</option> : null}
               {agents.map((a) => (
                 <option key={a.name} value={a.name}>
-                  {a.displayName || a.name}
+                  {agentLabel(a)}
                 </option>
               ))}
             </Select>
@@ -814,7 +821,7 @@ export function SettingsPage() {
 
           {activeAgent ? (
             <div className="rounded-lg border border-white/10 bg-[#0b1220] p-3">
-              <div className="text-sm font-medium">{activeAgent.displayName || activeAgent.name}</div>
+              <div className="text-sm font-medium">{agentLabel(activeAgent)}</div>
 
               <div className="grid grid-cols-1 gap-2 mt-3">
                 <label className="text-xs text-white/70">Name</label>
