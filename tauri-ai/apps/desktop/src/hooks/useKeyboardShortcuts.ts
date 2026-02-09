@@ -69,7 +69,19 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
 
   const bindingToAction = useCallback((): Record<string, string> => {
     const out: Record<string, string> = {};
+    const isNativeMenuAuthoritative = isTauri();
     for (const action of SHORTCUT_ACTIONS) {
+      // 在 Tauri 桌面端，这些快捷键应由系统菜单栏负责显示/触发，避免与前端 keydown 双触发。
+      if (
+        isNativeMenuAuthoritative &&
+        (action.id === 'session.new' ||
+          action.id === 'session.clone' ||
+          action.id === 'app.openSettings' ||
+          action.id === 'app.openHistory' ||
+          action.id === 'app.openDevtools')
+      ) {
+        continue;
+      }
       const binding = getEffectiveBinding(action.id);
       if (!binding) continue;
       if (out[binding]) continue; // keep first, UI will show conflicts
@@ -388,6 +400,14 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
     const def = SHORTCUT_ACTIONS.find((a) => a.id === actionId) || null;
     if (def && !def.allowWhenTyping && isEditableElement(event.target)) {
       return;
+    }
+
+    // Tauri 桌面端：这些动作的快捷键已绑定到系统菜单 accelerator。
+    // 如果这里也处理，会导致重复触发（例如 Cmd/Ctrl+T 新建两次会话）。
+    if (isTauri()) {
+      if (actionId === 'session.new' || actionId === 'app.openSettings' || actionId === 'app.openHistory') {
+        return;
+      }
     }
 
     const canHandleNow = (() => {

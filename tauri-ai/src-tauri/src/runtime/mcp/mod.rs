@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use futures::future::BoxFuture;
 use futures::FutureExt;
+use futures::StreamExt;
 use rmcp::model::{
     CallToolRequestParam, ClientCapabilities, ClientInfo, Implementation, InitializeRequestParam,
     JsonObject, ListResourceTemplatesResult, ListResourcesResult, PaginatedRequestParam,
@@ -14,12 +15,14 @@ use rmcp::service::{self, NotificationContext, RequestContext, RunningService, S
 use rmcp::transport::child_process::TokioChildProcess;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::transport::StreamableHttpClientTransport;
+use rmcp::transport::{worker::Worker, worker::WorkerConfig, worker::WorkerContext, worker::WorkerQuitReason, WorkerTransport};
 use rmcp::ClientHandler;
 use rmcp::RoleClient;
 use serde_json::Value;
+use sse_stream::SseStream;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{OnceCell, Notify, RwLock};
 use tokio::time;
 
 use crate::models::{McpServerConfig, McpServerTransportConfig};
@@ -244,29 +247,33 @@ impl ClientHandler for BasicClientHandler {
     }
 }
 
-enum ClientState {
-    Connecting {
-        transport: Option<PendingTransport>,
-    },
-    Ready {
-        service: Arc<RunningService<RoleClient, BasicClientHandler>>,
-    },
-}
-
 enum PendingTransport {
     ChildProcess(TokioChildProcess),
     StreamableHttp {
         transport: StreamableHttpClientTransport<reqwest::Client>,
     },
+    Sse {
+        transport: WorkerTransport<SseClientWorker>,
+    },
 }
 
 pub struct McpClient {
-    state: Mutex<ClientState>,
+    server_name: String,
+    cfg: McpServerConfig,
+    service: OnceCell<Arc<RunningService<RoleClient, BasicClientHandler>>>,
 }
 
 impl McpClient {
     pub async fn new(server_name: &str, cfg: &McpServerConfig) -> Result<Self, String> {
-        let transport = match &cfg.transport {
+        Ok(Self {
+            server_name: server_name.to_string(),
+            cfg: cfg.clone(),
+            service: OnceCell::new(),
+        })
+    }
+
+    async fn build_transport(&self) -> Result<PendingTransport, String> {
+        match &self.cfg.transport {
             McpServerTransportConfig::Stdio {
                 command,
                 args,
@@ -301,7 +308,7 @@ impl McpClient {
                     });
                 }
 
-                PendingTransport::ChildProcess(transport)
+                Ok(PendingTransport::ChildProcess(transport))
             }
             McpServerTransportConfig::StreamableHttp {
                 url,
@@ -321,90 +328,103 @@ impl McpClient {
                 let client = build_http_client(http_headers.as_ref(), env_http_headers.as_ref())
                     .map_err(|e| format!("构建 HTTP client 失败: {e}"))?;
                 let transport = StreamableHttpClientTransport::with_client(client, config);
-                PendingTransport::StreamableHttp { transport }
+                Ok(PendingTransport::StreamableHttp { transport })
             }
-        };
+            McpServerTransportConfig::Sse {
+                url,
+                bearer_token_env_var,
+                http_headers,
+                env_http_headers,
+            } => {
+                let sse_url = reqwest::Url::parse(url)
+                    .map_err(|e| format!("SSE url 非法: {e}"))?;
 
-        println!("[MCP] 初始化客户端: {server_name}");
-        Ok(Self {
-            state: Mutex::new(ClientState::Connecting {
-                transport: Some(transport),
-            }),
-        })
+                let bearer_token = bearer_token_env_var
+                    .as_deref()
+                    .and_then(|env_var| std::env::var(env_var).ok())
+                    .map(|t| t.trim().to_string())
+                    .filter(|t| !t.is_empty());
+
+                let client = build_http_client(http_headers.as_ref(), env_http_headers.as_ref())
+                    .map_err(|e| format!("构建 HTTP client 失败: {e}"))?;
+
+                let worker = SseClientWorker {
+                    client,
+                    sse_url,
+                    bearer_token,
+                };
+                let transport = WorkerTransport::spawn(worker);
+                Ok(PendingTransport::Sse { transport })
+            }
+        }
     }
 
     async fn ensure_ready(&self, timeout: Option<Duration>) -> Result<(), String> {
-        let transport_fut: BoxFuture<
-            'static,
-            Result<
-                RunningService<RoleClient, BasicClientHandler>,
-                rmcp::service::ClientInitializeError,
-            >,
-        > = {
-            let mut guard = self.state.lock().await;
-            match &mut *guard {
-                ClientState::Ready { .. } => return Ok(()),
-                ClientState::Connecting { transport } => {
-                    let pending = transport
-                        .take()
-                        .ok_or_else(|| "client already initializing".to_string())?;
-
-                    let client_info = InitializeRequestParam {
-                        protocol_version: rmcp::model::ProtocolVersion::default(),
-                        capabilities: ClientCapabilities {
-                            ..ClientCapabilities::default()
-                        },
-                        client_info: Implementation {
-                            name: "tauri-ai".to_string(),
-                            title: Some("TauriAI".to_string()),
-                            version: env!("CARGO_PKG_VERSION").to_string(),
-                            icons: None,
-                            website_url: None,
-                        },
-                    };
-
-                    let handler = BasicClientHandler {
-                        client_info: client_info.clone(),
-                    };
-
-                    match pending {
-                        PendingTransport::ChildProcess(t) => {
-                            service::serve_client(handler, t).boxed()
-                        }
-                        PendingTransport::StreamableHttp { transport } => {
-                            service::serve_client(handler, transport).boxed()
-                        }
-                    }
-                }
-            }
-        };
-
-        let service = match timeout {
-            Some(duration) => time::timeout(duration, transport_fut)
-                .await
-                .map_err(|_| format!("MCP 初始化超时（{duration:?}）"))?
-                .map_err(|err| format!("MCP 初始化失败: {err}"))?,
-            None => transport_fut
-                .await
-                .map_err(|err| format!("MCP 初始化失败: {err}"))?,
-        };
-
-        {
-            let mut guard = self.state.lock().await;
-            *guard = ClientState::Ready {
-                service: Arc::new(service),
-            };
+        if self.service.get().is_some() {
+            return Ok(());
         }
 
-        Ok(())
+        self.service
+            .get_or_try_init(|| async {
+                println!("[MCP] 初始化客户端: {}", self.server_name);
+
+                let client_info = InitializeRequestParam {
+                    protocol_version: rmcp::model::ProtocolVersion::default(),
+                    capabilities: ClientCapabilities {
+                        ..ClientCapabilities::default()
+                    },
+                    client_info: Implementation {
+                        name: "tauri-ai".to_string(),
+                        title: Some("TauriAI".to_string()),
+                        version: env!("CARGO_PKG_VERSION").to_string(),
+                        icons: None,
+                        website_url: None,
+                    },
+                };
+
+                let handler = BasicClientHandler {
+                    client_info: client_info.clone(),
+                };
+
+                // 并发初始化：只允许一个 init 在跑，其余调用会在这里 await，不再报 "already initializing"。
+                let pending = self.build_transport().await?;
+                let transport_fut: BoxFuture<
+                    'static,
+                    Result<
+                        RunningService<RoleClient, BasicClientHandler>,
+                        rmcp::service::ClientInitializeError,
+                    >,
+                > = match pending {
+                    PendingTransport::ChildProcess(t) => service::serve_client(handler, t).boxed(),
+                    PendingTransport::StreamableHttp { transport } => {
+                        service::serve_client(handler, transport).boxed()
+                    }
+                    PendingTransport::Sse { transport } => {
+                        service::serve_client(handler, transport).boxed()
+                    }
+                };
+
+                let service = match timeout {
+                    Some(duration) => time::timeout(duration, transport_fut)
+                        .await
+                        .map_err(|_| format!("MCP 初始化超时（{duration:?}）"))?
+                        .map_err(|err| format!("MCP 初始化失败: {err}"))?,
+                    None => transport_fut
+                        .await
+                        .map_err(|err| format!("MCP 初始化失败: {err}"))?,
+                };
+
+                Ok(Arc::new(service))
+            })
+            .await
+            .map(|_| ())
     }
 
     async fn service(&self) -> Result<Arc<RunningService<RoleClient, BasicClientHandler>>, String> {
-        let guard = self.state.lock().await;
-        match &*guard {
-            ClientState::Ready { service } => Ok(Arc::clone(service)),
-            ClientState::Connecting { .. } => Err("MCP client 未初始化".to_string()),
-        }
+        self.service
+            .get()
+            .cloned()
+            .ok_or_else(|| "MCP client 未初始化".to_string())
     }
 
     pub async fn list_tools(&self, timeout: Option<Duration>) -> Result<Vec<Tool>, String> {
@@ -523,6 +543,320 @@ impl McpClient {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+enum SseTransportError {
+    #[error("HTTP 请求失败: {0}")]
+    Http(#[from] reqwest::Error),
+    #[error("SSE 解析失败: {0}")]
+    Sse(#[from] sse_stream::Error),
+    #[error("JSON 解析失败: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("SSE 未提供 endpoint（event: endpoint）")]
+    MissingEndpoint,
+    #[error("等待 SSE endpoint 超时（{0:?}）")]
+    EndpointTimeout(Duration),
+    #[error("无法解析 SSE endpoint: {0}")]
+    InvalidEndpoint(String),
+    #[error("Transport 通道已关闭")]
+    TransportChannelClosed,
+    #[error("Tokio join error: {0}")]
+    TokioJoinError(#[from] tokio::task::JoinError),
+    #[error("HTTP 状态码异常: {status}（{body}）")]
+    HttpStatus { status: reqwest::StatusCode, body: String },
+}
+
+#[derive(Clone)]
+struct SseClientWorker {
+    client: reqwest::Client,
+    sse_url: reqwest::Url,
+    bearer_token: Option<String>,
+}
+
+impl Worker for SseClientWorker {
+    type Role = RoleClient;
+    type Error = SseTransportError;
+
+    fn err_closed() -> Self::Error {
+        SseTransportError::TransportChannelClosed
+    }
+
+    fn err_join(e: tokio::task::JoinError) -> Self::Error {
+        SseTransportError::TokioJoinError(e)
+    }
+
+    fn config(&self) -> WorkerConfig {
+        WorkerConfig {
+            name: Some("SseClientWorker".into()),
+            channel_buffer_capacity: 64,
+        }
+    }
+
+    async fn run(
+        self,
+        mut context: WorkerContext<Self>,
+    ) -> Result<(), WorkerQuitReason<Self::Error>> {
+        let endpoint = Arc::new(RwLock::<Option<reqwest::Url>>::new(None));
+        let endpoint_notify = Arc::new(Notify::new());
+
+        // SSE reader: connects to sse_url, consumes `event: endpoint` to learn POST endpoint,
+        // and forwards JSON-RPC messages from SSE `message` frames to the transport receive channel.
+        let (sse_to_transport_tx, mut sse_to_transport_rx) =
+            tokio::sync::mpsc::channel::<rmcp::model::ServerJsonRpcMessage>(64);
+        let ct = context.cancellation_token.clone();
+        let sse_url = self.sse_url.clone();
+        let bearer_token = self.bearer_token.clone();
+        let client = self.client.clone();
+        let endpoint_for_task = endpoint.clone();
+        let notify_for_task = endpoint_notify.clone();
+
+        let mut sse_task = tokio::spawn(async move {
+            let mut last_event_id: Option<String> = None;
+            let mut retry_interval = Duration::from_millis(1000);
+            let max_retry_interval = Duration::from_secs(30);
+
+            loop {
+                if ct.is_cancelled() {
+                    return Ok(());
+                }
+
+                let mut req = client
+                    .get(sse_url.clone())
+                    .header(reqwest::header::ACCEPT, "text/event-stream")
+                    .header(reqwest::header::CACHE_CONTROL, "no-cache");
+                if let Some(id) = last_event_id.as_deref() {
+                    req = req.header("Last-Event-ID", id);
+                }
+                if let Some(token) = bearer_token.as_deref() {
+                    req = req.bearer_auth(token);
+                }
+
+                let resp = match req.send().await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        println!("[MCP][SSE] 连接失败，{retry_interval:?} 后重试: {e}");
+                        tokio::select! {
+                            _ = ct.cancelled() => return Ok(()),
+                            _ = tokio::time::sleep(retry_interval) => {}
+                        }
+                        retry_interval = (retry_interval * 2).min(max_retry_interval);
+                        continue;
+                    }
+                };
+
+                let resp = match resp.error_for_status() {
+                    Ok(r) => r,
+                    Err(e) => {
+                        println!("[MCP][SSE] HTTP 状态异常，{retry_interval:?} 后重试: {e}");
+                        tokio::select! {
+                            _ = ct.cancelled() => return Ok(()),
+                            _ = tokio::time::sleep(retry_interval) => {}
+                        }
+                        retry_interval = (retry_interval * 2).min(max_retry_interval);
+                        continue;
+                    }
+                };
+
+                retry_interval = Duration::from_millis(1000);
+
+                let mut stream = SseStream::from_byte_stream(resp.bytes_stream());
+                loop {
+                    let next = tokio::select! {
+                        _ = ct.cancelled() => return Ok(()),
+                        ev = stream.next() => ev,
+                    };
+
+                    let Some(ev) = next.transpose()? else {
+                        // server closed the stream; reconnect
+                        println!("[MCP][SSE] stream 结束，准备重连…");
+                        break;
+                    };
+
+                    if let Some(new_retry) = ev.retry {
+                        retry_interval = Duration::from_millis(new_retry).max(Duration::from_millis(200));
+                    }
+                    if let Some(id) = ev.id.clone() {
+                        last_event_id = Some(id);
+                    }
+
+                    match ev.event.as_deref() {
+                        Some("endpoint") => {
+                            let raw = ev.data.unwrap_or_default();
+                            let raw = raw.trim();
+                            if raw.is_empty() {
+                                continue;
+                            }
+
+                            let endpoint_str: String = match serde_json::from_str::<serde_json::Value>(raw) {
+                                Ok(v) => {
+                                    if let Some(s) = v.as_str() {
+                                        s.to_string()
+                                    } else if let Some(s) = v.get("endpoint").and_then(|v| v.as_str()) {
+                                        s.to_string()
+                                    } else if let Some(s) = v.get("url").and_then(|v| v.as_str()) {
+                                        s.to_string()
+                                    } else {
+                                        raw.to_string()
+                                    }
+                                }
+                                Err(_) => raw.to_string(),
+                            };
+
+                            let endpoint_str = endpoint_str.trim();
+                            if endpoint_str.is_empty() {
+                                continue;
+                            }
+
+                            let full = match reqwest::Url::parse(endpoint_str) {
+                                Ok(u) => u,
+                                Err(_) => sse_url
+                                    .join(endpoint_str)
+                                    .map_err(|_| SseTransportError::InvalidEndpoint(endpoint_str.to_string()))?,
+                            };
+
+                            {
+                                let mut w = endpoint_for_task.write().await;
+                                *w = Some(full.clone());
+                            }
+                            notify_for_task.notify_waiters();
+                            println!("[MCP][SSE] endpoint 已更新: {full}");
+                        }
+                        None | Some("") | Some("message") => {
+                            let Some(data) = ev.data else {
+                                continue;
+                            };
+                            let data = data.trim();
+                            if data.is_empty() {
+                                continue;
+                            }
+
+                            match serde_json::from_str::<rmcp::model::ServerJsonRpcMessage>(data) {
+                                Ok(msg) => {
+                                    if sse_to_transport_tx.send(msg).await.is_err() {
+                                        return Ok(());
+                                    }
+                                }
+                                Err(e) => {
+                                    // 某些 server 会混入非 JSON 文本（例如 keep-alive），这里降噪处理。
+                                    println!("[MCP][SSE] 忽略无法解析的 message frame: {e}");
+                                }
+                            }
+                        }
+                        _ => {
+                            // ping / keepalive / 其它控制帧：忽略
+                        }
+                    }
+                }
+
+                tokio::select! {
+                    _ = ct.cancelled() => return Ok(()),
+                    _ = tokio::time::sleep(retry_interval) => {}
+                }
+            }
+        });
+
+        let post_client = self.client.clone();
+        let post_bearer = self.bearer_token.clone();
+
+        loop {
+            tokio::select! {
+                _ = context.cancellation_token.cancelled() => {
+                    return Err(WorkerQuitReason::Cancelled);
+                }
+                sse_result = (&mut sse_task) => {
+                    match sse_result {
+                        Ok(Ok(())) => return Ok(()),
+                        Ok(Err(e)) => return Err(WorkerQuitReason::fatal(e, "sse reader task")),
+                        Err(join_err) => return Err(WorkerQuitReason::Join(join_err)),
+                    }
+                }
+                maybe_server_msg = sse_to_transport_rx.recv() => {
+                    let Some(msg) = maybe_server_msg else {
+                        return Err(WorkerQuitReason::TransportClosed);
+                    };
+                    context.send_to_handler(msg).await?;
+                }
+                maybe_req = context.from_handler_rx.recv() => {
+                    let Some(req) = maybe_req else {
+                        return Err(WorkerQuitReason::HandlerTerminated);
+                    };
+
+                    // 等待 SSE endpoint 准备好（server 会通过 `event: endpoint` 下发）。
+                    let endpoint_url = {
+                        let deadline = Duration::from_secs(10);
+                        let started = std::time::Instant::now();
+                        loop {
+                            if let Some(u) = endpoint.read().await.clone() {
+                                break Ok(u);
+                            }
+                            if started.elapsed() >= deadline {
+                                break Err(SseTransportError::EndpointTimeout(deadline));
+                            }
+                            let remaining = deadline.saturating_sub(started.elapsed());
+                            tokio::select! {
+                                _ = context.cancellation_token.cancelled() => {
+                                    break Err(SseTransportError::TransportChannelClosed);
+                                }
+                                _ = endpoint_notify.notified() => {}
+                                _ = tokio::time::sleep(remaining) => {
+                                    break Err(SseTransportError::EndpointTimeout(deadline));
+                                }
+                            }
+                        }
+                    };
+                    let endpoint_url = match endpoint_url {
+                        Ok(u) => u,
+                        Err(e) => {
+                            let _ = req.responder.send(Err(e));
+                            continue;
+                        }
+                    };
+
+                    // POST JSON-RPC 消息到 endpoint。
+                    let mut http_req = post_client
+                        .post(endpoint_url.clone())
+                        .header(reqwest::header::ACCEPT, "application/json, text/event-stream")
+                        .json(&req.message);
+                    if let Some(token) = post_bearer.as_deref() {
+                        http_req = http_req.bearer_auth(token);
+                    }
+
+                    let resp = match http_req.send().await {
+                        Ok(r) => r,
+                        Err(e) => {
+                            let _ = req.responder.send(Err(SseTransportError::Http(e)));
+                            continue;
+                        }
+                    };
+
+                    let status = resp.status();
+                    if !status.is_success() {
+                        let body = resp.text().await.unwrap_or_default();
+                        let _ = req.responder.send(Err(SseTransportError::HttpStatus { status, body }));
+                        continue;
+                    }
+
+                    // send() 表示“已发出请求”；响应一般会从 SSE 回来，所以这里优先 ack。
+                    let _ = req.responder.send(Ok(()));
+
+                    // 一些 server 可能会在 HTTP 响应里直接返回 JSON-RPC（兼容处理）。
+                    if status != reqwest::StatusCode::ACCEPTED && status != reqwest::StatusCode::NO_CONTENT {
+                        let ct = resp
+                            .headers()
+                            .get(reqwest::header::CONTENT_TYPE)
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("");
+                        if ct.starts_with("application/json") {
+                            if let Ok(msg) = resp.json::<rmcp::model::ServerJsonRpcMessage>().await {
+                                context.send_to_handler(msg).await?;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 async fn run_with_timeout<F, T>(fut: F, timeout: Option<Duration>, label: &str) -> Result<T, String>
 where
     F: std::future::Future<Output = Result<T, ServiceError>>,
@@ -592,6 +926,37 @@ fn create_env_for_mcp_server(
         })
         .chain(extra_env.unwrap_or_default())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn concurrent_init_does_not_error_already_initializing() {
+        let cfg = McpServerConfig {
+            transport: McpServerTransportConfig::StreamableHttp {
+                url: "http://127.0.0.1:1".to_string(),
+                bearer_token_env_var: None,
+                http_headers: None,
+                env_http_headers: None,
+            },
+            enabled: true,
+            startup_timeout_ms: Some(50),
+            tool_timeout_ms: Some(50),
+            enabled_tools: Vec::new(),
+            disabled_tools: Vec::new(),
+        };
+
+        let client = McpClient::new("test", &cfg).await.unwrap();
+        let timeout = Some(Duration::from_millis(50));
+
+        let (a, b) = tokio::join!(client.list_tools(timeout), client.list_tools(timeout));
+        assert!(a.is_err());
+        assert!(b.is_err());
+        assert!(!a.unwrap_err().contains("already initializing"));
+        assert!(!b.unwrap_err().contains("already initializing"));
+    }
 }
 
 #[cfg(unix)]

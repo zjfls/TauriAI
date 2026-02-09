@@ -1392,6 +1392,20 @@ pub enum McpServerTransportConfig {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         env_http_headers: Option<HashMap<String, String>>,
     },
+    /// SSE transport: connect to `url` via Server-Sent Events (GET), then POST JSON-RPC to the
+    /// `event: endpoint` provided by the server.
+    ///
+    /// 典型例子：DeepWiki 的 `https://mcp.deepwiki.com/sse`（这是 SSE endpoint，而不是 streamable_http）。
+    #[serde(rename_all = "camelCase")]
+    Sse {
+        url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bearer_token_env_var: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        http_headers: Option<HashMap<String, String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        env_http_headers: Option<HashMap<String, String>>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

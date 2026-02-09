@@ -329,15 +329,13 @@ function App() {
     if (!shouldInitChatRuntime) return;
 
     let disposed = false;
-    let unlistenNew: null | (() => void) = null;
-    let unlistenClone: null | (() => void) = null;
+    let unlistenNewAgent: null | (() => void) = null;
     let unlistenSettings: null | (() => void) = null;
 
-    void listen('menu:new_session', () => {
-      const agents = config?.agents ?? [];
-      if (agents.length === 0) return;
-      const agentName = config?.defaultAgent ?? agents[0]!.name;
-      void createSession(agentName).catch((e) => console.error('menu:new_session failed:', e));
+    void listen<string>('menu:new_session_agent', (event) => {
+      const agentName = typeof event.payload === 'string' ? event.payload : '';
+      if (!agentName) return;
+      void createSession(agentName).catch((e) => console.error('menu:new_session_agent failed:', e));
       useUIStore.getState().setActiveView('chat');
     })
       .then((fn) => {
@@ -345,25 +343,7 @@ function App() {
           fn();
           return;
         }
-        unlistenNew = fn;
-      })
-      .catch(() => {});
-
-    void listen('menu:clone_session', () => {
-      const activeSessionId = useSessionStore.getState().activeSessionId;
-      if (!activeSessionId) return;
-      void useSessionStore
-        .getState()
-        .cloneConversation(activeSessionId)
-        .catch((e) => console.error('menu:clone_session failed:', e));
-      useUIStore.getState().setActiveView('chat');
-    })
-      .then((fn) => {
-        if (disposed) {
-          fn();
-          return;
-        }
-        unlistenClone = fn;
+        unlistenNewAgent = fn;
       })
       .catch(() => {});
 
@@ -381,11 +361,39 @@ function App() {
 
     return () => {
       disposed = true;
-      unlistenNew?.();
-      unlistenClone?.();
+      unlistenNewAgent?.();
       unlistenSettings?.();
     };
   }, [config, createSession, shouldInitChatRuntime]);
+
+  /**
+   * Menu: View -> History
+   * Emitted from Rust and routed to the main window.
+   */
+  useEffect(() => {
+    if (!isTauri()) return;
+    if (!shouldInitChatRuntime) return;
+
+    let disposed = false;
+    let unlisten: null | (() => void) = null;
+
+    void listen('menu:open_history', () => {
+      useUIStore.getState().setActiveView('history');
+    })
+      .then((fn) => {
+        if (disposed) {
+          fn();
+          return;
+        }
+        unlisten = fn;
+      })
+      .catch(() => {});
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [shouldInitChatRuntime]);
 
   /**
    * Menu: File -> Open File...
