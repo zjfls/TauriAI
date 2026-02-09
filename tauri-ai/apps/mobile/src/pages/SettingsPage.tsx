@@ -7,6 +7,7 @@ import { ModelPickerModal } from "../ui/ModelPickerModal";
 import { SecretInput } from "../ui/SecretInput";
 import { Select } from "../ui/Select";
 import { Spinner } from "../ui/Spinner";
+import { loadChatRenderMode, saveChatRenderMode, type ChatRenderMode } from "../lib/chatRenderPrefs";
 
 type ProviderType =
   | "openai"
@@ -122,6 +123,7 @@ export function SettingsPage() {
   const [status, setStatus] = useState<string>("未加载");
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [chatRenderMode, setChatRenderMode] = useState<ChatRenderMode>(() => loadChatRenderMode());
 
   type SettingsTab =
     | "providers"
@@ -185,6 +187,10 @@ export function SettingsPage() {
       // ignore
     }
   }, [view]);
+
+  useEffect(() => {
+    saveChatRenderMode(chatRenderMode);
+  }, [chatRenderMode]);
 
   const modelRefOptions = useMemo(() => {
     const out: Array<{ value: string; label: string }> = [];
@@ -438,6 +444,23 @@ export function SettingsPage() {
                 <span className="text-sm truncate">{t.label}</span>
               </button>
             ))}
+          </div>
+
+          <div className="rounded-lg border border-white/10 bg-white/5 p-3 space-y-2">
+            <div className="text-sm font-medium text-white/90">聊天渲染</div>
+            <div className="space-y-2">
+              <label className="text-xs text-white/70">文本显示</label>
+              <Select
+                value={chatRenderMode}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setChatRenderMode(v === "plain" ? "plain" : "rich");
+                }}
+              >
+                <option value="rich">富文本（Markdown）</option>
+                <option value="plain">纯文本</option>
+              </Select>
+            </div>
           </div>
         </>
       ) : (

@@ -3,8 +3,10 @@ import { Plus, SendHorizontal } from "lucide-react";
 import { isTauriRuntime, tauriInvoke, tauriListen, type UnlistenFn } from "../lib/tauri";
 import { clsx } from "../lib/clsx";
 import { useLayoutSize } from "../lib/breakpoints";
+import { loadChatRenderMode } from "../lib/chatRenderPrefs";
 import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
+import { RichText } from "../ui/RichText";
 import type { ChatMessage } from "../types/chat";
 import { useConversationStore } from "../stores/conversationStore";
 
@@ -43,6 +45,7 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
   } | null>(null);
 
   const messages = conversation?.messages ?? [];
+  const renderMode = useMemo(() => loadChatRenderMode(), []);
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -259,13 +262,17 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
           >
             <div
               className={clsx(
-                "max-w-[85%] rounded-2xl px-3 py-2 text-sm whitespace-pre-wrap break-words border",
+                "max-w-[85%] rounded-2xl px-3 py-2 text-sm break-words border overflow-x-hidden",
                 m.role === "user"
                   ? "bg-indigo-500/20 border-indigo-400/30"
                   : "bg-white/5 border-white/10",
               )}
             >
-              {m.content}
+              {renderMode === "rich" ? (
+                <RichText content={m.content} />
+              ) : (
+                <div className="whitespace-pre-wrap break-words">{m.content}</div>
+              )}
             </div>
           </div>
         ))}
