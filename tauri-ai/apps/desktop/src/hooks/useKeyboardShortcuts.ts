@@ -71,15 +71,8 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
     const out: Record<string, string> = {};
     const isNativeMenuAuthoritative = isTauri();
     for (const action of SHORTCUT_ACTIONS) {
-      // 在 Tauri 桌面端，这些快捷键应由系统菜单栏负责显示/触发，避免与前端 keydown 双触发。
-      if (
-        isNativeMenuAuthoritative &&
-        (action.id === 'session.new' ||
-          action.id === 'session.clone' ||
-          action.id === 'app.openSettings' ||
-          action.id === 'app.openHistory' ||
-          action.id === 'app.openDevtools')
-      ) {
+      // 在 Tauri 桌面端：`session.new` 默认由系统菜单 accelerator 处理，避免与前端 keydown 双触发导致创建两次会话。
+      if (isNativeMenuAuthoritative && action.id === 'session.new') {
         continue;
       }
       const binding = getEffectiveBinding(action.id);
@@ -402,12 +395,10 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
       return;
     }
 
-    // Tauri 桌面端：这些动作的快捷键已绑定到系统菜单 accelerator。
+    // Tauri 桌面端：`session.new` 默认由系统菜单 accelerator 处理。
     // 如果这里也处理，会导致重复触发（例如 Cmd/Ctrl+T 新建两次会话）。
-    if (isTauri()) {
-      if (actionId === 'session.new' || actionId === 'app.openSettings' || actionId === 'app.openHistory') {
-        return;
-      }
+    if (isTauri() && actionId === 'session.new') {
+      return;
     }
 
     const canHandleNow = (() => {
@@ -457,10 +448,10 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
   useEffect(() => {
     if (!shortcutsEnabled) return;
     
-    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keydown', handleKeyDown, { capture: true });
     
     return () => {
-      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keydown', handleKeyDown, { capture: true });
     };
   }, [shortcutsEnabled, handleKeyDown]);
   

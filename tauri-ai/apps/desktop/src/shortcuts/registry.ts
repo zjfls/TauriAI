@@ -29,7 +29,7 @@ export const SHORTCUT_ACTIONS: ShortcutActionDefinition[] = [
     description: '跳转到历史对话列表（参考浏览器 History 习惯）',
     category: '应用',
     defaultMac: 'Cmd+Y',
-    defaultWindows: 'Ctrl+H',
+    defaultWindows: 'Ctrl+Shift+H',
     allowWhenTyping: true,
   },
   {

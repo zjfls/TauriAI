@@ -177,7 +177,7 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
     let open_history_accelerator: Option<&str> = if cfg!(target_os = "macos") {
         Some("Cmd+Y")
     } else {
-        Some("Ctrl+H")
+        Some("Ctrl+Shift+H")
     };
     let open_history =
         MenuItem::with_id(app, "open_history", "历史", true, open_history_accelerator)?;
@@ -200,12 +200,18 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
     )?;
     let view_separator = PredefinedMenuItem::separator(app)?;
     #[cfg(debug_assertions)]
+    let open_devtools_accelerator: Option<&str> = if cfg!(target_os = "macos") {
+        Some("Cmd+Alt+I")
+    } else {
+        Some("Ctrl+Shift+I")
+    };
+    #[cfg(debug_assertions)]
     let open_devtools = MenuItem::with_id(
         app,
         "open_devtools",
         "打开开发者工具",
         true,
-        Some("CmdOrCtrl+Alt+I"),
+        open_devtools_accelerator,
     )?;
     #[cfg(debug_assertions)]
     let unit_test_ghost = MenuItem::with_id(
