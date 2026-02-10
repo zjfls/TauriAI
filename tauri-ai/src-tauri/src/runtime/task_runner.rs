@@ -731,12 +731,12 @@ fn render_skills_section(skills: &[SkillEntry]) -> Option<String> {
         return None;
     }
 
-    // Align with Codex: always provide "Available skills" + "How to use skills" section,
-    // and only inject SKILL.md bodies when the user explicitly mentions a skill.
+    // 对齐 Codex：总是注入“可用 Skills 列表 + 使用说明”，但只在用户显式 mention skill 时，
+    // 才把对应 SKILL.md 正文注入（避免默认把所有 skill 正文塞进上下文导致 token 爆炸）。
     let mut lines: Vec<String> = Vec::new();
-    lines.push("## Skills".to_string());
-    lines.push("A skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and file path so you can open the source for full instructions when using a specific skill.".to_string());
-    lines.push("### Available skills".to_string());
+    lines.push("## Skills（技能）".to_string());
+    lines.push("Skill 是一组需要遵循的本地指令，存放在 `SKILL.md` 文件中。下面列出本次会话可用的 skills。每条包含：名称、描述、文件路径（方便你在需要时打开 `SKILL.md` 阅读完整说明）。".to_string());
+    lines.push("### 可用 skills".to_string());
     for skill in skills {
         let path_str = skill.meta.path.replace('\\', "/");
         lines.push(format!(
@@ -745,26 +745,23 @@ fn render_skills_section(skills: &[SkillEntry]) -> Option<String> {
             description = skill.meta.description
         ));
     }
-    lines.push("### How to use skills".to_string());
-    lines.push("- Discovery: The list above is the skills available in this session (name + description + file path). Skill bodies live on disk at the listed paths.".to_string());
-    lines.push("- Trigger rules: If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a skill's description shown above, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.".to_string());
-    lines.push("- Missing/blocked: If a named skill isn't in the list or the path can't be read, say so briefly and continue with the best fallback.".to_string());
-    lines.push("- How to use a skill (progressive disclosure):".to_string());
-    lines.push("  1) After deciding to use a skill, open its `SKILL.md`. Read only enough to follow the workflow.".to_string());
-    lines.push("  2) If `SKILL.md` points to extra folders such as `references/`, load only the specific files needed for the request; don't bulk-load everything.".to_string());
-    lines.push("  3) If `scripts/` exist, prefer running or patching them instead of retyping large code blocks.".to_string());
-    lines.push(
-        "  4) If `assets/` or templates exist, reuse them instead of recreating from scratch."
-            .to_string(),
-    );
-    lines.push("- Coordination and sequencing:".to_string());
-    lines.push("  - If multiple skills apply, choose the minimal set that covers the request and state the order you'll use them.".to_string());
-    lines.push("  - Announce which skill(s) you're using and why (one short line). If you skip an obvious skill, say why.".to_string());
-    lines.push("- Context hygiene:".to_string());
-    lines.push("  - Keep context small: summarize long sections instead of pasting them; only load extra files when needed.".to_string());
-    lines.push("  - Avoid deep reference-chasing: prefer opening only files directly linked from `SKILL.md` unless you're blocked.".to_string());
-    lines.push("  - When variants exist (frameworks, providers, domains), pick only the relevant reference file(s) and note that choice.".to_string());
-    lines.push("- Safety and fallback: If a skill can't be applied cleanly (missing files, unclear instructions), state the issue, pick the next-best approach, and continue.".to_string());
+    lines.push("### 如何使用 skills".to_string());
+    lines.push("- 发现（Discovery）：上面的列表就是本次会话可用的 skills（名称 + 描述 + 文件路径）。Skill 正文在对应路径的 `SKILL.md` 中。".to_string());
+    lines.push("- 触发规则（Trigger rules）：当用户点名某个 skill（用 `$SkillName` 或纯文本提到）或任务明显匹配某个 skill 的描述时，你必须在该轮使用对应 skill。一次消息提到多个 skill 时，要全部使用；除非用户再次提到，否则不要把 skill 规则跨轮“默认携带”。".to_string());
+    lines.push("- 缺失/不可用（Missing/blocked）：如果用户提到的 skill 不在列表里，或路径无法读取，需要简要说明并采用最佳兜底方案继续。".to_string());
+    lines.push("- 使用方法（渐进披露 / progressive disclosure）：".to_string());
+    lines.push("  1) 决定要使用某个 skill 后，打开它的 `SKILL.md`，只读到足够执行工作流为止。".to_string());
+    lines.push("  2) 如果 `SKILL.md` 指向额外目录（如 `references/`），只加载本次请求需要的文件，不要批量加载全部内容。".to_string());
+    lines.push("  3) 如果存在 `scripts/`，优先运行或修改脚本，而不是手打/复述大段代码。".to_string());
+    lines.push("  4) 如果存在 `assets/` 或模板，优先复用，而不是从零重建。".to_string());
+    lines.push("- 协调与编排（Coordination and sequencing）：".to_string());
+    lines.push("  - 多个 skills 同时适用时，选择覆盖任务所需的最小集合，并说明使用顺序。".to_string());
+    lines.push("  - 简短说明你在用哪些 skill 以及原因；如果跳过了一个看起来明显相关的 skill，也要说明原因。".to_string());
+    lines.push("- 上下文卫生（Context hygiene）：".to_string());
+    lines.push("  - 保持上下文精简：能总结就不要整段粘贴，只在必要时加载额外文件。".to_string());
+    lines.push("  - 避免过度追链：除非被阻塞，否则优先只打开 `SKILL.md` 直接链接/提到的文件。".to_string());
+    lines.push("  - 存在多种变体（框架/提供商/领域）时，只选择与当前任务最相关的参考文件，并说明你的选择依据。".to_string());
+    lines.push("- 安全与兜底（Safety and fallback）：如果某个 skill 无法干净应用（缺文件、指令不清、环境阻塞等），说明问题并切换到次优但可执行的方案继续。".to_string());
 
     Some(lines.join("\n"))
 }
