@@ -63,8 +63,9 @@ pub use drag_ghost::{
 pub use file::{list_local_directory, read_local_file_base64, write_local_text_file};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use mcp::{
-    delete_mcp_server, delete_mcp_set, list_mcp_server_tools, list_mcp_servers, list_mcp_sets,
-    set_agent_mcp_set, test_mcp_server, upsert_mcp_server, upsert_mcp_set, warmup_mcp_servers,
+    delete_mcp_server, delete_mcp_set, list_mcp_server_resources, list_mcp_server_tools,
+    list_mcp_servers, list_mcp_sets, set_agent_mcp_set, test_mcp_server, upsert_mcp_server,
+    upsert_mcp_set, warmup_mcp_servers,
 };
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use mermaid_cache::{get_mermaid_svg_cache, set_mermaid_svg_cache};

@@ -118,6 +118,16 @@ impl ListResourcesPayload {
     }
 }
 
+fn is_resource_allowed(uri: &str, cfg: &McpServerConfig) -> bool {
+    if !cfg.enabled_resources.is_empty() && !cfg.enabled_resources.iter().any(|x| x == uri) {
+        return false;
+    }
+    if cfg.disabled_resources.iter().any(|x| x == uri) {
+        return false;
+    }
+    true
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ListResourceTemplatesPayload {
@@ -235,10 +245,15 @@ impl ToolHandler for ListMcpResourcesTool {
                     "MCP server '{server_name}' 未配置或不在当前可用范围内"
                 ))
             })?;
-            let result = runtime
+            let mut result = runtime
                 .list_resources(&server_name, cfg, cursor)
                 .await
                 .map_err(|e| ToolError::new(format!("MCP resources/list 失败: {e}")))?;
+            result.resources = result
+                .resources
+                .into_iter()
+                .filter(|r| is_resource_allowed(r.uri.as_str(), cfg))
+                .collect();
             ListResourcesPayload::from_single_server(server_name, result)
         } else {
             if cursor.is_some() {
@@ -258,7 +273,11 @@ impl ToolHandler for ListMcpResourcesTool {
                                 "MCP resources/list_all 失败: server={server_name} err={e}"
                             ))
                         })?;
-                all.insert(server_name.clone(), resources);
+                let filtered = resources
+                    .into_iter()
+                    .filter(|r| is_resource_allowed(r.uri.as_str(), cfg))
+                    .collect();
+                all.insert(server_name.clone(), filtered);
             }
             ListResourcesPayload::from_all_servers(all)
         };
@@ -396,6 +415,12 @@ impl ToolHandler for ReadMcpResourceTool {
         })?;
 
         let runtime = global_mcp_runtime();
+        if !is_resource_allowed(uri.as_str(), cfg) {
+            return Err(ToolError::denied(format!(
+                "MCP resource 已被禁用或不在允许列表内: server={server_name} uri={uri}"
+            )));
+        }
+
         let result = runtime
             .read_resource(&server_name, cfg, &uri)
             .await

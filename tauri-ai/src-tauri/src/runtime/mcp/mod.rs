@@ -134,6 +134,18 @@ impl McpRuntime {
         Ok(tools)
     }
 
+    /// List tools without applying enabled/disabled filters (raw `tools/list` from server).
+    /// This is intended for UI inspection/diagnostics where you want to see *all* available tools.
+    pub async fn list_tools_raw(
+        &self,
+        server_name: &str,
+        cfg: &McpServerConfig,
+    ) -> Result<Vec<Tool>, String> {
+        let client = self.ensure_client(server_name, cfg).await?;
+        let timeout = Self::startup_timeout(cfg);
+        client.list_tools(timeout).await
+    }
+
     pub async fn call_tool(
         &self,
         server_name: &str,

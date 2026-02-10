@@ -700,6 +700,7 @@ fn run_desktop() {
             list_mcp_servers,
             list_mcp_sets,
             list_mcp_server_tools,
+            list_mcp_server_resources,
             test_mcp_server,
             upsert_mcp_server,
             delete_mcp_server,

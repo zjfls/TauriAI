@@ -16,7 +16,21 @@ import type {
 } from '../../types';
 
 type McpToolInfo = { name: string; description?: string; inputSchema: unknown };
-type McpTestResult = { success: boolean; message: string; tools: McpToolInfo[] };
+type McpResourceInfo = {
+  uri: string;
+  name: string;
+  title?: string;
+  description?: string;
+  mimeType?: string;
+  size?: number;
+};
+type McpTestResult = {
+  success: boolean;
+  message: string;
+  tools: McpToolInfo[];
+  resources?: McpResourceInfo[];
+  resourcesError?: string;
+};
 type ImportMode = 'merge_overwrite' | 'merge_skip' | 'replace';
 
 const formatError = (e: unknown): string => {
@@ -51,6 +65,8 @@ const defaultServerEntry = (): McpServerEntry => ({
     toolTimeoutMs: DEFAULT_TOOL_TIMEOUT_MS,
     enabledTools: [],
     disabledTools: [],
+    enabledResources: [],
+    disabledResources: [],
   },
 });
 
@@ -172,6 +188,8 @@ export const McpConfigForm: React.FC = () => {
   const [diagServerName, setDiagServerName] = useState<string | null>(null);
   const [toolPreviewServer, setToolPreviewServer] = useState<string | null>(null);
   const [toolPreview, setToolPreview] = useState<McpToolInfo[] | null>(null);
+  const [resourcePreviewServer, setResourcePreviewServer] = useState<string | null>(null);
+  const [resourcePreview, setResourcePreview] = useState<McpResourceInfo[] | null>(null);
   const [inlineDiagByServerKey, setInlineDiagByServerKey] = useState<
     Record<
       string,
@@ -179,6 +197,8 @@ export const McpConfigForm: React.FC = () => {
         lastTest?: McpTestResult;
         lastTools?: McpToolInfo[];
         lastToolsSource?: 'test' | 'tools';
+        lastResources?: McpResourceInfo[];
+        lastResourcesSource?: 'test' | 'resources';
       }
     >
   >({});
@@ -429,6 +449,12 @@ export const McpConfigForm: React.FC = () => {
             toolTimeoutMs: cfg.toolTimeoutMs ? Number(cfg.toolTimeoutMs) : undefined,
             enabledTools: Array.isArray(cfg.enabledTools) ? cfg.enabledTools.map(String) : [],
             disabledTools: Array.isArray(cfg.disabledTools) ? cfg.disabledTools.map(String) : [],
+            enabledResources: Array.isArray((cfg as any).enabledResources)
+              ? ((cfg as any).enabledResources as unknown[]).map((x) => String(x))
+              : [],
+            disabledResources: Array.isArray((cfg as any).disabledResources)
+              ? ((cfg as any).disabledResources as unknown[]).map((x) => String(x))
+              : [],
             transport,
           },
         });
@@ -677,14 +703,26 @@ export const McpConfigForm: React.FC = () => {
       setTestResult(res);
       setInlineDiagByServerKey((prev) => ({
         ...prev,
-        [serverUiKey]: { lastTest: res, lastTools: res.tools ?? [], lastToolsSource: 'test' },
+        [serverUiKey]: {
+          lastTest: res,
+          lastTools: res.tools ?? [],
+          lastToolsSource: 'test',
+          lastResources: res.resources ?? [],
+          lastResourcesSource: 'test',
+        },
       }));
     } catch (e) {
-      const err = { success: false, message: formatError(e), tools: [] };
+      const err = { success: false, message: formatError(e), tools: [], resources: [] as McpResourceInfo[] };
       setTestResult(err);
       setInlineDiagByServerKey((prev) => ({
         ...prev,
-        [serverUiKey]: { lastTest: err, lastTools: [], lastToolsSource: 'test' },
+        [serverUiKey]: {
+          lastTest: err,
+          lastTools: [],
+          lastToolsSource: 'test',
+          lastResources: [],
+          lastResourcesSource: 'test',
+        },
       }));
     } finally {
       setTestingServer(null);
@@ -737,6 +775,68 @@ export const McpConfigForm: React.FC = () => {
     } finally {
       setToolPreviewServer(null);
     }
+  };
+
+  const previewResources = async (name: string, serverUiKey: string) => {
+    setDiagServerName(name);
+    setResourcePreviewServer(name);
+    try {
+      await flushConfigSaves();
+      const resources = await invoke<McpResourceInfo[]>('list_mcp_server_resources', { serverName: name });
+      setResourcePreview(resources);
+      setInlineDiagByServerKey((prev) => ({
+        ...prev,
+        [serverUiKey]: { ...prev[serverUiKey], lastResources: resources, lastResourcesSource: 'resources' },
+      }));
+    } catch (e) {
+      const err = { success: false, message: formatError(e), tools: [], resources: [] as McpResourceInfo[] };
+      setResourcePreview([]);
+      setTestResult(err);
+      setInlineDiagByServerKey((prev) => ({
+        ...prev,
+        [serverUiKey]: { ...prev[serverUiKey], lastTest: err },
+      }));
+    } finally {
+      setResourcePreviewServer(null);
+    }
+  };
+
+  const isToolEnabled = (enabled: string[], disabled: string[], name: string) => {
+    if (enabled.length > 0) return enabled.includes(name) && !disabled.includes(name);
+    return !disabled.includes(name);
+  };
+
+  const toggleToolEnabled = (enabled: string[], disabled: string[], name: string, nextEnabled: boolean) => {
+    const nextDisabled = new Set(disabled);
+    if (enabled.length > 0) {
+      const nextAllow = new Set(enabled);
+      if (nextEnabled) nextAllow.add(name);
+      else nextAllow.delete(name);
+      if (nextEnabled) nextDisabled.delete(name);
+      return { enabledTools: Array.from(nextAllow), disabledTools: Array.from(nextDisabled) };
+    }
+    if (nextEnabled) nextDisabled.delete(name);
+    else nextDisabled.add(name);
+    return { enabledTools: enabled, disabledTools: Array.from(nextDisabled) };
+  };
+
+  const isResourceEnabled = (enabled: string[], disabled: string[], uri: string) => {
+    if (enabled.length > 0) return enabled.includes(uri) && !disabled.includes(uri);
+    return !disabled.includes(uri);
+  };
+
+  const toggleResourceEnabled = (enabled: string[], disabled: string[], uri: string, nextEnabled: boolean) => {
+    const nextDisabled = new Set(disabled);
+    if (enabled.length > 0) {
+      const nextAllow = new Set(enabled);
+      if (nextEnabled) nextAllow.add(uri);
+      else nextAllow.delete(uri);
+      if (nextEnabled) nextDisabled.delete(uri);
+      return { enabledResources: Array.from(nextAllow), disabledResources: Array.from(nextDisabled) };
+    }
+    if (nextEnabled) nextDisabled.delete(uri);
+    else nextDisabled.add(uri);
+    return { enabledResources: enabled, disabledResources: Array.from(nextDisabled) };
   };
 
   return (
@@ -866,7 +966,11 @@ export const McpConfigForm: React.FC = () => {
                     <div className="flex items-center gap-2">
                       <button
                         onClick={() => previewTools(server.name, serverUiKey)}
-                        disabled={toolPreviewServer === server.name || testingServer === server.name}
+                        disabled={
+                          toolPreviewServer === server.name ||
+                          testingServer === server.name ||
+                          resourcePreviewServer === server.name
+                        }
                         className="px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700 rounded-lg flex items-center gap-1 disabled:opacity-60"
                         title="拉取 tools/list"
                       >
@@ -878,8 +982,29 @@ export const McpConfigForm: React.FC = () => {
                         工具
                       </button>
                       <button
+                        onClick={() => previewResources(server.name, serverUiKey)}
+                        disabled={
+                          resourcePreviewServer === server.name ||
+                          testingServer === server.name ||
+                          toolPreviewServer === server.name
+                        }
+                        className="px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700 rounded-lg flex items-center gap-1 disabled:opacity-60"
+                        title="拉取 resources/list"
+                      >
+                        {resourcePreviewServer === server.name ? (
+                          <Loader2 size={16} className="animate-spin" />
+                        ) : (
+                          <RefreshCw size={16} />
+                        )}
+                        资源
+                      </button>
+                      <button
                         onClick={() => testServer(server.name, serverUiKey)}
-                        disabled={testingServer === server.name || toolPreviewServer === server.name}
+                        disabled={
+                          testingServer === server.name ||
+                          toolPreviewServer === server.name ||
+                          resourcePreviewServer === server.name
+                        }
                         className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 rounded-lg flex items-center gap-1 disabled:opacity-60"
                         title="测试连接（initialize + tools/list）"
                       >
@@ -1300,7 +1425,7 @@ export const McpConfigForm: React.FC = () => {
                   </div>
                 </div>
 
-                {inlineDiag && (inlineDiag.lastTest || inlineDiag.lastTools) && (
+                {inlineDiag && (inlineDiag.lastTest || inlineDiag.lastTools || inlineDiag.lastResources) && (
                   <div
                     className={[
                       'rounded-lg border p-3',
@@ -1350,11 +1475,29 @@ export const McpConfigForm: React.FC = () => {
                             : ''}
                         </div>
                         <div className="mt-1 max-h-40 overflow-auto text-xs">
-                          <ul className="list-disc ml-4">
+                          <ul className="space-y-1">
                             {inlineDiag.lastTools.map((t) => (
-                              <li key={t.name}>
-                                <span className="font-mono">{t.name}</span>
-                                {t.description ? ` - ${t.description}` : ''}
+                              <li key={t.name} className="flex items-start gap-2">
+                                <input
+                                  type="checkbox"
+                                  className="mt-0.5"
+                                  checked={isToolEnabled(server.config.enabledTools, server.config.disabledTools, t.name)}
+                                  onChange={(e) => {
+                                    const next = toggleToolEnabled(
+                                      server.config.enabledTools,
+                                      server.config.disabledTools,
+                                      t.name,
+                                      e.target.checked
+                                    );
+                                    upsertServer({ ...server, config: { ...server.config, ...next } });
+                                  }}
+                                />
+                                <div className="min-w-0">
+                                  <div className="font-mono break-all">{t.name}</div>
+                                  {t.description ? (
+                                    <div className="opacity-80 break-all">{t.description}</div>
+                                  ) : null}
+                                </div>
                               </li>
                             ))}
                           </ul>
@@ -1363,6 +1506,68 @@ export const McpConfigForm: React.FC = () => {
                     ) : inlineDiag.lastTest?.success ? (
                       <div className="mt-2 text-xs opacity-80">
                         tools/list 为空（常见原因：你在 enabledTools 里填了白名单但名字不匹配，或 server 本身不提供 tools）。
+                      </div>
+                    ) : null}
+
+                    {inlineDiag.lastResources ? (
+                      <div className="mt-3">
+                        <div className="text-xs opacity-80">
+                          resources/list：{inlineDiag.lastResources.length} 个
+                          {inlineDiag.lastResourcesSource
+                            ? `（来源：${inlineDiag.lastResourcesSource === 'test' ? '测试' : '资源'}）`
+                            : ''}
+                        </div>
+                        {inlineDiag.lastTest?.resourcesError ? (
+                          <div className="mt-1 text-xs opacity-90 break-all">
+                            resources/list 错误：{inlineDiag.lastTest.resourcesError}
+                          </div>
+                        ) : null}
+                        {inlineDiag.lastResources.length ? (
+                          <div className="mt-1 max-h-40 overflow-auto text-xs">
+                            <ul className="space-y-1">
+                              {inlineDiag.lastResources.map((r) => {
+                                const enabledResources = server.config.enabledResources ?? [];
+                                const disabledResources = server.config.disabledResources ?? [];
+                                return (
+                                  <li key={r.uri} className="flex items-start gap-2">
+                                    <input
+                                      type="checkbox"
+                                      className="mt-0.5"
+                                      checked={isResourceEnabled(enabledResources, disabledResources, r.uri)}
+                                      onChange={(e) => {
+                                        const next = toggleResourceEnabled(
+                                          enabledResources,
+                                          disabledResources,
+                                          r.uri,
+                                          e.target.checked
+                                        );
+                                        upsertServer({
+                                          ...server,
+                                          config: {
+                                            ...server.config,
+                                            enabledResources: next.enabledResources,
+                                            disabledResources: next.disabledResources,
+                                          },
+                                        });
+                                      }}
+                                    />
+                                    <div className="min-w-0">
+                                      <div className="font-mono break-all">{r.uri}</div>
+                                      {(r.title || r.description) && (
+                                        <div className="opacity-80 break-all">
+                                          {r.title ? `${r.title}${r.description ? ' - ' : ''}` : ''}
+                                          {r.description ?? ''}
+                                        </div>
+                                      )}
+                                    </div>
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                          </div>
+                        ) : inlineDiag.lastTest?.success ? (
+                          <div className="mt-1 text-xs opacity-80">resources/list 为空</div>
+                        ) : null}
                       </div>
                     ) : null}
                   </div>
@@ -1617,6 +1822,7 @@ export const McpConfigForm: React.FC = () => {
               onClick={() => {
                 setTestResult(null);
                 setToolPreview(null);
+                setResourcePreview(null);
               }}
               className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 rounded-lg"
             >
@@ -1624,14 +1830,18 @@ export const McpConfigForm: React.FC = () => {
             </button>
           </div>
 
-	          {(testingServer || toolPreviewServer) && (
+	          {(testingServer || toolPreviewServer || resourcePreviewServer) && (
 	            <div className="text-sm text-gray-600 dark:text-gray-300 flex items-center gap-2">
 	              <Loader2 size={16} className="animate-spin" />
-	              {testingServer ? `正在测试连接：${testingServer}` : `正在拉取工具：${toolPreviewServer}`}
+	              {testingServer
+                    ? `正在测试连接：${testingServer}`
+                    : toolPreviewServer
+                      ? `正在拉取工具：${toolPreviewServer}`
+                      : `正在拉取资源：${resourcePreviewServer}`}
 	            </div>
 	          )}
 
-	          {!testResult && !toolPreview && (
+	          {!testResult && !toolPreview && !resourcePreview && (
 	            <div className="text-sm text-gray-500 dark:text-gray-400">
 	              在 Servers 页点击“测试/工具”后，这里会显示结果。
 	            </div>
@@ -1663,6 +1873,35 @@ export const McpConfigForm: React.FC = () => {
                   tools: {testResult.tools.map((t) => t.name).join(', ')}
                 </div>
               )}
+              {testResult.resources?.length ? (
+                <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+                  resources: {testResult.resources.length} 个
+                </div>
+              ) : null}
+              {testResult.resourcesError ? (
+                <div className="mt-1 text-xs text-gray-600 dark:text-gray-300 break-all">
+                  resources/list 错误：{testResult.resourcesError}
+                </div>
+              ) : null}
+            </div>
+          )}
+
+          {resourcePreview && (
+            <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3">
+              <div className="text-sm text-gray-700 dark:text-gray-300">
+                resources/list: {resourcePreview.length} 个
+                {resourcePreviewServer ? `（${resourcePreviewServer}）` : ''}
+              </div>
+              <div className="mt-2 text-xs text-gray-600 dark:text-gray-300 max-h-48 overflow-auto">
+                <ul className="list-disc ml-4">
+                  {resourcePreview.map((r) => (
+                    <li key={r.uri}>
+                      <span className="font-mono">{r.uri}</span>
+                      {r.title ? ` - ${r.title}` : ''}
+                    </li>
+                  ))}
+                </ul>
+              </div>
             </div>
           )}
 

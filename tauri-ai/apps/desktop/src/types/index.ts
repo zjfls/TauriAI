@@ -1034,6 +1034,10 @@ export interface McpServerConfig {
   toolTimeoutMs?: number;
   enabledTools: string[];
   disabledTools: string[];
+  /** Allow-list of resources by uri (empty = allow all) */
+  enabledResources?: string[];
+  /** Deny-list of resources by uri (applied after enabledResources) */
+  disabledResources?: string[];
 }
 
 export interface McpServerEntry {

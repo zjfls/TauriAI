@@ -21,11 +21,30 @@ pub struct McpToolInfo {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct McpResourceInfo {
+    pub uri: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct McpTestResult {
     pub success: bool,
     pub message: String,
     #[serde(default)]
     pub tools: Vec<McpToolInfo>,
+    #[serde(default)]
+    pub resources: Vec<McpResourceInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resources_error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -75,8 +94,10 @@ pub async fn list_mcp_server_tools(
         .find(|s| s.name == server_name)
         .ok_or_else(|| format!("未找到 MCP server: {server_name}"))?;
 
+    // NOTE: Return raw `tools/list` for UI inspection. Actual runtime tool exposure is still
+    // filtered by enabledTools/disabledTools when building tool specs.
     let tools = global_mcp_runtime()
-        .list_tools(&server_name, &entry.config)
+        .list_tools_raw(&server_name, &entry.config)
         .await?;
 
     Ok(tools
@@ -85,6 +106,36 @@ pub async fn list_mcp_server_tools(
             name: t.name.as_ref().to_string(),
             description: t.description.as_ref().map(|s| s.as_ref().to_string()),
             input_schema: serde_json::Value::Object((*t.input_schema).clone()),
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub async fn list_mcp_server_resources(
+    server_name: String,
+    config_manager: tauri::State<'_, Arc<ConfigManager>>,
+) -> Result<Vec<McpResourceInfo>, String> {
+    let config = config_manager.ensure_default().map_err(|e| e.to_string())?;
+    let entry = config
+        .mcp
+        .servers
+        .iter()
+        .find(|s| s.name == server_name)
+        .ok_or_else(|| format!("未找到 MCP server: {server_name}"))?;
+
+    let resources = global_mcp_runtime()
+        .list_all_resources(&server_name, &entry.config)
+        .await?;
+
+    Ok(resources
+        .into_iter()
+        .map(|r| McpResourceInfo {
+            uri: r.uri.clone(),
+            name: r.name.clone(),
+            title: r.title.clone(),
+            description: r.description.clone(),
+            mime_type: r.mime_type.clone(),
+            size: r.size,
         })
         .collect())
 }
@@ -102,28 +153,55 @@ pub async fn test_mcp_server(
         .find(|s| s.name == server_name)
         .ok_or_else(|| format!("未找到 MCP server: {server_name}"))?;
 
-    match global_mcp_runtime()
-        .list_tools(&server_name, &entry.config)
+    let tools = match global_mcp_runtime()
+        .list_tools_raw(&server_name, &entry.config)
         .await
     {
-        Ok(tools) => Ok(McpTestResult {
-            success: true,
-            message: "连接成功".to_string(),
-            tools: tools
-                .into_iter()
-                .map(|t| McpToolInfo {
-                    name: t.name.as_ref().to_string(),
-                    description: t.description.as_ref().map(|s| s.as_ref().to_string()),
-                    input_schema: serde_json::Value::Object((*t.input_schema).clone()),
-                })
-                .collect(),
-        }),
-        Err(err) => Ok(McpTestResult {
-            success: false,
-            message: err,
-            tools: Vec::new(),
-        }),
-    }
+        Ok(tools) => tools,
+        Err(err) => {
+            return Ok(McpTestResult {
+                success: false,
+                message: err,
+                tools: Vec::new(),
+                resources: Vec::new(),
+                resources_error: None,
+            });
+        }
+    };
+
+    let resources = global_mcp_runtime()
+        .list_all_resources(&server_name, &entry.config)
+        .await;
+
+    let (resources, resources_error) = match resources {
+        Ok(list) => (list, None),
+        Err(err) => (Vec::new(), Some(err)),
+    };
+
+    Ok(McpTestResult {
+        success: true,
+        message: "连接成功".to_string(),
+        tools: tools
+            .into_iter()
+            .map(|t| McpToolInfo {
+                name: t.name.as_ref().to_string(),
+                description: t.description.as_ref().map(|s| s.as_ref().to_string()),
+                input_schema: serde_json::Value::Object((*t.input_schema).clone()),
+            })
+            .collect(),
+        resources: resources
+            .into_iter()
+            .map(|r| McpResourceInfo {
+                uri: r.uri.clone(),
+                name: r.name.clone(),
+                title: r.title.clone(),
+                description: r.description.clone(),
+                mime_type: r.mime_type.clone(),
+                size: r.size,
+            })
+            .collect(),
+        resources_error,
+    })
 }
 
 #[tauri::command]

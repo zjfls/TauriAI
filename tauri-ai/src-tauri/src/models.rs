@@ -1428,6 +1428,12 @@ pub struct McpServerConfig {
     /// Deny-list of tools (applied after enabled_tools)
     #[serde(default)]
     pub disabled_tools: Vec<String>,
+    /// Allow-list of resources (by uri) exposed from this server (empty = allow all)
+    #[serde(default)]
+    pub enabled_resources: Vec<String>,
+    /// Deny-list of resources (by uri) (applied after enabled_resources)
+    #[serde(default)]
+    pub disabled_resources: Vec<String>,
 }
 
 impl Default for McpServerConfig {
@@ -1445,6 +1451,8 @@ impl Default for McpServerConfig {
             tool_timeout_ms: None,
             enabled_tools: Vec::new(),
             disabled_tools: Vec::new(),
+            enabled_resources: Vec::new(),
+            disabled_resources: Vec::new(),
         }
     }
 }
