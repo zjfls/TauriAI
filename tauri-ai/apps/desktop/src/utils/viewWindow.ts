@@ -155,6 +155,7 @@ const scheduleWorkstudioOpenFile = async (
   clearWorkstudioOpenTimers(label);
 
   const delays = [0, 60, 180, 420, 900];
+  const lastDelay = delays[delays.length - 1] ?? 0;
   const timerIds: number[] = [];
 
   for (const delayMs of delays) {
@@ -162,11 +163,20 @@ const scheduleWorkstudioOpenFile = async (
       if (workstudioOpenSeqByLabel.get(label) !== nextSeq) return;
       try {
         if (window.localStorage.getItem('tauri-ai:debug:open_file') === '1') {
+          const verbose =
+            window.localStorage.getItem('tauri-ai:debug:open_file:verbose') === '1';
+          const shouldLog = verbose || delayMs === 0 || delayMs === lastDelay;
+          if (!shouldLog) {
+            // skip noisy retry logs
+            return;
+          }
           // eslint-disable-next-line no-console
           console.log(`[open_file][viewWindow][${new Date().toISOString()}] emit workstudio:open_file`, {
             label,
             delayMs,
             seq: nextSeq,
+            retry: delayMs !== 0,
+            finalRetry: delayMs === lastDelay,
             payload,
           });
         }
@@ -193,12 +203,21 @@ const ensureWindowVisible = async (win: WebviewWindow) => {
       return false;
     }
   })();
+  const verbose = (() => {
+    try {
+      return window.localStorage.getItem('tauri-ai:debug:open_file:verbose') === '1';
+    } catch {
+      return false;
+    }
+  })();
   const log = (msg: string, meta?: Record<string, unknown>) => {
     if (!debug) return;
+    if (!verbose && msg !== 'window:ensureVisible') return;
     // eslint-disable-next-line no-console
     console.log(`[open_file][viewWindow][${new Date().toISOString()}] ${msg}`, meta ?? {});
   };
 
+  log('window:ensureVisible', { label: win.label });
   try {
     const minimized = await (win as any).isMinimized?.();
     if (minimized) {

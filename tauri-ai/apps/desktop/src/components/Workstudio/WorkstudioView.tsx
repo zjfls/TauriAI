@@ -730,9 +730,29 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     }
   };
 
+  const isOpenFileDebugVerboseEnabled = () => {
+    try {
+      return window.localStorage.getItem('tauri-ai:debug:open_file:verbose') === '1';
+    } catch {
+      return false;
+    }
+  };
+
   const dbg = useCallback(
     (msg: string, meta?: Record<string, unknown>) => {
       if (!isOpenFileDebugEnabled()) return;
+      // 默认只保留关键链路日志；想看全量（包括 event:* 等）可开启 verbose。
+      if (
+        !isOpenFileDebugVerboseEnabled() &&
+        !(
+          msg.startsWith('openLinkTarget:') ||
+          msg.startsWith('applySelection:') ||
+          msg.startsWith('applyWithWait:') ||
+          msg.startsWith('revealFileInExplorer:')
+        )
+      ) {
+        return;
+      }
       // eslint-disable-next-line no-console
       console.log(`[open_file][WorkstudioView][${new Date().toISOString()}] ${msg}`, meta ?? {});
     },

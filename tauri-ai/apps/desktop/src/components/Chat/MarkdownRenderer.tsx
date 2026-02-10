@@ -138,11 +138,29 @@ const isOpenFileDebugEnabled = (): boolean => {
   }
 };
 
+const isOpenFileVerboseEnabled = (): boolean => {
+  try {
+    return window.localStorage.getItem('tauri-ai:debug:open_file:verbose') === '1';
+  } catch {
+    return false;
+  }
+};
+
+const IMPORTANT_OPEN_FILE_LOGS = new Set<string>([
+  'click:fileRef',
+  'openFileReference:skipped_missing_context',
+  'openOrFocusWorkstudioWindow:begin',
+  'openFileReference:failed',
+  'openFilePath skipped: missing workstudio context',
+  'openFilePath failed',
+]);
+
 const dbgOpenFile = (
   msg: string,
   meta?: Record<string, unknown>
 ) => {
   if (!isOpenFileDebugEnabled()) return;
+  if (!isOpenFileVerboseEnabled() && !IMPORTANT_OPEN_FILE_LOGS.has(msg)) return;
   const ts = new Date().toISOString();
   // Keep logs easy to grep.
   // eslint-disable-next-line no-console
