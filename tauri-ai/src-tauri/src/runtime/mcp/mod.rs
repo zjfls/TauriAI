@@ -73,6 +73,18 @@ impl McpRuntime {
         self.status.read().await.clone()
     }
 
+    fn startup_timeout(cfg: &McpServerConfig) -> Option<Duration> {
+        cfg.startup_timeout_ms
+            .map(Duration::from_millis)
+            .or(Some(DEFAULT_STARTUP_TIMEOUT))
+    }
+
+    fn tool_timeout(cfg: &McpServerConfig) -> Option<Duration> {
+        cfg.tool_timeout_ms
+            .map(Duration::from_millis)
+            .or(Some(DEFAULT_TOOL_TIMEOUT))
+    }
+
     /// List tools with an in-memory cache (keyed by server name + config).
     ///
     /// Notes:
@@ -97,10 +109,7 @@ impl McpRuntime {
         cfg: &McpServerConfig,
     ) -> Result<Vec<Tool>, String> {
         let client = self.ensure_client(server_name, cfg).await?;
-        let timeout = cfg
-            .startup_timeout_ms
-            .map(Duration::from_millis)
-            .or(Some(DEFAULT_STARTUP_TIMEOUT));
+        let timeout = Self::startup_timeout(cfg);
 
         let tools = client.list_tools(timeout).await?;
         let tools = filter_tools(tools, &cfg.enabled_tools, &cfg.disabled_tools);
@@ -133,11 +142,16 @@ impl McpRuntime {
         arguments: Option<Value>,
     ) -> Result<Value, String> {
         let client = self.ensure_client(server_name, cfg).await?;
-        let timeout = cfg
-            .tool_timeout_ms
-            .map(Duration::from_millis)
-            .or(Some(DEFAULT_TOOL_TIMEOUT));
-        client.call_tool(tool_name, arguments, timeout).await
+        // IMPORTANT:
+        // - `tools/call` might be the *first* operation on a server.
+        // - If we use a small `toolTimeoutMs` for initialization, the first MCP call can
+        //   appear to "timeout at 6s" even though raw HTTP calls look fine.
+        // - Initialize with `startupTimeoutMs`, and apply `toolTimeoutMs` to the call itself.
+        let init_timeout = Self::startup_timeout(cfg);
+        let call_timeout = Self::tool_timeout(cfg);
+        client
+            .call_tool(tool_name, arguments, init_timeout, call_timeout)
+            .await
     }
 
     pub async fn list_resources(
@@ -147,10 +161,7 @@ impl McpRuntime {
         cursor: Option<String>,
     ) -> Result<ListResourcesResult, String> {
         let client = self.ensure_client(server_name, cfg).await?;
-        let timeout = cfg
-            .startup_timeout_ms
-            .map(Duration::from_millis)
-            .or(Some(DEFAULT_STARTUP_TIMEOUT));
+        let timeout = Self::startup_timeout(cfg);
         client.list_resources(cursor, timeout).await
     }
 
@@ -160,10 +171,7 @@ impl McpRuntime {
         cfg: &McpServerConfig,
     ) -> Result<Vec<Resource>, String> {
         let client = self.ensure_client(server_name, cfg).await?;
-        let timeout = cfg
-            .startup_timeout_ms
-            .map(Duration::from_millis)
-            .or(Some(DEFAULT_STARTUP_TIMEOUT));
+        let timeout = Self::startup_timeout(cfg);
         client.list_all_resources(timeout).await
     }
 
@@ -174,10 +182,7 @@ impl McpRuntime {
         cursor: Option<String>,
     ) -> Result<ListResourceTemplatesResult, String> {
         let client = self.ensure_client(server_name, cfg).await?;
-        let timeout = cfg
-            .startup_timeout_ms
-            .map(Duration::from_millis)
-            .or(Some(DEFAULT_STARTUP_TIMEOUT));
+        let timeout = Self::startup_timeout(cfg);
         client.list_resource_templates(cursor, timeout).await
     }
 
@@ -187,10 +192,7 @@ impl McpRuntime {
         cfg: &McpServerConfig,
     ) -> Result<Vec<ResourceTemplate>, String> {
         let client = self.ensure_client(server_name, cfg).await?;
-        let timeout = cfg
-            .startup_timeout_ms
-            .map(Duration::from_millis)
-            .or(Some(DEFAULT_STARTUP_TIMEOUT));
+        let timeout = Self::startup_timeout(cfg);
         client.list_all_resource_templates(timeout).await
     }
 
@@ -201,11 +203,9 @@ impl McpRuntime {
         uri: &str,
     ) -> Result<ReadResourceResult, String> {
         let client = self.ensure_client(server_name, cfg).await?;
-        let timeout = cfg
-            .tool_timeout_ms
-            .map(Duration::from_millis)
-            .or(Some(DEFAULT_TOOL_TIMEOUT));
-        client.read_resource(uri, timeout).await
+        let init_timeout = Self::startup_timeout(cfg);
+        let call_timeout = Self::tool_timeout(cfg);
+        client.read_resource(uri, init_timeout, call_timeout).await
     }
 
     async fn ensure_client(
@@ -562,23 +562,25 @@ impl McpClient {
     pub async fn read_resource(
         &self,
         uri: &str,
-        timeout: Option<Duration>,
+        init_timeout: Option<Duration>,
+        call_timeout: Option<Duration>,
     ) -> Result<ReadResourceResult, String> {
-        self.ensure_ready(timeout).await?;
+        self.ensure_ready(init_timeout).await?;
         let service = self.service().await?;
         let fut = service.read_resource(ReadResourceRequestParam {
             uri: uri.to_string(),
         });
-        run_with_timeout(fut, timeout, "resources/read").await
+        run_with_timeout(fut, call_timeout, "resources/read").await
     }
 
     pub async fn call_tool(
         &self,
         tool_name: &str,
         arguments: Option<Value>,
-        timeout: Option<Duration>,
+        init_timeout: Option<Duration>,
+        call_timeout: Option<Duration>,
     ) -> Result<Value, String> {
-        self.ensure_ready(timeout).await?;
+        self.ensure_ready(init_timeout).await?;
         let service = self.service().await?;
 
         let args: Option<JsonObject> = match arguments {
@@ -598,7 +600,7 @@ impl McpClient {
         };
 
         let fut = service.call_tool(params);
-        let result = run_with_timeout(fut, timeout, "tools/call").await?;
+        let result = run_with_timeout(fut, call_timeout, "tools/call").await?;
         serde_json::to_value(result).map_err(|e| format!("序列化 MCP tool result 失败: {e}"))
     }
 }
