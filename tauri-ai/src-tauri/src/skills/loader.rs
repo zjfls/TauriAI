@@ -103,7 +103,15 @@ fn discover_skills_under_root(
 
     // category = root/<category>/.../SKILL.md 里的第一个目录名
     let mut queue: VecDeque<PathBuf> = VecDeque::from([root.clone()]);
+    let mut visited_dirs: HashSet<PathBuf> = HashSet::new();
     while let Some(dir) = queue.pop_front() {
+        // Avoid symlink loops / duplicates by tracking canonical directory identity.
+        // NOTE: still read_dir on the original `dir` to preserve virtual paths under `root`.
+        let dir_key = normalize_path(&dir).unwrap_or_else(|_| dir.clone());
+        if !visited_dirs.insert(dir_key) {
+            continue;
+        }
+
         let entries = match fs::read_dir(&dir) {
             Ok(v) => v,
             Err(e) => {
@@ -129,9 +137,28 @@ fn discover_skills_under_root(
                 continue;
             };
 
+            // Support symlinked skill directories/files:
+            // - Many users install skills by linking to an external skill repo.
+            // - Previously we skipped all symlinks, which made the "app skills" root look populated
+            //   but nothing was actually discovered.
             if file_type.is_symlink() {
+                if path.is_dir() {
+                    queue.push_back(path);
+                } else if path.is_file() && file_name == SKILLS_FILENAME {
+                    match parse_skill_file(&root, &path, root_kind.clone(), include_contents) {
+                        Ok(skill) => {
+                            if seen.insert(skill.meta.name.clone()) {
+                                outcome.skills.push(skill);
+                            }
+                        }
+                        Err(err) => {
+                            outcome.errors.push(format!("{}: {err}", path.display()));
+                        }
+                    }
+                }
                 continue;
             }
+
             if file_type.is_dir() {
                 queue.push_back(path);
                 continue;
@@ -200,14 +227,66 @@ fn parse_skill_file(
 
 fn infer_category(root: &Path, skill_md: &Path) -> Option<String> {
     let root = normalize_path(root).unwrap_or_else(|_| root.to_path_buf());
-    let skill_md = normalize_path(skill_md).unwrap_or_else(|_| skill_md.to_path_buf());
-    let rel = skill_md.strip_prefix(&root).ok()?;
-    let mut comps = rel.components().filter_map(|c| c.as_os_str().to_str());
+    // Prefer the logical path under the configured root so symlinked skills keep their category.
+    // Fallback to the canonical path if needed.
+    let rel_path = if let Ok(rel) = skill_md.strip_prefix(&root) {
+        rel.to_path_buf()
+    } else {
+        let skill_norm = normalize_path(skill_md).ok()?;
+        skill_norm.strip_prefix(&root).ok()?.to_path_buf()
+    };
+
+    let mut comps = rel_path.components().filter_map(|c| c.as_os_str().to_str());
     let first = comps.next()?;
     if first.eq_ignore_ascii_case(SKILLS_FILENAME) {
         return None;
     }
     Some(first.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(unix)]
+    fn discovers_symlinked_skill_dir_and_preserves_category() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("skills");
+        let learn = root.join("learn");
+        fs::create_dir_all(&learn).expect("mkdir");
+
+        let external = tmp.path().join("external-skill");
+        fs::create_dir_all(&external).expect("mkdir external");
+        fs::write(
+            external.join(SKILLS_FILENAME),
+            r#"---
+name: deep-learning
+description: dl
+---
+
+body
+"#,
+        )
+        .expect("write SKILL.md");
+
+        let link = learn.join("deep-learning");
+        symlink(&external, &link).expect("symlink");
+
+        let mut outcome = SkillLoadOutcome::default();
+        let mut seen = HashSet::new();
+        discover_skills_under_root(&root, SkillRootKind::App, false, &mut outcome, &mut seen);
+
+        assert_eq!(outcome.errors, Vec::<String>::new());
+        assert_eq!(outcome.skills.len(), 1);
+        let skill = &outcome.skills[0];
+        assert_eq!(skill.meta.name, "deep-learning");
+        assert_eq!(skill.meta.category, "learn");
+        // Keep the "virtual" symlink path under root for better UX/debugging.
+        assert!(skill.meta.path.contains("skills/learn/deep-learning/"));
+    }
 }
 
 fn extract_frontmatter(contents: &str) -> Option<String> {
