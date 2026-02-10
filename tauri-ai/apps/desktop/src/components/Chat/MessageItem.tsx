@@ -4,8 +4,8 @@
  * Requirements: 3.1, 3.2, 3.6
  */
 
-import React, { useMemo, useState } from 'react';
-import { User, Bot, Bug, AlertCircle, RefreshCw, ZoomIn, File as FileIcon } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { User, Bot, Bug, AlertCircle, RefreshCw, ZoomIn, X, File as FileIcon } from 'lucide-react';
 import type { Message, Action, ContentPart } from '../../types';
 import { DeferredMarkdown } from './DeferredMarkdown';
 import { MessageToolbar } from './MessageToolbar';
@@ -79,6 +79,28 @@ interface ImagePreviewModalProps {
 }
 
 const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({ imageUrl, isOpen, onClose }) => {
+  useEffect(() => {
+    if (!isOpen) return;
+    document.body.dataset.tauriaiImagePreviewOpen = '1';
+    return () => {
+      delete document.body.dataset.tauriaiImagePreviewOpen;
+    };
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopPropagation();
+      onClose();
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   return (
@@ -86,12 +108,22 @@ const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({ imageUrl, isOpen,
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/80"
       onClick={onClose}
     >
-      <img
-        src={imageUrl}
-        alt="图片预览"
-        className="max-h-[90vh] max-w-[90vw] object-contain"
-        onClick={(e) => e.stopPropagation()}
-      />
+      <div className="relative" onClick={(e) => e.stopPropagation()}>
+        <button
+          type="button"
+          onClick={onClose}
+          className="absolute -top-3 -right-3 z-10 inline-flex h-10 w-10 items-center justify-center rounded-full bg-black/60 text-white shadow-lg hover:bg-black/80 focus:outline-none focus:ring-2 focus:ring-white/70"
+          aria-label="关闭图片预览"
+          title="关闭"
+        >
+          <X size={18} />
+        </button>
+        <img
+          src={imageUrl}
+          alt="图片预览"
+          className="max-h-[90vh] max-w-[90vw] object-contain"
+        />
+      </div>
     </div>
   );
 };
@@ -113,6 +145,7 @@ const ContentPartsRenderer: React.FC<ContentPartsRendererProps> = ({
   conversationId,
 }) => {
   const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const closePreviewImage = useCallback(() => setPreviewImage(null), []);
 
   // If no content parts, just render text
   if (!contentParts || contentParts.length === 0) {
@@ -171,7 +204,7 @@ const ContentPartsRenderer: React.FC<ContentPartsRendererProps> = ({
       <ImagePreviewModal
         imageUrl={previewImage || ''}
         isOpen={!!previewImage}
-        onClose={() => setPreviewImage(null)}
+        onClose={closePreviewImage}
       />
     </>
   );

@@ -414,6 +414,8 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
           return useUIStore.getState().activeView === 'web';
         case 'chat.abortGeneration': {
           if (useUIStore.getState().activeView !== 'chat') return false;
+          // 图片预览 modal 打开时，Escape 应该优先用于关闭预览，避免误触发中止流式输出。
+          if (document.body.dataset.tauriaiImagePreviewOpen === '1') return false;
           const activeSessionId = useSessionStore.getState().activeSessionId;
           if (!activeSessionId) return false;
           const session = useSessionStore.getState().sessions.get(activeSessionId);
