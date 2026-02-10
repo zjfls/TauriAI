@@ -6,7 +6,7 @@
 //! - Chat = 最简单的 Task（通常单 Turn）
 //! - Tool = 多 Turn 循环（后续可扩展）
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::OnceLock;
 
@@ -211,6 +211,139 @@ fn build_assistant_context_content(
     } else {
         format!("[thinking]\n{thinking}\n[/thinking]\n\n{content}")
     }
+}
+
+fn block_turn_index(block: &MessageBlock) -> Option<u32> {
+    match block {
+        MessageBlock::Text { turn_index, .. }
+        | MessageBlock::Thinking { turn_index, .. }
+        | MessageBlock::ToolCall { turn_index, .. }
+        | MessageBlock::ToolResult { turn_index, .. }
+        | MessageBlock::Approval { turn_index, .. }
+        | MessageBlock::Error { turn_index, .. }
+        | MessageBlock::WebSearch { turn_index, .. }
+        | MessageBlock::Unknown { turn_index, .. } => *turn_index,
+    }
+}
+
+#[derive(Default)]
+struct ReplayTurnParts {
+    thinking: Vec<String>,
+    text: Vec<String>,
+    tool_calls: Vec<ToolCall>,
+    tool_results: Vec<(String, String)>, // (call_id, text)
+    errors: Vec<String>,
+}
+
+fn replay_messages_from_blocks(
+    conversation_id: &str,
+    blocks: &[MessageBlock],
+    max_turn_index_exclusive: u32,
+    reinject_thinking: bool,
+) -> Vec<Message> {
+    if max_turn_index_exclusive <= 1 {
+        return Vec::new();
+    }
+
+    let mut by_turn: BTreeMap<u32, ReplayTurnParts> = BTreeMap::new();
+    for b in blocks {
+        let Some(turn_index) = block_turn_index(b) else {
+            continue;
+        };
+        if turn_index >= max_turn_index_exclusive {
+            continue;
+        }
+        let entry = by_turn.entry(turn_index).or_default();
+        match b {
+            MessageBlock::Thinking { text, .. } => entry.thinking.push(text.clone()),
+            MessageBlock::Text { text, .. } => entry.text.push(text.clone()),
+            MessageBlock::ToolCall {
+                call_id,
+                name,
+                arguments,
+                ..
+            } => entry.tool_calls.push(ToolCall {
+                id: call_id.clone(),
+                name: name.clone(),
+                arguments: arguments.clone(),
+            }),
+            MessageBlock::ToolResult { call_id, text, .. } => {
+                entry.tool_results.push((call_id.clone(), text.clone()))
+            }
+            MessageBlock::Approval { status, reason, .. } => {
+                let mut s = format!("APPROVAL: {status}");
+                if let Some(r) = reason.as_deref().filter(|v| !v.trim().is_empty()) {
+                    s.push_str(&format!("\n{r}"));
+                }
+                entry.errors.push(s);
+            }
+            MessageBlock::Error { text, .. } => entry.errors.push(text.clone()),
+            MessageBlock::WebSearch { .. } | MessageBlock::Unknown { .. } => {}
+        }
+    }
+
+    let mut out: Vec<Message> = Vec::new();
+    for (_turn_index, parts) in by_turn {
+        let thinking = parts.thinking.join("\n");
+        let mut content = parts.text.join("\n");
+        if content.trim().is_empty() && !parts.errors.is_empty() {
+            content = parts.errors.join("\n");
+        } else if !parts.errors.is_empty() {
+            content.push_str("\n\n");
+            content.push_str(&parts.errors.join("\n"));
+        }
+
+        let content_for_context = build_assistant_context_content(content, &thinking, reinject_thinking);
+        let assistant_meta = if parts.tool_calls.is_empty() {
+            None
+        } else {
+            Some(MessageMeta {
+                tool_calls: Some(parts.tool_calls),
+                ..Default::default()
+            })
+        };
+        if !content_for_context.trim().is_empty()
+            || !thinking.trim().is_empty()
+            || assistant_meta.as_ref().is_some_and(|m| m.tool_calls.as_ref().is_some_and(|t| !t.is_empty()))
+        {
+            out.push(Message {
+                id: uuid::Uuid::new_v4().to_string(),
+                conversation_id: conversation_id.to_string(),
+                role: MessageRole::Assistant,
+                content: content_for_context,
+                content_parts: Vec::new(),
+                thinking: if thinking.trim().is_empty() {
+                    None
+                } else {
+                    Some(thinking)
+                },
+                meta: assistant_meta,
+                created_at: chrono::Utc::now(),
+                status: MessageStatus::Success,
+                error_message: None,
+            });
+        }
+
+        for (call_id, text) in parts.tool_results {
+            out.push(Message {
+                id: uuid::Uuid::new_v4().to_string(),
+                conversation_id: conversation_id.to_string(),
+                role: MessageRole::Tool,
+                content: text,
+                content_parts: Vec::new(),
+                thinking: None,
+                meta: Some(MessageMeta {
+                    tool_call_id: Some(call_id),
+                    ..Default::default()
+                }),
+                created_at: chrono::Utc::now(),
+                status: MessageStatus::Success,
+                error_message: None,
+            });
+        }
+    }
+
+    out
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -2824,6 +2957,16 @@ pub async fn retry_turn(
 
     let cleanup_conversation_id = conversation_id.clone();
 
+    let config = config_manager
+        .ensure_default()
+        .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
+    let resolved = resolve_chat_model(
+        &config,
+        agent_name.as_deref(),
+        model_ref.as_deref(),
+    )?;
+    let reinject_thinking = resolved.agent.reinject_thinking;
+
     let (content, base_messages_override, start_turn_index, placeholder_assistant, removed_messages) = {
         let db = db.lock().await;
         let messages = db
@@ -2938,6 +3081,7 @@ pub async fn retry_turn(
         // Placeholder assistant message (same id) containing only turns *before* the retried turn.
         // We'll re-insert it after deleting the old tail so the UI can keep showing prior turns.
         let mut placeholder_assistant: Option<Message> = None;
+        let mut replay_blocks: Vec<MessageBlock> = Vec::new();
 
         if target_turn_index > 1 {
             if let Some(blocks) = meta.blocks.as_ref() {
@@ -3002,6 +3146,7 @@ pub async fn retry_turn(
                         resolved.is_some_and(|i| i < target_turn_index)
                     })
                     .collect();
+                replay_blocks = filtered_blocks.clone();
 
                 let filtered_turns = meta.turns.as_ref().map(|turns| {
                     turns
@@ -3014,26 +3159,6 @@ pub async fn retry_turn(
                 let has_filtered_turns = filtered_turns
                     .as_ref()
                     .is_some_and(|turns| !turns.is_empty());
-
-                if !filtered_blocks.is_empty() {
-                    base_messages.push(Message {
-                        id: uuid::Uuid::new_v4().to_string(),
-                        conversation_id: conversation_id.clone(),
-                        role: MessageRole::Assistant,
-                        content: String::new(),
-                        content_parts: Vec::new(),
-                        thinking: None,
-                        meta: Some(MessageMeta {
-                            model: meta.model.clone(),
-                            blocks: Some(filtered_blocks.clone()),
-                            turns: filtered_turns.clone(),
-                            ..Default::default()
-                        }),
-                        created_at: assistant_msg.created_at,
-                        status: MessageStatus::Success,
-                        error_message: None,
-                    });
-                }
 
                 if !filtered_blocks.is_empty() || has_filtered_turns {
                     placeholder_assistant = Some(Message {
@@ -3059,6 +3184,18 @@ pub async fn retry_turn(
                     });
                 }
             }
+        }
+
+        // Replay prior internal turns (tool calls + tool outputs) into model-visible messages.
+        // NOTE: Persisted `meta.blocks` are for UI restoration. The model only sees `Message` content
+        // and tool call metadata, so we must reconstruct the runtime chain here for retry_turn.
+        if !replay_blocks.is_empty() {
+            base_messages.extend(replay_messages_from_blocks(
+                &conversation_id,
+                &replay_blocks,
+                target_turn_index,
+                reinject_thinking,
+            ));
         }
 
         (
