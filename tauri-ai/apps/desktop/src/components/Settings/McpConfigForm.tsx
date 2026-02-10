@@ -186,9 +186,7 @@ export const McpConfigForm: React.FC = () => {
   const [testingServer, setTestingServer] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<McpTestResult | null>(null);
   const [diagServerName, setDiagServerName] = useState<string | null>(null);
-  const [toolPreviewServer, setToolPreviewServer] = useState<string | null>(null);
   const [toolPreview, setToolPreview] = useState<McpToolInfo[] | null>(null);
-  const [resourcePreviewServer, setResourcePreviewServer] = useState<string | null>(null);
   const [resourcePreview, setResourcePreview] = useState<McpResourceInfo[] | null>(null);
   const [inlineDiagByServerKey, setInlineDiagByServerKey] = useState<
     Record<
@@ -694,13 +692,17 @@ export const McpConfigForm: React.FC = () => {
     return { entry, nextUrl };
   }, [diagServerName, mcp.servers, testResult]);
 
-  const testServer = async (name: string, serverUiKey: string) => {
+  const connectServer = async (name: string, serverUiKey: string) => {
     setDiagServerName(name);
     setTestingServer(name);
+    setToolPreview(null);
+    setResourcePreview(null);
     try {
       await flushConfigSaves();
       const res = await invoke<McpTestResult>('test_mcp_server', { serverName: name });
       setTestResult(res);
+      setToolPreview(res.tools ?? []);
+      setResourcePreview(res.resources ?? []);
       setInlineDiagByServerKey((prev) => ({
         ...prev,
         [serverUiKey]: {
@@ -711,9 +713,43 @@ export const McpConfigForm: React.FC = () => {
           lastResourcesSource: 'test',
         },
       }));
+
+      // Persist the latest discovery results so the tool/resource list is still available after restart
+      // (without needing to reconnect each time).
+      if (res.success) {
+        const now = Date.now();
+        const latest = useConfigStore.getState().config;
+        if (latest) {
+          const servers = (latest.mcp?.servers ?? []).map((s) => {
+            if (s.name !== name) return s;
+            const prevCache = s.cache;
+            return {
+              ...s,
+              cache: {
+                updatedAtMs: now,
+                tools: (res.tools ?? []).map((t) => ({ name: t.name, description: t.description })),
+                // Keep previous resources on resources/list failure so we don't wipe a good cache.
+                resources: res.resourcesError
+                  ? prevCache?.resources ?? []
+                  : (res.resources ?? []).map((r) => ({
+                      uri: r.uri,
+                      name: r.name,
+                      title: r.title,
+                      description: r.description,
+                      mimeType: r.mimeType,
+                      size: r.size,
+                    })),
+              },
+            };
+          });
+          save({ ...latest, mcp: { ...latest.mcp, servers } });
+        }
+      }
     } catch (e) {
       const err = { success: false, message: formatError(e), tools: [], resources: [] as McpResourceInfo[] };
       setTestResult(err);
+      setToolPreview([]);
+      setResourcePreview([]);
       setInlineDiagByServerKey((prev) => ({
         ...prev,
         [serverUiKey]: {
@@ -750,55 +786,7 @@ export const McpConfigForm: React.FC = () => {
       },
     });
 
-    await testServer(entry.name, getServerUiKey(entry.name));
-  };
-
-  const previewTools = async (name: string, serverUiKey: string) => {
-    setDiagServerName(name);
-    setToolPreviewServer(name);
-    try {
-      await flushConfigSaves();
-      const tools = await invoke<McpToolInfo[]>('list_mcp_server_tools', { serverName: name });
-      setToolPreview(tools);
-      setInlineDiagByServerKey((prev) => ({
-        ...prev,
-        [serverUiKey]: { ...prev[serverUiKey], lastTools: tools, lastToolsSource: 'tools' },
-      }));
-    } catch (e) {
-      const err = { success: false, message: formatError(e), tools: [] };
-      setToolPreview([]);
-      setTestResult(err);
-      setInlineDiagByServerKey((prev) => ({
-        ...prev,
-        [serverUiKey]: { ...prev[serverUiKey], lastTest: err },
-      }));
-    } finally {
-      setToolPreviewServer(null);
-    }
-  };
-
-  const previewResources = async (name: string, serverUiKey: string) => {
-    setDiagServerName(name);
-    setResourcePreviewServer(name);
-    try {
-      await flushConfigSaves();
-      const resources = await invoke<McpResourceInfo[]>('list_mcp_server_resources', { serverName: name });
-      setResourcePreview(resources);
-      setInlineDiagByServerKey((prev) => ({
-        ...prev,
-        [serverUiKey]: { ...prev[serverUiKey], lastResources: resources, lastResourcesSource: 'resources' },
-      }));
-    } catch (e) {
-      const err = { success: false, message: formatError(e), tools: [], resources: [] as McpResourceInfo[] };
-      setResourcePreview([]);
-      setTestResult(err);
-      setInlineDiagByServerKey((prev) => ({
-        ...prev,
-        [serverUiKey]: { ...prev[serverUiKey], lastTest: err },
-      }));
-    } finally {
-      setResourcePreviewServer(null);
-    }
+    await connectServer(entry.name, getServerUiKey(entry.name));
   };
 
   const isToolEnabled = (enabled: string[], disabled: string[], name: string) => {
@@ -919,6 +907,25 @@ export const McpConfigForm: React.FC = () => {
               const toggleCollapsed = () =>
                 setCollapsedByServer((prev) => ({ ...prev, [serverUiKey]: !(prev[serverUiKey] ?? false) }));
               const inlineDiag = inlineDiagByServerKey[serverUiKey];
+              const cachedTools = server.cache?.tools ?? [];
+              const cachedResources = server.cache?.resources ?? [];
+              const toolsForList = inlineDiag?.lastTools?.length ? inlineDiag.lastTools : cachedTools;
+              const resourcesForList = inlineDiag?.lastResources?.length ? inlineDiag.lastResources : cachedResources;
+              const toolsSource = inlineDiag?.lastTools?.length
+                ? inlineDiag.lastToolsSource
+                : cachedTools.length
+                  ? 'cache'
+                  : undefined;
+              const resourcesSource = inlineDiag?.lastResources?.length
+                ? inlineDiag.lastResourcesSource
+                : cachedResources.length
+                  ? 'cache'
+                  : undefined;
+              const lastTest = inlineDiag?.lastTest;
+              const resourcesListError = lastTest?.resourcesError;
+              const showInlineDiag = Boolean(
+                lastTest || toolsForList.length || resourcesForList.length
+              );
 
               const transportSummary =
                 server.config.transport.transport === 'stdio'
@@ -965,58 +972,20 @@ export const McpConfigForm: React.FC = () => {
                     </div>
                     <div className="flex items-center gap-2">
                       <button
-                        onClick={() => previewTools(server.name, serverUiKey)}
-                        disabled={
-                          toolPreviewServer === server.name ||
-                          testingServer === server.name ||
-                          resourcePreviewServer === server.name
-                        }
-                        className="px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700 rounded-lg flex items-center gap-1 disabled:opacity-60"
-                        title="拉取 tools/list"
-                      >
-                        {toolPreviewServer === server.name ? (
-                          <Loader2 size={16} className="animate-spin" />
-                        ) : (
-                          <RefreshCw size={16} />
-                        )}
-                        工具
-                      </button>
-                      <button
-                        onClick={() => previewResources(server.name, serverUiKey)}
-                        disabled={
-                          resourcePreviewServer === server.name ||
-                          testingServer === server.name ||
-                          toolPreviewServer === server.name
-                        }
-                        className="px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700 rounded-lg flex items-center gap-1 disabled:opacity-60"
-                        title="拉取 resources/list"
-                      >
-                        {resourcePreviewServer === server.name ? (
-                          <Loader2 size={16} className="animate-spin" />
-                        ) : (
-                          <RefreshCw size={16} />
-                        )}
-                        资源
-                      </button>
-                      <button
-                        onClick={() => testServer(server.name, serverUiKey)}
-                        disabled={
-                          testingServer === server.name ||
-                          toolPreviewServer === server.name ||
-                          resourcePreviewServer === server.name
-                        }
+                        onClick={() => connectServer(server.name, serverUiKey)}
+                        disabled={testingServer === server.name}
                         className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 rounded-lg flex items-center gap-1 disabled:opacity-60"
-                        title="测试连接（initialize + tools/list）"
+                        title="连接（initialize + tools/list + resources/list）"
                       >
                         {testingServer === server.name ? (
                           <>
                             <Loader2 size={16} className="animate-spin" />
-                            测试中…
+                            连接中…
                           </>
                         ) : (
                           <>
                             <RefreshCw size={16} />
-                            测试
+                            连接
                           </>
                         )}
                       </button>
@@ -1396,41 +1365,12 @@ export const McpConfigForm: React.FC = () => {
                   </div>
                 )}
 
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1">
-                    <label className="block text-xs text-gray-500">enabledTools（空=全部允许）</label>
-                    <textarea
-                      className="w-full h-24 px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-xs font-mono"
-                      value={joinLines(server.config.enabledTools)}
-                      onChange={(e) =>
-                        upsertServer({
-                          ...server,
-                          config: { ...server.config, enabledTools: splitLines(e.target.value) },
-                        })
-                      }
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <label className="block text-xs text-gray-500">disabledTools</label>
-                    <textarea
-                      className="w-full h-24 px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-xs font-mono"
-                      value={joinLines(server.config.disabledTools)}
-                      onChange={(e) =>
-                        upsertServer({
-                          ...server,
-                          config: { ...server.config, disabledTools: splitLines(e.target.value) },
-                        })
-                      }
-                    />
-                  </div>
-                </div>
-
-                {inlineDiag && (inlineDiag.lastTest || inlineDiag.lastTools || inlineDiag.lastResources) && (
+                {showInlineDiag && (
                   <div
                     className={[
                       'rounded-lg border p-3',
-                      inlineDiag.lastTest
-                        ? inlineDiag.lastTest.success
+                      lastTest
+                        ? lastTest.success
                           ? 'border-green-200 bg-green-50 text-green-700 dark:border-green-900/40 dark:bg-green-900/20 dark:text-green-200'
                           : 'border-red-200 bg-red-50 text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-200'
                         : 'border-gray-200 bg-gray-50 text-gray-700 dark:border-gray-700 dark:bg-gray-900/30 dark:text-gray-200',
@@ -1438,45 +1378,49 @@ export const McpConfigForm: React.FC = () => {
                   >
                     <div className="flex items-start justify-between gap-2">
                       <div className="text-sm">
-                        {inlineDiag.lastTest ? (
+                        {lastTest ? (
                           <>
                             <span className="font-medium">
-                              {inlineDiag.lastTest.success ? '连接成功' : '连接失败'}
+                              {lastTest.success ? '连接成功' : '连接失败'}
                             </span>
-                            <span className="ml-2 break-all">{inlineDiag.lastTest.message}</span>
+                            <span className="ml-2 break-all">{lastTest.message}</span>
                           </>
                         ) : (
-                          <span className="font-medium">已拉取 tools/list</span>
+                          <span className="font-medium">
+                            已缓存：tools/list {cachedTools.length}，resources/list {cachedResources.length}
+                          </span>
                         )}
                       </div>
                       <button
                         type="button"
                         className="text-xs rounded px-2 py-1 bg-white/70 hover:bg-white dark:bg-black/10 dark:hover:bg-black/20"
-                        onClick={() =>
+                        onClick={() => {
                           setInlineDiagByServerKey((prev) => {
                             if (!(serverUiKey in prev)) return prev;
                             const next = { ...prev };
                             delete next[serverUiKey];
                             return next;
-                          })
-                        }
-                        title="清除该 server 的最近结果"
+                          });
+                          // Also clear persisted discovery cache for this server.
+                          upsertServer({ ...server, cache: undefined });
+                        }}
+                        title="清除该 server 的最近结果（同时清空缓存的 tools/resources 列表）"
                       >
                         清除
                       </button>
                     </div>
 
-                    {inlineDiag.lastTools?.length ? (
+                    {toolsForList.length ? (
                       <div className="mt-2">
                         <div className="text-xs opacity-80">
-                          tools/list：{inlineDiag.lastTools.length} 个
-                          {inlineDiag.lastToolsSource
-                            ? `（来源：${inlineDiag.lastToolsSource === 'test' ? '测试' : '工具'}）`
+                          tools/list：{toolsForList.length} 个
+                          {toolsSource
+                            ? `（来源：${toolsSource === 'cache' ? '缓存' : toolsSource === 'test' ? '连接' : '工具'}）`
                             : ''}
                         </div>
                         <div className="mt-1 max-h-40 overflow-auto text-xs">
                           <ul className="space-y-1">
-                            {inlineDiag.lastTools.map((t) => (
+                            {toolsForList.map((t) => (
                               <li key={t.name} className="flex items-start gap-2">
                                 <input
                                   type="checkbox"
@@ -1503,29 +1447,29 @@ export const McpConfigForm: React.FC = () => {
                           </ul>
                         </div>
                       </div>
-                    ) : inlineDiag.lastTest?.success ? (
+                    ) : lastTest?.success ? (
                       <div className="mt-2 text-xs opacity-80">
-                        tools/list 为空（常见原因：你在 enabledTools 里填了白名单但名字不匹配，或 server 本身不提供 tools）。
+                        tools/list 为空（常见原因：server 本身不提供 tools，或 server 未正确启动/鉴权/URL 配置错误）。
                       </div>
                     ) : null}
 
-                    {inlineDiag.lastResources ? (
+                    {(lastTest || resourcesForList.length) ? (
                       <div className="mt-3">
                         <div className="text-xs opacity-80">
-                          resources/list：{inlineDiag.lastResources.length} 个
-                          {inlineDiag.lastResourcesSource
-                            ? `（来源：${inlineDiag.lastResourcesSource === 'test' ? '测试' : '资源'}）`
+                          resources/list：{resourcesForList.length} 个
+                          {resourcesSource
+                            ? `（来源：${resourcesSource === 'cache' ? '缓存' : resourcesSource === 'test' ? '连接' : '资源'}）`
                             : ''}
                         </div>
-                        {inlineDiag.lastTest?.resourcesError ? (
+                        {resourcesListError ? (
                           <div className="mt-1 text-xs opacity-90 break-all">
-                            resources/list 错误：{inlineDiag.lastTest.resourcesError}
+                            resources/list 错误：{resourcesListError}
                           </div>
                         ) : null}
-                        {inlineDiag.lastResources.length ? (
+                        {resourcesForList.length ? (
                           <div className="mt-1 max-h-40 overflow-auto text-xs">
                             <ul className="space-y-1">
-                              {inlineDiag.lastResources.map((r) => {
+                              {resourcesForList.map((r) => {
                                 const enabledResources = server.config.enabledResources ?? [];
                                 const disabledResources = server.config.disabledResources ?? [];
                                 return (
@@ -1565,7 +1509,7 @@ export const McpConfigForm: React.FC = () => {
                               })}
                             </ul>
                           </div>
-                        ) : inlineDiag.lastTest?.success ? (
+                        ) : lastTest?.success ? (
                           <div className="mt-1 text-xs opacity-80">resources/list 为空</div>
                         ) : null}
                       </div>
@@ -1830,20 +1774,16 @@ export const McpConfigForm: React.FC = () => {
             </button>
           </div>
 
-	          {(testingServer || toolPreviewServer || resourcePreviewServer) && (
+	          {testingServer && (
 	            <div className="text-sm text-gray-600 dark:text-gray-300 flex items-center gap-2">
 	              <Loader2 size={16} className="animate-spin" />
-	              {testingServer
-                    ? `正在测试连接：${testingServer}`
-                    : toolPreviewServer
-                      ? `正在拉取工具：${toolPreviewServer}`
-                      : `正在拉取资源：${resourcePreviewServer}`}
+	              {`正在连接：${testingServer}`}
 	            </div>
 	          )}
 
 	          {!testResult && !toolPreview && !resourcePreview && (
 	            <div className="text-sm text-gray-500 dark:text-gray-400">
-	              在 Servers 页点击“测试/工具”后，这里会显示结果。
+	              在 Servers 页点击“连接”后，这里会显示结果。
 	            </div>
 	          )}
 
@@ -1890,7 +1830,7 @@ export const McpConfigForm: React.FC = () => {
             <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3">
               <div className="text-sm text-gray-700 dark:text-gray-300">
                 resources/list: {resourcePreview.length} 个
-                {resourcePreviewServer ? `（${resourcePreviewServer}）` : ''}
+                {diagServerName ? `（${diagServerName}）` : ''}
               </div>
               <div className="mt-2 text-xs text-gray-600 dark:text-gray-300 max-h-48 overflow-auto">
                 <ul className="list-disc ml-4">
@@ -1909,7 +1849,7 @@ export const McpConfigForm: React.FC = () => {
             <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3">
               <div className="text-sm text-gray-700 dark:text-gray-300">
                 tools/list: {toolPreview.length} 个
-                {toolPreviewServer ? `（${toolPreviewServer}）` : ''}
+                {diagServerName ? `（${diagServerName}）` : ''}
               </div>
               <div className="mt-2 text-xs text-gray-600 dark:text-gray-300 max-h-48 overflow-auto">
                 <ul className="list-disc ml-4">
@@ -1928,7 +1868,7 @@ export const McpConfigForm: React.FC = () => {
 
       <div className="pt-2 border-t border-gray-200 dark:border-gray-700">
         <p className="text-xs text-gray-500">
-          提示：配置改动会自动保存；“测试连接 / 拉取工具”会在执行前自动同步保存到后端。
+          提示：配置改动会自动保存；点击“连接”会在执行前自动同步保存到后端。
         </p>
       </div>
     </div>

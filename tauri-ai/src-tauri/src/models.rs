@@ -1436,6 +1436,41 @@ pub struct McpServerConfig {
     pub disabled_resources: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpCachedToolInfo {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpCachedResourceInfo {
+    pub uri: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerDiscoveryCache {
+    /// Unix epoch milliseconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_at_ms: Option<u64>,
+    #[serde(default)]
+    pub tools: Vec<McpCachedToolInfo>,
+    #[serde(default)]
+    pub resources: Vec<McpCachedResourceInfo>,
+}
+
 impl Default for McpServerConfig {
     fn default() -> Self {
         Self {
@@ -1462,6 +1497,8 @@ impl Default for McpServerConfig {
 pub struct McpServerEntry {
     pub name: String,
     pub config: McpServerConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache: Option<McpServerDiscoveryCache>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1040,9 +1040,32 @@ export interface McpServerConfig {
   disabledResources?: string[];
 }
 
+export interface McpCachedToolInfo {
+  name: string;
+  description?: string;
+}
+
+export interface McpCachedResourceInfo {
+  uri: string;
+  name: string;
+  title?: string;
+  description?: string;
+  mimeType?: string;
+  size?: number;
+}
+
+export interface McpServerDiscoveryCache {
+  /** Unix epoch milliseconds */
+  updatedAtMs?: number;
+  tools: McpCachedToolInfo[];
+  resources: McpCachedResourceInfo[];
+}
+
 export interface McpServerEntry {
   name: string;
   config: McpServerConfig;
+  /** Persisted discovery results for UI (tools/resources list). */
+  cache?: McpServerDiscoveryCache;
 }
 
 export interface McpSetServerConfig {
