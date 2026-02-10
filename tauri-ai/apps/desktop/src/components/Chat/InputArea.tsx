@@ -245,7 +245,6 @@ function findActiveDollarQuery(text: string, cursor: number): { start: number; q
   if (prev && isDollarMentionChar(prev)) return null;
 
   const rest = before.slice(lastDollar + 1);
-  if (!rest) return null;
   // Only treat as an active query if the user is still typing a mention token.
   // i.e. all characters from `$` to cursor must be mention chars.
   if (rest && [...rest].some((ch) => !isDollarMentionChar(ch))) return null;
@@ -2138,11 +2137,36 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
           setDollarIndex((v) => Math.max(v - 1, 0));
           return;
         }
-        if (e.key === 'Escape') {
+      if (e.key === 'Escape') {
           e.preventDefault();
           setDollarQuery(null);
           setDollarResults([]);
           setDollarIndex(0);
+          return;
+        }
+        if (e.key === 'Tab' && !e.shiftKey) {
+          const chosen = dollarResults.length > 0 ? dollarResults[dollarIndex] : undefined;
+          if (!chosen) return;
+          e.preventDefault();
+          const el = textareaRef.current;
+          const cursor = el?.selectionStart ?? content.length;
+          const token = chosen.insertText;
+          const nextContent = content.slice(0, dollarQuery.start) + token + ' ' + content.slice(cursor);
+          handleContentChange(nextContent);
+          setDollarQuery(null);
+          setDollarResults([]);
+          setDollarIndex(0);
+          window.setTimeout(() => {
+            const el2 = textareaRef.current;
+            if (!el2) return;
+            el2.focus();
+            const pos = dollarQuery.start + token.length + 1;
+            try {
+              el2.setSelectionRange(pos, pos);
+            } catch {
+              // ignore
+            }
+          }, 0);
           return;
         }
         if (e.key === 'Enter' && !e.shiftKey) {
@@ -2484,7 +2508,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
           kind: 'mcp_server',
           name: serverName,
           description: 'MCP Server',
-          insertText: `[$${serverName}](mcp://${serverName})`,
+          insertText: `$${serverName}`,
         });
       }
     }
@@ -2850,7 +2874,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
                 )}
               </div>
               <div className="border-t border-gray-200 px-3 py-2 text-[11px] text-gray-500 dark:border-gray-700 dark:text-gray-400">
-                输入 <span className="font-mono">$</span> 搜索 Skills / MCP Servers，回车插入，Esc 关闭
+                输入 <span className="font-mono">$</span> 搜索 Skills / MCP Servers，回车/Tab 插入，Esc 关闭
               </div>
             </div>
           )}
