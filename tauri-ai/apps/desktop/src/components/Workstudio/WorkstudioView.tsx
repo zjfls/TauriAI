@@ -722,21 +722,21 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
   // Debug logs for the "click file link -> open in Workstudio" pipeline.
   // Enable with: localStorage.setItem('tauri-ai:debug:open_file','1')
-  const dbgEnabled = useMemo(() => {
+  const isOpenFileDebugEnabled = () => {
     try {
       return window.localStorage.getItem('tauri-ai:debug:open_file') === '1';
     } catch {
       return false;
     }
-  }, []);
+  };
 
   const dbg = useCallback(
     (msg: string, meta?: Record<string, unknown>) => {
-      if (!dbgEnabled) return;
+      if (!isOpenFileDebugEnabled()) return;
       // eslint-disable-next-line no-console
       console.log(`[open_file][WorkstudioView][${new Date().toISOString()}] ${msg}`, meta ?? {});
     },
-    [dbgEnabled]
+    []
   );
 
   const revealFileInExplorer = useCallback(
@@ -910,7 +910,17 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       if (!rawLine) return true;
 
       const pane = useWindowLayoutStore.getState().panes.find((p) => p.id === paneId) ?? null;
-      if (openedFileId && (!pane || pane.activeTabId !== openedFileId)) return false;
+      if (openedFileId && (!pane || pane.activeTabId !== openedFileId)) {
+        dbg('applySelection:wait_active_tab', {
+          seq,
+          paneId,
+          openedFileId,
+          activeTabId: pane?.activeTabId ?? null,
+          tabIds: pane?.tabIds ?? null,
+          expectedPath,
+        });
+        return false;
+      }
 
       const editor = editorByPaneRef.current.get(paneId);
       if (!editor) {
@@ -936,7 +946,20 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         const matches =
           (expectedFsPath && modelPath && modelPath === expectedFsPath) ||
           (expectedModelKey && modelKey && modelKey === expectedModelKey);
-        if (!matches) return false;
+        if (!matches) {
+          dbg('applySelection:wait_model_match', {
+            seq,
+            paneId,
+            openedFileId,
+            expectedPath,
+            expectedFsPath,
+            expectedModelKey,
+            modelPathRaw,
+            modelPath,
+            modelKey,
+          });
+          return false;
+        }
       } catch {
         // ignore
       }
@@ -945,6 +968,40 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         const file = openFilesRef.current.find((f) => f.id === openedFileId) ?? null;
         if (!file) return false;
         if (file.kind !== 'text') return true;
+        // If Monaco's model is not fully hydrated yet (common right after opening a file),
+        // it may temporarily report a very small line count (often 1) and we'd clamp the
+        // selection to the top, causing "open file works but jump-to-line doesn't".
+        //
+        // To avoid this, use the already-loaded file content as a readiness hint:
+        // - When the requested line exists in the content, wait until the model has enough lines.
+        // - When the requested line is beyond EOF, allow clamping to end-of-file immediately.
+        try {
+          const content = file.content ?? '';
+          if (content && rawLine > 1) {
+            let expectedLineCount = 1;
+            for (let i = 0; i < content.length; i++) {
+              if (content.charCodeAt(i) === 10) expectedLineCount += 1;
+            }
+            // Only wait when the requested position should be reachable.
+            if (expectedLineCount >= rawLine) {
+              const modelLineCount = model.getLineCount();
+              if (modelLineCount > 0 && modelLineCount < rawLine) {
+                dbg('applySelection:wait_model_hydrate', {
+                  seq,
+                  paneId,
+                  openedFileId,
+                  expectedPath,
+                  rawLine,
+                  modelLineCount,
+                  expectedLineCount,
+                });
+                return false;
+              }
+            }
+          }
+        } catch {
+          // ignore: best-effort readiness check
+        }
       }
 
       try {
@@ -1013,37 +1070,40 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       }
     };
 
-    const applyWithWait = async (openedFileId: string | null, expectedPath: string) => {
-      const startAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
-      const timeoutMs = 2600;
+      const applyWithWait = async (openedFileId: string | null, expectedPath: string) => {
+        const startAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        const timeoutMs = 8000;
 
-      // VS Code-like：在跳转时把目标 Pane 设为聚焦（确保 editor mount / focus 链路稳定）
-      if (useWindowLayoutStore.getState().focusedPaneId !== paneId) {
-        useWindowLayoutStore.getState().setFocusedPane(paneId);
-      }
-
-      while (openLinkSeqRef.current === seq) {
-        const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
-        if (now - startAt > timeoutMs) {
-          dbg('applyWithWait:timeout', {
-            seq,
-            paneId,
-            openedFileId,
-            expectedPath,
-            timeoutMs,
-            visibility: typeof document !== 'undefined' ? document.visibilityState : null,
-          });
-          return;
+        // VS Code-like：在跳转时把目标 Pane 设为聚焦（确保 editor mount / focus 链路稳定）
+        if (useWindowLayoutStore.getState().focusedPaneId !== paneId) {
+          useWindowLayoutStore.getState().setFocusedPane(paneId);
         }
-        const done = applySelection(openedFileId, expectedPath);
-        if (done) return;
+
+        while (openLinkSeqRef.current === seq) {
+          const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+          if (now - startAt > timeoutMs) {
+            dbg('applyWithWait:timeout', {
+              seq,
+              paneId,
+              openedFileId,
+              expectedPath,
+              timeoutMs,
+              visibility: typeof document !== 'undefined' ? document.visibilityState : null,
+            });
+            if (typeof target.line === 'number' && target.line > 0) {
+              setOpenFromLinkError(`定位到行超时（${timeoutMs}ms）：${target.filePath}:${target.line}`);
+            }
+            return;
+          }
+          const done = applySelection(openedFileId, expectedPath);
+          if (done) return;
         // 等待 React commit + Monaco model ready
         // - 20ms：比 rAF 更宽松，避免主线程忙时错过帧
         // - 也避免 setTimeout(0) 过于频繁造成额外压力
         // eslint-disable-next-line no-await-in-loop
-        await sleep(20);
-      }
-    };
+          await sleep(20);
+        }
+      };
 
     setOpenFromLinkError(null);
     try {

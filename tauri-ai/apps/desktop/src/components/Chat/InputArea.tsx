@@ -2589,7 +2589,8 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
           kind: 'mcp_server',
           name: serverName,
           description: 'MCP Server',
-          insertText: `$${serverName}`,
+          // Codex-like MCP mention: use an explicit mcp:// link to avoid ambiguity with `$skill`.
+          insertText: `[$${serverName}](mcp://${serverName})`,
         });
       }
     }

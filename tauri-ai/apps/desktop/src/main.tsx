@@ -122,7 +122,31 @@ window.addEventListener('error', (event) => {
 });
 
 window.addEventListener('unhandledrejection', (event) => {
-  console.error('Unhandled promise rejection:', event.reason);
+  const reason: any = (event as any)?.reason;
+
+  // Monaco (and some platform APIs) use promise rejection to signal expected cancellation.
+  // These are noisy in a global handler and usually not actionable.
+  const isCancellation = (() => {
+    if (!reason) return false;
+    const name = typeof reason?.name === 'string' ? reason.name : '';
+    if (name === 'Canceled' || name === 'Cancelled' || name === 'AbortError') return true;
+    const msg = typeof reason?.message === 'string' ? reason.message : String(reason);
+    if (/Canceled:\s*Canceled/i.test(msg)) return true;
+    if (/Cancelled:\s*Cancelled/i.test(msg)) return true;
+    if (/aborted/i.test(msg)) return true;
+    // Best-effort: some Monaco bundles surface cancellation stack traces from editor.api-*.js.
+    const stack = typeof reason?.stack === 'string' ? reason.stack : '';
+    if (stack && /editor\.api/i.test(stack) && /(Canceled|Cancelled)/i.test(msg)) return true;
+    return false;
+  })();
+
+  if (isCancellation) {
+    // Suppress noisy "expected cancellation" errors.
+    event.preventDefault();
+    return;
+  }
+
+  console.error('Unhandled promise rejection:', reason);
 });
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
