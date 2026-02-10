@@ -3296,7 +3296,7 @@ async fn run_task_inner(
         .resolve_policy(agent.security_policy.as_deref());
 
     // RunMode semantics:
-    // - chat: enable tools but enforce read-only sandbox (block file writes)
+    // - chat: enable tools but block file writes / pty by default (keep network by security policy)
     // - agent: use security policy only
     // - agent-custom: use agent overrides (sandboxPolicy/approvalPolicy) on top of the security policy
     let mut sandbox_policy = if use_custom_security {
@@ -3308,7 +3308,17 @@ async fn run_task_inner(
         base_security_policy.sandbox_policy.clone()
     };
     if chat_mode {
-        sandbox_policy = crate::models::SandboxPolicy::ReadOnly;
+        // Important:
+        // - Chat mode should keep "network access" semantics from the security policy,
+        //   otherwise MCP/web_search are silently unavailable even when the user explicitly enables them.
+        // - We still block file writes/pty in chat mode via the tool permission policy below.
+        let network_access = sandbox_policy.has_full_network_access();
+        sandbox_policy = crate::models::SandboxPolicy::WorkspaceWrite {
+            writable_roots: Vec::new(),
+            network_access,
+            exclude_tmpdir_env_var: false,
+            exclude_slash_tmp: false,
+        };
     }
     if force_full_access {
         sandbox_policy = crate::models::SandboxPolicy::DangerFullAccess;
@@ -3405,8 +3415,11 @@ async fn run_task_inner(
         // 权限策略：不再使用全局开关；改为由安全策略（sandbox_policy）决定是否暴露高危工具。
         // 实际执行时仍会在工具层再次按 sandbox_policy 做强校验（例如 read-only 拒绝写入/PTY 等）。
         let allow_shell_exec = true;
-        let allow_pty_exec = !matches!(sandbox_policy, crate::models::SandboxPolicy::ReadOnly);
-        let allow_file_write = !matches!(sandbox_policy, crate::models::SandboxPolicy::ReadOnly);
+        // Chat mode: don't allow high-risk local execution by default; keep behavior conservative.
+        let allow_pty_exec =
+            !chat_mode && !matches!(sandbox_policy, crate::models::SandboxPolicy::ReadOnly);
+        let allow_file_write =
+            !chat_mode && !matches!(sandbox_policy, crate::models::SandboxPolicy::ReadOnly);
         let allow_mcp_exec = sandbox_policy.has_full_network_access();
         let permission_policy: Arc<dyn super::tools::permissions::ToolPermissionPolicy> =
             Arc::new(super::tools::permissions::BasicToolPermissionPolicy {
