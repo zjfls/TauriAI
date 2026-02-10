@@ -2278,40 +2278,121 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
     const text = content ?? '';
     if (!text) return null;
 
+    const COMMON_ENV_VARS = new Set([
+      'PATH',
+      'HOME',
+      'USER',
+      'SHELL',
+      'PWD',
+      'TMPDIR',
+      'TEMP',
+      'TMP',
+      'LANG',
+      'TERM',
+      'XDG_CONFIG_HOME',
+    ]);
+    const isCommonEnvVar = (name: string) => COMMON_ENV_VARS.has(name.toUpperCase());
+
+    const mentionClass =
+      'rounded-sm bg-purple-200/70 text-purple-950 font-medium dark:bg-purple-900/40 dark:text-purple-100';
+
     const nodes: React.ReactNode[] = [];
-    let last = 0;
-    WORKSPACE_MENTION_TOKEN_RE.lastIndex = 0;
-    let match: RegExpExecArray | null;
-    while ((match = WORKSPACE_MENTION_TOKEN_RE.exec(text))) {
-      const start = match.index;
-      const end = start + match[0].length;
-      if (start > last) {
-        nodes.push(<span key={`t-${last}`}>{text.slice(last, start)}</span>);
+
+    const flushText = (start: number, end: number) => {
+      if (end <= start) return;
+      nodes.push(<span key={`t-${start}`}>{text.slice(start, end)}</span>);
+    };
+
+    let i = 0;
+    let lastTextStart = 0;
+
+    while (i < text.length) {
+      // Workspace mention token: @{ref:<uuid>}
+      if (text.startsWith('@{ref:', i)) {
+        const m = text.slice(i).match(/^@\{ref:([0-9a-fA-F-]+)\}/);
+        if (m) {
+          const raw = m[0];
+          const id = m[1];
+          const start = i;
+          const end = i + raw.length;
+
+          flushText(lastTextStart, start);
+          const mention = workspaceMentionsById.get(id);
+          if (mention) {
+            nodes.push(
+              <span
+                key={`ws-${id}-${start}`}
+                className="inline-flex items-center gap-1 rounded-md bg-blue-50 px-2 py-0.5 text-xs text-blue-700 dark:bg-blue-900/30 dark:text-blue-200 align-baseline"
+                title={mention.absPath}
+              >
+                {mention.label}
+              </span>
+            );
+          } else {
+            nodes.push(
+              <span key={`ws-missing-${id}-${start}`} className="text-gray-400">
+                {raw}
+              </span>
+            );
+          }
+
+          i = end;
+          lastTextStart = i;
+          continue;
+        }
       }
-      const id = match[1];
-      const mention = workspaceMentionsById.get(id);
-      if (mention) {
-        nodes.push(
-          <span
-            key={`m-${id}-${start}`}
-            className="inline-flex items-center gap-1 rounded-md bg-blue-50 px-2 py-0.5 text-xs text-blue-700 dark:bg-blue-900/30 dark:text-blue-200 align-baseline"
-            title={mention.absPath}
-          >
-            {mention.label}
-          </span>
-        );
-      } else {
-        nodes.push(
-          <span key={`m-missing-${id}-${start}`} className="text-gray-400">
-            {match[0]}
-          </span>
-        );
+
+      // Linked mention: [${name}](mcp://...) / [${name}](app://...) / skill links
+      // We only highlight the `$name` portion to keep caret alignment stable.
+      if (text[i] === '[' && text[i + 1] === '$') {
+        const nameStart = i + 2;
+        let nameEnd = nameStart;
+        while (nameEnd < text.length && isDollarMentionChar(text[nameEnd]!)) nameEnd++;
+        if (nameEnd > nameStart && text[nameEnd] === ']') {
+          const name = text.slice(nameStart, nameEnd);
+          if (!isCommonEnvVar(name)) {
+            flushText(lastTextStart, i + 1); // include '['
+            nodes.push(
+              <span key={`link-$-${i}`} className={mentionClass}>
+                {text.slice(i + 1, nameEnd)}
+              </span>
+            );
+            i = nameEnd;
+            lastTextStart = i;
+            continue;
+          }
+        }
       }
-      last = end;
+
+      // Plain $mention
+      if (text[i] === '$') {
+        const prev = i > 0 ? text[i - 1] : '';
+        // Avoid highlighting in the middle of a larger token like `$foo_bar` when cursor is at `bar`.
+        if (!prev || !isDollarMentionChar(prev)) {
+          const nameStart = i + 1;
+          let nameEnd = nameStart;
+          while (nameEnd < text.length && isDollarMentionChar(text[nameEnd]!)) nameEnd++;
+          const name = text.slice(nameStart, nameEnd);
+          // Avoid `$1` / `$0` etc (shell positional params) and common env vars.
+          const hasLetter = /[a-zA-Z_]/.test(name);
+          if (name && hasLetter && !isCommonEnvVar(name)) {
+            flushText(lastTextStart, i);
+            nodes.push(
+              <span key={`$-${i}`} className={mentionClass}>
+                {text.slice(i, nameEnd)}
+              </span>
+            );
+            i = nameEnd;
+            lastTextStart = i;
+            continue;
+          }
+        }
+      }
+
+      i += 1;
     }
-    if (last < text.length) {
-      nodes.push(<span key={`t-${last}`}>{text.slice(last)}</span>);
-    }
+
+    flushText(lastTextStart, text.length);
     return nodes;
   }, [content, workspaceMentionsById]);
 
