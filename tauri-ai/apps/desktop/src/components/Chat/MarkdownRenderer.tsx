@@ -629,48 +629,7 @@ const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferen
     [svg]
   );
 
-  if (error) {
-    return (
-      <div className="my-2 rounded-lg bg-red-900/20 p-4 text-red-400">
-        <p className="text-sm font-medium">Mermaid 渲染失败</p>
-        <p className="mt-1 text-xs opacity-70">{error}</p>
-        <pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs opacity-70 bg-red-900/10 p-2 rounded">{code}</pre>
-      </div>
-    );
-  }
-
-  if (!svg) {
-    return (
-      <div className="my-2 flex justify-center rounded-lg bg-gray-100 dark:bg-gray-700/50 p-4 min-h-[100px]">
-        <span className="text-gray-400 text-sm">Loading diagram...</span>
-      </div>
-    );
-  }
-
-  const handleSvgClickCapture = (e: React.SyntheticEvent) => {
-    const el = e.target as Element | null;
-    if (!el) return;
-    const anchor = findNearestAnchorWithLink(el);
-    if (!anchor) return;
-
-    const hrefRaw =
-      anchor.getAttribute('href') ??
-      anchor.getAttribute('xlink:href') ??
-      anchor.getAttributeNS('http://www.w3.org/1999/xlink', 'href') ??
-      '';
-
-    const token = parseFileReferenceTokenFromHref(hrefRaw);
-    if (!token) return;
-    if (!tryOpenFileReferenceToken) return;
-
-    const handled = tryOpenFileReferenceToken(token);
-    if (!handled) return;
-
-    // IMPORTANT: 用 capture 阶段拦截，避免 Mermaid 生成的 target/onclick 先于外层 onClick 执行。
-    e.preventDefault();
-    e.stopPropagation();
-  };
-
+  // Fullscreen pan handlers (must be defined before any early-return to keep hooks order stable).
   const handleFullscreenPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
     if (!e.isPrimary) return;
@@ -742,6 +701,48 @@ const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferen
     e.stopPropagation();
     fullscreenPanRef.current.blockNextClick = false;
   }, []);
+
+  if (error) {
+    return (
+      <div className="my-2 rounded-lg bg-red-900/20 p-4 text-red-400">
+        <p className="text-sm font-medium">Mermaid 渲染失败</p>
+        <p className="mt-1 text-xs opacity-70">{error}</p>
+        <pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs opacity-70 bg-red-900/10 p-2 rounded">{code}</pre>
+      </div>
+    );
+  }
+
+  if (!svg) {
+    return (
+      <div className="my-2 flex justify-center rounded-lg bg-gray-100 dark:bg-gray-700/50 p-4 min-h-[100px]">
+        <span className="text-gray-400 text-sm">Loading diagram...</span>
+      </div>
+    );
+  }
+
+  const handleSvgClickCapture = (e: React.SyntheticEvent) => {
+    const el = e.target as Element | null;
+    if (!el) return;
+    const anchor = findNearestAnchorWithLink(el);
+    if (!anchor) return;
+
+    const hrefRaw =
+      anchor.getAttribute('href') ??
+      anchor.getAttribute('xlink:href') ??
+      anchor.getAttributeNS('http://www.w3.org/1999/xlink', 'href') ??
+      '';
+
+    const token = parseFileReferenceTokenFromHref(hrefRaw);
+    if (!token) return;
+    if (!tryOpenFileReferenceToken) return;
+
+    const handled = tryOpenFileReferenceToken(token);
+    if (!handled) return;
+
+    // IMPORTANT: 用 capture 阶段拦截，避免 Mermaid 生成的 target/onclick 先于外层 onClick 执行。
+    e.preventDefault();
+    e.stopPropagation();
+  };
 
   return (
     <>
