@@ -3386,7 +3386,7 @@ async fn run_task_inner(
         // ToolSet：Agent 可以绑定不同工具集合。
         // - 若未绑定 toolset：默认只暴露 `web_search`（若本次 run 启用了 web_search），避免把本地工具“默认”下发给模型。
         //   真实执行层仍会再按 sandbox_policy 做权限校验（防止前端/模型绕过）。
-        let toolset_is_unbound = agent
+        let _toolset_is_unbound = agent
             .toolset
             .as_deref()
             .map(|s| s.trim().is_empty())
@@ -3740,9 +3740,10 @@ async fn run_task_inner(
 
         // 如果 agent 使用 allow_list toolset，需要把 MCP 工具名也显式加入 allow_list，
         // 否则 orchestrator 会把它们过滤掉（即使 registry 已注册）。
-        // 但“未绑定 toolset”的默认模式只允许 web_search：不应把 MCP 工具自动加进来。
+        //
+        // 注意：即使 toolset 未绑定（默认只启用 web_search），只要本次 run 确实注入了 MCP 工具
+        //（例如 agent 绑定了 MCP Set，或用户在消息中显式 mention 了 MCP server），也应该允许这些 MCP 工具生效。
         if matches!(toolset.mode, super::tools::spec::ToolSetMode::AllowList)
-            && !toolset_is_unbound
             && (!mcp_tool_names.is_empty() || !mcp_resource_tool_names.is_empty())
         {
             toolset.tools.extend(mcp_tool_names);
