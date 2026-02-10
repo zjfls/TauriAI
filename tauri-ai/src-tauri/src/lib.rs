@@ -163,6 +163,7 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
 
     let open_settings =
         MenuItem::with_id(app, "open_settings", "设置…", true, Some("CmdOrCtrl+,"))?;
+    let view_settings_separator = PredefinedMenuItem::separator(app)?;
 
     let separator = PredefinedMenuItem::separator(app)?;
     let test_window = MenuItem::with_id(
@@ -181,7 +182,7 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
     };
     let open_history =
         MenuItem::with_id(app, "open_history", "历史", true, open_history_accelerator)?;
-    let view_history_separator = PredefinedMenuItem::separator(app)?;
+    let session_history_separator = PredefinedMenuItem::separator(app)?;
 
     // View: open web/terminal as tabs inside the workspace (not standalone windows).
     let open_web_tab = MenuItem::with_id(
@@ -262,9 +263,8 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
         view.insert_items(&[&unit_test_ghost, &open_devtools], 0)?;
         view.insert_items(
             &[
-                &open_history,
                 &open_settings,
-                &view_history_separator,
+                &view_settings_separator,
                 &open_web_tab,
                 &open_terminal_tab,
                 &view_separator,
@@ -278,9 +278,8 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
             "View",
             true,
             &[
-                &open_history,
                 &open_settings,
-                &view_history_separator,
+                &view_settings_separator,
                 &open_web_tab,
                 &open_terminal_tab,
                 &view_separator,
@@ -294,9 +293,8 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
             "View",
             true,
             &[
-                &open_history,
                 &open_settings,
-                &view_history_separator,
+                &view_settings_separator,
                 &open_web_tab,
                 &open_terminal_tab,
             ],
@@ -320,13 +318,13 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
     }
 
     if let Some(session) = session_submenu {
-        session.insert_items(&[&new_session_by_agent], 0)?;
+        session.insert_items(&[&open_history, &session_history_separator, &new_session_by_agent], 0)?;
     } else {
         let session = Submenu::with_items(
             app,
             "会话",
             true,
-            &[&new_session_by_agent],
+            &[&open_history, &session_history_separator, &new_session_by_agent],
         )?;
         // Insert after View submenu. On macOS index 0 is the app menu.
         let pos = if cfg!(target_os = "macos") { 3 } else { 2 };
