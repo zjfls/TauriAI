@@ -24,11 +24,17 @@ fn strip_data_url_prefix(input: &str) -> &str {
 /// Why: WebView clipboard APIs are inconsistent (especially on macOS WKWebView).
 /// This uses OS-native clipboard so paste behaves like a screenshot in other apps and in our input box.
 #[tauri::command]
-pub async fn clipboard_write_png_base64(png_base64: String) -> Result<(), String> {
+pub async fn clipboard_write_png_base64(
+    app: tauri::AppHandle,
+    png_base64: String,
+) -> Result<(), String> {
     let trimmed = png_base64.trim();
     if trimmed.is_empty() {
         return Err("图片数据为空".to_string());
     }
+
+    #[cfg(not(target_os = "windows"))]
+    let _ = &app;
 
     let base64_data = strip_data_url_prefix(trimmed).trim();
 
@@ -143,7 +149,48 @@ pub async fn clipboard_write_png_base64(png_base64: String) -> Result<(), String
 
     #[cfg(not(target_os = "macos"))]
     {
+        #[cfg(target_os = "windows")]
+        {
+            let (w, h, bytes) = tokio::task::spawn_blocking(move || -> Result<(usize, usize, Vec<u8>), String> {
+                let img = image::load_from_memory_with_format(&png_bytes, image::ImageFormat::Png)
+                    .map_err(|e| format!("parse PNG failed: {e}"))?;
+                let rgba = img.to_rgba8();
+                let (w, h) = rgba.dimensions();
+
+                if w == 0 || h == 0 {
+                    return Err("invalid PNG dimensions".to_string());
+                }
+
+                Ok((w as usize, h as usize, rgba.into_raw()))
+            })
+            .await
+            .map_err(|e| format!("clipboard decode task failed: {e}"))??;
+
+            let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+            app.run_on_main_thread(move || {
+                let res = (|| -> Result<(), String> {
+                    let mut clipboard =
+                        arboard::Clipboard::new().map_err(|e| format!("init clipboard failed: {e}"))?;
+                    clipboard
+                        .set_image(arboard::ImageData {
+                            width: w,
+                            height: h,
+                            bytes: Cow::Owned(bytes),
+                        })
+                        .map_err(|e| format!("set clipboard image failed: {e}"))?;
+
+                    Ok(())
+                })();
+                let _ = tx.send(res);
+            })
+            .map_err(|e| format!("schedule clipboard write failed: {e}"))?;
+
+            rx.await
+                .map_err(|_| "clipboard write task failed: channel closed".to_string())??;
+        }
+
         // Decode PNG -> RGBA (required by arboard).
+        #[cfg(not(target_os = "windows"))]
         tokio::task::spawn_blocking(move || -> Result<(), String> {
             let img = image::load_from_memory_with_format(&png_bytes, image::ImageFormat::Png)
                 .map_err(|e| format!("解析 PNG 失败: {e}"))?;
