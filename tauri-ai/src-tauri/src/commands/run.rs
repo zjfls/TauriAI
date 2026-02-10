@@ -50,6 +50,7 @@ pub async fn run_task(
             debug_mode,
             base_messages_override: None,
             start_turn_index: None,
+            assistant_message_id_override: None,
         },
         db.inner().clone(),
         config_manager.inner().clone(),

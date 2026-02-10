@@ -69,6 +69,9 @@ pub struct RunTaskInput {
     // Internal-only overrides (not exposed as Tauri command params)
     pub base_messages_override: Option<Vec<Message>>,
     pub start_turn_index: Option<u32>,
+    /// When set, reuse an existing assistant message id (manual turn retry semantics).
+    /// This makes the retried run overwrite the same assistant bubble instead of appending a new one.
+    pub assistant_message_id_override: Option<String>,
 }
 
 #[derive(Debug)]
@@ -2816,9 +2819,12 @@ pub async fn retry_turn(
     config_manager: Arc<ConfigManager>,
     run_state: Arc<RunState>,
 ) -> Result<(), SerializableError> {
+    // Retry is a history-rewrite operation: ensure any in-flight run fully stops before we mutate DB.
+    run_state.abort_and_wait(&conversation_id, 5_000).await;
+
     let cleanup_conversation_id = conversation_id.clone();
 
-    let (content, base_messages_override, start_turn_index) = {
+    let (content, base_messages_override, start_turn_index, placeholder_assistant, removed_messages) = {
         let db = db.lock().await;
         let messages = db
             .get_messages(&conversation_id, 2_000, None)
@@ -2926,6 +2932,13 @@ pub async fn retry_turn(
             .filter(|m| m.status == MessageStatus::Success || m.id == user_msg.id)
             .collect::<Vec<_>>();
 
+        // How many persisted messages will be removed when rewinding from this assistant message.
+        let removed_messages = (messages.len().saturating_sub(assistant_pos)) as u32;
+
+        // Placeholder assistant message (same id) containing only turns *before* the retried turn.
+        // We'll re-insert it after deleting the old tail so the UI can keep showing prior turns.
+        let mut placeholder_assistant: Option<Message> = None;
+
         if target_turn_index > 1 {
             if let Some(blocks) = meta.blocks.as_ref() {
                 let mut idx_by_turn_id: HashMap<String, u32> = HashMap::new();
@@ -2998,6 +3011,10 @@ pub async fn retry_turn(
                         .collect::<Vec<_>>()
                 });
 
+                let has_filtered_turns = filtered_turns
+                    .as_ref()
+                    .is_some_and(|turns| !turns.is_empty());
+
                 if !filtered_blocks.is_empty() {
                     base_messages.push(Message {
                         id: uuid::Uuid::new_v4().to_string(),
@@ -3008,7 +3025,31 @@ pub async fn retry_turn(
                         thinking: None,
                         meta: Some(MessageMeta {
                             model: meta.model.clone(),
-                            blocks: Some(filtered_blocks),
+                            blocks: Some(filtered_blocks.clone()),
+                            turns: filtered_turns.clone(),
+                            ..Default::default()
+                        }),
+                        created_at: assistant_msg.created_at,
+                        status: MessageStatus::Success,
+                        error_message: None,
+                    });
+                }
+
+                if !filtered_blocks.is_empty() || has_filtered_turns {
+                    placeholder_assistant = Some(Message {
+                        id: assistant_message_id.clone(),
+                        conversation_id: conversation_id.clone(),
+                        role: MessageRole::Assistant,
+                        content: String::new(),
+                        content_parts: Vec::new(),
+                        thinking: None,
+                        meta: Some(MessageMeta {
+                            model: meta.model.clone(),
+                            blocks: if filtered_blocks.is_empty() {
+                                None
+                            } else {
+                                Some(filtered_blocks.clone())
+                            },
                             turns: filtered_turns,
                             ..Default::default()
                         }),
@@ -3020,8 +3061,42 @@ pub async fn retry_turn(
             }
         }
 
-        (user_msg.content.clone(), base_messages, target_turn_index)
+        (
+            user_msg.content.clone(),
+            base_messages,
+            target_turn_index,
+            placeholder_assistant,
+            removed_messages,
+        )
     };
+
+    // Rewind persisted history: drop the original assistant message (including turns >= target)
+    // and all subsequent messages/tasks, then (optionally) re-insert a placeholder containing
+    // only the prefix turns so the UI can keep showing them.
+    {
+        let db = db.lock().await;
+        db.delete_messages_after(&cleanup_conversation_id, &assistant_message_id)
+            .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
+
+        if let Some(msg) = placeholder_assistant.as_ref() {
+            db.add_message(&cleanup_conversation_id, msg)
+                .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
+        }
+    }
+
+    // Notify UI to reload persisted history (important for other windows/tabs).
+    {
+        let mut emitter = RunEmitter::new(
+            app.clone(),
+            cleanup_conversation_id.clone(),
+            uuid::Uuid::new_v4().to_string(),
+        );
+        emitter.emit(RunEvent::HistorySyncNeeded {
+            reason: "retry_turn_rewind".to_string(),
+            removed_messages: Some(removed_messages),
+            dropped_for_fit: None,
+        });
+    }
 
     let result = run_task_inner(
         app,
@@ -3038,6 +3113,7 @@ pub async fn retry_turn(
             debug_mode,
             base_messages_override: Some(base_messages_override),
             start_turn_index: Some(start_turn_index),
+            assistant_message_id_override: Some(assistant_message_id.clone()),
         },
         db,
         config_manager,
@@ -3064,7 +3140,17 @@ async fn run_task_inner(
     let run_id = uuid::Uuid::new_v4().to_string();
     let task_id = uuid::Uuid::new_v4().to_string();
     // 一个 Task 最终只落一条 assistant 消息（tool/websearch 等作为 blocks 扩展）
-    let assistant_message_id = uuid::Uuid::new_v4().to_string();
+    let assistant_message_id = input
+        .assistant_message_id_override
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let reuse_assistant_message_id = input
+        .assistant_message_id_override
+        .as_deref()
+        .is_some_and(|s| !s.trim().is_empty());
 
     let mut emitter = RunEmitter::new(app.clone(), input.conversation_id.clone(), run_id.clone());
 
@@ -4189,12 +4275,35 @@ async fn run_task_inner(
                 }
             }
 
-            if !content.is_empty()
+            let should_persist = reuse_assistant_message_id
+                || !content.is_empty()
                 || !thinking.is_empty()
                 || !blocks.is_empty()
-                || !turns.is_empty()
-            {
+                || !turns.is_empty();
+
+            if should_persist {
                 let usage_for_meta = turns.iter().rev().find_map(|t| t.usage.clone());
+
+                let db = db.lock().await;
+                let existing = if reuse_assistant_message_id {
+                    db.get_message(&input.conversation_id, &assistant_message_id)
+                        .ok()
+                } else {
+                    None
+                };
+
+                let (merged_blocks, merged_turns) = if let Some(existing) = existing.as_ref() {
+                    let prefix_meta = existing.meta.as_ref();
+                    let prefix_blocks = prefix_meta.and_then(|m| m.blocks.clone());
+                    let prefix_turns = prefix_meta.and_then(|m| m.turns.clone());
+                    (
+                        merge_message_blocks(prefix_blocks, blocks),
+                        merge_message_turns(prefix_turns, turns),
+                    )
+                } else {
+                    (blocks, turns)
+                };
+
                 let assistant_message = Message {
                     id: assistant_message_id.clone(),
                     conversation_id: input.conversation_id.clone(),
@@ -4208,12 +4317,16 @@ async fn run_task_inner(
                     },
                     meta: Some(MessageMeta {
                         model: Some(model_config.model.clone()),
-                        blocks: if blocks.is_empty() {
+                        blocks: if merged_blocks.is_empty() {
                             None
                         } else {
-                            Some(blocks)
+                            Some(merged_blocks)
                         },
-                        turns: if turns.is_empty() { None } else { Some(turns) },
+                        turns: if merged_turns.is_empty() {
+                            None
+                        } else {
+                            Some(merged_turns)
+                        },
                         usage: usage_for_meta,
                         ..Default::default()
                     }),
@@ -4222,8 +4335,11 @@ async fn run_task_inner(
                     error_message: Some(error.clone()),
                 };
 
-                let db = db.lock().await;
-                let _ = db.add_message(&input.conversation_id, &assistant_message);
+                if reuse_assistant_message_id && existing.is_some() {
+                    let _ = db.update_message(&assistant_message);
+                } else {
+                    let _ = db.add_message(&input.conversation_id, &assistant_message);
+                }
             }
 
             emitter.emit(RunEvent::Error {
@@ -4256,7 +4372,29 @@ async fn run_task_inner(
                 || !blocks.is_empty()
                 || !turns.is_empty()
             {
-                let usage_for_meta = usage.clone().or_else(|| turns.iter().rev().find_map(|t| t.usage.clone()));
+                let usage_for_meta =
+                    usage.clone().or_else(|| turns.iter().rev().find_map(|t| t.usage.clone()));
+
+                let db = db.lock().await;
+                let existing = if reuse_assistant_message_id {
+                    db.get_message(&input.conversation_id, &assistant_message_id)
+                        .ok()
+                } else {
+                    None
+                };
+
+                let (merged_blocks, merged_turns) = if let Some(existing) = existing.as_ref() {
+                    let prefix_meta = existing.meta.as_ref();
+                    let prefix_blocks = prefix_meta.and_then(|m| m.blocks.clone());
+                    let prefix_turns = prefix_meta.and_then(|m| m.turns.clone());
+                    (
+                        merge_message_blocks(prefix_blocks, blocks),
+                        merge_message_turns(prefix_turns, turns),
+                    )
+                } else {
+                    (blocks, turns)
+                };
+
                 let assistant_message = Message {
                     id: assistant_message_id.clone(),
                     conversation_id: input.conversation_id.clone(),
@@ -4270,12 +4408,16 @@ async fn run_task_inner(
                     },
                     meta: Some(MessageMeta {
                         model: Some(model_config.model.clone()),
-                        blocks: if blocks.is_empty() {
+                        blocks: if merged_blocks.is_empty() {
                             None
                         } else {
-                            Some(blocks)
+                            Some(merged_blocks)
                         },
-                        turns: if turns.is_empty() { None } else { Some(turns) },
+                        turns: if merged_turns.is_empty() {
+                            None
+                        } else {
+                            Some(merged_turns)
+                        },
                         usage: usage_for_meta,
                         ..Default::default()
                     }),
@@ -4284,9 +4426,13 @@ async fn run_task_inner(
                     error_message: None,
                 };
 
-                let db = db.lock().await;
-                db.add_message(&input.conversation_id, &assistant_message)
-                    .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
+                if reuse_assistant_message_id && existing.is_some() {
+                    db.update_message(&assistant_message)
+                        .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
+                } else {
+                    db.add_message(&input.conversation_id, &assistant_message)
+                        .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
+                }
             }
 
             emitter.emit(RunEvent::Done {
@@ -4326,6 +4472,27 @@ async fn run_task_inner(
                 || !turns.is_empty()
             {
                 let usage_for_meta = turns.iter().rev().find_map(|t| t.usage.clone());
+
+                let db = db.lock().await;
+                let existing = if reuse_assistant_message_id {
+                    db.get_message(&input.conversation_id, &assistant_message_id)
+                        .ok()
+                } else {
+                    None
+                };
+
+                let (merged_blocks, merged_turns) = if let Some(existing) = existing.as_ref() {
+                    let prefix_meta = existing.meta.as_ref();
+                    let prefix_blocks = prefix_meta.and_then(|m| m.blocks.clone());
+                    let prefix_turns = prefix_meta.and_then(|m| m.turns.clone());
+                    (
+                        merge_message_blocks(prefix_blocks, blocks),
+                        merge_message_turns(prefix_turns, turns),
+                    )
+                } else {
+                    (blocks, turns)
+                };
+
                 let assistant_message = Message {
                     id: assistant_message_id.clone(),
                     conversation_id: input.conversation_id.clone(),
@@ -4339,12 +4506,16 @@ async fn run_task_inner(
                     },
                     meta: Some(MessageMeta {
                         model: Some(model_config.model.clone()),
-                        blocks: if blocks.is_empty() {
+                        blocks: if merged_blocks.is_empty() {
                             None
                         } else {
-                            Some(blocks)
+                            Some(merged_blocks)
                         },
-                        turns: if turns.is_empty() { None } else { Some(turns) },
+                        turns: if merged_turns.is_empty() {
+                            None
+                        } else {
+                            Some(merged_turns)
+                        },
                         usage: usage_for_meta,
                         ..Default::default()
                     }),
@@ -4353,9 +4524,13 @@ async fn run_task_inner(
                     error_message: None,
                 };
 
-                let db = db.lock().await;
-                db.add_message(&input.conversation_id, &assistant_message)
-                    .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
+                if reuse_assistant_message_id && existing.is_some() {
+                    db.update_message(&assistant_message)
+                        .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
+                } else {
+                    db.add_message(&input.conversation_id, &assistant_message)
+                        .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
+                }
             }
 
             emitter.emit(RunEvent::Done {
@@ -4381,6 +4556,58 @@ async fn run_task_inner(
 async fn cleanup_abort_sender(run_state: &RunState, conversation_id: &str) {
     let mut senders = run_state.abort_senders.write().await;
     senders.remove(conversation_id);
+}
+
+fn message_block_id(block: &MessageBlock) -> &str {
+    match block {
+        MessageBlock::Text { id, .. }
+        | MessageBlock::Thinking { id, .. }
+        | MessageBlock::ToolCall { id, .. }
+        | MessageBlock::ToolResult { id, .. }
+        | MessageBlock::Approval { id, .. }
+        | MessageBlock::Error { id, .. }
+        | MessageBlock::WebSearch { id, .. }
+        | MessageBlock::Unknown { id, .. } => id,
+    }
+}
+
+fn merge_message_blocks(prefix: Option<Vec<MessageBlock>>, next: Vec<MessageBlock>) -> Vec<MessageBlock> {
+    let mut out: Vec<MessageBlock> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    if let Some(prefix) = prefix {
+        for block in prefix {
+            if seen.insert(message_block_id(&block).to_string()) {
+                out.push(block);
+            }
+        }
+    }
+    for block in next {
+        if seen.insert(message_block_id(&block).to_string()) {
+            out.push(block);
+        }
+    }
+    out
+}
+
+fn merge_message_turns(prefix: Option<Vec<MessageTurn>>, next: Vec<MessageTurn>) -> Vec<MessageTurn> {
+    let mut out: Vec<MessageTurn> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    if let Some(prefix) = prefix {
+        for t in prefix {
+            if seen.insert(t.turn_id.clone()) {
+                out.push(t);
+            }
+        }
+    }
+    for t in next {
+        if seen.insert(t.turn_id.clone()) {
+            out.push(t);
+        }
+    }
+    out.sort_by_key(|t| t.turn_index);
+    out
 }
 
 trait TurnEventEmitter: Send {

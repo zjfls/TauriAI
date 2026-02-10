@@ -1253,8 +1253,48 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const newSessions = new Map(state.sessions);
       const currentSession = newSessions.get(sessionId);
       if (currentSession) {
+        // Business semantics:
+        // - Retry from a specific internal turn should *rewind* the assistant bubble to that turn,
+        //   removing later turns, and also remove all subsequent messages/tasks in the conversation.
+        let nextMessages = currentSession.messages;
+        const assistantIndex = currentSession.messages.findIndex((m) => m.id === assistantMessageId);
+        if (assistantIndex !== -1) {
+          const assistant = currentSession.messages[assistantIndex];
+          const turnIndexById = new Map<string, number>(
+            (assistant.turns ?? []).map((t) => [t.turnId, t.turnIndex])
+          );
+          const targetTurnIndex =
+            assistant.turns?.find((t) => t.turnId === turnId)?.turnIndex ??
+            assistant.blocks?.find((b: any) => b?.turnId === turnId && typeof b?.turnIndex === 'number')?.turnIndex ??
+            1;
+
+          const trimmedTurns = assistant.turns?.filter((t) => t.turnIndex < targetTurnIndex);
+          const trimmedBlocks = assistant.blocks?.filter((b: any) => {
+            const idx =
+              typeof b?.turnIndex === 'number'
+                ? b.turnIndex
+                : typeof b?.turnId === 'string'
+                  ? turnIndexById.get(b.turnId)
+                  : undefined;
+            return typeof idx === 'number' ? idx < targetTurnIndex : false;
+          });
+
+          const trimmedAssistant: Message = {
+            ...assistant,
+            // Avoid showing legacy final content after rewind.
+            content: '',
+            thinking: undefined,
+            blocks: trimmedBlocks && trimmedBlocks.length > 0 ? trimmedBlocks : undefined,
+            turns: trimmedTurns && trimmedTurns.length > 0 ? trimmedTurns : undefined,
+          };
+
+          nextMessages = currentSession.messages.slice(0, assistantIndex + 1);
+          nextMessages[assistantIndex] = trimmedAssistant;
+        }
+
         newSessions.set(sessionId, {
           ...currentSession,
+          messages: nextMessages,
           isGenerating: true,
           streamingBlocks: [],
           streamingTurns: new Map(),
@@ -1498,8 +1538,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       blocks.push(block);
     }
 
+    const resolvedAssistantMessageId = assistantMessageId || crypto.randomUUID();
     const assistantMessage: Message = {
-      id: assistantMessageId || crypto.randomUUID(),
+      id: resolvedAssistantMessageId,
       conversationId: session.conversationId,
       role: 'assistant',
       content: finalContent,
@@ -1528,9 +1569,64 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           }
         }
 
+        const existingIndex = updatedMessages.findIndex((m) => m.id === resolvedAssistantMessageId);
+        const existing = existingIndex !== -1 ? updatedMessages[existingIndex] : null;
+
+        const mergedBlocks = (() => {
+          const out: MessageBlock[] = [];
+          const seen = new Set<string>();
+          const prefix = existing?.blocks ?? [];
+          const next = assistantMessage.blocks ?? [];
+          for (const b of [...prefix, ...next]) {
+            if (!seen.has(b.id)) {
+              seen.add(b.id);
+              out.push(b);
+            }
+          }
+          return out.length > 0 ? out : undefined;
+        })();
+
+        const mergedTurns = (() => {
+          const out: MessageTurn[] = [];
+          const seen = new Set<string>();
+          const prefix = existing?.turns ?? [];
+          const next = assistantMessage.turns ?? [];
+          for (const t of [...prefix, ...next]) {
+            if (!seen.has(t.turnId)) {
+              seen.add(t.turnId);
+              out.push(t);
+            }
+          }
+          out.sort((a, b) => a.turnIndex - b.turnIndex);
+          return out.length > 0 ? out : undefined;
+        })();
+
+        const mergedAssistant: Message = existing
+          ? {
+            ...assistantMessage,
+            // Keep original timestamp to avoid reordering in UI.
+            createdAt: existing.createdAt,
+            blocks: mergedBlocks,
+            turns: mergedTurns,
+          }
+          : {
+            ...assistantMessage,
+            blocks: mergedBlocks,
+            turns: mergedTurns,
+          };
+
+        const nextMessages =
+          existingIndex !== -1
+            ? (() => {
+              const copy = updatedMessages.slice();
+              copy[existingIndex] = mergedAssistant;
+              return copy;
+            })()
+            : [...updatedMessages, mergedAssistant];
+
         newSessions.set(sessionId, {
           ...currentSession,
-          messages: [...updatedMessages, assistantMessage],
+          messages: nextMessages,
           streamingBlocks: null,
           streamingTurns: undefined,
           isGenerating: false,
@@ -1646,8 +1742,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
       const lastModel = mergedTurns?.[mergedTurns.length - 1]?.model;
 
+      const resolvedAssistantMessageId = assistantMessageId || crypto.randomUUID();
       const assistantMessage: Message = {
-        id: assistantMessageId || crypto.randomUUID(),
+        id: resolvedAssistantMessageId,
         conversationId: currentSession.conversationId || '',
         role: 'assistant',
         content: '',
@@ -1661,9 +1758,63 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         createdAt: new Date().toISOString(),
       };
 
+      const existingIndex = updatedMessages.findIndex((m) => m.id === resolvedAssistantMessageId);
+      const existing = existingIndex !== -1 ? updatedMessages[existingIndex] : null;
+
+      const mergedBlocks = (() => {
+        const out: MessageBlock[] = [];
+        const seen = new Set<string>();
+        const prefix = existing?.blocks ?? [];
+        const next = assistantMessage.blocks ?? [];
+        for (const b of [...prefix, ...next]) {
+          if (!seen.has(b.id)) {
+            seen.add(b.id);
+            out.push(b);
+          }
+        }
+        return out.length > 0 ? out : undefined;
+      })();
+
+      const mergedTurnsOut = (() => {
+        const out: MessageTurn[] = [];
+        const seen = new Set<string>();
+        const prefix = existing?.turns ?? [];
+        const next = assistantMessage.turns ?? [];
+        for (const t of [...prefix, ...next]) {
+          if (!seen.has(t.turnId)) {
+            seen.add(t.turnId);
+            out.push(t);
+          }
+        }
+        out.sort((a, b) => a.turnIndex - b.turnIndex);
+        return out.length > 0 ? out : undefined;
+      })();
+
+      const mergedAssistant: Message = existing
+        ? {
+          ...assistantMessage,
+          createdAt: existing.createdAt,
+          blocks: mergedBlocks,
+          turns: mergedTurnsOut,
+        }
+        : {
+          ...assistantMessage,
+          blocks: mergedBlocks,
+          turns: mergedTurnsOut,
+        };
+
+      const nextMessages =
+        existingIndex !== -1
+          ? (() => {
+            const copy = updatedMessages.slice();
+            copy[existingIndex] = mergedAssistant;
+            return copy;
+          })()
+          : [...updatedMessages, mergedAssistant];
+
       newSessions.set(sessionId, {
         ...currentSession,
-        messages: [...updatedMessages, assistantMessage],
+        messages: nextMessages,
         error,
         isGenerating: false,
         streamingBlocks: null,

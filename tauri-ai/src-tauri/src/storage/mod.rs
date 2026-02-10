@@ -2060,6 +2060,13 @@ impl Database {
             ],
         )?;
 
+        // Touch conversation updated_at for any message edits (e.g. manual retry overwriting a bubble).
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
+            params![now, message.conversation_id],
+        )?;
+
         Ok(())
     }
 
