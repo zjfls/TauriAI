@@ -379,6 +379,9 @@ export const DocumentView: React.FC<{ documentId?: string }> = ({ documentId }) 
                   theme={theme}
                   value={activeDoc.content}
                   language={language}
+                  // Configure MonacoEnvironment workers before the editor initializes.
+                  // Prevents TS/JS language-service requests from being routed to the simple editor worker.
+                  beforeMount={setupMonaco}
                   onMount={handleEditorMount}
                   onChange={(value) => updateDocumentContent(activeDoc.id, value ?? '')}
                   options={{

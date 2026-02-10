@@ -2482,6 +2482,10 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	                                path={toMonacoModelPath(activeFile.path)}
 	                                language={languageForPath(activeFile.path)}
 	                                value={activeFile.content ?? ''}
+	                                // Configure MonacoEnvironment workers before the editor initializes.
+	                                // Otherwise Monaco may route TS/JS language-service requests to the simple editor worker,
+	                                // leading to errors like: "Missing requestHandler or method: getQuickInfoAtPosition".
+	                                beforeMount={setupMonaco}
 	                                onMount={handleEditorMountForPane(pane.id)}
 	                                onChange={(value) => {
 	                                  const nextValue = value ?? '';
