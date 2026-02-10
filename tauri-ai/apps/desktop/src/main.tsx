@@ -4,6 +4,7 @@ import App from "./App";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import "./index.css";
 import * as pdfjsLib from 'pdfjs-dist';
+import './utils/monacoEnv';
 
 const createDevIconRgba = (size = 32): Uint8Array => {
   const rgba = new Uint8Array(size * size * 4);
