@@ -1027,6 +1027,8 @@ mod tests {
             tool_timeout_ms: Some(50),
             enabled_tools: Vec::new(),
             disabled_tools: Vec::new(),
+            enabled_resources: Vec::new(),
+            disabled_resources: Vec::new(),
         };
 
         let client = McpClient::new("test", &cfg).await.unwrap();

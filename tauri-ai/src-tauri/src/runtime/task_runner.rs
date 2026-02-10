@@ -4663,7 +4663,7 @@ async fn stream_one_turn(
         }
 
         // 确保任务退出，并把“没有通过 StreamEvent::Error 上报的错误”补齐（否则会被误判为成功结束）
-        let stream_result: Result<(), crate::ai_client::AiError> = match stream_handle.await {
+        let mut stream_result: Result<(), crate::ai_client::AiError> = match stream_handle.await {
             Ok(v) => v,
             Err(e) => Err(crate::ai_client::AiError::StreamError(e.to_string())),
         };
@@ -4676,6 +4676,18 @@ async fn stream_one_turn(
                 debug_info,
                 usage,
             };
+        }
+
+        // 重要：如果流“正常结束”但没有任何可见输出（也没有工具调用/错误），不要当作成功。
+        //
+        // 现象（用户反馈）：
+        // - Observe 阶段喂回工具结果后，模型可能直接结束流，但没有吐字（content 为空）。
+        // - 旧逻辑会返回 TurnStreamResult::Final(content="")，进而被上层当作 TaskOutcome::Success，
+        //   导致前端“无消息、无错误”。
+        if stream_result.is_ok() && last_error.is_none() && full_content.trim().is_empty() {
+            stream_result = Err(crate::ai_client::AiError::StreamError(
+                "模型流结束但未返回任何内容".to_string(),
+            ));
         }
 
         if let Err(stream_err) = stream_result {
