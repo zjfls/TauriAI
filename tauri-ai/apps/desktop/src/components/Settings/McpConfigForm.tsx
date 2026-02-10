@@ -192,6 +192,9 @@ export const McpConfigForm: React.FC = () => {
   // 否则每次改名都会 remount -> 输入框丢焦点。
   const serverUiKeyByNameRef = useRef<Map<string, string>>(new Map());
   const setUiKeyByNameRef = useRef<Map<string, string>>(new Map());
+  // UI-only cache: keep last remote URL when switching transports (avoid wiping user input).
+  // Keyed by server UI key (stable even if server name is edited).
+  const lastRemoteUrlByServerUiKeyRef = useRef<Map<string, string>>(new Map());
 
   const getServerUiKey = useCallback((name: string) => {
     const map = serverUiKeyByNameRef.current;
@@ -919,22 +922,42 @@ export const McpConfigForm: React.FC = () => {
                       value={server.config.transport.transport}
                       onChange={(e) => {
                         const t = e.target.value as McpServerTransportConfig['transport'];
+                        const prev = server.config.transport;
+                        if (isRemoteTransport(prev)) {
+                          lastRemoteUrlByServerUiKeyRef.current.set(serverUiKey, prev.url);
+                        }
                         if (t === 'stdio') {
                           upsertServer({ ...server, config: { ...server.config, transport: defaultStdioTransport() } });
                         } else if (t === 'streamable_http') {
+                          const cachedUrl = lastRemoteUrlByServerUiKeyRef.current.get(serverUiKey) ?? '';
+                          const url = isRemoteTransport(prev) ? prev.url : cachedUrl;
                           upsertServer({
                             ...server,
                             config: {
                               ...server.config,
-                              transport: { transport: 'streamable_http', url: '' },
+                              transport: {
+                                transport: 'streamable_http',
+                                url,
+                                bearerTokenEnvVar: isRemoteTransport(prev) ? prev.bearerTokenEnvVar : undefined,
+                                httpHeaders: isRemoteTransport(prev) ? prev.httpHeaders : undefined,
+                                envHttpHeaders: isRemoteTransport(prev) ? prev.envHttpHeaders : undefined,
+                              },
                             },
                           });
                         } else {
+                          const cachedUrl = lastRemoteUrlByServerUiKeyRef.current.get(serverUiKey) ?? '';
+                          const url = isRemoteTransport(prev) ? prev.url : cachedUrl;
                           upsertServer({
                             ...server,
                             config: {
                               ...server.config,
-                              transport: { transport: 'sse', url: '' },
+                              transport: {
+                                transport: 'sse',
+                                url,
+                                bearerTokenEnvVar: isRemoteTransport(prev) ? prev.bearerTokenEnvVar : undefined,
+                                httpHeaders: isRemoteTransport(prev) ? prev.httpHeaders : undefined,
+                                envHttpHeaders: isRemoteTransport(prev) ? prev.envHttpHeaders : undefined,
+                              },
                             },
                           });
                         }
@@ -1147,6 +1170,7 @@ export const McpConfigForm: React.FC = () => {
                         onChange={(e) => {
                           const t = server.config.transport;
                           if (!isRemoteTransport(t)) return;
+                          lastRemoteUrlByServerUiKeyRef.current.set(serverUiKey, e.target.value);
                           upsertServer({
                             ...server,
                             config: {
