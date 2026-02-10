@@ -676,7 +676,9 @@ const AgentForm: React.FC<AgentFormProps> = ({
             className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800"
           />
           <p className="text-xs text-gray-500">
-            {supportsToolset ? 'Tool 类型会进行多 Turn 循环；未设置时后端默认 10000。' : '一般 Chat 类型默认单 Turn。'}
+            {supportsToolset
+              ? 'Tool 类型会进行多 Turn 循环；未设置时后端默认 10000（所有类型一致）。'
+              : '未设置时后端默认 10000（所有类型一致）。'}
           </p>
         </div>
 

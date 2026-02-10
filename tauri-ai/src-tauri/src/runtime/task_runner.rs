@@ -3869,23 +3869,10 @@ async fn run_task_inner(
         .as_ref()
         .is_some_and(|names| names.contains("apply_patch"));
 
-    // 4) TurnLoop：Chat 默认单 Turn，但只要启用了工具调用，就至少需要 2 Turn 才能完成
-    //    （Turn1: tool_calls -> 执行工具；Turn2: 带工具结果继续生成最终回复）。
-    let has_tools = tools.as_ref().map(|t| !t.is_empty()).unwrap_or(false);
-    let default_max_turns: u32 = match runtime_agent_type {
-        AgentType::Tool => 10_000,
-        AgentType::Chat => {
-            if has_tools {
-                20
-            } else {
-                1
-            }
-        }
-    };
-    let mut max_turns: u32 = agent.max_turns.unwrap_or(default_max_turns).max(1);
-    if matches!(runtime_agent_type, AgentType::Chat) && has_tools && agent.max_turns.is_none() {
-        max_turns = max_turns.max(2);
-    }
+    // 4) TurnLoop：max_turns 统一以配置为准（agent.max_turns），未配置则使用全局默认值。
+    let default_max_turns: u32 = 10_000;
+    let max_turns: u32 = agent.max_turns.unwrap_or(default_max_turns).max(1);
+    // Note: 如果 max_turns 过小且模型仍然请求工具调用，会在 TurnLoop 内失败并提示用户调大 max_turns。
 
     // Skills: load (metadata only by default; full contents only when a skill is explicitly mentioned).
     let app_skills_dir = config_manager

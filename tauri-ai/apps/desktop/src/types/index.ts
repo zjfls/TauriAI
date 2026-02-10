@@ -232,7 +232,7 @@ export interface Agent {
   sandboxPolicy?: SandboxPolicy; // Optional sandbox policy override (defaults to global policy)
   approvalPolicy?: AskForApproval; // Optional approval policy override (defaults to global policy)
   workspaceSupport?: boolean; // Tool agent workspace support (default: true for tool, else false)
-  maxTurns?: number;      // Max turns per run/task (default depends on agent type)
+  maxTurns?: number;      // Max turns per run/task (backend default: 10000)
   reinjectThinking?: boolean; // Whether to reinject thinking into next turn context (default: false)
   contextPolicy?: ContextPolicyConfig; // Optional context management policy (agent-level)
 }
