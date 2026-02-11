@@ -52,6 +52,32 @@ type AgentDraft = {
   type?: AgentType;
   modelRef: string;
   systemPrompt?: string;
+  mcpSet?: string;
+};
+
+type McpTransportType = "streamable_http" | "sse" | "stdio";
+
+type McpServerDraft = {
+  name: string;
+  originalName: string;
+  enabled: boolean;
+  transport: McpTransportType;
+
+  // remote transports
+  url: string;
+  bearerTokenEnvVar: string;
+  httpHeadersText: string;
+  envHttpHeadersText: string;
+
+  // stdio transport (desktop only; keep for compatibility)
+  command: string;
+  argsText: string;
+};
+
+type McpSetDraft = {
+  name: string;
+  originalName: string;
+  servers: Array<{ server: string; enabled: boolean }>;
 };
 
 function newId(prefix: string) {
@@ -119,6 +145,100 @@ function parseModelRef(modelRef: string | undefined | null): { provider: string;
   return { provider, model };
 }
 
+const joinLines = (lines: string[]) => lines.join("\n");
+const splitLines = (text: string) =>
+  text
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+const parseKeyValueLines = (text: string): Record<string, string> | undefined => {
+  const entries: Array<[string, string]> = [];
+  for (const rawLine of text.split("\n")) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const eq = line.indexOf("=");
+    const colon = line.indexOf(":");
+    const idx = eq >= 0 ? eq : colon;
+    if (idx < 0) continue;
+    const key = line.slice(0, idx).trim();
+    const value = line.slice(idx + 1).trim();
+    if (!key) continue;
+    entries.push([key, value]);
+  }
+  if (entries.length === 0) return undefined;
+  return Object.fromEntries(entries);
+};
+
+const joinKeyValueLines = (obj?: Record<string, string>) => {
+  if (!obj) return "";
+  return Object.entries(obj)
+    .map(([k, v]) => `${k}=${v}`)
+    .join("\n");
+};
+
+function ensureMcpServersDraft(servers: any[]): McpServerDraft[] {
+  const list = Array.isArray(servers) ? servers : [];
+  return list
+    .filter((s) => s && typeof s === "object")
+    .map((s) => {
+      const name = String(s.name ?? "").trim() || newId("mcp");
+      const config: any = s.config && typeof s.config === "object" ? s.config : {};
+      const enabled = typeof config.enabled === "boolean" ? config.enabled : true;
+      const transport: any = config.transport && typeof config.transport === "object" ? config.transport : {};
+      const transportType = (String(transport.transport ?? "") as McpTransportType) || "streamable_http";
+
+      if (transportType === "stdio") {
+        return {
+          name,
+          originalName: name,
+          enabled,
+          transport: "stdio",
+          url: "",
+          bearerTokenEnvVar: "",
+          httpHeadersText: "",
+          envHttpHeadersText: "",
+          command: String(transport.command ?? "").trim(),
+          argsText: joinLines(Array.isArray(transport.args) ? transport.args.map((x: any) => String(x)) : []),
+        } satisfies McpServerDraft;
+      }
+
+      const url = String(transport.url ?? "").trim();
+      return {
+        name,
+        originalName: name,
+        enabled,
+        transport: transportType === "sse" ? "sse" : "streamable_http",
+        url,
+        bearerTokenEnvVar: String(transport.bearerTokenEnvVar ?? "").trim(),
+        httpHeadersText: joinKeyValueLines(transport.httpHeaders as any),
+        envHttpHeadersText: joinKeyValueLines(transport.envHttpHeaders as any),
+        command: "",
+        argsText: "",
+      } satisfies McpServerDraft;
+    })
+    .filter((s) => s.name);
+}
+
+function ensureMcpSetsDraft(sets: any[]): McpSetDraft[] {
+  const list = Array.isArray(sets) ? sets : [];
+  return list
+    .filter((s) => s && typeof s === "object")
+    .map((s) => {
+      const name = String(s.name ?? "").trim() || newId("mcp_set");
+      const serversRaw: any[] = Array.isArray(s.servers) ? s.servers : [];
+      const servers = serversRaw
+        .filter((x) => x && typeof x === "object")
+        .map((x) => ({
+          server: String(x.server ?? "").trim(),
+          enabled: typeof x.enabled === "boolean" ? x.enabled : true,
+        }))
+        .filter((x) => x.server);
+      return { name, originalName: name, servers } satisfies McpSetDraft;
+    })
+    .filter((s) => s.name);
+}
+
 export function SettingsPage() {
   const [status, setStatus] = useState<string>("未加载");
   const [loading, setLoading] = useState(false);
@@ -165,6 +285,14 @@ export function SettingsPage() {
   const [agents, setAgents] = useState<AgentDraft[]>([]);
   const [activeAgentName, setActiveAgentName] = useState<string>("");
   const [defaultAgentName, setDefaultAgentName] = useState<string>("");
+
+  const [mcpServers, setMcpServers] = useState<McpServerDraft[]>([]);
+  const [activeMcpServerName, setActiveMcpServerName] = useState<string>("");
+  const [mcpSets, setMcpSets] = useState<McpSetDraft[]>([]);
+  const [activeMcpSetName, setActiveMcpSetName] = useState<string>("");
+  const [mcpSubView, setMcpSubView] = useState<"servers" | "sets">("servers");
+  const [mcpTesting, setMcpTesting] = useState(false);
+  const [mcpTestMessage, setMcpTestMessage] = useState<string>("");
 
   const [showModelPicker, setShowModelPicker] = useState(false);
 
@@ -221,6 +349,16 @@ export function SettingsPage() {
     [agents, activeAgentName],
   );
 
+  const activeMcpServer = useMemo(
+    () => mcpServers.find((s) => s.name === activeMcpServerName) ?? mcpServers[0],
+    [mcpServers, activeMcpServerName],
+  );
+
+  const activeMcpSet = useMemo(
+    () => mcpSets.find((s) => s.name === activeMcpSetName) ?? mcpSets[0],
+    [mcpSets, activeMcpSetName],
+  );
+
   const agentLabel = useCallback((a: AgentDraft) => {
     const base = (a.displayName || a.name).trim() || a.name;
     const ref = parseModelRef(a.modelRef);
@@ -255,6 +393,7 @@ export function SettingsPage() {
           type: (a.type as AgentType) ?? "chat",
           modelRef: String(a.modelRef ?? ""),
           systemPrompt: a.systemPrompt ? String(a.systemPrompt) : "",
+          mcpSet: typeof a.mcpSet === "string" ? a.mcpSet : "",
         }))
         .filter((a) => a.name.trim());
 
@@ -287,6 +426,19 @@ export function SettingsPage() {
 
       setActiveProviderName(targetProviderName);
       setActiveModelName(targetModelName);
+
+      const nextMcpServers = ensureMcpServersDraft(cfg?.mcp?.servers ?? []);
+      const nextMcpSets = ensureMcpSetsDraft(cfg?.mcp?.sets ?? []);
+      setMcpServers(nextMcpServers);
+      setMcpSets(nextMcpSets);
+      setActiveMcpServerName((prev) => {
+        if (prev && nextMcpServers.some((s) => s.name === prev)) return prev;
+        return nextMcpServers[0]?.name ?? "";
+      });
+      setActiveMcpSetName((prev) => {
+        if (prev && nextMcpSets.some((s) => s.name === prev)) return prev;
+        return nextMcpSets[0]?.name ?? "";
+      });
 
       setStatus("配置已加载");
     } catch (e) {
@@ -353,14 +505,16 @@ export function SettingsPage() {
     }
   };
 
-  const save = async () => {
-    if (!isTauriRuntime()) return;
+  const save = async (): Promise<boolean> => {
+    if (!isTauriRuntime()) return false;
     setSaving(true);
     setStatus("正在保存…");
     try {
       const cfg = await tauriInvoke<AppConfig>("get_app_config");
       const existingProviders: any[] = Array.isArray(cfg?.providers) ? cfg.providers : [];
       const existingAgents: any[] = Array.isArray(cfg?.agents) ? cfg.agents : [];
+      const existingMcpServers: any[] = Array.isArray(cfg?.mcp?.servers) ? cfg.mcp.servers : [];
+      const existingMcpSets: any[] = Array.isArray(cfg?.mcp?.sets) ? cfg.mcp.sets : [];
 
       const next: AppConfig = { ...cfg };
       next.providers = providers.map((p) => {
@@ -403,6 +557,7 @@ export function SettingsPage() {
         if (a.type) base.type = a.type;
         base.modelRef = a.modelRef;
         base.systemPrompt = a.systemPrompt ?? "";
+        base.mcpSet = a.mcpSet && a.mcpSet.trim() ? a.mcpSet.trim() : null;
         return base;
       });
 
@@ -419,17 +574,79 @@ export function SettingsPage() {
       const fallbackModelRef = selectedModelRef || modelRefOptions[0]?.value || "";
       next.currentModelRef = (agentModelRef && agentModelRef.trim()) || fallbackModelRef || null;
 
+      const nextMcp: any = cfg?.mcp && typeof cfg.mcp === "object" ? { ...cfg.mcp } : {};
+      const oldByNewServerName = new Map<string, string>();
+      for (const s of mcpServers) {
+        if (s.name !== s.originalName) oldByNewServerName.set(s.name, s.originalName);
+      }
+
+      nextMcp.servers = mcpServers.map((s) => {
+        const existing = existingMcpServers.find((x) => x && typeof x === "object" && String(x.name) === s.originalName);
+        const base: any = existing && typeof existing === "object" ? { ...existing } : {};
+        base.name = s.name;
+        base.config = base.config && typeof base.config === "object" ? { ...base.config } : {};
+        base.config.enabled = s.enabled !== false;
+
+        const prevTransport: any = base.config.transport && typeof base.config.transport === "object" ? base.config.transport : {};
+
+        if (s.transport === "stdio") {
+          const args = splitLines(s.argsText);
+          base.config.transport = {
+            transport: "stdio",
+            command: s.command,
+            args,
+            env: prevTransport.env ?? null,
+            envVars: Array.isArray(prevTransport.envVars) ? prevTransport.envVars : [],
+            cwd: prevTransport.cwd ?? null,
+          };
+          return base;
+        }
+
+        const httpHeaders = parseKeyValueLines(s.httpHeadersText);
+        const envHttpHeaders = parseKeyValueLines(s.envHttpHeadersText);
+        base.config.transport = {
+          transport: s.transport,
+          url: s.url,
+          bearerTokenEnvVar: s.bearerTokenEnvVar && s.bearerTokenEnvVar.trim() ? s.bearerTokenEnvVar.trim() : null,
+          httpHeaders: httpHeaders ?? null,
+          envHttpHeaders: envHttpHeaders ?? null,
+        };
+        return base;
+      });
+
+      nextMcp.sets = mcpSets.map((set) => {
+        const existing = existingMcpSets.find((x) => x && typeof x === "object" && String(x.name) === set.originalName);
+        const base: any = existing && typeof existing === "object" ? { ...existing } : {};
+        base.name = set.name;
+        const existingServers: any[] = Array.isArray(existing?.servers) ? existing.servers : [];
+        base.servers = set.servers.map((ss) => {
+          const lookup = oldByNewServerName.get(ss.server) ?? ss.server;
+          const existingEntry = existingServers.find((x) => x && typeof x === "object" && String(x.server) === lookup);
+          const eb: any = existingEntry && typeof existingEntry === "object" ? { ...existingEntry } : {};
+          eb.server = ss.server;
+          eb.enabled = ss.enabled !== false;
+          eb.enabledTools = Array.isArray(eb.enabledTools) ? eb.enabledTools : [];
+          eb.disabledTools = Array.isArray(eb.disabledTools) ? eb.disabledTools : [];
+          return eb;
+        });
+        return base;
+      });
+
+      next.mcp = nextMcp;
+
       await tauriInvoke<void>("save_app_config", { config: next });
       setStatus("已保存");
+      return true;
     } catch (e) {
       setStatus(`保存失败：${String(e)}`);
+      return false;
     } finally {
       setSaving(false);
     }
   };
 
   return (
-    <div className="h-full min-w-0 max-w-full overflow-y-auto overflow-x-hidden p-3 safe-top space-y-3">
+    <div className="h-full min-w-0 max-w-full overflow-y-auto overscroll-none overflow-x-hidden p-3 safe-top space-y-3">
       {view === "home" ? (
         <>
           <div>
@@ -902,6 +1119,26 @@ export function SettingsPage() {
                   />
                 )}
 
+                <label className="text-xs text-white/70 mt-2">MCP 集合（可选）</label>
+                <Select
+                  value={activeAgent.mcpSet ?? ""}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setAgents((prev) =>
+                      prev.map((x) =>
+                        x.name === activeAgent.name ? { ...x, mcpSet: v } : x,
+                      ),
+                    );
+                  }}
+                >
+                  <option value="">（不启用 MCP）</option>
+                  {mcpSets.map((s) => (
+                    <option key={s.originalName} value={s.name}>
+                      {s.name}
+                    </option>
+                  ))}
+                </Select>
+
                 <label className="text-xs text-white/70 mt-2">System Prompt</label>
                 <textarea
                   className="min-h-24 w-full max-w-full rounded-md bg-white/5 border border-white/10 px-3 py-2 text-[16px] leading-5 outline-none focus:border-indigo-400"
@@ -923,7 +1160,492 @@ export function SettingsPage() {
         </div>
       ) : null}
 
-      {view !== "home" && view !== "providers" && view !== "agents" ? (
+      {view === "mcp" ? (
+        <div className="rounded-lg border border-white/10 bg-white/5 p-3 space-y-3">
+          <div className="grid grid-cols-2 gap-2">
+            <Button
+              size="sm"
+              variant={mcpSubView === "servers" ? "primary" : "ghost"}
+              className="w-full"
+              onClick={() => setMcpSubView("servers")}
+            >
+              服务器
+            </Button>
+            <Button
+              size="sm"
+              variant={mcpSubView === "sets" ? "primary" : "ghost"}
+              className="w-full"
+              onClick={() => setMcpSubView("sets")}
+            >
+              集合
+            </Button>
+          </div>
+
+          {mcpSubView === "servers" ? (
+            <div className="space-y-3">
+              <div className="space-y-2">
+                <label className="text-xs text-white/70">当前 MCP Server</label>
+                <Select
+                  value={activeMcpServer?.name ?? ""}
+                  onChange={(e) => setActiveMcpServerName(e.target.value)}
+                >
+                  {mcpServers.length === 0 ? <option value="">（暂无 server）</option> : null}
+                  {mcpServers.map((s) => (
+                    <option key={s.originalName} value={s.name}>
+                      {s.name}
+                    </option>
+                  ))}
+                </Select>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="w-full"
+                    onClick={() => {
+                      const base = `mcp_${Date.now()}`;
+                      const used = new Set(mcpServers.map((s) => s.name));
+                      let name = base;
+                      let n = 1;
+                      while (used.has(name)) {
+                        n += 1;
+                        name = `${base}_${n}`;
+                      }
+                      const next: McpServerDraft = {
+                        name,
+                        originalName: name,
+                        enabled: true,
+                        transport: "streamable_http",
+                        url: "",
+                        bearerTokenEnvVar: "",
+                        httpHeadersText: "",
+                        envHttpHeadersText: "",
+                        command: "",
+                        argsText: "",
+                      };
+                      setMcpServers((prev) => [...prev, next]);
+                      setActiveMcpServerName(name);
+                      setStatus("已新增 MCP Server（别忘了点保存）");
+                    }}
+                  >
+                    添加
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="w-full"
+                    disabled={!activeMcpServer}
+                    onClick={() => {
+                      if (!activeMcpServer) return;
+                      if (!confirm(`删除 MCP Server：${activeMcpServer.name} ?`)) return;
+                      setMcpServers((prev) => prev.filter((s) => s.name !== activeMcpServer.name));
+                      setMcpSets((prev) =>
+                        prev.map((set) => ({
+                          ...set,
+                          servers: set.servers.filter((ss) => ss.server !== activeMcpServer.name),
+                        })),
+                      );
+                      setActiveMcpServerName((prev) => {
+                        if (prev !== activeMcpServer.name) return prev;
+                        const remaining = mcpServers.filter((s) => s.name !== activeMcpServer.name);
+                        return remaining[0]?.name ?? "";
+                      });
+                      setStatus("已删除 MCP Server（别忘了点保存）");
+                    }}
+                  >
+                    删除
+                  </Button>
+                </div>
+              </div>
+
+              {activeMcpServer ? (
+                <div className="rounded-lg border border-white/10 bg-[#0b1220] p-3 space-y-2">
+                  <div className="text-sm font-medium">{activeMcpServer.name}</div>
+
+                  <label className="text-xs text-white/70 mt-2">Name</label>
+                  <Input
+                    value={activeMcpServer.name}
+                    onChange={(e) => {
+                      const nextName = e.target.value.trim();
+                      const oldName = activeMcpServer.name;
+                      if (!nextName) return;
+                      if (mcpServers.some((x) => x.name === nextName && x.name !== oldName)) {
+                        setStatus(`MCP server name 已存在：${nextName}`);
+                        return;
+                      }
+                      setMcpServers((prev) =>
+                        prev.map((x) =>
+                          x.name === oldName ? { ...x, name: nextName } : x,
+                        ),
+                      );
+                      setMcpSets((prev) =>
+                        prev.map((set) => ({
+                          ...set,
+                          servers: set.servers.map((ss) =>
+                            ss.server === oldName ? { ...ss, server: nextName } : ss,
+                          ),
+                        })),
+                      );
+                      setActiveMcpServerName(nextName);
+                    }}
+                  />
+
+                  <label className="text-xs text-white/70 mt-2">启用</label>
+                  <Select
+                    value={activeMcpServer.enabled ? "true" : "false"}
+                    onChange={(e) => {
+                      const v = e.target.value === "true";
+                      setMcpServers((prev) =>
+                        prev.map((x) =>
+                          x.name === activeMcpServer.name ? { ...x, enabled: v } : x,
+                        ),
+                      );
+                    }}
+                  >
+                    <option value="true">启用</option>
+                    <option value="false">禁用</option>
+                  </Select>
+
+                  <label className="text-xs text-white/70 mt-2">Transport</label>
+                  <Select
+                    value={activeMcpServer.transport}
+                    onChange={(e) => {
+                      const v = e.target.value as McpTransportType;
+                      setMcpServers((prev) =>
+                        prev.map((x) =>
+                          x.name === activeMcpServer.name ? { ...x, transport: v } : x,
+                        ),
+                      );
+                    }}
+                  >
+                    <option value="streamable_http">http-streamable</option>
+                    <option value="sse">sse</option>
+                    <option value="stdio">stdio（桌面）</option>
+                  </Select>
+
+                  {activeMcpServer.transport === "stdio" ? (
+                    <div className="space-y-2">
+                      <label className="text-xs text-white/70 mt-2">Command</label>
+                      <Input
+                        value={activeMcpServer.command}
+                        onChange={(e) =>
+                          setMcpServers((prev) =>
+                            prev.map((x) =>
+                              x.name === activeMcpServer.name
+                                ? { ...x, command: e.target.value }
+                                : x,
+                            ),
+                          )
+                        }
+                        placeholder="npx"
+                      />
+
+                      <label className="text-xs text-white/70 mt-2">Args（每行一个）</label>
+                      <textarea
+                        className="min-h-20 w-full max-w-full rounded-md bg-white/5 border border-white/10 px-3 py-2 text-[16px] leading-5 outline-none focus:border-indigo-400"
+                        value={activeMcpServer.argsText}
+                        onChange={(e) =>
+                          setMcpServers((prev) =>
+                            prev.map((x) =>
+                              x.name === activeMcpServer.name
+                                ? { ...x, argsText: e.target.value }
+                                : x,
+                            ),
+                          )
+                        }
+                        placeholder="-y\n@modelcontextprotocol/server-filesystem\n/Users/me/projects"
+                      />
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      <label className="text-xs text-white/70 mt-2">URL</label>
+                      <Input
+                        value={activeMcpServer.url}
+                        onChange={(e) =>
+                          setMcpServers((prev) =>
+                            prev.map((x) =>
+                              x.name === activeMcpServer.name ? { ...x, url: e.target.value } : x,
+                            ),
+                          )
+                        }
+                        placeholder="https://example.com/mcp"
+                      />
+
+                      <label className="text-xs text-white/70 mt-2">Bearer Token Env（可选）</label>
+                      <Input
+                        value={activeMcpServer.bearerTokenEnvVar}
+                        onChange={(e) =>
+                          setMcpServers((prev) =>
+                            prev.map((x) =>
+                              x.name === activeMcpServer.name
+                                ? { ...x, bearerTokenEnvVar: e.target.value }
+                                : x,
+                            ),
+                          )
+                        }
+                        placeholder="MCP_TOKEN"
+                      />
+
+                      <label className="text-xs text-white/70 mt-2">HTTP Headers（每行 key=value）</label>
+                      <textarea
+                        className="min-h-20 w-full max-w-full rounded-md bg-white/5 border border-white/10 px-3 py-2 text-[16px] leading-5 outline-none focus:border-indigo-400"
+                        value={activeMcpServer.httpHeadersText}
+                        onChange={(e) =>
+                          setMcpServers((prev) =>
+                            prev.map((x) =>
+                              x.name === activeMcpServer.name
+                                ? { ...x, httpHeadersText: e.target.value }
+                                : x,
+                            ),
+                          )
+                        }
+                        placeholder="Authorization=Bearer xxx\nX-Client=tauri-ai"
+                      />
+
+                      <label className="text-xs text-white/70 mt-2">
+                        Env Headers（每行 key=ENV_VAR，可选）
+                      </label>
+                      <textarea
+                        className="min-h-16 w-full max-w-full rounded-md bg-white/5 border border-white/10 px-3 py-2 text-[16px] leading-5 outline-none focus:border-indigo-400"
+                        value={activeMcpServer.envHttpHeadersText}
+                        onChange={(e) =>
+                          setMcpServers((prev) =>
+                            prev.map((x) =>
+                              x.name === activeMcpServer.name
+                                ? { ...x, envHttpHeadersText: e.target.value }
+                                : x,
+                            ),
+                          )
+                        }
+                        placeholder="Authorization=MCP_AUTH"
+                      />
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-2 gap-2 pt-2">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="w-full"
+                      disabled={mcpTesting || !activeMcpServer || !isTauriRuntime()}
+                      onClick={async () => {
+                        if (!activeMcpServer) return;
+                        if (!isTauriRuntime()) return;
+                        setMcpTesting(true);
+                        setMcpTestMessage("");
+                        try {
+                          const okSaved = await save();
+                          if (!okSaved) return;
+                          const resp = await tauriInvoke<any>("test_mcp_server", {
+                            serverName: activeMcpServer.name,
+                          });
+                          const ok = !!resp?.success;
+                          const toolsCount = Array.isArray(resp?.tools) ? resp.tools.length : 0;
+                          const resourcesCount = Array.isArray(resp?.resources) ? resp.resources.length : 0;
+                          setMcpTestMessage(
+                            ok
+                              ? `连接成功 · tools=${toolsCount} · resources=${resourcesCount}`
+                              : `连接失败：${String(resp?.message ?? "unknown")}`,
+                          );
+                          setStatus(ok ? "MCP 测试通过" : "MCP 测试失败");
+                        } catch (e) {
+                          setMcpTestMessage(`测试失败：${String(e)}`);
+                          setStatus(`MCP 测试失败：${String(e)}`);
+                        } finally {
+                          setMcpTesting(false);
+                        }
+                      }}
+                    >
+                      {mcpTesting ? <Spinner /> : "保存并测试"}
+                    </Button>
+                  </div>
+
+                  {mcpTestMessage ? (
+                    <div className="text-xs text-white/70 break-words">{mcpTestMessage}</div>
+                  ) : null}
+                </div>
+              ) : (
+                <div className="text-sm text-white/60">暂无 MCP Server，点击“添加”创建一个。</div>
+              )}
+            </div>
+          ) : null}
+
+          {mcpSubView === "sets" ? (
+            <div className="space-y-3">
+              <div className="space-y-2">
+                <label className="text-xs text-white/70">当前 MCP 集合</label>
+                <Select
+                  value={activeMcpSet?.name ?? ""}
+                  onChange={(e) => setActiveMcpSetName(e.target.value)}
+                >
+                  {mcpSets.length === 0 ? <option value="">（暂无集合）</option> : null}
+                  {mcpSets.map((s) => (
+                    <option key={s.originalName} value={s.name}>
+                      {s.name}
+                    </option>
+                  ))}
+                </Select>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="w-full"
+                    onClick={() => {
+                      const base = `mcp_set_${Date.now()}`;
+                      const used = new Set(mcpSets.map((s) => s.name));
+                      let name = base;
+                      let n = 1;
+                      while (used.has(name)) {
+                        n += 1;
+                        name = `${base}_${n}`;
+                      }
+                      const next: McpSetDraft = { name, originalName: name, servers: [] };
+                      setMcpSets((prev) => [...prev, next]);
+                      setActiveMcpSetName(name);
+                      setStatus("已新增 MCP 集合（别忘了点保存）");
+                    }}
+                  >
+                    添加
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="w-full"
+                    disabled={!activeMcpSet}
+                    onClick={() => {
+                      if (!activeMcpSet) return;
+                      if (!confirm(`删除 MCP 集合：${activeMcpSet.name} ?`)) return;
+                      setMcpSets((prev) => prev.filter((s) => s.name !== activeMcpSet.name));
+                      setAgents((prev) =>
+                        prev.map((a) =>
+                          a.mcpSet === activeMcpSet.name ? { ...a, mcpSet: "" } : a,
+                        ),
+                      );
+                      setActiveMcpSetName((prev) => {
+                        if (prev !== activeMcpSet.name) return prev;
+                        const remaining = mcpSets.filter((s) => s.name !== activeMcpSet.name);
+                        return remaining[0]?.name ?? "";
+                      });
+                      setStatus("已删除 MCP 集合（别忘了点保存）");
+                    }}
+                  >
+                    删除
+                  </Button>
+                </div>
+              </div>
+
+              {activeMcpSet ? (
+                <div className="rounded-lg border border-white/10 bg-[#0b1220] p-3 space-y-2">
+                  <div className="text-sm font-medium">{activeMcpSet.name}</div>
+
+                  <label className="text-xs text-white/70 mt-2">Name</label>
+                  <Input
+                    value={activeMcpSet.name}
+                    onChange={(e) => {
+                      const nextName = e.target.value.trim();
+                      const oldName = activeMcpSet.name;
+                      if (!nextName) return;
+                      if (mcpSets.some((x) => x.name === nextName && x.name !== oldName)) {
+                        setStatus(`MCP set name 已存在：${nextName}`);
+                        return;
+                      }
+                      setMcpSets((prev) =>
+                        prev.map((x) =>
+                          x.name === oldName ? { ...x, name: nextName } : x,
+                        ),
+                      );
+                      setAgents((prev) =>
+                        prev.map((a) => (a.mcpSet === oldName ? { ...a, mcpSet: nextName } : a)),
+                      );
+                      setActiveMcpSetName(nextName);
+                    }}
+                  />
+
+                  <div className="space-y-2 pt-2">
+                    <div className="text-xs text-white/70">选择该集合启用的 servers</div>
+                    <div className="space-y-2">
+                      {mcpServers.length === 0 ? (
+                        <div className="text-sm text-white/60">暂无 MCP Server。</div>
+                      ) : (
+                        mcpServers.map((srv) => {
+                          const existing = activeMcpSet.servers.find((x) => x.server === srv.name);
+                          const included = !!existing;
+                          const enabled = existing?.enabled !== false;
+                          return (
+                            <div
+                              key={srv.originalName}
+                              className="flex items-center justify-between gap-3 rounded-md border border-white/10 bg-white/5 px-3 py-2"
+                            >
+                              <div className="min-w-0 flex-1">
+                                <div className="text-sm truncate">{srv.name}</div>
+                                <div className="text-[11px] text-white/60 truncate">
+                                  {srv.transport === "stdio"
+                                    ? "stdio"
+                                    : `${srv.transport} · ${srv.url || "未设置 URL"}`}
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-2">
+                                <label className="text-xs text-white/70 flex items-center gap-2">
+                                  <input
+                                    type="checkbox"
+                                    checked={included}
+                                    onChange={(e) => {
+                                      const on = e.target.checked;
+                                      setMcpSets((prev) =>
+                                        prev.map((set) => {
+                                          if (set.name !== activeMcpSet.name) return set;
+                                          const nextServers = set.servers.filter((x) => x.server !== srv.name);
+                                          if (on) nextServers.push({ server: srv.name, enabled: true });
+                                          return { ...set, servers: nextServers };
+                                        }),
+                                      );
+                                    }}
+                                  />
+                                  使用
+                                </label>
+
+                                {included ? (
+                                  <Select
+                                    className="w-24 shrink-0"
+                                    value={enabled ? "true" : "false"}
+                                    onChange={(e) => {
+                                      const v = e.target.value === "true";
+                                      setMcpSets((prev) =>
+                                        prev.map((set) => {
+                                          if (set.name !== activeMcpSet.name) return set;
+                                          return {
+                                            ...set,
+                                            servers: set.servers.map((x) =>
+                                              x.server === srv.name ? { ...x, enabled: v } : x,
+                                            ),
+                                          };
+                                        }),
+                                      );
+                                    }}
+                                  >
+                                    <option value="true">启用</option>
+                                    <option value="false">禁用</option>
+                                  </Select>
+                                ) : null}
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="text-sm text-white/60">暂无 MCP 集合，点击“添加”创建一个。</div>
+              )}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {view !== "home" && view !== "providers" && view !== "agents" && view !== "mcp" ? (
         <div className="rounded-lg border border-white/10 bg-white/5 p-3 space-y-2">
           <div className="text-sm font-medium">该模块移动端暂未实现</div>
         </div>

@@ -262,7 +262,10 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
         </div>
       ) : null}
 
-      <div ref={listRef} className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-3 space-y-3">
+      <div
+        ref={listRef}
+        className="flex-1 min-h-0 overflow-y-auto overscroll-none overflow-x-hidden p-3 space-y-3"
+      >
         {messages.map((m) => (
           <div
             key={m.id}

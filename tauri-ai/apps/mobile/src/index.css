@@ -8,6 +8,10 @@ body,
   height: 100%;
   width: 100%;
   overflow-x: hidden;
+  /* 避免 iOS 的“整页橡皮筋”导致可向下拖拽过远（应由内部滚动容器承担滚动）。 */
+  overflow-y: hidden;
+  overscroll-behavior-y: none;
+  overscroll-behavior-x: none;
 }
 
 body {
@@ -20,6 +24,7 @@ body {
   word-break: break-word;
   /* 避免 iOS/Android WebView 的横向“弹性滚动/拖拽”体验 */
   overscroll-behavior-x: none;
+  overscroll-behavior-y: none;
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
 }
