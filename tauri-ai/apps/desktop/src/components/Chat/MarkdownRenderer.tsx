@@ -99,6 +99,33 @@ async function blobToPngBase64(blob: Blob): Promise<string> {
   return uint8ArrayToBase64(bytes);
 }
 
+function utf8StringToBase64(input: string): string {
+  try {
+    if (typeof TextEncoder !== 'undefined') {
+      return uint8ArrayToBase64(new TextEncoder().encode(input));
+    }
+  } catch {
+    // ignore
+  }
+
+  // Fallback: encodeURIComponent -> btoa (works for most cases, but may be slow for huge strings)
+  return btoa(unescape(encodeURIComponent(input)));
+}
+
+function addMermaidInitDirective(code: string, init: Record<string, unknown>): string {
+  const initLine = `%%{init: ${JSON.stringify(init)} }%%`;
+  const normalized = code.replace(/\r\n/g, '\n');
+
+  // Preserve YAML frontmatter (must be first in the diagram definition)
+  // https://mermaid.js.org/config/theming.html#frontmatter
+  const fm = normalized.match(/^\s*---\s*\n[\s\S]*?\n---\s*\n/);
+  if (fm?.[0]) {
+    return `${fm[0]}${initLine}\n${normalized.slice(fm[0].length)}`;
+  }
+
+  return `${initLine}\n${normalized}`;
+}
+
 function patchSvgForExport(svgText: string, width: number, height: number): string {
   // Some WebViews fail to rasterize SVG with percentage dimensions or missing XML namespaces.
   // Ensure root <svg> has explicit width/height and xmlns so it can be loaded as an image.
@@ -362,17 +389,45 @@ function findNearestAnchorWithLink(start: Element): SVGElement | HTMLAnchorEleme
   return null;
 }
 
+function isProbablyWindows(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const platform = (navigator as any).userAgentData?.platform ?? navigator.platform ?? '';
+  return /win/i.test(String(platform));
+}
+
 async function svgStringToPngBlob(svgText: string, width: number, height: number): Promise<Blob> {
-  const svgBlob = new Blob([svgText], { type: 'image/svg+xml;charset=utf-8' });
-  const url = URL.createObjectURL(svgBlob);
+  const svgWithHeader = svgText.trimStart().startsWith('<?xml')
+    ? svgText
+    : `<?xml version="1.0" encoding="UTF-8"?>\n${svgText}`;
+
+  const svgBlob = new Blob([svgWithHeader], { type: 'image/svg+xml' });
+  const blobUrl = URL.createObjectURL(svgBlob);
+
+  // Some WebViews fail to load blob: SVG URLs for Image(). Use a data: URL fallback.
+  let dataUrl: string | null = null;
+  try {
+    dataUrl = `data:image/svg+xml;base64,${utf8StringToBase64(svgWithHeader)}`;
+  } catch {
+    dataUrl = null;
+  }
 
   try {
-    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-      const image = new window.Image();
-      image.onload = () => resolve(image);
-      image.onerror = () => reject(new Error('Failed to load SVG image'));
-      image.src = url;
-    });
+    const loadImage = (src: string) =>
+      new Promise<HTMLImageElement>((resolve, reject) => {
+        const image = new window.Image();
+        image.crossOrigin = 'anonymous';
+        image.onload = () => resolve(image);
+        image.onerror = () => reject(new Error('Failed to load SVG image'));
+        image.src = src;
+      });
+
+    let img: HTMLImageElement;
+    try {
+      img = await loadImage(blobUrl);
+    } catch (err) {
+      if (!dataUrl) throw err;
+      img = await loadImage(dataUrl);
+    }
 
     const dpr = window.devicePixelRatio || 1;
     let pixelWidth = Math.max(1, Math.round(width * dpr));
@@ -419,8 +474,15 @@ async function svgStringToPngBlob(svgText: string, width: number, height: number
 
     return pngBlob;
   } finally {
-    URL.revokeObjectURL(url);
+    URL.revokeObjectURL(blobUrl);
   }
+}
+
+async function renderMermaidSvgForExport(code: string): Promise<string> {
+  const exportId = generateMermaidId();
+  const exportCode = addMermaidInitDirective(code, { htmlLabels: false });
+  const { svg } = await mermaid.render(exportId, exportCode);
+  return sanitizeMermaidSvg(svg);
 }
 
 const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferenceToken }: MermaidBlockProps) {
@@ -595,8 +657,31 @@ const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferen
         if (!Number.isFinite(width) || width <= 0) width = 800;
         if (!Number.isFinite(height) || height <= 0) height = 600;
 
-        const svgSource = patchSvgForExport(svgSourceRaw, width, height);
-        const pngBlob = await svgStringToPngBlob(svgSource, width, height);
+        let svgSource = patchSvgForExport(svgSourceRaw, width, height);
+        let pngBlob: Blob | null = null;
+        let lastPngErr: unknown = null;
+
+        try {
+          pngBlob = await svgStringToPngBlob(svgSource, width, height);
+        } catch (err) {
+          lastPngErr = err;
+        }
+
+        // Windows WebView2 can be picky about rasterizing Mermaid SVGs (esp. those with <foreignObject> labels).
+        // As a fallback, re-render the diagram with `htmlLabels: false` to produce a simpler SVG for export.
+        if (!pngBlob && isProbablyWindows()) {
+          try {
+            const exportSvg = await renderMermaidSvgForExport(cleanCode);
+            svgSource = patchSvgForExport(exportSvg, width, height);
+            pngBlob = await svgStringToPngBlob(svgSource, width, height);
+          } catch (err) {
+            lastPngErr = err;
+          }
+        }
+
+        if (!pngBlob) {
+          throw (lastPngErr instanceof Error ? lastPngErr : new Error('Failed to create PNG'));
+        }
 
         // Prefer OS-native clipboard in Tauri to ensure pasting behaves like a screenshot (esp. macOS WKWebView).
         let copied = false;
@@ -644,7 +729,7 @@ const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferen
         setIsCopyingImage(false);
       }
     },
-    [svg]
+    [svg, cleanCode]
   );
 
   // Fullscreen pan handlers (must be defined before any early-return to keep hooks order stable).
