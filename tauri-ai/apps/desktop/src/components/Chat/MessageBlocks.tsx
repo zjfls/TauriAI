@@ -276,6 +276,70 @@ type GitDiffCommitsResponse = {
   diff: string;
 };
 
+type TaskPatchSummaryGroup = {
+  key: string;
+  repoRoot: string;
+  workTree: string;
+  ghostBefore: string;
+  ghostAfter: string;
+  affectedPaths: string[];
+  createdPaths: string[];
+};
+
+const buildTaskPatchSummaryGroups = (blocks: MessageBlock[]): TaskPatchSummaryGroup[] => {
+  const groups = new Map<string, TaskPatchSummaryGroup>();
+  for (const b of blocks) {
+    if (!b || (b as any).type !== 'tool_call') continue;
+    const toolName = (b as any).name;
+    if (toolName !== 'apply_patch') continue;
+
+    const meta = ((b as any).meta ?? null) as ApplyPatchToolMeta | null;
+    const git = meta?.applyPatch?.git;
+    const repoRoot = typeof git?.repoRoot === 'string' ? git.repoRoot : '';
+    const workTree = typeof git?.workTree === 'string' ? git.workTree : '';
+    const ghostBefore = typeof git?.ghostBefore === 'string' ? git.ghostBefore : '';
+    const ghostAfter = typeof git?.ghostAfter === 'string' ? git.ghostAfter : '';
+    const baseDir = typeof meta?.applyPatch?.baseDir === 'string' ? meta.applyPatch.baseDir : '';
+
+    const affectedPaths = Array.isArray(git?.affectedPaths)
+      ? git!.affectedPaths!.filter((s) => typeof s === 'string' && s.trim() !== '')
+      : [];
+    const createdPaths = Array.isArray(git?.createdPaths)
+      ? git!.createdPaths!.filter((s) => typeof s === 'string' && s.trim() !== '')
+      : [];
+
+    if (!repoRoot || !ghostBefore || affectedPaths.length === 0) continue;
+
+    const effectiveWorkTree = workTree || repoRoot || baseDir || '';
+    const key = `${repoRoot}@@${effectiveWorkTree}`;
+    const existing = groups.get(key);
+    if (!existing) {
+      groups.set(key, {
+        key,
+        repoRoot,
+        workTree: effectiveWorkTree,
+        ghostBefore,
+        ghostAfter: ghostAfter || '',
+        affectedPaths: [...affectedPaths],
+        createdPaths: [...createdPaths],
+      });
+      continue;
+    }
+
+    // Keep the earliest ghostBefore; update ghostAfter to the latest non-empty snapshot.
+    if (ghostAfter) existing.ghostAfter = ghostAfter;
+    existing.affectedPaths.push(...affectedPaths);
+    existing.createdPaths.push(...createdPaths);
+  }
+
+  const out = Array.from(groups.values());
+  for (const g of out) {
+    g.affectedPaths = Array.from(new Set(g.affectedPaths)).sort();
+    g.createdPaths = Array.from(new Set(g.createdPaths)).sort();
+  }
+  return out;
+};
+
 const splitDiffByFile = (diffText: string): Map<string, string> => {
   const out = new Map<string, string>();
   if (!diffText) return out;
@@ -800,6 +864,181 @@ const ApplyPatchToolRunBlock: React.FC<{
           )}
         </div>
       ) : null}
+    </div>
+  );
+};
+
+const TaskPatchSummaryCard: React.FC<{
+  group: TaskPatchSummaryGroup;
+}> = ({ group }) => {
+  const canUseTauri = isTauri();
+  const canLoad = Boolean(canUseTauri && group.repoRoot && group.ghostBefore && group.affectedPaths.length > 0);
+  const canUndo = canLoad;
+
+  const [isExpanded, setIsExpanded] = useState(true);
+  const [diffLoading, setDiffLoading] = useState(false);
+  const [diffError, setDiffError] = useState<string | null>(null);
+  const [diffData, setDiffData] = useState<GitDiffCommitsResponse | null>(null);
+  const [refreshSeq, setRefreshSeq] = useState(0);
+
+  const [undoBusy, setUndoBusy] = useState(false);
+  const [undoMsg, setUndoMsg] = useState<string>('');
+
+  useEffect(() => {
+    if (!isExpanded) return;
+    if (!canLoad) return;
+
+    let cancelled = false;
+    setDiffLoading(true);
+    setDiffError(null);
+    setUndoMsg('');
+    const req = group.ghostAfter
+      ? invoke<GitDiffCommitsResponse>('git_diff_commits', {
+          args: {
+            repoRoot: group.repoRoot,
+            from: group.ghostBefore,
+            to: group.ghostAfter,
+            paths: group.affectedPaths,
+            options: { detectRenames: true },
+          },
+        })
+      : invoke<GitDiffCommitsResponse>('git_diff_ghost_worktree', {
+          args: {
+            repoRoot: group.repoRoot,
+            workTree: group.workTree || undefined,
+            ghostBefore: group.ghostBefore,
+            paths: group.affectedPaths,
+            options: { detectRenames: true },
+          },
+        });
+
+    void req
+      .then((res) => {
+        if (cancelled) return;
+        setDiffData(res);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setDiffData(null);
+        setDiffError(String(e));
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setDiffLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isExpanded, canLoad, group.key, refreshSeq]);
+
+  const doUndo = useCallback(async () => {
+    if (!canUseTauri) return;
+    if (!group.repoRoot || !group.ghostBefore || group.affectedPaths.length === 0) return;
+    const ok = window.confirm('确认撤销本次任务内所有 apply_patch 修改吗？这会覆盖 affected 文件的当前工作区内容。');
+    if (!ok) return;
+    setUndoBusy(true);
+    setUndoMsg('');
+    try {
+      await invoke('undo_apply_patch', {
+        args: {
+          repoRoot: group.repoRoot,
+          workTree: group.workTree || undefined,
+          ghostBefore: group.ghostBefore,
+          affectedPaths: group.affectedPaths,
+          createdPaths: group.createdPaths,
+        },
+      });
+      setUndoMsg('已撤销。');
+      setDiffData(null);
+      setDiffError(null);
+      setRefreshSeq((v) => v + 1);
+    } catch (e) {
+      setUndoMsg(`撤销失败：${String(e)}`);
+    } finally {
+      setUndoBusy(false);
+    }
+  }, [canUseTauri, group.key]);
+
+  const title = diffData
+    ? `本次任务修改：${diffData.summary.filesChanged} 个文件，+${diffData.summary.insertions} −${diffData.summary.deletions}`
+    : '本次任务修改汇总';
+
+  return (
+    <div className="mb-2 overflow-hidden rounded-xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900/40">
+      <div className="flex items-center gap-2 px-4 py-3">
+        <button
+          type="button"
+          onClick={() => setIsExpanded((v) => !v)}
+          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+          title={isExpanded ? '收起' : '展开'}
+        >
+          <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">{title}</span>
+          <span className="ml-auto text-gray-400">{isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={doUndo}
+          disabled={!canUndo || undoBusy}
+          className={`rounded px-3 py-1 text-sm font-medium ${!canUndo || undoBusy ? 'cursor-not-allowed bg-gray-100 text-gray-400 dark:bg-gray-800/60 dark:text-gray-600' : 'bg-gray-900 text-white hover:bg-gray-800 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-gray-200'}`}
+          title="Undo（仅 affected）"
+        >
+          {undoBusy ? '撤销中…' : 'Undo'}
+        </button>
+      </div>
+
+      {isExpanded ? (
+        <div className="border-t border-gray-200 dark:border-gray-800">
+          {undoMsg ? (
+            <div className="px-4 pt-3 text-xs text-gray-700 dark:text-gray-200">{undoMsg}</div>
+          ) : null}
+
+          {!canLoad ? (
+            <div className="px-4 py-3 text-xs text-gray-600 dark:text-gray-300">
+              当前环境不可用：缺少 git 快照信息或不是 Tauri 环境。
+            </div>
+          ) : diffLoading ? (
+            <div className="px-4 py-3 text-xs text-gray-600 dark:text-gray-300">生成修改汇总中…</div>
+          ) : diffError ? (
+            <div className="px-4 py-3 text-xs text-red-700 dark:text-red-300">生成修改汇总失败：{diffError}</div>
+          ) : diffData?.files?.length ? (
+            <div className="divide-y divide-gray-200 dark:divide-gray-800">
+              {diffData.files.map((f) => {
+                const plus = typeof f.added === 'number' ? f.added : 0;
+                const minus = typeof f.deleted === 'number' ? f.deleted : 0;
+                const label = f.status.startsWith('R') && f.oldPath ? `${f.oldPath} → ${f.path}` : f.path;
+                return (
+                  <div key={`${f.status}:${f.path}`} className="flex items-center justify-between gap-3 px-4 py-3">
+                    <div className="min-w-0 truncate font-mono text-sm font-semibold text-gray-900 dark:text-gray-100" title={label}>
+                      {label}
+                    </div>
+                    <div className="shrink-0 font-mono text-sm">
+                      <span className="text-green-700 dark:text-green-300">+{plus}</span>{' '}
+                      <span className="text-red-700 dark:text-red-300">-{minus}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="px-4 py-3 text-xs text-gray-600 dark:text-gray-300">无差异（已与快照一致）</div>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+};
+
+const TaskPatchSummary: React.FC<{ blocks: MessageBlock[]; isStreaming?: boolean }> = ({ blocks, isStreaming }) => {
+  const groups = useMemo(() => buildTaskPatchSummaryGroups(blocks), [blocks]);
+  const show = !Boolean(isStreaming) && groups.length > 0;
+  if (!show) return null;
+  return (
+    <div className="mb-2">
+      {groups.map((g) => (
+        <TaskPatchSummaryCard key={g.key} group={g} />
+      ))}
     </div>
   );
 };
@@ -2248,7 +2487,7 @@ export const MessageBlocks: React.FC<{
 
   return (
     <>
-      {groups.map((g, idx) => {
+	      {groups.map((g, idx) => {
         const turnMeta = g.turnId ? turnMetaById.get(g.turnId) : undefined;
         const turnIndex = turnMeta?.turnIndex ?? g.turnIndex ?? idx + 1;
         const debugInfo = turnMeta?.debugInfo;
@@ -2382,12 +2621,14 @@ export const MessageBlocks: React.FC<{
             )}
           </div>
         );
-      })}
+	      })}
 
-      {activeDebugTurn && (
-        <DebugModal
-          isOpen
-          onClose={() => setActiveDebugTurn(null)}
+	      <TaskPatchSummary blocks={blocks} isStreaming={isStreaming} />
+
+	      {activeDebugTurn && (
+	        <DebugModal
+	          isOpen
+	          onClose={() => setActiveDebugTurn(null)}
           debugInfo={activeDebugTurn.debugInfo || null}
           turns={turns || null}
           blocks={blocks}
