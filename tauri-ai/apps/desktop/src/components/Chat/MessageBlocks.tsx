@@ -22,9 +22,9 @@
  } from '../../types';
 import { DeferredMarkdown } from './DeferredMarkdown';
 import { AnsiText } from './AnsiText';
- import { useConfigStore } from '../../stores/configStore';
- import { useSessionStore } from '../../stores/sessionStore';
- import { DebugModal } from './DebugModal';
+import { useConfigStore } from '../../stores/configStore';
+import { useSessionStore } from '../../stores/sessionStore';
+import { DebugModal } from './DebugModal';
 
 const TOOL_SUMMARY_MAX_CHARS = 220;
 const TOOL_SUMMARY_SCAN_MAX_CHARS = 30_000;
@@ -1395,27 +1395,6 @@ export const MessageBlocks: React.FC<{
   const ansiColorMode = config?.general?.ansiColorMode;
   const [activeDebugTurn, setActiveDebugTurn] = useState<MessageTurn | null>(null);
 
-  const computeDefaultCollapsedTurns = useCallback((): Set<string> => {
-    // 对“历史加载”的多 Turn：默认只展开最新一轮，避免长对话渲染爆炸。
-    // 对“刚生成（live）”的多 Turn：默认全展开，便于用户立刻检查/回看。
-    if (messageSource === 'live') return new Set();
-    const all = new Set<string>();
-    let lastTurnId: string | null = null;
-    for (const b of blocks) {
-      if (!b.turnId) continue;
-      all.add(b.turnId);
-      lastTurnId = b.turnId;
-    }
-    if (!lastTurnId) return new Set();
-    const collapsed = new Set<string>();
-    for (const id of all) {
-      if (id !== lastTurnId) collapsed.add(id);
-    }
-    return collapsed;
-  }, [blocks, messageSource]);
-
-  const [collapsedTurns, setCollapsedTurns] = useState<Set<string>>(() => computeDefaultCollapsedTurns());
-
   const turnMetaById = useMemo(() => {
     const map = new Map<string, MessageTurn>();
     for (const t of turns || []) {
@@ -1432,6 +1411,8 @@ export const MessageBlocks: React.FC<{
     return set;
   }, [blocks]);
   const showTurnHeader = distinctTurnIds.size > 0;
+  const showTaskToggle = distinctTurnIds.size > 1;
+  const [isTaskCollapsed, setIsTaskCollapsed] = useState<boolean>(() => messageSource !== 'live');
   const latestTurnId = useMemo(() => {
     let last: string | null = null;
     for (const b of blocks) {
@@ -1444,6 +1425,15 @@ export const MessageBlocks: React.FC<{
   const autoCollapseEnabled = Boolean(isStreaming) && !Boolean(isUserBrowsing);
   const lastLatestBlockIdRef = useRef<string | null>(null);
   const [autoCollapseSeq, setAutoCollapseSeq] = useState(0);
+
+  // 兼容旧行为：
+  // - “历史加载”的多 Turn：默认收起整个 Task（只展示最新一轮）
+  // - “刚生成（live）”：默认展开整个 Task（便于立刻查看）
+  //
+  // 仅在 messageSource 发生变化时重置；避免用户手动展开/收起时被流式增量更新打断。
+  useEffect(() => {
+    setIsTaskCollapsed(messageSource !== 'live');
+  }, [messageSource]);
 
   useEffect(() => {
     if (!latestBlockId) return;
@@ -1579,6 +1569,13 @@ export const MessageBlocks: React.FC<{
     });
   }, [blocks, turnMetaById]);
 
+  const visibleGroups = useMemo(() => {
+    if (!showTaskToggle) return groups;
+    if (!isTaskCollapsed) return groups;
+    if (!latestTurnId) return groups;
+    return groups.filter((g) => !g.turnId || g.turnId === latestTurnId);
+  }, [groups, isTaskCollapsed, latestTurnId, showTaskToggle]);
+
   const renderBlock = (block: MessageBlock, opts?: { deferHeavy?: boolean }) => {
     const isLatest = Boolean(latestBlockId && block.id === latestBlockId);
 
@@ -1686,7 +1683,24 @@ export const MessageBlocks: React.FC<{
 
   return (
     <>
-      {groups.map((g, idx) => {
+      {showTaskToggle ? (
+        <div className="mb-2 flex items-center justify-between">
+          <div className="select-text text-[10px] font-mono text-gray-400 dark:text-gray-500">
+            共 {distinctTurnIds.size} 轮
+          </div>
+          <button
+            type="button"
+            onClick={() => setIsTaskCollapsed((v) => !v)}
+            className="flex items-center gap-1 rounded bg-gray-50 px-2 py-0.5 text-[10px] font-medium text-gray-600 hover:bg-gray-100 dark:bg-gray-900/40 dark:text-gray-300 dark:hover:bg-gray-800"
+            title={isTaskCollapsed ? '展开任务' : '收起任务'}
+          >
+            {isTaskCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+            <span>{isTaskCollapsed ? '展开' : '收起'}</span>
+          </button>
+        </div>
+      ) : null}
+
+      {visibleGroups.map((g, idx) => {
         const turnMeta = g.turnId ? turnMetaById.get(g.turnId) : undefined;
         const turnIndex = turnMeta?.turnIndex ?? g.turnIndex ?? idx + 1;
         const debugInfo = turnMeta?.debugInfo;
@@ -1701,8 +1715,7 @@ export const MessageBlocks: React.FC<{
             : debugMode
               ? '该轮暂无调试数据'
               : '开启调试模式后可采集调试信息';
-        const isCollapsed = Boolean(g.turnId && collapsedTurns.has(g.turnId));
-        const deferHeavyForGroup = !isCollapsed && !isStreaming && (g.turnId ? g.turnId === latestTurnId : true);
+        const deferHeavyForGroup = !isStreaming && (g.turnId ? g.turnId === latestTurnId : true);
 
 	        return (
 	          <div key={`${g.key}:${idx}`}>
@@ -1715,22 +1728,6 @@ export const MessageBlocks: React.FC<{
                   >
                     第 {turnIndex} 轮
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setCollapsedTurns((prev) => {
-                        const next = new Set(prev);
-                        if (next.has(g.turnId!)) next.delete(g.turnId!);
-                        else next.add(g.turnId!);
-                        return next;
-                      });
-                    }}
-                    className="flex items-center gap-1 rounded bg-gray-50 px-2 py-0.5 text-[10px] font-medium text-gray-600 hover:bg-gray-100 dark:bg-gray-900/40 dark:text-gray-300 dark:hover:bg-gray-800"
-                    title={isCollapsed ? '展开本轮' : '收起本轮'}
-                  >
-                    {isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
-                    <span>{isCollapsed ? '展开' : '收起'}</span>
-	                  </button>
 	                </div>
 	
 	                <div className="flex items-center gap-2">
@@ -1763,43 +1760,45 @@ export const MessageBlocks: React.FC<{
 	              </div>
 	            ) : null}
 
-            {isCollapsed ? null : (
-              g.blocks.map((block, blockIdx) => {
-                if (block.type === 'tool_call') {
-                  const next = g.blocks[blockIdx + 1];
-                  if (next && next.type === 'tool_result' && next.callId === block.callId) {
-                    const isLatestToolRun = Boolean(
-                      latestBlockId && (block.id === latestBlockId || next.id === latestBlockId)
-                    );
-                    return (
-                      <ToolRunBlock
-                        key={`${block.id}:${next.id}`}
-                        name={block.name}
-                        args={block.arguments}
-                        resultText={next.text}
-                        callId={block.callId}
-                        isStreaming={isStreaming}
-                        onAbortTool={onAbortTool}
-                        ansiRenderMode={ansiRenderMode}
-                        ansiColorMode={ansiColorMode}
-                        defaultExpanded={autoCollapseEnabled ? isLatestToolRun : Boolean(isStreaming)}
-                        autoCollapseEnabled={autoCollapseEnabled}
-                        autoCollapseSeq={autoCollapseSeq}
-                      />
-                    );
-                  }
+            {g.blocks.map((block, blockIdx) => {
+              if (block.type === 'tool_call') {
+                const next = g.blocks[blockIdx + 1];
+                if (next && next.type === 'tool_result' && next.callId === block.callId) {
+                  const isLatestToolRun = Boolean(
+                    latestBlockId && (block.id === latestBlockId || next.id === latestBlockId)
+                  );
+                  return (
+                    <ToolRunBlock
+                      key={`${block.id}:${next.id}`}
+                      name={block.name}
+                      args={block.arguments}
+                      resultText={next.text}
+                      callId={block.callId}
+                      isStreaming={isStreaming}
+                      onAbortTool={onAbortTool}
+                      ansiRenderMode={ansiRenderMode}
+                      ansiColorMode={ansiColorMode}
+                      defaultExpanded={autoCollapseEnabled ? isLatestToolRun : Boolean(isStreaming)}
+                      autoCollapseEnabled={autoCollapseEnabled}
+                      autoCollapseSeq={autoCollapseSeq}
+                    />
+                  );
                 }
+              }
 
-                if (block.type === 'tool_result') {
-                  const prev = g.blocks[blockIdx - 1];
-                  if (prev && prev.type === 'tool_call' && prev.callId === block.callId) {
-                    return null;
-                  }
+              if (block.type === 'tool_result') {
+                const prev = g.blocks[blockIdx - 1];
+                if (prev && prev.type === 'tool_call' && prev.callId === block.callId) {
+                  return null;
                 }
+              }
 
-                return <React.Fragment key={block.id}>{renderBlock(block, { deferHeavy: deferHeavyForGroup })}</React.Fragment>;
-              })
-            )}
+              return (
+                <React.Fragment key={block.id}>
+                  {renderBlock(block, { deferHeavy: deferHeavyForGroup })}
+                </React.Fragment>
+              );
+            })}
           </div>
         );
       })}

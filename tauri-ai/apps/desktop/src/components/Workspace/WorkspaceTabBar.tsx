@@ -6,7 +6,7 @@
  * - right-click context menu (close / close others / close left/right / open in new window)
  */
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   DndContext,
   PointerSensor,
@@ -366,6 +366,26 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
 
+  // dnd-kit 默认的 `closestCenter` 会基于 activeRect（被拖拽元素的 rect）来算 over。
+  // 当我们在拖拽中“固定 tab 位置 / 仅用 ghost 跟随”或指针移动到 tab strip 空白区时，
+  // activeRect 与指针位置可能不一致，导致落点偏一格（常见表现：拖到最右侧却落在倒数第二）。
+  // 这里改为“以指针为中心的 0x0 rect”参与 closestCenter，让 over 更符合鼠标位置。
+  const collisionDetection = useCallback((args: any) => {
+    const p = args?.pointerCoordinates as { x: number; y: number } | null | undefined;
+    if (!p) return closestCenter(args);
+    return closestCenter({
+      ...args,
+      collisionRect: {
+        left: p.x,
+        right: p.x,
+        top: p.y,
+        bottom: p.y,
+        width: 0,
+        height: 0,
+      },
+    });
+  }, []);
+
   const {
     start: startDragGhost,
     moveByClientPoint: moveDragGhostByClientPoint,
@@ -717,6 +737,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
 
     const rect = tabBarRef.current?.getBoundingClientRect();
     const p = lastDragPointRef.current;
+    const escapeAttr = (v: string) => v.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
     const desiredClientPoint = (() => {
       if (!p) return null;
       if (!rect) return p;
@@ -757,8 +778,41 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
       return;
     }
 
-    if (overId && activeId !== overId) {
-      reorderTabs(activeId, overId);
+    const resolvedOverId = (() => {
+      if (!p || !rect || items.length === 0) return overId;
+
+      // 仅在“确实在 tab strip 内释放”时做兜底修正，避免影响 tear-off 等场景。
+      const inTabBar =
+        p.x >= rect.left && p.x <= rect.right && p.y >= rect.top && p.y <= rect.bottom;
+      if (!inTabBar) return overId;
+
+      const firstId = items[0]?.id;
+      const lastId = items[items.length - 1]?.id;
+      if (!firstId || !lastId) return overId;
+
+      const root = tabBarRef.current;
+      if (!root) return overId;
+
+      const firstEl = root.querySelector(
+        `[data-workspace-tab-id="${escapeAttr(firstId)}"]`
+      ) as HTMLElement | null;
+      const lastEl = root.querySelector(
+        `[data-workspace-tab-id="${escapeAttr(lastId)}"]`
+      ) as HTMLElement | null;
+
+      const firstRect = firstEl?.getBoundingClientRect() ?? null;
+      const lastRect = lastEl?.getBoundingClientRect() ?? null;
+
+      // 指针在最右侧空白区/右侧控制区时：强制认为是“移动到末尾”
+      if (lastRect && p.x >= lastRect.left + lastRect.width * 0.55) return lastId;
+      // 对称处理：指针在最左侧空白区时，移动到最前
+      if (firstRect && p.x <= firstRect.left + firstRect.width * 0.45) return firstId;
+
+      return overId;
+    })();
+
+    if (resolvedOverId && activeId !== resolvedOverId) {
+      reorderTabs(activeId, resolvedOverId);
     }
   };
 
@@ -868,7 +922,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
       {showChatTabs ? (
         <DndContext
           sensors={sensors}
-          collisionDetection={closestCenter}
+          collisionDetection={collisionDetection}
           onDragStart={handleDragStart}
           onDragMove={handleDragMove}
           onDragEnd={handleDragEnd}
