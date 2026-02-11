@@ -63,6 +63,9 @@ type McpServerDraft = {
   enabled: boolean;
   transport: McpTransportType;
 
+  enabledTools: string[];
+  disabledTools: string[];
+
   // remote transports
   url: string;
   bearerTokenEnvVar: string;
@@ -79,6 +82,8 @@ type McpSetDraft = {
   originalName: string;
   servers: Array<{ server: string; enabled: boolean }>;
 };
+
+type McpToolInfo = { name: string; description?: string };
 
 function newId(prefix: string) {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
@@ -185,6 +190,12 @@ function ensureMcpServersDraft(servers: any[]): McpServerDraft[] {
       const name = String(s.name ?? "").trim() || newId("mcp");
       const config: any = s.config && typeof s.config === "object" ? s.config : {};
       const enabled = typeof config.enabled === "boolean" ? config.enabled : true;
+      const enabledTools: string[] = Array.isArray(config.enabledTools)
+        ? config.enabledTools.map((x: any) => String(x)).filter(Boolean)
+        : [];
+      const disabledTools: string[] = Array.isArray(config.disabledTools)
+        ? config.disabledTools.map((x: any) => String(x)).filter(Boolean)
+        : [];
       const transport: any = config.transport && typeof config.transport === "object" ? config.transport : {};
       const transportType = (String(transport.transport ?? "") as McpTransportType) || "streamable_http";
 
@@ -194,6 +205,8 @@ function ensureMcpServersDraft(servers: any[]): McpServerDraft[] {
           originalName: name,
           enabled,
           transport: "stdio",
+          enabledTools,
+          disabledTools,
           url: "",
           bearerTokenEnvVar: "",
           httpHeadersText: "",
@@ -209,6 +222,8 @@ function ensureMcpServersDraft(servers: any[]): McpServerDraft[] {
         originalName: name,
         enabled,
         transport: transportType === "sse" ? "sse" : "streamable_http",
+        enabledTools,
+        disabledTools,
         url,
         bearerTokenEnvVar: String(transport.bearerTokenEnvVar ?? "").trim(),
         httpHeadersText: joinKeyValueLines(transport.httpHeaders as any),
@@ -293,6 +308,9 @@ export function SettingsPage() {
   const [mcpSubView, setMcpSubView] = useState<"servers" | "sets">("servers");
   const [mcpTesting, setMcpTesting] = useState(false);
   const [mcpTestMessage, setMcpTestMessage] = useState<string>("");
+  const [mcpToolsLoading, setMcpToolsLoading] = useState(false);
+  const [mcpToolsMessage, setMcpToolsMessage] = useState<string>("");
+  const [mcpToolsByServer, setMcpToolsByServer] = useState<Record<string, McpToolInfo[]>>({});
 
   const [showModelPicker, setShowModelPicker] = useState(false);
 
@@ -358,6 +376,12 @@ export function SettingsPage() {
     () => mcpSets.find((s) => s.name === activeMcpSetName) ?? mcpSets[0],
     [mcpSets, activeMcpSetName],
   );
+
+  const activeMcpTools = useMemo(() => {
+    const name = activeMcpServer?.name ?? "";
+    if (!name) return [];
+    return mcpToolsByServer[name] ?? [];
+  }, [activeMcpServer?.name, mcpToolsByServer]);
 
   const agentLabel = useCallback((a: AgentDraft) => {
     const base = (a.displayName || a.name).trim() || a.name;
@@ -586,6 +610,8 @@ export function SettingsPage() {
         base.name = s.name;
         base.config = base.config && typeof base.config === "object" ? { ...base.config } : {};
         base.config.enabled = s.enabled !== false;
+        base.config.enabledTools = Array.isArray(s.enabledTools) ? [...new Set(s.enabledTools.map(String).filter(Boolean))] : [];
+        base.config.disabledTools = Array.isArray(s.disabledTools) ? [...new Set(s.disabledTools.map(String).filter(Boolean))] : [];
 
         const prevTransport: any = base.config.transport && typeof base.config.transport === "object" ? base.config.transport : {};
 
@@ -1216,6 +1242,8 @@ export function SettingsPage() {
                         originalName: name,
                         enabled: true,
                         transport: "streamable_http",
+                        enabledTools: [],
+                        disabledTools: [],
                         url: "",
                         bearerTokenEnvVar: "",
                         httpHeadersText: "",
@@ -1438,10 +1466,22 @@ export function SettingsPage() {
                           if (!okSaved) return;
                           const resp = await tauriInvoke<any>("test_mcp_server", {
                             serverName: activeMcpServer.name,
+                            server_name: activeMcpServer.name,
                           });
                           const ok = !!resp?.success;
                           const toolsCount = Array.isArray(resp?.tools) ? resp.tools.length : 0;
                           const resourcesCount = Array.isArray(resp?.resources) ? resp.resources.length : 0;
+                          if (Array.isArray(resp?.tools)) {
+                            setMcpToolsByServer((prev) => ({
+                              ...prev,
+                              [activeMcpServer.name]: resp.tools
+                                .map((t: any) => ({
+                                  name: String(t?.name ?? "").trim(),
+                                  description: t?.description ? String(t.description) : undefined,
+                                }))
+                                .filter((t: McpToolInfo) => t.name),
+                            }));
+                          }
                           setMcpTestMessage(
                             ok
                               ? `连接成功 · tools=${toolsCount} · resources=${resourcesCount}`
@@ -1458,11 +1498,166 @@ export function SettingsPage() {
                     >
                       {mcpTesting ? <Spinner /> : "保存并测试"}
                     </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="w-full"
+                      disabled={mcpToolsLoading || !activeMcpServer || !isTauriRuntime()}
+                      onClick={async () => {
+                        if (!activeMcpServer) return;
+                        if (!isTauriRuntime()) return;
+                        setMcpToolsLoading(true);
+                        setMcpToolsMessage("");
+                        try {
+                          const okSaved = await save();
+                          if (!okSaved) return;
+                          const tools = await tauriInvoke<any[]>("list_mcp_server_tools", {
+                            serverName: activeMcpServer.name,
+                            server_name: activeMcpServer.name,
+                          });
+                          const list = Array.isArray(tools)
+                            ? tools
+                                .map((t: any) => ({
+                                  name: String(t?.name ?? "").trim(),
+                                  description: t?.description ? String(t.description) : undefined,
+                                }))
+                                .filter((t: McpToolInfo) => t.name)
+                            : [];
+                          setMcpToolsByServer((prev) => ({ ...prev, [activeMcpServer.name]: list }));
+                          setMcpToolsMessage(list.length > 0 ? `已加载 tools：${list.length}` : "未获取到 tools");
+                        } catch (e) {
+                          setMcpToolsMessage(`加载 tools 失败：${String(e)}`);
+                        } finally {
+                          setMcpToolsLoading(false);
+                        }
+                      }}
+                    >
+                      {mcpToolsLoading ? <Spinner /> : "获取工具"}
+                    </Button>
                   </div>
 
                   {mcpTestMessage ? (
                     <div className="text-xs text-white/70 break-words">{mcpTestMessage}</div>
                   ) : null}
+                  {mcpToolsMessage ? (
+                    <div className="text-xs text-white/70 break-words">{mcpToolsMessage}</div>
+                  ) : null}
+
+                  <div className="pt-2 space-y-2">
+                    <div className="text-sm font-medium">工具开关</div>
+                    <div className="text-xs text-white/60">
+                      {activeMcpServer.enabledTools.length > 0
+                        ? `模式：仅启用选择的（enabledTools=${activeMcpServer.enabledTools.length}）`
+                        : `模式：默认全部启用（disabledTools=${activeMcpServer.disabledTools.length}）`}
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="w-full"
+                        disabled={!activeMcpServer || activeMcpTools.length === 0}
+                        onClick={() => {
+                          // Switch to allow-list mode using current tool list (PC-style).
+                          const allowedNow = activeMcpTools
+                            .map((t) => t.name)
+                            .filter((name) => {
+                              if (activeMcpServer.enabledTools.length > 0) {
+                                return activeMcpServer.enabledTools.includes(name);
+                              }
+                              return !activeMcpServer.disabledTools.includes(name);
+                            });
+                          setMcpServers((prev) =>
+                            prev.map((x) =>
+                              x.name === activeMcpServer.name
+                                ? { ...x, enabledTools: allowedNow, disabledTools: [] }
+                                : x,
+                            ),
+                          );
+                          setStatus("已切换为“仅启用选择的”（别忘了点保存）");
+                        }}
+                      >
+                        仅启用勾选
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="w-full"
+                        disabled={!activeMcpServer}
+                        onClick={() => {
+                          setMcpServers((prev) =>
+                            prev.map((x) =>
+                              x.name === activeMcpServer.name
+                                ? { ...x, enabledTools: [], disabledTools: [] }
+                                : x,
+                            ),
+                          );
+                          setStatus("已恢复为“默认全部启用”（别忘了点保存）");
+                        }}
+                      >
+                        默认全启用
+                      </Button>
+                    </div>
+
+                    {activeMcpTools.length === 0 ? (
+                      <div className="text-sm text-white/60">
+                        还没有工具列表。先点上面的“获取工具”（或“保存并测试”）加载工具，再进行开关配置。
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        {activeMcpTools.map((t) => {
+                          const allowListMode = activeMcpServer.enabledTools.length > 0;
+                          const enabled = allowListMode
+                            ? activeMcpServer.enabledTools.includes(t.name)
+                            : !activeMcpServer.disabledTools.includes(t.name);
+                          return (
+                            <div
+                              key={t.name}
+                              className="flex items-center justify-between gap-3 rounded-md border border-white/10 bg-white/5 px-3 py-2"
+                            >
+                              <div className="min-w-0 flex-1">
+                                <div className="text-sm truncate">{t.name}</div>
+                                {t.description ? (
+                                  <div className="text-[11px] text-white/60 truncate">{t.description}</div>
+                                ) : null}
+                              </div>
+                              <label className="text-xs text-white/70 flex items-center gap-2 shrink-0">
+                                <input
+                                  type="checkbox"
+                                  checked={enabled}
+                                  onChange={(e) => {
+                                    const on = e.target.checked;
+                                    setMcpServers((prev) =>
+                                      prev.map((x) => {
+                                        if (x.name !== activeMcpServer.name) return x;
+                                        const enabledTools = [...x.enabledTools];
+                                        const disabledTools = [...x.disabledTools];
+
+                                        if (enabledTools.length > 0) {
+                                          // allow-list mode
+                                          const next = new Set(enabledTools);
+                                          if (on) next.add(t.name);
+                                          else next.delete(t.name);
+                                          return { ...x, enabledTools: Array.from(next), disabledTools: [] };
+                                        }
+
+                                        // default-allow mode (deny-list)
+                                        const deny = new Set(disabledTools);
+                                        if (on) deny.delete(t.name);
+                                        else deny.add(t.name);
+                                        return { ...x, disabledTools: Array.from(deny) };
+                                      }),
+                                    );
+                                  }}
+                                />
+                                启用
+                              </label>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                 </div>
               ) : (
                 <div className="text-sm text-white/60">暂无 MCP Server，点击“添加”创建一个。</div>
