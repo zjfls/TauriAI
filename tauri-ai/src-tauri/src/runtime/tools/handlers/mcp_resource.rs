@@ -285,7 +285,10 @@ impl ToolHandler for ListMcpResourcesTool {
         let output = serde_json::to_string_pretty(&payload)
             .unwrap_or_else(|_| serde_json::json!(payload).to_string());
         emit_tool_result(ctx, call.id.as_str(), &output);
-        Ok(ToolCallResult { content: output })
+        Ok(ToolCallResult {
+            content: output,
+            meta: None,
+        })
     }
 }
 
@@ -362,7 +365,10 @@ impl ToolHandler for ListMcpResourceTemplatesTool {
         let output = serde_json::to_string_pretty(&payload)
             .unwrap_or_else(|_| serde_json::json!(payload).to_string());
         emit_tool_result(ctx, call.id.as_str(), &output);
-        Ok(ToolCallResult { content: output })
+        Ok(ToolCallResult {
+            content: output,
+            meta: None,
+        })
     }
 }
 
@@ -435,6 +441,9 @@ impl ToolHandler for ReadMcpResourceTool {
         let output = serde_json::to_string_pretty(&payload)
             .unwrap_or_else(|_| serde_json::json!(payload).to_string());
         emit_tool_result(ctx, call.id.as_str(), &output);
-        Ok(ToolCallResult { content: output })
+        Ok(ToolCallResult {
+            content: output,
+            meta: None,
+        })
     }
 }

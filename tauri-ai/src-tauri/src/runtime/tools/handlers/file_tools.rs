@@ -235,7 +235,10 @@ impl ToolHandler for ReadFileTool {
         let output = lines.join("\n");
         emit_tool_result(ctx, call.id.as_str(), &output);
 
-        Ok(ToolCallResult { content: output })
+        Ok(ToolCallResult {
+            content: output,
+            meta: None,
+        })
     }
 }
 
@@ -298,7 +301,10 @@ impl ToolHandler for ListDirTool {
         let output = output_lines.join("\n");
         emit_tool_result(ctx, call.id.as_str(), &output);
 
-        Ok(ToolCallResult { content: output })
+        Ok(ToolCallResult {
+            content: output,
+            meta: None,
+        })
     }
 }
 
@@ -365,7 +371,10 @@ impl ToolHandler for RgTool {
         };
 
         emit_tool_result(ctx, call.id.as_str(), &output);
-        Ok(ToolCallResult { content: output })
+        Ok(ToolCallResult {
+            content: output,
+            meta: None,
+        })
     }
 }
 

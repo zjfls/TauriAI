@@ -242,6 +242,552 @@ const detectToolRunStatus = (resultText?: string): { kind: ToolRunStatusKind; ba
   return { kind: 'success' };
 };
 
+type ApplyPatchToolMeta = {
+  applyPatch?: {
+    baseDir?: string;
+    git?: {
+      repoRoot?: string;
+      repoPrefix?: string | null;
+      ghostBefore?: string | null;
+      ghostAfter?: string | null;
+      affectedPaths?: string[];
+      createdPaths?: string[];
+      snapshotErrorBefore?: string;
+      snapshotErrorAfter?: string;
+      error?: string;
+    };
+  };
+};
+
+type GitDiffCommitsResponse = {
+  repoRoot: string;
+  from: string;
+  to: string;
+  summary: { filesChanged: number; insertions: number; deletions: number };
+  files: Array<{
+    path: string;
+    oldPath?: string;
+    status: string;
+    added?: number;
+    deleted?: number;
+    isBinary?: boolean;
+  }>;
+  diff: string;
+};
+
+const splitDiffByFile = (diffText: string): Map<string, string> => {
+  const out = new Map<string, string>();
+  if (!diffText) return out;
+  const lines = diffText.split('\n');
+  let currentPath: string | null = null;
+  let buf: string[] = [];
+
+  const flush = () => {
+    if (!currentPath) return;
+    out.set(currentPath, buf.join('\n'));
+  };
+
+  for (const line of lines) {
+    const m = line.match(/^diff --git a\/(.+)\s+b\/(.+)$/);
+    if (m) {
+      flush();
+      currentPath = m[2] || m[1] || null;
+      buf = [line];
+      continue;
+    }
+    if (currentPath) buf.push(line);
+  }
+  flush();
+  return out;
+};
+
+const DiffViewer: React.FC<{ text: string; wrap: boolean }> = ({ text, wrap }) => {
+  const MAX_RICH_CHARS = 400_000;
+  const MAX_RICH_LINES = 4000;
+  const useRich = useMemo(() => {
+    if (!text) return false;
+    if (text.length > MAX_RICH_CHARS) return false;
+    const lines = text.split('\n');
+    if (lines.length > MAX_RICH_LINES) return false;
+    return true;
+  }, [text]);
+
+  const lines = useMemo(() => (useRich ? text.split('\n') : []), [text, useRich]);
+  const cls = `max-h-[520px] overflow-auto rounded border bg-white p-2 text-xs font-mono text-gray-800 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-100 ${wrap ? 'whitespace-pre-wrap break-words' : 'whitespace-pre'}`;
+
+  if (!useRich) {
+    return (
+      <pre className={cls}>
+        {text || '（无 diff 输出）'}
+      </pre>
+    );
+  }
+
+  const lineClass = (line: string): string => {
+    if (line.startsWith('diff --git') || line.startsWith('index ') || line.startsWith('new file mode') || line.startsWith('deleted file mode') || line.startsWith('similarity index') || line.startsWith('rename from') || line.startsWith('rename to')) {
+      return 'text-gray-500 dark:text-gray-400';
+    }
+    if (line.startsWith('@@')) return 'text-blue-700 dark:text-blue-300';
+    if (line.startsWith('+++') || line.startsWith('---')) return 'text-gray-600 dark:text-gray-300';
+    if (line.startsWith('+')) return 'text-green-700 dark:text-green-300';
+    if (line.startsWith('-')) return 'text-red-700 dark:text-red-300';
+    return 'text-gray-800 dark:text-gray-100';
+  };
+
+  return (
+    <pre className={cls}>
+      {lines.map((line, idx) => (
+        <span key={idx} className={lineClass(line)}>
+          {line}
+          {'\n'}
+        </span>
+      ))}
+    </pre>
+  );
+};
+
+const ApplyPatchToolRunBlock: React.FC<{
+  name: string;
+  args: string;
+  resultText?: string;
+  callId?: string;
+  toolMeta?: unknown;
+  isStreaming?: boolean;
+  onAbortTool?: (callId: string) => void;
+  ansiRenderMode?: AnsiRenderMode;
+  ansiColorMode?: AnsiColorMode;
+  defaultExpanded?: boolean;
+  autoCollapseEnabled?: boolean;
+  autoCollapseSeq?: number;
+}> = ({
+  name,
+  args,
+  resultText,
+  callId,
+  toolMeta,
+  isStreaming,
+  onAbortTool,
+  ansiRenderMode,
+  ansiColorMode,
+  defaultExpanded,
+  autoCollapseEnabled,
+  autoCollapseSeq,
+}) => {
+  const toolStatus = useMemo(() => detectToolRunStatus(resultText), [resultText]);
+  const tone = useMemo(() => {
+    switch (toolStatus.kind) {
+      case 'error':
+        return {
+          container: 'border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-900/20',
+          headerText: 'text-red-700 dark:text-red-300',
+          hoverBg: 'hover:bg-red-100 dark:hover:bg-red-900/30',
+          summaryText: 'text-red-700/70 dark:text-red-200/70',
+          pulse: 'bg-red-500',
+          badge: 'border border-red-200 bg-red-100 text-red-700 dark:border-red-800 dark:bg-red-900/30 dark:text-red-200',
+          detailBorder: 'border-red-200 dark:border-red-800',
+          detailLabel: 'text-red-700/80 dark:text-red-200/80',
+        };
+      case 'denied':
+        return {
+          container: 'border-orange-200 bg-orange-50 dark:border-orange-800 dark:bg-orange-900/20',
+          headerText: 'text-orange-800 dark:text-orange-300',
+          hoverBg: 'hover:bg-orange-100 dark:hover:bg-orange-900/30',
+          summaryText: 'text-orange-700/70 dark:text-orange-200/70',
+          pulse: 'bg-orange-500',
+          badge: 'border border-orange-200 bg-orange-100 text-orange-800 dark:border-orange-800 dark:bg-orange-900/30 dark:text-orange-200',
+          detailBorder: 'border-orange-200 dark:border-orange-800',
+          detailLabel: 'text-orange-700/80 dark:text-orange-200/80',
+        };
+      case 'aborted':
+        return {
+          container: 'border-yellow-200 bg-yellow-50 dark:border-yellow-800 dark:bg-yellow-900/20',
+          headerText: 'text-yellow-800 dark:text-yellow-300',
+          hoverBg: 'hover:bg-yellow-100 dark:hover:bg-yellow-900/30',
+          summaryText: 'text-yellow-700/70 dark:text-yellow-200/70',
+          pulse: 'bg-yellow-500',
+          badge: 'border border-yellow-200 bg-yellow-100 text-yellow-800 dark:border-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-200',
+          detailBorder: 'border-yellow-200 dark:border-yellow-800',
+          detailLabel: 'text-yellow-700/80 dark:text-yellow-200/80',
+        };
+      case 'running':
+      case 'success':
+      default:
+        return {
+          container: 'border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-900/30',
+          headerText: 'text-green-700 dark:text-green-300',
+          hoverBg: 'hover:bg-green-100 dark:hover:bg-green-900/50',
+          summaryText: 'text-green-700/70 dark:text-green-200/70',
+          pulse: 'bg-green-500',
+          badge: 'border border-green-200 bg-green-100 text-green-800 dark:border-green-800 dark:bg-green-900/30 dark:text-green-200',
+          detailBorder: 'border-green-200 dark:border-green-800',
+          detailLabel: 'text-green-700/80 dark:text-green-200/80',
+        };
+    }
+  }, [toolStatus.kind]);
+
+  const resolvedDefaultExpanded = defaultExpanded ?? Boolean(isStreaming);
+  const [isExpanded, setIsExpanded] = useState(Boolean(resolvedDefaultExpanded));
+  const canAbort = Boolean(onAbortTool && callId && isStreaming);
+
+  useEffect(() => {
+    if (!autoCollapseEnabled) return;
+    setIsExpanded(Boolean(resolvedDefaultExpanded));
+  }, [autoCollapseSeq]);
+
+  const parsedArgs = useMemo(() => {
+    if (!isExpanded) return null;
+    if (!args) return null;
+    if (args.length > 200_000) return null;
+    try {
+      return JSON.parse(args) as unknown;
+    } catch {
+      return null;
+    }
+  }, [args, isExpanded]);
+
+  const prettyArgs = useMemo(() => {
+    if (!isExpanded) return '';
+    if (!args) return '';
+    if (!parsedArgs) return args;
+    try {
+      return JSON.stringify(parsedArgs, null, 2);
+    } catch {
+      return args;
+    }
+  }, [args, isExpanded, parsedArgs]);
+
+  const summary = useMemo(() => extractToolSummary(name, args, parsedArgs), [name, args, parsedArgs]);
+
+  const meta = toolMeta as ApplyPatchToolMeta | null;
+  const git = meta?.applyPatch?.git;
+  const repoRoot = typeof git?.repoRoot === 'string' ? git.repoRoot : '';
+  const ghostBefore = typeof git?.ghostBefore === 'string' ? git.ghostBefore : '';
+  const affectedPaths = Array.isArray(git?.affectedPaths) ? git!.affectedPaths!.filter((s) => typeof s === 'string' && s.trim() !== '') : [];
+  const createdPaths = Array.isArray(git?.createdPaths) ? git!.createdPaths!.filter((s) => typeof s === 'string' && s.trim() !== '') : [];
+  const gitError = typeof git?.error === 'string' ? git.error : '';
+  const snapshotErrBefore = typeof git?.snapshotErrorBefore === 'string' ? git.snapshotErrorBefore : '';
+  const snapshotErrAfter = typeof git?.snapshotErrorAfter === 'string' ? git.snapshotErrorAfter : '';
+
+  const canGitDiff = Boolean(isTauri() && repoRoot && ghostBefore && affectedPaths.length > 0);
+  const [activeView, setActiveView] = useState<'git' | 'tool'>('git');
+
+  useEffect(() => {
+    if (activeView !== 'git') return;
+    if (canGitDiff) return;
+    setActiveView('tool');
+  }, [activeView, canGitDiff]);
+
+  const [contextLines, setContextLines] = useState<0 | 3 | 10>(3);
+  const [ignoreWhitespace, setIgnoreWhitespace] = useState(false);
+  const [detectRenames, setDetectRenames] = useState(true);
+  const [wrap, setWrap] = useState(true);
+
+  const [diffLoading, setDiffLoading] = useState(false);
+  const [diffError, setDiffError] = useState<string | null>(null);
+  const [diffData, setDiffData] = useState<GitDiffCommitsResponse | null>(null);
+  const [activeFile, setActiveFile] = useState<string>('');
+  const [refreshSeq, setRefreshSeq] = useState(0);
+  const [undoBusy, setUndoBusy] = useState(false);
+  const [undoMsg, setUndoMsg] = useState<string>('');
+
+  useEffect(() => {
+    if (!isExpanded) return;
+    if (activeView !== 'git') return;
+    if (!canGitDiff) return;
+
+    let cancelled = false;
+    setDiffLoading(true);
+    setDiffError(null);
+    setUndoMsg('');
+    void invoke<GitDiffCommitsResponse>('git_diff_ghost_worktree', {
+      args: {
+        repoRoot,
+        ghostBefore,
+        paths: affectedPaths,
+        options: {
+          contextLines,
+          ignoreWhitespace,
+          detectRenames,
+        },
+      },
+    })
+      .then((res) => {
+        if (cancelled) return;
+        setDiffData(res);
+        const firstPath = res?.files?.[0]?.path;
+        setActiveFile((prev) => prev || (typeof firstPath === 'string' ? firstPath : ''));
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setDiffData(null);
+        setDiffError(String(e));
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setDiffLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isExpanded, activeView, canGitDiff, repoRoot, ghostBefore, affectedPaths.join('|'), contextLines, ignoreWhitespace, detectRenames, refreshSeq]);
+
+  const diffByFile = useMemo(() => splitDiffByFile(diffData?.diff || ''), [diffData?.diff]);
+  const currentDiff = useMemo(() => {
+    if (!diffData?.diff) return '';
+    if (activeFile && diffByFile.has(activeFile)) return diffByFile.get(activeFile) || '';
+    return diffData.diff;
+  }, [diffData, activeFile, diffByFile]);
+
+  const doUndo = useCallback(async () => {
+    if (!isTauri()) return;
+    if (!repoRoot || !ghostBefore || affectedPaths.length === 0) return;
+    const ok = window.confirm('确认撤销本次 apply_patch 的修改吗？这会覆盖这些文件的当前工作区内容。');
+    if (!ok) return;
+    setUndoBusy(true);
+    setUndoMsg('');
+    try {
+      await invoke('undo_apply_patch', {
+        args: {
+          repoRoot,
+          ghostBefore,
+          affectedPaths,
+          createdPaths,
+        },
+      });
+      setUndoMsg('已撤销。');
+      // Refresh diff
+      setActiveFile('');
+      setDiffData(null);
+      setDiffError(null);
+      setRefreshSeq((v) => v + 1);
+    } catch (e) {
+      setUndoMsg(`撤销失败：${String(e)}`);
+    } finally {
+      setUndoBusy(false);
+    }
+  }, [repoRoot, ghostBefore, affectedPaths.join('|'), createdPaths.join('|')]);
+
+  return (
+    <div className={`mb-2 rounded-lg border ${tone.container}`}>
+      <div className={`flex items-center gap-2 px-3 py-2 text-left text-sm ${tone.headerText}`}>
+        <button
+          type="button"
+          onClick={() => setIsExpanded(!isExpanded)}
+          className={`flex min-w-0 flex-1 items-center gap-2 rounded py-0.5 text-left ${tone.hoverBg}`}
+        >
+          <Wrench size={16} className="shrink-0" />
+          <span className="font-medium">工具：{name || 'unknown'}</span>
+          {summary ? (
+            <span className={`ml-2 max-w-[60%] truncate font-mono text-xs ${tone.summaryText}`}>
+              {summary}
+            </span>
+          ) : null}
+          {isStreaming ? (
+            <span className={`ml-1 inline-block h-2 w-2 animate-pulse rounded-full ${tone.pulse}`} />
+          ) : null}
+          <span className="ml-auto flex items-center gap-2">
+            {toolStatus.badge ? (
+              <span className={`rounded px-2 py-0.5 text-[10px] font-medium ${tone.badge}`}>
+                {toolStatus.badge}
+              </span>
+            ) : null}
+            {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+          </span>
+        </button>
+
+        {canAbort ? (
+          <button
+            type="button"
+            onClick={() => callId && onAbortTool?.(callId)}
+            className={`rounded border px-2 py-0.5 text-[10px] font-medium ${tone.badge} ${tone.hoverBg}`}
+            title="强制关闭当前工具（将终止本轮）"
+          >
+            强制关闭
+          </button>
+        ) : null}
+      </div>
+
+      {isExpanded ? (
+        <div className={`border-t px-3 py-2 ${tone.detailBorder}`}>
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <div className="inline-flex overflow-hidden rounded border border-gray-200 dark:border-gray-800">
+              <button
+                type="button"
+                onClick={() => setActiveView('git')}
+                className={`px-2 py-1 text-xs font-medium ${activeView === 'git' ? 'bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900' : 'bg-white text-gray-700 hover:bg-gray-50 dark:bg-gray-900/40 dark:text-gray-200 dark:hover:bg-gray-800'}`}
+                title="默认视图：Git diff"
+              >
+                变更预览（Git）
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveView('tool')}
+                className={`px-2 py-1 text-xs font-medium ${activeView === 'tool' ? 'bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900' : 'bg-white text-gray-700 hover:bg-gray-50 dark:bg-gray-900/40 dark:text-gray-200 dark:hover:bg-gray-800'}`}
+              >
+                工具详情
+              </button>
+            </div>
+
+            {activeView === 'git' ? (
+              <>
+                <label className="ml-2 inline-flex items-center gap-1 text-xs text-gray-700 dark:text-gray-200">
+                  上下文
+                  <select
+                    value={contextLines}
+                    onChange={(e) => setContextLines(Number(e.target.value) as 0 | 3 | 10)}
+                    className="rounded border border-gray-200 bg-white px-1 py-0.5 text-xs dark:border-gray-800 dark:bg-gray-900/40"
+                  >
+                    <option value={0}>0</option>
+                    <option value={3}>3</option>
+                    <option value={10}>10</option>
+                  </select>
+                </label>
+                <label className="inline-flex items-center gap-1 text-xs text-gray-700 dark:text-gray-200">
+                  <input type="checkbox" checked={ignoreWhitespace} onChange={(e) => setIgnoreWhitespace(e.target.checked)} />
+                  忽略空白
+                </label>
+                <label className="inline-flex items-center gap-1 text-xs text-gray-700 dark:text-gray-200">
+                  <input type="checkbox" checked={detectRenames} onChange={(e) => setDetectRenames(e.target.checked)} />
+                  检测重命名
+                </label>
+                <label className="inline-flex items-center gap-1 text-xs text-gray-700 dark:text-gray-200">
+                  <input type="checkbox" checked={wrap} onChange={(e) => setWrap(e.target.checked)} />
+                  自动换行
+                </label>
+                <button
+                  type="button"
+                  onClick={doUndo}
+                  disabled={!canGitDiff || undoBusy}
+                  className={`ml-auto rounded border px-2 py-1 text-xs font-medium ${!canGitDiff || undoBusy ? 'cursor-not-allowed border-gray-200 bg-gray-50 text-gray-400 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-600' : 'border-gray-200 bg-white text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-100 dark:hover:bg-gray-800'}`}
+                  title="撤销本次 apply_patch（仅 affected）"
+                >
+                  {undoBusy ? '撤销中…' : 'Undo'}
+                </button>
+              </>
+            ) : null}
+          </div>
+
+          {activeView === 'git' ? (
+            <>
+              {toolStatus.kind === 'error' || toolStatus.kind === 'aborted' ? (
+                <div className="mb-2 rounded border border-yellow-200 bg-yellow-50 px-2 py-1 text-xs text-yellow-900 dark:border-yellow-800 dark:bg-yellow-900/20 dark:text-yellow-100">
+                  <AlertTriangle size={14} className="mr-1 inline-block" />
+                  本次执行未完全成功：可能存在部分写入，请以当前 diff 为准。
+                </div>
+              ) : null}
+
+              {gitError ? (
+                <div className="mb-2 rounded border border-yellow-200 bg-yellow-50 px-2 py-1 text-xs text-yellow-900 dark:border-yellow-800 dark:bg-yellow-900/20 dark:text-yellow-100">
+                  <AlertTriangle size={14} className="mr-1 inline-block" />
+                  Git 不可用：{gitError}
+                </div>
+              ) : null}
+              {snapshotErrBefore ? (
+                <div className="mb-2 rounded border border-yellow-200 bg-yellow-50 px-2 py-1 text-xs text-yellow-900 dark:border-yellow-800 dark:bg-yellow-900/20 dark:text-yellow-100">
+                  <AlertTriangle size={14} className="mr-1 inline-block" />
+                  快照失败（before）：{snapshotErrBefore}
+                </div>
+              ) : null}
+              {snapshotErrAfter ? (
+                <div className="mb-2 rounded border border-yellow-200 bg-yellow-50 px-2 py-1 text-xs text-yellow-900 dark:border-yellow-800 dark:bg-yellow-900/20 dark:text-yellow-100">
+                  <AlertTriangle size={14} className="mr-1 inline-block" />
+                  快照失败（after）：{snapshotErrAfter}
+                </div>
+              ) : null}
+
+              {undoMsg ? (
+                <div className="mb-2 text-xs text-gray-700 dark:text-gray-200">{undoMsg}</div>
+              ) : null}
+
+              {diffLoading ? (
+                <div className="text-xs text-gray-600 dark:text-gray-300">生成 Git diff 中…</div>
+              ) : diffError ? (
+                <div className="text-xs text-red-700 dark:text-red-300">生成 diff 失败：{diffError}</div>
+              ) : diffData ? (
+                <>
+                  <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-gray-700 dark:text-gray-200">
+                    <span className="rounded bg-gray-100 px-2 py-0.5 font-medium text-gray-700 dark:bg-gray-800 dark:text-gray-200">
+                      本次修改：{diffData.summary.filesChanged} 个文件，+{diffData.summary.insertions} −{diffData.summary.deletions}
+                    </span>
+                    {repoRoot ? <span className="truncate font-mono text-[10px] text-gray-500 dark:text-gray-400">repoRoot={repoRoot}</span> : null}
+                  </div>
+
+                  {diffData.files?.length ? (
+                    <div className="mb-2 flex flex-wrap gap-2">
+                      {diffData.files.map((f) => {
+                        const label = f.status.startsWith('R') && f.oldPath
+                          ? `${f.status} ${f.oldPath} → ${f.path}`
+                          : `${f.status} ${f.path}`;
+                        const stats =
+                          typeof f.added === 'number' || typeof f.deleted === 'number'
+                            ? ` +${f.added ?? 0} -${f.deleted ?? 0}`
+                            : '';
+                        const isActive = activeFile === f.path;
+                        return (
+                          <button
+                            key={`${f.status}:${f.path}`}
+                            type="button"
+                            onClick={() => setActiveFile(f.path)}
+                            className={`rounded border px-2 py-0.5 text-[10px] font-mono ${isActive ? 'border-gray-900 bg-gray-900 text-white dark:border-gray-100 dark:bg-gray-100 dark:text-gray-900' : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-200 dark:hover:bg-gray-800'}`}
+                            title={label}
+                          >
+                            {f.path}
+                            <span className="ml-1 text-[10px] opacity-70">{stats}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+
+                  {currentDiff ? (
+                    <DiffViewer text={currentDiff} wrap={wrap} />
+                  ) : (
+                    <div className="text-xs text-gray-600 dark:text-gray-300">无差异（已与快照一致）</div>
+                  )}
+
+                  <details className="mt-2">
+                    <summary className="cursor-pointer text-xs text-gray-600 dark:text-gray-300">详情</summary>
+                    <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded border border-gray-200 bg-white p-2 text-[11px] text-gray-800 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-100">
+                      {JSON.stringify(toolMeta ?? null, null, 2)}
+                    </pre>
+                  </details>
+                </>
+              ) : (
+                <div className="text-xs text-gray-600 dark:text-gray-300">
+                  {canGitDiff ? '等待 diff 数据…' : '缺少 ghost commit 信息，无法生成 Git diff。请切换到“工具详情”。'}
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              {prettyArgs ? (
+                <>
+                  <div className={`mb-1 text-xs font-medium ${tone.detailLabel}`}>参数</div>
+                  <pre className="mb-3 max-h-48 overflow-y-auto whitespace-pre-wrap break-words pr-2 text-sm text-gray-800 dark:text-gray-100">
+                    {prettyArgs}
+                  </pre>
+                </>
+              ) : null}
+
+              {resultText ? (
+                <>
+                  <div className={`mb-1 text-xs font-medium ${tone.detailLabel}`}>输出</div>
+                  <pre className="h-48 overflow-y-auto whitespace-pre-wrap break-words pr-2 text-sm text-gray-800 dark:text-gray-100">
+                    <AnsiText text={resultText} renderMode={ansiRenderMode} colorMode={ansiColorMode} />
+                  </pre>
+                </>
+              ) : (
+                <div className="text-xs text-green-700/70 dark:text-green-200/70">等待工具输出…</div>
+              )}
+            </>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+};
+
 interface ThinkingBlockProps {
   text: string;
   isStreaming?: boolean;
@@ -1771,24 +2317,42 @@ export const MessageBlocks: React.FC<{
                     const isLatestToolRun = Boolean(
                       latestBlockId && (block.id === latestBlockId || next.id === latestBlockId)
                     );
-                    return (
-                      <ToolRunBlock
-                        key={`${block.id}:${next.id}`}
-                        name={block.name}
-                        args={block.arguments}
-                        resultText={next.text}
-                        callId={block.callId}
-                        isStreaming={isStreaming}
-                        onAbortTool={onAbortTool}
-                        ansiRenderMode={ansiRenderMode}
-                        ansiColorMode={ansiColorMode}
-                        defaultExpanded={autoCollapseEnabled ? isLatestToolRun : Boolean(isStreaming)}
-                        autoCollapseEnabled={autoCollapseEnabled}
-                        autoCollapseSeq={autoCollapseSeq}
-                      />
-                    );
-                  }
-                }
+	                    return (
+	                      block.name === 'apply_patch' ? (
+	                        <ApplyPatchToolRunBlock
+	                          key={`${block.id}:${next.id}`}
+	                          name={block.name}
+	                          args={block.arguments}
+	                          resultText={next.text}
+	                          callId={block.callId}
+	                          toolMeta={(block as any).meta}
+	                          isStreaming={isStreaming}
+	                          onAbortTool={onAbortTool}
+	                          ansiRenderMode={ansiRenderMode}
+	                          ansiColorMode={ansiColorMode}
+	                          defaultExpanded={autoCollapseEnabled ? isLatestToolRun : Boolean(isStreaming)}
+	                          autoCollapseEnabled={autoCollapseEnabled}
+	                          autoCollapseSeq={autoCollapseSeq}
+	                        />
+	                      ) : (
+	                        <ToolRunBlock
+	                          key={`${block.id}:${next.id}`}
+	                          name={block.name}
+	                          args={block.arguments}
+	                          resultText={next.text}
+	                          callId={block.callId}
+	                          isStreaming={isStreaming}
+	                          onAbortTool={onAbortTool}
+	                          ansiRenderMode={ansiRenderMode}
+	                          ansiColorMode={ansiColorMode}
+	                          defaultExpanded={autoCollapseEnabled ? isLatestToolRun : Boolean(isStreaming)}
+	                          autoCollapseEnabled={autoCollapseEnabled}
+	                          autoCollapseSeq={autoCollapseSeq}
+	                        />
+	                      )
+	                    );
+	                  }
+	                }
 
                 if (block.type === 'tool_result') {
                   const prev = g.blocks[blockIdx - 1];

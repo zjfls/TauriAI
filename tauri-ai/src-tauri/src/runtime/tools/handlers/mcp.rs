@@ -74,7 +74,10 @@ impl ToolHandler for McpToolHandler {
         let output = serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string());
 
         emit_tool_result(ctx, call.id.as_str(), &output);
-        Ok(ToolCallResult { content: output })
+        Ok(ToolCallResult {
+            content: output,
+            meta: None,
+        })
     }
 }
 

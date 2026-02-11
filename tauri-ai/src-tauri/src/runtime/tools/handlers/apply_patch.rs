@@ -2,9 +2,13 @@ use std::path::{Component, Path, PathBuf};
 
 use async_trait::async_trait;
 use serde::Deserialize;
+use serde_json::json;
 use tokio::fs;
 
 use crate::ai_client::ToolCall;
+use crate::git_tools::{
+    abs_to_repo_rel, create_ghost_commit_for_paths, repo_prefix, resolve_repo_root, GhostCommit,
+};
 use crate::models::SandboxPolicy;
 use crate::runtime::events::RunEvent;
 use crate::runtime::tools::permissions::ToolPermission;
@@ -122,13 +126,126 @@ impl ToolHandler for ApplyPatchTool {
             .ok_or_else(|| ToolError::internal("无法确定默认工作目录"))?;
 
         let hunks = parse_patch(patch_text)?;
+
+        // Collect patch pathspecs for git snapshot/diff/undo meta (best-effort).
+        // IMPORTANT: apply_patch is not transactional; meta helps UI show "what actually changed" and support Undo.
+        let (affected_abs_paths, created_abs_paths) = collect_patch_paths(&base_dir, &hunks)?;
+        let mut apply_patch_meta: serde_json::Value = json!({
+            "applyPatch": {
+                "baseDir": base_dir.display().to_string(),
+            }
+        });
+
+        // Best-effort git snapshots (ghost commits) for:
+        // - Undo: restore to "before"
+        // - Diff: compare before..after (includes untracked in affected scope)
+        let mut repo_root: Option<PathBuf> = None;
+        let mut affected_rel: Vec<String> = Vec::new();
+        let mut created_rel: Vec<String> = Vec::new();
+        let mut ghost_before: Option<GhostCommit> = None;
+        let mut ghost_after: Option<GhostCommit> = None;
+        let mut snapshot_err_before: Option<String> = None;
+        let mut snapshot_err_after: Option<String> = None;
+
+        match resolve_repo_root(&base_dir).await {
+            Ok(root) => {
+                let prefix = repo_prefix(&root, &base_dir).map(|p| p.to_string_lossy().to_string());
+                repo_root = Some(root.clone());
+
+                for abs in &affected_abs_paths {
+                    if let Some(rel) = abs_to_repo_rel(&root, abs) {
+                        affected_rel.push(rel);
+                    }
+                }
+                affected_rel.sort();
+                affected_rel.dedup();
+
+                for abs in &created_abs_paths {
+                    if let Some(rel) = abs_to_repo_rel(&root, abs) {
+                        created_rel.push(rel);
+                    }
+                }
+                created_rel.sort();
+                created_rel.dedup();
+
+                if !affected_rel.is_empty() {
+                    match create_ghost_commit_for_paths(
+                        &root,
+                        &affected_rel,
+                        "tauri-ai apply_patch snapshot (before)",
+                    )
+                    .await
+                    {
+                        Ok(c) => ghost_before = Some(c),
+                        Err(e) => snapshot_err_before = Some(e),
+                    }
+                }
+
+                apply_patch_meta["applyPatch"]["git"] = json!({
+                    "repoRoot": root.display().to_string(),
+                    "repoPrefix": prefix,
+                    "affectedPaths": affected_rel,
+                    "createdPaths": created_rel,
+                    "ghostBefore": ghost_before.as_ref().map(|c| c.id.clone()),
+                });
+                if let Some(e) = snapshot_err_before.as_ref() {
+                    apply_patch_meta["applyPatch"]["git"]["snapshotErrorBefore"] = json!(e);
+                }
+            }
+            Err(e) => {
+                apply_patch_meta["applyPatch"]["git"] = json!({
+                    "error": e,
+                });
+            }
+        }
+
         let affected =
-            apply_hunks(&base_dir, &ctx.sandbox_policy, &ctx.workspace_roots, &hunks).await?;
+            match apply_hunks(&base_dir, &ctx.sandbox_policy, &ctx.workspace_roots, &hunks).await {
+                Ok(v) => Ok(v),
+                Err(err) => Err(err),
+            };
+
+        // Snapshot "after" even if apply_hunks failed (best-effort), so UI can still render what was written.
+        if let Some(root) = repo_root.as_ref() {
+            let affected_paths = apply_patch_meta["applyPatch"]["git"]["affectedPaths"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect::<Vec<_>>();
+            if !affected_paths.is_empty() {
+                match create_ghost_commit_for_paths(
+                    root,
+                    &affected_paths,
+                    "tauri-ai apply_patch snapshot (after)",
+                )
+                .await
+                {
+                    Ok(c) => ghost_after = Some(c),
+                    Err(e) => snapshot_err_after = Some(e),
+                }
+            }
+        }
+
+        if apply_patch_meta["applyPatch"].get("git").is_some() {
+            if let Some(c) = ghost_after.as_ref() {
+                apply_patch_meta["applyPatch"]["git"]["ghostAfter"] = json!(c.id.clone());
+            }
+            if let Some(e) = snapshot_err_after.as_ref() {
+                apply_patch_meta["applyPatch"]["git"]["snapshotErrorAfter"] = json!(e);
+            }
+        }
+
+        let affected = affected.map_err(|e| e.with_meta(apply_patch_meta.clone()))?;
 
         let summary = format_summary(&base_dir, &affected);
         emit_tool_result(ctx, call.id.as_str(), &summary);
 
-        Ok(ToolCallResult { content: summary })
+        Ok(ToolCallResult {
+            content: summary,
+            meta: Some(apply_patch_meta),
+        })
     }
 }
 
@@ -137,6 +254,46 @@ struct AffectedPaths {
     added: Vec<PathBuf>,
     modified: Vec<PathBuf>,
     deleted: Vec<PathBuf>,
+}
+
+fn collect_patch_paths(base_dir: &Path, hunks: &[Hunk]) -> Result<(Vec<PathBuf>, Vec<PathBuf>), ToolError> {
+    let mut affected: Vec<PathBuf> = Vec::new();
+    let mut created: Vec<PathBuf> = Vec::new();
+
+    for h in hunks {
+        match h {
+            Hunk::AddFile { path, .. } => {
+                let abs = resolve_patch_path(base_dir, path)?;
+                affected.push(abs.clone());
+                created.push(abs);
+            }
+            Hunk::DeleteFile { path } => {
+                let abs = resolve_patch_path(base_dir, path)?;
+                affected.push(abs);
+            }
+            Hunk::UpdateFile {
+                path,
+                move_path,
+                ..
+            } => {
+                let src_abs = resolve_patch_path(base_dir, path)?;
+                affected.push(src_abs.clone());
+                if let Some(dest_rel) = move_path {
+                    let dest_abs = resolve_patch_path(base_dir, dest_rel)?;
+                    if dest_abs != src_abs {
+                        affected.push(dest_abs.clone());
+                        created.push(dest_abs);
+                    }
+                }
+            }
+        }
+    }
+
+    affected.sort();
+    affected.dedup();
+    created.sort();
+    created.dedup();
+    Ok((affected, created))
 }
 
 fn emit_tool_result(ctx: &mut ToolExecutionContext<'_>, call_id: &str, content: &str) {

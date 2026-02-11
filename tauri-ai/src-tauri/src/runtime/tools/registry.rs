@@ -41,6 +41,8 @@ pub struct ToolExecutionContext<'a> {
 #[derive(Debug, Clone)]
 pub struct ToolCallResult {
     pub content: String,
+    /// 可选：补充的结构化 meta（用于 UI 展示/Undo 等能力，不进入模型上下文）。
+    pub meta: Option<serde_json::Value>,
 }
 
 /// 工具执行错误（用于 runtime -> 模型的可读报错）。
@@ -64,6 +66,8 @@ pub enum ToolErrorKind {
 pub struct ToolError {
     pub kind: ToolErrorKind,
     pub message: String,
+    /// 可选：补充的结构化 meta（用于 UI 展示/Undo 等能力）。
+    pub meta: Option<serde_json::Value>,
 }
 
 impl ToolError {
@@ -71,6 +75,7 @@ impl ToolError {
         Self {
             kind: ToolErrorKind::ExecutionFailed,
             message: message.into(),
+            meta: None,
         }
     }
 
@@ -78,6 +83,7 @@ impl ToolError {
         Self {
             kind: ToolErrorKind::Denied,
             message: message.into(),
+            meta: None,
         }
     }
 
@@ -85,6 +91,7 @@ impl ToolError {
         Self {
             kind: ToolErrorKind::InvalidArguments,
             message: message.into(),
+            meta: None,
         }
     }
 
@@ -92,6 +99,7 @@ impl ToolError {
         Self {
             kind: ToolErrorKind::Timeout,
             message: message.into(),
+            meta: None,
         }
     }
 
@@ -99,6 +107,7 @@ impl ToolError {
         Self {
             kind: ToolErrorKind::Aborted,
             message: message.into(),
+            meta: None,
         }
     }
 
@@ -106,7 +115,13 @@ impl ToolError {
         Self {
             kind: ToolErrorKind::Internal,
             message: message.into(),
+            meta: None,
         }
+    }
+
+    pub fn with_meta(mut self, meta: serde_json::Value) -> Self {
+        self.meta = Some(meta);
+        self
     }
 }
 

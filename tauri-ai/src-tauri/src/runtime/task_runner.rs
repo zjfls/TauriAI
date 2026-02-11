@@ -1546,14 +1546,15 @@ impl<'a> TurnLoop<'a> {
                             .to_string(),
                         });
 
-                        blocks.push(MessageBlock::ToolCall {
-                            id: format!("{turn_id}:tool_call:{id}"),
-                            turn_id: Some(turn_id.clone()),
-                            turn_index: Some(turn_index),
-                            call_id: id.clone(),
-                            name: call.name.clone(),
-                            arguments: call.arguments.clone(),
-                        });
+	                        blocks.push(MessageBlock::ToolCall {
+	                            id: format!("{turn_id}:tool_call:{id}"),
+	                            turn_id: Some(turn_id.clone()),
+	                            turn_index: Some(turn_index),
+	                            call_id: id.clone(),
+	                            name: call.name.clone(),
+	                            arguments: call.arguments.clone(),
+	                            meta: None,
+	                        });
 
                         normalized_calls.push(call);
                     }
@@ -2060,9 +2061,14 @@ impl<'a> TurnLoop<'a> {
                             });
                         }
 
+                        let tool_meta: Option<serde_json::Value>;
                         let result = match exec {
-                            Ok(v) => v.content,
+                            Ok(v) => {
+                                tool_meta = v.meta.clone();
+                                v.content
+                            }
                             Err(e) => {
+                                tool_meta = e.meta.clone();
                                 if e.kind == super::tools::registry::ToolErrorKind::Aborted {
                                     let msg = format!("TOOL_ABORTED: {}", e.message);
                                     self.emitter.emit(RunEvent::BlockDelta {
@@ -2076,6 +2082,33 @@ impl<'a> TurnLoop<'a> {
                                         format: Some("plain".to_string()),
                                         delta: msg.clone(),
                                     });
+                                    // Best-effort: persist tool meta into the corresponding tool_call block.
+                                    if let Some(meta) = tool_meta.as_ref() {
+                                        for b in blocks.iter_mut().rev() {
+                                            if let MessageBlock::ToolCall { call_id, meta: m, .. } = b {
+                                                if call_id == &call.id {
+                                                    *m = Some(meta.clone());
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        self.emitter.emit(RunEvent::BlockDelta {
+                                            task_id: self.task_id.clone(),
+                                            turn_id: turn_id.clone(),
+                                            assistant_message_id: Some(self.assistant_message_id.clone()),
+                                            block_id: format!("tool_call:{}", call.id),
+                                            block_type: "tool_call".to_string(),
+                                            format: Some("json".to_string()),
+                                            delta: serde_json::json!({
+                                                "id": call.id,
+                                                "name": call.name,
+                                                "arguments": call.arguments,
+                                                "meta": meta,
+                                            })
+                                            .to_string(),
+                                        });
+                                    }
+
                                     blocks.push(MessageBlock::ToolResult {
                                         id: format!("{turn_id}:tool_result:{}", call.id),
                                         turn_id: Some(turn_id.clone()),
@@ -2114,6 +2147,33 @@ impl<'a> TurnLoop<'a> {
                                 msg
                             }
                         };
+
+                        // Best-effort: persist tool meta into the corresponding tool_call block.
+                        if let Some(meta) = tool_meta.as_ref() {
+                            for b in blocks.iter_mut().rev() {
+                                if let MessageBlock::ToolCall { call_id, meta: m, .. } = b {
+                                    if call_id == &call.id {
+                                        *m = Some(meta.clone());
+                                        break;
+                                    }
+                                }
+                            }
+                            self.emitter.emit(RunEvent::BlockDelta {
+                                task_id: self.task_id.clone(),
+                                turn_id: turn_id.clone(),
+                                assistant_message_id: Some(self.assistant_message_id.clone()),
+                                block_id: format!("tool_call:{}", call.id),
+                                block_type: "tool_call".to_string(),
+                                format: Some("json".to_string()),
+                                delta: serde_json::json!({
+                                    "id": call.id,
+                                    "name": call.name,
+                                    "arguments": call.arguments,
+                                    "meta": meta,
+                                })
+                                .to_string(),
+                            });
+                        }
 
                         blocks.push(MessageBlock::ToolResult {
                             id: format!("{turn_id}:tool_result:{}", call.id),
@@ -5422,14 +5482,15 @@ mod tests {
             content_parts: vec![],
             thinking: None,
             meta: Some(crate::models::MessageMeta {
-                blocks: Some(vec![crate::models::MessageBlock::ToolCall {
-                    id: "t1:tool_call:call_1".to_string(),
-                    turn_id: Some("t1".to_string()),
-                    turn_index: Some(1),
-                    call_id: "call_1".to_string(),
-                    name: "read_file".to_string(),
-                    arguments: "{\"file_path\":\"requirements.txt\"}".to_string(),
-                }]),
+	                blocks: Some(vec![crate::models::MessageBlock::ToolCall {
+	                    id: "t1:tool_call:call_1".to_string(),
+	                    turn_id: Some("t1".to_string()),
+	                    turn_index: Some(1),
+	                    call_id: "call_1".to_string(),
+	                    name: "read_file".to_string(),
+	                    arguments: "{\"file_path\":\"requirements.txt\"}".to_string(),
+	                    meta: None,
+	                }]),
                 ..Default::default()
             }),
             created_at: chrono::Utc::now(),
@@ -5470,23 +5531,25 @@ mod tests {
             content_parts: vec![],
             thinking: None,
             meta: Some(crate::models::MessageMeta {
-                blocks: Some(vec![
-                    crate::models::MessageBlock::ToolCall {
-                        id: "t1:tool_call:call_1".to_string(),
-                        turn_id: Some("t1".to_string()),
-                        turn_index: Some(1),
-                        call_id: "call_1".to_string(),
-                        name: "read_file".to_string(),
-                        arguments: "{}".to_string(),
-                    },
-                    crate::models::MessageBlock::ToolCall {
-                        id: "t1:tool_call:call_2".to_string(),
-                        turn_id: Some("t1".to_string()),
-                        turn_index: Some(1),
-                        call_id: "call_2".to_string(),
-                        name: "shell_command".to_string(),
-                        arguments: "{}".to_string(),
-                    },
+	                blocks: Some(vec![
+	                    crate::models::MessageBlock::ToolCall {
+	                        id: "t1:tool_call:call_1".to_string(),
+	                        turn_id: Some("t1".to_string()),
+	                        turn_index: Some(1),
+	                        call_id: "call_1".to_string(),
+	                        name: "read_file".to_string(),
+	                        arguments: "{}".to_string(),
+	                        meta: None,
+	                    },
+	                    crate::models::MessageBlock::ToolCall {
+	                        id: "t1:tool_call:call_2".to_string(),
+	                        turn_id: Some("t1".to_string()),
+	                        turn_index: Some(1),
+	                        call_id: "call_2".to_string(),
+	                        name: "shell_command".to_string(),
+	                        arguments: "{}".to_string(),
+	                        meta: None,
+	                    },
                     crate::models::MessageBlock::ToolResult {
                         id: "t1:tool_result:call_2".to_string(),
                         turn_id: Some("t1".to_string()),

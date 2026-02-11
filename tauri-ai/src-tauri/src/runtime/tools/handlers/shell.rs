@@ -367,7 +367,10 @@ impl ToolHandler for ShellCommandTool {
                             delta: tail,
                         });
                     }
-                    return Ok(ToolCallResult { content: output });
+                    return Ok(ToolCallResult {
+                        content: output,
+                        meta: None,
+                    });
                 }
                 Ok(None) => {}
                 Err(e) => return Err(ToolError::new(format!("检查进程状态失败: {e}"))),
