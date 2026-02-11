@@ -225,6 +225,8 @@ export interface Agent {
   modelRef: string;       // Format: "provider_name/model_name"
   systemPrompt: string;
   formatType: FormatPromptType;
+  /** 新建会话/打开历史时使用的默认运行模式（未设置时：Tool=>agent，Chat=>chat） */
+  defaultRunMode?: RunMode;
   toolset?: string;       // Optional toolset binding (for tool agents)
   mcpSet?: string;        // Optional MCP Set binding (servers/tools per agent)
   skillSet?: string;      // Optional Skill Set binding (skills per agent)
@@ -835,6 +837,7 @@ export interface Conversation {
   systemPrompt?: string;  // Cached merged system prompt (conversation-scoped)
   systemPromptCacheKey?: string; // Cache key for systemPrompt
   thinkingMode?: ThinkingMode; // Conversation-scoped thinking mode/level
+  runMode?: RunMode;      // Conversation-scoped run mode (chat/agent/...)
   workstudioId?: string;  // Optional workstudio binding
   /** 消息数量（用于历史列表/概览展示） */
   messageCount?: number;

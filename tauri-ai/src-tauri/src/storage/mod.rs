@@ -103,6 +103,7 @@ impl Database {
                 system_prompt TEXT,
                 system_prompt_cache_key TEXT,
                 thinking_mode TEXT,
+                run_mode TEXT,
                 workstudio_id TEXT,
                 primary_path TEXT,
                 primary_path_kind TEXT,
@@ -131,6 +132,7 @@ impl Database {
             "ALTER TABLE conversations ADD COLUMN thinking_mode TEXT",
             [],
         );
+        let _ = conn.execute("ALTER TABLE conversations ADD COLUMN run_mode TEXT", []);
         let _ = conn.execute(
             "ALTER TABLE conversations ADD COLUMN workstudio_id TEXT",
             [],
@@ -252,8 +254,8 @@ impl Database {
         let now_str = now.to_rfc3339();
 
         conn.execute(
-            "INSERT INTO conversations (id, title, model_id, agent_name, model_ref, system_prompt, system_prompt_cache_key, thinking_mode, workstudio_id, created_at, updated_at)
-             VALUES (?1, ?2, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?3, ?4)",
+            "INSERT INTO conversations (id, title, model_id, agent_name, model_ref, system_prompt, system_prompt_cache_key, thinking_mode, run_mode, workstudio_id, created_at, updated_at)
+             VALUES (?1, ?2, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?3, ?4)",
             params![id, title, now_str, now_str],
         )?;
 
@@ -265,6 +267,7 @@ impl Database {
             system_prompt: None,
             system_prompt_cache_key: None,
             thinking_mode: None,
+            run_mode: None,
             workstudio_id: None,
             message_count: None,
             turn_count: None,
@@ -534,6 +537,7 @@ impl Database {
             .as_ref()
             .map(serde_json::to_string)
             .transpose()?;
+        let run_mode = source.run_mode.clone();
 
         let workstudio_id = cloned_workstudio_id;
 
@@ -568,8 +572,8 @@ impl Database {
             }
 
             tx.execute(
-                "INSERT INTO conversations (id, title, model_id, agent_name, model_ref, system_prompt, system_prompt_cache_key, thinking_mode, workstudio_id, created_at, updated_at)
-                 VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                "INSERT INTO conversations (id, title, model_id, agent_name, model_ref, system_prompt, system_prompt_cache_key, thinking_mode, run_mode, workstudio_id, created_at, updated_at)
+                 VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     new_conversation_id,
                     new_title,
@@ -578,6 +582,7 @@ impl Database {
                     source.system_prompt,
                     source.system_prompt_cache_key,
                     thinking_mode_json,
+                    run_mode,
                     workstudio_id,
                     now_str,
                     now_str
@@ -639,6 +644,7 @@ impl Database {
             system_prompt: source.system_prompt,
             system_prompt_cache_key: source.system_prompt_cache_key,
             thinking_mode: source.thinking_mode,
+            run_mode: source.run_mode,
             workstudio_id,
             message_count: None,
             turn_count: None,
@@ -669,6 +675,7 @@ impl Database {
                c.system_prompt,
                c.system_prompt_cache_key,
                c.thinking_mode,
+               c.run_mode,
                c.workstudio_id,
                c.primary_path,
                c.primary_path_kind,
@@ -702,17 +709,18 @@ impl Database {
                 let system_prompt: Option<String> = row.get(4)?;
                 let system_prompt_cache_key: Option<String> = row.get(5)?;
                 let thinking_mode_str: Option<String> = row.get(6)?;
-                let workstudio_id: Option<String> = row.get(7)?;
-                let primary_path: Option<String> = row.get(8)?;
-                let primary_path_kind: Option<String> = row.get(9)?;
-                let primary_path_pref: Option<String> = row.get(10)?;
-                let active_files_str: Option<String> = row.get(11)?;
-                let active_files_updated_at_str: Option<String> = row.get(12)?;
-                let created_at_str: String = row.get(13)?;
-                let updated_at_str: String = row.get(14)?;
-                let last_message_at_str: Option<String> = row.get(15)?;
-                let message_count_i64: i64 = row.get(16)?;
-                let turn_count_i64: i64 = row.get(17)?;
+                let run_mode: Option<String> = row.get(7)?;
+                let workstudio_id: Option<String> = row.get(8)?;
+                let primary_path: Option<String> = row.get(9)?;
+                let primary_path_kind: Option<String> = row.get(10)?;
+                let primary_path_pref: Option<String> = row.get(11)?;
+                let active_files_str: Option<String> = row.get(12)?;
+                let active_files_updated_at_str: Option<String> = row.get(13)?;
+                let created_at_str: String = row.get(14)?;
+                let updated_at_str: String = row.get(15)?;
+                let last_message_at_str: Option<String> = row.get(16)?;
+                let message_count_i64: i64 = row.get(17)?;
+                let turn_count_i64: i64 = row.get(18)?;
 
                 let thinking_mode: Option<serde_json::Value> = thinking_mode_str
                     .as_deref()
@@ -740,6 +748,7 @@ impl Database {
                     system_prompt,
                     system_prompt_cache_key,
                     thinking_mode,
+                    run_mode,
                     workstudio_id,
                     message_count: u32::try_from(message_count_i64).ok(),
                     turn_count: u32::try_from(turn_count_i64).ok(),
@@ -770,7 +779,7 @@ impl Database {
             .map_err(|e| StorageError::Lock(e.to_string()))?;
 
         let mut stmt = conn.prepare(
-            "SELECT id, title, agent_name, model_ref, system_prompt, system_prompt_cache_key, thinking_mode, workstudio_id, primary_path, primary_path_kind, primary_path_pref, active_files, active_files_updated_at, created_at, updated_at 
+            "SELECT id, title, agent_name, model_ref, system_prompt, system_prompt_cache_key, thinking_mode, run_mode, workstudio_id, primary_path, primary_path_kind, primary_path_pref, active_files, active_files_updated_at, created_at, updated_at 
              FROM conversations 
              WHERE id = ?1",
         )?;
@@ -781,14 +790,15 @@ impl Database {
             let system_prompt: Option<String> = row.get(4)?;
             let system_prompt_cache_key: Option<String> = row.get(5)?;
             let thinking_mode_str: Option<String> = row.get(6)?;
-            let workstudio_id: Option<String> = row.get(7)?;
-            let primary_path: Option<String> = row.get(8)?;
-            let primary_path_kind: Option<String> = row.get(9)?;
-            let primary_path_pref: Option<String> = row.get(10)?;
-            let active_files_str: Option<String> = row.get(11)?;
-            let active_files_updated_at_str: Option<String> = row.get(12)?;
-            let created_at_str: String = row.get(13)?;
-            let updated_at_str: String = row.get(14)?;
+            let run_mode: Option<String> = row.get(7)?;
+            let workstudio_id: Option<String> = row.get(8)?;
+            let primary_path: Option<String> = row.get(9)?;
+            let primary_path_kind: Option<String> = row.get(10)?;
+            let primary_path_pref: Option<String> = row.get(11)?;
+            let active_files_str: Option<String> = row.get(12)?;
+            let active_files_updated_at_str: Option<String> = row.get(13)?;
+            let created_at_str: String = row.get(14)?;
+            let updated_at_str: String = row.get(15)?;
 
             let thinking_mode: Option<serde_json::Value> = thinking_mode_str
                 .as_deref()
@@ -811,6 +821,7 @@ impl Database {
                 system_prompt,
                 system_prompt_cache_key,
                 thinking_mode,
+                run_mode,
                 workstudio_id,
                 message_count: None,
                 turn_count: None,
@@ -859,6 +870,7 @@ impl Database {
         agent_name: Option<&str>,
         model_ref: Option<&str>,
         thinking_mode: Option<&serde_json::Value>,
+        run_mode: Option<&str>,
         workstudio_id: Option<&str>,
     ) -> Result<(), StorageError> {
         let conn = self
@@ -879,13 +891,15 @@ impl Database {
              SET agent_name = COALESCE(?1, agent_name),
                  model_ref = COALESCE(?2, model_ref),
                  thinking_mode = COALESCE(?3, thinking_mode),
-                 workstudio_id = COALESCE(?4, workstudio_id),
-                 updated_at = ?5 
-             WHERE id = ?6",
+                 run_mode = COALESCE(?4, run_mode),
+                 workstudio_id = COALESCE(?5, workstudio_id),
+                 updated_at = ?6 
+             WHERE id = ?7",
             params![
                 agent_name,
                 model_ref,
                 thinking_mode_json,
+                run_mode,
                 workstudio_id,
                 now,
                 id
@@ -2670,6 +2684,7 @@ mod tests {
             Some("test-agent"),
             Some("test-provider/test-model"),
             Some(&thinking_mode),
+            None,
             Some(&ws_id),
         )
         .unwrap();

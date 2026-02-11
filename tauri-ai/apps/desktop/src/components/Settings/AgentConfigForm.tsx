@@ -11,6 +11,7 @@ import type {
   AgentType,
   AskForApproval,
   FormatPromptType,
+  RunMode,
   SandboxPolicy,
   SecurityPolicyConfig,
   SkillSetConfig,
@@ -303,6 +304,13 @@ const AgentForm: React.FC<AgentFormProps> = ({
     { value: 'none', label: '无格式' },
   ];
 
+  const runModeOptions: { value: RunMode; label: string }[] = [
+    { value: 'chat', label: 'Chat（对话）' },
+    { value: 'agent', label: 'Agent（工具/任务）' },
+    { value: 'agent-custom', label: 'Agent Custom（自定义安全策略）' },
+    { value: 'agent-full-access', label: 'Agent Full Access（完全访问）' },
+  ];
+
   const sandboxSummary = (policy: SandboxPolicy) => {
     switch (policy.type) {
       case 'read-only':
@@ -503,6 +511,29 @@ const AgentForm: React.FC<AgentFormProps> = ({
                 {supportsToolset ? '未绑定时默认 allow_all（再由工具权限过滤）。' : '仅 Tool 类型可绑定 toolset。'}
               </p>
           </div>
+        </div>
+
+        <div className="space-y-1">
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">默认 Agent 模式</label>
+          <select
+            value={agent.defaultRunMode ?? ''}
+            onChange={(e) => {
+              const raw = e.target.value.trim();
+              onFieldChange('defaultRunMode', raw ? (raw as RunMode) : undefined);
+            }}
+            disabled={!isEditing}
+          className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800"
+          >
+            <option value="">（自动：Tool→Agent，Chat→Chat）</option>
+            {runModeOptions.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+          <p className="text-xs text-gray-500">
+            新建对话/打开历史时：若对话本身未保存 runMode，则使用此默认值。
+          </p>
         </div>
 
         <div className="grid grid-cols-2 gap-4">

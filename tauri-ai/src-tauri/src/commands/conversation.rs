@@ -628,6 +628,7 @@ pub async fn update_conversation_metadata(
     agent_name: Option<String>,
     model_ref: Option<String>,
     thinking_mode: Option<serde_json::Value>,
+    run_mode: Option<String>,
     workstudio_id: Option<String>,
     db: tauri::State<'_, Arc<Mutex<Database>>>,
 ) -> Result<(), String> {
@@ -637,6 +638,7 @@ pub async fn update_conversation_metadata(
         agent_name.as_deref(),
         model_ref.as_deref(),
         thinking_mode.as_ref(),
+        run_mode.as_deref(),
         workstudio_id.as_deref(),
     )
     .map_err(|e| e.to_string())
