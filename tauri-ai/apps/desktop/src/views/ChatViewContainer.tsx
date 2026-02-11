@@ -490,6 +490,42 @@ const ChatViewContainerInner: React.FC = () => {
     return null;
   }, []);
 
+  const computeTabStripInsertIndex = useCallback(
+    (paneId: string, point: { x: number; y: number }, activeId: WorkspaceTabId): number | null => {
+      const pane = paneById.get(paneId);
+      if (!pane) return null;
+
+      const stripEl = paneTabStripRefs.current.get(paneId);
+      if (!stripEl) return null;
+
+      const candidates = pane.tabIds.filter((id) => id !== activeId);
+      if (candidates.length === 0) return 0;
+
+      const rectById = new Map<string, DOMRect>();
+      const nodes = Array.from(stripEl.querySelectorAll('[data-workspace-tab-id]')) as HTMLElement[];
+      for (const el of nodes) {
+        const id = el.getAttribute('data-workspace-tab-id');
+        if (!id) continue;
+        rectById.set(id, el.getBoundingClientRect());
+      }
+
+      const centers: number[] = [];
+      for (const id of candidates) {
+        const rect = rectById.get(id);
+        if (!rect) continue;
+        centers.push(rect.left + rect.width / 2);
+      }
+      if (centers.length === 0) return candidates.length;
+      centers.sort((a, b) => a - b);
+
+      for (let i = 0; i < centers.length; i++) {
+        if (point.x < centers[i]!) return i;
+      }
+      return centers.length;
+    },
+    [paneById]
+  );
+
   // 仅当指针在 tab strip 区域时才参与“tab 排序”的碰撞检测。
   // 这样可以避免在 pane body（非 tab 区域）拖动时，tab 顺序被 dnd-kit 的排序预览/落点影响。
   const collisionDetection = useCallback(
@@ -957,6 +993,27 @@ const ChatViewContainerInner: React.FC = () => {
           return;
         }
 
+        // 在 tab strip 区域释放时，按鼠标落点计算插入位置（避免拖到最右侧空白区时误判为“倒数第二”）。
+        // 说明：dnd-kit 的 over 基于 collision detection，某些布局/滚动情况下会出现落点偏一格。
+        if (point) {
+          const tabStripPaneId = getTabStripPaneAtPoint(point);
+          if (tabStripPaneId) {
+            const insertIndex = computeTabStripInsertIndex(tabStripPaneId, point, activeId);
+            if (typeof insertIndex === 'number' && Number.isFinite(insertIndex)) {
+              const fromPaneId = tabToPaneId.get(activeId) ?? null;
+              const pane = paneById.get(tabStripPaneId) ?? null;
+              if (fromPaneId && fromPaneId === tabStripPaneId && pane && pane.tabIds.length > 0) {
+                const desiredIndex = Math.max(0, Math.min(pane.tabIds.length - 1, insertIndex));
+                const overId = pane.tabIds[desiredIndex];
+                if (overId) reorderTabInPane(tabStripPaneId, activeId, overId);
+              } else {
+                moveTabToPane(activeId, tabStripPaneId, insertIndex);
+              }
+              return;
+            }
+          }
+        }
+
         if (!overIdRaw) return;
 
         const overId = String(overIdRaw) as WorkspaceTabId | string;
@@ -986,6 +1043,8 @@ const ChatViewContainerInner: React.FC = () => {
       isCursorOutsideCurrentWindow,
       moveTabToPane,
       paneById,
+      computeTabStripInsertIndex,
+      getTabStripPaneAtPoint,
       reorderTabInPane,
       splitTabToNewPane,
       stopDragGhost,
