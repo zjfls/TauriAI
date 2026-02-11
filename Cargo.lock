@@ -4430,6 +4430,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "chrono",
+ "clipboard-win",
  "dirs 5.0.1",
  "dunce",
  "filetime",
