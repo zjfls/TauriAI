@@ -51,13 +51,15 @@ struct MobileChatStreamPayload {
     stream_id: String,
     conversation_id: String,
     assistant_message_id: String,
-    kind: String, // delta | thinking | done | error | canceled
+    kind: String, // delta | thinking | web_search | tool_calls | tool_result | done | error | canceled
     #[serde(skip_serializing_if = "Option::is_none")]
     delta: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
@@ -566,6 +568,7 @@ pub async fn mobile_chat_stream_start(
                     delta: None,
                     content: None,
                     thinking: None,
+                    data: None,
                     error: None,
                 },
             );
@@ -592,6 +595,7 @@ pub async fn mobile_chat_stream_start(
                             delta: None,
                             content: None,
                             thinking: None,
+                            data: None,
                             error: Some(format!("加载 MCP 工具失败: {err}")),
                         },
                     );
@@ -632,6 +636,7 @@ pub async fn mobile_chat_stream_start(
                         delta: None,
                         content: None,
                         thinking: None,
+                        data: None,
                         error: Some("工具调用轮次过多（可能出现循环）。".to_string()),
                     },
                 );
@@ -675,6 +680,7 @@ pub async fn mobile_chat_stream_start(
                                         delta: Some(t),
                                         content: None,
                                         thinking: None,
+                                        data: None,
                                         error: None,
                                     },
                                 );
@@ -691,6 +697,7 @@ pub async fn mobile_chat_stream_start(
                                         delta: Some(t),
                                         content: None,
                                         thinking: None,
+                                        data: None,
                                         error: None,
                                     },
                                 );
@@ -723,6 +730,7 @@ pub async fn mobile_chat_stream_start(
                                         delta: None,
                                         content: None,
                                         thinking: None,
+                                        data: None,
                                         error: Some(err),
                                     },
                                 );
@@ -731,26 +739,44 @@ pub async fn mobile_chat_stream_start(
                             }
                             StreamEvent::TurnState(_) => {}
                             StreamEvent::ToolCalls(calls) => {
-                                pending_tool_calls = Some(calls);
-                                terminal = Some("tool_calls");
-                                break;
-                            }
-                            StreamEvent::WebSearch { .. } => {
                                 emit_mobile_stream_event(
                                     &app2,
                                     MobileChatStreamPayload {
                                         stream_id: stream_id2.clone(),
                                         conversation_id: conversation_id2.clone(),
                                         assistant_message_id: assistant_message_id2.clone(),
-                                        kind: "error".to_string(),
+                                        kind: "tool_calls".to_string(),
                                         delta: None,
                                         content: None,
                                         thinking: None,
-                                        error: Some("移动端暂不支持网页搜索输出。".to_string()),
+                                        data: Some(serde_json::json!({ "calls": &calls })),
+                                        error: None,
                                     },
                                 );
-                                terminal = Some("error");
+                                pending_tool_calls = Some(calls);
+                                terminal = Some("tool_calls");
                                 break;
+                            }
+                            StreamEvent::WebSearch { id, status, action } => {
+                                emit_mobile_stream_event(
+                                    &app2,
+                                    MobileChatStreamPayload {
+                                        stream_id: stream_id2.clone(),
+                                        conversation_id: conversation_id2.clone(),
+                                        assistant_message_id: assistant_message_id2.clone(),
+                                        kind: "web_search".to_string(),
+                                        delta: None,
+                                        content: None,
+                                        thinking: None,
+                                        data: Some(serde_json::json!({
+                                            "id": id,
+                                            "status": status,
+                                            "action": action,
+                                        })),
+                                        error: None,
+                                    },
+                                );
+                                // web search 是 provider-native 事件流，不能中断本次对话；继续等待 token/done。
                             }
                         }
                     }
@@ -767,6 +793,7 @@ pub async fn mobile_chat_stream_start(
                                         delta: None,
                                         content: None,
                                         thinking: None,
+                                        data: None,
                                         error: Some(err.to_string()),
                                     },
                                 );
@@ -792,6 +819,7 @@ pub async fn mobile_chat_stream_start(
                                 delta: None,
                                 content: None,
                                 thinking: None,
+                                data: None,
                                 error: Some("模型请求了空的 tool_calls。".to_string()),
                             },
                         );
@@ -817,6 +845,9 @@ pub async fn mobile_chat_stream_start(
                     });
 
                     for call in calls {
+                        let call_id = call.id.clone();
+                        let call_name = call.name.clone();
+
                         let binding = match tool_bindings.get(call.name.as_str()).cloned() {
                             Some(b) => b,
                             None => {
@@ -830,6 +861,7 @@ pub async fn mobile_chat_stream_start(
                                         delta: None,
                                         content: None,
                                         thinking: None,
+                                        data: None,
                                         error: Some(format!("未知工具：{}", call.name)),
                                     },
                                 );
@@ -851,6 +883,7 @@ pub async fn mobile_chat_stream_start(
                                         delta: None,
                                         content: None,
                                         thinking: None,
+                                        data: None,
                                         error: Some(format!("解析 tool 参数失败：{e}")),
                                     },
                                 );
@@ -880,6 +913,7 @@ pub async fn mobile_chat_stream_start(
                                         delta: None,
                                         content: None,
                                         thinking: None,
+                                        data: None,
                                         error: Some(format!("MCP tool 调用失败：{e}")),
                                     },
                                 );
@@ -890,6 +924,25 @@ pub async fn mobile_chat_stream_start(
 
                         let output =
                             serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string());
+
+                        emit_mobile_stream_event(
+                            &app2,
+                            MobileChatStreamPayload {
+                                stream_id: stream_id2.clone(),
+                                conversation_id: conversation_id2.clone(),
+                                assistant_message_id: assistant_message_id2.clone(),
+                                kind: "tool_result".to_string(),
+                                delta: None,
+                                content: None,
+                                thinking: None,
+                                data: Some(serde_json::json!({
+                                    "id": call_id,
+                                    "name": call_name,
+                                    "output": &output,
+                                })),
+                                error: None,
+                            },
+                        );
 
                         model_messages.push(Message {
                             id: uuid::Uuid::new_v4().to_string(),
@@ -937,6 +990,7 @@ pub async fn mobile_chat_stream_start(
                             delta: None,
                             content: None,
                             thinking: None,
+                            data: None,
                             error: Some("流式响应提前结束（未收到 Done/Error）".to_string()),
                         },
                     );
@@ -967,6 +1021,7 @@ pub async fn mobile_chat_stream_start(
                     delta: None,
                     content: Some(content),
                     thinking,
+                    data: None,
                     error: None,
                 },
             );
@@ -1011,6 +1066,7 @@ pub async fn mobile_chat_stream_cancel(
                 delta: None,
                 content: None,
                 thinking: None,
+                data: None,
                 error: None,
             },
         );

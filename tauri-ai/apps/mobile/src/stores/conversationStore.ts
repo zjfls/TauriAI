@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { loadJson, saveJson } from "../lib/storage";
-import type { ChatMessage, Conversation } from "../types/chat";
+import type { ChatMessage, Conversation, ToolCallEvent, WebSearchEvent } from "../types/chat";
 
 export type CreateConversationOptions = {
   title?: string;
@@ -15,7 +15,20 @@ type State = {
   deleteConversation: (id: string) => void;
   appendMessage: (conversationId: string, message: ChatMessage) => void;
   appendMessageDelta: (conversationId: string, messageId: string, delta: string) => void;
+  appendThinkingDelta: (conversationId: string, messageId: string, delta: string) => void;
+  upsertWebSearchEvent: (conversationId: string, messageId: string, ev: WebSearchEvent) => void;
+  setToolCalls: (conversationId: string, messageId: string, calls: ToolCallEvent[]) => void;
+  setToolCallResult: (
+    conversationId: string,
+    messageId: string,
+    result: { id: string; output?: string; error?: string },
+  ) => void;
   setMessageContent: (conversationId: string, messageId: string, content: string) => void;
+  finalizeMessage: (
+    conversationId: string,
+    messageId: string,
+    patch: { content?: string; thinking?: string },
+  ) => void;
   setTitle: (conversationId: string, title: string) => void;
 };
 
@@ -115,11 +128,105 @@ export const useConversationStore = create<State>((set) => {
         return { conversations, activeConversationId: s.activeConversationId };
       });
     },
+    appendThinkingDelta: (conversationId, messageId, delta) => {
+      if (!delta) return;
+      set((s) => {
+        const conversations = s.conversations.map((c) => {
+          if (c.id !== conversationId) return c;
+          const messages = c.messages.map((m) =>
+            m.id === messageId ? { ...m, thinking: (m.thinking ?? "") + delta } : m,
+          );
+          return { ...c, messages, updatedAt: now() };
+        });
+        // thinking 也可能高频；同样不落盘。
+        return { conversations, activeConversationId: s.activeConversationId };
+      });
+    },
+    upsertWebSearchEvent: (conversationId, messageId, ev) => {
+      if (!ev || !ev.id) return;
+      set((s) => {
+        const conversations = s.conversations.map((c) => {
+          if (c.id !== conversationId) return c;
+          const messages = c.messages.map((m) => {
+            if (m.id !== messageId) return m;
+            const prev = Array.isArray(m.webSearch) ? m.webSearch : [];
+            const idx = prev.findIndex((x) => x && x.id === ev.id);
+            const next = idx >= 0 ? prev.map((x, i) => (i === idx ? { ...x, ...ev } : x)) : [...prev, ev];
+            return { ...m, webSearch: next };
+          });
+          return { ...c, messages, updatedAt: now() };
+        });
+        // web_search 事件频率不高，但也先不落盘；在 done 时统一持久化。
+        return { conversations, activeConversationId: s.activeConversationId };
+      });
+    },
+    setToolCalls: (conversationId, messageId, calls) => {
+      set((s) => {
+        const conversations = s.conversations.map((c) => {
+          if (c.id !== conversationId) return c;
+          const messages = c.messages.map((m) => {
+            if (m.id !== messageId) return m;
+            const prev = Array.isArray(m.toolCalls) ? m.toolCalls : [];
+            if (!Array.isArray(calls) || calls.length === 0) return { ...m, toolCalls: prev };
+
+            const byId = new Map(prev.map((x) => [x.id, x] as const));
+            const next = [...prev];
+            for (const call of calls) {
+              if (!call || !call.id) continue;
+              const existing = byId.get(call.id);
+              if (existing) {
+                // 保留已写入的 output/error，同时更新 name/arguments（避免后端格式差异）。
+                const merged = { ...existing, ...call, output: existing.output, error: existing.error };
+                const idx = next.findIndex((x) => x.id === call.id);
+                if (idx >= 0) next[idx] = merged;
+              } else {
+                next.push(call);
+              }
+            }
+            return { ...m, toolCalls: next };
+          });
+          return { ...c, messages, updatedAt: now() };
+        });
+        return { conversations, activeConversationId: s.activeConversationId };
+      });
+    },
+    setToolCallResult: (conversationId, messageId, result) => {
+      if (!result?.id) return;
+      set((s) => {
+        const conversations = s.conversations.map((c) => {
+          if (c.id !== conversationId) return c;
+          const messages = c.messages.map((m) => {
+            if (m.id !== messageId) return m;
+            const prev = Array.isArray(m.toolCalls) ? m.toolCalls : [];
+            const idx = prev.findIndex((x) => x && x.id === result.id);
+            if (idx < 0) return m;
+            const next = prev.map((x, i) => (i === idx ? { ...x, ...result } : x));
+            return { ...m, toolCalls: next };
+          });
+          return { ...c, messages, updatedAt: now() };
+        });
+        return { conversations, activeConversationId: s.activeConversationId };
+      });
+    },
     setMessageContent: (conversationId, messageId, content) => {
       set((s) => {
         const conversations = s.conversations.map((c) => {
           if (c.id !== conversationId) return c;
           const messages = c.messages.map((m) => (m.id === messageId ? { ...m, content } : m));
+          return { ...c, messages, updatedAt: now() };
+        });
+        const next = { conversations, activeConversationId: s.activeConversationId };
+        persist(next);
+        return next;
+      });
+    },
+    finalizeMessage: (conversationId, messageId, patch) => {
+      set((s) => {
+        const conversations = s.conversations.map((c) => {
+          if (c.id !== conversationId) return c;
+          const messages = c.messages.map((m) =>
+            m.id === messageId ? { ...m, ...patch } : m,
+          );
           return { ...c, messages, updatedAt: now() };
         });
         const next = { conversations, activeConversationId: s.activeConversationId };

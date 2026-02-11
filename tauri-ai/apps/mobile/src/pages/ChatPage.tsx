@@ -5,6 +5,7 @@ import { clsx } from "../lib/clsx";
 import { useLayoutSize } from "../lib/breakpoints";
 import { loadChatRenderMode } from "../lib/chatRenderPrefs";
 import { Button } from "../ui/Button";
+import { ThinkingBlock, ToolCallBlock, WebSearchBlock } from "../ui/ChatBlocks";
 import { Input } from "../ui/Input";
 import { RichText } from "../ui/RichText";
 import type { ChatMessage } from "../types/chat";
@@ -14,17 +15,35 @@ type MobileChatStreamPayload = {
   streamId: string;
   conversationId: string;
   assistantMessageId: string;
-  kind: "delta" | "thinking" | "done" | "error" | "canceled";
+  kind:
+    | "delta"
+    | "thinking"
+    | "web_search"
+    | "tool_calls"
+    | "tool_result"
+    | "done"
+    | "error"
+    | "canceled";
   delta?: string;
   content?: string;
   thinking?: string;
+  data?: any;
   error?: string;
 };
 
 export function ChatPage({ onNewConversation }: { onNewConversation?: () => void }) {
   const layout = useLayoutSize();
-  const { conversations, activeConversationId, appendMessage, appendMessageDelta, setMessageContent } =
-    useConversationStore();
+  const {
+    conversations,
+    activeConversationId,
+    appendMessage,
+    appendMessageDelta,
+    appendThinkingDelta,
+    upsertWebSearchEvent,
+    setToolCalls,
+    setToolCallResult,
+    finalizeMessage,
+  } = useConversationStore();
   const conversation = useMemo(() => {
     const c =
       (activeConversationId && conversations.find((x) => x.id === activeConversationId)) ||
@@ -196,7 +215,7 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
           if (p.conversationId !== conversation.id) return;
           if (assistantMessageId && p.assistantMessageId !== assistantMessageId) return;
 
-          if (p.kind === "delta" || p.kind === "thinking") {
+          if (p.kind === "delta") {
             if (p.delta && assistantMessageId) {
               appendMessageDelta(conversation.id, assistantMessageId, p.delta);
             }
@@ -204,9 +223,61 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
             return;
           }
 
+          if (p.kind === "thinking") {
+            if (p.delta && assistantMessageId) {
+              appendThinkingDelta(conversation.id, assistantMessageId, p.delta);
+            }
+            queueMicrotask(scrollToBottom);
+            return;
+          }
+
+          if (p.kind === "web_search") {
+            const id = String(p.data?.id ?? "").trim();
+            const status = String(p.data?.status ?? "").trim();
+            const action = p.data?.action;
+            if (assistantMessageId && id) {
+              upsertWebSearchEvent(conversation.id, assistantMessageId, { id, status, action });
+            }
+            return;
+          }
+
+          if (p.kind === "tool_calls") {
+            const calls = Array.isArray(p.data?.calls) ? p.data.calls : [];
+            if (assistantMessageId && calls.length > 0) {
+              setToolCalls(
+                conversation.id,
+                assistantMessageId,
+                calls
+                  .map((c: any) => ({
+                    id: String(c?.id ?? "").trim(),
+                    name: String(c?.name ?? "").trim(),
+                    arguments: String(c?.arguments ?? ""),
+                  }))
+                  .filter((c: any) => c.id && c.name),
+              );
+            }
+            return;
+          }
+
+          if (p.kind === "tool_result") {
+            const id = String(p.data?.id ?? "").trim();
+            const output = p.data?.output != null ? String(p.data.output) : undefined;
+            const error = p.data?.error != null ? String(p.data.error) : undefined;
+            if (assistantMessageId && id) {
+              setToolCallResult(conversation.id, assistantMessageId, { id, output, error });
+            }
+            return;
+          }
+
           if (p.kind === "done") {
             const final = p.content ?? "";
-            if (assistantMessageId) setMessageContent(conversation.id, assistantMessageId, final);
+            if (assistantMessageId) {
+              const patch: { content: string; thinking?: string } = { content: final };
+              if (typeof p.thinking === "string" && p.thinking.trim()) {
+                patch.thinking = p.thinking;
+              }
+              finalizeMessage(conversation.id, assistantMessageId, patch);
+            }
             setSending(false);
             void cleanupStream(false);
             queueMicrotask(scrollToBottom);
@@ -221,11 +292,9 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
 
           if (p.kind === "error") {
             if (assistantMessageId) {
-              setMessageContent(
-                conversation.id,
-                assistantMessageId,
-                `请求失败：${p.error ? String(p.error) : "未知错误"}`,
-              );
+              finalizeMessage(conversation.id, assistantMessageId, {
+                content: `请求失败：${p.error ? String(p.error) : "未知错误"}`,
+              });
             }
             setSending(false);
             void cleanupStream(false);
@@ -250,7 +319,7 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
       // 后续由 event 推送更新；这里不再等待完整响应。
     } catch (e) {
       if (assistantMessageId) {
-        setMessageContent(conversation.id, assistantMessageId, `请求失败：${String(e)}`);
+        finalizeMessage(conversation.id, assistantMessageId, { content: `请求失败：${String(e)}` });
       } else {
         appendMessage(conversation.id, {
           id: `m_${Date.now()}_${Math.random().toString(16).slice(2)}`,
@@ -297,20 +366,63 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
             key={m.id}
             className={clsx("flex", m.role === "user" ? "justify-end" : "justify-start")}
           >
-            <div
-              className={clsx(
-                "max-w-[85%] rounded-2xl px-3 py-2 text-sm break-words border overflow-x-hidden",
-                m.role === "user"
-                  ? "bg-indigo-500/20 border-indigo-400/30"
-                  : "bg-white/5 border-white/10",
-              )}
-            >
-              {renderMode === "rich" ? (
-                <RichText content={m.content} />
-              ) : (
-                <div className="whitespace-pre-wrap break-words">{m.content}</div>
-              )}
-            </div>
+            {m.role === "assistant" ? (
+              <div className="max-w-[85%] w-full space-y-2 overflow-x-hidden">
+                {m.thinking ? (
+                  <ThinkingBlock
+                    text={m.thinking}
+                    isStreaming={sending && m.id === activeStreamRef.current?.assistantMessageId}
+                  />
+                ) : null}
+                {Array.isArray(m.webSearch) && m.webSearch.length > 0
+                  ? m.webSearch.map((w) => (
+                      <WebSearchBlock
+                        key={w.id}
+                        status={w.status}
+                        action={w.action}
+                        isStreaming={sending && w.status !== "completed" && w.status !== "failed"}
+                      />
+                    ))
+                  : null}
+                {Array.isArray(m.toolCalls) && m.toolCalls.length > 0
+                  ? m.toolCalls.map((t) => (
+                      <ToolCallBlock
+                        key={t.id}
+                        name={t.name}
+                        args={t.arguments}
+                        output={t.output}
+                        error={t.error}
+                      />
+                    ))
+                  : null}
+
+                <div
+                  className={clsx(
+                    "rounded-2xl px-3 py-2 text-sm break-words border overflow-x-hidden",
+                    "bg-white/5 border-white/10",
+                  )}
+                >
+                  {renderMode === "rich" ? (
+                    <RichText content={m.content} />
+                  ) : (
+                    <div className="whitespace-pre-wrap break-words">{m.content}</div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div
+                className={clsx(
+                  "max-w-[85%] rounded-2xl px-3 py-2 text-sm break-words border overflow-x-hidden",
+                  "bg-indigo-500/20 border-indigo-400/30",
+                )}
+              >
+                {renderMode === "rich" ? (
+                  <RichText content={m.content} />
+                ) : (
+                  <div className="whitespace-pre-wrap break-words">{m.content}</div>
+                )}
+              </div>
+            )}
           </div>
         ))}
       </div>
