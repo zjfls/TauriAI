@@ -71,7 +71,7 @@ tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 
-# MCP client (Model Context Protocol) - desktop only for now
+# MCP client (Model Context Protocol)
 rmcp = { version = "0.12.0", default-features = false, features = [
   "base64",
   "client",
@@ -91,6 +91,17 @@ portable-pty = "0.8"
 # Desktop-only OS integrations
 notify = "6"
 arboard = "3.6.1"
+
+[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
+# MCP client (Model Context Protocol) - mobile: only remote transports (streamable_http / sse)
+rmcp = { version = "0.12.0", default-features = false, features = [
+  "base64",
+  "client",
+  "macros",
+  "schemars",
+  "server",
+  "transport-streamable-http-client-reqwest",
+] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # 仅用于开发态动态设置 Dock 图标（不影响 build 产物图标）

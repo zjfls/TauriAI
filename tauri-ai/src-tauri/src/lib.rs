@@ -874,6 +874,10 @@ fn run_mobile() {
     use crate::commands::{
         fetch_provider_models, get_app_config, mobile_chat, mobile_chat_stream_cancel,
         mobile_chat_stream_start, save_app_config, test_connection,
+        // MCP commands (mobile)
+        delete_mcp_server, delete_mcp_set, list_mcp_server_resources, list_mcp_server_tools,
+        list_mcp_servers, list_mcp_sets, set_agent_mcp_set, test_mcp_server, upsert_mcp_server,
+        upsert_mcp_set, warmup_mcp_servers,
     };
     use tauri::Manager;
 
@@ -888,6 +892,18 @@ fn run_mobile() {
             mobile_chat,
             mobile_chat_stream_start,
             mobile_chat_stream_cancel,
+            // MCP commands
+            list_mcp_servers,
+            list_mcp_sets,
+            list_mcp_server_tools,
+            list_mcp_server_resources,
+            test_mcp_server,
+            upsert_mcp_server,
+            delete_mcp_server,
+            upsert_mcp_set,
+            delete_mcp_set,
+            set_agent_mcp_set,
+            warmup_mcp_servers,
         ])
         .setup(|app| {
             let config_dir = app.path().app_config_dir()?;
