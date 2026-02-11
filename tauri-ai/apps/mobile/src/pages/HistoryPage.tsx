@@ -12,7 +12,7 @@ export function HistoryPage({
     useConversationStore();
 
   return (
-    <div className="h-full overflow-x-hidden">
+    <div className="h-full overflow-x-hidden overflow-y-hidden">
       <ConversationList
         conversations={conversations}
         activeId={activeConversationId}

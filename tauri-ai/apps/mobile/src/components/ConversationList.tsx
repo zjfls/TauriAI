@@ -27,7 +27,7 @@ export function ConversationList({
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto overflow-x-hidden">
+      <div className="flex-1 overflow-y-auto overscroll-none overflow-x-hidden">
         {conversations.map((c) => (
           <div
             key={c.id}

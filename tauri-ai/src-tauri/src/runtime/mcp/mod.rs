@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::process::Stdio;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -12,20 +11,29 @@ use rmcp::model::{
     ReadResourceRequestParam, ReadResourceResult, Resource, ResourceTemplate, Tool,
 };
 use rmcp::service::{self, NotificationContext, RequestContext, RunningService, ServiceError};
-use rmcp::transport::child_process::TokioChildProcess;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::transport::StreamableHttpClientTransport;
-use rmcp::transport::{worker::Worker, worker::WorkerConfig, worker::WorkerContext, worker::WorkerQuitReason, WorkerTransport};
+use rmcp::transport::{
+    worker::Worker, worker::WorkerConfig, worker::WorkerContext, worker::WorkerQuitReason,
+    WorkerTransport,
+};
 use rmcp::ClientHandler;
 use rmcp::RoleClient;
 use serde_json::Value;
 use sse_stream::SseStream;
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
 use tokio::sync::{OnceCell, Notify, RwLock};
 use tokio::time;
 
 use crate::models::{McpServerConfig, McpServerTransportConfig};
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use std::process::Stdio;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use rmcp::transport::child_process::TokioChildProcess;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use tokio::io::{AsyncBufReadExt, BufReader};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use tokio::process::Command;
 
 const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 // tools/call 默认超时（对应前端 toolTimeoutMs 默认值）
@@ -320,6 +328,7 @@ impl ClientHandler for BasicClientHandler {
 }
 
 enum PendingTransport {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     ChildProcess(TokioChildProcess),
     StreamableHttp {
         transport: StreamableHttpClientTransport<reqwest::Client>,
@@ -353,6 +362,15 @@ impl McpClient {
                 env_vars,
                 cwd,
             } => {
+                #[cfg(any(target_os = "android", target_os = "ios"))]
+                {
+                    let _ = (command, args, env, env_vars, cwd);
+                    return Err("移动端暂不支持 MCP stdio transport（仅支持 http-streamable / sse）"
+                        .to_string());
+                }
+
+                #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                {
                 let mut command_builder = Command::new(command);
                 command_builder
                     .kill_on_drop(true)
@@ -381,6 +399,7 @@ impl McpClient {
                 }
 
                 Ok(PendingTransport::ChildProcess(transport))
+                }
             }
             McpServerTransportConfig::StreamableHttp {
                 url,
@@ -467,6 +486,7 @@ impl McpClient {
                         rmcp::service::ClientInitializeError,
                     >,
                 > = match pending {
+                    #[cfg(not(any(target_os = "android", target_os = "ios")))]
                     PendingTransport::ChildProcess(t) => service::serve_client(handler, t).boxed(),
                     PendingTransport::StreamableHttp { transport } => {
                         service::serve_client(handler, transport).boxed()

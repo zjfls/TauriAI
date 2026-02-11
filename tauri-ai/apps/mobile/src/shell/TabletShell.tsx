@@ -28,14 +28,14 @@ export function TabletShell({
   onNewConversation?: () => void;
 }) {
   return (
-    <div className="h-full flex overflow-x-hidden">
+    <div className="h-full flex overflow-x-hidden overflow-y-hidden">
       <Rail tab={tab} onTabChange={onTabChange} />
 
       {listVisible && list ? (
         <aside className="w-[360px] border-r border-white/10 bg-white/5">{list}</aside>
       ) : null}
 
-      <main className="flex-1 min-w-0 overflow-x-hidden">
+      <main className="flex-1 min-w-0 overflow-x-hidden overflow-y-hidden">
         <div className="h-12 border-b border-white/10 bg-white/5 flex items-center gap-2 px-3">
           <button
             type="button"
