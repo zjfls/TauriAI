@@ -1,11 +1,12 @@
-import type { InputHTMLAttributes } from "react";
+import { forwardRef, type InputHTMLAttributes } from "react";
 import { clsx } from "../lib/clsx";
 
 type Props = InputHTMLAttributes<HTMLInputElement>;
 
-export function Input({ className, ...rest }: Props) {
+export const Input = forwardRef<HTMLInputElement, Props>(function Input({ className, ...rest }, ref) {
   return (
     <input
+      ref={ref}
       className={clsx(
         // iOS WebView：输入框 font-size < 16px 时聚焦会自动“放大/缩放”页面（像是输入框变大）。
         // 这里统一用 16px，避免手机端聚焦时布局跳动。
@@ -20,4 +21,4 @@ export function Input({ className, ...rest }: Props) {
       {...rest}
     />
   );
-}
+});

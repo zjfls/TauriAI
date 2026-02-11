@@ -35,6 +35,7 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
   const [fallbackAgentName, setFallbackAgentName] = useState<string>("");
   const [agentLabels, setAgentLabels] = useState<Record<string, string>>({});
   const unlistenRef = useRef<UnlistenFn | null>(null);
@@ -86,6 +87,31 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
 
   const activeAgentName = conversation?.agentName || fallbackAgentName || "";
   const activeAgentLabel = activeAgentName ? agentLabels[activeAgentName] || activeAgentName : "";
+
+  const insertDollar = () => {
+    if (sending) return;
+    const el = inputRef.current;
+    const current = input;
+    if (!el) {
+      setInput(current ? `${current}$` : "$");
+      return;
+    }
+
+    const start = typeof el.selectionStart === "number" ? el.selectionStart : current.length;
+    const end = typeof el.selectionEnd === "number" ? el.selectionEnd : current.length;
+    const next = current.slice(0, start) + "$" + current.slice(end);
+    setInput(next);
+
+    requestAnimationFrame(() => {
+      try {
+        el.focus();
+        const pos = start + 1;
+        el.setSelectionRange(pos, pos);
+      } catch {
+        // ignore
+      }
+    });
+  };
 
   const scrollToBottom = () => {
     const el = listRef.current;
@@ -293,6 +319,7 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
         <div className="flex items-end gap-2">
           <div className="flex-1 min-w-0">
             <Input
+              ref={inputRef}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               placeholder={sending ? "发送中…" : "输入消息…"}
@@ -305,6 +332,15 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
               }}
             />
           </div>
+          <Button
+            variant="ghost"
+            className="w-10 shrink-0 font-mono"
+            onClick={insertDollar}
+            disabled={sending}
+            title="插入 $"
+          >
+            $
+          </Button>
           <Button onClick={() => void send()} disabled={sending || !input.trim()}>
             <SendHorizontal size={18} />
           </Button>
