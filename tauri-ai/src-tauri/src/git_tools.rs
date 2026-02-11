@@ -22,6 +22,10 @@ fn normalize_git_pathspec(s: &str) -> String {
     s.replace('\\', "/")
 }
 
+fn git_dir_path(repo_root: &Path) -> PathBuf {
+    repo_root.join(".git")
+}
+
 async fn run_git_for_stdout(
     repo_root: &Path,
     args: Vec<OsString>,
@@ -86,6 +90,54 @@ async fn run_git_for_status(
     Ok(())
 }
 
+async fn run_git_for_stdout_in_repo(
+    repo_root: &Path,
+    work_tree: &Path,
+    args: Vec<OsString>,
+    extra_env: Option<&[(OsString, OsString)]>,
+) -> Result<String, String> {
+    if work_tree == repo_root {
+        return run_git_for_stdout(repo_root, args, extra_env).await;
+    }
+
+    let git_dir = git_dir_path(repo_root);
+    let mut env: Vec<(OsString, OsString)> = vec![
+        (OsString::from("GIT_DIR"), OsString::from(git_dir.as_os_str())),
+        (
+            OsString::from("GIT_WORK_TREE"),
+            OsString::from(work_tree.as_os_str()),
+        ),
+    ];
+    if let Some(extra) = extra_env {
+        env.extend_from_slice(extra);
+    }
+    run_git_for_stdout(work_tree, args, Some(env.as_slice())).await
+}
+
+async fn run_git_for_status_in_repo(
+    repo_root: &Path,
+    work_tree: &Path,
+    args: Vec<OsString>,
+    extra_env: Option<&[(OsString, OsString)]>,
+) -> Result<(), String> {
+    if work_tree == repo_root {
+        return run_git_for_status(repo_root, args, extra_env).await;
+    }
+
+    let git_dir = git_dir_path(repo_root);
+    let mut env: Vec<(OsString, OsString)> = vec![
+        (OsString::from("GIT_DIR"), OsString::from(git_dir.as_os_str())),
+        (
+            OsString::from("GIT_WORK_TREE"),
+            OsString::from(work_tree.as_os_str()),
+        ),
+    ];
+    if let Some(extra) = extra_env {
+        env.extend_from_slice(extra);
+    }
+    run_git_for_status(work_tree, args, Some(env.as_slice())).await
+}
+
 fn default_commit_identity_env() -> Vec<(OsString, OsString)> {
     vec![
         (OsString::from("GIT_AUTHOR_NAME"), OsString::from("TauriAI")),
@@ -117,9 +169,10 @@ pub(crate) fn repo_prefix(repo_root: &Path, workdir: &Path) -> Option<PathBuf> {
     Some(rel.to_path_buf())
 }
 
-async fn resolve_head(repo_root: &Path) -> Option<String> {
-    run_git_for_stdout(
+async fn resolve_head(repo_root: &Path, work_tree: &Path) -> Option<String> {
+    run_git_for_stdout_in_repo(
         repo_root,
+        work_tree,
         vec![
             OsString::from("rev-parse"),
             OsString::from("--verify"),
@@ -132,7 +185,11 @@ async fn resolve_head(repo_root: &Path) -> Option<String> {
     .filter(|s| !s.trim().is_empty())
 }
 
-async fn list_tracked_paths(repo_root: &Path, pathspecs: &[String]) -> Result<HashSet<String>, String> {
+async fn list_tracked_paths(
+    repo_root: &Path,
+    work_tree: &Path,
+    pathspecs: &[String],
+) -> Result<HashSet<String>, String> {
     if pathspecs.is_empty() {
         return Ok(HashSet::new());
     }
@@ -142,7 +199,9 @@ async fn list_tracked_paths(repo_root: &Path, pathspecs: &[String]) -> Result<Ha
     for p in pathspecs {
         args.push(OsString::from(p));
     }
-    let out = run_git_for_stdout(repo_root, args, None).await.unwrap_or_default();
+    let out = run_git_for_stdout_in_repo(repo_root, work_tree, args, None)
+        .await
+        .unwrap_or_default();
     let mut set = HashSet::new();
     for line in out.lines() {
         let s = line.trim();
@@ -154,11 +213,11 @@ async fn list_tracked_paths(repo_root: &Path, pathspecs: &[String]) -> Result<Ha
     Ok(set)
 }
 
-fn list_existing_paths(repo_root: &Path, pathspecs: &[String]) -> HashSet<String> {
+fn list_existing_paths(work_tree: &Path, pathspecs: &[String]) -> HashSet<String> {
     let mut set = HashSet::new();
     for p in pathspecs {
         let norm = normalize_git_pathspec(p);
-        let abs = repo_root.join(PathBuf::from(&norm));
+        let abs = work_tree.join(PathBuf::from(&norm));
         if abs.exists() {
             set.insert(norm);
         }
@@ -171,12 +230,36 @@ pub(crate) struct GhostCommit {
     pub parent: Option<String>,
 }
 
+pub(crate) async fn ensure_git_repo(repo_root: &Path) -> Result<(), String> {
+    if repo_root.join(".git").is_dir() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(repo_root).map_err(|e| format!("创建 git 目录失败: {e}"))?;
+    run_git_for_status(
+        repo_root,
+        vec![OsString::from("init"), OsString::from("--quiet")],
+        None,
+    )
+    .await?;
+    Ok(())
+}
+
 pub(crate) async fn create_ghost_commit_for_paths(
     repo_root: &Path,
     candidate_pathspecs: &[String],
     message: &str,
 ) -> Result<GhostCommit, String> {
-    let parent = resolve_head(repo_root).await;
+    create_ghost_commit_for_paths_with_worktree(repo_root, repo_root, candidate_pathspecs, message)
+        .await
+}
+
+pub(crate) async fn create_ghost_commit_for_paths_with_worktree(
+    repo_root: &Path,
+    work_tree: &Path,
+    candidate_pathspecs: &[String],
+    message: &str,
+) -> Result<GhostCommit, String> {
+    let parent = resolve_head(repo_root, work_tree).await;
 
     // Prepare a temporary index so we don't disturb user's staged changes.
     let tmp_dir = std::env::temp_dir().join(format!("tauriai-git-index-{}", uuid::Uuid::new_v4()));
@@ -190,8 +273,9 @@ pub(crate) async fn create_ghost_commit_for_paths(
     let out = async {
         // Pre-populate index with HEAD so unchanged tracked files are in the tree.
         if let Some(parent_sha) = parent.as_ref() {
-            run_git_for_status(
+            run_git_for_status_in_repo(
                 repo_root,
+                work_tree,
                 vec![OsString::from("read-tree"), OsString::from(parent_sha)],
                 Some(base_env.as_slice()),
             )
@@ -202,8 +286,8 @@ pub(crate) async fn create_ghost_commit_for_paths(
             .iter()
             .map(|s| normalize_git_pathspec(s))
             .collect::<Vec<_>>();
-        let tracked = list_tracked_paths(repo_root, &candidate_pathspecs).await?;
-        let existing = list_existing_paths(repo_root, &candidate_pathspecs);
+        let tracked = list_tracked_paths(repo_root, work_tree, &candidate_pathspecs).await?;
+        let existing = list_existing_paths(work_tree, &candidate_pathspecs);
 
         let mut stage_paths: Vec<String> = Vec::new();
         stage_paths.extend(tracked.into_iter());
@@ -220,11 +304,13 @@ pub(crate) async fn create_ghost_commit_for_paths(
             for p in &stage_paths {
                 args.push(OsString::from(p));
             }
-            run_git_for_status(repo_root, args, Some(base_env.as_slice())).await?;
+            run_git_for_status_in_repo(repo_root, work_tree, args, Some(base_env.as_slice()))
+                .await?;
         }
 
-        let tree_id = run_git_for_stdout(
+        let tree_id = run_git_for_stdout_in_repo(
             repo_root,
+            work_tree,
             vec![OsString::from("write-tree")],
             Some(base_env.as_slice()),
         )
@@ -238,7 +324,9 @@ pub(crate) async fn create_ghost_commit_for_paths(
             commit_args.extend([OsString::from("-p"), OsString::from(parent_sha)]);
         }
         commit_args.extend([OsString::from("-m"), OsString::from(message)]);
-        let commit_id = run_git_for_stdout(repo_root, commit_args, Some(commit_env.as_slice())).await?;
+        let commit_id =
+            run_git_for_stdout_in_repo(repo_root, work_tree, commit_args, Some(commit_env.as_slice()))
+                .await?;
         Ok::<String, String>(commit_id)
     }
     .await;
@@ -335,6 +423,15 @@ pub(crate) async fn git_restore_worktree_from_commit(
     commit_id: &str,
     pathspecs: &[String],
 ) -> Result<(), String> {
+    git_restore_worktree_from_commit_with_worktree(repo_root, repo_root, commit_id, pathspecs).await
+}
+
+pub(crate) async fn git_restore_worktree_from_commit_with_worktree(
+    repo_root: &Path,
+    work_tree: &Path,
+    commit_id: &str,
+    pathspecs: &[String],
+) -> Result<(), String> {
     let mut args: Vec<OsString> = Vec::new();
     args.push(OsString::from("restore"));
     args.push(OsString::from("--source"));
@@ -344,7 +441,7 @@ pub(crate) async fn git_restore_worktree_from_commit(
     for p in pathspecs {
         args.push(OsString::from(normalize_git_pathspec(p)));
     }
-    run_git_for_status(repo_root, args, None).await
+    run_git_for_status_in_repo(repo_root, work_tree, args, None).await
 }
 
 pub(crate) fn abs_to_repo_rel(repo_root: &Path, abs: &Path) -> Option<String> {
@@ -354,4 +451,3 @@ pub(crate) fn abs_to_repo_rel(repo_root: &Path, abs: &Path) -> Option<String> {
     }
     Some(to_git_path(rel))
 }
-

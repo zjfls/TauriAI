@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::git_tools::{
     git_diff_between_commits, git_diff_name_status_between_commits,
-    git_diff_numstat_between_commits, git_restore_worktree_from_commit, GitDiffOptions,
-    create_ghost_commit_for_paths,
+    git_diff_numstat_between_commits, git_restore_worktree_from_commit_with_worktree, GitDiffOptions,
+    create_ghost_commit_for_paths_with_worktree,
 };
 
 #[derive(Debug, Deserialize)]
@@ -254,6 +254,8 @@ pub async fn git_diff_commits(args: GitDiffCommitsArgs) -> Result<GitDiffCommits
 #[serde(rename_all = "camelCase")]
 pub struct GitDiffGhostWorktreeArgs {
     pub repo_root: String,
+    #[serde(default)]
+    pub work_tree: Option<String>,
     pub ghost_before: String,
     #[serde(default)]
     pub paths: Vec<String>,
@@ -272,6 +274,13 @@ pub async fn git_diff_ghost_worktree(
 ) -> Result<GitDiffCommitsResponse, String> {
     let repo_root = PathBuf::from(args.repo_root.trim());
     ensure_dir(&repo_root)?;
+    let work_tree = args
+        .work_tree
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| repo_root.clone());
 
     let pathspecs = args
         .paths
@@ -280,8 +289,9 @@ pub async fn git_diff_ghost_worktree(
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>();
 
-    let ghost_current = create_ghost_commit_for_paths(
+    let ghost_current = create_ghost_commit_for_paths_with_worktree(
         &repo_root,
+        &work_tree,
         &pathspecs,
         "tauri-ai snapshot (worktree for diff)",
     )
@@ -301,6 +311,8 @@ pub async fn git_diff_ghost_worktree(
 #[serde(rename_all = "camelCase")]
 pub struct UndoApplyPatchArgs {
     pub repo_root: String,
+    #[serde(default)]
+    pub work_tree: Option<String>,
     pub ghost_before: String,
     #[serde(default)]
     pub affected_paths: Vec<String>,
@@ -312,6 +324,13 @@ pub struct UndoApplyPatchArgs {
 pub async fn undo_apply_patch(args: UndoApplyPatchArgs) -> Result<bool, String> {
     let repo_root = PathBuf::from(args.repo_root.trim());
     ensure_dir(&repo_root)?;
+    let work_tree = args
+        .work_tree
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| repo_root.clone());
 
     let affected = args
         .affected_paths
@@ -323,7 +342,13 @@ pub async fn undo_apply_patch(args: UndoApplyPatchArgs) -> Result<bool, String> 
         return Err("affected_paths 不能为空".to_string());
     }
 
-    git_restore_worktree_from_commit(&repo_root, &args.ghost_before, &affected).await?;
+    git_restore_worktree_from_commit_with_worktree(
+        &repo_root,
+        &work_tree,
+        &args.ghost_before,
+        &affected,
+    )
+    .await?;
 
     // Remove files/directories created by apply_patch (best-effort).
     for rel in args
@@ -332,7 +357,7 @@ pub async fn undo_apply_patch(args: UndoApplyPatchArgs) -> Result<bool, String> 
         .map(|s| normalize_git_pathspec(&s))
         .filter(|s| !s.is_empty())
     {
-        let abs = repo_root.join(PathBuf::from(&rel));
+        let abs = work_tree.join(PathBuf::from(&rel));
         if !abs.exists() {
             continue;
         }

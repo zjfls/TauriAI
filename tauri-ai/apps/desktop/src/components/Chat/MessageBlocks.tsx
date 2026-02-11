@@ -242,15 +242,16 @@ const detectToolRunStatus = (resultText?: string): { kind: ToolRunStatusKind; ba
   return { kind: 'success' };
 };
 
-type ApplyPatchToolMeta = {
-  applyPatch?: {
-    baseDir?: string;
-    git?: {
-      repoRoot?: string;
-      repoPrefix?: string | null;
-      ghostBefore?: string | null;
-      ghostAfter?: string | null;
-      affectedPaths?: string[];
+	type ApplyPatchToolMeta = {
+	  applyPatch?: {
+	    baseDir?: string;
+	    git?: {
+	      repoRoot?: string;
+	      workTree?: string;
+	      repoPrefix?: string | null;
+	      ghostBefore?: string | null;
+	      ghostAfter?: string | null;
+	      affectedPaths?: string[];
       createdPaths?: string[];
       snapshotErrorBefore?: string;
       snapshotErrorAfter?: string;
@@ -458,28 +459,26 @@ const ApplyPatchToolRunBlock: React.FC<{
 
   const summary = useMemo(() => extractToolSummary(name, args, parsedArgs), [name, args, parsedArgs]);
 
-  const meta = toolMeta as ApplyPatchToolMeta | null;
-  const git = meta?.applyPatch?.git;
-  const repoRoot = typeof git?.repoRoot === 'string' ? git.repoRoot : '';
-  const ghostBefore = typeof git?.ghostBefore === 'string' ? git.ghostBefore : '';
-  const affectedPaths = Array.isArray(git?.affectedPaths) ? git!.affectedPaths!.filter((s) => typeof s === 'string' && s.trim() !== '') : [];
-  const createdPaths = Array.isArray(git?.createdPaths) ? git!.createdPaths!.filter((s) => typeof s === 'string' && s.trim() !== '') : [];
-  const gitError = typeof git?.error === 'string' ? git.error : '';
-  const snapshotErrBefore = typeof git?.snapshotErrorBefore === 'string' ? git.snapshotErrorBefore : '';
-  const snapshotErrAfter = typeof git?.snapshotErrorAfter === 'string' ? git.snapshotErrorAfter : '';
+	const meta = toolMeta as ApplyPatchToolMeta | null;
+	const git = meta?.applyPatch?.git;
+	const repoRoot = typeof git?.repoRoot === 'string' ? git.repoRoot : '';
+	const workTree = typeof git?.workTree === 'string' ? git.workTree : '';
+	const ghostBefore = typeof git?.ghostBefore === 'string' ? git.ghostBefore : '';
+	const ghostAfter = typeof git?.ghostAfter === 'string' ? git.ghostAfter : '';
+	const affectedPaths = Array.isArray(git?.affectedPaths) ? git!.affectedPaths!.filter((s) => typeof s === 'string' && s.trim() !== '') : [];
+	const createdPaths = Array.isArray(git?.createdPaths) ? git!.createdPaths!.filter((s) => typeof s === 'string' && s.trim() !== '') : [];
+	const gitError = typeof git?.error === 'string' ? git.error : '';
+	const snapshotErrBefore = typeof git?.snapshotErrorBefore === 'string' ? git.snapshotErrorBefore : '';
+	const snapshotErrAfter = typeof git?.snapshotErrorAfter === 'string' ? git.snapshotErrorAfter : '';
 
-  const canGitDiff = Boolean(isTauri() && repoRoot && ghostBefore && affectedPaths.length > 0);
-  const [activeView, setActiveView] = useState<'git' | 'tool'>('git');
+	const effectiveWorkTree = workTree || repoRoot || meta?.applyPatch?.baseDir || '';
+	const canUndo = Boolean(isTauri() && repoRoot && ghostBefore && affectedPaths.length > 0);
+	const canGitDiff = Boolean(isTauri() && repoRoot && ghostBefore && affectedPaths.length > 0);
+	const [activeView, setActiveView] = useState<'git' | 'tool'>('git');
 
-  useEffect(() => {
-    if (activeView !== 'git') return;
-    if (canGitDiff) return;
-    setActiveView('tool');
-  }, [activeView, canGitDiff]);
-
-  const [contextLines, setContextLines] = useState<0 | 3 | 10>(3);
-  const [ignoreWhitespace, setIgnoreWhitespace] = useState(false);
-  const [detectRenames, setDetectRenames] = useState(true);
+	const [contextLines, setContextLines] = useState<0 | 3 | 10>(3);
+	const [ignoreWhitespace, setIgnoreWhitespace] = useState(false);
+	const [detectRenames, setDetectRenames] = useState(true);
   const [wrap, setWrap] = useState(true);
 
   const [diffLoading, setDiffLoading] = useState(false);
@@ -490,31 +489,47 @@ const ApplyPatchToolRunBlock: React.FC<{
   const [undoBusy, setUndoBusy] = useState(false);
   const [undoMsg, setUndoMsg] = useState<string>('');
 
-  useEffect(() => {
-    if (!isExpanded) return;
-    if (activeView !== 'git') return;
-    if (!canGitDiff) return;
+	useEffect(() => {
+	  if (!isExpanded) return;
+	  if (activeView !== 'git') return;
+	  if (!canGitDiff) return;
 
-    let cancelled = false;
-    setDiffLoading(true);
-    setDiffError(null);
-    setUndoMsg('');
-    void invoke<GitDiffCommitsResponse>('git_diff_ghost_worktree', {
-      args: {
-        repoRoot,
-        ghostBefore,
-        paths: affectedPaths,
-        options: {
-          contextLines,
-          ignoreWhitespace,
-          detectRenames,
-        },
-      },
-    })
-      .then((res) => {
-        if (cancelled) return;
-        setDiffData(res);
-        const firstPath = res?.files?.[0]?.path;
+	  let cancelled = false;
+	  setDiffLoading(true);
+	  setDiffError(null);
+	  setUndoMsg('');
+	  const req = ghostAfter
+	    ? invoke<GitDiffCommitsResponse>('git_diff_commits', {
+	        args: {
+	          repoRoot,
+	          from: ghostBefore,
+	          to: ghostAfter,
+	          paths: affectedPaths,
+	          options: {
+	            contextLines,
+	            ignoreWhitespace,
+	            detectRenames,
+	          },
+	        },
+	      })
+	    : invoke<GitDiffCommitsResponse>('git_diff_ghost_worktree', {
+	        args: {
+	          repoRoot,
+	          workTree: effectiveWorkTree || undefined,
+	          ghostBefore,
+	          paths: affectedPaths,
+	          options: {
+	            contextLines,
+	            ignoreWhitespace,
+	            detectRenames,
+	          },
+	        },
+	      });
+	  void req
+	    .then((res) => {
+	      if (cancelled) return;
+	      setDiffData(res);
+	      const firstPath = res?.files?.[0]?.path;
         setActiveFile((prev) => prev || (typeof firstPath === 'string' ? firstPath : ''));
       })
       .catch((e) => {
@@ -527,10 +542,10 @@ const ApplyPatchToolRunBlock: React.FC<{
         setDiffLoading(false);
       });
 
-    return () => {
-      cancelled = true;
-    };
-  }, [isExpanded, activeView, canGitDiff, repoRoot, ghostBefore, affectedPaths.join('|'), contextLines, ignoreWhitespace, detectRenames, refreshSeq]);
+	  return () => {
+	    cancelled = true;
+	  };
+	}, [isExpanded, activeView, canGitDiff, repoRoot, effectiveWorkTree, ghostBefore, ghostAfter, affectedPaths.join('|'), contextLines, ignoreWhitespace, detectRenames, refreshSeq]);
 
   const diffByFile = useMemo(() => splitDiffByFile(diffData?.diff || ''), [diffData?.diff]);
   const currentDiff = useMemo(() => {
@@ -539,22 +554,23 @@ const ApplyPatchToolRunBlock: React.FC<{
     return diffData.diff;
   }, [diffData, activeFile, diffByFile]);
 
-  const doUndo = useCallback(async () => {
-    if (!isTauri()) return;
-    if (!repoRoot || !ghostBefore || affectedPaths.length === 0) return;
-    const ok = window.confirm('确认撤销本次 apply_patch 的修改吗？这会覆盖这些文件的当前工作区内容。');
-    if (!ok) return;
-    setUndoBusy(true);
-    setUndoMsg('');
-    try {
-      await invoke('undo_apply_patch', {
-        args: {
-          repoRoot,
-          ghostBefore,
-          affectedPaths,
-          createdPaths,
-        },
-      });
+	const doUndo = useCallback(async () => {
+	  if (!isTauri()) return;
+	  if (!repoRoot || !ghostBefore || affectedPaths.length === 0) return;
+	  const ok = window.confirm('确认撤销本次 apply_patch 的修改吗？这会覆盖这些文件的当前工作区内容。');
+	  if (!ok) return;
+	  setUndoBusy(true);
+	  setUndoMsg('');
+	  try {
+	    await invoke('undo_apply_patch', {
+	      args: {
+	        repoRoot,
+	        workTree: effectiveWorkTree || undefined,
+	        ghostBefore,
+	        affectedPaths,
+	        createdPaths,
+	      },
+	    });
       setUndoMsg('已撤销。');
       // Refresh diff
       setActiveFile('');
@@ -563,10 +579,10 @@ const ApplyPatchToolRunBlock: React.FC<{
       setRefreshSeq((v) => v + 1);
     } catch (e) {
       setUndoMsg(`撤销失败：${String(e)}`);
-    } finally {
-      setUndoBusy(false);
-    }
-  }, [repoRoot, ghostBefore, affectedPaths.join('|'), createdPaths.join('|')]);
+	  } finally {
+	    setUndoBusy(false);
+	  }
+	}, [repoRoot, effectiveWorkTree, ghostBefore, affectedPaths.join('|'), createdPaths.join('|')]);
 
   return (
     <div className={`mb-2 rounded-lg border ${tone.container}`}>
@@ -655,13 +671,13 @@ const ApplyPatchToolRunBlock: React.FC<{
                   <input type="checkbox" checked={wrap} onChange={(e) => setWrap(e.target.checked)} />
                   自动换行
                 </label>
-                <button
-                  type="button"
-                  onClick={doUndo}
-                  disabled={!canGitDiff || undoBusy}
-                  className={`ml-auto rounded border px-2 py-1 text-xs font-medium ${!canGitDiff || undoBusy ? 'cursor-not-allowed border-gray-200 bg-gray-50 text-gray-400 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-600' : 'border-gray-200 bg-white text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-100 dark:hover:bg-gray-800'}`}
-                  title="撤销本次 apply_patch（仅 affected）"
-                >
+	                <button
+	                  type="button"
+	                  onClick={doUndo}
+	                  disabled={!canUndo || undoBusy}
+	                  className={`ml-auto rounded border px-2 py-1 text-xs font-medium ${!canUndo || undoBusy ? 'cursor-not-allowed border-gray-200 bg-gray-50 text-gray-400 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-600' : 'border-gray-200 bg-white text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-100 dark:hover:bg-gray-800'}`}
+	                  title="撤销本次 apply_patch（仅 affected）"
+	                >
                   {undoBusy ? '撤销中…' : 'Undo'}
                 </button>
               </>
