@@ -1081,7 +1081,6 @@ export interface McpSetConfig {
 }
 
 export interface McpSettings {
-  enabled: boolean;
   servers: McpServerEntry[];
   sets: McpSetConfig[];
 }

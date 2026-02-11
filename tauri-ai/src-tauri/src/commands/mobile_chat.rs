@@ -314,10 +314,6 @@ async fn build_mcp_tooling_for_mobile(
     agent_name: Option<&str>,
     user_text: &str,
 ) -> Result<(Vec<ToolDefinition>, HashMap<String, McpToolBinding>), String> {
-    if !cfg.mcp.enabled {
-        return Ok((Vec::new(), HashMap::new()));
-    }
-
     let requested_servers_lower = collect_requested_mcp_servers_lower(user_text);
 
     // server_name -> server_cfg (enabled only)
