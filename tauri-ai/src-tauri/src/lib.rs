@@ -367,16 +367,32 @@ fn run_desktop() {
 	            build_desktop_menu(app, &config)
 	        })
         .on_menu_event(|app, event| {
+            let pick_menu_target = || {
+                let focused = app
+                    .webview_windows()
+                    .into_values()
+                    .find(|w| {
+                        if !w.is_focused().unwrap_or(false) {
+                            return false;
+                        }
+                        let label = w.label();
+                        // 避免把菜单事件发给 ghost / workstudio 这类不初始化 chat runtime 的窗口。
+                        !label.starts_with("__tauriai_ghost__") && !label.starts_with("workspace-")
+                    });
+
+                focused.or_else(|| app.get_webview_window("main"))
+            };
+
             match event.id().as_ref() {
                 "open_settings" => {
-                    if let Some(window) = app.get_webview_window("main") {
+                    if let Some(window) = pick_menu_target() {
                         let _ = window.emit("menu:open_settings", ());
                     } else {
 	                        let _ = app.emit("menu:open_settings", ());
 	                    }
 	                }
 	                "open_history" => {
-	                    if let Some(window) = app.get_webview_window("main") {
+	                    if let Some(window) = pick_menu_target() {
 	                        let _ = window.emit("menu:open_history", ());
 	                    } else {
 	                        let _ = app.emit("menu:open_history", ());
@@ -387,7 +403,7 @@ fn run_desktop() {
 	                    let agent_name = urlencoding::decode(raw)
 	                        .map(|s| s.into_owned())
 	                        .unwrap_or_else(|_| raw.to_string());
-	                    if let Some(window) = app.get_webview_window("main") {
+	                    if let Some(window) = pick_menu_target() {
 	                        let _ = window.emit("menu:new_session_agent", agent_name);
 	                    } else {
 	                        let _ = app.emit("menu:new_session_agent", agent_name);

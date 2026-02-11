@@ -322,7 +322,7 @@ function App() {
 
   /**
    * Menu: Session -> New/Clone/Settings
-   * These are emitted from Rust and always routed to the main window.
+   * These are emitted from Rust and routed to the focused window (fallback to main).
    */
   useEffect(() => {
     if (!isTauri()) return;
@@ -368,7 +368,7 @@ function App() {
 
   /**
    * Menu: View -> History
-   * Emitted from Rust and routed to the main window.
+   * Emitted from Rust and routed to the focused window (fallback to main).
    */
   useEffect(() => {
     if (!isTauri()) return;
