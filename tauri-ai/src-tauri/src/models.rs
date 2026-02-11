@@ -431,6 +431,15 @@ pub struct Conversation {
     /// - 使用 JSON value 存储以便后续扩展更多设置（draft、rag、memory 开关等）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_mode: Option<serde_json::Value>,
+    /// Conversation-scoped run mode (persisted).
+    ///
+    /// Semantics:
+    /// - "chat": normal chat mode
+    /// - "agent"/"agent-custom"/"agent-full-access": tool/agentic modes
+    ///
+    /// Note: stored as String for forward-compatibility.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_mode: Option<String>,
     /// Optional workstudio binding (many conversations can map to one workstudio).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workstudio_id: Option<String>,
@@ -830,6 +839,13 @@ pub struct Agent {
     /// Output format type
     #[serde(default)]
     pub format_type: FormatPromptType,
+    /// Default run mode for new/opened sessions.
+    ///
+    /// Semantics:
+    /// - None: auto (Tool => "agent"; Chat => "chat")
+    /// - Some(...): explicit override (e.g. "agent", "agent-custom", "agent-full-access")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_run_mode: Option<String>,
     /// Optional toolset name (bind different tool collections per agent)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub toolset: Option<String>,
@@ -886,6 +902,7 @@ impl Default for Agent {
             model_ref: String::new(),
             system_prompt: String::new(),
             format_type: FormatPromptType::default(),
+            default_run_mode: None,
             toolset: None,
             mcp_set: None,
             skill_set: None,
@@ -1930,6 +1947,7 @@ impl AppConfig {
                     .clone()
                     .unwrap_or_default(),
                 format_type: FormatPromptType::Chat,
+                default_run_mode: None,
                 toolset: None,
                 mcp_set: None,
                 skill_set: None,

@@ -59,6 +59,9 @@ const getSessionStateStorage = (): Storage | null => {
 
 const getSessionStateStorageKey = (): string => getWindowScopedStorageKey(SESSION_STORAGE_KEY_PREFIX);
 
+const isRunMode = (v: unknown): v is RunMode =>
+  v === 'chat' || v === 'agent' || v === 'agent-custom' || v === 'agent-full-access';
+
 export interface SessionPane {
   id: string;
   sessionIds: string[];
@@ -359,7 +362,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     const agentType = agent?.type ?? 'chat';
     const workspaceEnabled = agentType === 'tool' && (agent?.workspaceSupport ?? true);
-    const runMode: RunMode = agentType === 'tool' ? 'agent' : 'chat';
+    const fallbackRunMode: RunMode = agentType === 'tool' ? 'agent' : 'chat';
+    const runMode: RunMode = isRunMode(agent?.defaultRunMode) ? agent.defaultRunMode : fallbackRunMode;
 
     // Generate default title with timestamp: 新对话_MM-DD HH:mm
     const nowDate = new Date();
@@ -379,6 +383,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       conversationId: conversation.id,
       agentName: agentName,
       modelRef: agent?.modelRef,
+      runMode,
       thinkingMode,
     }).catch(console.error);
 
@@ -1951,6 +1956,20 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
 
     get().saveSessionState();
+
+    const session = get().sessions.get(sessionId);
+    if (session?.conversationId) {
+      invoke('update_conversation_metadata', {
+        conversationId: session.conversationId,
+        runMode,
+      }).catch(console.error);
+
+      void import('./conversationStore')
+        .then(({ useConversationStore }) => {
+          useConversationStore.getState().patchConversation(session.conversationId!, { runMode });
+        })
+        .catch(() => {});
+    }
   },
 
   /**
@@ -2400,7 +2419,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   * Open a historical conversation in a new session
   * Requirements: 8.1, 8.2, 8.3, 8.4
   */
-  openHistoricalConversation: async (conversationId: string, opts?: { agentName?: string; runMode?: RunMode }) => {
+  openHistoricalConversation: async (
+    conversationId: string,
+    opts?: { agentName?: string; runMode?: RunMode }
+  ) => {
     markChatOpenProfile('sessionStore:openHistoricalConversation:enter', { conversationId });
     requestConversationScrollToBottomOnce(conversationId);
     const { sessions } = get();
@@ -2460,8 +2482,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     const agentType = agent?.type ?? 'chat';
     const workspaceEnabled = agentType === 'tool' && (agent?.workspaceSupport ?? true);
-    const defaultRunMode: RunMode = agentType === 'tool' ? 'agent' : 'chat';
-    const runMode: RunMode = opts?.runMode ?? defaultRunMode;
+    const fallbackRunMode: RunMode = agentType === 'tool' ? 'agent' : 'chat';
+    const agentDefaultRunMode: RunMode = isRunMode(agent?.defaultRunMode) ? agent.defaultRunMode : fallbackRunMode;
+    const runMode: RunMode = opts?.runMode ?? (isRunMode(conversation?.runMode) ? conversation.runMode : agentDefaultRunMode);
 
     let resolvedWorkstudioId: string | null = conversation?.workstudioId ?? null;
     if (workspaceEnabled) {
@@ -2507,12 +2530,23 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     setChatOpenProfileTarget({ conversationId, sessionId });
 
     // Sync metadata to DB if missing in conversation (Lazy migration)
-    if (!conversation?.agentName || !conversation?.modelRef) {
+    if (!conversation?.agentName || !conversation?.modelRef || !conversation?.runMode) {
       invoke('update_conversation_metadata', {
         conversationId,
-        agentName: agentName,
-        modelRef,
+        agentName: !conversation?.agentName ? agentName : undefined,
+        modelRef: !conversation?.modelRef ? modelRef : undefined,
+        runMode: !conversation?.runMode ? runMode : undefined,
       }).catch(console.error);
+
+      void import('./conversationStore')
+        .then(({ useConversationStore }) => {
+          useConversationStore.getState().patchConversation(conversationId, {
+            agentName,
+            modelRef,
+            runMode,
+          });
+        })
+        .catch(() => {});
     }
 
     const session: AgentSession = {
@@ -2605,6 +2639,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     await useConversationStore.getState().loadConversations();
 
     const newSessionId = await get().openHistoricalConversation(cloned.id);
+    // 克隆对话：在 UI 层也保持与源会话一致的 runMode（对话级 runMode 也会在后端/DB 层复制）。
+    if (source.runMode) {
+      get().setSessionRunMode(newSessionId, source.runMode);
+    }
 
     // VS Code-like：把新 tab 放在源 tab 的右侧（同一 pane）
     if (sourcePaneId && sourceTabIndex >= 0) {
