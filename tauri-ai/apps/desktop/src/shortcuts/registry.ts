@@ -56,6 +56,8 @@ export const SHORTCUT_ACTIONS: ShortcutActionDefinition[] = [
     category: '会话',
     defaultMac: 'Cmd+Shift+D',
     defaultWindows: 'Ctrl+Shift+D',
+    // 这是“会话级”操作，允许在输入/编辑时也能触发，避免表现为“偶发无效”。
+    allowWhenTyping: true,
   },
   {
     id: 'session.close',

@@ -381,10 +381,10 @@ fn run_desktop() {
                         // - drag ghost window（__tauriai_ghost__*）
                         // - workstudio window（view-workstudio*）
                         //
-                        // 这些窗口不监听 `menu:*` 事件；菜单操作应路由到“聊天窗口”（优先聚焦窗口，否则 main）。
+                        // 注意：`workspace-*` 是“可聊天的工作区窗口”（standalone workspace container），
+                        // 需要接收菜单事件（例如新建会话）。因此不要在这里排除它。
                         !label.starts_with("__tauriai_ghost__")
                             && !label.starts_with("view-workstudio")
-                            && !label.starts_with("workspace-")
                     });
 
                 focused.or_else(|| app.get_webview_window("main"))
