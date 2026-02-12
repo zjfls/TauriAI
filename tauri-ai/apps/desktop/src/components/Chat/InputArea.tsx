@@ -20,6 +20,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useConfigStore } from '../../stores/configStore';
+import { SHORTCUT_ACTIONS, detectShortcutPlatform, normalizeKeybindingString } from '../../shortcuts';
 
 // Constants for textarea sizing
 const MIN_TEXTAREA_HEIGHT = 40; // Minimum height in pixels
@@ -661,11 +662,13 @@ const AttachmentMenu: React.FC<AttachmentMenuProps> = ({
 
 interface ExtraActionsMenuProps {
   onCloneConversation?: () => void;
+  cloneConversationShortcutLabel?: string | null;
   disabled?: boolean;
 }
 
 const ExtraActionsMenu: React.FC<ExtraActionsMenuProps> = ({
   onCloneConversation,
+  cloneConversationShortcutLabel,
   disabled = false,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
@@ -689,6 +692,7 @@ const ExtraActionsMenu: React.FC<ExtraActionsMenuProps> = ({
       onClick: onCloneConversation,
       enabled: typeof onCloneConversation === 'function',
       disabledTip: '当前对话不可克隆',
+      shortcut: cloneConversationShortcutLabel ?? null,
     },
   ];
 
@@ -727,6 +731,11 @@ const ExtraActionsMenu: React.FC<ExtraActionsMenuProps> = ({
             >
               {item.icon}
               <span className="text-xs">{item.label}</span>
+              {item.shortcut ? (
+                <span className="ml-auto rounded border border-gray-200 bg-white/60 px-1.5 py-0.5 text-[10px] font-mono text-gray-500 dark:border-gray-700 dark:bg-black/20 dark:text-gray-400">
+                  {item.shortcut}
+                </span>
+              ) : null}
             </button>
           ))}
         </div>
@@ -2462,6 +2471,18 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   }, [agents, currentAgentName]);
 
   const config = useConfigStore((state) => state.config);
+  const keyboardShortcuts = config?.general?.keyboardShortcuts;
+  const shortcutPlatform = useMemo(() => detectShortcutPlatform(), []);
+  const cloneConversationShortcutLabel = useMemo(() => {
+    const def = SHORTCUT_ACTIONS.find((a) => a.id === 'session.clone');
+    const userRaw =
+      shortcutPlatform === 'mac'
+        ? keyboardShortcuts?.mac?.['session.clone']
+        : keyboardShortcuts?.windows?.['session.clone'];
+    const fallback = shortcutPlatform === 'mac' ? 'Cmd+Shift+D' : 'Ctrl+Shift+D';
+    const raw = userRaw ?? (shortcutPlatform === 'mac' ? def?.defaultMac : def?.defaultWindows) ?? fallback;
+    return normalizeKeybindingString(String(raw || ''), shortcutPlatform) ?? fallback;
+  }, [keyboardShortcuts, shortcutPlatform]);
 
   // Skills catalog for `$skill` autocomplete (metadata only)
   const [skillOutcomeForMentions, setSkillOutcomeForMentions] = useState<SkillLoadOutcome | null>(null);
@@ -3030,7 +3051,11 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
           supportsVision={supportsVision}
           disabled={disabled || isGenerating}
         />
-        <ExtraActionsMenu onCloneConversation={onCloneConversation} disabled={disabled || isGenerating} />
+        <ExtraActionsMenu
+          onCloneConversation={onCloneConversation}
+          cloneConversationShortcutLabel={cloneConversationShortcutLabel}
+          disabled={disabled || isGenerating}
+        />
       </div>
 
       {/* MCP modal */}
