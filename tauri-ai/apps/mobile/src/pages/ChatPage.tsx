@@ -357,17 +357,17 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
         </div>
       ) : null}
 
-      <div
-        ref={listRef}
-        className="flex-1 min-h-0 overflow-y-auto overscroll-none overflow-x-hidden p-3 space-y-3"
-      >
-        {messages.map((m) => (
-          <div
-            key={m.id}
-            className={clsx("flex", m.role === "user" ? "justify-end" : "justify-start")}
-          >
-            {m.role === "assistant" ? (
-              <div className="max-w-[85%] w-full space-y-2 overflow-x-hidden">
+	      <div
+	        ref={listRef}
+	        className="flex-1 min-h-0 overflow-y-auto overscroll-none overflow-x-hidden p-3 space-y-3"
+	      >
+	        {messages.map((m) => (
+	          <div
+	            key={m.id}
+	            className={clsx("flex", m.role === "user" ? "justify-end" : "justify-start")}
+	          >
+	            {m.role === "assistant" ? (
+	              <div className="max-w-[85%] w-full min-w-0 space-y-2 overflow-x-hidden">
                 {m.thinking ? (
                   <ThinkingBlock
                     text={m.thinking}
@@ -396,12 +396,12 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
                     ))
                   : null}
 
-                <div
-                  className={clsx(
-                    "rounded-2xl px-3 py-2 text-sm break-words border overflow-x-hidden",
-                    "bg-white/5 border-white/10",
-                  )}
-                >
+	                <div
+	                  className={clsx(
+	                    "rounded-2xl px-3 py-2 text-sm break-words border overflow-x-hidden min-w-0",
+	                    "bg-white/5 border-white/10",
+	                  )}
+	                >
                   {renderMode === "rich" ? (
                     <RichText content={m.content} />
                   ) : (
@@ -409,13 +409,13 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
                   )}
                 </div>
               </div>
-            ) : (
-              <div
-                className={clsx(
-                  "max-w-[85%] rounded-2xl px-3 py-2 text-sm break-words border overflow-x-hidden",
-                  "bg-indigo-500/20 border-indigo-400/30",
-                )}
-              >
+	            ) : (
+	              <div
+	                className={clsx(
+	                  "max-w-[85%] min-w-0 rounded-2xl px-3 py-2 text-sm break-words border overflow-x-hidden",
+	                  "bg-indigo-500/20 border-indigo-400/30",
+	                )}
+	              >
                 {renderMode === "rich" ? (
                   <RichText content={m.content} />
                 ) : (
