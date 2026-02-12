@@ -662,6 +662,8 @@ pub async fn mobile_chat_stream_start(
 
             let mut pending_tool_calls: Option<Vec<ToolCall>> = None;
             terminal = None;
+            let mut stream_done = false;
+            let mut stream_err: Option<String> = None;
 
             loop {
                 tokio::select! {
@@ -780,27 +782,14 @@ pub async fn mobile_chat_stream_start(
                             }
                         }
                     }
-                    stream_res = &mut stream_fut => {
+                    stream_res = &mut stream_fut, if !stream_done => {
+                        stream_done = true;
                         if let Err(err) = stream_res {
-                            if terminal != Some("done") && terminal != Some("error") {
-                                emit_mobile_stream_event(
-                                    &app2,
-                                    MobileChatStreamPayload {
-                                        stream_id: stream_id2.clone(),
-                                        conversation_id: conversation_id2.clone(),
-                                        assistant_message_id: assistant_message_id2.clone(),
-                                        kind: "error".to_string(),
-                                        delta: None,
-                                        content: None,
-                                        thinking: None,
-                                        data: None,
-                                        error: Some(err.to_string()),
-                                    },
-                                );
-                                terminal = Some("error");
-                            }
+                            stream_err = Some(err.to_string());
                         }
-                        break;
+                        // 注意：此处不要 break。chat_stream 结束时，通道里可能仍有排队的
+                        // Done/ToolCalls/Error 事件（尤其是 tool-call turn）。
+                        // 需要继续 drain rx，否则会误判为“提前结束未收到 Done/Error”。
                     }
                 }
             }
@@ -980,6 +969,27 @@ pub async fn mobile_chat_stream_start(
                         }
                         break;
                     }
+
+                    // 如果 chat_stream 本身返回了 Err，但未能透传为 StreamEvent::Error，则在此补发更明确的错误。
+                    if let Some(err) = stream_err {
+                        emit_mobile_stream_event(
+                            &app2,
+                            MobileChatStreamPayload {
+                                stream_id: stream_id2.clone(),
+                                conversation_id: conversation_id2.clone(),
+                                assistant_message_id: assistant_message_id2.clone(),
+                                kind: "error".to_string(),
+                                delta: None,
+                                content: None,
+                                thinking: None,
+                                data: None,
+                                error: Some(err),
+                            },
+                        );
+                        terminal = Some("error");
+                        break;
+                    }
+
                     emit_mobile_stream_event(
                         &app2,
                         MobileChatStreamPayload {
