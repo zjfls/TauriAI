@@ -5,6 +5,8 @@ pub mod ai_client;
 pub mod bundled_tools;
 pub mod commands;
 pub mod config;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub mod code_intel;
 pub mod errors;
 pub mod git_tools;
 pub mod mentions;
@@ -669,6 +671,14 @@ fn run_desktop() {
             set_workstudio_main_folder,
             remove_workstudio_folder,
             workstudio_find_files,
+            // Code intelligence (LSP)
+            lsp_ensure_server,
+            lsp_notify,
+            lsp_request,
+            lsp_shutdown_workstudio,
+            lsp_status,
+            // Code intelligence (AST)
+            ast_document_symbols,
             // Workstudio terminal (UI)
             workstudio_terminal_create,
             workstudio_terminal_write,
@@ -754,6 +764,11 @@ fn run_desktop() {
         .setup(|app| {
             // Skills watcher for realtime refresh
             app.manage(SkillsWatcherState(SkillsWatcher::new(app.handle().clone())));
+
+            // Code intelligence: LSP manager (stdio JSON-RPC)
+            app.manage(Arc::new(crate::code_intel::lsp::LspManager::new(
+                app.handle().clone(),
+            )));
 
             // 预创建单例 Ghost 窗口（避免运行期 `builder.build()` 偶发卡死导致“窗口创建了但没内容/卡住”）。
             // 运行期只做 show/move/update，不再动态创建。

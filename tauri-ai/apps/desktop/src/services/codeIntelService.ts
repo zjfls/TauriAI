@@ -1,0 +1,63 @@
+import { invoke, isTauri } from '@tauri-apps/api/core';
+
+import type { AstSymbol, LspServerStatus } from '../types';
+
+export type LspEnsureServerArgs = {
+  workstudioId: string;
+  languageId: string;
+};
+
+export const lspEnsureServer = async (args: LspEnsureServerArgs): Promise<void> => {
+  if (!isTauri()) return;
+  await invoke<void>('lsp_ensure_server', { args });
+};
+
+export type LspNotifyArgs = {
+  workstudioId: string;
+  languageId: string;
+  method: string;
+  params?: unknown;
+};
+
+export const lspNotify = async (args: LspNotifyArgs): Promise<void> => {
+  if (!isTauri()) return;
+  await invoke<void>('lsp_notify', { args });
+};
+
+export type LspRequestArgs = {
+  workstudioId: string;
+  languageId: string;
+  method: string;
+  params?: unknown;
+  timeoutMs?: number;
+};
+
+export const lspRequest = async <T = unknown>(args: LspRequestArgs): Promise<T> => {
+  if (!isTauri()) {
+    throw new Error('Not running in Tauri');
+  }
+  return invoke<T>('lsp_request', { args });
+};
+
+export const lspShutdownWorkstudio = async (workstudioId: string): Promise<void> => {
+  if (!isTauri()) return;
+  await invoke<void>('lsp_shutdown_workstudio', { workstudioId });
+};
+
+export const lspStatus = async (workstudioId: string): Promise<LspServerStatus[]> => {
+  if (!isTauri()) return [];
+  return invoke<LspServerStatus[]>('lsp_status', { workstudioId });
+};
+
+export type AstDocumentSymbolsArgs = {
+  languageId: string;
+  text: string;
+};
+
+export const astDocumentSymbols = async (args: AstDocumentSymbolsArgs): Promise<AstSymbol[]> => {
+  if (!isTauri()) {
+    throw new Error('Not running in Tauri');
+  }
+  return invoke<AstSymbol[]>('ast_document_symbols', { args });
+};
+

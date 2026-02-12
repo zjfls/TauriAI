@@ -29,8 +29,9 @@ import {
   FolderOpen,
   X,
 } from 'lucide-react';
-import type { TerminalScope, Workstudio, WorkstudioUiState } from '../../types';
+import type { LspServerStatus, TerminalScope, Workstudio, WorkstudioUiState } from '../../types';
 import { SHORTCUT_ACTIONS, detectShortcutPlatform, normalizeKeybindingString } from '../../shortcuts';
+import { lspEnsureServer, lspNotify, lspStatus } from '../../services';
 import { useConfigStore } from '../../stores/configStore';
 import { useTerminalSessionStore } from '../../stores/terminalSessionStore';
 import { type WindowPane, useWindowLayoutStore } from '../../stores/windowLayoutStore';
@@ -38,6 +39,7 @@ import { useRemoteDragSplitPreview } from '../../hooks/useRemoteDragSplitPreview
 import { useDragGhostSession } from '../../hooks/useDragGhostSession';
 import { getViewWindowParams } from '../../utils/viewWindow';
 import { setupMonaco } from '../../utils/monaco';
+import { attachMonacoLspBridge } from '../../utils/monacoLspBridge';
 import { TerminalSurface, type TerminalSurfaceHandle } from '../Terminal/TerminalSurface';
 
 type DirEntry = {
@@ -347,6 +349,9 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const editorByPaneRef = useRef(
     new Map<string, import('monaco-editor').editor.IStandaloneCodeEditor>()
   );
+  const monacoRef = useRef<typeof import('monaco-editor') | null>(null);
+  const lspBridgeRef = useRef<{ dispose: () => void } | null>(null);
+  const lspBridgeWorkstudioIdRef = useRef<string | null>(null);
   const explorerContainerRef = useRef<HTMLDivElement | null>(null);
   const openFilesRef = useRef<OpenFile[]>([]);
   const openingPathsRef = useRef<Set<string>>(new Set());
@@ -360,6 +365,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const terminalSessionId = useTerminalSessionStore((s) => (terminalScope ? s.getSessionId(terminalScope) : null));
 
   const keyboardShortcuts = useConfigStore((s) => s.config?.general?.keyboardShortcuts);
+  const codeIntelligenceConfig = useConfigStore((s) => s.config?.codeIntelligence);
   const shortcutPlatform = useMemo(() => detectShortcutPlatform(), []);
   const fileSearchShortcutLabel = useMemo(() => {
     const def = SHORTCUT_ACTIONS.find((a) => a.id === 'workstudio.fileSearch');
@@ -499,6 +505,30 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     | { visible: true; x: number; y: number }
     | null
   >(null);
+  const lspStatusButtonRef = useRef<HTMLButtonElement | null>(null);
+  const [lspMenu, setLspMenu] = useState<
+    | { visible: true; x: number; y: number }
+    | null
+  >(null);
+  const [lspStatuses, setLspStatuses] = useState<LspServerStatus[]>([]);
+  const [lspEnsureErrors, setLspEnsureErrors] = useState<Record<string, string>>({});
+  const ensuredLspLangRef = useRef<Set<string>>(new Set());
+  const [lspProgress, setLspProgress] = useState<
+    Record<
+      string,
+      Record<
+        string,
+        {
+          title: string;
+          message?: string;
+          percentage?: number;
+          updatedAtMs: number;
+        }
+      >
+    >
+  >({});
+  const [lspLogs, setLspLogs] = useState<Record<string, string[]>>({});
+  const [lspExited, setLspExited] = useState<Record<string, { code?: number | null; signal?: number | null; timestampMs: number }>>({});
 
   const [filePaletteOpen, setFilePaletteOpen] = useState(false);
   const [filePaletteQuery, setFilePaletteQuery] = useState('');
@@ -1818,6 +1848,30 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
               : f
           )
         );
+
+        // Best-effort: 通知 LSP didSave（部分 server 会在保存后重新计算诊断/索引）
+        try {
+          const wsId = ws?.id ?? null;
+          const cfg = useConfigStore.getState().config?.codeIntelligence ?? null;
+          const model = editor?.getModel() ?? null;
+          const uri = (model as any)?.uri?.toString?.() ? String((model as any).uri.toString()) : '';
+          const languageId = typeof model?.getLanguageId === 'function' ? model.getLanguageId() : '';
+          const hasServer = Boolean(
+            cfg?.enabled &&
+              languageId &&
+              (cfg.lspServers ?? []).some((s) => s.enabled && s.languageId === languageId && String(s.command || '').trim())
+          );
+          if (wsId && uri && uri.startsWith('file://') && hasServer) {
+            await lspNotify({
+              workstudioId: wsId,
+              languageId,
+              method: 'textDocument/didSave',
+              params: { textDocument: { uri }, text: latest },
+            });
+          }
+        } catch {
+          // ignore
+        }
       } catch (e) {
         setSaveError(e instanceof Error ? e.message : String(e));
       }
@@ -1858,11 +1912,57 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     terminalSurfaceRef.current?.reset();
   }, [terminalScope]);
 
+  // 初始化 Monaco <-> LSP Bridge（仅在 Tauri 桌面端）。
+  // - 在 Workstudio 首次挂载 editor 时拿到 monaco 实例
+  // - 当 ws.id 就绪后，启动 LSP Bridge（注册 provider + editor opener + 文档同步）
+  useEffect(() => {
+    return () => {
+      lspBridgeRef.current?.dispose();
+      lspBridgeRef.current = null;
+      lspBridgeWorkstudioIdRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const monaco = monacoRef.current;
+    const wsId = ws?.id ?? null;
+    if (!monaco || !wsId) return;
+    if (lspBridgeWorkstudioIdRef.current === wsId) return;
+
+    lspBridgeRef.current?.dispose();
+    lspBridgeRef.current = attachMonacoLspBridge({
+      monaco,
+      workstudioId: wsId,
+      openFile: async (t) => {
+        await openLinkTarget(t);
+      },
+      getConfig: () => useConfigStore.getState().config?.codeIntelligence,
+    });
+    lspBridgeWorkstudioIdRef.current = wsId;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ws?.id, openLinkTarget, codeIntelligenceConfig?.enabled, codeIntelligenceConfig?.lspServers?.length]);
+
   const handleEditorMountForPane = useCallback(
     (paneId: string): OnMount =>
       (editor, monaco) => {
         setupMonaco(monaco);
         editorByPaneRef.current.set(paneId, editor);
+        monacoRef.current = monaco as any;
+
+        // 如果 ws 已经就绪，尽早 attach（否则由 useEffect 在 ws.id 就绪后再 attach）
+        const wsId = ws?.id ?? null;
+        if (wsId && lspBridgeWorkstudioIdRef.current !== wsId) {
+          lspBridgeRef.current?.dispose();
+          lspBridgeRef.current = attachMonacoLspBridge({
+            monaco,
+            workstudioId: wsId,
+            openFile: async (t) => {
+              await openLinkTarget(t);
+            },
+            getConfig: () => useConfigStore.getState().config?.codeIntelligence,
+          });
+          lspBridgeWorkstudioIdRef.current = wsId;
+        }
 
         editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
           const fileId = useWindowLayoutStore.getState().panes.find((p) => p.id === paneId)?.activeTabId ?? null;
@@ -1871,12 +1971,218 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         });
         editor.onDidFocusEditorWidget(() => useWindowLayoutStore.getState().setFocusedPane(paneId));
       },
-    [saveFile]
+    [openLinkTarget, saveFile, ws?.id]
   );
 
   const editorTheme = useMemo(() => {
     return document.documentElement.classList.contains('dark') ? 'vs-dark' : 'vs';
   }, []);
+
+  const lspStatusByLanguageId = useMemo(() => {
+    const map = new Map<string, LspServerStatus>();
+    for (const s of lspStatuses) {
+      const lang = String(s?.languageId ?? '').trim();
+      if (!lang) continue;
+      map.set(lang, s);
+    }
+    return map;
+  }, [lspStatuses]);
+
+  const lspMenuServers = useMemo(() => {
+    const cfg = codeIntelligenceConfig ?? null;
+    const servers = Array.isArray(cfg?.lspServers) ? cfg!.lspServers : [];
+    const out = servers
+      .map((s) => ({
+        languageId: String(s.languageId || '').trim(),
+        enabled: Boolean(s.enabled),
+        command: String(s.command || '').trim(),
+        args: Array.isArray(s.args) ? s.args.map((x) => String(x)) : [],
+      }))
+      .filter((s) => Boolean(s.languageId));
+    out.sort((a, b) => a.languageId.localeCompare(b.languageId));
+    return out;
+  }, [codeIntelligenceConfig?.lspServers]);
+
+  const enabledLspLanguageIds = useMemo(() => {
+    const cfg = codeIntelligenceConfig ?? null;
+    if (!cfg?.enabled) return [];
+    const servers = Array.isArray(cfg.lspServers) ? cfg.lspServers : [];
+    const out: string[] = [];
+    for (const s of servers) {
+      const lang = String(s.languageId || '').trim();
+      const cmd = String(s.command || '').trim();
+      if (!s.enabled || !lang || !cmd) continue;
+      out.push(lang);
+    }
+    return Array.from(new Set(out));
+  }, [codeIntelligenceConfig?.enabled, codeIntelligenceConfig?.lspServers]);
+
+  const getLanguageProgressText = useCallback(
+    (languageId: string) => {
+      const items = Object.values(lspProgress[languageId] ?? {});
+      if (items.length === 0) return null;
+      items.sort((a, b) => (b.updatedAtMs ?? 0) - (a.updatedAtMs ?? 0));
+      const top = items[0] ?? null;
+      if (!top) return null;
+      const pct = typeof top.percentage === 'number' ? `${Math.max(0, Math.min(100, Math.round(top.percentage)))}%` : '';
+      const detail = [top.title, top.message].filter(Boolean).join(' - ');
+      return pct ? `${detail}（${pct}）` : detail;
+    },
+    [lspProgress]
+  );
+
+  const describeLspLanguage = useCallback(
+    (languageId: string) => {
+      const st = lspStatusByLanguageId.get(languageId) ?? null;
+      const started = Boolean(st?.started);
+      const initialized = Boolean(st?.initialized);
+      const ensureError = lspEnsureErrors[languageId] ?? null;
+      const lastError = ensureError || st?.lastError || null;
+      const hasProgress = Object.keys(lspProgress[languageId] ?? {}).length > 0;
+
+      const state: 'error' | 'not_started' | 'starting' | 'indexing' | 'ready' = lastError
+        ? 'error'
+        : !started
+          ? 'not_started'
+          : !initialized
+            ? 'starting'
+            : hasProgress
+              ? 'indexing'
+              : 'ready';
+
+      const progressText = getLanguageProgressText(languageId);
+      const exited = lspExited[languageId] ?? null;
+      const exitedText = exited
+        ? `已退出（code=${exited.code ?? 'null'} signal=${exited.signal ?? 'null'}）`
+        : null;
+
+      const label =
+        state === 'error'
+          ? '错误'
+          : state === 'not_started'
+            ? '未启动'
+            : state === 'starting'
+              ? '启动中'
+              : state === 'indexing'
+                ? '索引中'
+                : '就绪';
+
+      const dotClass =
+        state === 'error'
+          ? 'bg-red-500'
+          : state === 'indexing' || state === 'starting'
+            ? 'bg-yellow-500'
+            : state === 'ready'
+              ? 'bg-green-500'
+              : 'bg-gray-400';
+
+      return {
+        state,
+        label,
+        dotClass,
+        started,
+        initialized,
+        command: st?.command ?? undefined,
+        args: st?.args ?? undefined,
+        lastError,
+        progressText,
+        exitedText,
+      };
+    },
+    [getLanguageProgressText, lspEnsureErrors, lspExited, lspProgress, lspStatusByLanguageId]
+  );
+
+  const lspSummary = useMemo(() => {
+    if (!isTauri()) {
+      return { label: '代码智能：仅桌面端', dotClass: 'bg-gray-400', title: '仅 Tauri 桌面端支持 LSP（rust-analyzer 等）' };
+    }
+    if (!codeIntelligenceConfig?.enabled) {
+      return { label: '代码智能：关闭', dotClass: 'bg-gray-400', title: '设置 -> Code Intelligence 中开启' };
+    }
+    if (enabledLspLanguageIds.length === 0) {
+      return { label: '代码智能：未配置', dotClass: 'bg-yellow-500', title: '未找到已启用的 LSP server 配置' };
+    }
+
+    const states = enabledLspLanguageIds.map((lang) => describeLspLanguage(lang).state);
+    const hasError = states.includes('error');
+    const hasNotStarted = states.includes('not_started');
+    const hasStarting = states.includes('starting');
+    const hasIndexing = states.includes('indexing');
+
+    if (hasError) return { label: '代码智能：错误', dotClass: 'bg-red-500', title: 'LSP 出错（点击查看详情）' };
+    if (hasNotStarted) return { label: '代码智能：未启动', dotClass: 'bg-gray-400', title: '点击查看/启动 LSP' };
+    if (hasStarting) return { label: '代码智能：启动中', dotClass: 'bg-yellow-500', title: 'LSP 正在初始化' };
+    if (hasIndexing) {
+      const detail = enabledLspLanguageIds.map((lang) => getLanguageProgressText(lang)).find(Boolean) ?? null;
+      return { label: '代码智能：索引中', dotClass: 'bg-yellow-500', title: detail ?? 'rust-analyzer 正在索引' };
+    }
+    return { label: '代码智能：就绪', dotClass: 'bg-green-500', title: 'rust-analyzer 等已就绪' };
+  }, [codeIntelligenceConfig?.enabled, describeLspLanguage, enabledLspLanguageIds, getLanguageProgressText]);
+
+  const ensureLspForLanguage = useCallback(
+    async (languageId: string) => {
+      if (!isTauri()) return;
+      const wsId = ws?.id ?? null;
+      if (!wsId) return;
+
+      setLspEnsureErrors((prev) => {
+        if (!prev[languageId]) return prev;
+        const next = { ...prev };
+        delete next[languageId];
+        return next;
+      });
+
+      ensuredLspLangRef.current.add(languageId);
+      try {
+        await lspEnsureServer({ workstudioId: wsId, languageId });
+        const res = await lspStatus(wsId);
+        setLspStatuses(res);
+      } catch (e) {
+        ensuredLspLangRef.current.delete(languageId);
+        setLspEnsureErrors((prev) => ({
+          ...prev,
+          [languageId]: e instanceof Error ? e.message : String(e),
+        }));
+      }
+    },
+    [ws?.id]
+  );
+
+  const restartLspBridge = useCallback(async () => {
+    if (!isTauri()) return;
+    const monaco = monacoRef.current;
+    const wsId = ws?.id ?? null;
+    if (!monaco || !wsId) return;
+
+    ensuredLspLangRef.current = new Set();
+    setLspEnsureErrors({});
+    setLspProgress({});
+    setLspLogs({});
+    setLspExited({});
+
+    lspBridgeRef.current?.dispose();
+    lspBridgeRef.current = attachMonacoLspBridge({
+      monaco,
+      workstudioId: wsId,
+      openFile: async (t) => {
+        await openLinkTarget(t);
+      },
+      getConfig: () => useConfigStore.getState().config?.codeIntelligence,
+    });
+    lspBridgeWorkstudioIdRef.current = wsId;
+
+    // Best-effort: immediately re-ensure servers so status/progress can be seen early.
+    const cfg = useConfigStore.getState().config?.codeIntelligence ?? null;
+    if (cfg?.enabled) {
+      const servers = Array.isArray(cfg.lspServers) ? cfg.lspServers : [];
+      for (const s of servers) {
+        const languageId = String(s.languageId || '').trim();
+        const command = String(s.command || '').trim();
+        if (!s.enabled || !languageId || !command) continue;
+        void ensureLspForLanguage(languageId);
+      }
+    }
+  }, [ensureLspForLanguage, openLinkTarget, ws?.id]);
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
 
@@ -2353,6 +2659,18 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [editorNavMenu]);
 
+  // Esc: close LSP status menu
+  useEffect(() => {
+    if (!lspMenu) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      setLspMenu(null);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [lspMenu]);
+
   useEffect(() => {
     if (!filePaletteOpen) return;
     if (!ws) return;
@@ -2621,6 +2939,190 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     void listDir(ws.mainFolder);
   }, [ws, listDir]);
 
+  // LSP UI states: reset when switching workstudio
+  useEffect(() => {
+    ensuredLspLangRef.current = new Set();
+    setLspStatuses([]);
+    setLspEnsureErrors({});
+    setLspProgress({});
+    setLspLogs({});
+    setLspExited({});
+  }, [ws?.id]);
+
+  // Auto-start LSP servers (best-effort) so rust-analyzer 的“启动/索引/就绪”可见。
+  useEffect(() => {
+    if (!isTauri()) return;
+    const wsId = ws?.id ?? null;
+    if (!wsId) return;
+    const cfg = useConfigStore.getState().config?.codeIntelligence ?? null;
+    if (!cfg?.enabled) return;
+
+    const servers = Array.isArray(cfg.lspServers) ? cfg.lspServers : [];
+    for (const s of servers) {
+      const languageId = String(s.languageId || '').trim();
+      const command = String(s.command || '').trim();
+      if (!s.enabled || !languageId || !command) continue;
+      if (ensuredLspLangRef.current.has(languageId)) continue;
+      ensuredLspLangRef.current.add(languageId);
+
+      void lspEnsureServer({ workstudioId: wsId, languageId }).catch((e) => {
+        ensuredLspLangRef.current.delete(languageId);
+        setLspEnsureErrors((prev) => ({
+          ...prev,
+          [languageId]: e instanceof Error ? e.message : String(e),
+        }));
+      });
+    }
+  }, [ws?.id, codeIntelligenceConfig?.enabled, codeIntelligenceConfig?.lspServers?.length]);
+
+  // Poll LSP server runtime status (started/initialized/lastError).
+  useEffect(() => {
+    if (!isTauri()) return;
+    const wsId = ws?.id ?? null;
+    if (!wsId) return;
+
+    let disposed = false;
+    const tick = async () => {
+      try {
+        const cfg = useConfigStore.getState().config?.codeIntelligence ?? null;
+        if (!cfg?.enabled) {
+          if (!disposed) setLspStatuses([]);
+          return;
+        }
+        const res = await lspStatus(wsId);
+        if (disposed) return;
+        setLspStatuses(res);
+      } catch {
+        // ignore
+      }
+    };
+
+    void tick();
+    const timer = window.setInterval(() => {
+      if (document.hidden) return;
+      void tick();
+    }, 1500);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [ws?.id]);
+
+  // Listen to server->client notifications to surface progress/logs (e.g. rust-analyzer indexing).
+  useEffect(() => {
+    if (!isTauri()) return;
+    const wsId = ws?.id ?? null;
+    if (!wsId) return;
+
+    let disposed = false;
+    let unlisten: null | (() => void) = null;
+    void listen('lsp:event', (event) => {
+      const payload = (event as any)?.payload as any;
+      if (!payload) return;
+      if (payload.workstudioId !== wsId) return;
+
+      const languageId = String(payload.languageId || 'unknown');
+      const now = typeof payload.timestampMs === 'number' ? payload.timestampMs : Date.now();
+
+      const pushLog = (line: string) => {
+        const text = String(line || '').trim();
+        if (!text) return;
+        setLspLogs((prev) => {
+          const next = { ...prev };
+          const list = [...(next[languageId] ?? []), text];
+          if (list.length > 240) list.splice(0, list.length - 240);
+          next[languageId] = list;
+          return next;
+        });
+      };
+
+      if (payload.type === 'stderr') {
+        pushLog(`[stderr] ${String(payload.line ?? '')}`);
+        return;
+      }
+
+      if (payload.type === 'exited') {
+        setLspExited((prev) => ({
+          ...prev,
+          [languageId]: { code: payload.code ?? null, signal: payload.signal ?? null, timestampMs: now },
+        }));
+        setLspProgress((prev) => {
+          const next = { ...prev };
+          if (next[languageId]) delete next[languageId];
+          return next;
+        });
+        pushLog(`[exited] code=${payload.code ?? 'null'} signal=${payload.signal ?? 'null'}`);
+        return;
+      }
+
+      if (payload.type !== 'notification') return;
+
+      const method = String(payload.method || '').trim();
+      const params = payload.params ?? null;
+      if (!method) return;
+
+      if (method === '$/progress') {
+        const tokenRaw = (params as any)?.token;
+        const token = tokenRaw === null || tokenRaw === undefined ? '' : String(tokenRaw);
+        const value = (params as any)?.value ?? null;
+        const kind = String(value?.kind ?? '').trim();
+        if (!token || !kind) return;
+
+        if (kind === 'end') {
+          setLspProgress((prev) => {
+            const next = { ...prev };
+            const byToken = { ...(next[languageId] ?? {}) };
+            if (byToken[token]) delete byToken[token];
+            next[languageId] = byToken;
+            return next;
+          });
+          return;
+        }
+
+        const title = String(value?.title ?? '').trim() || 'Progress';
+        const message = String(value?.message ?? '').trim() || undefined;
+        const percentage =
+          typeof value?.percentage === 'number' && Number.isFinite(value.percentage) ? value.percentage : undefined;
+        setLspProgress((prev) => {
+          const next = { ...prev };
+          const byToken = { ...(next[languageId] ?? {}) };
+          byToken[token] = { title, message, percentage, updatedAtMs: now };
+          next[languageId] = byToken;
+          return next;
+        });
+        return;
+      }
+
+      if (method === 'window/logMessage' || method === 'window/showMessage') {
+        const msg = String((params as any)?.message ?? '').trim();
+        if (!msg) return;
+        pushLog(`[${method}] ${msg}`);
+        return;
+      }
+
+      if (method.startsWith('rust-analyzer/')) {
+        pushLog(`[${method}] ${JSON.stringify(params)}`);
+        return;
+      }
+
+      // Best-effort: do not spam logs for every notification (publishDiagnostics is handled by Monaco bridge).
+      if (method === 'textDocument/publishDiagnostics') return;
+    })
+      .then((fn) => {
+        if (disposed) {
+          fn();
+          return;
+        }
+        unlisten = fn;
+      })
+      .catch(() => {});
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [ws?.id]);
+
   // Best-effort auto refresh (polling) for expanded directories.
   // This avoids a manual "refresh" button while keeping the UI responsive to changes.
   useEffect(() => {
@@ -2637,15 +3139,16 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   }, [ws, expandedDirs, entriesByDir, loadingDirs, listDir]);
 
   useEffect(() => {
-    if (!contextMenu && !tabMenu && !editorNavMenu) return;
+    if (!contextMenu && !tabMenu && !editorNavMenu && !lspMenu) return;
     const onDown = () => {
       setContextMenu(null);
       setTabMenu(null);
       setEditorNavMenu(null);
+      setLspMenu(null);
     };
     window.addEventListener('mousedown', onDown);
     return () => window.removeEventListener('mousedown', onDown);
-  }, [contextMenu, editorNavMenu, tabMenu]);
+  }, [contextMenu, editorNavMenu, lspMenu, tabMenu]);
 
   useEffect(() => {
     let disposed = false;
@@ -2894,6 +3397,28 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	            </div>
               </div>
 	            <div className="flex items-center gap-2">
+                <button
+                  ref={lspStatusButtonRef}
+                  type="button"
+                  className="inline-flex items-center gap-2 rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                  onClick={() => {
+                    const btn = lspStatusButtonRef.current;
+                    if (!btn) return;
+                    if (lspMenu) {
+                      setLspMenu(null);
+                      return;
+                    }
+                    const rect = btn.getBoundingClientRect();
+                    const menuWidth = 480;
+                    const x = Math.max(8, Math.min(rect.left, window.innerWidth - menuWidth - 8));
+                    setLspMenu({ visible: true, x, y: rect.bottom + 4 });
+                  }}
+                  title={lspSummary.title}
+                >
+                  <span className={['h-2 w-2 rounded-full', lspSummary.dotClass].join(' ')} />
+                  <span className="whitespace-nowrap">{lspSummary.label}</span>
+                  <ChevronDown size={12} className="opacity-70" />
+                </button>
 	              <button
 	                type="button"
 	                className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
@@ -3232,6 +3757,158 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                 )}
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {lspMenu && (
+        <div
+          className="fixed z-[220] w-[480px] max-w-[92vw] overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900"
+          style={{ left: lspMenu.x, top: lspMenu.y }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <div className="flex items-start justify-between gap-3 border-b border-gray-200 px-3 py-2 dark:border-gray-700">
+            <div className="min-w-0">
+              <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">代码智能</div>
+              <div className="mt-0.5 truncate text-[11px] text-gray-500 dark:text-gray-400" title="LSP: rust-analyzer / pylsp / clangd 等">
+                LSP 状态与进度（rust-analyzer 索引/就绪）
+              </div>
+            </div>
+            <div className="flex flex-shrink-0 items-center gap-2">
+              <button
+                type="button"
+                className="rounded border border-gray-200 px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+                onClick={() => void restartLspBridge()}
+                title="重启 Monaco-LSP Bridge（会重启所有 LSP 进程）"
+              >
+                重启
+              </button>
+              <button
+                type="button"
+                className="rounded border border-gray-200 px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+                onClick={() => setLspLogs({})}
+                title="清空 LSP 日志"
+              >
+                清空日志
+              </button>
+              <button
+                type="button"
+                className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+                onClick={() => setLspMenu(null)}
+                aria-label="关闭"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          </div>
+
+          <div className="max-h-[70vh] overflow-auto px-3 py-3">
+            {!isTauri() ? (
+              <div className="text-sm text-gray-600 dark:text-gray-300">仅桌面端支持 LSP。</div>
+            ) : !codeIntelligenceConfig?.enabled ? (
+              <div className="text-sm text-gray-600 dark:text-gray-300">
+                代码智能已关闭：在 设置 → Code Intelligence 中开启。
+              </div>
+            ) : lspMenuServers.length === 0 ? (
+              <div className="text-sm text-gray-600 dark:text-gray-300">
+                未配置 LSP server：在 设置 → Code Intelligence 中添加 rust-analyzer 等。
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {lspMenuServers.map((s) => {
+                  const lang = s.languageId;
+                  const desc = describeLspLanguage(lang);
+                  const configuredOk = s.enabled && Boolean(s.command);
+                  const effectiveDot = configuredOk ? desc.dotClass : s.enabled ? 'bg-red-500' : 'bg-gray-400';
+                  const statusText = !s.enabled
+                    ? '已禁用'
+                    : !s.command
+                      ? '命令为空'
+                      : desc.label;
+
+                  const cmdLine = s.command ? [s.command, ...(s.args ?? [])].join(' ') : '（未配置命令）';
+                  const logs = lspLogs[lang] ?? [];
+                  const lastLogs = logs.slice(-3);
+
+                  return (
+                    <div
+                      key={`${lang}:${cmdLine}`}
+                      className="rounded-lg border border-gray-200 bg-white p-2 dark:border-gray-700 dark:bg-gray-900"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className={['h-2 w-2 rounded-full', effectiveDot].join(' ')} />
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs font-semibold text-gray-900 dark:text-gray-100">
+                                  {lang}
+                                </span>
+                                <span className="text-[11px] text-gray-500 dark:text-gray-400">
+                                  {statusText}
+                                </span>
+                              </div>
+                              <div
+                                className="mt-0.5 truncate font-mono text-[11px] text-gray-500 dark:text-gray-400"
+                                title={cmdLine}
+                              >
+                                {cmdLine}
+                              </div>
+                            </div>
+                          </div>
+
+                          {configuredOk && desc.progressText && (
+                            <div className="mt-1 text-[11px] text-gray-600 dark:text-gray-300">
+                              进度：{desc.progressText}
+                            </div>
+                          )}
+
+                          {desc.exitedText && (
+                            <div className="mt-1 text-[11px] text-orange-700 dark:text-orange-200">
+                              {desc.exitedText}
+                            </div>
+                          )}
+
+                          {desc.lastError && (
+                            <div className="mt-1 text-[11px] text-red-700 dark:text-red-200">
+                              错误：{desc.lastError}
+                            </div>
+                          )}
+
+                          {lastLogs.length > 0 && (
+                            <div className="mt-1 space-y-0.5 rounded bg-gray-50 px-2 py-1 font-mono text-[10px] text-gray-700 dark:bg-gray-950 dark:text-gray-300">
+                              {lastLogs.map((line, idx) => (
+                                <div key={`${lang}:log:${idx}`} className="truncate" title={line}>
+                                  {line}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="flex flex-shrink-0 items-center gap-1">
+                          {s.enabled && (
+                            <button
+                              type="button"
+                              className="rounded border border-gray-200 px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+                              disabled={!s.command}
+                              onClick={() => void ensureLspForLanguage(lang)}
+                              title={!s.command ? '请先在设置中填写启动命令' : '启动/初始化该语言的 LSP'}
+                            >
+                              启动
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+
+                <div className="pt-1 text-[11px] text-gray-500 dark:text-gray-400">
+                  提示：rust-analyzer 首次索引可能需要一段时间；索引进度会通过 <code>$/progress</code> 显示在这里。
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

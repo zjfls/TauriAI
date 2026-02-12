@@ -1007,6 +1007,58 @@ export interface ToolsSettings {
 }
 
 // ============================================================================
+// Code Intelligence (LSP / AST)
+// ============================================================================
+
+export interface LspServerConfig {
+  /** Monaco language id，例如：rust / python / cpp */
+  languageId: string;
+  enabled: boolean;
+  /** 启动命令，例如：rust-analyzer / pylsp / clangd */
+  command: string;
+  args: string[];
+  /** 仅对该 LSP 进程生效 */
+  env: Record<string, string>;
+  /** LSP initialize 的 initializationOptions */
+  initializationOptions: unknown;
+  /** 用于响应 workspace/configuration 的 settings */
+  settings: unknown;
+}
+
+export interface CodeIntelligenceSettings {
+  enabled: boolean;
+  lspServers: LspServerConfig[];
+}
+
+export interface LspServerStatus {
+  workstudioId: string;
+  languageId: string;
+  started: boolean;
+  initialized: boolean;
+  command?: string;
+  args?: string[];
+  lastError?: string;
+}
+
+export interface AstPosition {
+  line: number;       // 0-based
+  character: number;  // 0-based
+}
+
+export interface AstRange {
+  start: AstPosition;
+  end: AstPosition;
+}
+
+export interface AstSymbol {
+  name: string;
+  kind: string;
+  range: AstRange;
+  selectionRange: AstRange;
+  children: AstSymbol[];
+}
+
+// ============================================================================
 // MCP (Model Context Protocol)
 // ============================================================================
 
@@ -1146,6 +1198,7 @@ export interface AppConfig {
   appearance: AppearanceSettings;
   general: GeneralSettings;
   tools: ToolsSettings;
+  codeIntelligence: CodeIntelligenceSettings;
   mcp: McpSettings;
   skills: SkillsSettings;
   security: SecuritySettings;

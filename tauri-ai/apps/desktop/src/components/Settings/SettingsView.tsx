@@ -4,7 +4,7 @@
  */
 
 import React, { useState } from 'react';
-import { ArrowLeft, Server, Bot, Palette, Sliders, Wrench, Shield, Plug, Sparkles, ChevronDown } from 'lucide-react';
+import { ArrowLeft, Server, Bot, Palette, Sliders, Wrench, Shield, Plug, Sparkles, Code, ChevronDown } from 'lucide-react';
 
 import { ProviderConfigForm } from './ProviderConfigForm';
 import { AgentConfigForm } from './AgentConfigForm';
@@ -12,6 +12,7 @@ import { ToolsConfigForm } from './ToolsConfigForm';
 import { SecurityConfigForm } from './SecurityConfigForm';
 import { McpConfigForm } from './McpConfigForm';
 import { SkillsConfigForm } from './SkillsConfigForm';
+import { CodeIntelligenceConfigForm } from './CodeIntelligenceConfigForm';
 import { SecretInput } from './SecretInput';
 import { useConfigStore } from '../../stores/configStore';
 import { useUIStore } from '../../stores/uiStore';
@@ -26,7 +27,16 @@ import type {
   KeyboardShortcutActionId,
 } from '../../types';
 
-type SettingsTab = 'providers' | 'agents' | 'tools' | 'mcp' | 'skills' | 'security' | 'appearance' | 'general';
+type SettingsTab =
+  | 'providers'
+  | 'agents'
+  | 'tools'
+  | 'codeIntelligence'
+  | 'mcp'
+  | 'skills'
+  | 'security'
+  | 'appearance'
+  | 'general';
 
 interface TabButtonProps {
   icon: React.ReactNode;
@@ -58,6 +68,7 @@ export const SettingsView: React.FC = () => {
     { id: 'providers', icon: <Server size={18} />, label: '提供商' },
     { id: 'agents', icon: <Bot size={18} />, label: '智能体' },
     { id: 'tools', icon: <Wrench size={18} />, label: '工具' },
+    { id: 'codeIntelligence', icon: <Code size={18} />, label: '代码智能' },
     { id: 'mcp', icon: <Plug size={18} />, label: 'MCP' },
     { id: 'skills', icon: <Sparkles size={18} />, label: 'Skills' },
     { id: 'security', icon: <Shield size={18} />, label: '安全' },
@@ -218,6 +229,8 @@ export const SettingsView: React.FC = () => {
         return <AgentConfigForm />;
       case 'tools':
         return <ToolsConfigForm />;
+      case 'codeIntelligence':
+        return <CodeIntelligenceConfigForm />;
       case 'mcp':
         return <McpConfigForm />;
       case 'skills':

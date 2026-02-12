@@ -1381,6 +1381,71 @@ impl Default for ToolsSettings {
 }
 
 // ============================================================================
+// Code Intelligence (LSP / AST)
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LspServerConfig {
+    /// Monaco language id（例如：rust / python / cpp）
+    pub language_id: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// 启动命令（例如：rust-analyzer / pylsp / clangd）
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// 可选环境变量注入（避免污染全局 PATH；仅影响该 LSP 进程）
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    /// initialize 的 initializationOptions（按 LSP server 约定）
+    #[serde(default)]
+    pub initialization_options: serde_json::Value,
+    /// 用于响应 `workspace/configuration` 的 settings（通常为 JSON object）
+    #[serde(default)]
+    pub settings: serde_json::Value,
+}
+
+impl Default for LspServerConfig {
+    fn default() -> Self {
+        Self {
+            language_id: String::new(),
+            enabled: true,
+            command: String::new(),
+            args: Vec::new(),
+            env: HashMap::new(),
+            initialization_options: serde_json::Value::Object(serde_json::Map::new()),
+            settings: serde_json::Value::Object(serde_json::Map::new()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeIntelligenceSettings {
+    /// 总开关：关闭后前端不会启动/请求 LSP（保留纯编辑器能力）
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub lsp_servers: Vec<LspServerConfig>,
+}
+
+impl Default for CodeIntelligenceSettings {
+    fn default() -> Self {
+        // 默认开启 Rust（若本机未安装 rust-analyzer，会在 UI 层提示；不会影响其它功能）
+        Self {
+            enabled: true,
+            lsp_servers: vec![LspServerConfig {
+                language_id: "rust".to_string(),
+                enabled: true,
+                command: "rust-analyzer".to_string(),
+                ..Default::default()
+            }],
+        }
+    }
+}
+
+// ============================================================================
 // MCP (Model Context Protocol)
 // ============================================================================
 
@@ -1793,6 +1858,9 @@ pub struct AppConfig {
     /// Tooling settings (toolsets)
     #[serde(default)]
     pub tools: ToolsSettings,
+    /// Code intelligence settings (LSP / AST)
+    #[serde(default)]
+    pub code_intelligence: CodeIntelligenceSettings,
     /// MCP settings (servers + sets)
     #[serde(default)]
     pub mcp: McpSettings,
@@ -1832,6 +1900,7 @@ impl Default for AppConfig {
             appearance: AppearanceSettings::default(),
             general: GeneralSettings::default(),
             tools: ToolsSettings::default(),
+            code_intelligence: CodeIntelligenceSettings::default(),
             mcp: McpSettings::default(),
             skills: SkillsSettings::default(),
             security: SecuritySettings::default(),

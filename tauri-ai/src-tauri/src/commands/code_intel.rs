@@ -1,0 +1,171 @@
+//! Code intelligence commands (LSP / AST)
+//!
+//! 说明：
+//! - 这些命令面向前端 Monaco Bridge：后端负责 LSP 进程管理与 JSON-RPC 通信。
+//! - 目前优先覆盖 Workstudio 的核心能力：定义/引用/类型定义/悬停/补全/诊断。
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use tokio::sync::Mutex;
+
+use crate::code_intel::lsp::LspManager;
+use crate::code_intel::ast::{AstDocumentSymbolsArgs, AstSymbol};
+use crate::code_intel::types::{LspLaunchConfig, LspServerStatus};
+use crate::config::ConfigManager;
+use crate::models::Workstudio;
+use crate::storage::Database;
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LspEnsureServerArgs {
+    pub workstudio_id: String,
+    pub language_id: String,
+}
+
+#[tauri::command]
+pub async fn lsp_ensure_server(
+    args: LspEnsureServerArgs,
+    lsp: tauri::State<'_, Arc<LspManager>>,
+    db: tauri::State<'_, Arc<Mutex<Database>>>,
+    config_manager: tauri::State<'_, Arc<ConfigManager>>,
+) -> Result<(), String> {
+    let ws: Workstudio = {
+        let db = db.lock().await;
+        db.get_workstudio(&args.workstudio_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "Workstudio not found".to_string())?
+    };
+
+    let launch = resolve_launch_config(&*config_manager, &args.language_id)?;
+    lsp.ensure(&ws, &args.language_id, launch).await?;
+    Ok(())
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LspNotifyArgs {
+    pub workstudio_id: String,
+    pub language_id: String,
+    pub method: String,
+    #[serde(default)]
+    pub params: serde_json::Value,
+}
+
+#[tauri::command]
+pub async fn lsp_notify(
+    args: LspNotifyArgs,
+    lsp: tauri::State<'_, Arc<LspManager>>,
+    db: tauri::State<'_, Arc<Mutex<Database>>>,
+    config_manager: tauri::State<'_, Arc<ConfigManager>>,
+) -> Result<(), String> {
+    let ws: Workstudio = {
+        let db = db.lock().await;
+        db.get_workstudio(&args.workstudio_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "Workstudio not found".to_string())?
+    };
+
+    let launch = resolve_launch_config(&*config_manager, &args.language_id)?;
+    let server = lsp.ensure(&ws, &args.language_id, launch).await?;
+    server.notify(&args.method, args.params).await
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LspRequestArgs {
+    pub workstudio_id: String,
+    pub language_id: String,
+    pub method: String,
+    #[serde(default)]
+    pub params: serde_json::Value,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+}
+
+#[tauri::command]
+pub async fn lsp_request(
+    args: LspRequestArgs,
+    lsp: tauri::State<'_, Arc<LspManager>>,
+    db: tauri::State<'_, Arc<Mutex<Database>>>,
+    config_manager: tauri::State<'_, Arc<ConfigManager>>,
+) -> Result<serde_json::Value, String> {
+    let ws: Workstudio = {
+        let db = db.lock().await;
+        db.get_workstudio(&args.workstudio_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "Workstudio not found".to_string())?
+    };
+
+    let launch = resolve_launch_config(&*config_manager, &args.language_id)?;
+    let server = lsp.ensure(&ws, &args.language_id, launch).await?;
+
+    let timeout = args
+        .timeout_ms
+        .and_then(|ms| if ms == 0 { None } else { Some(Duration::from_millis(ms)) })
+        .or(Some(Duration::from_secs(20)));
+
+    server.request(&args.method, args.params, timeout).await
+}
+
+#[tauri::command]
+pub async fn lsp_shutdown_workstudio(
+    workstudio_id: String,
+    lsp: tauri::State<'_, Arc<LspManager>>,
+) -> Result<(), String> {
+    lsp.shutdown_workstudio(&workstudio_id).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn lsp_status(
+    workstudio_id: String,
+    lsp: tauri::State<'_, Arc<LspManager>>,
+) -> Result<Vec<LspServerStatus>, String> {
+    Ok(lsp.status(&workstudio_id).await)
+}
+
+#[tauri::command]
+pub async fn ast_document_symbols(args: AstDocumentSymbolsArgs) -> Result<Vec<AstSymbol>, String> {
+    crate::code_intel::ast::document_symbols(args)
+}
+
+fn resolve_launch_config(
+    config_manager: &Arc<ConfigManager>,
+    language_id: &str,
+) -> Result<LspLaunchConfig, String> {
+    let config = config_manager
+        .ensure_default()
+        .map_err(|e| e.to_string())?;
+
+    if !config.code_intelligence.enabled {
+        return Err("代码智能已关闭（设置 -> Code Intelligence）".to_string());
+    }
+
+    let lang = language_id.trim();
+    if lang.is_empty() {
+        return Err("languageId 为空".to_string());
+    }
+
+    let server = config
+        .code_intelligence
+        .lsp_servers
+        .iter()
+        .find(|s| s.enabled && s.language_id == lang)
+        .ok_or_else(|| format!("未找到已启用的 LSP 配置: {lang}"))?;
+
+    let env = server
+        .env
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect::<Vec<_>>();
+
+    Ok(LspLaunchConfig {
+        language_id: server.language_id.clone(),
+        command: server.command.clone(),
+        args: server.args.clone(),
+        env,
+        initialization_options: server.initialization_options.clone(),
+        settings: server.settings.clone(),
+    })
+}

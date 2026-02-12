@@ -30,3 +30,17 @@ export {
   type BindPreference,
   type ConversationFileIndexUpdate,
 } from './conversationService';
+
+// Code intelligence service
+export {
+  lspEnsureServer,
+  lspNotify,
+  lspRequest,
+  lspShutdownWorkstudio,
+  lspStatus,
+  astDocumentSymbols,
+  type LspEnsureServerArgs,
+  type LspNotifyArgs,
+  type LspRequestArgs,
+  type AstDocumentSymbolsArgs,
+} from './codeIntelService';

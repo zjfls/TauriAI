@@ -88,6 +88,11 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # Cross-platform PTY (Windows ConPTY / Unix PTY)
 portable-pty = "0.8"
 
+# Code intelligence (AST parsing)
+tree-sitter = "0.26"
+tree-sitter-rust = "0.24"
+tree-sitter-typescript = "0.23"
+
 # Desktop-only OS integrations
 notify = "6"
 arboard = "3.6.1"
