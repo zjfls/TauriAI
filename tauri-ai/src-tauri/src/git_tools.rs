@@ -161,6 +161,74 @@ pub(crate) async fn resolve_repo_root(workdir: &Path) -> Result<PathBuf, String>
     Ok(p)
 }
 
+pub(crate) async fn git_current_branch(workdir: &Path) -> Result<Option<String>, String> {
+    if !workdir.is_dir() {
+        return Ok(None);
+    }
+
+    // Keep behavior consistent with other git helpers: rely on git itself to decide whether
+    // this is a work tree (handles worktrees/submodules/.git files etc.).
+    let inside = match run_git_for_stdout(
+        workdir,
+        vec![
+            OsString::from("rev-parse"),
+            OsString::from("--is-inside-work-tree"),
+        ],
+        None,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(_) => return Ok(None),
+    };
+    if inside.trim() != "true" {
+        return Ok(None);
+    }
+
+    let branch = match run_git_for_stdout(
+        workdir,
+        vec![
+            OsString::from("rev-parse"),
+            OsString::from("--abbrev-ref"),
+            OsString::from("HEAD"),
+        ],
+        None,
+    )
+    .await
+    {
+        Ok(v) => v.trim().to_string(),
+        Err(_) => return Ok(None),
+    };
+
+    if branch.is_empty() {
+        return Ok(None);
+    }
+
+    // Detached HEAD: rev-parse returns literal "HEAD". Show a friendly label with short sha.
+    if branch == "HEAD" {
+        let sha = run_git_for_stdout(
+            workdir,
+            vec![
+                OsString::from("rev-parse"),
+                OsString::from("--short"),
+                OsString::from("HEAD"),
+            ],
+            None,
+        )
+        .await
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+        return Ok(Some(match sha {
+            Some(s) => format!("detached@{s}"),
+            None => "detached".to_string(),
+        }));
+    }
+
+    Ok(Some(branch))
+}
+
 pub(crate) fn repo_prefix(repo_root: &Path, workdir: &Path) -> Option<PathBuf> {
     let rel = workdir.strip_prefix(repo_root).ok()?;
     if rel.as_os_str().is_empty() {

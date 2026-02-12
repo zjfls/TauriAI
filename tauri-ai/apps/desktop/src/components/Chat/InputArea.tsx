@@ -5,7 +5,7 @@
  */
 
 import React, { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo } from 'react';
-import { Send, Square, Bot, Cpu, ChevronDown, Check, ImagePlus, Paperclip, FileText, Plug, File as FileIcon, Copy } from 'lucide-react';
+import { Send, Square, Bot, Cpu, ChevronDown, Check, ImagePlus, Paperclip, FileText, Plug, File as FileIcon, Copy, GitBranch } from 'lucide-react';
 import { ContextUsageIndicator } from './ContextUsageIndicator';
 import { McpModal } from './McpModal';
 import { AttachmentPreview } from './AttachmentPreview';
@@ -939,6 +939,50 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
 
   const content = controlledValue ?? contentDraft;
   const workspaceRoots = useMemo(() => buildWorkspaceRoots(workstudio), [workstudio]);
+  const gitWorkdir = useMemo(() => (workstudio?.mainFolder ?? '').trim(), [workstudio?.mainFolder]);
+  const [gitBranch, setGitBranch] = useState<string | null>(null);
+  const gitBranchFetchSeqRef = useRef(0);
+
+  const refreshGitBranch = useCallback(async () => {
+    const workdir = gitWorkdir;
+    gitBranchFetchSeqRef.current += 1;
+    const seq = gitBranchFetchSeqRef.current;
+
+    if (!isTauri() || !workdir) {
+      setGitBranch(null);
+      return;
+    }
+
+    try {
+      const branch = await invoke<string | null>('git_get_current_branch', { workdir });
+      if (gitBranchFetchSeqRef.current !== seq) return;
+      const normalized = typeof branch === 'string' && branch.trim().length > 0 ? branch.trim() : null;
+      setGitBranch(normalized);
+    } catch {
+      if (gitBranchFetchSeqRef.current !== seq) return;
+      setGitBranch(null);
+    }
+  }, [gitWorkdir]);
+
+  useEffect(() => {
+    void refreshGitBranch();
+  }, [refreshGitBranch]);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    if (!gitWorkdir) return;
+
+    const onFocus = () => void refreshGitBranch();
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') void refreshGitBranch();
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [gitWorkdir, refreshGitBranch]);
 
   const handleContentChange = useCallback(
     (value: string) => {
@@ -3056,6 +3100,20 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
           cloneConversationShortcutLabel={cloneConversationShortcutLabel}
           disabled={disabled || isGenerating}
         />
+        {gitBranch && (
+          <div
+            className={[
+              'ml-auto inline-flex items-center gap-1.5 px-2 py-1 rounded-md border',
+              'border-gray-200 dark:border-gray-700',
+              'bg-gray-50 dark:bg-gray-900',
+              'text-gray-700 dark:text-gray-200',
+            ].join(' ')}
+            title={gitWorkdir ? `Git branch（${gitWorkdir}）：${gitBranch}` : `Git branch：${gitBranch}`}
+          >
+            <GitBranch size={12} className="text-gray-500 dark:text-gray-400" />
+            <span className="max-w-52 truncate font-mono text-[11px]">{gitBranch}</span>
+          </div>
+        )}
       </div>
 
       {/* MCP modal */}

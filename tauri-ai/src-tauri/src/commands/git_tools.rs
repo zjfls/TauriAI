@@ -8,6 +8,7 @@ use crate::git_tools::{
     git_diff_between_commits, git_diff_name_status_between_commits,
     git_diff_numstat_between_commits, git_restore_worktree_from_commit_with_worktree, GitDiffOptions,
     create_ghost_commit_for_paths_with_worktree,
+    git_current_branch,
 };
 
 #[derive(Debug, Deserialize)]
@@ -369,4 +370,22 @@ pub async fn undo_apply_patch(args: UndoApplyPatchArgs) -> Result<bool, String> 
     }
 
     Ok(true)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitGetCurrentBranchArgs {
+    pub workdir: String,
+}
+
+/// Get current git branch name for a given workdir.
+/// - Returns `None` when the workdir is not a git work tree (or git is unavailable).
+/// - For detached HEAD, returns `detached@<shortsha>`.
+#[tauri::command]
+pub async fn git_get_current_branch(args: GitGetCurrentBranchArgs) -> Result<Option<String>, String> {
+    let workdir = args.workdir.trim();
+    if workdir.is_empty() {
+        return Ok(None);
+    }
+    git_current_branch(&PathBuf::from(workdir)).await
 }
