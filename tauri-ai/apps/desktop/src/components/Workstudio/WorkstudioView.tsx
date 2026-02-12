@@ -428,7 +428,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const navHistoryRef = useRef<Map<string, PaneNavHistory>>(new Map());
   const lastNavLocationRef = useRef<Map<string, NavLocation>>(new Map());
   const pendingNavRecordRef = useRef<Map<string, NavLocation>>(new Map());
-  const suppressNavRecordRef = useRef(false);
+  const suppressNavRecordDepthRef = useRef(0);
   const [navEpoch, setNavEpoch] = useState(0);
 
   const [navToast, setNavToast] = useState<string | null>(null);
@@ -837,7 +837,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           : (state.panes[0]?.id ?? fallbackPaneIdRef.current);
 
       const prevLocation =
-        !suppressNavRecordRef.current && targetPaneId
+        suppressNavRecordDepthRef.current === 0 && targetPaneId
           ? getCurrentNavLocationForPane(targetPaneId)
           : null;
       const targetLocation: NavLocation = { tabId: normalizedPath };
@@ -1112,7 +1112,8 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     dbg('openLinkTarget:resolved', { seq, resolved, isAbs, mainFolder: ws?.mainFolder ?? null });
 
     // 仅在“同一文件内跳转到指定行”时记录历史（跨文件跳转由 openFileAtPath 记录，避免重复入栈）。
-    const prevLocationForHistory = !suppressNavRecordRef.current ? getCurrentNavLocationForPane(paneId) : null;
+    const prevLocationForHistory =
+      suppressNavRecordDepthRef.current === 0 ? getCurrentNavLocationForPane(paneId) : null;
     const targetLocationForHistory: NavLocation = {
       tabId: resolved,
       line: typeof target.line === 'number' ? target.line : null,
@@ -1482,12 +1483,13 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
     setNavEpoch((v) => v + 1);
 
-    const prevSuppressed = suppressNavRecordRef.current;
-    suppressNavRecordRef.current = true;
+    suppressNavRecordDepthRef.current += 1;
     try {
       await navigateToLocation(target, { paneId });
     } finally {
-      suppressNavRecordRef.current = prevSuppressed;
+      window.setTimeout(() => {
+        suppressNavRecordDepthRef.current = Math.max(0, suppressNavRecordDepthRef.current - 1);
+      }, 120);
     }
   }, [getCurrentNavLocationForPane, isSameNavLocation, navigateToLocation, resolvedFocusedPaneId, showNavToast]);
 
@@ -1519,12 +1521,13 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
     setNavEpoch((v) => v + 1);
 
-    const prevSuppressed = suppressNavRecordRef.current;
-    suppressNavRecordRef.current = true;
+    suppressNavRecordDepthRef.current += 1;
     try {
       await navigateToLocation(target, { paneId });
     } finally {
-      suppressNavRecordRef.current = prevSuppressed;
+      window.setTimeout(() => {
+        suppressNavRecordDepthRef.current = Math.max(0, suppressNavRecordDepthRef.current - 1);
+      }, 120);
     }
   }, [getCurrentNavLocationForPane, isSameNavLocation, navigateToLocation, resolvedFocusedPaneId, showNavToast]);
 
@@ -1548,7 +1551,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       // 菜单触发时 editor 可能暂时失焦；主动聚焦可提升稳定性。
       editor.focus();
 
-      if (recordNavBeforeRun && !suppressNavRecordRef.current) {
+      if (recordNavBeforeRun && suppressNavRecordDepthRef.current === 0) {
         const prev = getCurrentNavLocationForPane(paneId);
         if (prev) {
           pendingNavRecordRef.current.set(paneId, prev);
@@ -1598,7 +1601,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   );
 
   const activateTabInPane = useCallback((paneId: string, tabId: string) => {
-    const prevLocation = !suppressNavRecordRef.current ? getCurrentNavLocationForPane(paneId) : null;
+    const prevLocation = suppressNavRecordDepthRef.current === 0 ? getCurrentNavLocationForPane(paneId) : null;
     const targetLocation: NavLocation = { tabId };
     const shouldRecord = Boolean(prevLocation && isMeaningfulNavTransition(prevLocation, targetLocation));
 
@@ -1963,7 +1966,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           const prev = lastNavLocationRef.current.get(paneId) ?? next;
           lastNavLocationRef.current.set(paneId, next);
 
-          if (suppressNavRecordRef.current) return;
+          if (suppressNavRecordDepthRef.current > 0) return;
 
           const pendingPrev = pendingNavRecordRef.current.get(paneId) ?? null;
           if (pendingPrev) {
