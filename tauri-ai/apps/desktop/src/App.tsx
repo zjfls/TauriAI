@@ -146,7 +146,10 @@ function App() {
    * Initialize keyboard shortcuts for session management
    * Requirements: 9.1, 9.2, 9.3, 9.4, 9.5
    */
-  useKeyboardShortcuts({ enabled: shouldInitChatRuntime });
+  useKeyboardShortcuts({
+    enabled: !isDragGhostWindow,
+    scope: isWorkstudioWindow ? 'workstudio' : 'all',
+  });
 
   // ---------------------------------------------------------------------------
   // 窗口/分屏持久化（跨重启）
