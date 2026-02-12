@@ -954,7 +954,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
     }
 
     try {
-      const branch = await invoke<string | null>('git_get_current_branch', { workdir });
+      const branch = await invoke<string | null>('git_get_current_branch', { args: { workdir } });
       if (gitBranchFetchSeqRef.current !== seq) return;
       const normalized = typeof branch === 'string' && branch.trim().length > 0 ? branch.trim() : null;
       setGitBranch(normalized);
