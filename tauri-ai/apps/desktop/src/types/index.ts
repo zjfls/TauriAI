@@ -485,6 +485,8 @@ export interface ToolCallMessageBlock extends BaseMessageBlock {
   callId: string;
   name: string;
   arguments: string;
+  /** 可选：工具产生的结构化 meta（用于 diff/undo 等 UI 能力） */
+  meta?: unknown;
 }
 
 export interface ToolResultMessageBlock extends BaseMessageBlock {

@@ -507,6 +507,7 @@ async fn exec_command_with_scope(
             "exit_code": exit_code
         })
         .to_string(),
+        meta: None,
     })
 }
 
@@ -594,6 +595,7 @@ async fn write_stdin_with_scope(
             "exit_code": exit_code
         })
         .to_string(),
+        meta: None,
     })
 }
 

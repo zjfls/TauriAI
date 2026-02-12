@@ -15,6 +15,8 @@ mod devtools;
 mod drag_ghost;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod file;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+mod git_tools;
 mod mcp;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod mermaid_cache;
@@ -60,6 +62,8 @@ pub use drag_ghost::{
 };
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use file::{list_local_directory, read_local_file_base64, write_local_text_file};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub use git_tools::{git_diff_commits, git_diff_ghost_worktree, undo_apply_patch};
 pub use mcp::{
     delete_mcp_server, delete_mcp_set, list_mcp_server_resources, list_mcp_server_tools,
     list_mcp_servers, list_mcp_sets, set_agent_mcp_set, test_mcp_server, upsert_mcp_server,

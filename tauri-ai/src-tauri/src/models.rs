@@ -250,6 +250,8 @@ pub enum MessageBlock {
         call_id: String,
         name: String,
         arguments: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        meta: Option<serde_json::Value>,
     },
     #[serde(rename_all = "camelCase")]
     ToolResult {

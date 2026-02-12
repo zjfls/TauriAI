@@ -54,6 +54,7 @@ impl ToolHandler for EchoTool {
         });
         Ok(ToolCallResult {
             content: text.to_string(),
+            meta: None,
         })
     }
 }
@@ -95,6 +96,6 @@ impl ToolHandler for GetTimeTool {
             format: Some("plain".to_string()),
             delta: content.clone(),
         });
-        Ok(ToolCallResult { content })
+        Ok(ToolCallResult { content, meta: None })
     }
 }

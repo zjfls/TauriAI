@@ -90,7 +90,10 @@ impl ToolHandler for WebSearchTool {
 
         let pretty = serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string());
         emit_web_search_block(ctx, call.id.as_str(), "done", Some(&result));
-        Ok(ToolCallResult { content: pretty })
+        Ok(ToolCallResult {
+            content: pretty,
+            meta: None,
+        })
     }
 }
 

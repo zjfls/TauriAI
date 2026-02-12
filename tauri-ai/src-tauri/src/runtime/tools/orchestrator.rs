@@ -179,7 +179,10 @@ impl ToolOrchestrator {
 
             let combined = format!("{}{}", notice, out.content);
             return Ok(match mode {
-                ApplyPatchInterceptMode::PlainText => ToolCallResult { content: combined },
+                ApplyPatchInterceptMode::PlainText => ToolCallResult {
+                    content: combined,
+                    meta: None,
+                },
                 ApplyPatchInterceptMode::ExecCommandJson => ToolCallResult {
                     content: serde_json::json!({
                         "session_id": Value::Null,
@@ -189,6 +192,7 @@ impl ToolOrchestrator {
                         "exit_code": 0
                     })
                     .to_string(),
+                    meta: None,
                 },
             });
         }

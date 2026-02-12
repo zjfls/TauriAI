@@ -2805,7 +2805,8 @@ const flushPendingStreamChunks = () => {
               const callId = typeof v.id === 'string' ? v.id : extractSuffixId('tool_call:', blockId);
               const name = typeof v.name === 'string' ? v.name : '';
               const args = typeof v.arguments === 'string' ? v.arguments : '';
-              return { id: blockId, type: 'tool_call', callId, name, arguments: args, turnId, turnIndex };
+              const meta = (v as any).meta;
+              return { id: blockId, type: 'tool_call', callId, name, arguments: args, meta, turnId, turnIndex };
             }
           }
           if (blockType === 'approval') {

@@ -6,6 +6,7 @@ pub mod bundled_tools;
 pub mod commands;
 pub mod config;
 pub mod errors;
+pub mod git_tools;
 pub mod mentions;
 pub mod models;
 pub mod prompts;
@@ -735,6 +736,10 @@ fn run_desktop() {
             create_skill,
             // Prompt commands
             get_format_prompt,
+            // Git tools (diff/undo for apply_patch)
+            git_diff_commits,
+            git_diff_ghost_worktree,
+            undo_apply_patch,
             // Mermaid SVG cache (disk)
             get_mermaid_svg_cache,
             set_mermaid_svg_cache,
