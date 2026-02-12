@@ -129,6 +129,8 @@ function fnv1a32Hex(input: string): string {
 function toErrorMessage(err: unknown): string {
   if (typeof err === 'string') return err;
   if (err && typeof err === 'object') {
+    const maybeError = (err as { error?: unknown }).error;
+    if (typeof maybeError === 'string' && maybeError.trim()) return maybeError.trim();
     const maybe = (err as { message?: unknown }).message;
     if (typeof maybe === 'string' && maybe.trim()) return maybe.trim();
   }
@@ -138,6 +140,51 @@ function toErrorMessage(err: unknown): string {
   } catch {
     return String(err);
   }
+}
+
+function summarizeGitError(raw: string, workdir?: string): string {
+  const s = raw.trim();
+  if (!s) return '未知错误';
+
+  const lower = s.toLowerCase();
+
+  if (
+    s.includes('Your local changes to the following files would be overwritten by checkout') ||
+    s.includes('would be overwritten by checkout') ||
+    s.includes('Please commit your changes or stash them before you switch branches')
+  ) {
+    return '工作区存在未提交修改，切换分支会覆盖它们。请先提交/暂存，或执行 git stash 后再切换。';
+  }
+
+  if (s.includes('The following untracked working tree files would be overwritten by checkout')) {
+    return '工作区存在未跟踪文件会被覆盖。请先移动/删除这些文件，或将其加入 Git 后再切换。';
+  }
+
+  if (lower.includes('pathspec') && lower.includes('did not match any file(s) known to git')) {
+    return '分支不存在（本地）或名称错误。';
+  }
+
+  if (lower.includes('not a git repository')) {
+    return '当前目录不是 Git 仓库。';
+  }
+
+  if (lower.includes('detected dubious ownership in repository')) {
+    const suffix = workdir ? `\n\n可尝试：git config --global --add safe.directory "${workdir}"` : '';
+    return `Git 安全策略阻止访问（dubious ownership，需要配置 safe.directory）。${suffix}`;
+  }
+
+  if (lower.includes('index.lock') && lower.includes('file exists')) {
+    return 'Git 被其他进程占用（index.lock）。请关闭占用 Git 的进程，或确认无 git 操作后删除锁文件再重试。';
+  }
+
+  if (
+    (lower.includes('a branch named') && lower.includes('already exists')) ||
+    (lower.includes('branch') && lower.includes('already exists'))
+  ) {
+    return '分支已存在。';
+  }
+
+  return s;
 }
 
 type WorkspaceRoot = { key: string; name: string; absPath: string };
@@ -963,6 +1010,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   const [gitBranchesError, setGitBranchesError] = useState<string | null>(null);
   const [isGitBranchesLoading, setIsGitBranchesLoading] = useState(false);
   const [isGitCheckingOut, setIsGitCheckingOut] = useState(false);
+  const [gitCheckoutError, setGitCheckoutError] = useState<string | null>(null);
   const gitBranchesFetchSeqRef = useRef(0);
 
   const refreshGitBranch = useCallback(async () => {
@@ -1047,20 +1095,23 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
       if (!isTauri() || !workdir) return;
 
       setIsGitCheckingOut(true);
+      setGitCheckoutError(null);
       try {
         await invoke<string | null>('git_checkout_branch', { args: { workdir, branch } });
         setIsGitBranchMenuOpen(false);
         await refreshGitBranch();
         void refreshGitBranches();
       } catch (err) {
-        const msg = toErrorMessage(err);
+        const raw = toErrorMessage(err);
+        const summary = summarizeGitError(raw, workdir);
+        setGitCheckoutError(summary);
         try {
-          await showMessageDialog(`切换到分支「${branch}」失败：\n\n${msg}`, {
+          await showMessageDialog(`切换到分支「${branch}」失败。\n\n${summary}\n\n详细信息：\n${raw}`, {
             title: '切换分支失败',
             kind: 'error',
           });
         } catch {
-          window.alert(`切换到分支「${branch}」失败：\n\n${msg}`);
+          window.alert(`切换到分支「${branch}」失败。\n\n${summary}\n\n详细信息：\n${raw}`);
         }
       } finally {
         setIsGitCheckingOut(false);
@@ -1079,20 +1130,23 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
     if (!branch) return;
 
     setIsGitCheckingOut(true);
+    setGitCheckoutError(null);
     try {
       await invoke<string | null>('git_create_and_checkout_branch', { args: { workdir, branch } });
       setIsGitBranchMenuOpen(false);
       await refreshGitBranch();
       void refreshGitBranches();
     } catch (err) {
-      const msg = toErrorMessage(err);
+      const raw = toErrorMessage(err);
+      const summary = summarizeGitError(raw, workdir);
+      setGitCheckoutError(summary);
       try {
-        await showMessageDialog(`创建并切换到分支「${branch}」失败：\n\n${msg}`, {
+        await showMessageDialog(`创建并切换到分支「${branch}」失败。\n\n${summary}\n\n详细信息：\n${raw}`, {
           title: '切换分支失败',
           kind: 'error',
         });
       } catch {
-        window.alert(`创建并切换到分支「${branch}」失败：\n\n${msg}`);
+        window.alert(`创建并切换到分支「${branch}」失败。\n\n${summary}\n\n详细信息：\n${raw}`);
       }
     } finally {
       setIsGitCheckingOut(false);
@@ -1115,6 +1169,11 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
     void refreshGitBranch();
     void refreshGitBranches();
   }, [isGitBranchMenuOpen, refreshGitBranch, refreshGitBranches]);
+
+  useEffect(() => {
+    if (!isGitBranchMenuOpen) return;
+    setGitCheckoutError(null);
+  }, [isGitBranchMenuOpen]);
 
   useEffect(() => {
     if (!isGitBranchMenuOpen) return;
@@ -3281,6 +3340,12 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
                 <div className="px-3 pb-2 text-[11px] font-medium text-gray-500 dark:text-gray-400">
                   Checkout branch
                 </div>
+
+                {gitCheckoutError ? (
+                  <div className="mx-3 mb-2 rounded-md border border-red-200 bg-red-50 px-2 py-1.5 text-xs text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-200 whitespace-pre-wrap">
+                    {gitCheckoutError}
+                  </div>
+                ) : null}
 
                 <div className="max-h-72 overflow-auto">
                   {isGitBranchesLoading ? (
