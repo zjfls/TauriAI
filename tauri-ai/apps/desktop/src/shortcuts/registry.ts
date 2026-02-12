@@ -129,6 +129,27 @@ export const SHORTCUT_ACTIONS: ShortcutActionDefinition[] = [
     allowWhenTyping: true,
   },
   {
+    id: 'workstudio.navigateBack',
+    title: '后退（Workstudio）',
+    description: '返回到上一个浏览位置（文件/行号）',
+    category: 'Workstudio',
+    // VS Code-like defaults:
+    // - macOS: Ctrl+-（避免占用 Cmd+[ / Cmd+]，与编辑器缩进常用快捷键冲突）
+    // - Windows: Alt+Left
+    defaultMac: 'Ctrl+-',
+    defaultWindows: 'Alt+Left',
+    allowWhenTyping: true,
+  },
+  {
+    id: 'workstudio.navigateForward',
+    title: '前进（Workstudio）',
+    description: '前进到下一个浏览位置（文件/行号）',
+    category: 'Workstudio',
+    defaultMac: 'Ctrl+Shift+-',
+    defaultWindows: 'Alt+Right',
+    allowWhenTyping: true,
+  },
+  {
     id: 'document.save',
     title: '保存文档',
     description: '保存当前文档（若未选择路径会弹出保存对话框）',
@@ -168,3 +189,4 @@ export const DEFAULT_SHORTCUTS_WINDOWS: Record<KeyboardShortcutActionId, string>
 export const getDefaultShortcut = (platform: ShortcutPlatform, actionId: KeyboardShortcutActionId): string => {
   return platform === 'mac' ? DEFAULT_SHORTCUTS_MAC[actionId] : DEFAULT_SHORTCUTS_WINDOWS[actionId];
 };
+

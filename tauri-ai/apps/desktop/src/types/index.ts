@@ -966,6 +966,8 @@ export type KeyboardShortcutActionId =
   | 'session.next'
   | 'session.previous'
   | 'workstudio.fileSearch'
+  | 'workstudio.navigateBack'
+  | 'workstudio.navigateForward'
   | 'chat.abortGeneration'
   | 'chat.openWorkstudio'
   | 'chat.toggleOutline'

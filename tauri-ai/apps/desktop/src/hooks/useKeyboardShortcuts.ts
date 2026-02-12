@@ -341,6 +341,12 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
           dispatchShortcutEvent(actionId);
           return true;
         }
+        case 'workstudio.navigateBack':
+        case 'workstudio.navigateForward': {
+          if (useUIStore.getState().activeView !== 'workstudio') return false;
+          dispatchShortcutEvent(actionId);
+          return true;
+        }
         case 'document.save': {
           if (useUIStore.getState().activeView !== 'document') return false;
           dispatchShortcutEvent(actionId);
@@ -406,6 +412,9 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
         case 'app.openDevtools':
           return isTauri();
         case 'workstudio.fileSearch':
+          return useUIStore.getState().activeView === 'workstudio';
+        case 'workstudio.navigateBack':
+        case 'workstudio.navigateForward':
           return useUIStore.getState().activeView === 'workstudio';
         case 'document.save':
           return useUIStore.getState().activeView === 'document';

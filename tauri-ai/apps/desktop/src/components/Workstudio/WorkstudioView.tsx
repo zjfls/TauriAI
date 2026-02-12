@@ -20,6 +20,8 @@ import {
 import { SortableContext, useSortable, horizontalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import {
+  ArrowLeft,
+  ArrowRight,
   ChevronDown,
   ChevronRight,
   FileText,
@@ -56,6 +58,17 @@ type OpenFile = {
   dirty?: boolean;
   dataUrl?: string; // for image preview
   base64?: string;  // raw bytes (for binary/pdf preview or external open)
+};
+
+type NavLocation = {
+  tabId: string;
+  line?: number | null;
+  column?: number | null;
+};
+
+type PaneNavHistory = {
+  back: NavLocation[];
+  forward: NavLocation[];
 };
 
 const paneDropId = (paneId: string) => `pane:${paneId}`;
@@ -357,6 +370,34 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     const raw = userRaw ?? (shortcutPlatform === 'mac' ? def?.defaultMac : def?.defaultWindows) ?? (shortcutPlatform === 'mac' ? 'Cmd+P' : 'Ctrl+P');
     return normalizeKeybindingString(String(raw || ''), shortcutPlatform) ?? (shortcutPlatform === 'mac' ? 'Cmd+P' : 'Ctrl+P');
   }, [keyboardShortcuts, shortcutPlatform]);
+  const navigateBackShortcutLabel = useMemo(() => {
+    const def = SHORTCUT_ACTIONS.find((a) => a.id === 'workstudio.navigateBack');
+    const userRaw =
+      shortcutPlatform === 'mac'
+        ? keyboardShortcuts?.mac?.['workstudio.navigateBack']
+        : keyboardShortcuts?.windows?.['workstudio.navigateBack'];
+    const raw = userRaw ?? (shortcutPlatform === 'mac' ? def?.defaultMac : def?.defaultWindows) ?? (shortcutPlatform === 'mac' ? 'Ctrl+-' : 'Alt+Left');
+    return normalizeKeybindingString(String(raw || ''), shortcutPlatform) ?? (shortcutPlatform === 'mac' ? 'Ctrl+-' : 'Alt+Left');
+  }, [keyboardShortcuts, shortcutPlatform]);
+  const navigateForwardShortcutLabel = useMemo(() => {
+    const def = SHORTCUT_ACTIONS.find((a) => a.id === 'workstudio.navigateForward');
+    const userRaw =
+      shortcutPlatform === 'mac'
+        ? keyboardShortcuts?.mac?.['workstudio.navigateForward']
+        : keyboardShortcuts?.windows?.['workstudio.navigateForward'];
+    const raw = userRaw ?? (shortcutPlatform === 'mac' ? def?.defaultMac : def?.defaultWindows) ?? (shortcutPlatform === 'mac' ? 'Ctrl+Shift+-' : 'Alt+Right');
+    return normalizeKeybindingString(String(raw || ''), shortcutPlatform) ?? (shortcutPlatform === 'mac' ? 'Ctrl+Shift+-' : 'Alt+Right');
+  }, [keyboardShortcuts, shortcutPlatform]);
+
+  const navHistoryRef = useRef<Map<string, PaneNavHistory>>(new Map());
+  const suppressNavRecordRef = useRef(false);
+  const [navEpoch, setNavEpoch] = useState(0);
+
+  useEffect(() => {
+    // 切换 Workstudio 时清空浏览历史，避免跨项目串联。
+    navHistoryRef.current.clear();
+    setNavEpoch((v) => v + 1);
+  }, [workstudioId]);
 
   const [ws, setWs] = useState<Workstudio | null>(null);
   const [wsError, setWsError] = useState<string | null>(null);
@@ -553,6 +594,16 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         editorByPaneRef.current.delete(key);
       }
     }
+    let navChanged = false;
+    for (const key of navHistoryRef.current.keys()) {
+      if (!alivePaneIds.has(key)) {
+        navHistoryRef.current.delete(key);
+        navChanged = true;
+      }
+    }
+    if (navChanged) {
+      setNavEpoch((v) => v + 1);
+    }
 
     let raf2: number | null = null;
     const raf1 = window.requestAnimationFrame(() => {
@@ -644,6 +695,68 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     [entriesByDir, listDir]
   );
 
+  const getPaneNavHistory = useCallback((paneId: string): PaneNavHistory => {
+    const existing = navHistoryRef.current.get(paneId);
+    if (existing) return existing;
+    const next: PaneNavHistory = { back: [], forward: [] };
+    navHistoryRef.current.set(paneId, next);
+    return next;
+  }, [navHistoryRef]);
+
+  const isSameNavLocation = useCallback((a: NavLocation, b: NavLocation): boolean => {
+    return (
+      a.tabId === b.tabId &&
+      (a.line ?? null) === (b.line ?? null) &&
+      (a.column ?? null) === (b.column ?? null)
+    );
+  }, []);
+
+  const isMeaningfulNavTransition = useCallback((from: NavLocation, to: NavLocation): boolean => {
+    if (from.tabId !== to.tabId) return true;
+    const toLine = typeof to.line === 'number' ? to.line : null;
+    const toColumn = typeof to.column === 'number' ? to.column : null;
+    if (toLine === null) return false;
+    const fromLine = typeof from.line === 'number' ? from.line : null;
+    const fromColumn = typeof from.column === 'number' ? from.column : null;
+    if (fromLine !== toLine) return true;
+    if (toColumn !== null && fromColumn !== toColumn) return true;
+    return false;
+  }, []);
+
+  const getCurrentNavLocationForPane = useCallback((paneId: string): NavLocation | null => {
+    const state = useWindowLayoutStore.getState();
+    const pane = state.panes.find((p) => p.id === paneId) ?? null;
+    if (!pane) return null;
+    const activeId =
+      pane.activeTabId && pane.tabIds.includes(pane.activeTabId)
+        ? pane.activeTabId
+        : pane.tabIds[0] ?? null;
+    if (!activeId) return null;
+
+    const editor = editorByPaneRef.current.get(paneId) ?? null;
+    if (!editor) return { tabId: activeId };
+    try {
+      const pos = editor.getPosition();
+      if (!pos) return { tabId: activeId };
+      return { tabId: activeId, line: pos.lineNumber, column: pos.column };
+    } catch {
+      return { tabId: activeId };
+    }
+  }, [editorByPaneRef]);
+
+  const commitNavBackEntry = useCallback((paneId: string, prev: NavLocation) => {
+    const history = getPaneNavHistory(paneId);
+    const last = history.back[history.back.length - 1] ?? null;
+    if (!last || !isSameNavLocation(last, prev)) {
+      history.back.push(prev);
+      const max = 200;
+      if (history.back.length > max) history.back.splice(0, history.back.length - max);
+    }
+    // 正常导航会清空 forward 栈（浏览器/编辑器通用约定）
+    if (history.forward.length > 0) history.forward = [];
+    setNavEpoch((v) => v + 1);
+  }, [getPaneNavHistory, isSameNavLocation]);
+
   const openFileAtPath = useCallback(
     async (path: string, opts?: { paneId?: string | null }): Promise<string | null> => {
       const normalizedPath = normalizeFsPath(path);
@@ -656,6 +769,13 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           ? requestedPaneId
           : (state.panes[0]?.id ?? fallbackPaneIdRef.current);
 
+      const prevLocation =
+        !suppressNavRecordRef.current && targetPaneId
+          ? getCurrentNavLocationForPane(targetPaneId)
+          : null;
+      const targetLocation: NavLocation = { tabId: normalizedPath };
+      const shouldRecord = Boolean(prevLocation && isMeaningfulNavTransition(prevLocation, targetLocation));
+
       if (targetPaneId) {
         state.setFocusedPane(targetPaneId);
       }
@@ -663,6 +783,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       const existing = openFilesRef.current.find((f) => f.id === normalizedPath);
       if (existing) {
         state.openTabInFocusedPane(existing.id);
+        if (shouldRecord && prevLocation) commitNavBackEntry(targetPaneId, prevLocation);
         return existing.id;
       }
 
@@ -670,6 +791,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         // 如果同一路径正在打开中，也要确保它成为当前 Pane 的 active，
         // 否则“跳转到行”逻辑可能因为 activeTabId 还没切换而一直失败。
         state.openTabInFocusedPane(normalizedPath);
+        if (shouldRecord && prevLocation) commitNavBackEntry(targetPaneId, prevLocation);
         return normalizedPath;
       }
       openingPathsRef.current.add(normalizedPath);
@@ -696,6 +818,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         };
         setOpenFiles((prev) => (prev.some((f) => f.id === id) ? prev : [...prev, next]));
         state.openTabInFocusedPane(id);
+        if (shouldRecord && prevLocation) commitNavBackEntry(targetPaneId, prevLocation);
         return id;
       } finally {
         openingPathsRef.current.delete(normalizedPath);
@@ -921,6 +1044,19 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
     dbg('openLinkTarget:resolved', { seq, resolved, isAbs, mainFolder: ws?.mainFolder ?? null });
 
+    // 仅在“同一文件内跳转到指定行”时记录历史（跨文件跳转由 openFileAtPath 记录，避免重复入栈）。
+    const prevLocationForHistory = !suppressNavRecordRef.current ? getCurrentNavLocationForPane(paneId) : null;
+    const targetLocationForHistory: NavLocation = {
+      tabId: resolved,
+      line: typeof target.line === 'number' ? target.line : null,
+      column: typeof target.column === 'number' ? target.column : null,
+    };
+    const shouldRecordSameFileJump = Boolean(
+      prevLocationForHistory &&
+        prevLocationForHistory.tabId === targetLocationForHistory.tabId &&
+        isMeaningfulNavTransition(prevLocationForHistory, targetLocationForHistory)
+    );
+
     const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
 
     const applySelection = (openedFileId: string | null, expectedPath: string): boolean => {
@@ -1129,6 +1265,9 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     try {
       const openedId = await openFileAtPath(resolved, { paneId });
       dbg('openLinkTarget:file_opened', { seq, openedId, resolved, paneId });
+      if (openLinkSeqRef.current === seq && shouldRecordSameFileJump && prevLocationForHistory) {
+        commitNavBackEntry(paneId, prevLocationForHistory);
+      }
       void revealFileInExplorer(resolved, seq);
       await applyWithWait(openedId, resolved);
       dbg('openLinkTarget:done', { seq, openedId, resolved, paneId });
@@ -1178,6 +1317,152 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       }
     }
   }, [dbg, openFileAtPath, revealFileInExplorer, uiStateRestored, workstudioId, ws]);
+
+  const canNavigateBack = useMemo(() => {
+    const paneId = resolvedFocusedPaneId;
+    if (!paneId) return false;
+    const history = navHistoryRef.current.get(paneId) ?? null;
+    return Boolean(history && history.back.length > 0);
+  }, [navEpoch, navHistoryRef, resolvedFocusedPaneId]);
+
+  const canNavigateForward = useMemo(() => {
+    const paneId = resolvedFocusedPaneId;
+    if (!paneId) return false;
+    const history = navHistoryRef.current.get(paneId) ?? null;
+    return Boolean(history && history.forward.length > 0);
+  }, [navEpoch, navHistoryRef, resolvedFocusedPaneId]);
+
+  const navigateToLocation = useCallback(async (location: NavLocation, opts?: { paneId?: string | null }) => {
+    const state = useWindowLayoutStore.getState();
+    const paneIdFromCaller = opts?.paneId ?? state.focusedPaneId;
+    const paneId =
+      paneIdFromCaller && state.panes.some((p) => p.id === paneIdFromCaller)
+        ? paneIdFromCaller
+        : (state.panes[0]?.id ?? fallbackPaneIdRef.current);
+
+    const tabId = (location.tabId ?? '').trim();
+    if (!tabId) return;
+
+    if (isUntitledPath(tabId)) {
+      // 仅在“未保存文档”场景下使用：best-effort 激活 tab 并恢复光标。
+      state.setFocusedPane(paneId);
+      state.openTabInFocusedPane(tabId);
+
+      const rawLine = typeof location.line === 'number' ? location.line : null;
+      if (rawLine && rawLine > 0) {
+        const startAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        const timeoutMs = 800;
+        while (true) {
+          const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+          if (now - startAt > timeoutMs) break;
+          const editor = editorByPaneRef.current.get(paneId) ?? null;
+          if (!editor) {
+            // eslint-disable-next-line no-await-in-loop
+            await new Promise<void>((resolve) => window.setTimeout(resolve, 20));
+            continue;
+          }
+          try {
+            const model = editor.getModel();
+            if (!model) break;
+            const lineNumber = Math.max(1, Math.min(rawLine, model.getLineCount()));
+            const column = typeof location.column === 'number' ? location.column : 1;
+            editor.setPosition({ lineNumber, column });
+            editor.revealLineInCenter(lineNumber);
+            break;
+          } catch {
+            break;
+          }
+        }
+      }
+      return;
+    }
+
+    await openLinkTarget(
+      {
+        filePath: tabId,
+        line: typeof location.line === 'number' ? location.line : null,
+        column: typeof location.column === 'number' ? location.column : null,
+      },
+      { paneId }
+    );
+  }, [openLinkTarget]);
+
+  const navigateBack = useCallback(async () => {
+    const state = useWindowLayoutStore.getState();
+    const paneId =
+      (state.focusedPaneId && state.panes.some((p) => p.id === state.focusedPaneId) ? state.focusedPaneId : null) ??
+      resolvedFocusedPaneId ??
+      (state.panes[0]?.id ?? fallbackPaneIdRef.current);
+    if (!paneId) return;
+
+    const history = navHistoryRef.current.get(paneId) ?? null;
+    if (!history || history.back.length === 0) return;
+
+    const current = getCurrentNavLocationForPane(paneId);
+    const target = history.back.pop()!;
+
+    if (current) {
+      const last = history.forward[history.forward.length - 1] ?? null;
+      if (!last || !isSameNavLocation(last, current)) {
+        history.forward.push(current);
+        const max = 200;
+        if (history.forward.length > max) history.forward.splice(0, history.forward.length - max);
+      }
+    }
+
+    setNavEpoch((v) => v + 1);
+
+    const prevSuppressed = suppressNavRecordRef.current;
+    suppressNavRecordRef.current = true;
+    try {
+      await navigateToLocation(target, { paneId });
+    } finally {
+      suppressNavRecordRef.current = prevSuppressed;
+    }
+  }, [getCurrentNavLocationForPane, isSameNavLocation, navigateToLocation, resolvedFocusedPaneId]);
+
+  const navigateForward = useCallback(async () => {
+    const state = useWindowLayoutStore.getState();
+    const paneId =
+      (state.focusedPaneId && state.panes.some((p) => p.id === state.focusedPaneId) ? state.focusedPaneId : null) ??
+      resolvedFocusedPaneId ??
+      (state.panes[0]?.id ?? fallbackPaneIdRef.current);
+    if (!paneId) return;
+
+    const history = navHistoryRef.current.get(paneId) ?? null;
+    if (!history || history.forward.length === 0) return;
+
+    const current = getCurrentNavLocationForPane(paneId);
+    const target = history.forward.pop()!;
+
+    if (current) {
+      const last = history.back[history.back.length - 1] ?? null;
+      if (!last || !isSameNavLocation(last, current)) {
+        history.back.push(current);
+        const max = 200;
+        if (history.back.length > max) history.back.splice(0, history.back.length - max);
+      }
+    }
+
+    setNavEpoch((v) => v + 1);
+
+    const prevSuppressed = suppressNavRecordRef.current;
+    suppressNavRecordRef.current = true;
+    try {
+      await navigateToLocation(target, { paneId });
+    } finally {
+      suppressNavRecordRef.current = prevSuppressed;
+    }
+  }, [getCurrentNavLocationForPane, isSameNavLocation, navigateToLocation, resolvedFocusedPaneId]);
+
+  const activateTabInPane = useCallback((paneId: string, tabId: string) => {
+    const prevLocation = !suppressNavRecordRef.current ? getCurrentNavLocationForPane(paneId) : null;
+    const targetLocation: NavLocation = { tabId };
+    const shouldRecord = Boolean(prevLocation && isMeaningfulNavTransition(prevLocation, targetLocation));
+
+    setActiveTabInPane(paneId, tabId);
+    if (shouldRecord && prevLocation) commitNavBackEntry(paneId, prevLocation);
+  }, [commitNavBackEntry, getCurrentNavLocationForPane, isMeaningfulNavTransition, setActiveTabInPane]);
 
   // 在 Workstudio UI state 恢复完成后，处理之前暂存的 open_file 请求（只保留最后一次）。
   useEffect(() => {
@@ -1915,13 +2200,23 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   useEffect(() => {
     const onShortcut = (event: Event) => {
       const e = event as CustomEvent<{ action?: string }>;
-      if (e.detail?.action !== 'workstudio.fileSearch') return;
-      setFilePaletteOpen(true);
-      window.setTimeout(() => filePaletteInputRef.current?.focus(), 0);
+      const action = e.detail?.action;
+      if (action === 'workstudio.fileSearch') {
+        setFilePaletteOpen(true);
+        window.setTimeout(() => filePaletteInputRef.current?.focus(), 0);
+        return;
+      }
+      if (action === 'workstudio.navigateBack') {
+        void navigateBack();
+        return;
+      }
+      if (action === 'workstudio.navigateForward') {
+        void navigateForward();
+      }
     };
     window.addEventListener('tauri-ai:shortcut', onShortcut as EventListener);
     return () => window.removeEventListener('tauri-ai:shortcut', onShortcut as EventListener);
-  }, []);
+  }, [navigateBack, navigateForward]);
 
   // Esc: close palette (local behavior)
   useEffect(() => {
@@ -2425,12 +2720,37 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
 	        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
 	          <div className="flex items-center justify-between border-b border-gray-200 bg-white px-3 py-2 dark:border-gray-800 dark:bg-gray-950">
+	            <div className="flex min-w-0 items-center gap-2">
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    disabled={!canNavigateBack}
+                    onClick={() => void navigateBack()}
+                    title={`后退（${navigateBackShortcutLabel}）`}
+                    aria-label="后退"
+                    className="rounded border border-gray-200 p-1 text-gray-600 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-800 dark:text-gray-300 dark:hover:bg-gray-900/40"
+                  >
+                    <ArrowLeft size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!canNavigateForward}
+                    onClick={() => void navigateForward()}
+                    title={`前进（${navigateForwardShortcutLabel}）`}
+                    aria-label="前进"
+                    className="rounded border border-gray-200 p-1 text-gray-600 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-800 dark:text-gray-300 dark:hover:bg-gray-900/40"
+                  >
+                    <ArrowRight size={14} />
+                  </button>
+                </div>
+
 	            <div className="min-w-0 text-xs text-gray-600 dark:text-gray-300">
 	              窗格: {resolvedPanes.length}{' '}
 	              <span className="text-gray-400">
 	                （聚焦 {Math.max(1, resolvedPanes.findIndex((p) => p.id === resolvedFocusedPaneId) + 1)}）
 	              </span>
 	            </div>
+              </div>
 	            <div className="flex items-center gap-2">
 	              <button
 	                type="button"
@@ -2509,7 +2829,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	                                    active={active}
 	                                    title={title}
 	                                    pinnedWhileDragging={pinActiveTabWhileDragging && activeDragTabId === file.id}
-	                                    onClick={() => setActiveTabInPane(pane.id, file.id)}
+	                                    onClick={() => activateTabInPane(pane.id, file.id)}
 	                                    onClose={() => closeFileTab(file.id)}
 	                                    onContextMenu={(e) => {
 	                                      e.preventDefault();

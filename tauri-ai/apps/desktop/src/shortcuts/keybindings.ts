@@ -34,6 +34,10 @@ const KEY_ALIASES: Record<string, string> = {
   backspace: 'Backspace',
   delete: 'Delete',
   del: 'Delete',
+  left: 'ArrowLeft',
+  right: 'ArrowRight',
+  up: 'ArrowUp',
+  down: 'ArrowDown',
   comma: ',',
 };
 
