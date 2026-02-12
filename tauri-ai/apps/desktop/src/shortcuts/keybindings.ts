@@ -39,6 +39,10 @@ const KEY_ALIASES: Record<string, string> = {
   up: 'ArrowUp',
   down: 'ArrowDown',
   comma: ',',
+  minus: '-',
+  _: '-',
+  '–': '-', // en dash
+  '－': '-', // fullwidth hyphen-minus
 };
 
 export const isModifierOnlyKey = (key: string): boolean => {
@@ -136,4 +140,3 @@ export const isEditableElement = (target: EventTarget | null): boolean => {
 
   return false;
 };
-

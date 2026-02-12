@@ -426,12 +426,16 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   }, [keyboardShortcuts, shortcutPlatform]);
 
   const navHistoryRef = useRef<Map<string, PaneNavHistory>>(new Map());
+  const lastNavLocationRef = useRef<Map<string, NavLocation>>(new Map());
+  const pendingNavRecordRef = useRef<Map<string, NavLocation>>(new Map());
   const suppressNavRecordRef = useRef(false);
   const [navEpoch, setNavEpoch] = useState(0);
 
   useEffect(() => {
     // 切换 Workstudio 时清空浏览历史，避免跨项目串联。
     navHistoryRef.current.clear();
+    lastNavLocationRef.current.clear();
+    pendingNavRecordRef.current.clear();
     setNavEpoch((v) => v + 1);
   }, [workstudioId]);
 
@@ -1497,8 +1501,9 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   }, [getCurrentNavLocationForPane, isSameNavLocation, navigateToLocation, resolvedFocusedPaneId]);
 
   const runFocusedEditorAction = useCallback(
-    async (actionId: string, opts?: { requireTextFocus?: boolean }) => {
+    async (actionId: string, opts?: { requireTextFocus?: boolean; recordNavBeforeRun?: boolean }) => {
       const requireTextFocus = opts?.requireTextFocus ?? true;
+      const recordNavBeforeRun = opts?.recordNavBeforeRun ?? false;
       const state = useWindowLayoutStore.getState();
       const paneId =
         (state.focusedPaneId && state.panes.some((p) => p.id === state.focusedPaneId) ? state.focusedPaneId : null) ??
@@ -1515,6 +1520,18 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       // 菜单触发时 editor 可能暂时失焦；主动聚焦可提升稳定性。
       editor.focus();
 
+      if (recordNavBeforeRun && !suppressNavRecordRef.current) {
+        const prev = getCurrentNavLocationForPane(paneId);
+        if (prev) {
+          pendingNavRecordRef.current.set(paneId, prev);
+          window.setTimeout(() => {
+            if (pendingNavRecordRef.current.get(paneId) === prev) {
+              pendingNavRecordRef.current.delete(paneId);
+            }
+          }, 1200);
+        }
+      }
+
       const action = editor.getAction(actionId);
       if (!action) {
         console.warn('[Workstudio] monaco action not found:', { actionId });
@@ -1528,23 +1545,27 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         return false;
       }
     },
-    [resolvedFocusedPaneId]
+    [getCurrentNavLocationForPane, resolvedFocusedPaneId]
   );
 
   const goToDefinition = useCallback(
-    (opts?: { requireTextFocus?: boolean }) => runFocusedEditorAction('editor.action.revealDefinition', opts),
+    (opts?: { requireTextFocus?: boolean }) =>
+      runFocusedEditorAction('editor.action.revealDefinition', { ...opts, recordNavBeforeRun: true }),
     [runFocusedEditorAction]
   );
   const goToTypeDefinition = useCallback(
-    (opts?: { requireTextFocus?: boolean }) => runFocusedEditorAction('editor.action.revealTypeDefinition', opts),
+    (opts?: { requireTextFocus?: boolean }) =>
+      runFocusedEditorAction('editor.action.revealTypeDefinition', { ...opts, recordNavBeforeRun: true }),
     [runFocusedEditorAction]
   );
   const goToReferences = useCallback(
-    (opts?: { requireTextFocus?: boolean }) => runFocusedEditorAction('editor.action.goToReferences', opts),
+    (opts?: { requireTextFocus?: boolean }) =>
+      runFocusedEditorAction('editor.action.goToReferences', { ...opts, recordNavBeforeRun: true }),
     [runFocusedEditorAction]
   );
   const peekDefinition = useCallback(
-    (opts?: { requireTextFocus?: boolean }) => runFocusedEditorAction('editor.action.peekDefinition', opts),
+    (opts?: { requireTextFocus?: boolean }) =>
+      runFocusedEditorAction('editor.action.peekDefinition', { ...opts, recordNavBeforeRun: true }),
     [runFocusedEditorAction]
   );
 
@@ -1864,14 +1885,73 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         setupMonaco(monaco);
         editorByPaneRef.current.set(paneId, editor);
 
+        editor.onDidDispose(() => {
+          editorByPaneRef.current.delete(paneId);
+          lastNavLocationRef.current.delete(paneId);
+          pendingNavRecordRef.current.delete(paneId);
+        });
+
         editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
           const fileId = useWindowLayoutStore.getState().panes.find((p) => p.id === paneId)?.activeTabId ?? null;
           if (!fileId) return;
           void saveFile(fileId, editor);
         });
         editor.onDidFocusEditorWidget(() => useWindowLayoutStore.getState().setFocusedPane(paneId));
+
+        const readActiveTabId = (): string | null => {
+          const state = useWindowLayoutStore.getState();
+          const pane = state.panes.find((p) => p.id === paneId) ?? null;
+          if (!pane) return null;
+          const active =
+            pane.activeTabId && pane.tabIds.includes(pane.activeTabId)
+              ? pane.activeTabId
+              : pane.tabIds[0] ?? null;
+          return active ?? null;
+        };
+
+        const snapshotCurrentLocation = (): NavLocation | null => {
+          const tabId = readActiveTabId();
+          if (!tabId) return null;
+          try {
+            const pos = editor.getPosition();
+            if (!pos) return { tabId };
+            return { tabId, line: pos.lineNumber, column: pos.column };
+          } catch {
+            return { tabId };
+          }
+        };
+
+        const init = snapshotCurrentLocation();
+        if (init) {
+          lastNavLocationRef.current.set(paneId, init);
+        }
+
+        // 记录“代码导航类”跳转（例如 F12 转到定义）产生的程序化光标移动。
+        // 只在 source=api 或者存在 pendingNavRecord 时记入历史，避免箭头键移动污染浏览栈。
+        editor.onDidChangeCursorPosition((ev) => {
+          const tabId = readActiveTabId();
+          if (!tabId) return;
+          const next: NavLocation = { tabId, line: ev.position.lineNumber, column: ev.position.column };
+          const prev = lastNavLocationRef.current.get(paneId) ?? next;
+          lastNavLocationRef.current.set(paneId, next);
+
+          if (suppressNavRecordRef.current) return;
+
+          const pendingPrev = pendingNavRecordRef.current.get(paneId) ?? null;
+          if (pendingPrev) {
+            pendingNavRecordRef.current.delete(paneId);
+            if (isMeaningfulNavTransition(pendingPrev, next)) {
+              commitNavBackEntry(paneId, pendingPrev);
+            }
+            return;
+          }
+
+          if (ev.source !== 'api') return;
+          if (!isMeaningfulNavTransition(prev, next)) return;
+          commitNavBackEntry(paneId, prev);
+        });
       },
-    [saveFile]
+    [commitNavBackEntry, isMeaningfulNavTransition, saveFile]
   );
 
   const editorTheme = useMemo(() => {
