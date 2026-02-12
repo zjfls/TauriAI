@@ -1,2 +1,1 @@
-export type RootTab = "chat" | "history" | "settings";
-
+export type RootTab = "chat" | "history" | "practice" | "settings";

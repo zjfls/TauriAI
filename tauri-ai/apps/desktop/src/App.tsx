@@ -378,7 +378,8 @@ function App() {
     if (!shouldInitChatRuntime) return;
 
     let disposed = false;
-    let unlisten: null | (() => void) = null;
+    let unlistenHistory: null | (() => void) = null;
+    let unlistenPractice: null | (() => void) = null;
 
     void listen('menu:open_history', () => {
       useUIStore.getState().setActiveView('history');
@@ -388,13 +389,26 @@ function App() {
           fn();
           return;
         }
-        unlisten = fn;
+        unlistenHistory = fn;
+      })
+      .catch(() => {});
+
+    void listen('menu:open_practice', () => {
+      useUIStore.getState().setActiveView('practice');
+    })
+      .then((fn) => {
+        if (disposed) {
+          fn();
+          return;
+        }
+        unlistenPractice = fn;
       })
       .catch(() => {});
 
     return () => {
       disposed = true;
-      unlisten?.();
+      unlistenHistory?.();
+      unlistenPractice?.();
     };
   }, [shouldInitChatRuntime]);
 
@@ -829,9 +843,9 @@ function App() {
     viewOverrideAppliedRef.current = true;
 
     // 兼容旧的 standalone window 语义：
-    // - history/settings：作为初始 activeView
+    // - history/settings/practice：作为初始 activeView
     // - document/web/terminal/workstudio：视为“在工作区内打开一个 Tab”，activeView 仍为 chat
-    if (viewOverride === 'history' || viewOverride === 'settings') {
+    if (viewOverride === 'history' || viewOverride === 'settings' || viewOverride === 'practice') {
       if (viewOverride !== activeView) setActiveView(viewOverride);
       return;
     }

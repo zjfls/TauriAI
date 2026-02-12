@@ -167,6 +167,7 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
 
     let open_settings =
         MenuItem::with_id(app, "open_settings", "设置…", true, Some("CmdOrCtrl+,"))?;
+    let open_practice = MenuItem::with_id(app, "open_practice", "练习", true, None::<&str>)?;
     let view_settings_separator = PredefinedMenuItem::separator(app)?;
 
     let separator = PredefinedMenuItem::separator(app)?;
@@ -267,6 +268,7 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
         view.insert_items(&[&unit_test_ghost, &open_devtools], 0)?;
         view.insert_items(
             &[
+                &open_practice,
                 &open_settings,
                 &view_settings_separator,
                 &open_web_tab,
@@ -282,6 +284,7 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
             "View",
             true,
             &[
+                &open_practice,
                 &open_settings,
                 &view_settings_separator,
                 &open_web_tab,
@@ -297,6 +300,7 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
             "View",
             true,
             &[
+                &open_practice,
                 &open_settings,
                 &view_settings_separator,
                 &open_web_tab,
@@ -399,6 +403,13 @@ fn run_desktop() {
                         let _ = window.emit("menu:open_settings", ());
                     } else {
 	                        let _ = app.emit("menu:open_settings", ());
+	                    }
+	                }
+	                "open_practice" => {
+	                    if let Some(window) = pick_menu_target() {
+	                        let _ = window.emit("menu:open_practice", ());
+	                    } else {
+	                        let _ = app.emit("menu:open_practice", ());
 	                    }
 	                }
 	                "open_history" => {
@@ -704,6 +715,8 @@ fn run_desktop() {
             save_app_config,
             test_connection,
             fetch_provider_models,
+            // Lightweight LLM calls (used by practice module)
+            mobile_chat,
             // Clipboard
             clipboard_write_png_base64,
 	            // DevTools

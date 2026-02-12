@@ -34,6 +34,7 @@ export type TerminalScope = { kind: TerminalScopeKind; id: string };
 export type ActiveView =
   | 'chat'
   | 'history'
+  | 'practice'
   | 'settings'
   | 'document'
   | 'workstudio'
