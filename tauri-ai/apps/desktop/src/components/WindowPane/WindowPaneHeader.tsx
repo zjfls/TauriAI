@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Bot, Dock, ExternalLink, FileText, Globe, Loader2, TerminalSquare, X } from 'lucide-react';
+import { Bot, FileText, Globe, Loader2, TerminalSquare, X } from 'lucide-react';
 import { useDroppable } from '@dnd-kit/core';
 import { SortableContext, useSortable, horizontalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -11,6 +11,7 @@ import { parseWorkspaceTabId, type WorkspaceTabId } from '../../stores/workspace
 import { useDocumentStore } from '../../stores/documentStore';
 import { useWebTabStore } from '../../stores/webTabStore';
 import { useTerminalTabStore } from '../../stores/terminalTabStore';
+import { WindowPaneTabContextMenu } from './WindowPaneTabContextMenu';
 import {
   dockWorkspaceItemToWindow,
   listChatWindows,
@@ -69,9 +70,8 @@ const SortableTab: React.FC<{
   isActive: boolean;
   pinnedWhileDragging?: boolean;
   onSelect: () => void;
-  onClose: () => void;
-  onOpenDockMenu: (session: AgentSession, anchorEl: HTMLElement) => void;
-}> = ({ tab, isActive, pinnedWhileDragging, onSelect, onClose, onOpenDockMenu }) => {
+  onContextMenu: (e: React.MouseEvent<HTMLDivElement>) => void;
+}> = ({ tab, isActive, pinnedWhileDragging, onSelect, onContextMenu }) => {
   const [isRenaming, setIsRenaming] = useState(false);
   const [draftTitle, setDraftTitle] = useState(tab.title);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
@@ -115,13 +115,6 @@ const SortableTab: React.FC<{
     return <TerminalSquare size={14} className={isActive ? 'text-blue-500' : 'text-gray-400'} />;
   })();
 
-  const canDockChat = tab.kind === 'chat' && !tab.session.isGenerating && Boolean(tab.session.conversationId);
-  const canPopout = (() => {
-    if (tab.kind === 'chat') return !tab.session.isGenerating && Boolean(tab.session.conversationId);
-    if (tab.kind === 'document') return Boolean(tab.path);
-    return true;
-  })();
-
   const commitRename = useCallback(async () => {
     const next = draftTitle.trim();
     setIsRenaming(false);
@@ -145,89 +138,13 @@ const SortableTab: React.FC<{
     }
   }, [draftTitle, tab]);
 
-  const handlePopout = () => {
-    void (async () => {
-      if (!canPopout) {
-        if (tab.kind === 'document') {
-          alert('该文档尚未保存到文件，暂不支持在新窗口打开');
-        }
-        return;
-      }
-
-      if (tab.kind === 'chat') {
-        if (!tab.session.conversationId) return;
-        try {
-          const { win, isExisting } = await openOrFocusConversationChatWindow(tab.session.conversationId, tab.session.title, {
-            runMode: tab.session.runMode,
-            agentName: tab.session.agentName,
-          });
-          if (isExisting) {
-            onClose();
-            return;
-          }
-          win.once('tauri://created', () => {
-            void win.setFocus().catch(() => {});
-            onClose();
-          });
-          win.once('tauri://error', (err) => {
-            console.error('Failed to popout chat window:', (err as any)?.payload ?? err);
-            alert('打开新窗口失败，请检查窗口权限/配置');
-          });
-        } catch (err) {
-          console.error('Failed to popout chat window:', err);
-          alert('当前环境不支持打开新窗口');
-        }
-        return;
-      }
-
-      if (tab.kind === 'document') {
-        if (!tab.path) return;
-        try {
-          const item = { kind: 'document' as const, title: tab.title, documentPath: tab.path };
-          const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-          const win = openViewWindow('chat', tab.title, { label, noDefaultSession: true });
-          await dockWorkspaceItemToWindow(item, win, 'tab');
-          onClose();
-        } catch (err) {
-          console.error('Failed to popout document tab:', err);
-          alert('当前环境不支持打开新窗口');
-        }
-        return;
-      }
-
-      if (tab.kind === 'web') {
-        try {
-          const item = { kind: 'web' as const, title: tab.title, webUrl: tab.url };
-          const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-          const win = openViewWindow('chat', tab.title || '网页', { label, noDefaultSession: true });
-          await dockWorkspaceItemToWindow(item, win, 'tab');
-          onClose();
-        } catch (err) {
-          console.error('Failed to popout web tab:', err);
-          alert('当前环境不支持打开新窗口');
-        }
-        return;
-      }
-
-      try {
-        const item = { kind: 'terminal' as const, title: tab.title, terminalWorkdir: tab.workdir ?? undefined };
-        const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-        const win = openViewWindow('chat', tab.title || '终端', { label, noDefaultSession: true });
-        await dockWorkspaceItemToWindow(item, win, 'tab');
-        onClose();
-      } catch (err) {
-        console.error('Failed to popout terminal tab:', err);
-        alert('当前环境不支持打开新窗口');
-      }
-    })();
-  };
-
   return (
     <div
       ref={setNodeRef}
       style={style}
       data-workspace-tab-id={tab.id}
       onClick={onSelect}
+      onContextMenu={onContextMenu}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
@@ -275,8 +192,7 @@ const SortableTab: React.FC<{
         <span
           className={[
             'flex-1 min-w-0 truncate text-sm font-medium',
-            // 固定预留右侧操作区空间，避免 hover 时 padding 变化导致 tab 宽度抖动/变长
-            'pr-20',
+            'pr-2',
           ].join(' ')}
           onDoubleClick={(e) => {
             if (tab.kind !== 'chat') return;
@@ -293,77 +209,6 @@ const SortableTab: React.FC<{
       {tab.kind === 'chat' && tab.session.apiType === 'responses' ? (
         <span className="flex-shrink-0 text-[10px] text-gray-400">R</span>
       ) : null}
-
-      {!isRenaming && (
-        <div
-          className={[
-            'absolute right-2 top-1/2 -translate-y-1/2',
-            'flex items-center gap-1 rounded bg-white/80 p-0.5 shadow-sm',
-            'dark:bg-gray-900/80',
-            'opacity-0 pointer-events-none transition-opacity',
-            'group-hover:opacity-100 group-hover:pointer-events-auto',
-            'group-focus-within:opacity-100 group-focus-within:pointer-events-auto',
-          ].join(' ')}
-        >
-          {tab.kind === 'chat' ? (
-            <button
-              type="button"
-              className={[
-                'rounded p-0.5 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800',
-                'disabled:cursor-not-allowed disabled:text-gray-300 dark:disabled:text-gray-600 disabled:hover:bg-transparent',
-              ].join(' ')}
-              disabled={!canDockChat}
-              onPointerDown={(e) => e.stopPropagation()}
-              onClick={(e) => {
-                e.stopPropagation();
-                if (tab.kind !== 'chat') return;
-                if (tab.session.isGenerating) {
-                  alert('流式生成中，暂不支持停靠');
-                  return;
-                }
-                if (!tab.session.conversationId) {
-                  alert('对话尚未初始化，无法停靠');
-                  return;
-                }
-                onOpenDockMenu(tab.session, e.currentTarget as HTMLElement);
-              }}
-              title="停靠到其它聊天窗口"
-            >
-              <Dock size={14} />
-            </button>
-          ) : null}
-
-          <button
-            type="button"
-            className={[
-              'rounded p-0.5 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800',
-              'disabled:cursor-not-allowed disabled:text-gray-300 dark:disabled:text-gray-600 disabled:hover:bg-transparent',
-            ].join(' ')}
-            disabled={!canPopout}
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={(e) => {
-              e.stopPropagation();
-              handlePopout();
-            }}
-            title="在新窗口打开"
-          >
-            <ExternalLink size={14} />
-          </button>
-
-          <button
-            type="button"
-            className="rounded p-0.5 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800"
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={(e) => {
-              e.stopPropagation();
-              onClose();
-            }}
-            title="关闭标签"
-          >
-            <X size={14} />
-          </button>
-        </div>
-      )}
     </div>
   );
 };
@@ -473,6 +318,9 @@ export const WindowPaneHeader: React.FC<WindowPaneHeaderProps> = ({
       })();
       const windows = await listChatWindows();
       setDockTargets(currentLabel ? windows.filter((w) => w.label !== currentLabel) : windows);
+    } catch (err) {
+      console.error('Failed to list chat windows for docking:', err);
+      setDockTargets([]);
     } finally {
       setDockLoading(false);
     }
@@ -495,6 +343,116 @@ export const WindowPaneHeader: React.FC<WindowPaneHeaderProps> = ({
 
   const { setNodeRef: setTabListRef } = useDroppable({ id: `pane:${paneId}` });
   const tabStripRef = registerTabStripRef ? registerTabStripRef(paneId) : undefined;
+
+  const [tabContextMenu, setTabContextMenu] = useState<{
+    visible: boolean;
+    position: { x: number; y: number };
+    targetId: WorkspaceTabId;
+    anchorEl: HTMLElement | null;
+  } | null>(null);
+
+  const closeTabContextMenu = () => setTabContextMenu(null);
+
+  const closeTabsInCurrentPane = useCallback(
+    async (ids: WorkspaceTabId[]) => {
+      for (const id of ids) {
+        // eslint-disable-next-line no-await-in-loop
+        await Promise.resolve(onCloseTab(id));
+      }
+    },
+    [onCloseTab]
+  );
+
+  const popoutTab = useCallback(
+    async (tabId: WorkspaceTabId) => {
+      const target = items.find((t) => t.id === tabId) ?? null;
+      if (!target) return;
+
+      const canPopout = (() => {
+        if (target.kind === 'chat') return !target.session.isGenerating && Boolean(target.session.conversationId);
+        if (target.kind === 'document') return Boolean(target.path);
+        return true;
+      })();
+
+      if (!canPopout) {
+        if (target.kind === 'document') {
+          alert('该文档尚未保存到文件，暂不支持在新窗口打开');
+        }
+        return;
+      }
+
+      if (target.kind === 'chat') {
+        if (!target.session.conversationId) return;
+        try {
+          const { win, isExisting } = await openOrFocusConversationChatWindow(
+            target.session.conversationId,
+            target.session.title,
+            {
+              runMode: target.session.runMode,
+              agentName: target.session.agentName,
+            }
+          );
+          if (isExisting) {
+            await Promise.resolve(onCloseTab(target.id));
+            return;
+          }
+          win.once('tauri://created', () => {
+            void win.setFocus().catch(() => {});
+            void onCloseTab(target.id);
+          });
+          win.once('tauri://error', (err) => {
+            console.error('Failed to popout chat window:', (err as any)?.payload ?? err);
+            alert('打开新窗口失败，请检查窗口权限/配置');
+          });
+        } catch (err) {
+          console.error('Failed to popout chat window:', err);
+          alert('当前环境不支持打开新窗口');
+        }
+        return;
+      }
+
+      if (target.kind === 'document') {
+        if (!target.path) return;
+        try {
+          const item = { kind: 'document' as const, title: target.title, documentPath: target.path };
+          const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+          const win = openViewWindow('chat', target.title, { label, noDefaultSession: true });
+          await dockWorkspaceItemToWindow(item, win, 'tab');
+          await Promise.resolve(onCloseTab(target.id));
+        } catch (err) {
+          console.error('Failed to popout document tab:', err);
+          alert('当前环境不支持打开新窗口');
+        }
+        return;
+      }
+
+      if (target.kind === 'web') {
+        try {
+          const item = { kind: 'web' as const, title: target.title, webUrl: target.url };
+          const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+          const win = openViewWindow('chat', target.title || '网页', { label, noDefaultSession: true });
+          await dockWorkspaceItemToWindow(item, win, 'tab');
+          await Promise.resolve(onCloseTab(target.id));
+        } catch (err) {
+          console.error('Failed to popout web tab:', err);
+          alert('当前环境不支持打开新窗口');
+        }
+        return;
+      }
+
+      try {
+        const item = { kind: 'terminal' as const, title: target.title, terminalWorkdir: target.workdir ?? undefined };
+        const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        const win = openViewWindow('chat', target.title || '终端', { label, noDefaultSession: true });
+        await dockWorkspaceItemToWindow(item, win, 'tab');
+        await Promise.resolve(onCloseTab(target.id));
+      } catch (err) {
+        console.error('Failed to popout terminal tab:', err);
+        alert('当前环境不支持打开新窗口');
+      }
+    },
+    [items, onCloseTab]
+  );
 
   return (
     <div
@@ -519,8 +477,16 @@ export const WindowPaneHeader: React.FC<WindowPaneHeaderProps> = ({
               isActive={t.id === activeTabId}
               pinnedWhileDragging={Boolean(pinnedTabId && pinnedTabId === t.id)}
               onSelect={() => onSelectTab(t.id)}
-              onClose={() => void onCloseTab(t.id)}
-              onOpenDockMenu={openDockMenu}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setTabContextMenu({
+                  visible: true,
+                  position: { x: e.clientX, y: e.clientY },
+                  targetId: t.id,
+                  anchorEl: e.currentTarget,
+                });
+              }}
             />
           ))}
         </SortableContext>
@@ -609,6 +575,54 @@ export const WindowPaneHeader: React.FC<WindowPaneHeaderProps> = ({
             </div>
           )}
         </div>
+      )}
+
+      {tabContextMenu && (
+        <WindowPaneTabContextMenu
+          visible={tabContextMenu.visible}
+          position={tabContextMenu.position}
+          tabIds={tabIds}
+          targetId={tabContextMenu.targetId}
+          canDockToOtherWindow={(() => {
+            const target = items.find((t) => t.id === tabContextMenu.targetId) ?? null;
+            return Boolean(
+              target?.kind === 'chat' && !target.session.isGenerating && Boolean(target.session.conversationId)
+            );
+          })()}
+          onDockToOtherWindow={(() => {
+            const target = items.find((t) => t.id === tabContextMenu.targetId) ?? null;
+            if (!target || target.kind !== 'chat') return undefined;
+            return () => {
+              const anchor = tabContextMenu.anchorEl;
+              if (!anchor) return;
+              void openDockMenu(target.session, anchor);
+            };
+          })()}
+          canOpenInNewWindow={(() => {
+            const target = items.find((t) => t.id === tabContextMenu.targetId) ?? null;
+            if (!target) return false;
+            if (target.kind === 'chat') return !target.session.isGenerating && Boolean(target.session.conversationId);
+            if (target.kind === 'document') return Boolean(target.path);
+            return true;
+          })()}
+          onOpenInNewWindow={() => void popoutTab(tabContextMenu.targetId)}
+          onCloseCurrent={() => void onCloseTab(tabContextMenu.targetId)}
+          onCloseOthers={() => {
+            const keep = tabContextMenu.targetId;
+            void closeTabsInCurrentPane(tabIds.filter((id) => id !== keep));
+          }}
+          onCloseToLeft={() => {
+            const idx = tabIds.indexOf(tabContextMenu.targetId);
+            if (idx <= 0) return;
+            void closeTabsInCurrentPane(tabIds.slice(0, idx));
+          }}
+          onCloseToRight={() => {
+            const idx = tabIds.indexOf(tabContextMenu.targetId);
+            if (idx < 0 || idx >= tabIds.length - 1) return;
+            void closeTabsInCurrentPane(tabIds.slice(idx + 1));
+          }}
+          onClose={closeTabContextMenu}
+        />
       )}
     </div>
   );
