@@ -323,6 +323,93 @@ pub(crate) async fn git_current_branch(workdir: &Path) -> Result<Option<String>,
     Ok(Some(branch))
 }
 
+fn normalize_branch_input(branch: &str) -> Result<String, String> {
+    let b = branch.trim();
+    if b.is_empty() {
+        return Err("branch 不能为空".to_string());
+    }
+    // `git checkout <name>` 会将 `-xxx` 视为选项；直接拒绝，避免歧义/风险。
+    if b.starts_with('-') {
+        return Err("branch 不能以 '-' 开头".to_string());
+    }
+    Ok(b.to_string())
+}
+
+pub(crate) async fn git_list_local_branches(workdir: &Path) -> Result<Vec<String>, String> {
+    if !workdir.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let out = run_git_for_stdout(
+        workdir,
+        vec![
+            OsString::from("for-each-ref"),
+            OsString::from("--format=%(refname:short)"),
+            OsString::from("--sort=refname"),
+            OsString::from("refs/heads"),
+        ],
+        None,
+    )
+    .await?;
+
+    let mut branches = out
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>();
+    branches.sort();
+    branches.dedup();
+    Ok(branches)
+}
+
+pub(crate) async fn git_checkout_branch(workdir: &Path, branch: &str) -> Result<(), String> {
+    if !workdir.is_dir() {
+        return Err("workdir 不是目录".to_string());
+    }
+    let branch = normalize_branch_input(branch)?;
+    run_git_for_status(
+        workdir,
+        vec![
+            OsString::from("checkout"),
+            OsString::from("--quiet"),
+            OsString::from(branch),
+        ],
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn git_create_and_checkout_branch(workdir: &Path, branch: &str) -> Result<(), String> {
+    if !workdir.is_dir() {
+        return Err("workdir 不是目录".to_string());
+    }
+    let branch = normalize_branch_input(branch)?;
+
+    // Validate branch name early for a clearer error message.
+    run_git_for_status(
+        workdir,
+        vec![
+            OsString::from("check-ref-format"),
+            OsString::from("--branch"),
+            OsString::from(&branch),
+        ],
+        None,
+    )
+    .await?;
+
+    run_git_for_status(
+        workdir,
+        vec![
+            OsString::from("checkout"),
+            OsString::from("--quiet"),
+            OsString::from("-b"),
+            OsString::from(branch),
+        ],
+        None,
+    )
+    .await
+}
+
 pub(crate) fn repo_prefix(repo_root: &Path, workdir: &Path) -> Option<PathBuf> {
     let rel = workdir.strip_prefix(repo_root).ok()?;
     if rel.as_os_str().is_empty() {
