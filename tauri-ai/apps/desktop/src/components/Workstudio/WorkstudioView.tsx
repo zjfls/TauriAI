@@ -431,6 +431,28 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const suppressNavRecordRef = useRef(false);
   const [navEpoch, setNavEpoch] = useState(0);
 
+  const [navToast, setNavToast] = useState<string | null>(null);
+  const navToastTimerRef = useRef<number | null>(null);
+  const showNavToast = useCallback((message: string) => {
+    setNavToast(message);
+    if (navToastTimerRef.current) {
+      window.clearTimeout(navToastTimerRef.current);
+    }
+    navToastTimerRef.current = window.setTimeout(() => {
+      navToastTimerRef.current = null;
+      setNavToast(null);
+    }, 1400);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (navToastTimerRef.current) {
+        window.clearTimeout(navToastTimerRef.current);
+        navToastTimerRef.current = null;
+      }
+    };
+  }, []);
+
   useEffect(() => {
     // 切换 Workstudio 时清空浏览历史，避免跨项目串联。
     navHistoryRef.current.clear();
@@ -1441,7 +1463,10 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     if (!paneId) return;
 
     const history = navHistoryRef.current.get(paneId) ?? null;
-    if (!history || history.back.length === 0) return;
+    if (!history || history.back.length === 0) {
+      showNavToast('没有可后退的记录');
+      return;
+    }
 
     const current = getCurrentNavLocationForPane(paneId);
     const target = history.back.pop()!;
@@ -1464,7 +1489,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     } finally {
       suppressNavRecordRef.current = prevSuppressed;
     }
-  }, [getCurrentNavLocationForPane, isSameNavLocation, navigateToLocation, resolvedFocusedPaneId]);
+  }, [getCurrentNavLocationForPane, isSameNavLocation, navigateToLocation, resolvedFocusedPaneId, showNavToast]);
 
   const navigateForward = useCallback(async () => {
     const state = useWindowLayoutStore.getState();
@@ -1475,7 +1500,10 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     if (!paneId) return;
 
     const history = navHistoryRef.current.get(paneId) ?? null;
-    if (!history || history.forward.length === 0) return;
+    if (!history || history.forward.length === 0) {
+      showNavToast('没有可前进的记录');
+      return;
+    }
 
     const current = getCurrentNavLocationForPane(paneId);
     const target = history.forward.pop()!;
@@ -1498,7 +1526,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     } finally {
       suppressNavRecordRef.current = prevSuppressed;
     }
-  }, [getCurrentNavLocationForPane, isSameNavLocation, navigateToLocation, resolvedFocusedPaneId]);
+  }, [getCurrentNavLocationForPane, isSameNavLocation, navigateToLocation, resolvedFocusedPaneId, showNavToast]);
 
   const runFocusedEditorAction = useCallback(
     async (actionId: string, opts?: { requireTextFocus?: boolean; recordNavBeforeRun?: boolean }) => {
@@ -2889,7 +2917,14 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-gray-50 dark:bg-gray-900">
-	      <div className="flex flex-1 overflow-hidden">
+      {navToast && (
+        <div className="pointer-events-none fixed bottom-4 right-4 z-[200]">
+          <div className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-gray-700 shadow-lg dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200">
+            {navToast}
+          </div>
+        </div>
+      )}
+		      <div className="flex flex-1 overflow-hidden">
         <div className="flex w-[280px] flex-shrink-0 flex-col border-r border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-950">
           <div className="flex items-center justify-between border-b border-gray-200 px-3 py-2 dark:border-gray-800">
             <div className="min-w-0">
