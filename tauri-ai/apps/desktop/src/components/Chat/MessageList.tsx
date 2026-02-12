@@ -996,6 +996,7 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>((
             <MessageBlocks
               blocks={streamingBlocks}
               conversationId={conversationId ?? messages[0]?.conversationId}
+              messageSource="live"
               isStreaming
               isUserBrowsing={userScrolledAway}
               turns={streamingTurns}

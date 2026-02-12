@@ -312,6 +312,7 @@ export const MessageItem = React.memo(function MessageItem({
           <DebugModal
             isOpen
             onClose={() => setShowDebugModal(false)}
+            isStreaming={isStreaming}
             debugInfo={message.debugInfo || null}
             turns={message.turns || null}
             blocks={message.blocks || null}
@@ -446,6 +447,7 @@ export const MessageItem = React.memo(function MessageItem({
         <DebugModal
           isOpen
           onClose={() => setShowDebugModal(false)}
+          isStreaming={isStreaming}
           debugInfo={message.debugInfo || null}
           turns={message.turns || null}
           blocks={isAssistant ? assistantBlocks : message.blocks || null}

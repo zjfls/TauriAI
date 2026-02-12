@@ -8,7 +8,7 @@
  *   2) 在这里补上对应 block 的渲染组件
  */
 
- import React, { useEffect, useMemo, useRef, useState } from 'react';
+ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
  import { AlertTriangle, Brain, Bug, ChevronDown, ChevronRight, RefreshCw, Search, Wrench } from 'lucide-react';
  import { invoke, isTauri } from '@tauri-apps/api/core';
  import type {
@@ -2187,7 +2187,7 @@ export const MessageBlocks: React.FC<{
   onAbortTool?: (callId: string) => void;
   assistantMessageId?: string;
   onRetryTurn?: (assistantMessageId: string, turnId: string) => void;
-}> = ({ blocks, conversationId, isStreaming, isUserBrowsing, messageSource, turns, onAbortTool, assistantMessageId, onRetryTurn }) => {
+}> = ({ blocks, conversationId, isStreaming, messageSource, turns, onAbortTool, assistantMessageId, onRetryTurn }) => {
   if (!blocks || blocks.length === 0) return null;
 
   const { config } = useConfigStore();
@@ -2214,6 +2214,7 @@ export const MessageBlocks: React.FC<{
   const showTurnHeader = distinctTurnIds.size > 0;
   const showTaskToggle = distinctTurnIds.size > 1;
   const [isTaskCollapsed, setIsTaskCollapsed] = useState<boolean>(() => messageSource !== 'live');
+  const defaultExpandedForBlocks = messageSource === 'live' || Boolean(isStreaming);
   const latestTurnId = useMemo(() => {
     let last: string | null = null;
     for (const b of blocks) {
@@ -2222,10 +2223,9 @@ export const MessageBlocks: React.FC<{
     return last;
   }, [blocks]);
 
-  const latestBlockId = useMemo(() => (blocks.length > 0 ? blocks[blocks.length - 1].id : null), [blocks]);
-  const autoCollapseEnabled = Boolean(isStreaming) && !Boolean(isUserBrowsing);
-  const lastLatestBlockIdRef = useRef<string | null>(null);
-  const [autoCollapseSeq, setAutoCollapseSeq] = useState(0);
+  // Streaming 时保持展开：不要随着新 block 到来自动收起旧 block（便于跟踪 ReAct 过程）。
+  const autoCollapseEnabled = false;
+  const autoCollapseSeq = 0;
 
   // 兼容旧行为：
   // - “历史加载”的多 Turn：默认收起整个 Task（只展示最新一轮）
@@ -2235,22 +2235,6 @@ export const MessageBlocks: React.FC<{
   useEffect(() => {
     setIsTaskCollapsed(messageSource !== 'live');
   }, [messageSource]);
-
-  useEffect(() => {
-    if (!latestBlockId) return;
-
-    // 仅在流式且用户在“跟随输出”的状态下做自动收起；避免浏览历史时布局突变。
-    if (!autoCollapseEnabled) {
-      lastLatestBlockIdRef.current = latestBlockId;
-      return;
-    }
-
-    const prev = lastLatestBlockIdRef.current;
-    lastLatestBlockIdRef.current = latestBlockId;
-    if (prev && prev !== latestBlockId) {
-      setAutoCollapseSeq((n) => n + 1);
-    }
-  }, [autoCollapseEnabled, latestBlockId]);
 
   const groups = useMemo(() => {
     const map = new Map<
@@ -2378,14 +2362,12 @@ export const MessageBlocks: React.FC<{
   }, [groups, isTaskCollapsed, latestTurnId, showTaskToggle]);
 
   const renderBlock = (block: MessageBlock, opts?: { deferHeavy?: boolean }) => {
-    const isLatest = Boolean(latestBlockId && block.id === latestBlockId);
-
     if (block.type === 'thinking') {
       return (
         <ThinkingBlock
           text={block.text}
           isStreaming={isStreaming}
-          defaultExpanded={autoCollapseEnabled ? isLatest : Boolean(isStreaming)}
+          defaultExpanded={defaultExpandedForBlocks}
           autoCollapseEnabled={autoCollapseEnabled}
           autoCollapseSeq={autoCollapseSeq}
         />
@@ -2418,7 +2400,7 @@ export const MessageBlocks: React.FC<{
           name={block.name}
           args={block.arguments}
           isStreaming={isStreaming}
-          defaultExpanded={autoCollapseEnabled ? isLatest : Boolean(isStreaming)}
+          defaultExpanded={defaultExpandedForBlocks}
           autoCollapseEnabled={autoCollapseEnabled}
           autoCollapseSeq={autoCollapseSeq}
         />
@@ -2427,7 +2409,7 @@ export const MessageBlocks: React.FC<{
 
     if (block.type === 'approval') {
       const isPending = block.status === 'pending';
-      const resolvedDefaultExpanded = isPending || (autoCollapseEnabled ? isLatest : Boolean(isStreaming));
+      const resolvedDefaultExpanded = isPending || defaultExpandedForBlocks;
       return (
         <ApprovalBlock
           conversationId={conversationId}
@@ -2449,7 +2431,7 @@ export const MessageBlocks: React.FC<{
           onAbortTool={onAbortTool}
           ansiRenderMode={ansiRenderMode}
           ansiColorMode={ansiColorMode}
-          defaultExpanded={autoCollapseEnabled ? isLatest : Boolean(isStreaming)}
+          defaultExpanded={defaultExpandedForBlocks}
           autoCollapseEnabled={autoCollapseEnabled}
           autoCollapseSeq={autoCollapseSeq}
         />
@@ -2472,7 +2454,7 @@ export const MessageBlocks: React.FC<{
           status={block.status}
           action={block.action}
           isStreaming={isStreaming}
-          defaultExpanded={autoCollapseEnabled ? isLatest : Boolean(isStreaming)}
+          defaultExpanded={defaultExpandedForBlocks}
           autoCollapseEnabled={autoCollapseEnabled}
           autoCollapseSeq={autoCollapseSeq}
         />
@@ -2565,9 +2547,6 @@ export const MessageBlocks: React.FC<{
               if (block.type === 'tool_call') {
                 const next = g.blocks[blockIdx + 1];
                 if (next && next.type === 'tool_result' && next.callId === block.callId) {
-                  const isLatestToolRun = Boolean(
-                    latestBlockId && (block.id === latestBlockId || next.id === latestBlockId)
-                  );
                   return block.name === 'apply_patch' ? (
                     <ApplyPatchToolRunBlock
                       key={`${block.id}:${next.id}`}
@@ -2580,7 +2559,7 @@ export const MessageBlocks: React.FC<{
                       onAbortTool={onAbortTool}
                       ansiRenderMode={ansiRenderMode}
                       ansiColorMode={ansiColorMode}
-                      defaultExpanded={autoCollapseEnabled ? isLatestToolRun : Boolean(isStreaming)}
+                      defaultExpanded={defaultExpandedForBlocks}
                       autoCollapseEnabled={autoCollapseEnabled}
                       autoCollapseSeq={autoCollapseSeq}
                     />
@@ -2595,7 +2574,7 @@ export const MessageBlocks: React.FC<{
                       onAbortTool={onAbortTool}
                       ansiRenderMode={ansiRenderMode}
                       ansiColorMode={ansiColorMode}
-                      defaultExpanded={autoCollapseEnabled ? isLatestToolRun : Boolean(isStreaming)}
+                      defaultExpanded={defaultExpandedForBlocks}
                       autoCollapseEnabled={autoCollapseEnabled}
                       autoCollapseSeq={autoCollapseSeq}
                     />
@@ -2626,6 +2605,7 @@ export const MessageBlocks: React.FC<{
 	        <DebugModal
 	          isOpen
 	          onClose={() => setActiveDebugTurn(null)}
+          isStreaming={isStreaming}
           debugInfo={activeDebugTurn.debugInfo || null}
           turns={turns || null}
           blocks={blocks}

@@ -6,6 +6,7 @@ import type { ActiveView, RunMode } from '../types';
 import { upsertWindowRecord } from './windowLayout';
 
 type WorkstudioOpenPayload = {
+  requestId?: string | null;
   workstudioId?: string | null;
   mainFolder?: string | null;
   filePath: string;
@@ -69,6 +70,40 @@ const pointInRect = (p: { x: number; y: number }, r: PhysicalRect) => {
   return p.x >= r.x && p.y >= r.y && p.x <= r.x + r.width && p.y <= r.y + r.height;
 };
 
+const isOpenFileDebugEnabled = () => {
+  try {
+    return window.localStorage.getItem('tauri-ai:debug:open_file') === '1';
+  } catch {
+    return false;
+  }
+};
+
+const isOpenFileVerboseEnabled = () => {
+  try {
+    return window.localStorage.getItem('tauri-ai:debug:open_file:verbose') === '1';
+  } catch {
+    return false;
+  }
+};
+
+const dbgOpenFile = (msg: string, meta?: Record<string, unknown>, opts?: { important?: boolean }) => {
+  if (!isOpenFileDebugEnabled()) return;
+  if (!isOpenFileVerboseEnabled() && !opts?.important) return;
+  // eslint-disable-next-line no-console
+  console.log(`[open_file][viewWindow][${new Date().toISOString()}] ${msg}`, meta ?? {});
+};
+
+const makeRequestId = (): string => {
+  try {
+    if (typeof crypto !== 'undefined' && typeof (crypto as any).randomUUID === 'function') {
+      return (crypto as any).randomUUID();
+    }
+  } catch {
+    // ignore
+  }
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+};
+
 export const computePopoutWindowBoundsAtCursor = async (opts?: {
   clientPoint?: { x: number; y: number } | null;
   minWidth?: number;
@@ -122,17 +157,6 @@ export const computePopoutWindowBoundsAtCursor = async (opts?: {
   }
 };
 
-const workstudioOpenSeqByLabel = new Map<string, number>();
-const workstudioOpenTimersByLabel = new Map<string, number[]>();
-
-const clearWorkstudioOpenTimers = (label: string) => {
-  const timers = workstudioOpenTimersByLabel.get(label);
-  if (timers) {
-    for (const id of timers) window.clearTimeout(id);
-  }
-  workstudioOpenTimersByLabel.delete(label);
-};
-
 const parseRunMode = (value: string | null): RunMode | null => {
   switch (value) {
     case 'chat':
@@ -145,96 +169,38 @@ const parseRunMode = (value: string | null): RunMode | null => {
   }
 };
 
-const scheduleWorkstudioOpenFile = async (
-  win: WebviewWindow,
-  label: string,
-  payload: WorkstudioOpenPayload
-) => {
-  const nextSeq = (workstudioOpenSeqByLabel.get(label) ?? 0) + 1;
-  workstudioOpenSeqByLabel.set(label, nextSeq);
-  clearWorkstudioOpenTimers(label);
-
-  const delays = [0, 60, 180, 420, 900];
-  const lastDelay = delays[delays.length - 1] ?? 0;
-  const timerIds: number[] = [];
-
-  for (const delayMs of delays) {
-    const id = window.setTimeout(() => {
-      if (workstudioOpenSeqByLabel.get(label) !== nextSeq) return;
-      try {
-        if (window.localStorage.getItem('tauri-ai:debug:open_file') === '1') {
-          const verbose =
-            window.localStorage.getItem('tauri-ai:debug:open_file:verbose') === '1';
-          const shouldLog = verbose || delayMs === 0 || delayMs === lastDelay;
-          if (!shouldLog) {
-            // skip noisy retry logs
-            return;
-          }
-          // eslint-disable-next-line no-console
-          console.log(`[open_file][viewWindow][${new Date().toISOString()}] emit workstudio:open_file`, {
-            label,
-            delayMs,
-            seq: nextSeq,
-            retry: delayMs !== 0,
-            finalRetry: delayMs === lastDelay,
-            payload,
-          });
-        }
-      } catch {
-        // ignore
-      }
-      void win.emit('workstudio:open_file', payload).catch(() => {
-        // ignore; best-effort
-      });
-    }, delayMs);
-    timerIds.push(id);
+const emitWorkstudioOpenFileOnce = async (win: WebviewWindow, label: string, payload: WorkstudioOpenPayload) => {
+  const requestId = makeRequestId();
+  const out = { ...payload, requestId };
+  dbgOpenFile('emit:workstudio:open_file', { label, requestId, payload: out }, { important: true });
+  try {
+    await win.emit('workstudio:open_file', out);
+  } catch (error) {
+    dbgOpenFile('emit:workstudio:open_file:failed', { label, requestId, error: String(error) }, { important: true });
   }
-
-  workstudioOpenTimersByLabel.set(label, timerIds);
 };
 
 // When a window is minimized/hidden, some WebView runtimes throttle timers and delay UI init.
 // For link-open flows (open file + reveal line), we want the target window to be interactive.
 const ensureWindowVisible = async (win: WebviewWindow) => {
-  const debug = (() => {
-    try {
-      return window.localStorage.getItem('tauri-ai:debug:open_file') === '1';
-    } catch {
-      return false;
-    }
-  })();
-  const verbose = (() => {
-    try {
-      return window.localStorage.getItem('tauri-ai:debug:open_file:verbose') === '1';
-    } catch {
-      return false;
-    }
-  })();
-  const log = (msg: string, meta?: Record<string, unknown>) => {
-    if (!debug) return;
-    if (!verbose && msg !== 'window:ensureVisible') return;
-    // eslint-disable-next-line no-console
-    console.log(`[open_file][viewWindow][${new Date().toISOString()}] ${msg}`, meta ?? {});
-  };
-
-  log('window:ensureVisible', { label: win.label });
+  dbgOpenFile('window:ensureVisible', { label: win.label }, { important: true });
   try {
     const minimized = await (win as any).isMinimized?.();
     if (minimized) {
-      log('window:isMinimized=true; unminimize()', { label: win.label });
+      dbgOpenFile('window:isMinimized=true; unminimize()', { label: win.label });
       await (win as any).unminimize?.();
     }
   } catch {
     // ignore: best-effort
   }
   try {
-    log('window:show()', { label: win.label });
+    dbgOpenFile('window:show()', { label: win.label });
     await (win as any).show?.();
   } catch {
     // ignore: best-effort
   }
   try {
-    log('window:setFocus()', { label: win.label });
+    dbgOpenFile('window:setFocus()', { label: win.label });
     await win.setFocus();
   } catch {
     // ignore: best-effort
@@ -738,18 +704,41 @@ export const openOrFocusWorkstudioWindow = async (
     return byFolder ?? workstudioWindowLabel(workstudioId);
   })();
 
-  const win = await openOrFocusViewWindow('workstudio', title, {
-    label,
-    workstudioId,
-    noDefaultSession: true,
-  });
+  const existing = await WebviewWindow.getByLabel(label).catch(() => null);
+  dbgOpenFile(
+    'openOrFocusWorkstudioWindow:begin',
+    {
+      label,
+      existing: Boolean(existing),
+      workstudioId,
+      mainFolder: opts.mainFolder ?? null,
+      filePath: opts.filePath ?? null,
+      line: opts.line ?? null,
+      column: opts.column ?? null,
+      endLine: opts.endLine ?? null,
+      endColumn: opts.endColumn ?? null,
+    },
+    { important: true }
+  );
+  const win = existing
+    ? existing
+    : openViewWindow('workstudio', title, {
+        label,
+        workstudioId,
+        noDefaultSession: true,
+        filePath: opts.filePath,
+        line: opts.line,
+        column: opts.column,
+        endLine: opts.endLine,
+        endColumn: opts.endColumn,
+      });
 
   // If the window already exists but is minimized, make it visible first; otherwise the
   // open_file event and Monaco reveal logic may be delayed/throttled and time out.
   await ensureWindowVisible(win);
 
-  if (opts.filePath) {
-    await scheduleWorkstudioOpenFile(win, label, {
+  if (existing && opts.filePath) {
+    await emitWorkstudioOpenFileOnce(win, label, {
       workstudioId,
       mainFolder: opts.mainFolder ?? null,
       filePath: opts.filePath,
@@ -758,6 +747,41 @@ export const openOrFocusWorkstudioWindow = async (
       endLine: opts.endLine ?? null,
       endColumn: opts.endColumn ?? null,
     });
+  }
+
+  // When opening a new window from a link-open flow, we pass file targets via URL params so
+  // Workstudio can open it after hydration. But we don't want window-restore to force-open that
+  // one file on next launch, so clear the persisted file target fields after creation.
+  if (!existing && opts.filePath) {
+    try {
+      upsertWindowRecord({
+        label,
+        title,
+        params: {
+          view: 'workstudio',
+          standalone: true,
+          noDefaultSession: true,
+          conversationId: null,
+          runMode: null,
+          agentName: null,
+          documentPath: null,
+          workstudioId,
+          webUrl: null,
+          webTitle: null,
+          terminalWorkdir: null,
+          terminalTitle: null,
+          filePath: null,
+          line: null,
+          column: null,
+          endLine: null,
+          endColumn: null,
+        },
+        bounds: null,
+      });
+      dbgOpenFile('persist:workstudio:clear_file_target', { label, workstudioId }, { important: false });
+    } catch {
+      // ignore
+    }
   }
 
   return win;

@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import ReactMarkdown, { type Components } from "react-markdown";
+import ReactMarkdown, { type Components, defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkGemoji from "remark-gemoji";
 import remarkMath from "remark-math";
@@ -121,6 +121,22 @@ export type CommonMarkdownProps = {
   components?: Components;
 };
 
+const urlTransform = (value: string): string => {
+  const url = (value ?? "").trim();
+  if (!url) return url;
+
+  // Allow our internal file-open link scheme.
+  if (/^tauri-ai:/i.test(url)) return url;
+
+  // Allow Windows absolute paths in markdown links, e.g.:
+  // - E:/work/TauriAI/foo.rs
+  // - E:\work\TauriAI\foo.rs
+  if (/^[A-Za-z]:[\\/]/.test(url)) return url;
+
+  // Preserve default sanitization for everything else.
+  return defaultUrlTransform(url);
+};
+
 export function CommonMarkdown({ content, components }: CommonMarkdownProps) {
   const processed = useMemo(() => preprocessMarkdown(content), [content]);
 
@@ -137,6 +153,7 @@ export function CommonMarkdown({ content, components }: CommonMarkdownProps) {
       remarkPlugins={[remarkGfm, remarkMath, remarkGemoji]}
       rehypePlugins={[[rehypeKatex, katexOptions], rehypeRaw]}
       components={components}
+      urlTransform={urlTransform}
     >
       {processed}
     </ReactMarkdown>

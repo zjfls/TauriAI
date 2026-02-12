@@ -1165,10 +1165,12 @@ export const MarkdownRenderer = React.memo(function MarkdownRendererImpl({ conte
       const hrefStr = typeof href === 'string' ? href : '';
       const token = hrefStr ? parseFileReferenceTokenFromHref(hrefStr) : null;
       const fileRef = token ? parseFileReferenceToken(token) : null;
+      const filePathToken = !fileRef && token && looksLikeFilePath(token) ? token.trim() : null;
       const canOpenFileRef = Boolean(fileRef) && isTauriRuntime() && Boolean(conversationId || workstudioId);
+      const canOpenFilePath = Boolean(filePathToken) && isTauriRuntime() && Boolean(conversationId || workstudioId);
       const canOpenWebTab = isTauriRuntime() && looksLikeWebUrl(hrefStr);
 
-      if (!canOpenFileRef && !canOpenWebTab) {
+      if (!canOpenFileRef && !canOpenFilePath && !canOpenWebTab) {
         return (
           <a href={hrefStr} {...props}>
             {children}
@@ -1176,15 +1178,38 @@ export const MarkdownRenderer = React.memo(function MarkdownRendererImpl({ conte
         );
       }
 
+      const computedTitle = (() => {
+        if (fileRef) {
+          const base = fileRef.filePath;
+          const start = fileRef.column ? `${fileRef.line}:${fileRef.column}` : `${fileRef.line}`;
+          if (typeof fileRef.endLine === 'number') {
+            const end = fileRef.endColumn ? `${fileRef.endLine}:${fileRef.endColumn}` : `${fileRef.endLine}`;
+            return `打开 ${base} (${start}-${end})`;
+          }
+          return `打开 ${base} (${start})`;
+        }
+        if (filePathToken) {
+          return `打开 ${filePathToken}`;
+        }
+        if (canOpenWebTab) return hrefStr;
+        return undefined;
+      })();
+      const title = (props as any)?.title ?? computedTitle;
+
       return (
         <a
           href={hrefStr}
           {...props}
+          title={title}
           onClick={(e) => {
             e.preventDefault();
             e.stopPropagation();
             if (fileRef) {
               void openFileReference(fileRef);
+              return;
+            }
+            if (filePathToken) {
+              void openFilePath(filePathToken);
               return;
             }
             if (canOpenWebTab) {

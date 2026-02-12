@@ -13,6 +13,8 @@ import { AnsiText } from './AnsiText';
 interface DebugModalProps {
   isOpen: boolean;
   onClose: () => void;
+  /** 是否处于流式生成中（用于调整默认展开/收起行为） */
+  isStreaming?: boolean;
   debugInfo: DebugInfo | null;
   turns?: MessageTurn[] | null;
   blocks?: MessageBlock[] | null;
@@ -460,6 +462,7 @@ const HeadersViewer: React.FC<HeadersViewerProps> = ({ headers }) => {
 export const DebugModal: React.FC<DebugModalProps> = ({
   isOpen,
   onClose,
+  isStreaming,
   debugInfo,
   turns,
   blocks,
@@ -472,6 +475,7 @@ export const DebugModal: React.FC<DebugModalProps> = ({
   const { config } = useConfigStore();
   const ansiRenderMode = config?.general?.ansiRenderMode;
   const ansiColorMode = config?.general?.ansiColorMode;
+  const defaultExpandedForStreaming = Boolean(isStreaming);
 
   const sortedTurns = useMemo(
     () => (turns ?? []).slice().sort((a, b) => a.turnIndex - b.turnIndex),
@@ -915,9 +919,9 @@ export const DebugModal: React.FC<DebugModalProps> = ({
             </div>
           )}
 
-          <div className="overflow-auto max-h-[calc(80vh-80px-72px)] space-y-4 pr-1">
+            <div className="overflow-auto max-h-[calc(80vh-80px-72px)] space-y-4 pr-1">
             {thinkingText && (
-              <CollapsibleSection title="思考过程" defaultExpanded={false}>
+              <CollapsibleSection title="思考过程" defaultExpanded={defaultExpandedForStreaming}>
                 <TextViewer
                   text={thinkingText}
                   containerClassName="bg-purple-50 dark:bg-purple-900/30 text-purple-800 dark:text-purple-200"
@@ -927,7 +931,7 @@ export const DebugModal: React.FC<DebugModalProps> = ({
             )}
 
           {(toolCalls.length > 0 || toolResults.length > 0 || webSearchBlocks.length > 0) && (
-            <CollapsibleSection title="工具执行" defaultExpanded={false}>
+            <CollapsibleSection title="工具执行" defaultExpanded={defaultExpandedForStreaming}>
               <div className="space-y-3">
                 {pairedToolRuns.runs.map(({ call, result }) => {
                   let prettyArgs: string = call.arguments;
