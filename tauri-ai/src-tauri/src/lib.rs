@@ -376,8 +376,14 @@ fn run_desktop() {
                             return false;
                         }
                         let label = w.label();
-                        // 避免把菜单事件发给 ghost / workstudio 这类不初始化 chat runtime 的窗口。
-                        !label.starts_with("__tauriai_ghost__") && !label.starts_with("workspace-")
+                        // 避免把菜单事件发给不初始化 chat runtime 的窗口：
+                        // - drag ghost window（__tauriai_ghost__*）
+                        // - workstudio window（view-workstudio*）
+                        //
+                        // 这些窗口不监听 `menu:*` 事件；菜单操作应路由到“聊天窗口”（优先聚焦窗口，否则 main）。
+                        !label.starts_with("__tauriai_ghost__")
+                            && !label.starts_with("view-workstudio")
+                            && !label.starts_with("workspace-")
                     });
 
                 focused.or_else(|| app.get_webview_window("main"))

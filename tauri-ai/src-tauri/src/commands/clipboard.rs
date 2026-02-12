@@ -5,6 +5,8 @@
 use base64::Engine as _;
 #[cfg(not(target_os = "macos"))]
 use std::borrow::Cow;
+#[cfg(target_os = "windows")]
+use std::sync::Arc;
 
 const MAX_PNG_BYTES: usize = 30 * 1024 * 1024; // 30MB
 const MAX_INLINE_DATA_URL_PNG_BYTES: usize = 2 * 1024 * 1024; // 2MB: avoid massive HTML/text payloads
@@ -17,6 +19,27 @@ fn strip_data_url_prefix(input: &str) -> &str {
         }
     }
     input
+}
+
+#[cfg(target_os = "windows")]
+fn write_png_bytes_to_windows_clipboard(png_bytes: &[u8]) -> Result<(), String> {
+    const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+    if png_bytes.len() < PNG_SIGNATURE.len() || &png_bytes[..PNG_SIGNATURE.len()] != PNG_SIGNATURE {
+        return Err("invalid PNG signature".to_string());
+    }
+
+    let _clip = clipboard_win::Clipboard::new_attempts(12)
+        .map_err(|e| format!("open clipboard failed: {e}"))?;
+
+    clipboard_win::raw::empty().map_err(|e| format!("empty clipboard failed: {e}"))?;
+
+    let format_id = clipboard_win::register_format("PNG")
+        .ok_or_else(|| "Cannot register PNG clipboard format".to_string())?;
+
+    clipboard_win::raw::set_without_clear(format_id.get(), png_bytes)
+        .map_err(|e| format!("set clipboard PNG failed: {e}"))?;
+
+    Ok(())
 }
 
 /// Write a PNG image (base64-encoded bytes) into the system clipboard.
@@ -151,36 +174,62 @@ pub async fn clipboard_write_png_base64(
     {
         #[cfg(target_os = "windows")]
         {
-            let (w, h, bytes) = tokio::task::spawn_blocking(move || -> Result<(usize, usize, Vec<u8>), String> {
-                let img = image::load_from_memory_with_format(&png_bytes, image::ImageFormat::Png)
-                    .map_err(|e| format!("parse PNG failed: {e}"))?;
-                let rgba = img.to_rgba8();
-                let (w, h) = rgba.dimensions();
+            // Keep a copy of the original PNG bytes for a raw "PNG" clipboard fallback.
+            let png_bytes = Arc::new(png_bytes);
 
-                if w == 0 || h == 0 {
-                    return Err("invalid PNG dimensions".to_string());
+            // Try decode PNG -> RGBA (required by `arboard::Clipboard::set_image`).
+            // If decoding fails (some WebViews generate PNGs that `image` rejects), fall back to putting raw PNG bytes
+            // on the clipboard (registered "PNG" format) so paste still works in most apps.
+            let decoded: Result<(usize, usize, Vec<u8>), String> = tokio::task::spawn_blocking({
+                let png_bytes = png_bytes.clone();
+                move || -> Result<(usize, usize, Vec<u8>), String> {
+                    let img = image::load_from_memory_with_format(&png_bytes, image::ImageFormat::Png)
+                        .map_err(|e| format!("parse PNG failed: {e}"))?;
+                    let rgba = img.to_rgba8();
+                    let (w, h) = rgba.dimensions();
+
+                    if w == 0 || h == 0 {
+                        return Err("invalid PNG dimensions".to_string());
+                    }
+
+                    Ok((w as usize, h as usize, rgba.into_raw()))
                 }
-
-                Ok((w as usize, h as usize, rgba.into_raw()))
             })
             .await
-            .map_err(|e| format!("clipboard decode task failed: {e}"))??;
+            .map_err(|e| format!("clipboard decode task failed: {e}"))?;
 
             let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
             app.run_on_main_thread(move || {
                 let res = (|| -> Result<(), String> {
-                    let mut clipboard =
-                        arboard::Clipboard::new().map_err(|e| format!("init clipboard failed: {e}"))?;
-                    clipboard
-                        .set_image(arboard::ImageData {
-                            width: w,
-                            height: h,
-                            bytes: Cow::Owned(bytes),
-                        })
-                        .map_err(|e| format!("set clipboard image failed: {e}"))?;
+                    let primary_error: Option<String> = match decoded {
+                        Ok((w, h, bytes)) => match arboard::Clipboard::new()
+                            .map_err(|e| format!("init clipboard failed: {e}"))
+                        {
+                            Ok(mut clipboard) => match clipboard.set_image(arboard::ImageData {
+                                width: w,
+                                height: h,
+                                bytes: Cow::Owned(bytes),
+                            }) {
+                                Ok(()) => return Ok(()),
+                                Err(e) => Some(format!("set clipboard image failed: {e}")),
+                            },
+                            Err(e) => Some(e),
+                        },
+                        Err(e) => Some(e),
+                    };
 
-                    Ok(())
+                    match write_png_bytes_to_windows_clipboard(png_bytes.as_ref().as_slice()) {
+                        Ok(()) => Ok(()),
+                        Err(fallback_err) => {
+                            if let Some(primary) = primary_error {
+                                Err(format!("{primary}; fallback failed: {fallback_err}"))
+                            } else {
+                                Err(fallback_err)
+                            }
+                        }
+                    }
                 })();
+
                 let _ = tx.send(res);
             })
             .map_err(|e| format!("schedule clipboard write failed: {e}"))?;

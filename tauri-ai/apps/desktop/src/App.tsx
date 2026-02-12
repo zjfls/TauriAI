@@ -335,7 +335,10 @@ function App() {
     void listen<string>('menu:new_session_agent', (event) => {
       const agentName = typeof event.payload === 'string' ? event.payload : '';
       if (!agentName) return;
-      void createSession(agentName).catch((e) => console.error('menu:new_session_agent failed:', e));
+      void useSessionStore
+        .getState()
+        .createSession(agentName)
+        .catch((e) => console.error('menu:new_session_agent failed:', e));
       useUIStore.getState().setActiveView('chat');
     })
       .then((fn) => {
@@ -364,7 +367,7 @@ function App() {
       unlistenNewAgent?.();
       unlistenSettings?.();
     };
-  }, [config, createSession, shouldInitChatRuntime]);
+  }, [shouldInitChatRuntime]);
 
   /**
    * Menu: View -> History

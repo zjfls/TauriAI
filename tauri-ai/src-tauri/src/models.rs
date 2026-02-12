@@ -1544,8 +1544,6 @@ pub struct McpSetConfig {
 #[serde(rename_all = "camelCase")]
 pub struct McpSettings {
     #[serde(default)]
-    pub enabled: bool,
-    #[serde(default)]
     pub servers: Vec<McpServerEntry>,
     #[serde(default)]
     pub sets: Vec<McpSetConfig>,
@@ -1554,8 +1552,6 @@ pub struct McpSettings {
 impl Default for McpSettings {
     fn default() -> Self {
         Self {
-            // MCP 在 TauriAI 中更多是“按 agent/mcp set 生效”的能力；不再提供全局开关。
-            enabled: true,
             servers: Vec::new(),
             sets: Vec::new(),
         }

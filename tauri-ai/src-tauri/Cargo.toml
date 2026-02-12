@@ -108,3 +108,8 @@ rmcp = { version = "0.12.0", default-features = false, features = [
 objc2 = "0.6.3"
 objc2-app-kit = "0.3.2"
 objc2-foundation = "0.3.2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# Used to write raw PNG bytes into the Windows clipboard (registered "PNG" format),
+# as a fallback when decoding PNG -> RGBA fails.
+clipboard-win = { version = "5.4.1", features = ["std"] }

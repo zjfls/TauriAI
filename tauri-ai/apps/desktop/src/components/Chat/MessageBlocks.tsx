@@ -8,7 +8,7 @@
  *   2) 在这里补上对应 block 的渲染组件
  */
 
- import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+ import React, { useEffect, useMemo, useRef, useState } from 'react';
  import { AlertTriangle, Brain, Bug, ChevronDown, ChevronRight, RefreshCw, Search, Wrench } from 'lucide-react';
  import { invoke, isTauri } from '@tauri-apps/api/core';
  import type {
