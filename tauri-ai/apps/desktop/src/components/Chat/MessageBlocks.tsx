@@ -2214,7 +2214,8 @@ export const MessageBlocks: React.FC<{
   const showTurnHeader = distinctTurnIds.size > 0;
   const showTaskToggle = distinctTurnIds.size > 1;
   const [isTaskCollapsed, setIsTaskCollapsed] = useState<boolean>(() => messageSource !== 'live');
-  const defaultExpandedForBlocks = messageSource === 'live' || Boolean(isStreaming);
+  // Streaming 时默认展开（便于查看 ReAct）；stream 结束后默认收起每个 turn 的细节 block，但不影响 task（多 turn）整体是否收起。
+  const defaultExpandedForBlocks = Boolean(isStreaming);
   const latestTurnId = useMemo(() => {
     let last: string | null = null;
     for (const b of blocks) {
