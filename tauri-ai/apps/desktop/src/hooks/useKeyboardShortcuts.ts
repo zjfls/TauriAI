@@ -347,6 +347,14 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
           dispatchShortcutEvent(actionId);
           return true;
         }
+        case 'workstudio.goToDefinition':
+        case 'workstudio.goToTypeDefinition':
+        case 'workstudio.goToReferences':
+        case 'workstudio.peekDefinition': {
+          if (useUIStore.getState().activeView !== 'workstudio') return false;
+          dispatchShortcutEvent(actionId);
+          return true;
+        }
         case 'document.save': {
           if (useUIStore.getState().activeView !== 'document') return false;
           dispatchShortcutEvent(actionId);
@@ -416,6 +424,11 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
         case 'workstudio.navigateBack':
         case 'workstudio.navigateForward':
           return useUIStore.getState().activeView === 'workstudio';
+        case 'workstudio.goToDefinition':
+        case 'workstudio.goToTypeDefinition':
+        case 'workstudio.goToReferences':
+        case 'workstudio.peekDefinition':
+          return useUIStore.getState().activeView === 'workstudio';
         case 'document.save':
           return useUIStore.getState().activeView === 'document';
         case 'web.focusAddressBar':
@@ -445,6 +458,16 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
     // 允许 Escape 在其他监听里继续用于关闭面板；abort 成功也不强制阻止默认行为。
     if (binding !== 'Escape') {
       event.preventDefault();
+    }
+
+    // Workstudio 编辑器内动作：避免被 Monaco/其它监听重复处理（例如 F12 内置跳转）。
+    if (
+      actionId === 'workstudio.goToDefinition' ||
+      actionId === 'workstudio.goToTypeDefinition' ||
+      actionId === 'workstudio.goToReferences' ||
+      actionId === 'workstudio.peekDefinition'
+    ) {
+      event.stopPropagation();
     }
     void executeAction(actionId);
   }, [

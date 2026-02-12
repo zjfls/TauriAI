@@ -388,6 +388,42 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     const raw = userRaw ?? (shortcutPlatform === 'mac' ? def?.defaultMac : def?.defaultWindows) ?? (shortcutPlatform === 'mac' ? 'Ctrl+Shift+-' : 'Alt+Right');
     return normalizeKeybindingString(String(raw || ''), shortcutPlatform) ?? (shortcutPlatform === 'mac' ? 'Ctrl+Shift+-' : 'Alt+Right');
   }, [keyboardShortcuts, shortcutPlatform]);
+  const goToDefinitionShortcutLabel = useMemo(() => {
+    const def = SHORTCUT_ACTIONS.find((a) => a.id === 'workstudio.goToDefinition');
+    const userRaw =
+      shortcutPlatform === 'mac'
+        ? keyboardShortcuts?.mac?.['workstudio.goToDefinition']
+        : keyboardShortcuts?.windows?.['workstudio.goToDefinition'];
+    const raw = userRaw ?? (shortcutPlatform === 'mac' ? def?.defaultMac : def?.defaultWindows) ?? 'F12';
+    return normalizeKeybindingString(String(raw || ''), shortcutPlatform) ?? 'F12';
+  }, [keyboardShortcuts, shortcutPlatform]);
+  const goToTypeDefinitionShortcutLabel = useMemo(() => {
+    const def = SHORTCUT_ACTIONS.find((a) => a.id === 'workstudio.goToTypeDefinition');
+    const userRaw =
+      shortcutPlatform === 'mac'
+        ? keyboardShortcuts?.mac?.['workstudio.goToTypeDefinition']
+        : keyboardShortcuts?.windows?.['workstudio.goToTypeDefinition'];
+    const raw = userRaw ?? (shortcutPlatform === 'mac' ? def?.defaultMac : def?.defaultWindows) ?? (shortcutPlatform === 'mac' ? 'Cmd+F12' : 'Ctrl+F12');
+    return normalizeKeybindingString(String(raw || ''), shortcutPlatform) ?? (shortcutPlatform === 'mac' ? 'Cmd+F12' : 'Ctrl+F12');
+  }, [keyboardShortcuts, shortcutPlatform]);
+  const goToReferencesShortcutLabel = useMemo(() => {
+    const def = SHORTCUT_ACTIONS.find((a) => a.id === 'workstudio.goToReferences');
+    const userRaw =
+      shortcutPlatform === 'mac'
+        ? keyboardShortcuts?.mac?.['workstudio.goToReferences']
+        : keyboardShortcuts?.windows?.['workstudio.goToReferences'];
+    const raw = userRaw ?? (shortcutPlatform === 'mac' ? def?.defaultMac : def?.defaultWindows) ?? 'Shift+F12';
+    return normalizeKeybindingString(String(raw || ''), shortcutPlatform) ?? 'Shift+F12';
+  }, [keyboardShortcuts, shortcutPlatform]);
+  const peekDefinitionShortcutLabel = useMemo(() => {
+    const def = SHORTCUT_ACTIONS.find((a) => a.id === 'workstudio.peekDefinition');
+    const userRaw =
+      shortcutPlatform === 'mac'
+        ? keyboardShortcuts?.mac?.['workstudio.peekDefinition']
+        : keyboardShortcuts?.windows?.['workstudio.peekDefinition'];
+    const raw = userRaw ?? (shortcutPlatform === 'mac' ? def?.defaultMac : def?.defaultWindows) ?? (shortcutPlatform === 'mac' ? 'Option+F12' : 'Alt+F12');
+    return normalizeKeybindingString(String(raw || ''), shortcutPlatform) ?? (shortcutPlatform === 'mac' ? 'Option+F12' : 'Alt+F12');
+  }, [keyboardShortcuts, shortcutPlatform]);
 
   const navHistoryRef = useRef<Map<string, PaneNavHistory>>(new Map());
   const suppressNavRecordRef = useRef(false);
@@ -456,6 +492,11 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   >(null);
   const [tabMenu, setTabMenu] = useState<
     | { visible: true; x: number; y: number; paneId: string; fileId: string; path: string }
+    | null
+  >(null);
+  const editorNavMenuButtonRef = useRef<HTMLButtonElement | null>(null);
+  const [editorNavMenu, setEditorNavMenu] = useState<
+    | { visible: true; x: number; y: number }
     | null
   >(null);
 
@@ -1455,6 +1496,58 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     }
   }, [getCurrentNavLocationForPane, isSameNavLocation, navigateToLocation, resolvedFocusedPaneId]);
 
+  const runFocusedEditorAction = useCallback(
+    async (actionId: string, opts?: { requireTextFocus?: boolean }) => {
+      const requireTextFocus = opts?.requireTextFocus ?? true;
+      const state = useWindowLayoutStore.getState();
+      const paneId =
+        (state.focusedPaneId && state.panes.some((p) => p.id === state.focusedPaneId) ? state.focusedPaneId : null) ??
+        resolvedFocusedPaneId ??
+        (state.panes[0]?.id ?? fallbackPaneIdRef.current);
+      if (!paneId) return false;
+
+      const editor = editorByPaneRef.current.get(paneId) ?? null;
+      if (!editor) {
+        console.warn('[Workstudio] editor not ready for action:', { paneId, actionId });
+        return false;
+      }
+      if (requireTextFocus && !editor.hasTextFocus()) return false;
+      // 菜单触发时 editor 可能暂时失焦；主动聚焦可提升稳定性。
+      editor.focus();
+
+      const action = editor.getAction(actionId);
+      if (!action) {
+        console.warn('[Workstudio] monaco action not found:', { actionId });
+        return false;
+      }
+      try {
+        await action.run();
+        return true;
+      } catch (err) {
+        console.error('[Workstudio] monaco action failed:', { actionId, err });
+        return false;
+      }
+    },
+    [resolvedFocusedPaneId]
+  );
+
+  const goToDefinition = useCallback(
+    (opts?: { requireTextFocus?: boolean }) => runFocusedEditorAction('editor.action.revealDefinition', opts),
+    [runFocusedEditorAction]
+  );
+  const goToTypeDefinition = useCallback(
+    (opts?: { requireTextFocus?: boolean }) => runFocusedEditorAction('editor.action.revealTypeDefinition', opts),
+    [runFocusedEditorAction]
+  );
+  const goToReferences = useCallback(
+    (opts?: { requireTextFocus?: boolean }) => runFocusedEditorAction('editor.action.goToReferences', opts),
+    [runFocusedEditorAction]
+  );
+  const peekDefinition = useCallback(
+    (opts?: { requireTextFocus?: boolean }) => runFocusedEditorAction('editor.action.peekDefinition', opts),
+    [runFocusedEditorAction]
+  );
+
   const activateTabInPane = useCallback((paneId: string, tabId: string) => {
     const prevLocation = !suppressNavRecordRef.current ? getCurrentNavLocationForPane(paneId) : null;
     const targetLocation: NavLocation = { tabId };
@@ -2212,11 +2305,27 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       }
       if (action === 'workstudio.navigateForward') {
         void navigateForward();
+        return;
+      }
+      if (action === 'workstudio.goToDefinition') {
+        void goToDefinition();
+        return;
+      }
+      if (action === 'workstudio.goToTypeDefinition') {
+        void goToTypeDefinition();
+        return;
+      }
+      if (action === 'workstudio.goToReferences') {
+        void goToReferences();
+        return;
+      }
+      if (action === 'workstudio.peekDefinition') {
+        void peekDefinition();
       }
     };
     window.addEventListener('tauri-ai:shortcut', onShortcut as EventListener);
     return () => window.removeEventListener('tauri-ai:shortcut', onShortcut as EventListener);
-  }, [navigateBack, navigateForward]);
+  }, [goToDefinition, goToReferences, goToTypeDefinition, navigateBack, navigateForward, peekDefinition]);
 
   // Esc: close palette (local behavior)
   useEffect(() => {
@@ -2231,6 +2340,18 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [filePaletteOpen]);
+
+  // Esc: close editor navigation menu
+  useEffect(() => {
+    if (!editorNavMenu) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      setEditorNavMenu(null);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [editorNavMenu]);
 
   useEffect(() => {
     if (!filePaletteOpen) return;
@@ -2516,14 +2637,15 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   }, [ws, expandedDirs, entriesByDir, loadingDirs, listDir]);
 
   useEffect(() => {
-    if (!contextMenu && !tabMenu) return;
+    if (!contextMenu && !tabMenu && !editorNavMenu) return;
     const onDown = () => {
       setContextMenu(null);
       setTabMenu(null);
+      setEditorNavMenu(null);
     };
     window.addEventListener('mousedown', onDown);
     return () => window.removeEventListener('mousedown', onDown);
-  }, [contextMenu, tabMenu]);
+  }, [contextMenu, editorNavMenu, tabMenu]);
 
   useEffect(() => {
     let disposed = false;
@@ -2744,6 +2866,26 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                   </button>
                 </div>
 
+                <button
+                  ref={editorNavMenuButtonRef}
+                  type="button"
+                  className="inline-flex items-center gap-1 rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                  onClick={() => {
+                    const btn = editorNavMenuButtonRef.current;
+                    if (!btn) return;
+                    if (editorNavMenu) {
+                      setEditorNavMenu(null);
+                      return;
+                    }
+                    const rect = btn.getBoundingClientRect();
+                    setEditorNavMenu({ visible: true, x: rect.left, y: rect.bottom + 4 });
+                  }}
+                  title="代码导航（转到定义/引用等）"
+                >
+                  导航
+                  <ChevronDown size={12} />
+                </button>
+
 	            <div className="min-w-0 text-xs text-gray-600 dark:text-gray-300">
 	              窗格: {resolvedPanes.length}{' '}
 	              <span className="text-gray-400">
@@ -2891,6 +3033,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	                                theme={editorTheme}
 	                                options={{
 	                                  minimap: { enabled: false },
+	                                  codeLens: false,
 	                                  fontSize: 13,
 	                                  fontFamily:
 	                                    'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
@@ -3089,6 +3232,61 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                 )}
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {editorNavMenu && (
+        <div
+          className="fixed z-[210] min-w-[240px] rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900"
+          style={{ left: editorNavMenu.x, top: editorNavMenu.y }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <div className="py-1 text-sm">
+            <button
+              type="button"
+              className="flex w-full items-center justify-between gap-4 px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+              onClick={() => {
+                setEditorNavMenu(null);
+                void goToDefinition({ requireTextFocus: false });
+              }}
+            >
+              <span>转到定义</span>
+              <span className="text-xs text-gray-400">{goToDefinitionShortcutLabel}</span>
+            </button>
+            <button
+              type="button"
+              className="flex w-full items-center justify-between gap-4 px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+              onClick={() => {
+                setEditorNavMenu(null);
+                void goToTypeDefinition({ requireTextFocus: false });
+              }}
+            >
+              <span>转到类型定义</span>
+              <span className="text-xs text-gray-400">{goToTypeDefinitionShortcutLabel}</span>
+            </button>
+            <button
+              type="button"
+              className="flex w-full items-center justify-between gap-4 px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+              onClick={() => {
+                setEditorNavMenu(null);
+                void goToReferences({ requireTextFocus: false });
+              }}
+            >
+              <span>查找引用</span>
+              <span className="text-xs text-gray-400">{goToReferencesShortcutLabel}</span>
+            </button>
+            <button
+              type="button"
+              className="flex w-full items-center justify-between gap-4 px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+              onClick={() => {
+                setEditorNavMenu(null);
+                void peekDefinition({ requireTextFocus: false });
+              }}
+            >
+              <span>预览定义</span>
+              <span className="text-xs text-gray-400">{peekDefinitionShortcutLabel}</span>
+            </button>
           </div>
         </div>
       )}
