@@ -458,6 +458,167 @@ fn convert_messages(
     (inputs, None)
 }
 
+fn extract_text_from_responses_response(resp: &ResponsesResponse) -> Result<String, AiError> {
+    // Extract text from output
+    let mut result = String::new();
+    let mut saw_function_call = false;
+    for item in &resp.output {
+        match item {
+            OutputItem::Message(msg) => {
+                for content in &msg.content {
+                    if let ContentItem::OutputText { text } = content {
+                        result.push_str(text);
+                    }
+                }
+            }
+            OutputItem::Reasoning(reasoning) => {
+                // Optionally include reasoning summary
+                for summary in &reasoning.summary {
+                    if let SummaryItem::SummaryText { text } = summary {
+                        result.push_str("[Reasoning: ");
+                        result.push_str(text);
+                        result.push_str("]\n\n");
+                    }
+                }
+            }
+            OutputItem::FunctionCall(_) => {
+                saw_function_call = true;
+            }
+            OutputItem::Other => {}
+        }
+    }
+
+    if saw_function_call {
+        return Err(AiError::InvalidResponse(
+            "Model requested tool calls in non-streaming Responses API; use streaming run_task/turn loop"
+                .to_string(),
+        ));
+    }
+
+    if result.is_empty() {
+        return Err(AiError::InvalidResponse(
+            "No content in response".to_string(),
+        ));
+    }
+
+    Ok(result)
+}
+
+fn parse_responses_sse_to_text(body: &str) -> Result<String, AiError> {
+    let trimmed = body.trim_start();
+    if !trimmed.starts_with("event:") && !trimmed.starts_with("data:") {
+        return Err(AiError::InvalidResponse(
+            "Not an SSE response body".to_string(),
+        ));
+    }
+
+    let mut full_content = String::new();
+    let mut saw_function_call = false;
+    let mut last_error: Option<String> = None;
+    let mut completed: Option<ResponsesResponse> = None;
+
+    for raw_line in body.lines() {
+        let line = raw_line.trim_end_matches('\r');
+        let Some(data) = line.strip_prefix("data: ") else {
+            continue;
+        };
+        let data = data.trim();
+        if data.is_empty() {
+            continue;
+        }
+        if data == "[DONE]" {
+            break;
+        }
+
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(data) else {
+            continue;
+        };
+
+        let event_type = v.get("type").and_then(|t| t.as_str()).unwrap_or_default();
+        match event_type {
+            "response.output_text.delta" => {
+                if let Some(delta) = v.get("delta").and_then(|d| d.as_str()) {
+                    full_content.push_str(delta);
+                }
+            }
+            "response.output_text.done" => {
+                if let Some(text) = v.get("text").and_then(|d| d.as_str()) {
+                    full_content.push_str(text);
+                }
+            }
+            "response.text.delta" => {
+                let delta = v
+                    .get("delta")
+                    .and_then(|d| d.as_str())
+                    .or_else(|| v.get("text").and_then(|t| t.as_str()));
+                if let Some(delta) = delta {
+                    full_content.push_str(delta);
+                }
+            }
+            // Function tool call arguments streaming (Responses API)
+            "response.function_call_arguments.delta" => {
+                saw_function_call = true;
+            }
+            "response.output_item.added" => {
+                let item_type = v
+                    .get("item")
+                    .and_then(|i| i.get("type"))
+                    .and_then(|t| t.as_str());
+                if item_type == Some("function_call") {
+                    saw_function_call = true;
+                }
+            }
+            "error" => {
+                last_error = v
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .map(|s| s.to_string());
+            }
+            "response.failed" | "response.incomplete" => {
+                last_error = v
+                    .get("response")
+                    .and_then(|r| r.get("error"))
+                    .and_then(|e| e.get("message"))
+                    .and_then(|m| m.as_str())
+                    .map(|s| s.to_string());
+            }
+            "response.completed" | "response.done" => {
+                if let Some(resp) = v.get("response") {
+                    if let Ok(parsed) = serde_json::from_value::<ResponsesResponse>(resp.clone()) {
+                        completed = Some(parsed);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(err) = last_error.filter(|s| !s.is_empty()) {
+        return Err(AiError::RequestFailed(err));
+    }
+
+    if full_content.is_empty() {
+        if let Some(resp) = completed.as_ref() {
+            return extract_text_from_responses_response(resp);
+        }
+    }
+
+    if full_content.is_empty() && saw_function_call {
+        return Err(AiError::InvalidResponse(
+            "Model requested tool calls in streaming Responses API, but caller used non-streaming API"
+                .to_string(),
+        ));
+    }
+
+    if full_content.is_empty() {
+        return Err(AiError::InvalidResponse(
+            "No content in SSE response".to_string(),
+        ));
+    }
+
+    Ok(full_content)
+}
+
 impl From<ResponsesInput> for ResponsesInputItem {
     fn from(v: ResponsesInput) -> Self {
         ResponsesInputItem::Message(v)
@@ -607,55 +768,26 @@ impl AiClient for OpenAiResponsesClient {
             .bytes()
             .await
             .map_err(|e| AiError::InvalidResponse(e.to_string()))?;
-        let responses_response: ResponsesResponse = serde_json::from_slice(&bytes).map_err(|e| {
-            let snippet = String::from_utf8_lossy(&bytes);
-            let snippet = snippet.chars().take(800).collect::<String>();
-            AiError::InvalidResponse(format!("{}；响应体（截断）：{}", e, snippet))
-        })?;
+        let responses_response: ResponsesResponse = match serde_json::from_slice(&bytes) {
+            Ok(v) => v,
+            Err(e) => {
+                // Some OpenAI-compatible providers return SSE even when `stream=false`.
+                // Try to parse SSE and extract output text to keep `chat()` robust.
+                let body = String::from_utf8_lossy(&bytes);
+                let trimmed = body.trim_start();
+                if trimmed.starts_with("event:") || trimmed.starts_with("data:") {
+                    return parse_responses_sse_to_text(&body);
+                }
 
-        // Extract text from output
-        let mut result = String::new();
-        let mut saw_function_call = false;
-        for item in responses_response.output {
-            match item {
-                OutputItem::Message(msg) => {
-                    for content in msg.content {
-                        if let ContentItem::OutputText { text } = content {
-                            result.push_str(&text);
-                        }
-                    }
-                }
-                OutputItem::Reasoning(reasoning) => {
-                    // Optionally include reasoning summary
-                    for summary in reasoning.summary {
-                        if let SummaryItem::SummaryText { text } = summary {
-                            result.push_str("[Reasoning: ");
-                            result.push_str(&text);
-                            result.push_str("]\n\n");
-                        }
-                    }
-                }
-                OutputItem::FunctionCall(_call) => {
-                    saw_function_call = true;
-                }
-                OutputItem::Other => {}
+                let snippet = body.chars().take(800).collect::<String>();
+                return Err(AiError::InvalidResponse(format!(
+                    "{}；响应体（截断）：{}",
+                    e, snippet
+                )));
             }
-        }
+        };
 
-        if saw_function_call {
-            return Err(AiError::InvalidResponse(
-                "Model requested tool calls in non-streaming Responses API; use streaming run_task/turn loop"
-                    .to_string(),
-            ));
-        }
-
-        if result.is_empty() {
-            return Err(AiError::InvalidResponse(
-                "No content in response".to_string(),
-            ));
-        }
-
-        Ok(result)
+        extract_text_from_responses_response(&responses_response)
     }
 
     async fn chat_stream(

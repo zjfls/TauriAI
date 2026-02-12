@@ -438,6 +438,81 @@ fn should_include_reasoning_content(config: &ModelConfig) -> bool {
     matches!(config.thinking_level.as_deref(), Some(level) if level != "disabled")
 }
 
+fn parse_chat_completions_sse_to_text(body: &str) -> Result<String, AiError> {
+    let trimmed = body.trim_start();
+    if !trimmed.starts_with("data:") {
+        return Err(AiError::InvalidResponse(
+            "Not an SSE response body".to_string(),
+        ));
+    }
+
+    let mut full_content = String::new();
+    let mut last_error: Option<String> = None;
+
+    for raw_line in body.lines() {
+        let line = raw_line.trim_end_matches('\r');
+        let Some(data) = line.strip_prefix("data: ") else {
+            continue;
+        };
+        let data = data.trim();
+        if data.is_empty() {
+            continue;
+        }
+        if data == "[DONE]" {
+            break;
+        }
+
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(data) else {
+            continue;
+        };
+
+        if let Some(err) = v
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+            .map(|s| s.to_string())
+        {
+            last_error = Some(err);
+            continue;
+        }
+
+        // Standard Chat Completions streaming: choices[0].delta.content
+        if let Some(delta) = v
+            .get("choices")
+            .and_then(|c| c.get(0))
+            .and_then(|c0| c0.get("delta"))
+            .and_then(|d| d.get("content"))
+            .and_then(|t| t.as_str())
+        {
+            full_content.push_str(delta);
+            continue;
+        }
+
+        // Some proxies may put text under choices[0].message.content even in a streamed response.
+        if let Some(text) = v
+            .get("choices")
+            .and_then(|c| c.get(0))
+            .and_then(|c0| c0.get("message"))
+            .and_then(|m| m.get("content"))
+            .and_then(|t| t.as_str())
+        {
+            full_content.push_str(text);
+        }
+    }
+
+    if let Some(err) = last_error.filter(|s| !s.is_empty()) {
+        return Err(AiError::RequestFailed(err));
+    }
+
+    if full_content.is_empty() {
+        return Err(AiError::InvalidResponse(
+            "No content in SSE response".to_string(),
+        ));
+    }
+
+    Ok(full_content)
+}
+
 // ============================================================================
 // Base implementation (shared logic)
 // ============================================================================
@@ -583,11 +658,24 @@ impl OpenAiBaseClient {
             .bytes()
             .await
             .map_err(|e| AiError::InvalidResponse(e.to_string()))?;
-        let completion: ChatCompletionResponse = serde_json::from_slice(&bytes).map_err(|e| {
-            let snippet = String::from_utf8_lossy(&bytes);
-            let snippet = snippet.chars().take(800).collect::<String>();
-            AiError::InvalidResponse(format!("{}；响应体（截断）：{}", e, snippet))
-        })?;
+        let completion: ChatCompletionResponse = match serde_json::from_slice(&bytes) {
+            Ok(v) => v,
+            Err(e) => {
+                // Some OpenAI-compatible providers return SSE even when `stream=false`.
+                // Try to parse SSE and extract output text to keep `chat()` robust.
+                let body = String::from_utf8_lossy(&bytes);
+                let trimmed = body.trim_start();
+                if trimmed.starts_with("data:") {
+                    return parse_chat_completions_sse_to_text(&body);
+                }
+
+                let snippet = body.chars().take(800).collect::<String>();
+                return Err(AiError::InvalidResponse(format!(
+                    "{}；响应体（截断）：{}",
+                    e, snippet
+                )));
+            }
+        };
 
         completion
             .choices

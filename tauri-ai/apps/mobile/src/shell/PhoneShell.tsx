@@ -1,4 +1,4 @@
-import { MessageSquareText, Settings, History } from "lucide-react";
+import { MessageSquareText, Settings, History, NotebookPen } from "lucide-react";
 import type { ReactNode } from "react";
 import { clsx } from "../lib/clsx";
 import type { RootTab } from "./types";
@@ -16,7 +16,7 @@ export function PhoneShell({
     <div className="h-full flex flex-col overflow-x-hidden overflow-y-hidden">
       <div className="flex-1 min-h-0 overflow-x-hidden overflow-y-hidden">{children}</div>
       <nav className="safe-bottom border-t border-white/10 bg-[#0b1220]">
-        <div className="grid grid-cols-3">
+        <div className="grid grid-cols-4">
           <TabButton
             active={tab === "chat"}
             label="聊天"
@@ -28,6 +28,12 @@ export function PhoneShell({
             label="会话"
             onClick={() => onTabChange("history")}
             icon={<History size={18} />}
+          />
+          <TabButton
+            active={tab === "practice"}
+            label="练习"
+            onClick={() => onTabChange("practice")}
+            icon={<NotebookPen size={18} />}
           />
           <TabButton
             active={tab === "settings"}

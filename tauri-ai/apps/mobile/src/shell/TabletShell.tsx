@@ -1,4 +1,4 @@
-import { History, MessageSquareText, PanelLeft, PanelRight, Plus, Settings } from "lucide-react";
+import { History, MessageSquareText, PanelLeft, PanelRight, Plus, Settings, NotebookPen } from "lucide-react";
 import type { ReactNode } from "react";
 import { clsx } from "../lib/clsx";
 import { loadJson, saveJson } from "../lib/storage";
@@ -41,7 +41,7 @@ export function TabletShell({
             type="button"
             className="h-8 w-8 rounded-md bg-white/5 hover:bg-white/10 flex items-center justify-center"
             onClick={onToggleList}
-            title={listVisible ? "隐藏会话列表" : "显示会话列表"}
+            title={listVisible ? "隐藏侧边列表" : "显示侧边列表"}
           >
             {listVisible ? <PanelRight size={18} /> : <PanelLeft size={18} />}
           </button>
@@ -82,6 +82,12 @@ function Rail({ tab, onTabChange }: { tab: RootTab; onTabChange: (t: RootTab) =>
         icon={<History size={20} />}
       />
       <RailButton
+        active={tab === "practice"}
+        label="练习"
+        onClick={() => onTabChange("practice")}
+        icon={<NotebookPen size={20} />}
+      />
+      <RailButton
         active={tab === "settings"}
         label="设置"
         onClick={() => onTabChange("settings")}
@@ -120,6 +126,7 @@ function RailButton({
 function tabTitle(tab: RootTab): string {
   if (tab === "chat") return "聊天";
   if (tab === "history") return "会话";
+  if (tab === "practice") return "练习";
   return "设置";
 }
 

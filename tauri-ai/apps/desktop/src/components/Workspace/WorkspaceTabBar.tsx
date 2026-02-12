@@ -24,7 +24,7 @@ import {
   horizontalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { Bot, ChevronDown, FileText, Loader2, Menu, MessageSquare, History, Settings, Plus, X, Globe, Terminal } from 'lucide-react';
+import { Bot, ChevronDown, FileText, Loader2, Menu, MessageSquare, History, Settings, Plus, X, Globe, Terminal, NotebookPen } from 'lucide-react';
 import type { Agent, AgentSession } from '../../types';
 import { useDocumentStore } from '../../stores/documentStore';
 import { useUIStore } from '../../stores/uiStore';
@@ -981,6 +981,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
 	                  {[
 	                    { id: 'chat' as const, label: '聊天', icon: <MessageSquare size={14} /> },
 	                    { id: 'history' as const, label: '历史', icon: <History size={14} /> },
+	                    { id: 'practice' as const, label: '练习', icon: <NotebookPen size={14} /> },
 	                    { id: 'settings' as const, label: '设置', icon: <Settings size={14} /> },
 	                  ].map((item) => (
 	                    <button

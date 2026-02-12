@@ -1,8 +1,9 @@
 import React from 'react';
-import { MessageSquare, History, Settings, FileText, LayoutPanelLeft, ExternalLink, Globe, Terminal } from 'lucide-react';
+import { MessageSquare, History, Settings, FileText, LayoutPanelLeft, ExternalLink, Globe, Terminal, NotebookPen } from 'lucide-react';
 import type { ActiveView } from '../types';
 import { ChatViewContainer } from './ChatViewContainer';
 import { HistoryPanel } from '../components/History/HistoryPanel';
+import { PracticeView } from '../components/Practice/PracticeView';
 import { SettingsView } from '../components/Settings/SettingsView';
 import { DocumentView } from '../components/Documents/DocumentView';
 import { WorkstudioView } from '../components/Workstudio/WorkstudioView';
@@ -36,6 +37,14 @@ export const VIEW_DEFINITIONS: ViewDefinition[] = [
     title: '历史记录',
     icon: <History size={20} />,
     render: () => <HistoryPanel />,
+    inSidebar: true,
+  },
+  {
+    id: 'practice',
+    label: '练习',
+    title: '练习',
+    icon: <NotebookPen size={20} />,
+    render: () => <PracticeView />,
     inSidebar: true,
   },
   {

@@ -4,11 +4,14 @@ import { PhoneShell } from "./shell/PhoneShell";
 import { TabletShell, loadShellPrefs, saveShellPrefs } from "./shell/TabletShell";
 import type { RootTab } from "./shell/types";
 import { ConversationList } from "./components/ConversationList";
+import { PracticeQuizList } from "./components/PracticeQuizList";
 import { useConversationStore } from "./stores/conversationStore";
 import { ChatPage } from "./pages/ChatPage";
 import { HistoryPage } from "./pages/HistoryPage";
+import { PracticePage } from "./pages/PracticePage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { NewConversationModal } from "./ui/NewConversationModal";
+import { usePracticeStore } from "../../common/src/practice/store";
 
 export default function App() {
   const layout = useLayoutSize();
@@ -25,18 +28,35 @@ export default function App() {
   const { conversations, activeConversationId, createConversation, setActiveConversation, deleteConversation } =
     useConversationStore();
 
-  const list = (
-    <ConversationList
-      conversations={conversations}
-      activeId={activeConversationId}
-      onCreate={() => setNewConversationOpen(true)}
-      onSelect={(id) => {
-        setActiveConversation(id);
-        setTab("chat");
-      }}
-      onDelete={(id) => deleteConversation(id)}
-    />
-  );
+  const { quizzes, activeQuizId, createQuiz, setActiveQuiz, deleteQuiz } = usePracticeStore();
+
+  const list =
+    tab === "practice" ? (
+      <PracticeQuizList
+        quizzes={quizzes}
+        activeId={activeQuizId}
+        onCreate={() => {
+          const id = createQuiz({ title: "新练习" });
+          setActiveQuiz(id);
+        }}
+        onSelect={(id) => {
+          setActiveQuiz(id);
+          setTab("practice");
+        }}
+        onDelete={(id) => deleteQuiz(id)}
+      />
+    ) : (
+      <ConversationList
+        conversations={conversations}
+        activeId={activeConversationId}
+        onCreate={() => setNewConversationOpen(true)}
+        onSelect={(id) => {
+          setActiveConversation(id);
+          setTab("chat");
+        }}
+        onDelete={(id) => deleteConversation(id)}
+      />
+    );
 
   const detail =
     tab === "chat" ? (
@@ -46,6 +66,8 @@ export default function App() {
         onNewConversation={() => setNewConversationOpen(true)}
         onNavigateChat={() => setTab("chat")}
       />
+    ) : tab === "practice" ? (
+      <PracticePage />
     ) : (
       <SettingsPage />
     );
@@ -68,7 +90,9 @@ export default function App() {
         }}
         listVisible={listVisible && tab !== "settings"}
         onToggleList={() => setListVisible((v) => !v)}
-        onNewConversation={() => setNewConversationOpen(true)}
+        onNewConversation={
+          tab === "chat" || tab === "history" ? () => setNewConversationOpen(true) : undefined
+        }
         list={list}
         detail={detail}
       />
