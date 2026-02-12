@@ -161,6 +161,97 @@ pub(crate) async fn resolve_repo_root(workdir: &Path) -> Result<PathBuf, String>
     Ok(p)
 }
 
+fn parse_branch_from_git_head(head: &str) -> Option<String> {
+    let head = head.trim();
+    if head.is_empty() {
+        return None;
+    }
+
+    if let Some(rest) = head.strip_prefix("ref:") {
+        let r = rest.trim();
+        if r.is_empty() {
+            return None;
+        }
+        // Typical: refs/heads/<branch>
+        if let Some(branch) = r.strip_prefix("refs/heads/") {
+            let b = branch.trim();
+            if !b.is_empty() {
+                return Some(b.to_string());
+            }
+        }
+        // Fallback: show the ref tail.
+        if let Some(last) = r.split('/').last().filter(|s| !s.is_empty()) {
+            return Some(last.to_string());
+        }
+        return Some(r.to_string());
+    }
+
+    // Detached HEAD: HEAD contains the full commit sha.
+    let sha = head.split_whitespace().next().unwrap_or("").trim();
+    if sha.is_empty() {
+        return None;
+    }
+    let short = if sha.len() > 7 { &sha[..7] } else { sha };
+    Some(format!("detached@{short}"))
+}
+
+fn resolve_git_dir_from_dot_git(dot_git: &Path) -> Option<PathBuf> {
+    if dot_git.is_dir() {
+        return Some(dot_git.to_path_buf());
+    }
+    if !dot_git.is_file() {
+        return None;
+    }
+    // Worktree/submodule: `.git` can be a file: `gitdir: <path>`
+    let content = std::fs::read_to_string(dot_git).ok()?;
+    let line = content.lines().next()?.trim();
+    if line.is_empty() {
+        return None;
+    }
+    let lower = line.to_ascii_lowercase();
+    if !lower.starts_with("gitdir:") {
+        return None;
+    }
+    let p = line["gitdir:".len()..].trim();
+    if p.is_empty() {
+        return None;
+    }
+    let pb = PathBuf::from(p);
+    let resolved = if pb.is_absolute() {
+        pb
+    } else {
+        dot_git.parent()?.join(pb)
+    };
+    Some(resolved)
+}
+
+fn find_git_dir_from_workdir(start: &Path) -> Option<PathBuf> {
+    let mut cur = start;
+    loop {
+        let dot = cur.join(".git");
+        if dot.exists() {
+            if let Some(dir) = resolve_git_dir_from_dot_git(&dot) {
+                if dir.is_dir() {
+                    return Some(dir);
+                }
+            }
+        }
+        let parent = cur.parent()?;
+        if parent == cur {
+            break;
+        }
+        cur = parent;
+    }
+    None
+}
+
+fn read_branch_from_fs(workdir: &Path) -> Option<String> {
+    let git_dir = find_git_dir_from_workdir(workdir)?;
+    let head_path = git_dir.join("HEAD");
+    let head = std::fs::read_to_string(&head_path).ok()?;
+    parse_branch_from_git_head(&head)
+}
+
 pub(crate) async fn git_current_branch(workdir: &Path) -> Result<Option<String>, String> {
     if !workdir.is_dir() {
         return Ok(None);
@@ -179,7 +270,10 @@ pub(crate) async fn git_current_branch(workdir: &Path) -> Result<Option<String>,
     .await
     {
         Ok(v) => v,
-        Err(_) => return Ok(None),
+        Err(_) => {
+            // Git binary might be unavailable (e.g. packaged app env). Fall back to reading `.git/HEAD`.
+            return Ok(read_branch_from_fs(workdir));
+        }
     };
     if inside.trim() != "true" {
         return Ok(None);
@@ -197,11 +291,11 @@ pub(crate) async fn git_current_branch(workdir: &Path) -> Result<Option<String>,
     .await
     {
         Ok(v) => v.trim().to_string(),
-        Err(_) => return Ok(None),
+        Err(_) => return Ok(read_branch_from_fs(workdir)),
     };
 
     if branch.is_empty() {
-        return Ok(None);
+        return Ok(read_branch_from_fs(workdir));
     }
 
     // Detached HEAD: rev-parse returns literal "HEAD". Show a friendly label with short sha.
@@ -220,10 +314,10 @@ pub(crate) async fn git_current_branch(workdir: &Path) -> Result<Option<String>,
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
 
-        return Ok(Some(match sha {
-            Some(s) => format!("detached@{s}"),
-            None => "detached".to_string(),
-        }));
+        if let Some(s) = sha {
+            return Ok(Some(format!("detached@{s}")));
+        }
+        return Ok(read_branch_from_fs(workdir).or_else(|| Some("detached".to_string())));
     }
 
     Ok(Some(branch))
