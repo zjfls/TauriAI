@@ -106,23 +106,26 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
 
     // Prepare agent list for "新建会话（按 Agent）"
     let mut enabled_agents: Vec<_> = config.agents.iter().filter(|a| a.enabled).collect();
-    let effective_default_agent = if !config.default_agent.is_empty() {
-        config.default_agent.as_str()
+    // If configured default agent is missing/disabled, fall back to the first enabled agent.
+    // Otherwise Ctrl/Cmd+T may not be bound to any menu item, making it look "not working".
+    let configured_default = config.default_agent.trim();
+    let default_exists = !configured_default.is_empty()
+        && enabled_agents.iter().any(|a| a.name == configured_default);
+    let effective_default_agent = if default_exists {
+        if let Some(pos) = enabled_agents
+            .iter()
+            .position(|a| a.name == configured_default)
+        {
+            let default_agent = enabled_agents.remove(pos);
+            enabled_agents.insert(0, default_agent);
+        }
+        configured_default
     } else {
         enabled_agents
             .first()
             .map(|a| a.name.as_str())
             .unwrap_or_default()
     };
-    if !config.default_agent.is_empty() {
-        if let Some(pos) = enabled_agents
-            .iter()
-            .position(|a| a.name == config.default_agent)
-        {
-            let default_agent = enabled_agents.remove(pos);
-            enabled_agents.insert(0, default_agent);
-        }
-    }
     let has_agents = !enabled_agents.is_empty();
 
     let open_file = MenuItem::with_id(app, "open_file", "打开文件…", true, Some("CmdOrCtrl+O"))?;
