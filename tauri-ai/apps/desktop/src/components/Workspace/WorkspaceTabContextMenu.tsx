@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { WorkspaceTabId } from '../../stores/workspaceTabStore';
 
 export interface WorkspaceTabContextMenuProps {
@@ -111,18 +112,14 @@ export const WorkspaceTabContextMenu: React.FC<WorkspaceTabContextMenuProps> = (
 
   const Divider = () => <div className="my-1 border-t border-gray-200 dark:border-gray-700" />;
 
-  return (
+  const menu = (
     <div
       ref={menuRef}
-      className="fixed z-50"
+      className="fixed z-[1000]"
       style={{ left: `${adjustedPosition.x}px`, top: `${adjustedPosition.y}px` }}
     >
       <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-1 min-w-[180px]">
-        <Item
-          label="在新窗口打开"
-          disabled={!canOpenInNewWindow}
-          onClick={onOpenInNewWindow}
-        />
+        <Item label="在新窗口打开" disabled={!canOpenInNewWindow} onClick={onOpenInNewWindow} />
         <Divider />
         <Item label="关闭当前标签" onClick={onCloseCurrent} />
         <Item label="关闭其他标签" disabled={isOnlyTab} onClick={onCloseOthers} />
@@ -131,7 +128,8 @@ export const WorkspaceTabContextMenu: React.FC<WorkspaceTabContextMenuProps> = (
       </div>
     </div>
   );
+
+  return typeof document !== 'undefined' ? createPortal(menu, document.body) : menu;
 };
 
 export default WorkspaceTabContextMenu;
-

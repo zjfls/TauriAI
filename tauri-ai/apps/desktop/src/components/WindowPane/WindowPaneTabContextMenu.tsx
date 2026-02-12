@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { WorkspaceTabId } from '../../stores/workspaceTabStore';
 
 export interface WindowPaneTabContextMenuProps {
@@ -121,19 +122,15 @@ export const WindowPaneTabContextMenu: React.FC<WindowPaneTabContextMenuProps> =
 
   const showDock = typeof onDockToOtherWindow === 'function';
 
-  return (
+  const menu = (
     <div
       ref={menuRef}
-      className="fixed z-50"
+      className="fixed z-[1000]"
       style={{ left: `${adjustedPosition.x}px`, top: `${adjustedPosition.y}px` }}
     >
       <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-1 min-w-[200px]">
         {showDock && (
-          <Item
-            label="停靠到其他窗口"
-            disabled={!canDockToOtherWindow}
-            onClick={onDockToOtherWindow!}
-          />
+          <Item label="停靠到其他窗口" disabled={!canDockToOtherWindow} onClick={onDockToOtherWindow!} />
         )}
         <Item label="在新窗口打开" disabled={!canOpenInNewWindow} onClick={onOpenInNewWindow} />
         <Item label="关闭" onClick={onCloseCurrent} />
@@ -144,7 +141,11 @@ export const WindowPaneTabContextMenu: React.FC<WindowPaneTabContextMenuProps> =
       </div>
     </div>
   );
+
+  // 注意：在某些 WebView / CSS 组合（例如包含 backdrop-filter 的祖先节点）下，
+  // `position: fixed` 可能会被当作“相对祖先”定位并被 `overflow: hidden` 裁剪。
+  // 用 portal 把菜单挂到 body，确保坐标系与 viewport 一致。
+  return typeof document !== 'undefined' ? createPortal(menu, document.body) : menu;
 };
 
 export default WindowPaneTabContextMenu;
-
