@@ -17,6 +17,12 @@ import type { AgentSession, AppConfig } from '../types';
 interface KeyboardShortcutsOptions {
   /** Whether shortcuts are enabled */
   enabled?: boolean;
+  /**
+   * Shortcut handling scope.
+   * - all: default behavior (session/chat/workstudio/etc.)
+   * - workstudio: only handle Workstudio actions (plus DevTools)
+   */
+  scope?: 'all' | 'workstudio';
   /** Callback when a new session is requested (for showing agent selector) */
   onNewSessionRequest?: () => void;
 }
@@ -37,7 +43,7 @@ interface SessionStoreState {
  * - 固定补充：Ctrl/Cmd + 1-9 切换当前 Pane 内的会话索引（不在设置里展开配置）
  */
 export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
-  const { enabled = true, onNewSessionRequest } = options;
+  const { enabled = true, scope = 'all', onNewSessionRequest } = options;
   
   // Config store for agents - subscribe to config changes
   const config = useConfigStore((s: ConfigStoreState) => s.config);
@@ -55,6 +61,17 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
   const shortcutSettings = config?.general?.keyboardShortcuts;
   const shortcutsEnabled = enabled && (shortcutSettings?.enabled ?? true);
 
+  const isActionInScope = useCallback(
+    (actionId: string) => {
+      if (scope === 'workstudio') {
+        if (actionId === 'app.openDevtools') return true;
+        return actionId.startsWith('workstudio.');
+      }
+      return true;
+    },
+    [scope]
+  );
+
   const getEffectiveBinding = useCallback(
     (actionId: string): string | null => {
       const defaults = SHORTCUT_ACTIONS.find((a) => a.id === actionId);
@@ -71,6 +88,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
     const out: Record<string, string> = {};
     const isNativeMenuAuthoritative = isTauri();
     for (const action of SHORTCUT_ACTIONS) {
+      if (!isActionInScope(action.id)) continue;
       // 在 Tauri 桌面端：`session.new` 默认由系统菜单 accelerator 处理，避免与前端 keydown 双触发导致创建两次会话。
       if (isNativeMenuAuthoritative && action.id === 'session.new') {
         continue;
@@ -81,7 +99,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
       out[binding] = action.id;
     }
     return out;
-  }, [getEffectiveBinding]);
+  }, [getEffectiveBinding, isActionInScope]);
   
   // Get ordered sessions in the focused pane (VS Code-like group behavior)
   const getOrderedSessions = useCallback((): AgentSession[] => {
@@ -387,13 +405,15 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
     if (!shortcutsEnabled) return;
 
     // 先处理：Ctrl/Cmd + 1-9 切换会话（固定规则）
-    const isCtrlOrCmd = event.ctrlKey || event.metaKey;
-    if (isCtrlOrCmd) {
-      const numKey = parseInt(event.key, 10);
-      if (numKey >= 1 && numKey <= 9) {
-        event.preventDefault();
-        handleSwitchToIndex(numKey);
-        return;
+    if (scope !== 'workstudio') {
+      const isCtrlOrCmd = event.ctrlKey || event.metaKey;
+      if (isCtrlOrCmd) {
+        const numKey = parseInt(event.key, 10);
+        if (numKey >= 1 && numKey <= 9) {
+          event.preventDefault();
+          handleSwitchToIndex(numKey);
+          return;
+        }
       }
     }
 
@@ -472,6 +492,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
     void executeAction(actionId);
   }, [
     shortcutsEnabled,
+    scope,
     bindingToAction,
     executeAction,
     platform,

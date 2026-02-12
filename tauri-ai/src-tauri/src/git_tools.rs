@@ -161,6 +161,255 @@ pub(crate) async fn resolve_repo_root(workdir: &Path) -> Result<PathBuf, String>
     Ok(p)
 }
 
+fn parse_branch_from_git_head(head: &str) -> Option<String> {
+    let head = head.trim();
+    if head.is_empty() {
+        return None;
+    }
+
+    if let Some(rest) = head.strip_prefix("ref:") {
+        let r = rest.trim();
+        if r.is_empty() {
+            return None;
+        }
+        // Typical: refs/heads/<branch>
+        if let Some(branch) = r.strip_prefix("refs/heads/") {
+            let b = branch.trim();
+            if !b.is_empty() {
+                return Some(b.to_string());
+            }
+        }
+        // Fallback: show the ref tail.
+        if let Some(last) = r.split('/').last().filter(|s| !s.is_empty()) {
+            return Some(last.to_string());
+        }
+        return Some(r.to_string());
+    }
+
+    // Detached HEAD: HEAD contains the full commit sha.
+    let sha = head.split_whitespace().next().unwrap_or("").trim();
+    if sha.is_empty() {
+        return None;
+    }
+    let short = if sha.len() > 7 { &sha[..7] } else { sha };
+    Some(format!("detached@{short}"))
+}
+
+fn resolve_git_dir_from_dot_git(dot_git: &Path) -> Option<PathBuf> {
+    if dot_git.is_dir() {
+        return Some(dot_git.to_path_buf());
+    }
+    if !dot_git.is_file() {
+        return None;
+    }
+    // Worktree/submodule: `.git` can be a file: `gitdir: <path>`
+    let content = std::fs::read_to_string(dot_git).ok()?;
+    let line = content.lines().next()?.trim();
+    if line.is_empty() {
+        return None;
+    }
+    let lower = line.to_ascii_lowercase();
+    if !lower.starts_with("gitdir:") {
+        return None;
+    }
+    let p = line["gitdir:".len()..].trim();
+    if p.is_empty() {
+        return None;
+    }
+    let pb = PathBuf::from(p);
+    let resolved = if pb.is_absolute() {
+        pb
+    } else {
+        dot_git.parent()?.join(pb)
+    };
+    Some(resolved)
+}
+
+fn find_git_dir_from_workdir(start: &Path) -> Option<PathBuf> {
+    let mut cur = start;
+    loop {
+        let dot = cur.join(".git");
+        if dot.exists() {
+            if let Some(dir) = resolve_git_dir_from_dot_git(&dot) {
+                if dir.is_dir() {
+                    return Some(dir);
+                }
+            }
+        }
+        let parent = cur.parent()?;
+        if parent == cur {
+            break;
+        }
+        cur = parent;
+    }
+    None
+}
+
+fn read_branch_from_fs(workdir: &Path) -> Option<String> {
+    let git_dir = find_git_dir_from_workdir(workdir)?;
+    let head_path = git_dir.join("HEAD");
+    let head = std::fs::read_to_string(&head_path).ok()?;
+    parse_branch_from_git_head(&head)
+}
+
+pub(crate) async fn git_current_branch(workdir: &Path) -> Result<Option<String>, String> {
+    if !workdir.is_dir() {
+        return Ok(None);
+    }
+
+    // Keep behavior consistent with other git helpers: rely on git itself to decide whether
+    // this is a work tree (handles worktrees/submodules/.git files etc.).
+    let inside = match run_git_for_stdout(
+        workdir,
+        vec![
+            OsString::from("rev-parse"),
+            OsString::from("--is-inside-work-tree"),
+        ],
+        None,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(_) => {
+            // Git binary might be unavailable (e.g. packaged app env). Fall back to reading `.git/HEAD`.
+            return Ok(read_branch_from_fs(workdir));
+        }
+    };
+    if inside.trim() != "true" {
+        return Ok(None);
+    }
+
+    let branch = match run_git_for_stdout(
+        workdir,
+        vec![
+            OsString::from("rev-parse"),
+            OsString::from("--abbrev-ref"),
+            OsString::from("HEAD"),
+        ],
+        None,
+    )
+    .await
+    {
+        Ok(v) => v.trim().to_string(),
+        Err(_) => return Ok(read_branch_from_fs(workdir)),
+    };
+
+    if branch.is_empty() {
+        return Ok(read_branch_from_fs(workdir));
+    }
+
+    // Detached HEAD: rev-parse returns literal "HEAD". Show a friendly label with short sha.
+    if branch == "HEAD" {
+        let sha = run_git_for_stdout(
+            workdir,
+            vec![
+                OsString::from("rev-parse"),
+                OsString::from("--short"),
+                OsString::from("HEAD"),
+            ],
+            None,
+        )
+        .await
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+        if let Some(s) = sha {
+            return Ok(Some(format!("detached@{s}")));
+        }
+        return Ok(read_branch_from_fs(workdir).or_else(|| Some("detached".to_string())));
+    }
+
+    Ok(Some(branch))
+}
+
+fn normalize_branch_input(branch: &str) -> Result<String, String> {
+    let b = branch.trim();
+    if b.is_empty() {
+        return Err("branch 不能为空".to_string());
+    }
+    // `git checkout <name>` 会将 `-xxx` 视为选项；直接拒绝，避免歧义/风险。
+    if b.starts_with('-') {
+        return Err("branch 不能以 '-' 开头".to_string());
+    }
+    Ok(b.to_string())
+}
+
+pub(crate) async fn git_list_local_branches(workdir: &Path) -> Result<Vec<String>, String> {
+    if !workdir.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let out = run_git_for_stdout(
+        workdir,
+        vec![
+            OsString::from("for-each-ref"),
+            OsString::from("--format=%(refname:short)"),
+            OsString::from("--sort=refname"),
+            OsString::from("refs/heads"),
+        ],
+        None,
+    )
+    .await?;
+
+    let mut branches = out
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>();
+    branches.sort();
+    branches.dedup();
+    Ok(branches)
+}
+
+pub(crate) async fn git_checkout_branch(workdir: &Path, branch: &str) -> Result<(), String> {
+    if !workdir.is_dir() {
+        return Err("workdir 不是目录".to_string());
+    }
+    let branch = normalize_branch_input(branch)?;
+    run_git_for_status(
+        workdir,
+        vec![
+            OsString::from("checkout"),
+            OsString::from("--quiet"),
+            OsString::from(branch),
+        ],
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn git_create_and_checkout_branch(workdir: &Path, branch: &str) -> Result<(), String> {
+    if !workdir.is_dir() {
+        return Err("workdir 不是目录".to_string());
+    }
+    let branch = normalize_branch_input(branch)?;
+
+    // Validate branch name early for a clearer error message.
+    run_git_for_status(
+        workdir,
+        vec![
+            OsString::from("check-ref-format"),
+            OsString::from("--branch"),
+            OsString::from(&branch),
+        ],
+        None,
+    )
+    .await?;
+
+    run_git_for_status(
+        workdir,
+        vec![
+            OsString::from("checkout"),
+            OsString::from("--quiet"),
+            OsString::from("-b"),
+            OsString::from(branch),
+        ],
+        None,
+    )
+    .await
+}
+
 pub(crate) fn repo_prefix(repo_root: &Path, workdir: &Path) -> Option<PathBuf> {
     let rel = workdir.strip_prefix(repo_root).ok()?;
     if rel.as_os_str().is_empty() {

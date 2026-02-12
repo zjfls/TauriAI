@@ -5,7 +5,7 @@
  */
 
 import React, { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo } from 'react';
-import { Send, Square, Bot, Cpu, ChevronDown, Check, ImagePlus, Paperclip, FileText, Plug, File as FileIcon, Copy } from 'lucide-react';
+import { Send, Square, Bot, Cpu, ChevronDown, Check, ImagePlus, Paperclip, FileText, Plug, File as FileIcon, Copy, GitBranch, Loader2, Plus } from 'lucide-react';
 import { ContextUsageIndicator } from './ContextUsageIndicator';
 import { McpModal } from './McpModal';
 import { AttachmentPreview } from './AttachmentPreview';
@@ -19,6 +19,7 @@ import { FILE_ERROR_MESSAGES } from '../../utils/textFileUtils';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { message as showMessageDialog } from '@tauri-apps/plugin-dialog';
 import { useConfigStore } from '../../stores/configStore';
 import { SHORTCUT_ACTIONS, detectShortcutPlatform, normalizeKeybindingString } from '../../shortcuts';
 
@@ -123,6 +124,67 @@ function fnv1a32Hex(input: string): string {
     hash = (hash + ((hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24))) >>> 0;
   }
   return hash.toString(16).padStart(8, '0');
+}
+
+function toErrorMessage(err: unknown): string {
+  if (typeof err === 'string') return err;
+  if (err && typeof err === 'object') {
+    const maybeError = (err as { error?: unknown }).error;
+    if (typeof maybeError === 'string' && maybeError.trim()) return maybeError.trim();
+    const maybe = (err as { message?: unknown }).message;
+    if (typeof maybe === 'string' && maybe.trim()) return maybe.trim();
+  }
+  try {
+    const s = JSON.stringify(err);
+    return typeof s === 'string' && s.trim() ? s : String(err);
+  } catch {
+    return String(err);
+  }
+}
+
+function summarizeGitError(raw: string, workdir?: string): string {
+  const s = raw.trim();
+  if (!s) return '未知错误';
+
+  const lower = s.toLowerCase();
+
+  if (
+    s.includes('Your local changes to the following files would be overwritten by checkout') ||
+    s.includes('would be overwritten by checkout') ||
+    s.includes('Please commit your changes or stash them before you switch branches')
+  ) {
+    return '工作区存在未提交修改，切换分支会覆盖它们。请先提交/暂存，或执行 git stash 后再切换。';
+  }
+
+  if (s.includes('The following untracked working tree files would be overwritten by checkout')) {
+    return '工作区存在未跟踪文件会被覆盖。请先移动/删除这些文件，或将其加入 Git 后再切换。';
+  }
+
+  if (lower.includes('pathspec') && lower.includes('did not match any file(s) known to git')) {
+    return '分支不存在（本地）或名称错误。';
+  }
+
+  if (lower.includes('not a git repository')) {
+    return '当前目录不是 Git 仓库。';
+  }
+
+  if (lower.includes('detected dubious ownership in repository')) {
+    const suffix = workdir ? `\n\n可尝试：git config --global --add safe.directory "${workdir}"` : '';
+    return `Git 安全策略阻止访问（dubious ownership，需要配置 safe.directory）。${suffix}`;
+  }
+
+  if (lower.includes('index.lock') && lower.includes('file exists')) {
+    return 'Git 被其他进程占用（index.lock）。请关闭占用 Git 的进程，或确认无 git 操作后删除锁文件再重试。';
+  }
+
+  if (
+    (lower.includes('a branch named') && lower.includes('already exists')) ||
+    (lower.includes('branch') && lower.includes('already exists'))
+  ) {
+    return '分支已存在。';
+  }
+
+  return s;
 }
 
 type WorkspaceRoot = { key: string; name: string; absPath: string };
@@ -939,6 +1001,190 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
 
   const content = controlledValue ?? contentDraft;
   const workspaceRoots = useMemo(() => buildWorkspaceRoots(workstudio), [workstudio]);
+  const gitWorkdir = useMemo(() => (workstudio?.mainFolder ?? '').trim(), [workstudio?.mainFolder]);
+  const [gitBranch, setGitBranch] = useState<string | null>(null);
+  const gitBranchFetchSeqRef = useRef(0);
+  const [isGitBranchMenuOpen, setIsGitBranchMenuOpen] = useState(false);
+  const gitBranchMenuRef = useRef<HTMLDivElement>(null);
+  const [gitBranches, setGitBranches] = useState<string[]>([]);
+  const [gitBranchesError, setGitBranchesError] = useState<string | null>(null);
+  const [isGitBranchesLoading, setIsGitBranchesLoading] = useState(false);
+  const [isGitCheckingOut, setIsGitCheckingOut] = useState(false);
+  const [gitCheckoutError, setGitCheckoutError] = useState<string | null>(null);
+  const gitBranchesFetchSeqRef = useRef(0);
+
+  const refreshGitBranch = useCallback(async () => {
+    const workdir = gitWorkdir;
+    gitBranchFetchSeqRef.current += 1;
+    const seq = gitBranchFetchSeqRef.current;
+
+    if (!isTauri() || !workdir) {
+      setGitBranch(null);
+      return;
+    }
+
+    try {
+      const branch = await invoke<string | null>('git_get_current_branch', { args: { workdir } });
+      if (gitBranchFetchSeqRef.current !== seq) return;
+      const normalized = typeof branch === 'string' && branch.trim().length > 0 ? branch.trim() : null;
+      setGitBranch(normalized);
+    } catch {
+      if (gitBranchFetchSeqRef.current !== seq) return;
+      setGitBranch(null);
+    }
+  }, [gitWorkdir]);
+
+  useEffect(() => {
+    void refreshGitBranch();
+  }, [refreshGitBranch]);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    if (!gitWorkdir) return;
+
+    const onFocus = () => void refreshGitBranch();
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') void refreshGitBranch();
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [gitWorkdir, refreshGitBranch]);
+
+  const refreshGitBranches = useCallback(async () => {
+    const workdir = gitWorkdir;
+    gitBranchesFetchSeqRef.current += 1;
+    const seq = gitBranchesFetchSeqRef.current;
+
+    if (!isTauri() || !workdir) {
+      setGitBranches([]);
+      setGitBranchesError(null);
+      setIsGitBranchesLoading(false);
+      return;
+    }
+
+    setIsGitBranchesLoading(true);
+    setGitBranchesError(null);
+
+    try {
+      const branches = await invoke<string[]>('git_list_local_branches', { args: { workdir } });
+      if (gitBranchesFetchSeqRef.current !== seq) return;
+      const normalized = Array.isArray(branches)
+        ? branches
+            .map((b) => (typeof b === 'string' ? b.trim() : ''))
+            .filter((b) => b.length > 0)
+        : [];
+      setGitBranches(normalized);
+      setGitBranchesError(null);
+    } catch (err) {
+      if (gitBranchesFetchSeqRef.current !== seq) return;
+      setGitBranches([]);
+      setGitBranchesError(toErrorMessage(err));
+    } finally {
+      if (gitBranchesFetchSeqRef.current !== seq) return;
+      setIsGitBranchesLoading(false);
+    }
+  }, [gitWorkdir]);
+
+  const checkoutGitBranch = useCallback(
+    async (branch: string) => {
+      const workdir = gitWorkdir;
+      if (!isTauri() || !workdir) return;
+
+      setIsGitCheckingOut(true);
+      setGitCheckoutError(null);
+      try {
+        await invoke<string | null>('git_checkout_branch', { args: { workdir, branch } });
+        setIsGitBranchMenuOpen(false);
+        await refreshGitBranch();
+        void refreshGitBranches();
+      } catch (err) {
+        const raw = toErrorMessage(err);
+        const summary = summarizeGitError(raw, workdir);
+        setGitCheckoutError(summary);
+        try {
+          await showMessageDialog(`切换到分支「${branch}」失败。\n\n${summary}\n\n详细信息：\n${raw}`, {
+            title: '切换分支失败',
+            kind: 'error',
+          });
+        } catch {
+          window.alert(`切换到分支「${branch}」失败。\n\n${summary}\n\n详细信息：\n${raw}`);
+        }
+      } finally {
+        setIsGitCheckingOut(false);
+      }
+    },
+    [gitWorkdir, refreshGitBranch, refreshGitBranches]
+  );
+
+  const createAndCheckoutGitBranch = useCallback(async () => {
+    const workdir = gitWorkdir;
+    if (!isTauri() || !workdir) return;
+
+    const input = window.prompt('请输入新分支名称（将创建并切换）', '');
+    if (input === null) return;
+    const branch = input.trim();
+    if (!branch) return;
+
+    setIsGitCheckingOut(true);
+    setGitCheckoutError(null);
+    try {
+      await invoke<string | null>('git_create_and_checkout_branch', { args: { workdir, branch } });
+      setIsGitBranchMenuOpen(false);
+      await refreshGitBranch();
+      void refreshGitBranches();
+    } catch (err) {
+      const raw = toErrorMessage(err);
+      const summary = summarizeGitError(raw, workdir);
+      setGitCheckoutError(summary);
+      try {
+        await showMessageDialog(`创建并切换到分支「${branch}」失败。\n\n${summary}\n\n详细信息：\n${raw}`, {
+          title: '切换分支失败',
+          kind: 'error',
+        });
+      } catch {
+        window.alert(`创建并切换到分支「${branch}」失败。\n\n${summary}\n\n详细信息：\n${raw}`);
+      }
+    } finally {
+      setIsGitCheckingOut(false);
+    }
+  }, [gitWorkdir, refreshGitBranch, refreshGitBranches]);
+
+  // Close git branch menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (gitBranchMenuRef.current && !gitBranchMenuRef.current.contains(event.target as Node)) {
+        setIsGitBranchMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  useEffect(() => {
+    if (!isGitBranchMenuOpen) return;
+    void refreshGitBranch();
+    void refreshGitBranches();
+  }, [isGitBranchMenuOpen, refreshGitBranch, refreshGitBranches]);
+
+  useEffect(() => {
+    if (!isGitBranchMenuOpen) return;
+    setGitCheckoutError(null);
+  }, [isGitBranchMenuOpen]);
+
+  useEffect(() => {
+    if (!isGitBranchMenuOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsGitBranchMenuOpen(false);
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [isGitBranchMenuOpen]);
 
   const handleContentChange = useCallback(
     (value: string) => {
@@ -3056,6 +3302,111 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
           cloneConversationShortcutLabel={cloneConversationShortcutLabel}
           disabled={disabled || isGenerating}
         />
+        {gitBranch && (
+          <div className="ml-auto relative" ref={gitBranchMenuRef}>
+            <button
+              type="button"
+              onClick={() => setIsGitBranchMenuOpen((v) => !v)}
+              disabled={isGitCheckingOut}
+              className={[
+                'inline-flex items-center gap-1.5 px-2 py-1 rounded-md border',
+                'border-gray-200 dark:border-gray-700',
+                'bg-gray-50 dark:bg-gray-900',
+                'text-gray-700 dark:text-gray-200',
+                'hover:bg-gray-100 dark:hover:bg-gray-800',
+                'transition-colors',
+                'disabled:cursor-not-allowed disabled:opacity-60',
+              ].join(' ')}
+              title={gitWorkdir ? `Git branch（${gitWorkdir}）：${gitBranch}` : `Git branch：${gitBranch}`}
+              aria-haspopup="menu"
+              aria-expanded={isGitBranchMenuOpen}
+            >
+              <GitBranch size={12} className="text-gray-500 dark:text-gray-400" />
+              <span className="max-w-40 truncate font-mono text-[11px]">{gitBranch}</span>
+              <ChevronDown
+                size={12}
+                className={`transition-transform ${isGitBranchMenuOpen ? 'rotate-180' : ''}`}
+              />
+              {isGitCheckingOut ? (
+                <Loader2 size={12} className="animate-spin text-gray-500 dark:text-gray-400" />
+              ) : null}
+            </button>
+
+            {isGitBranchMenuOpen && (
+              <div
+                role="menu"
+                className="absolute bottom-full right-0 mb-2 w-72 bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 py-2 z-50"
+              >
+                <div className="px-3 pb-2 text-[11px] font-medium text-gray-500 dark:text-gray-400">
+                  Checkout branch
+                </div>
+
+                {gitCheckoutError ? (
+                  <div className="mx-3 mb-2 rounded-md border border-red-200 bg-red-50 px-2 py-1.5 text-xs text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-200 whitespace-pre-wrap">
+                    {gitCheckoutError}
+                  </div>
+                ) : null}
+
+                <div className="max-h-72 overflow-auto">
+                  {isGitBranchesLoading ? (
+                    <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400 flex items-center gap-2">
+                      <Loader2 size={12} className="animate-spin" />
+                      <span>正在加载分支…</span>
+                    </div>
+                  ) : gitBranchesError ? (
+                    <div className="px-3 py-2 text-xs text-red-600 dark:text-red-400 whitespace-pre-wrap">
+                      无法读取分支列表：{gitBranchesError}
+                    </div>
+                  ) : gitBranches.length === 0 ? (
+                    <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">未找到本地分支</div>
+                  ) : (
+                    gitBranches.map((b) => {
+                      const isCurrent = b === gitBranch;
+                      return (
+                        <button
+                          key={b}
+                          type="button"
+                          role="menuitem"
+                          disabled={isGitCheckingOut}
+                          onClick={() => void checkoutGitBranch(b)}
+                          className={[
+                            'flex items-center gap-2 w-full px-3 py-1.5 text-left transition-colors',
+                            'text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700',
+                            isCurrent ? 'font-semibold' : '',
+                            isGitCheckingOut ? 'cursor-not-allowed opacity-70' : '',
+                          ].join(' ')}
+                          title={b}
+                        >
+                          <GitBranch size={14} className="text-gray-500 dark:text-gray-400" />
+                          <span className="min-w-0 flex-1 truncate font-mono text-[12px]">{b}</span>
+                          {isCurrent ? <Check size={14} className="text-blue-500" /> : null}
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+
+                <div className="mt-2 border-t border-gray-200 dark:border-gray-700 pt-2 px-2">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={isGitCheckingOut}
+                    onClick={() => void createAndCheckoutGitBranch()}
+                    className={[
+                      'flex items-center gap-2 w-full px-2 py-1.5 rounded-md text-left transition-colors',
+                      'text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700',
+                      isGitCheckingOut ? 'cursor-not-allowed opacity-70' : '',
+                    ].join(' ')}
+                    title="创建并切换新分支"
+                  >
+                    <Plus size={14} className="text-gray-500 dark:text-gray-400" />
+                    <span className="text-xs">Create and checkout new branch…</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* MCP modal */}

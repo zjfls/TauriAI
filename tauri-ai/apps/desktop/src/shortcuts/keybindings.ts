@@ -39,6 +39,16 @@ const KEY_ALIASES: Record<string, string> = {
   up: 'ArrowUp',
   down: 'ArrowDown',
   comma: ',',
+  minus: '-',
+  _: '-',
+  '–': '-', // en dash
+  '－': '-', // fullwidth hyphen-minus
+};
+
+// Prefer KeyboardEvent.code for certain punctuation keys so shortcuts remain stable across keyboard layouts.
+const KEY_CODE_ALIASES: Record<string, string> = {
+  Minus: '-',
+  NumpadSubtract: '-',
 };
 
 export const isModifierOnlyKey = (key: string): boolean => {
@@ -110,7 +120,8 @@ export const normalizeKeybindingString = (raw: string, platform: ShortcutPlatfor
 };
 
 export const eventToKeybindingString = (event: KeyboardEvent, platform: ShortcutPlatform): string | null => {
-  const key = normalizeKeyName(event.key);
+  const codeAlias = KEY_CODE_ALIASES[event.code] || '';
+  const key = codeAlias ? normalizeKeyName(codeAlias) : normalizeKeyName(event.key);
   if (!key) return null;
   if (isModifierOnlyKey(key)) return null;
 
@@ -136,4 +147,3 @@ export const isEditableElement = (target: EventTarget | null): boolean => {
 
   return false;
 };
-

@@ -8,6 +8,7 @@ use crate::git_tools::{
     git_diff_between_commits, git_diff_name_status_between_commits,
     git_diff_numstat_between_commits, git_restore_worktree_from_commit_with_worktree, GitDiffOptions,
     create_ghost_commit_for_paths_with_worktree,
+    git_current_branch,
 };
 
 #[derive(Debug, Deserialize)]
@@ -369,4 +370,86 @@ pub async fn undo_apply_patch(args: UndoApplyPatchArgs) -> Result<bool, String> 
     }
 
     Ok(true)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitGetCurrentBranchArgs {
+    pub workdir: String,
+}
+
+/// Get current git branch name for a given workdir.
+/// - Returns `None` when the workdir is not a git work tree (or git is unavailable).
+/// - For detached HEAD, returns `detached@<shortsha>`.
+#[tauri::command]
+pub async fn git_get_current_branch(args: GitGetCurrentBranchArgs) -> Result<Option<String>, String> {
+    let workdir = args.workdir.trim();
+    if workdir.is_empty() {
+        return Ok(None);
+    }
+    git_current_branch(&PathBuf::from(workdir)).await
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitListLocalBranchesArgs {
+    pub workdir: String,
+}
+
+/// List local branches (`refs/heads/*`) for a given workdir.
+#[tauri::command]
+pub async fn git_list_local_branches(args: GitListLocalBranchesArgs) -> Result<Vec<String>, String> {
+    let workdir = args.workdir.trim();
+    if workdir.is_empty() {
+        return Ok(Vec::new());
+    }
+    crate::git_tools::git_list_local_branches(&PathBuf::from(workdir)).await
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCheckoutBranchArgs {
+    pub workdir: String,
+    pub branch: String,
+}
+
+/// Checkout an existing local branch.
+#[tauri::command]
+pub async fn git_checkout_branch(args: GitCheckoutBranchArgs) -> Result<Option<String>, String> {
+    let workdir = args.workdir.trim();
+    let branch = args.branch.trim();
+    if workdir.is_empty() {
+        return Err("workdir 不能为空".to_string());
+    }
+    if branch.is_empty() {
+        return Err("branch 不能为空".to_string());
+    }
+    let wd = PathBuf::from(workdir);
+    crate::git_tools::git_checkout_branch(&wd, branch).await?;
+    git_current_branch(&wd).await
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCreateAndCheckoutBranchArgs {
+    pub workdir: String,
+    pub branch: String,
+}
+
+/// Create a new branch and checkout.
+#[tauri::command]
+pub async fn git_create_and_checkout_branch(
+    args: GitCreateAndCheckoutBranchArgs,
+) -> Result<Option<String>, String> {
+    let workdir = args.workdir.trim();
+    let branch = args.branch.trim();
+    if workdir.is_empty() {
+        return Err("workdir 不能为空".to_string());
+    }
+    if branch.is_empty() {
+        return Err("branch 不能为空".to_string());
+    }
+    let wd = PathBuf::from(workdir);
+    crate::git_tools::git_create_and_checkout_branch(&wd, branch).await?;
+    git_current_branch(&wd).await
 }

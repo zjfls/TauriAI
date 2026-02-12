@@ -396,12 +396,38 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   }, [keyboardShortcuts, shortcutPlatform]);
 
   const navHistoryRef = useRef<Map<string, PaneNavHistory>>(new Map());
-  const suppressNavRecordRef = useRef(false);
+  const lastNavLocationRef = useRef<Map<string, NavLocation>>(new Map());
+  const pendingNavRecordRef = useRef<Map<string, NavLocation>>(new Map());
+  const suppressNavRecordDepthRef = useRef(0);
   const [navEpoch, setNavEpoch] = useState(0);
+
+  const [navToast, setNavToast] = useState<string | null>(null);
+  const navToastTimerRef = useRef<number | null>(null);
+  const showNavToast = useCallback((message: string) => {
+    setNavToast(message);
+    if (navToastTimerRef.current) {
+      window.clearTimeout(navToastTimerRef.current);
+    }
+    navToastTimerRef.current = window.setTimeout(() => {
+      navToastTimerRef.current = null;
+      setNavToast(null);
+    }, 1400);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (navToastTimerRef.current) {
+        window.clearTimeout(navToastTimerRef.current);
+        navToastTimerRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     // 切换 Workstudio 时清空浏览历史，避免跨项目串联。
     navHistoryRef.current.clear();
+    lastNavLocationRef.current.clear();
+    pendingNavRecordRef.current.clear();
     setNavEpoch((v) => v + 1);
   }, [workstudioId]);
 
@@ -800,7 +826,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           : (state.panes[0]?.id ?? fallbackPaneIdRef.current);
 
       const prevLocation =
-        !suppressNavRecordRef.current && targetPaneId
+        suppressNavRecordDepthRef.current === 0 && targetPaneId
           ? getCurrentNavLocationForPane(targetPaneId)
           : null;
       const targetLocation: NavLocation = { tabId: normalizedPath };
@@ -1075,7 +1101,8 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     dbg('openLinkTarget:resolved', { seq, resolved, isAbs, mainFolder: ws?.mainFolder ?? null });
 
     // 仅在“同一文件内跳转到指定行”时记录历史（跨文件跳转由 openFileAtPath 记录，避免重复入栈）。
-    const prevLocationForHistory = !suppressNavRecordRef.current ? getCurrentNavLocationForPane(paneId) : null;
+    const prevLocationForHistory =
+      suppressNavRecordDepthRef.current === 0 ? getCurrentNavLocationForPane(paneId) : null;
     const targetLocationForHistory: NavLocation = {
       tabId: resolved,
       line: typeof target.line === 'number' ? target.line : null,
@@ -1426,7 +1453,10 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     if (!paneId) return;
 
     const history = navHistoryRef.current.get(paneId) ?? null;
-    if (!history || history.back.length === 0) return;
+    if (!history || history.back.length === 0) {
+      showNavToast('没有可后退的记录');
+      return;
+    }
 
     const current = getCurrentNavLocationForPane(paneId);
     const target = history.back.pop()!;
@@ -1442,14 +1472,15 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
     setNavEpoch((v) => v + 1);
 
-    const prevSuppressed = suppressNavRecordRef.current;
-    suppressNavRecordRef.current = true;
+    suppressNavRecordDepthRef.current += 1;
     try {
       await navigateToLocation(target, { paneId });
     } finally {
-      suppressNavRecordRef.current = prevSuppressed;
+      window.setTimeout(() => {
+        suppressNavRecordDepthRef.current = Math.max(0, suppressNavRecordDepthRef.current - 1);
+      }, 120);
     }
-  }, [getCurrentNavLocationForPane, isSameNavLocation, navigateToLocation, resolvedFocusedPaneId]);
+  }, [getCurrentNavLocationForPane, isSameNavLocation, navigateToLocation, resolvedFocusedPaneId, showNavToast]);
 
   const navigateForward = useCallback(async () => {
     const state = useWindowLayoutStore.getState();
@@ -1460,7 +1491,10 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     if (!paneId) return;
 
     const history = navHistoryRef.current.get(paneId) ?? null;
-    if (!history || history.forward.length === 0) return;
+    if (!history || history.forward.length === 0) {
+      showNavToast('没有可前进的记录');
+      return;
+    }
 
     const current = getCurrentNavLocationForPane(paneId);
     const target = history.forward.pop()!;
@@ -1476,18 +1510,20 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
     setNavEpoch((v) => v + 1);
 
-    const prevSuppressed = suppressNavRecordRef.current;
-    suppressNavRecordRef.current = true;
+    suppressNavRecordDepthRef.current += 1;
     try {
       await navigateToLocation(target, { paneId });
     } finally {
-      suppressNavRecordRef.current = prevSuppressed;
+      window.setTimeout(() => {
+        suppressNavRecordDepthRef.current = Math.max(0, suppressNavRecordDepthRef.current - 1);
+      }, 120);
     }
-  }, [getCurrentNavLocationForPane, isSameNavLocation, navigateToLocation, resolvedFocusedPaneId]);
+  }, [getCurrentNavLocationForPane, isSameNavLocation, navigateToLocation, resolvedFocusedPaneId, showNavToast]);
 
   const runFocusedEditorAction = useCallback(
-    async (actionId: string, opts?: { requireTextFocus?: boolean }) => {
+    async (actionId: string, opts?: { requireTextFocus?: boolean; recordNavBeforeRun?: boolean }) => {
       const requireTextFocus = opts?.requireTextFocus ?? true;
+      const recordNavBeforeRun = opts?.recordNavBeforeRun ?? false;
       const state = useWindowLayoutStore.getState();
       const paneId =
         (state.focusedPaneId && state.panes.some((p) => p.id === state.focusedPaneId) ? state.focusedPaneId : null) ??
@@ -1504,6 +1540,18 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       // 菜单触发时 editor 可能暂时失焦；主动聚焦可提升稳定性。
       editor.focus();
 
+      if (recordNavBeforeRun && suppressNavRecordDepthRef.current === 0) {
+        const prev = getCurrentNavLocationForPane(paneId);
+        if (prev) {
+          pendingNavRecordRef.current.set(paneId, prev);
+          window.setTimeout(() => {
+            if (pendingNavRecordRef.current.get(paneId) === prev) {
+              pendingNavRecordRef.current.delete(paneId);
+            }
+          }, 1200);
+        }
+      }
+
       const action = editor.getAction(actionId);
       if (!action) {
         console.warn('[Workstudio] monaco action not found:', { actionId });
@@ -1517,28 +1565,32 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         return false;
       }
     },
-    [resolvedFocusedPaneId]
+    [getCurrentNavLocationForPane, resolvedFocusedPaneId]
   );
 
   const goToDefinition = useCallback(
-    (opts?: { requireTextFocus?: boolean }) => runFocusedEditorAction('editor.action.revealDefinition', opts),
+    (opts?: { requireTextFocus?: boolean }) =>
+      runFocusedEditorAction('editor.action.revealDefinition', { ...opts, recordNavBeforeRun: true }),
     [runFocusedEditorAction]
   );
   const goToTypeDefinition = useCallback(
-    (opts?: { requireTextFocus?: boolean }) => runFocusedEditorAction('editor.action.revealTypeDefinition', opts),
+    (opts?: { requireTextFocus?: boolean }) =>
+      runFocusedEditorAction('editor.action.revealTypeDefinition', { ...opts, recordNavBeforeRun: true }),
     [runFocusedEditorAction]
   );
   const goToReferences = useCallback(
-    (opts?: { requireTextFocus?: boolean }) => runFocusedEditorAction('editor.action.goToReferences', opts),
+    (opts?: { requireTextFocus?: boolean }) =>
+      runFocusedEditorAction('editor.action.goToReferences', { ...opts, recordNavBeforeRun: true }),
     [runFocusedEditorAction]
   );
   const peekDefinition = useCallback(
-    (opts?: { requireTextFocus?: boolean }) => runFocusedEditorAction('editor.action.peekDefinition', opts),
+    (opts?: { requireTextFocus?: boolean }) =>
+      runFocusedEditorAction('editor.action.peekDefinition', { ...opts, recordNavBeforeRun: true }),
     [runFocusedEditorAction]
   );
 
   const activateTabInPane = useCallback((paneId: string, tabId: string) => {
-    const prevLocation = !suppressNavRecordRef.current ? getCurrentNavLocationForPane(paneId) : null;
+    const prevLocation = suppressNavRecordDepthRef.current === 0 ? getCurrentNavLocationForPane(paneId) : null;
     const targetLocation: NavLocation = { tabId };
     const shouldRecord = Boolean(prevLocation && isMeaningfulNavTransition(prevLocation, targetLocation));
 
@@ -1923,14 +1975,73 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           lspBridgeWorkstudioIdRef.current = wsId;
         }
 
+        editor.onDidDispose(() => {
+          editorByPaneRef.current.delete(paneId);
+          lastNavLocationRef.current.delete(paneId);
+          pendingNavRecordRef.current.delete(paneId);
+        });
+
         editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
           const fileId = useWindowLayoutStore.getState().panes.find((p) => p.id === paneId)?.activeTabId ?? null;
           if (!fileId) return;
           void saveFile(fileId, editor);
         });
         editor.onDidFocusEditorWidget(() => useWindowLayoutStore.getState().setFocusedPane(paneId));
+
+        const readActiveTabId = (): string | null => {
+          const state = useWindowLayoutStore.getState();
+          const pane = state.panes.find((p) => p.id === paneId) ?? null;
+          if (!pane) return null;
+          const active =
+            pane.activeTabId && pane.tabIds.includes(pane.activeTabId)
+              ? pane.activeTabId
+              : pane.tabIds[0] ?? null;
+          return active ?? null;
+        };
+
+        const snapshotCurrentLocation = (): NavLocation | null => {
+          const tabId = readActiveTabId();
+          if (!tabId) return null;
+          try {
+            const pos = editor.getPosition();
+            if (!pos) return { tabId };
+            return { tabId, line: pos.lineNumber, column: pos.column };
+          } catch {
+            return { tabId };
+          }
+        };
+
+        const init = snapshotCurrentLocation();
+        if (init) {
+          lastNavLocationRef.current.set(paneId, init);
+        }
+
+        // 记录“代码导航类”跳转（例如 F12 转到定义）产生的程序化光标移动。
+        // 只在 source=api 或者存在 pendingNavRecord 时记入历史，避免箭头键移动污染浏览栈。
+        editor.onDidChangeCursorPosition((ev) => {
+          const tabId = readActiveTabId();
+          if (!tabId) return;
+          const next: NavLocation = { tabId, line: ev.position.lineNumber, column: ev.position.column };
+          const prev = lastNavLocationRef.current.get(paneId) ?? next;
+          lastNavLocationRef.current.set(paneId, next);
+
+          if (suppressNavRecordDepthRef.current > 0) return;
+
+          const pendingPrev = pendingNavRecordRef.current.get(paneId) ?? null;
+          if (pendingPrev) {
+            pendingNavRecordRef.current.delete(paneId);
+            if (isMeaningfulNavTransition(pendingPrev, next)) {
+              commitNavBackEntry(paneId, pendingPrev);
+            }
+            return;
+          }
+
+          if (ev.source !== 'api') return;
+          if (!isMeaningfulNavTransition(prev, next)) return;
+          commitNavBackEntry(paneId, prev);
+        });
       },
-    [openLinkTarget, saveFile, ws?.id]
+    [commitNavBackEntry, isMeaningfulNavTransition, openLinkTarget, saveFile, ws?.id]
   );
 
   const editorTheme = useMemo(() => {
@@ -3258,7 +3369,14 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-gray-50 dark:bg-gray-900">
-	      <div className="flex flex-1 overflow-hidden">
+      {navToast && (
+        <div className="pointer-events-none fixed bottom-4 right-4 z-[200]">
+          <div className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-gray-700 shadow-lg dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200">
+            {navToast}
+          </div>
+        </div>
+      )}
+		      <div className="flex flex-1 overflow-hidden">
         <div className="flex w-[280px] flex-shrink-0 flex-col border-r border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-950">
           <div className="flex items-center justify-between border-b border-gray-200 px-3 py-2 dark:border-gray-800">
             <div className="min-w-0">

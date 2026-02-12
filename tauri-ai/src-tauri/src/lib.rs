@@ -752,6 +752,10 @@ fn run_desktop() {
             // Git tools (diff/undo for apply_patch)
             git_diff_commits,
             git_diff_ghost_worktree,
+            git_get_current_branch,
+            git_list_local_branches,
+            git_checkout_branch,
+            git_create_and_checkout_branch,
             undo_apply_patch,
             // Mermaid SVG cache (disk)
             get_mermaid_svg_cache,
