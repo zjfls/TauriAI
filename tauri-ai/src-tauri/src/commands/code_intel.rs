@@ -10,6 +10,7 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 
 use crate::code_intel::lsp::LspManager;
+use crate::code_intel::lsp::resolve_lsp_spawn_program;
 use crate::code_intel::ast::{AstDocumentSymbolsArgs, AstSymbol};
 use crate::code_intel::types::{LspLaunchConfig, LspServerStatus};
 use crate::config::ConfigManager;
@@ -118,6 +119,24 @@ pub async fn lsp_shutdown_workstudio(
 }
 
 #[tauri::command]
+pub async fn lsp_shutdown_language(
+    workstudio_id: String,
+    language_id: String,
+    lsp: tauri::State<'_, Arc<LspManager>>,
+) -> Result<(), String> {
+    let ws = workstudio_id.trim();
+    let lang = language_id.trim();
+    if ws.is_empty() {
+        return Err("workstudioId 为空".to_string());
+    }
+    if lang.is_empty() {
+        return Err("languageId 为空".to_string());
+    }
+    lsp.shutdown_language(ws, lang).await;
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn lsp_status(
     workstudio_id: String,
     lsp: tauri::State<'_, Arc<LspManager>>,
@@ -128,6 +147,51 @@ pub async fn lsp_status(
 #[tauri::command]
 pub async fn ast_document_symbols(args: AstDocumentSymbolsArgs) -> Result<Vec<AstSymbol>, String> {
     crate::code_intel::ast::document_symbols(args)
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LspDetectServerArgs {
+    pub language_id: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LspDetectServerResult {
+    pub language_id: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub via: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+/// Detect LSP server executable and return an absolute command path.
+///
+/// 说明：
+/// - 主要用于“一键配置”（自动把 rust-analyzer 的绝对路径写入配置）。
+/// - 目前先支持 rust（rust-analyzer）。后续可扩展 python/cpp 等。
+#[tauri::command]
+pub async fn lsp_detect_server(args: LspDetectServerArgs) -> Result<LspDetectServerResult, String> {
+    let lang = args.language_id.trim();
+    if lang.is_empty() {
+        return Err("languageId 为空".to_string());
+    }
+
+    match lang {
+        "rust" => {
+            // rust-analyzer 推荐带 --stdio（与 VS Code 一致）。
+            let resolved = resolve_lsp_spawn_program("rust-analyzer", "", &[])?;
+            Ok(LspDetectServerResult {
+                language_id: "rust".to_string(),
+                command: resolved.target,
+                args: vec!["--stdio".to_string()],
+                via: resolved.via,
+                warnings: resolved.warnings,
+            })
+        }
+        _ => Err(format!("暂不支持自动探测该语言的 LSP：{lang}")),
+    }
 }
 
 fn resolve_launch_config(
@@ -154,11 +218,12 @@ fn resolve_launch_config(
         .find(|s| s.enabled && s.language_id == lang)
         .ok_or_else(|| format!("未找到已启用的 LSP 配置: {lang}"))?;
 
-    let env = server
+    let mut env = server
         .env
         .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect::<Vec<_>>();
+    env.sort_by(|(a, _), (b, _)| a.cmp(b));
 
     Ok(LspLaunchConfig {
         language_id: server.language_id.clone(),

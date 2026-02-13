@@ -31,7 +31,7 @@ import {
 } from 'lucide-react';
 import type { LspServerStatus, TerminalScope, Workstudio, WorkstudioUiState } from '../../types';
 import { SHORTCUT_ACTIONS, detectShortcutPlatform, normalizeKeybindingString } from '../../shortcuts';
-import { lspEnsureServer, lspNotify, lspStatus } from '../../services';
+import { lspDetectServer, lspEnsureServer, lspNotify, lspShutdownLanguage, lspStatus } from '../../services';
 import { useConfigStore } from '../../stores/configStore';
 import { useTerminalSessionStore } from '../../stores/terminalSessionStore';
 import { type WindowPane, useWindowLayoutStore } from '../../stores/windowLayoutStore';
@@ -71,6 +71,16 @@ type NavLocation = {
 type PaneNavHistory = {
   back: NavLocation[];
   forward: NavLocation[];
+};
+
+const DEFAULT_EDITOR_FONT_SIZE = 13;
+const MIN_EDITOR_FONT_SIZE = 10;
+const MAX_EDITOR_FONT_SIZE = 28;
+
+const clampEditorFontSize = (value: number): number => {
+  if (!Number.isFinite(value)) return DEFAULT_EDITOR_FONT_SIZE;
+  const rounded = Math.round(value);
+  return Math.max(MIN_EDITOR_FONT_SIZE, Math.min(MAX_EDITOR_FONT_SIZE, rounded));
 };
 
 const paneDropId = (paneId: string) => `pane:${paneId}`;
@@ -244,6 +254,14 @@ const normalizeFsPath = (input: string) => {
   if (isUnc) return body ? `//${body}` : '//';
   if (drive) return `${drive}${isAbs ? '/' : ''}${body}`.replace(/\/+$/, '');
   return `${isAbs ? '/' : ''}${body}`.replace(/\/+$/, '') || (isAbs ? '/' : '');
+};
+
+const isAbsoluteFsPath = (input: string) => {
+  const p = normalizeFsPath(input);
+  if (!p) return false;
+  if (/^[A-Za-z]:\//.test(p)) return true;
+  if (p.startsWith('//')) return true;
+  return p.startsWith('/');
 };
 
 // Monaco 的 model key（Editor 的 `path` 属性）使用 URI 更可靠：
@@ -467,6 +485,11 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   }, [openFiles]);
   const [explorerSelectedFilePath, setExplorerSelectedFilePath] = useState<string | null>(null);
   const [uiStateRestored, setUiStateRestored] = useState(false);
+  const [editorFontSize, setEditorFontSize] = useState<number>(DEFAULT_EDITOR_FONT_SIZE);
+  const editorFontSizeRef = useRef<number>(DEFAULT_EDITOR_FONT_SIZE);
+  useEffect(() => {
+    editorFontSizeRef.current = editorFontSize;
+  }, [editorFontSize]);
 
   const panes = useWindowLayoutStore((s) => s.panes);
   const focusedPaneId = useWindowLayoutStore((s) => s.focusedPaneId);
@@ -495,8 +518,44 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     | { visible: true; x: number; y: number }
     | null
   >(null);
+  // Workstudio-scoped language filter for code intelligence (null => auto/all configured languages).
+  const [wsEnabledLspLanguageIds, setWsEnabledLspLanguageIds] = useState<string[] | null>(null);
+  const wsEnabledLspLanguageSetRef = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    if (wsEnabledLspLanguageIds === null) {
+      wsEnabledLspLanguageSetRef.current = null;
+      return;
+    }
+    wsEnabledLspLanguageSetRef.current = new Set(
+      wsEnabledLspLanguageIds.map((x) => String(x ?? '').trim()).filter((x) => Boolean(x))
+    );
+  }, [wsEnabledLspLanguageIds]);
+
+  const isLspLanguageEnabledForWorkstudio = useCallback((languageId: string) => {
+    const lang = String(languageId ?? '').trim();
+    if (!lang) return false;
+    const set = wsEnabledLspLanguageSetRef.current;
+    if (!set) return true; // auto
+    return set.has(lang);
+  }, []);
   const [lspStatuses, setLspStatuses] = useState<LspServerStatus[]>([]);
   const [lspEnsureErrors, setLspEnsureErrors] = useState<Record<string, string>>({});
+  const lspEnsureErrorsRef = useRef<Record<string, string>>({});
+  useEffect(() => {
+    lspEnsureErrorsRef.current = lspEnsureErrors;
+  }, [lspEnsureErrors]);
+
+  const isLspLanguageEnabledForBridge = useCallback(
+    (languageId: string) => {
+      const lang = String(languageId ?? '').trim();
+      if (!lang) return false;
+      if (!isLspLanguageEnabledForWorkstudio(lang)) return false;
+      const err = lspEnsureErrorsRef.current?.[lang];
+      if (err) return false;
+      return true;
+    },
+    [isLspLanguageEnabledForWorkstudio]
+  );
   const ensuredLspLangRef = useRef<Set<string>>(new Set());
   const [lspProgress, setLspProgress] = useState<
     Record<
@@ -513,7 +572,10 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     >
   >({});
   const [lspLogs, setLspLogs] = useState<Record<string, string[]>>({});
+  const [lspLogExpanded, setLspLogExpanded] = useState<Record<string, boolean>>({});
   const [lspExited, setLspExited] = useState<Record<string, { code?: number | null; signal?: number | null; timestampMs: number }>>({});
+  const [lspListenerReadyWsId, setLspListenerReadyWsId] = useState<string | null>(null);
+  const [lspAutoConfigStatus, setLspAutoConfigStatus] = useState<'idle' | 'running' | 'done'>('idle');
 
   const [filePaletteOpen, setFilePaletteOpen] = useState(false);
   const [filePaletteQuery, setFilePaletteQuery] = useState('');
@@ -1937,7 +1999,16 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   useEffect(() => {
     const monaco = monacoRef.current;
     const wsId = ws?.id ?? null;
+    // Switching workstudio: dispose immediately (do not keep old listeners/processes around).
+    if (lspBridgeWorkstudioIdRef.current && lspBridgeWorkstudioIdRef.current !== wsId) {
+      lspBridgeRef.current?.dispose();
+      lspBridgeRef.current = null;
+      lspBridgeWorkstudioIdRef.current = null;
+    }
+
     if (!monaco || !wsId) return;
+    // Auto-config must finish before enabling LSP bridge to avoid spawning with an unresolved command.
+    if (lspAutoConfigStatus !== 'done') return;
     if (lspBridgeWorkstudioIdRef.current === wsId) return;
 
     lspBridgeRef.current?.dispose();
@@ -1948,10 +2019,18 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         await openLinkTarget(t);
       },
       getConfig: () => useConfigStore.getState().config?.codeIntelligence,
+      isLanguageEnabled: isLspLanguageEnabledForBridge,
     });
     lspBridgeWorkstudioIdRef.current = wsId;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ws?.id, openLinkTarget, codeIntelligenceConfig?.enabled, codeIntelligenceConfig?.lspServers?.length]);
+  }, [
+    ws?.id,
+    lspAutoConfigStatus,
+    openLinkTarget,
+    codeIntelligenceConfig?.enabled,
+    codeIntelligenceConfig?.lspServers?.length,
+    isLspLanguageEnabledForBridge,
+  ]);
 
   const handleEditorMountForPane = useCallback(
     (paneId: string): OnMount =>
@@ -1962,7 +2041,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
         // 如果 ws 已经就绪，尽早 attach（否则由 useEffect 在 ws.id 就绪后再 attach）
         const wsId = ws?.id ?? null;
-        if (wsId && lspBridgeWorkstudioIdRef.current !== wsId) {
+        if (wsId && lspAutoConfigStatus === 'done' && lspBridgeWorkstudioIdRef.current !== wsId) {
           lspBridgeRef.current?.dispose();
           lspBridgeRef.current = attachMonacoLspBridge({
             monaco,
@@ -1971,6 +2050,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
               await openLinkTarget(t);
             },
             getConfig: () => useConfigStore.getState().config?.codeIntelligence,
+            isLanguageEnabled: isLspLanguageEnabledForBridge,
           });
           lspBridgeWorkstudioIdRef.current = wsId;
         }
@@ -2041,8 +2121,20 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           commitNavBackEntry(paneId, prev);
         });
       },
-    [commitNavBackEntry, isMeaningfulNavTransition, openLinkTarget, saveFile, ws?.id]
+    [commitNavBackEntry, isMeaningfulNavTransition, lspAutoConfigStatus, openLinkTarget, saveFile, ws?.id]
   );
+
+  useEffect(() => {
+    // Ensure existing editors are updated immediately when font size changes.
+    for (const editor of editorByPaneRef.current.values()) {
+      try {
+        editor.updateOptions({ fontSize: editorFontSize });
+        editor.layout();
+      } catch {
+        // ignore
+      }
+    }
+  }, [editorFontSize]);
 
   const editorTheme = useMemo(() => {
     return document.documentElement.classList.contains('dark') ? 'vs-dark' : 'vs';
@@ -2073,7 +2165,53 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     return out;
   }, [codeIntelligenceConfig?.lspServers]);
 
-  const enabledLspLanguageIds = useMemo(() => {
+  const lspConfigFingerprint = useMemo(() => {
+    const cfg = codeIntelligenceConfig ?? null;
+    if (!cfg?.enabled) return '';
+    const servers = Array.isArray(cfg.lspServers) ? cfg.lspServers : [];
+    const parts = servers
+      .filter((s) => Boolean(s?.enabled))
+      .map((s) => {
+        const lang = String(s?.languageId ?? '').trim();
+        const cmd = String(s?.command ?? '').trim();
+        const args = Array.isArray(s?.args) ? s.args.map((x) => String(x)).join(' ') : '';
+        return `${lang}:${cmd}:${args}`;
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b));
+    return parts.join('|');
+  }, [codeIntelligenceConfig?.enabled, codeIntelligenceConfig?.lspServers]);
+
+  // 当用户通过“设置 -> 一键配置”把 command 修复为绝对路径时，自动解除该语言的错误阻塞。
+  useEffect(() => {
+    if (!isTauri()) return;
+    if (!codeIntelligenceConfig?.enabled) return;
+    const servers = Array.isArray(codeIntelligenceConfig?.lspServers) ? codeIntelligenceConfig!.lspServers : [];
+    const rust = servers.find((s) => s.enabled && String(s.languageId || '').trim() === 'rust') ?? null;
+    const cmd = String(rust?.command || '').trim();
+    if (!cmd || !isAbsoluteFsPath(cmd)) return;
+    setLspEnsureErrors((prev) => {
+      if (!prev.rust) return prev;
+      const next = { ...prev };
+      delete next.rust;
+      return next;
+    });
+  }, [codeIntelligenceConfig?.enabled, lspConfigFingerprint]);
+
+  const configuredLspLanguageIds = useMemo(() => {
+    const out = lspMenuServers.map((s) => s.languageId).filter((x) => Boolean(x));
+    out.sort((a, b) => a.localeCompare(b));
+    return Array.from(new Set(out));
+  }, [lspMenuServers]);
+
+  const wsSelectedLspLanguageIds = useMemo(() => {
+    if (wsEnabledLspLanguageIds === null) return configuredLspLanguageIds;
+    const allow = new Set(wsEnabledLspLanguageIds.map((x) => String(x ?? '').trim()).filter((x) => Boolean(x)));
+    return configuredLspLanguageIds.filter((lang) => allow.has(lang));
+  }, [configuredLspLanguageIds, wsEnabledLspLanguageIds]);
+  const wsSelectedLspLanguageIdSet = useMemo(() => new Set(wsSelectedLspLanguageIds), [wsSelectedLspLanguageIds]);
+
+  const globallyEnabledLspLanguageIds = useMemo(() => {
     const cfg = codeIntelligenceConfig ?? null;
     if (!cfg?.enabled) return [];
     const servers = Array.isArray(cfg.lspServers) ? cfg.lspServers : [];
@@ -2084,8 +2222,16 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       if (!s.enabled || !lang || !cmd) continue;
       out.push(lang);
     }
-    return Array.from(new Set(out));
+    const uniq = Array.from(new Set(out));
+    uniq.sort((a, b) => a.localeCompare(b));
+    return uniq;
   }, [codeIntelligenceConfig?.enabled, codeIntelligenceConfig?.lspServers]);
+
+  const enabledLspLanguageIds = useMemo(() => {
+    if (wsEnabledLspLanguageIds === null) return globallyEnabledLspLanguageIds;
+    const allow = new Set(wsEnabledLspLanguageIds.map((x) => String(x ?? '').trim()).filter((x) => Boolean(x)));
+    return globallyEnabledLspLanguageIds.filter((lang) => allow.has(lang));
+  }, [globallyEnabledLspLanguageIds, wsEnabledLspLanguageIds]);
 
   const getLanguageProgressText = useCallback(
     (languageId: string) => {
@@ -2169,8 +2315,11 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     if (!codeIntelligenceConfig?.enabled) {
       return { label: '代码智能：关闭', dotClass: 'bg-gray-400', title: '设置 -> Code Intelligence 中开启' };
     }
-    if (enabledLspLanguageIds.length === 0) {
+    if (globallyEnabledLspLanguageIds.length === 0) {
       return { label: '代码智能：未配置', dotClass: 'bg-yellow-500', title: '未找到已启用的 LSP server 配置' };
+    }
+    if (enabledLspLanguageIds.length === 0) {
+      return { label: '代码智能：未启用语言', dotClass: 'bg-gray-400', title: '在代码智能面板中为该工作区选择语言' };
     }
 
     const states = enabledLspLanguageIds.map((lang) => describeLspLanguage(lang).state);
@@ -2187,35 +2336,41 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       return { label: '代码智能：索引中', dotClass: 'bg-yellow-500', title: detail ?? 'rust-analyzer 正在索引' };
     }
     return { label: '代码智能：就绪', dotClass: 'bg-green-500', title: 'rust-analyzer 等已就绪' };
-  }, [codeIntelligenceConfig?.enabled, describeLspLanguage, enabledLspLanguageIds, getLanguageProgressText]);
+  }, [codeIntelligenceConfig?.enabled, describeLspLanguage, enabledLspLanguageIds, getLanguageProgressText, globallyEnabledLspLanguageIds.length]);
 
   const ensureLspForLanguage = useCallback(
     async (languageId: string) => {
       if (!isTauri()) return;
       const wsId = ws?.id ?? null;
       if (!wsId) return;
+      const lang = String(languageId ?? '').trim();
+      if (!lang) return;
+      if (!isLspLanguageEnabledForWorkstudio(lang)) {
+        showNavToast(`未启用语言：${lang}`);
+        return;
+      }
 
       setLspEnsureErrors((prev) => {
-        if (!prev[languageId]) return prev;
+        if (!prev[lang]) return prev;
         const next = { ...prev };
-        delete next[languageId];
+        delete next[lang];
         return next;
       });
 
-      ensuredLspLangRef.current.add(languageId);
+      ensuredLspLangRef.current.add(lang);
       try {
-        await lspEnsureServer({ workstudioId: wsId, languageId });
+        await lspEnsureServer({ workstudioId: wsId, languageId: lang });
         const res = await lspStatus(wsId);
         setLspStatuses(res);
       } catch (e) {
-        ensuredLspLangRef.current.delete(languageId);
+        ensuredLspLangRef.current.delete(lang);
         setLspEnsureErrors((prev) => ({
           ...prev,
-          [languageId]: e instanceof Error ? e.message : String(e),
+          [lang]: e instanceof Error ? e.message : String(e),
         }));
       }
     },
-    [ws?.id]
+    [isLspLanguageEnabledForWorkstudio, showNavToast, ws?.id]
   );
 
   const restartLspBridge = useCallback(async () => {
@@ -2238,6 +2393,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         await openLinkTarget(t);
       },
       getConfig: () => useConfigStore.getState().config?.codeIntelligence,
+      isLanguageEnabled: isLspLanguageEnabledForBridge,
     });
     lspBridgeWorkstudioIdRef.current = wsId;
 
@@ -2249,10 +2405,82 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         const languageId = String(s.languageId || '').trim();
         const command = String(s.command || '').trim();
         if (!s.enabled || !languageId || !command) continue;
+        if (!isLspLanguageEnabledForWorkstudio(languageId)) continue;
         void ensureLspForLanguage(languageId);
       }
     }
-  }, [ensureLspForLanguage, openLinkTarget, ws?.id]);
+  }, [ensureLspForLanguage, isLspLanguageEnabledForWorkstudio, isLspLanguageEnabledForBridge, openLinkTarget, ws?.id]);
+
+  const copyTextToClipboard = useCallback(
+    async (text: string, okMessage: string) => {
+      try {
+        await navigator.clipboard.writeText(text);
+        showNavToast(okMessage);
+      } catch (e) {
+        console.error('[Workstudio] clipboard write failed:', e);
+        showNavToast('复制失败（请检查剪贴板权限）');
+      }
+    },
+    [showNavToast]
+  );
+
+  const copyLspLogsForLanguage = useCallback(
+    async (languageId: string) => {
+      const lang = String(languageId ?? '').trim();
+      if (!lang) return;
+      const logs = lspLogs[lang] ?? [];
+      if (logs.length === 0) {
+        showNavToast(`暂无日志：${lang}`);
+        return;
+      }
+      await copyTextToClipboard(logs.join('\n'), `已复制日志：${lang}`);
+    },
+    [copyTextToClipboard, lspLogs, showNavToast]
+  );
+
+  const copyAllLspLogs = useCallback(async () => {
+    const langs = Object.keys(lspLogs).sort((a, b) => a.localeCompare(b));
+    if (langs.length === 0) {
+      showNavToast('暂无 LSP 日志');
+      return;
+    }
+    const parts: string[] = [];
+    for (const lang of langs) {
+      const logs = lspLogs[lang] ?? [];
+      if (logs.length === 0) continue;
+      parts.push(`### ${lang}`);
+      parts.push(...logs);
+      parts.push('');
+    }
+    const text = parts.join('\n').trim();
+    if (!text) {
+      showNavToast('暂无 LSP 日志');
+      return;
+    }
+    await copyTextToClipboard(text, '已复制 LSP 日志');
+  }, [copyTextToClipboard, lspLogs, showNavToast]);
+
+  const toggleWorkstudioLspLanguage = useCallback(
+    (languageId: string) => {
+      const lang = String(languageId ?? '').trim();
+      if (!lang) return;
+      setWsEnabledLspLanguageIds((prev) => {
+        const base = prev === null ? configuredLspLanguageIds : prev;
+        const set = new Set(base.map((x) => String(x ?? '').trim()).filter((x) => Boolean(x)));
+        if (set.has(lang)) set.delete(lang);
+        else set.add(lang);
+        const out = Array.from(set);
+        out.sort((a, b) => a.localeCompare(b));
+        return out;
+      });
+    },
+    [configuredLspLanguageIds]
+  );
+
+  const restoreWorkstudioLspLanguageAuto = useCallback(() => {
+    setWsEnabledLspLanguageIds(null);
+    showNavToast('已恢复自动语言（使用全局配置）');
+  }, [showNavToast]);
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
 
@@ -2665,6 +2893,40 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     await openFileAtPath(selected);
   }, [openFileAtPath]);
 
+  const setEditorFontSizeFromUser = useCallback(
+    (nextFontSize: number) => {
+      const next = clampEditorFontSize(nextFontSize);
+      if (next === editorFontSizeRef.current) return;
+      setEditorFontSize(next);
+      showNavToast(`字体：${next}px`);
+    },
+    [showNavToast]
+  );
+
+  const zoomInEditorFont = useCallback(() => {
+    setEditorFontSizeFromUser(editorFontSizeRef.current + 1);
+  }, [setEditorFontSizeFromUser]);
+
+  const zoomOutEditorFont = useCallback(() => {
+    setEditorFontSizeFromUser(editorFontSizeRef.current - 1);
+  }, [setEditorFontSizeFromUser]);
+
+  const resetEditorFont = useCallback(() => {
+    setEditorFontSizeFromUser(DEFAULT_EDITOR_FONT_SIZE);
+  }, [setEditorFontSizeFromUser]);
+
+  const onEditorWheelCapture = useCallback(
+    (e: React.WheelEvent) => {
+      // Ctrl/Cmd + Wheel: zoom editor font size (like VS Code / browsers).
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.deltaY < 0) zoomInEditorFont();
+      if (e.deltaY > 0) zoomOutEditorFont();
+    },
+    [zoomInEditorFont, zoomOutEditorFont]
+  );
+
   // Workstudio 文件搜索（由全局快捷键系统分发：tauri-ai:shortcut）
   useEffect(() => {
     const onShortcut = (event: Event) => {
@@ -2697,11 +2959,23 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       }
       if (action === 'workstudio.peekDefinition') {
         void peekDefinition();
+        return;
+      }
+      if (action === 'workstudio.fontZoomIn') {
+        zoomInEditorFont();
+        return;
+      }
+      if (action === 'workstudio.fontZoomOut') {
+        zoomOutEditorFont();
+        return;
+      }
+      if (action === 'workstudio.fontZoomReset') {
+        resetEditorFont();
       }
     };
     window.addEventListener('tauri-ai:shortcut', onShortcut as EventListener);
     return () => window.removeEventListener('tauri-ai:shortcut', onShortcut as EventListener);
-  }, [goToDefinition, goToReferences, goToTypeDefinition, navigateBack, navigateForward, peekDefinition]);
+  }, [goToDefinition, goToReferences, goToTypeDefinition, navigateBack, navigateForward, peekDefinition, resetEditorFont, zoomInEditorFont, zoomOutEditorFont]);
 
   // Esc: close palette (local behavior)
   useEffect(() => {
@@ -2761,6 +3035,8 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     if (!ws) return;
     setUiStateRestored(false);
     setOpenFiles([]);
+    setWsEnabledLspLanguageIds(null);
+    setEditorFontSize(DEFAULT_EDITOR_FONT_SIZE);
     replaceLayout({
       panes: [
         {
@@ -2780,6 +3056,21 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         });
         if (cancelled) return;
         if (!state) return;
+
+        // Restore workstudio-scoped LSP language filter (optional)
+        const rawEnabled = state.codeIntelligence?.enabledLanguageIds;
+        if (Array.isArray(rawEnabled)) {
+          const cleaned = Array.from(
+            new Set(rawEnabled.map((x) => String(x ?? '').trim()).filter((x) => Boolean(x)))
+          );
+          cleaned.sort((a, b) => a.localeCompare(b));
+          setWsEnabledLspLanguageIds(cleaned);
+        }
+
+        const rawFontSize = state.editorFontSize;
+        if (typeof rawFontSize === 'number' && Number.isFinite(rawFontSize)) {
+          setEditorFontSize(clampEditorFontSize(rawFontSize));
+        }
 
         const legacyPaths = Array.isArray(state.openFiles)
           ? state.openFiles.map((p) => normalizeFsPath(String(p))).filter((p) => Boolean(p))
@@ -2984,13 +3275,23 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           .filter((p) => p.tabIds.length > 0),
         focusedPaneId: resolvedFocusedPaneId ?? undefined,
         expandedDirs: Array.from(expandedDirs),
+        ...(editorFontSize === DEFAULT_EDITOR_FONT_SIZE ? {} : { editorFontSize }),
+        ...(wsEnabledLspLanguageIds === null
+          ? {}
+          : {
+              codeIntelligence: {
+                enabledLanguageIds: Array.from(
+                  new Set(wsEnabledLspLanguageIds.map((x) => String(x ?? '').trim()).filter((x) => Boolean(x)))
+                ).sort((a, b) => a.localeCompare(b)),
+              },
+            }),
       };
       void invoke('set_workstudio_ui_state', { workstudioId: ws.id, state }).catch(() => {});
     }, 500);
     return () => {
       if (saveStateTimerRef.current) window.clearTimeout(saveStateTimerRef.current);
     };
-  }, [ws, openFiles, resolvedPanes, resolvedFocusedPaneId, expandedDirs]);
+  }, [ws, openFiles, resolvedPanes, resolvedFocusedPaneId, expandedDirs, editorFontSize, wsEnabledLspLanguageIds]);
 
   useEffect(() => {
     if (!ws) return;
@@ -3004,14 +3305,124 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     setLspEnsureErrors({});
     setLspProgress({});
     setLspLogs({});
+    setLspLogExpanded({});
     setLspExited({});
+    setLspListenerReadyWsId(null);
+    setLspAutoConfigStatus('idle');
   }, [ws?.id]);
+
+  // Auto-config rust-analyzer（产品级兜底）：当 command 为空/非绝对路径时，尝试探测并写回配置。
+  // - 成功：把绝对路径写入配置（并尽量补齐 --stdio），后续启动不依赖 PATH。
+  // - 失败：只尝试一次，随后等待用户在设置页“一键配置”或手动修正后重启。
+  useEffect(() => {
+    if (!isTauri()) return;
+    if (!uiStateRestored) return;
+    const wsId = ws?.id ?? null;
+    if (!wsId) return;
+    if (lspAutoConfigStatus !== 'idle') return;
+
+    const cfg = codeIntelligenceConfig ?? null;
+    if (!cfg) {
+      // 等待配置加载完成（避免误判为“未开启”导致后续不再尝试自动配置）。
+      return;
+    }
+    if (!cfg.enabled) {
+      setLspAutoConfigStatus('done');
+      return;
+    }
+
+    const servers = Array.isArray(cfg.lspServers) ? cfg.lspServers : [];
+    const rust = servers.find((s) => s.enabled && String(s.languageId || '').trim() === 'rust') ?? null;
+    if (!rust && servers.length !== 0) {
+      setLspAutoConfigStatus('done');
+      return;
+    }
+
+    const rawCmd = String(rust?.command || '').trim();
+    const shouldAuto = rust
+      ? !rawCmd || rawCmd === 'rust-analyzer' || rawCmd === 'rust-analyzer.exe' || !isAbsoluteFsPath(rawCmd)
+      : true;
+    if (!shouldAuto) {
+      setLspAutoConfigStatus('done');
+      return;
+    }
+
+    setLspAutoConfigStatus('running');
+    void (async () => {
+      try {
+        console.info('[Workstudio][LSP] auto-config rust-analyzer: start', { workstudioId: wsId, rawCommand: rawCmd });
+        const res = await lspDetectServer({ languageId: 'rust' });
+        const foundCmd = String(res?.command || '').trim();
+        if (!foundCmd) {
+          throw new Error('未找到 rust-analyzer（返回 command 为空）');
+        }
+        const recommendedArgs = Array.isArray(res?.args) ? res.args.map((x) => String(x || '').trim()).filter(Boolean) : [];
+        console.info('[Workstudio][LSP] auto-config rust-analyzer: ok', {
+          workstudioId: wsId,
+          command: foundCmd,
+          via: String(res?.via || ''),
+          warnings: Array.isArray(res?.warnings) ? res.warnings : [],
+        });
+
+        const currentConfig = useConfigStore.getState().config;
+        if (!currentConfig) {
+          throw new Error('配置未加载完成');
+        }
+
+        const currentCi = currentConfig.codeIntelligence ?? { enabled: true, lspServers: [] };
+        const currentServers = Array.isArray(currentCi.lspServers) ? currentCi.lspServers : [];
+        let patched = false;
+        const nextServers = currentServers.map((s) => {
+          if (String(s.languageId || '').trim() !== 'rust') return s;
+          patched = true;
+          const existingArgs = Array.isArray(s.args) ? s.args : [];
+          const nextArgs = existingArgs.length === 0 && recommendedArgs.length > 0 ? recommendedArgs : existingArgs;
+          return { ...s, enabled: true, command: foundCmd, args: nextArgs };
+        });
+        if (!patched) {
+          nextServers.push({
+            languageId: 'rust',
+            enabled: true,
+            command: foundCmd,
+            args: recommendedArgs.length > 0 ? recommendedArgs : ['--stdio'],
+            env: {},
+            initializationOptions: {},
+            settings: {},
+          });
+        }
+
+        useConfigStore.getState().saveConfigDebounced(
+          {
+            ...currentConfig,
+            codeIntelligence: { ...currentCi, enabled: true, lspServers: nextServers },
+          },
+          0
+        );
+
+        setLspEnsureErrors((prev) => {
+          if (!prev.rust) return prev;
+          const next = { ...prev };
+          delete next.rust;
+          return next;
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn('[Workstudio][LSP] auto-config rust-analyzer: failed', { workstudioId: wsId, msg });
+        setLspEnsureErrors((prev) => ({ ...prev, rust: `自动配置失败：${msg}` }));
+      } finally {
+        setLspAutoConfigStatus('done');
+      }
+    })();
+  }, [uiStateRestored, ws?.id, lspAutoConfigStatus, codeIntelligenceConfig?.enabled, codeIntelligenceConfig?.lspServers?.length]);
 
   // Auto-start LSP servers (best-effort) so rust-analyzer 的“启动/索引/就绪”可见。
   useEffect(() => {
     if (!isTauri()) return;
+    if (!uiStateRestored) return;
     const wsId = ws?.id ?? null;
     if (!wsId) return;
+    if (lspListenerReadyWsId !== wsId) return;
+    if (lspAutoConfigStatus !== 'done') return;
     const cfg = useConfigStore.getState().config?.codeIntelligence ?? null;
     if (!cfg?.enabled) return;
 
@@ -3020,6 +3431,8 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       const languageId = String(s.languageId || '').trim();
       const command = String(s.command || '').trim();
       if (!s.enabled || !languageId || !command) continue;
+      if (!isLspLanguageEnabledForWorkstudio(languageId)) continue;
+      if (lspEnsureErrorsRef.current?.[languageId]) continue;
       if (ensuredLspLangRef.current.has(languageId)) continue;
       ensuredLspLangRef.current.add(languageId);
 
@@ -3031,7 +3444,64 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         }));
       });
     }
-  }, [ws?.id, codeIntelligenceConfig?.enabled, codeIntelligenceConfig?.lspServers?.length]);
+  }, [
+    ws?.id,
+    uiStateRestored,
+    lspListenerReadyWsId,
+    lspAutoConfigStatus,
+    wsEnabledLspLanguageIds,
+    codeIntelligenceConfig?.enabled,
+    lspConfigFingerprint,
+    isLspLanguageEnabledForWorkstudio,
+  ]);
+
+  // 当 workstudio 语言筛选/全局配置变化导致“有效启用语言”减少时，主动 shutdown 对应 LSP 进程，避免后台残留。
+  const prevEnabledLspLanguageIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    prevEnabledLspLanguageIdsRef.current = new Set();
+  }, [ws?.id]);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    if (!uiStateRestored) return;
+    const wsId = ws?.id ?? null;
+    if (!wsId) return;
+
+    const prev = prevEnabledLspLanguageIdsRef.current;
+    const next = new Set(enabledLspLanguageIds);
+    prevEnabledLspLanguageIdsRef.current = next;
+
+    const removed: string[] = [];
+    for (const lang of prev) {
+      if (!next.has(lang)) removed.push(lang);
+    }
+    if (removed.length === 0) return;
+
+    for (const lang of removed) {
+      ensuredLspLangRef.current.delete(lang);
+      void lspShutdownLanguage(wsId, lang).catch((e) => {
+        console.warn('[Workstudio][LSP] shutdown language failed:', { workstudioId: wsId, languageId: lang, e });
+      });
+      setLspEnsureErrors((prevErr) => {
+        if (!prevErr[lang]) return prevErr;
+        const nextErr = { ...prevErr };
+        delete nextErr[lang];
+        return nextErr;
+      });
+      setLspProgress((prevProg) => {
+        if (!prevProg[lang]) return prevProg;
+        const nextProg = { ...prevProg };
+        delete nextProg[lang];
+        return nextProg;
+      });
+      setLspExited((prevExited) => {
+        if (!prevExited[lang]) return prevExited;
+        const nextExited = { ...prevExited };
+        delete nextExited[lang];
+        return nextExited;
+      });
+    }
+  }, [enabledLspLanguageIds, isLspLanguageEnabledForWorkstudio, uiStateRestored, ws?.id]);
 
   // Poll LSP server runtime status (started/initialized/lastError).
   useEffect(() => {
@@ -3072,6 +3542,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     const wsId = ws?.id ?? null;
     if (!wsId) return;
 
+    setLspListenerReadyWsId(null);
     let disposed = false;
     let unlisten: null | (() => void) = null;
     void listen('lsp:event', (event) => {
@@ -3172,8 +3643,12 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           return;
         }
         unlisten = fn;
+        setLspListenerReadyWsId(wsId);
       })
-      .catch(() => {});
+      .catch((e) => {
+        console.warn('[Workstudio][LSP] listen lsp:event failed:', e);
+        if (!disposed) setLspListenerReadyWsId(wsId);
+      });
 
     return () => {
       disposed = true;
@@ -3576,43 +4051,45 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	                        <div ref={registerPaneBodyRef(pane.id)} className="min-h-0 flex-1">
 	                          {activeFile ? (
 	                            activeFile.kind === 'text' ? (
-	                              <Editor
-	                                path={toMonacoModelPath(activeFile.path)}
-	                                language={languageForPath(activeFile.path)}
-	                                value={activeFile.content ?? ''}
-	                                // Configure MonacoEnvironment workers before the editor initializes.
-	                                // Otherwise Monaco may route TS/JS language-service requests to the simple editor worker,
-	                                // leading to errors like: "Missing requestHandler or method: getQuickInfoAtPosition".
-	                                beforeMount={setupMonaco}
-	                                onMount={handleEditorMountForPane(pane.id)}
-	                                onChange={(value) => {
-	                                  const nextValue = value ?? '';
-	                                  setOpenFiles((prev) =>
-	                                    prev.map((file) =>
-	                                      file.id === activeFile.id
-	                                        ? {
-	                                            ...file,
-	                                            content: nextValue,
-	                                            dirty: nextValue !== (file.originalContent ?? ''),
-	                                          }
-	                                        : file
-	                                    )
-	                                  );
-	                                }}
-	                                theme={editorTheme}
-	                                options={{
-	                                  minimap: { enabled: false },
-	                                  codeLens: false,
-	                                  fontSize: 13,
-	                                  fontFamily:
-	                                    'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
-	                                  lineNumbers: 'on',
-	                                  wordWrap: 'on',
-	                                  renderWhitespace: 'selection',
-	                                  automaticLayout: true,
-	                                  scrollBeyondLastLine: false,
-	                                }}
-	                              />
+	                              <div className="h-full w-full" onWheelCapture={onEditorWheelCapture}>
+	                                <Editor
+	                                  path={toMonacoModelPath(activeFile.path)}
+	                                  language={languageForPath(activeFile.path)}
+	                                  value={activeFile.content ?? ''}
+	                                  // Configure MonacoEnvironment workers before the editor initializes.
+	                                  // Otherwise Monaco may route TS/JS language-service requests to the simple editor worker,
+	                                  // leading to errors like: "Missing requestHandler or method: getQuickInfoAtPosition".
+	                                  beforeMount={setupMonaco}
+	                                  onMount={handleEditorMountForPane(pane.id)}
+	                                  onChange={(value) => {
+	                                    const nextValue = value ?? '';
+	                                    setOpenFiles((prev) =>
+	                                      prev.map((file) =>
+	                                        file.id === activeFile.id
+	                                          ? {
+	                                              ...file,
+	                                              content: nextValue,
+	                                              dirty: nextValue !== (file.originalContent ?? ''),
+	                                            }
+	                                          : file
+	                                      )
+	                                    );
+	                                  }}
+	                                  theme={editorTheme}
+	                                  options={{
+	                                    minimap: { enabled: false },
+	                                    codeLens: false,
+	                                    fontSize: editorFontSize,
+	                                    fontFamily:
+	                                      'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+	                                    lineNumbers: 'on',
+	                                    wordWrap: 'on',
+	                                    renderWhitespace: 'selection',
+	                                    automaticLayout: true,
+	                                    scrollBeyondLastLine: false,
+	                                  }}
+	                                />
+	                              </div>
 	                            ) : (
 	                              <div className="flex h-full flex-col gap-3 p-4">
 	                                <div className="flex items-center justify-between">
@@ -3830,6 +4307,14 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
               <button
                 type="button"
                 className="rounded border border-gray-200 px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+                onClick={() => void copyAllLspLogs()}
+                title="复制所有语言的 LSP 输出日志"
+              >
+                复制日志
+              </button>
+              <button
+                type="button"
+                className="rounded border border-gray-200 px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
                 onClick={() => setLspLogs({})}
                 title="清空 LSP 日志"
               >
@@ -3849,108 +4334,200 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           <div className="max-h-[70vh] overflow-auto px-3 py-3">
             {!isTauri() ? (
               <div className="text-sm text-gray-600 dark:text-gray-300">仅桌面端支持 LSP。</div>
-            ) : !codeIntelligenceConfig?.enabled ? (
-              <div className="text-sm text-gray-600 dark:text-gray-300">
-                代码智能已关闭：在 设置 → Code Intelligence 中开启。
-              </div>
-            ) : lspMenuServers.length === 0 ? (
-              <div className="text-sm text-gray-600 dark:text-gray-300">
-                未配置 LSP server：在 设置 → Code Intelligence 中添加 rust-analyzer 等。
-              </div>
             ) : (
-              <div className="space-y-2">
-                {lspMenuServers.map((s) => {
-                  const lang = s.languageId;
-                  const desc = describeLspLanguage(lang);
-                  const configuredOk = s.enabled && Boolean(s.command);
-                  const effectiveDot = configuredOk ? desc.dotClass : s.enabled ? 'bg-red-500' : 'bg-gray-400';
-                  const statusText = !s.enabled
-                    ? '已禁用'
-                    : !s.command
-                      ? '命令为空'
-                      : desc.label;
+              <div className="space-y-3">
+                {!codeIntelligenceConfig?.enabled && (
+                  <div className="text-sm text-gray-600 dark:text-gray-300">
+                    代码智能已关闭：在 设置 → Code Intelligence 中开启。
+                  </div>
+                )}
 
-                  const cmdLine = s.command ? [s.command, ...(s.args ?? [])].join(' ') : '（未配置命令）';
-                  const logs = lspLogs[lang] ?? [];
-                  const lastLogs = logs.slice(-3);
+                {lspMenuServers.length === 0 ? (
+                  <div className="text-sm text-gray-600 dark:text-gray-300">
+                    未配置 LSP server：在 设置 → Code Intelligence 中添加 rust-analyzer 等。
+                  </div>
+                ) : (
+                  <div className="rounded-lg border border-gray-200 bg-white p-2 dark:border-gray-700 dark:bg-gray-900">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-xs font-semibold text-gray-900 dark:text-gray-100">
+                        本工作区启用语言
+                      </div>
+                      {wsEnabledLspLanguageIds !== null && (
+                        <button
+                          type="button"
+                          className="rounded border border-gray-200 px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+                          onClick={restoreWorkstudioLspLanguageAuto}
+                          title="恢复自动：使用全局 Code Intelligence 配置"
+                        >
+                          恢复自动
+                        </button>
+                      )}
+                    </div>
 
-                  return (
-                    <div
-                      key={`${lang}:${cmdLine}`}
-                      className="rounded-lg border border-gray-200 bg-white p-2 dark:border-gray-700 dark:bg-gray-900"
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <span className={['h-2 w-2 rounded-full', effectiveDot].join(' ')} />
-                            <div className="min-w-0">
-                              <div className="flex items-center gap-2">
-                                <span className="text-xs font-semibold text-gray-900 dark:text-gray-100">
-                                  {lang}
-                                </span>
-                                <span className="text-[11px] text-gray-500 dark:text-gray-400">
-                                  {statusText}
-                                </span>
-                              </div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {configuredLspLanguageIds.map((lang) => (
+                        <label
+                          key={`ws:lsp:lang:${lang}`}
+                          className="inline-flex items-center gap-2 rounded border border-gray-200 px-2 py-1 text-[11px] text-gray-700 dark:border-gray-700 dark:text-gray-200"
+                        >
+                          <input
+                            type="checkbox"
+                            className="h-3 w-3 accent-blue-600"
+                            checked={wsSelectedLspLanguageIdSet.has(lang)}
+                            onChange={() => toggleWorkstudioLspLanguage(lang)}
+                          />
+                          <span className="font-mono">{lang}</span>
+                        </label>
+                      ))}
+                    </div>
+
+                    <div className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
+                      {wsEnabledLspLanguageIds === null ? '当前：自动（使用全局配置）' : '当前：自定义（仅启用勾选语言）'}
+                    </div>
+                  </div>
+                )}
+
+                {codeIntelligenceConfig?.enabled && lspMenuServers.length > 0 && (
+                  <>
+                    {wsSelectedLspLanguageIds.length === 0 ? (
+                      <div className="text-sm text-gray-600 dark:text-gray-300">
+                        本工作区未启用任何语言：请在上方勾选需要的语言。
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        {lspMenuServers
+                          .filter((s) => wsSelectedLspLanguageIdSet.has(s.languageId))
+                          .map((s) => {
+                            const lang = s.languageId;
+                            const desc = describeLspLanguage(lang);
+                            const configuredOk = s.enabled && Boolean(s.command);
+                            const effectiveDot = configuredOk ? desc.dotClass : s.enabled ? 'bg-red-500' : 'bg-gray-400';
+                            const statusText = !s.enabled
+                              ? '已禁用'
+                              : !s.command
+                                ? '命令为空'
+                                : desc.label;
+
+                            const cmdLine = s.command ? [s.command, ...(s.args ?? [])].join(' ') : '（未配置命令）';
+                            const logs = lspLogs[lang] ?? [];
+                            const expanded = Boolean(lspLogExpanded[lang]);
+                            const lastLogs = logs.slice(-3);
+
+                            return (
                               <div
-                                className="mt-0.5 truncate font-mono text-[11px] text-gray-500 dark:text-gray-400"
-                                title={cmdLine}
+                                key={`${lang}:${cmdLine}`}
+                                className="rounded-lg border border-gray-200 bg-white p-2 dark:border-gray-700 dark:bg-gray-900"
                               >
-                                {cmdLine}
-                              </div>
-                            </div>
-                          </div>
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-2">
+                                      <span className={['h-2 w-2 rounded-full', effectiveDot].join(' ')} />
+                                      <div className="min-w-0">
+                                        <div className="flex items-center gap-2">
+                                          <span className="text-xs font-semibold text-gray-900 dark:text-gray-100">
+                                            {lang}
+                                          </span>
+                                          <span className="text-[11px] text-gray-500 dark:text-gray-400">
+                                            {statusText}
+                                          </span>
+                                        </div>
+                                        <div
+                                          className="mt-0.5 truncate font-mono text-[11px] text-gray-500 dark:text-gray-400"
+                                          title={cmdLine}
+                                        >
+                                          {cmdLine}
+                                        </div>
+                                      </div>
+                                    </div>
 
-                          {configuredOk && desc.progressText && (
-                            <div className="mt-1 text-[11px] text-gray-600 dark:text-gray-300">
-                              进度：{desc.progressText}
-                            </div>
-                          )}
+                                    {configuredOk && desc.progressText && (
+                                      <div className="mt-1 text-[11px] text-gray-600 dark:text-gray-300">
+                                        进度：{desc.progressText}
+                                      </div>
+                                    )}
 
-                          {desc.exitedText && (
-                            <div className="mt-1 text-[11px] text-orange-700 dark:text-orange-200">
-                              {desc.exitedText}
-                            </div>
-                          )}
+                                    {desc.exitedText && (
+                                      <div className="mt-1 text-[11px] text-orange-700 dark:text-orange-200">
+                                        {desc.exitedText}
+                                      </div>
+                                    )}
 
-                          {desc.lastError && (
-                            <div className="mt-1 text-[11px] text-red-700 dark:text-red-200">
-                              错误：{desc.lastError}
-                            </div>
-                          )}
+                                    {desc.lastError && (
+                                      <div className="mt-1 text-[11px] text-red-700 dark:text-red-200">
+                                        错误：{desc.lastError}
+                                      </div>
+                                    )}
 
-                          {lastLogs.length > 0 && (
-                            <div className="mt-1 space-y-0.5 rounded bg-gray-50 px-2 py-1 font-mono text-[10px] text-gray-700 dark:bg-gray-950 dark:text-gray-300">
-                              {lastLogs.map((line, idx) => (
-                                <div key={`${lang}:log:${idx}`} className="truncate" title={line}>
-                                  {line}
+                                    {!expanded && lastLogs.length > 0 && (
+                                      <div className="mt-1 space-y-0.5 rounded bg-gray-50 px-2 py-1 font-mono text-[10px] text-gray-700 dark:bg-gray-950 dark:text-gray-300">
+                                        {lastLogs.map((line, idx) => (
+                                          <div key={`${lang}:log:${idx}`} className="truncate" title={line}>
+                                            {line}
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+
+                                    {expanded && logs.length > 0 && (
+                                      <div className="mt-1 max-h-[220px] overflow-auto rounded bg-gray-50 px-2 py-1 font-mono text-[10px] text-gray-700 dark:bg-gray-950 dark:text-gray-300 whitespace-pre-wrap break-words">
+                                        {logs.map((line, idx) => (
+                                          <div key={`${lang}:log:full:${idx}`} className="whitespace-pre-wrap break-words">
+                                            {line}
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  <div className="flex flex-shrink-0 items-center gap-1">
+                                    <button
+                                      type="button"
+                                      className="rounded border border-gray-200 px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-100 disabled:opacity-60 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+                                      disabled={logs.length === 0}
+                                      onClick={() => void copyLspLogsForLanguage(lang)}
+                                      title="复制该语言日志"
+                                    >
+                                      复制
+                                    </button>
+                                    {logs.length > 0 && (
+                                      <button
+                                        type="button"
+                                        className="rounded border border-gray-200 px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+                                        onClick={() =>
+                                          setLspLogExpanded((prev) => ({
+                                            ...prev,
+                                            [lang]: !Boolean(prev[lang]),
+                                          }))
+                                        }
+                                        title={expanded ? '收起日志' : '展开日志'}
+                                      >
+                                        {expanded ? '收起' : '展开'}
+                                      </button>
+                                    )}
+                                    {s.enabled && (
+                                      <button
+                                        type="button"
+                                        className="rounded border border-gray-200 px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-100 disabled:opacity-60 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+                                        disabled={!s.command}
+                                        onClick={() => void ensureLspForLanguage(lang)}
+                                        title={!s.command ? '请先在设置中填写启动命令' : '启动/初始化该语言的 LSP'}
+                                      >
+                                        启动
+                                      </button>
+                                    )}
+                                  </div>
                                 </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
+                              </div>
+                            );
+                          })}
 
-                        <div className="flex flex-shrink-0 items-center gap-1">
-                          {s.enabled && (
-                            <button
-                              type="button"
-                              className="rounded border border-gray-200 px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
-                              disabled={!s.command}
-                              onClick={() => void ensureLspForLanguage(lang)}
-                              title={!s.command ? '请先在设置中填写启动命令' : '启动/初始化该语言的 LSP'}
-                            >
-                              启动
-                            </button>
-                          )}
+                        <div className="pt-1 text-[11px] text-gray-500 dark:text-gray-400">
+                          提示：某些语言服务器（例如 rust-analyzer）首次索引可能需要一段时间；索引进度会通过 <code>$/progress</code> 显示在这里。
                         </div>
                       </div>
-                    </div>
-                  );
-                })}
-
-                <div className="pt-1 text-[11px] text-gray-500 dark:text-gray-400">
-                  提示：rust-analyzer 首次索引可能需要一段时间；索引进度会通过 <code>$/progress</code> 显示在这里。
-                </div>
+                    )}
+                  </>
+                )}
               </div>
             )}
           </div>

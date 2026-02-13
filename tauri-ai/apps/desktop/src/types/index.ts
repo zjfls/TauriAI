@@ -883,6 +883,16 @@ export interface Workstudio {
 }
 
 /**
+ * Workstudio-scoped code intelligence preferences (persisted in Workstudio UI state).
+ * - 未设置时：默认使用全局配置（所有已配置语言都可用）
+ * - 设置后：仅对该 workstudio 启用选择的语言
+ */
+export interface WorkstudioCodeIntelligenceUiState {
+  /** Monaco language id 列表，例如：['rust', 'python'] */
+  enabledLanguageIds?: string[];
+}
+
+/**
  * Workstudio UI 持久化状态（用于恢复上次打开的文件/分屏等）。
  */
 export interface WorkstudioUiState {
@@ -901,6 +911,11 @@ export interface WorkstudioUiState {
   activeLeftFile?: string;
   activeRightFile?: string;
   splitOpen?: boolean;
+
+  /** Monaco 编辑器字体大小（px） */
+  editorFontSize?: number;
+  /** Workstudio 级别的代码智能偏好（可选） */
+  codeIntelligence?: WorkstudioCodeIntelligenceUiState;
 }
 
 // ============================================================================
@@ -973,6 +988,9 @@ export type KeyboardShortcutActionId =
   | 'workstudio.goToTypeDefinition'
   | 'workstudio.goToReferences'
   | 'workstudio.peekDefinition'
+  | 'workstudio.fontZoomIn'
+  | 'workstudio.fontZoomOut'
+  | 'workstudio.fontZoomReset'
   | 'chat.abortGeneration'
   | 'chat.openWorkstudio'
   | 'chat.toggleOutline'
@@ -1039,6 +1057,14 @@ export interface LspServerStatus {
   command?: string;
   args?: string[];
   lastError?: string;
+}
+
+export interface LspDetectServerResult {
+  languageId: string;
+  command: string;
+  args: string[];
+  via: string;
+  warnings?: string[];
 }
 
 export interface AstPosition {

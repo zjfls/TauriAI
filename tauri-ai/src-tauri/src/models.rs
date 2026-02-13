@@ -545,6 +545,24 @@ pub struct WorkstudioUiState {
     pub active_right_file: Option<String>,
     #[serde(default)]
     pub split_open: bool,
+
+    /// Monaco 编辑器字体大小（px），用于 Workstudio 字体缩放。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub editor_font_size: Option<u32>,
+
+    /// Workstudio 级别的代码智能偏好（可选）。
+    /// - 未设置：默认使用全局 Code Intelligence 配置（所有已配置语言可用）
+    /// - 设置后：仅对该 Workstudio 启用指定语言
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code_intelligence: Option<WorkstudioCodeIntelligenceState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkstudioCodeIntelligenceState {
+    /// 允许启用的 Monaco language id 列表（例如 rust/python/cpp）。
+    #[serde(default)]
+    pub enabled_language_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1439,6 +1457,7 @@ impl Default for CodeIntelligenceSettings {
                 language_id: "rust".to_string(),
                 enabled: true,
                 command: "rust-analyzer".to_string(),
+                args: vec!["--stdio".to_string()],
                 ..Default::default()
             }],
         }

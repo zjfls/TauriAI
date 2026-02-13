@@ -5,8 +5,10 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { Plus, Trash2 } from 'lucide-react';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
 
 import { useConfigStore } from '../../stores/configStore';
+import { lspDetectServer } from '../../services';
 import type { AppConfig, LspServerConfig } from '../../types';
 
 const Toggle: React.FC<{
@@ -75,7 +77,7 @@ const defaultServer = (): LspServerConfig => ({
   languageId: 'rust',
   enabled: true,
   command: 'rust-analyzer',
-  args: [],
+  args: ['--stdio'],
   env: {},
   initializationOptions: {},
   settings: {},
@@ -84,6 +86,10 @@ const defaultServer = (): LspServerConfig => ({
 export const CodeIntelligenceConfigForm: React.FC = () => {
   const { config, saveConfigDebounced } = useConfigStore();
   const [selectedIndex, setSelectedIndex] = useState<number>(0);
+
+  const [autoConfigBusy, setAutoConfigBusy] = useState(false);
+  const [autoConfigMessage, setAutoConfigMessage] = useState<string | null>(null);
+  const [autoConfigError, setAutoConfigError] = useState<string | null>(null);
 
   const [argsDraft, setArgsDraft] = useState('');
   const [envDraft, setEnvDraft] = useState('');
@@ -121,6 +127,8 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
       setSettingsDraft('{}');
       setJsonError(null);
       setEnvError(null);
+      setAutoConfigMessage(null);
+      setAutoConfigError(null);
       return;
     }
     setArgsDraft((selectedServer.args ?? []).join('\n'));
@@ -130,6 +138,12 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
     setJsonError(null);
     setEnvError(null);
   }, [selectedServer?.languageId, selectedServer?.command, selectedServer?.enabled, selectedIndex]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Clear one-click status when switching between server configs (avoid stale messages).
+  useEffect(() => {
+    setAutoConfigMessage(null);
+    setAutoConfigError(null);
+  }, [selectedIndex]);
 
   const serverLabels = useMemo(() => {
     return servers.map((s, idx) => {
@@ -217,6 +231,129 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
     setSelectedIndex(Math.max(0, selectedIndex - 1));
   };
 
+  const autoConfigureSelected = async () => {
+    if (!selectedServer) return;
+    const lang = String(selectedServer.languageId || '').trim();
+    if (!lang) {
+      setAutoConfigError('languageId 为空');
+      return;
+    }
+    if (lang !== 'rust') {
+      setAutoConfigError(`暂仅支持 rust：${lang}`);
+      return;
+    }
+
+    setAutoConfigBusy(true);
+    setAutoConfigMessage(null);
+    setAutoConfigError(null);
+    try {
+      const res = await lspDetectServer({ languageId: lang });
+      const foundCmd = String(res?.command || '').trim();
+      if (!foundCmd) {
+        setAutoConfigError('未找到可执行文件（返回 command 为空）');
+        return;
+      }
+
+      const recommendedArgs = Array.isArray(res?.args) ? res.args.map((x) => String(x || '').trim()).filter(Boolean) : [];
+
+      updateServer(selectedIndex, (s) => {
+        const existingArgs = Array.isArray(s.args) ? s.args : [];
+        const nextArgs = existingArgs.length === 0 && recommendedArgs.length > 0 ? recommendedArgs : existingArgs;
+        return { ...s, enabled: true, command: foundCmd, args: nextArgs };
+      });
+
+      // Keep drafts in sync so user can immediately看到变化。
+      setArgsDraft((prev) => {
+        const current = parseLines(prev);
+        if (current.length === 0 && recommendedArgs.length > 0) {
+          return recommendedArgs.join('\n');
+        }
+        return prev;
+      });
+
+      const warnings = Array.isArray(res?.warnings) ? res.warnings : [];
+      const via = String(res?.via || '').trim();
+      setAutoConfigMessage(
+        `已自动配置 rust-analyzer：${foundCmd}${via ? `（via=${via}）` : ''}${warnings.length > 0 ? `；警告：${warnings.join(' | ')}` : ''}`
+      );
+    } catch (e) {
+      setAutoConfigError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setAutoConfigBusy(false);
+    }
+  };
+
+  const autoConfigureRustFromEmpty = async () => {
+    if (!config) return;
+    if (servers.length !== 0) return;
+
+    setAutoConfigBusy(true);
+    setAutoConfigMessage(null);
+    setAutoConfigError(null);
+    try {
+      const res = await lspDetectServer({ languageId: 'rust' });
+      const foundCmd = String(res?.command || '').trim();
+      if (!foundCmd) {
+        setAutoConfigError('未找到可执行文件（返回 command 为空）');
+        return;
+      }
+
+      const recommendedArgs = Array.isArray(res?.args) ? res.args.map((x) => String(x || '').trim()).filter(Boolean) : [];
+
+      const nextServer: LspServerConfig = {
+        languageId: 'rust',
+        enabled: true,
+        command: foundCmd,
+        args: recommendedArgs.length > 0 ? recommendedArgs : ['--stdio'],
+        env: {},
+        initializationOptions: {},
+        settings: {},
+      };
+
+      const currentCi = config.codeIntelligence ?? { enabled: true, lspServers: [] };
+      saveConfigDebounced(
+        {
+          ...config,
+          codeIntelligence: {
+            ...currentCi,
+            enabled: true,
+            lspServers: [nextServer],
+          },
+        },
+        0
+      );
+
+      const warnings = Array.isArray(res?.warnings) ? res.warnings : [];
+      const via = String(res?.via || '').trim();
+      setAutoConfigMessage(
+        `已自动配置 rust-analyzer：${foundCmd}${via ? `（via=${via}）` : ''}${warnings.length > 0 ? `；警告：${warnings.join(' | ')}` : ''}`
+      );
+    } catch (e) {
+      setAutoConfigError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setAutoConfigBusy(false);
+    }
+  };
+
+  const pickCommandForSelected = async () => {
+    if (!selectedServer) return;
+    setAutoConfigMessage(null);
+    setAutoConfigError(null);
+
+    const selected = await openDialog({ title: '选择 LSP 可执行文件', multiple: false, directory: false });
+    if (!selected || Array.isArray(selected)) return;
+    const command = String(selected || '').trim();
+    if (!command) return;
+
+    updateServer(selectedIndex, (s) => {
+      const lang = String(s.languageId || '').trim();
+      const existingArgs = Array.isArray(s.args) ? s.args : [];
+      const nextArgs = lang === 'rust' && existingArgs.length === 0 ? ['--stdio'] : existingArgs;
+      return { ...s, enabled: true, command, args: nextArgs };
+    });
+    setAutoConfigMessage(`已选择命令：${command}`);
+  };
+
   return (
     <div className="flex gap-6 h-full">
       {/* Left list */}
@@ -253,7 +390,24 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
         <div className="flex-1 space-y-1 overflow-auto">
           {serverLabels.length === 0 ? (
             <div className="rounded-lg border border-dashed border-gray-300 px-3 py-3 text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400">
-              暂无 LSP 配置，点击右上角“新增”添加。
+              <div>暂无 LSP 配置，点击右上角“新增”添加，或直接一键配置 rust-analyzer。</div>
+              <div className="mt-2 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void autoConfigureRustFromEmpty()}
+                  disabled={autoConfigBusy}
+                  className="rounded-md border border-gray-200 px-2 py-1 text-xs text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+                  title="自动探测 rust-analyzer 并创建默认 Rust LSP 配置"
+                >
+                  {autoConfigBusy ? '配置中...' : '一键配置 Rust'}
+                </button>
+              </div>
+              {autoConfigMessage && (
+                <div className="mt-2 text-xs text-green-700 dark:text-green-300">{autoConfigMessage}</div>
+              )}
+              {autoConfigError && (
+                <div className="mt-2 text-xs text-red-600 dark:text-red-300">{autoConfigError}</div>
+              )}
             </div>
           ) : (
             serverLabels.map((it) => (
@@ -324,9 +478,11 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
                   <input
                     type="text"
                     value={selectedServer.languageId ?? ''}
-                    onChange={(e) =>
-                      updateServer(selectedIndex, (s) => ({ ...s, languageId: e.target.value }))
-                    }
+                    onChange={(e) => {
+                      setAutoConfigMessage(null);
+                      setAutoConfigError(null);
+                      updateServer(selectedIndex, (s) => ({ ...s, languageId: e.target.value }));
+                    }}
                     className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
                     placeholder="rust / python / cpp ..."
                   />
@@ -334,16 +490,46 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
               </div>
 
               <div className="space-y-2">
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">启动命令</label>
+                <div className="flex items-center justify-between gap-2">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">启动命令</label>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void pickCommandForSelected()}
+                      disabled={autoConfigBusy}
+                      className="rounded-md border border-gray-200 px-2 py-1 text-xs text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+                      title="选择 LSP 可执行文件（例如 rust-analyzer.exe）"
+                    >
+                      选择文件
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void autoConfigureSelected()}
+                      disabled={autoConfigBusy || String(selectedServer.languageId || '').trim() !== 'rust'}
+                      className="rounded-md border border-gray-200 px-2 py-1 text-xs text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+                      title={String(selectedServer.languageId || '').trim() === 'rust' ? '自动探测 rust-analyzer 并填入绝对路径' : '暂仅支持 rust 一键配置'}
+                    >
+                      {autoConfigBusy ? '配置中...' : '一键配置'}
+                    </button>
+                  </div>
+                </div>
                 <input
                   type="text"
                   value={selectedServer.command ?? ''}
-                  onChange={(e) =>
-                    updateServer(selectedIndex, (s) => ({ ...s, command: e.target.value }))
-                  }
+                  onChange={(e) => {
+                    setAutoConfigMessage(null);
+                    setAutoConfigError(null);
+                    updateServer(selectedIndex, (s) => ({ ...s, command: e.target.value }));
+                  }}
                   className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
                   placeholder="rust-analyzer / pylsp / clangd ..."
                 />
+                {autoConfigMessage && (
+                  <div className="text-xs text-green-700 dark:text-green-300">{autoConfigMessage}</div>
+                )}
+                {autoConfigError && (
+                  <div className="text-xs text-red-600 dark:text-red-300">{autoConfigError}</div>
+                )}
               </div>
 
               <div className="space-y-2">

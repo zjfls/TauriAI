@@ -4,7 +4,7 @@ use std::sync::{
     Arc, Mutex, OnceLock,
 };
 use std::thread::JoinHandle;
-use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize, Url, WebviewUrl};
+use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize};
 
 #[cfg(target_os = "macos")]
 use objc2::MainThreadMarker;
@@ -33,40 +33,12 @@ fn follow_state() -> &'static Mutex<DragGhostFollowState> {
     STATE.get_or_init(|| Mutex::new(DragGhostFollowState::default()))
 }
 
-fn safe_label_part(raw: &str) -> String {
-    raw.chars()
-        .map(|c| match c {
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | ':' | '/' | '-' => c,
-            _ => '_',
-        })
-        .collect()
-}
-
 fn ghost_label_for_source(source_label: &str) -> String {
     // 关键策略：Windows 上在拖拽/菜单回调期间动态创建 WebviewWindow 可能卡死在 `builder.build()`。
     // 因此 ghost 窗口改为“启动时预创建一个单例”，运行期只做 show/move/update。
     // 这里始终返回同一个 label，避免多窗口创建带来的不稳定性。
     let _ = source_label;
     "__tauriai_ghost__global".to_string()
-}
-
-fn build_ghost_webview_url(handle: &tauri::AppHandle, title: &str) -> WebviewUrl {
-    // Dev: prefer the dev server so we can iterate quickly.
-    if cfg!(debug_assertions) {
-        let encoded_title = urlencoding::encode(title).to_string();
-        if let Some(base) = handle.config().build.dev_url.clone() {
-            let base = base.as_str().trim_end_matches('/').to_string();
-            if let Ok(url) = Url::parse(&format!(
-                "{base}/?view=drag-ghost&standalone=1&ghostTitle={encoded_title}"
-            )) {
-                return WebviewUrl::External(url);
-            }
-        }
-    }
-
-    // Build: do NOT rely on query params; some runtimes are picky about `App(path?query)` and may render blank.
-    // We'll detect ghost windows by label prefix on the frontend side.
-    WebviewUrl::App("index.html".into())
 }
 
 #[tauri::command]
@@ -278,6 +250,7 @@ pub fn drag_ghost_follow_start(
     let ghost = app
         .get_webview_window(&ghost_label)
         .ok_or_else(|| format!("ghost window not found: {}", ghost_label))?;
+    let _ = (client_x, client_y);
 
     // already running?
     {

@@ -51,8 +51,10 @@ struct ShellCommandArgs {
     timeout_ms: Option<u64>,
     #[serde(default)]
     env: Option<EnvSpec>,
+    #[allow(dead_code)]
     #[serde(default)]
     sandbox_permissions: Option<String>,
+    #[allow(dead_code)]
     #[serde(default)]
     justification: Option<String>,
 }

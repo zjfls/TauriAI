@@ -1,6 +1,6 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 
-import type { AstSymbol, LspServerStatus } from '../types';
+import type { AstSymbol, LspDetectServerResult, LspServerStatus } from '../types';
 
 export type LspEnsureServerArgs = {
   workstudioId: string;
@@ -44,9 +44,25 @@ export const lspShutdownWorkstudio = async (workstudioId: string): Promise<void>
   await invoke<void>('lsp_shutdown_workstudio', { workstudioId });
 };
 
+export const lspShutdownLanguage = async (workstudioId: string, languageId: string): Promise<void> => {
+  if (!isTauri()) return;
+  await invoke<void>('lsp_shutdown_language', { workstudioId, languageId });
+};
+
 export const lspStatus = async (workstudioId: string): Promise<LspServerStatus[]> => {
   if (!isTauri()) return [];
   return invoke<LspServerStatus[]>('lsp_status', { workstudioId });
+};
+
+export type LspDetectServerArgs = {
+  languageId: string;
+};
+
+export const lspDetectServer = async (args: LspDetectServerArgs): Promise<LspDetectServerResult> => {
+  if (!isTauri()) {
+    throw new Error('Not running in Tauri');
+  }
+  return invoke<LspDetectServerResult>('lsp_detect_server', { args });
 };
 
 export type AstDocumentSymbolsArgs = {

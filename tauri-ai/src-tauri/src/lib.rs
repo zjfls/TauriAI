@@ -351,7 +351,9 @@ fn run_desktop() {
     use crate::skills::installer::install_bundled_skills;
     use crate::skills::watcher::{SkillsWatcher, SkillsWatcherState};
     use crate::storage::Database;
-    use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize, Url, WebviewUrl};
+    use tauri::{Emitter, Manager, Url, WebviewUrl};
+    #[cfg(debug_assertions)]
+    use tauri::{PhysicalPosition, PhysicalSize};
     use tokio::sync::Mutex;
 
     println!("[Backend] TauriAI starting...");
@@ -687,7 +689,9 @@ fn run_desktop() {
             lsp_notify,
             lsp_request,
             lsp_shutdown_workstudio,
+            lsp_shutdown_language,
             lsp_status,
+            lsp_detect_server,
             // Code intelligence (AST)
             ast_document_symbols,
             // Workstudio terminal (UI)
@@ -864,7 +868,7 @@ fn run_desktop() {
             schedule_set_dev_window_icons(app.handle());
 
             // Main 窗口初始化（图标 / DevTools 等）
-            if let Some(window) = app.get_webview_window("main") {
+            if let Some(_window) = app.get_webview_window("main") {
                 // DEV: 让任务栏/Alt-Tab/窗口图标与托盘一致（使用 `src-tauri/icons-dev/icon.png`）。
                 #[cfg(all(debug_assertions, target_os = "windows"))]
                 {
@@ -872,7 +876,7 @@ fn run_desktop() {
                         .join("icons-dev")
                         .join("icon.png");
                     if let Ok(icon) = tauri::image::Image::from_path(&path) {
-                        let _ = window.set_icon(icon.to_owned());
+                        let _ = _window.set_icon(icon.to_owned());
                     }
                 }
 
@@ -895,7 +899,7 @@ fn run_desktop() {
 
                     let open_devtools = env_override.unwrap_or(config_value);
                     if open_devtools {
-                        window.open_devtools();
+                        _window.open_devtools();
                     }
                 }
             }

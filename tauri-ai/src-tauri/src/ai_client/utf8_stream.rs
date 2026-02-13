@@ -53,6 +53,7 @@ impl Utf8StreamDecoder {
         out
     }
 
+    #[allow(dead_code)]
     pub fn finish_lossy(&mut self) -> String {
         if self.buffered.is_empty() {
             return String::new();

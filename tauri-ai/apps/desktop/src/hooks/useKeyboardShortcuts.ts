@@ -373,6 +373,13 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
           dispatchShortcutEvent(actionId);
           return true;
         }
+        case 'workstudio.fontZoomIn':
+        case 'workstudio.fontZoomOut':
+        case 'workstudio.fontZoomReset': {
+          if (useUIStore.getState().activeView !== 'workstudio') return false;
+          dispatchShortcutEvent(actionId);
+          return true;
+        }
         case 'document.save': {
           if (useUIStore.getState().activeView !== 'document') return false;
           dispatchShortcutEvent(actionId);
@@ -418,10 +425,23 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
     }
 
     const bindingMap = bindingToAction();
-    const binding = eventToKeybindingString(event, platform);
-    if (!binding) return;
+    const rawBinding = eventToKeybindingString(event, platform);
+    if (!rawBinding) return;
 
-    const actionId = bindingMap[binding];
+    let binding = rawBinding;
+    let actionId = bindingMap[binding];
+
+    // Ctrl/Cmd + "+" is typically emitted as Shift+ "=" on many keyboards (event.code === "Equal"),
+    // so allow matching a configured "Ctrl/Cmd + =" binding as a fallback.
+    if (!actionId && event.shiftKey && (event.code === 'Equal' || event.code === 'NumpadAdd')) {
+      const withoutShift = binding.replace('Shift+', '');
+      const fallbackAction = bindingMap[withoutShift];
+      if (fallbackAction) {
+        binding = withoutShift;
+        actionId = fallbackAction;
+      }
+    }
+
     if (!actionId) return;
 
     const def = SHORTCUT_ACTIONS.find((a) => a.id === actionId) || null;
@@ -448,6 +468,10 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
         case 'workstudio.goToTypeDefinition':
         case 'workstudio.goToReferences':
         case 'workstudio.peekDefinition':
+          return useUIStore.getState().activeView === 'workstudio';
+        case 'workstudio.fontZoomIn':
+        case 'workstudio.fontZoomOut':
+        case 'workstudio.fontZoomReset':
           return useUIStore.getState().activeView === 'workstudio';
         case 'document.save':
           return useUIStore.getState().activeView === 'document';
@@ -485,7 +509,10 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
       actionId === 'workstudio.goToDefinition' ||
       actionId === 'workstudio.goToTypeDefinition' ||
       actionId === 'workstudio.goToReferences' ||
-      actionId === 'workstudio.peekDefinition'
+      actionId === 'workstudio.peekDefinition' ||
+      actionId === 'workstudio.fontZoomIn' ||
+      actionId === 'workstudio.fontZoomOut' ||
+      actionId === 'workstudio.fontZoomReset'
     ) {
       event.stopPropagation();
     }

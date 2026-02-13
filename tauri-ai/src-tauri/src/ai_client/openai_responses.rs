@@ -183,7 +183,7 @@ enum OutputItem {
     #[serde(rename = "reasoning")]
     Reasoning(ReasoningOutput),
     #[serde(rename = "function_call")]
-    FunctionCall(FunctionCallOutputItem),
+    FunctionCall(#[allow(dead_code)] FunctionCallOutputItem),
     #[serde(other)]
     Other,
 }
@@ -239,6 +239,7 @@ enum SummaryItem {
 // ============================================================================
 
 /// Streaming event from Responses API
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct StreamingEvent {
     #[serde(rename = "type")]

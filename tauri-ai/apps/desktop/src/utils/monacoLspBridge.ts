@@ -62,10 +62,15 @@ const getEnabledServerLanguageIds = (cfg: CodeIntelligenceSettings | null | unde
 
 const isCodeIntelEnabled = (cfg: CodeIntelligenceSettings | null | undefined) => Boolean(cfg?.enabled);
 
-const isLspEnabled = (cfg: CodeIntelligenceSettings | null | undefined, languageId: string) => {
+const isLspEnabled = (
+  cfg: CodeIntelligenceSettings | null | undefined,
+  languageId: string,
+  isLanguageEnabled?: (languageId: string) => boolean
+) => {
   if (!isCodeIntelEnabled(cfg)) return false;
   const lang = (languageId ?? '').trim();
   if (!lang) return false;
+  if (typeof isLanguageEnabled === 'function' && !isLanguageEnabled(lang)) return false;
   const servers = cfg?.lspServers ?? [];
   return servers.some((s) => s.enabled && s.languageId === lang && String(s.command || '').trim());
 };
@@ -75,8 +80,9 @@ export const attachMonacoLspBridge = (opts: {
   workstudioId: string;
   openFile: (target: OpenInWorkstudioTarget) => Promise<void>;
   getConfig: () => CodeIntelligenceSettings | null | undefined;
+  isLanguageEnabled?: (languageId: string) => boolean;
 }): MonacoLspBridge => {
-  const { monaco, workstudioId, openFile, getConfig } = opts;
+  const { monaco, workstudioId, openFile, getConfig, isLanguageEnabled } = opts;
   if (!isTauri()) {
     return { dispose: () => {} };
   }
@@ -90,7 +96,7 @@ export const attachMonacoLspBridge = (opts: {
     if (!isFileUri(uri)) return;
     const languageId = model.getLanguageId();
     const cfg = getConfig();
-    if (!isLspEnabled(cfg, languageId)) return;
+    if (!isLspEnabled(cfg, languageId, isLanguageEnabled)) return;
 
     if (openedUris.has(uri)) return;
     openedUris.add(uri);
@@ -120,7 +126,7 @@ export const attachMonacoLspBridge = (opts: {
     if (!isFileUri(uri)) return;
     const languageId = model.getLanguageId();
     const cfg = getConfig();
-    if (!isLspEnabled(cfg, languageId)) return;
+    if (!isLspEnabled(cfg, languageId, isLanguageEnabled)) return;
 
     try {
       await ensureOpen(model);
@@ -302,7 +308,7 @@ export const attachMonacoLspBridge = (opts: {
         provideDefinition: async (model, position, token) => {
           if (token.isCancellationRequested) return null;
           const cfg = getConfig();
-          if (!isLspEnabled(cfg, model.getLanguageId())) return null;
+          if (!isLspEnabled(cfg, model.getLanguageId(), isLanguageEnabled)) return null;
 
           const uri = model.uri.toString();
           if (!isFileUri(uri)) return null;
@@ -328,7 +334,7 @@ export const attachMonacoLspBridge = (opts: {
         provideTypeDefinition: async (model, position, token) => {
           if (token.isCancellationRequested) return null;
           const cfg = getConfig();
-          if (!isLspEnabled(cfg, model.getLanguageId())) return null;
+          if (!isLspEnabled(cfg, model.getLanguageId(), isLanguageEnabled)) return null;
 
           const uri = model.uri.toString();
           if (!isFileUri(uri)) return null;
@@ -354,7 +360,7 @@ export const attachMonacoLspBridge = (opts: {
         provideReferences: async (model, position, context, token) => {
           if (token.isCancellationRequested) return [];
           const cfg = getConfig();
-          if (!isLspEnabled(cfg, model.getLanguageId())) return [];
+          if (!isLspEnabled(cfg, model.getLanguageId(), isLanguageEnabled)) return [];
 
           const uri = model.uri.toString();
           if (!isFileUri(uri)) return [];
@@ -391,7 +397,7 @@ export const attachMonacoLspBridge = (opts: {
         provideHover: async (model, position, token) => {
           if (token.isCancellationRequested) return null;
           const cfg = getConfig();
-          if (!isLspEnabled(cfg, model.getLanguageId())) return null;
+          if (!isLspEnabled(cfg, model.getLanguageId(), isLanguageEnabled)) return null;
 
           const uri = model.uri.toString();
           if (!isFileUri(uri)) return null;
@@ -425,7 +431,7 @@ export const attachMonacoLspBridge = (opts: {
         provideCompletionItems: async (model, position, _context, token) => {
           if (token.isCancellationRequested) return { suggestions: [] };
           const cfg = getConfig();
-          if (!isLspEnabled(cfg, model.getLanguageId())) return { suggestions: [] };
+          if (!isLspEnabled(cfg, model.getLanguageId(), isLanguageEnabled)) return { suggestions: [] };
 
           const uri = model.uri.toString();
           if (!isFileUri(uri)) return { suggestions: [] };
@@ -499,7 +505,7 @@ export const attachMonacoLspBridge = (opts: {
           if (!isCodeIntelEnabled(cfg)) return [];
           const uri = model.uri.toString();
           if (!isFileUri(uri)) return [];
-          const lspEnabled = isLspEnabled(cfg, model.getLanguageId());
+          const lspEnabled = isLspEnabled(cfg, model.getLanguageId(), isLanguageEnabled);
           if (lspEnabled) {
             await ensureOpen(model);
           }

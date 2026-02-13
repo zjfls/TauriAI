@@ -56,8 +56,8 @@ pub use conversation::{
 };
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use code_intel::{
-    ast_document_symbols, lsp_ensure_server, lsp_notify, lsp_request, lsp_shutdown_workstudio,
-    lsp_status,
+    ast_document_symbols, lsp_detect_server, lsp_ensure_server, lsp_notify, lsp_request,
+    lsp_shutdown_workstudio, lsp_shutdown_language, lsp_status,
 };
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use devtools::open_devtools_current_window;

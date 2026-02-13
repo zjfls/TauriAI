@@ -476,7 +476,6 @@ fn list_existing_paths(work_tree: &Path, pathspecs: &[String]) -> HashSet<String
 
 pub(crate) struct GhostCommit {
     pub id: String,
-    pub parent: Option<String>,
 }
 
 pub(crate) async fn ensure_git_repo(repo_root: &Path) -> Result<(), String> {
@@ -584,7 +583,7 @@ pub(crate) async fn create_ghost_commit_for_paths_with_worktree(
     let _ = std::fs::remove_dir_all(&tmp_dir);
 
     let id = out?;
-    Ok(GhostCommit { id, parent })
+    Ok(GhostCommit { id })
 }
 
 pub(crate) struct GitDiffOptions {
@@ -665,14 +664,6 @@ pub(crate) async fn git_diff_name_status_between_commits(
         args.push(OsString::from(normalize_git_pathspec(p)));
     }
     run_git_for_stdout(repo_root, args, None).await
-}
-
-pub(crate) async fn git_restore_worktree_from_commit(
-    repo_root: &Path,
-    commit_id: &str,
-    pathspecs: &[String],
-) -> Result<(), String> {
-    git_restore_worktree_from_commit_with_worktree(repo_root, repo_root, commit_id, pathspecs).await
 }
 
 pub(crate) async fn git_restore_worktree_from_commit_with_worktree(

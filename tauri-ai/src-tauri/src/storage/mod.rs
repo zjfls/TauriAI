@@ -1109,28 +1109,24 @@ impl Database {
         #[derive(Debug, Clone)]
         struct WsRow {
             id: String,
-            kind: String,
             main_folder: String,
             folders_json: String,
             created_at: String,
-            updated_at: String,
             key: String,
         }
 
         let rows: Vec<WsRow> = {
             let mut stmt = conn.prepare(
-                "SELECT id, kind, main_folder, folders_json, created_at, updated_at, main_folder_key
+                "SELECT id, main_folder, folders_json, created_at, main_folder_key
                  FROM workstudios",
             )?;
             let iter = stmt.query_map([], |row| {
                 Ok(WsRow {
                     id: row.get(0)?,
-                    kind: row.get(1)?,
-                    main_folder: row.get(2)?,
-                    folders_json: row.get(3)?,
-                    created_at: row.get(4)?,
-                    updated_at: row.get(5)?,
-                    key: row.get::<_, String>(6)?,
+                    main_folder: row.get(1)?,
+                    folders_json: row.get(2)?,
+                    created_at: row.get(3)?,
+                    key: row.get::<_, String>(4)?,
                 })
             })?;
 

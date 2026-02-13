@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
@@ -13,6 +14,588 @@ use tokio::sync::{oneshot, Mutex};
 use crate::models::Workstudio;
 
 use super::types::{LspEvent, LspEventPayload, LspLaunchConfig, LspServerStatus, LSP_EVENT_NAME};
+
+#[derive(Debug, Clone)]
+pub(crate) struct ResolvedSpawnProgram {
+    pub(crate) program: String,
+    pub(crate) prefix_args: Vec<String>,
+    pub(crate) target: String,
+    pub(crate) via: String,
+    pub(crate) warnings: Vec<String>,
+}
+
+pub(crate) fn resolve_lsp_spawn_program(
+    raw_command: &str,
+    ws_main_folder: &str,
+    launch_env: &[(String, String)],
+) -> Result<ResolvedSpawnProgram, String> {
+    let mut warnings: Vec<String> = Vec::new();
+
+    let command = normalize_command_token(raw_command);
+    if command.is_empty() {
+        return Err("LSP command 为空".to_string());
+    }
+
+    let command = if cfg!(target_os = "windows") {
+        expand_windows_env_vars(command, launch_env)
+    } else {
+        command.to_string()
+    };
+
+    let ws_main_folder = ws_main_folder.trim();
+
+    let (target_path, via) = if is_path_like_command(&command) {
+        let raw_path = PathBuf::from(&command);
+        let via = if raw_path.is_absolute() {
+            "absolute_path".to_string()
+        } else {
+            "workspace_relative".to_string()
+        };
+        let base = if raw_path.is_absolute() || ws_main_folder.is_empty() {
+            raw_path
+        } else {
+            Path::new(ws_main_folder).join(raw_path)
+        };
+        let found = find_executable_with_pathext(&base, launch_env)?;
+        (found, via)
+    } else {
+        let mut search_dirs: Vec<PathBuf> = Vec::new();
+        if !ws_main_folder.is_empty() {
+            search_dirs.push(PathBuf::from(ws_main_folder));
+        }
+
+        if let Some(path_var) = get_env_var_from_launch_env(launch_env, "PATH")
+            .or_else(|| std::env::var("PATH").ok())
+        {
+            let separator = if cfg!(target_os = "windows") { ';' } else { ':' };
+            for part in path_var.split(separator) {
+                let mut dir = normalize_path_list_item(part).to_string();
+                if cfg!(target_os = "windows") {
+                    dir = expand_windows_env_vars(&dir, launch_env);
+                }
+                if dir.is_empty() {
+                    continue;
+                }
+                search_dirs.push(PathBuf::from(dir));
+            }
+        } else {
+            warnings.push("[lsp] 启动诊断：PATH 环境变量为空，可能无法自动找到语言服务器可执行文件。".to_string());
+        }
+
+        let pathext = if cfg!(target_os = "windows") {
+            get_env_var_from_launch_env(launch_env, "PATHEXT")
+                .or_else(|| std::env::var("PATHEXT").ok())
+        } else {
+            None
+        };
+        let exts = pathext_extensions(pathext.as_deref());
+
+        let (found, found_dir_idx, skipped_448, other_errors) =
+            find_executable_in_dirs(&command, &search_dirs, &exts);
+        if !skipped_448.is_empty() {
+            warnings.push(format!(
+                "[lsp] 启动诊断：PATH 中有 {} 个目录触发 Windows 448（不受信任的挂载点），已自动跳过。",
+                skipped_448.len()
+            ));
+        }
+        if !other_errors.is_empty() {
+            warnings.push(format!(
+                "[lsp] 启动诊断：PATH 扫描时遇到 {} 个目录异常（已忽略）。",
+                other_errors.len()
+            ));
+        }
+
+        let (found, via) = if let Some(p) = found {
+            let via = if found_dir_idx == Some(0) && !ws_main_folder.is_empty() {
+                "workspace".to_string()
+            } else {
+                "PATH".to_string()
+            };
+            (p, via)
+        } else if cfg!(target_os = "windows") {
+            // 兜底（产品级）：开始菜单启动时，Explorer 进程的 PATH 可能没刷新（安装 Rust 后需重启 Explorer/注销）。
+            // 因此不只依赖 PATH：额外探测 CARGO_HOME/bin、RUSTUP_HOME/toolchains/*/bin，以及 VS Code rust-analyzer 扩展（若存在）。
+
+            if let Some(dir) = cargo_bin_dir(launch_env) {
+                let (p, _idx, _s1, _s2) = find_executable_in_dirs(&command, &[dir.clone()], &exts);
+                if let Some(p) = p {
+                    warnings.push(format!(
+                        "[lsp] 启动诊断：未在 PATH 中找到可执行文件，已从 cargo bin 目录兜底解析：{}",
+                        dir.to_string_lossy()
+                    ));
+                    (p, "cargo_bin".to_string())
+                } else {
+                    let bins = rustup_toolchain_bin_dirs(launch_env);
+                    if !bins.is_empty() {
+                        let (p2, _idx2, _s3, _s4) = find_executable_in_dirs(&command, &bins, &exts);
+                        if let Some(p2) = p2 {
+                            warnings.push("[lsp] 启动诊断：未在 PATH 中找到可执行文件，已从 rustup toolchains 目录兜底解析。".to_string());
+                            (p2, "rustup_toolchains".to_string())
+                        } else if command.eq_ignore_ascii_case("rust-analyzer") {
+                            if let Some(vscode_ra) = find_vscode_rust_analyzer() {
+                                warnings.push("[lsp] 启动诊断：未在 PATH 中找到 rust-analyzer，已从 VS Code 扩展目录兜底解析。".to_string());
+                                (vscode_ra, "vscode_extension".to_string())
+                            } else {
+                                (PathBuf::from(&command), "unresolved".to_string())
+                            }
+                        } else {
+                            (PathBuf::from(&command), "unresolved".to_string())
+                        }
+                    } else if command.eq_ignore_ascii_case("rust-analyzer") {
+                        if let Some(vscode_ra) = find_vscode_rust_analyzer() {
+                            warnings.push("[lsp] 启动诊断：未在 PATH 中找到 rust-analyzer，已从 VS Code 扩展目录兜底解析。".to_string());
+                            (vscode_ra, "vscode_extension".to_string())
+                        } else {
+                            (PathBuf::from(&command), "unresolved".to_string())
+                        }
+                    } else {
+                        (PathBuf::from(&command), "unresolved".to_string())
+                    }
+                }
+            } else {
+                let bins = rustup_toolchain_bin_dirs(launch_env);
+                if !bins.is_empty() {
+                    let (p2, _idx2, _s3, _s4) = find_executable_in_dirs(&command, &bins, &exts);
+                    if let Some(p2) = p2 {
+                        warnings.push("[lsp] 启动诊断：未在 PATH 中找到可执行文件，已从 rustup toolchains 目录兜底解析。".to_string());
+                        (p2, "rustup_toolchains".to_string())
+                    } else if command.eq_ignore_ascii_case("rust-analyzer") {
+                        if let Some(vscode_ra) = find_vscode_rust_analyzer() {
+                            warnings.push("[lsp] 启动诊断：未在 PATH 中找到 rust-analyzer，已从 VS Code 扩展目录兜底解析。".to_string());
+                            (vscode_ra, "vscode_extension".to_string())
+                        } else {
+                            (PathBuf::from(&command), "unresolved".to_string())
+                        }
+                    } else {
+                        (PathBuf::from(&command), "unresolved".to_string())
+                    }
+                } else if command.eq_ignore_ascii_case("rust-analyzer") {
+                    if let Some(vscode_ra) = find_vscode_rust_analyzer() {
+                        warnings.push("[lsp] 启动诊断：未在 PATH 中找到 rust-analyzer，已从 VS Code 扩展目录兜底解析。".to_string());
+                        (vscode_ra, "vscode_extension".to_string())
+                    } else {
+                        (PathBuf::from(&command), "unresolved".to_string())
+                    }
+                } else {
+                    (PathBuf::from(&command), "unresolved".to_string())
+                }
+            }
+        } else {
+            (PathBuf::from(&command), "unresolved".to_string())
+        };
+
+        if !found.is_absolute() {
+            let mut err = if cfg!(target_os = "windows") && command.eq_ignore_ascii_case("rust-analyzer") {
+                format!(
+                    "未找到可执行文件：{command}。请在 设置 → Code Intelligence 中把 command 填成绝对路径，或安装 rust-analyzer（例如 rustup component add rust-analyzer）。另外：从开始菜单启动时 Explorer 的 PATH 可能未刷新，可尝试重启资源管理器或注销/重启系统。"
+                )
+            } else {
+                format!(
+                    "未找到可执行文件：{}。请在 设置 → Code Intelligence 中把 command 填成绝对路径，或确认该命令在 PATH 中可用。",
+                    command
+                )
+            };
+
+            if cfg!(target_os = "windows") {
+                let mut diag: Vec<String> = Vec::new();
+                if let Some(dir) = cargo_bin_dir(launch_env) {
+                    diag.push(format!("cargo_bin={}", dir.to_string_lossy()));
+                }
+                let bins = rustup_toolchain_bin_dirs(launch_env);
+                if !bins.is_empty() {
+                    diag.push(format!("rustup_toolchains_bins={}", bins.len()));
+                }
+                if command.eq_ignore_ascii_case("rust-analyzer") {
+                    let home = dirs::home_dir()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "<unknown>".to_string());
+                    diag.push(format!("home={home}"));
+                }
+                if !diag.is_empty() {
+                    err.push_str(&format!("（诊断：{}）", diag.join("; ")));
+                }
+            }
+            return Err(err);
+        }
+
+        (found, via)
+    };
+
+    let target = target_path.to_string_lossy().to_string();
+    let ext = target_path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    if cfg!(target_os = "windows") && (ext == "cmd" || ext == "bat") {
+        let comspec = std::env::var("COMSPEC")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| r"C:\Windows\System32\cmd.exe".to_string());
+        Ok(ResolvedSpawnProgram {
+            program: comspec,
+            prefix_args: vec!["/C".to_string(), target.clone()],
+            target,
+            via,
+            warnings,
+        })
+    } else {
+        Ok(ResolvedSpawnProgram {
+            program: target.clone(),
+            prefix_args: Vec::new(),
+            target,
+            via,
+            warnings,
+        })
+    }
+}
+
+fn normalize_command_token(s: &str) -> &str {
+    let s = s.trim();
+    if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
+        return &s[1..s.len() - 1];
+    }
+    s
+}
+
+fn is_path_like_command(command: &str) -> bool {
+    if command.contains('/') || command.contains('\\') {
+        return true;
+    }
+    // Windows drive letter form: C:...
+    if cfg!(target_os = "windows") {
+        let bytes = command.as_bytes();
+        if bytes.len() >= 2 && bytes[1] == b':' {
+            return true;
+        }
+    }
+    false
+}
+
+fn normalize_path_list_item(s: &str) -> &str {
+    let s = s.trim();
+    if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
+        return &s[1..s.len() - 1];
+    }
+    s
+}
+
+fn get_env_var_from_launch_env(launch_env: &[(String, String)], key: &str) -> Option<String> {
+    let key_trim = key.trim();
+    if key_trim.is_empty() {
+        return None;
+    }
+    for (k, v) in launch_env {
+        if cfg!(target_os = "windows") {
+            if k.eq_ignore_ascii_case(key_trim) {
+                return Some(v.clone());
+            }
+        } else if k == key_trim {
+            return Some(v.clone());
+        }
+    }
+    None
+}
+
+fn expand_windows_env_vars(input: &str, launch_env: &[(String, String)]) -> String {
+    // Minimal %VAR% expansion to make config friendlier on Windows.
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+
+    while let Some(start) = rest.find('%') {
+        out.push_str(&rest[..start]);
+        rest = &rest[start + 1..];
+
+        let Some(end) = rest.find('%') else {
+            out.push('%');
+            out.push_str(rest);
+            return out;
+        };
+
+        let var = &rest[..end];
+        if var.is_empty() {
+            out.push('%');
+            rest = &rest[end + 1..];
+            continue;
+        }
+
+        let val = get_env_var_from_launch_env(launch_env, var)
+            .or_else(|| std::env::var(var).ok())
+            .unwrap_or_else(|| format!("%{var}%"));
+        out.push_str(&val);
+        rest = &rest[end + 1..];
+    }
+
+    out.push_str(rest);
+    out
+}
+
+fn pathext_extensions(pathext: Option<&str>) -> Vec<String> {
+    if !cfg!(target_os = "windows") {
+        return vec![String::new()];
+    }
+    let raw = pathext.unwrap_or(".COM;.EXE;.BAT;.CMD");
+    let mut out: Vec<String> = Vec::new();
+    for part in raw.split(';') {
+        let ext = part.trim();
+        if ext.is_empty() {
+            continue;
+        }
+        let ext = ext.trim_start_matches('.').to_ascii_lowercase();
+        if ext.is_empty() {
+            continue;
+        }
+        out.push(ext);
+    }
+    if out.is_empty() {
+        out.push("exe".to_string());
+    }
+    out
+}
+
+fn cargo_bin_dir(launch_env: &[(String, String)]) -> Option<PathBuf> {
+    let raw = get_env_var_from_launch_env(launch_env, "CARGO_HOME").or_else(|| std::env::var("CARGO_HOME").ok());
+    let base = if let Some(raw) = raw {
+        let mut s = normalize_path_list_item(raw.trim()).to_string();
+        if cfg!(target_os = "windows") {
+            s = expand_windows_env_vars(&s, launch_env);
+        }
+        let p = PathBuf::from(s);
+        if !p.as_os_str().is_empty() {
+            Some(p)
+        } else {
+            None
+        }
+    } else {
+        dirs::home_dir().map(|home| home.join(".cargo"))
+    }?;
+
+    let file_name = base
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if file_name == "bin" {
+        Some(base)
+    } else {
+        Some(base.join("bin"))
+    }
+}
+
+fn rustup_toolchain_bin_dirs(launch_env: &[(String, String)]) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    if !cfg!(target_os = "windows") {
+        return out;
+    }
+
+    let raw = get_env_var_from_launch_env(launch_env, "RUSTUP_HOME").or_else(|| std::env::var("RUSTUP_HOME").ok());
+    let base = if let Some(raw) = raw {
+        let mut s = normalize_path_list_item(raw.trim()).to_string();
+        s = expand_windows_env_vars(&s, launch_env);
+        PathBuf::from(s)
+    } else if let Some(home) = dirs::home_dir() {
+        home.join(".rustup")
+    } else {
+        return out;
+    };
+
+    let toolchains_dir = base.join("toolchains");
+    let rd = match std::fs::read_dir(&toolchains_dir) {
+        Ok(rd) => rd,
+        Err(_) => return out,
+    };
+    for entry in rd.flatten() {
+        let path = entry.path();
+        if let Ok(ft) = entry.file_type() {
+            if !ft.is_dir() {
+                continue;
+            }
+        }
+        out.push(path.join("bin"));
+    }
+
+    out.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
+    out
+}
+
+fn find_vscode_rust_analyzer() -> Option<PathBuf> {
+    if !cfg!(target_os = "windows") {
+        return None;
+    }
+
+    let home = dirs::home_dir()?;
+    let roots = [
+        home.join(".vscode").join("extensions"),
+        home.join(".vscode-insiders").join("extensions"),
+        home.join(".cursor").join("extensions"),
+    ];
+
+    for root in roots {
+        let rd = match std::fs::read_dir(&root) {
+            Ok(rd) => rd,
+            Err(_) => continue,
+        };
+
+        for entry in rd.flatten() {
+            let ft = match entry.file_type() {
+                Ok(ft) => ft,
+                Err(_) => continue,
+            };
+            if !ft.is_dir() {
+                continue;
+            }
+
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !(name == "rust-lang.rust-analyzer" || name.starts_with("rust-lang.rust-analyzer-")) {
+                continue;
+            }
+
+            let ext_dir = entry.path();
+            let candidates = [
+                ext_dir.join("server").join("rust-analyzer.exe"),
+                ext_dir.join("server").join("rust-analyzer"),
+                ext_dir.join("server").join("rust-analyzer-x86_64-pc-windows-msvc.exe"),
+                ext_dir.join("server").join("rust-analyzer-win32-x64.exe"),
+            ];
+            for c in candidates {
+                if let Ok(m) = std::fs::metadata(&c) {
+                    if m.is_file() {
+                        return Some(c);
+                    }
+                }
+            }
+
+            // Fallback: scan server/ directory for rust-analyzer*.exe
+            let server_dir = ext_dir.join("server");
+            let srd = match std::fs::read_dir(&server_dir) {
+                Ok(rd) => rd,
+                Err(_) => continue,
+            };
+            for e2 in srd.flatten() {
+                let p = e2.path();
+                let Ok(m) = std::fs::metadata(&p) else {
+                    continue;
+                };
+                if !m.is_file() {
+                    continue;
+                }
+                let fname = p
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                if fname.starts_with("rust-analyzer") && fname.ends_with(".exe") {
+                    return Some(p);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn find_executable_with_pathext(base: &Path, launch_env: &[(String, String)]) -> Result<PathBuf, String> {
+    match std::fs::metadata(base) {
+        Ok(m) => {
+            if m.is_file() {
+                return Ok(base.to_path_buf());
+            }
+            return Err(format!("目标不是文件：{}", base.to_string_lossy()));
+        }
+        Err(e) => {
+            if cfg!(target_os = "windows") && e.raw_os_error() == Some(448) {
+                return Err(format!(
+                    "路径不可遍历（Windows 448：不受信任的挂载点）：{}",
+                    base.to_string_lossy()
+                ));
+            }
+            if e.kind() != std::io::ErrorKind::NotFound {
+                return Err(format!("访问路径失败：{}: {}", base.to_string_lossy(), e));
+            }
+        }
+    }
+
+    if !cfg!(target_os = "windows") {
+        return Err(format!("未找到可执行文件：{}", base.to_string_lossy()));
+    }
+
+    if base.extension().is_some() {
+        return Err(format!("未找到可执行文件：{}", base.to_string_lossy()));
+    }
+
+    let pathext = get_env_var_from_launch_env(launch_env, "PATHEXT").or_else(|| std::env::var("PATHEXT").ok());
+    let exts = pathext_extensions(pathext.as_deref());
+    for ext in exts {
+        let candidate = base.with_extension(ext);
+        match std::fs::metadata(&candidate) {
+            Ok(m) => {
+                if m.is_file() {
+                    return Ok(candidate);
+                }
+            }
+            Err(e) => {
+                if cfg!(target_os = "windows") && e.raw_os_error() == Some(448) {
+                    return Err(format!(
+                        "路径不可遍历（Windows 448：不受信任的挂载点）：{}",
+                        candidate.to_string_lossy()
+                    ));
+                }
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    continue;
+                }
+                return Err(format!(
+                    "访问路径失败：{}: {}",
+                    candidate.to_string_lossy(),
+                    e
+                ));
+            }
+        }
+    }
+
+    Err(format!("未找到可执行文件：{}", base.to_string_lossy()))
+}
+
+fn find_executable_in_dirs(
+    command: &str,
+    dirs: &[PathBuf],
+    exts: &[String],
+) -> (Option<PathBuf>, Option<usize>, Vec<String>, Vec<String>) {
+    let has_ext = Path::new(command).extension().is_some();
+    let mut skipped_448: Vec<String> = Vec::new();
+    let mut other_errors: Vec<String> = Vec::new();
+
+    for (idx, dir) in dirs.iter().enumerate() {
+        let base = dir.join(command);
+        let candidates: Vec<PathBuf> = if cfg!(target_os = "windows") && !has_ext {
+            exts.iter().map(|e| base.with_extension(e)).collect()
+        } else {
+            vec![base]
+        };
+
+        for c in candidates {
+            match std::fs::metadata(&c) {
+                Ok(m) => {
+                    if m.is_file() {
+                        return (Some(c), Some(idx), skipped_448, other_errors);
+                    }
+                }
+                Err(e) => {
+                    if cfg!(target_os = "windows") && e.raw_os_error() == Some(448) {
+                        skipped_448.push(dir.to_string_lossy().to_string());
+                        break;
+                    }
+                    if e.kind() == std::io::ErrorKind::NotFound {
+                        continue;
+                    }
+                    other_errors.push(format!("{}: {}", c.to_string_lossy(), e));
+                }
+            }
+        }
+    }
+
+    (None, None, skipped_448, other_errors)
+}
 
 // NOTE:
 // - 这里实现的是一个“够用且可扩展”的 LSP stdio JSON-RPC 传输层。
@@ -63,30 +646,41 @@ impl LspManager {
             language_id: language_id.to_string(),
         };
 
-        // Fast path: already exists.
-        if let Some(existing) = self.servers.lock().await.get(&key).cloned() {
-            existing.ensure_started_and_initialized(ws).await?;
-            return Ok(existing);
-        }
-
-        // Slow path: create & insert (avoid race).
-        let server = Arc::new(LspServer::new(
-            self.app.clone(),
-            ws.id.clone(),
-            language_id.to_string(),
-            ws.main_folder.clone(),
-            ws.folders.clone(),
-            launch,
-        ));
-
-        {
+        let mut old_to_shutdown: Option<Arc<LspServer>> = None;
+        let server = {
             let mut map = self.servers.lock().await;
             if let Some(existing) = map.get(&key).cloned() {
-                drop(map);
-                existing.ensure_started_and_initialized(ws).await?;
-                return Ok(existing);
+                if existing.same_launch(&launch) {
+                    existing
+                } else {
+                    old_to_shutdown = map.remove(&key);
+                    let next = Arc::new(LspServer::new(
+                        self.app.clone(),
+                        ws.id.clone(),
+                        language_id.to_string(),
+                        ws.main_folder.clone(),
+                        ws.folders.clone(),
+                        launch,
+                    ));
+                    map.insert(key, next.clone());
+                    next
+                }
+            } else {
+                let next = Arc::new(LspServer::new(
+                    self.app.clone(),
+                    ws.id.clone(),
+                    language_id.to_string(),
+                    ws.main_folder.clone(),
+                    ws.folders.clone(),
+                    launch,
+                ));
+                map.insert(key, next.clone());
+                next
             }
-            map.insert(key, server.clone());
+        };
+
+        if let Some(old) = old_to_shutdown {
+            let _ = old.shutdown().await;
         }
 
         server.ensure_started_and_initialized(ws).await?;
@@ -110,6 +704,21 @@ impl LspManager {
         }
 
         for s in servers {
+            let _ = s.shutdown().await;
+        }
+    }
+
+    pub async fn shutdown_language(&self, workstudio_id: &str, language_id: &str) {
+        let server = {
+            let mut map = self.servers.lock().await;
+            let key = LspKey {
+                workstudio_id: workstudio_id.to_string(),
+                language_id: language_id.to_string(),
+            };
+            map.remove(&key)
+        };
+
+        if let Some(s) = server {
             let _ = s.shutdown().await;
         }
     }
@@ -166,6 +775,15 @@ impl LspServer {
         }
     }
 
+    fn same_launch(&self, other: &LspLaunchConfig) -> bool {
+        self.launch.language_id == other.language_id
+            && self.launch.command == other.command
+            && self.launch.args == other.args
+            && self.launch.env == other.env
+            && self.launch.initialization_options == other.initialization_options
+            && self.launch.settings == other.settings
+    }
+
     pub async fn status(&self) -> LspServerStatus {
         let st = self.state.lock().await;
         LspServerStatus {
@@ -192,6 +810,11 @@ impl LspServer {
             if st.started {
                 return Ok(());
             }
+            // 产品级策略：启动失败后不反复重试（避免每次请求/点击都 spawn 一次）。
+            // 需要用户手动修复配置后重启 LSP（或重启 Workstudio/应用）。
+            if let Some(err) = st.last_error.clone() {
+                return Err(err);
+            }
         }
 
         let command = self.launch.command.trim();
@@ -201,29 +824,121 @@ impl LspServer {
             return Err(err);
         }
 
-        let mut cmd = Command::new(command);
-        cmd.args(&self.launch.args);
-
-        // 在项目根目录下运行（对 rust-analyzer/cargo 等更友好）
         let cwd = ws.main_folder.trim();
-        if !cwd.is_empty() {
-            cmd.current_dir(cwd);
+        let resolved = match resolve_lsp_spawn_program(command, cwd, &self.launch.env) {
+            Ok(r) => r,
+            Err(e) => {
+                let err = format!("解析 LSP 启动命令失败: {e}");
+                self.set_last_error(err.clone()).await;
+                self.emit(LspEvent::Stderr { line: format!("[lsp] {err}") });
+                return Err(err);
+            }
+        };
+
+        for w in &resolved.warnings {
+            self.emit(LspEvent::Stderr { line: w.clone() });
         }
 
-        for (k, v) in &self.launch.env {
-            cmd.env(k, v);
+        let mut spawn_cwd: Option<&str> = if cwd.is_empty() { None } else { Some(cwd) };
+        if cfg!(target_os = "windows") {
+            if let Some(cwd) = spawn_cwd {
+                match std::fs::metadata(cwd) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        if e.raw_os_error() == Some(448) {
+                            self.emit(LspEvent::Stderr {
+                                line: format!(
+                                    "[lsp] 警告：工作区目录包含不受信任的挂载点（Windows 448），将不设置 current_dir 启动。cwd={}",
+                                    cwd
+                                ),
+                            });
+                        } else {
+                            self.emit(LspEvent::Stderr {
+                                line: format!(
+                                    "[lsp] 警告：无法访问工作区目录，将不设置 current_dir 启动。cwd={} err={}",
+                                    cwd, e
+                                ),
+                            });
+                        }
+                        spawn_cwd = None;
+                    }
+                }
+            }
         }
+        self.emit(LspEvent::Stderr {
+            line: format!(
+                "[lsp] 启动：languageId={} command={} resolvedTarget={} via={} program={} prefixArgs={:?} spawnCwd={} args={:?}",
+                self.language_id,
+                command,
+                resolved.target,
+                resolved.via,
+                resolved.program,
+                resolved.prefix_args,
+                spawn_cwd.unwrap_or("<none>"),
+                self.launch.args
+            ),
+        });
 
-        cmd.stdin(Stdio::piped());
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
+        let spawn_once = |cwd: Option<&str>| -> Result<tokio::process::Child, std::io::Error> {
+            let mut cmd = Command::new(&resolved.program);
+            cmd.args(&resolved.prefix_args);
+            cmd.args(&self.launch.args);
 
-        let mut child = match cmd.spawn() {
+            // 尽量在项目根目录下运行（对 rust-analyzer/cargo 等更友好）。
+            // 但在 Windows 上，某些路径（包含“不受信任的挂载点”）会导致 CreateProcess 直接失败（os error 448）。
+            // 此时退化为“不设置 current_dir”依然可用，因为我们会在 initialize 里传 rootUri/workspaceFolders。
+            if let Some(cwd) = cwd {
+                let cwd = cwd.trim();
+                if !cwd.is_empty() {
+                    cmd.current_dir(cwd);
+                }
+            }
+
+            for (k, v) in &self.launch.env {
+                cmd.env(k, v);
+            }
+
+            cmd.stdin(Stdio::piped());
+            cmd.stdout(Stdio::piped());
+            cmd.stderr(Stdio::piped());
+            cmd.spawn()
+        };
+
+        let mut spawn_errors: Vec<String> = Vec::new();
+        let mut child = match spawn_once(spawn_cwd) {
             Ok(c) => c,
             Err(e) => {
-                let err = format!("启动 LSP 失败: {e}");
-                self.set_last_error(err.clone()).await;
-                return Err(err);
+                spawn_errors.push(format!("cwd={}: {e}", spawn_cwd.unwrap_or("<none>")));
+
+                // Windows: ERROR_UNTRUSTED_MOUNT_POINT (448)
+                let should_retry_without_cwd =
+                    cfg!(target_os = "windows") && e.raw_os_error() == Some(448) && spawn_cwd.is_some();
+                if should_retry_without_cwd {
+                    self.emit(LspEvent::Stderr {
+                        line: format!(
+                            "[lsp] 警告：无法使用工作区目录作为工作目录启动（Windows 448：不受信任的挂载点）。已退化为默认工作目录启动。cwd={}",
+                                cwd
+                            ),
+                        });
+                    match spawn_once(None) {
+                        Ok(c) => c,
+                        Err(e2) => {
+                            spawn_errors.push(format!("cwd=<none>: {e2}"));
+                            let err = format!(
+                                "启动 LSP 失败: {e2}（已尝试回退启动；详情：{}；resolvedTarget={} program={}）",
+                                spawn_errors.join(" | "),
+                                resolved.target,
+                                resolved.program
+                            );
+                            self.set_last_error(err.clone()).await;
+                            return Err(err);
+                        }
+                    }
+                } else {
+                    let err = format!("启动 LSP 失败: {e}（resolvedTarget={} program={}）", resolved.target, resolved.program);
+                    self.set_last_error(err.clone()).await;
+                    return Err(err);
+                }
             }
         };
         let stdin = child

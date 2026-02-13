@@ -141,6 +141,7 @@ struct GoogleModelsResponse {
 #[serde(rename_all = "camelCase")]
 struct GoogleModelData {
     name: String, // Format: "models/gemini-1.5-pro"
+    #[allow(dead_code)]
     display_name: Option<String>,
 }
 

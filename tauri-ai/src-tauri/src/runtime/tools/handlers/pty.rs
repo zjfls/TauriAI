@@ -36,8 +36,10 @@ struct ExecCommandArgs {
     yield_time_ms: u64,
     #[serde(default)]
     max_output_tokens: Option<usize>,
+    #[allow(dead_code)]
     #[serde(default)]
     sandbox_permissions: Option<String>,
+    #[allow(dead_code)]
     #[serde(default)]
     justification: Option<String>,
 }

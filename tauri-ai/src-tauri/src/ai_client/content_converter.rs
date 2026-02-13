@@ -65,15 +65,6 @@ pub fn content_part_to_blocks(part: &ContentPart, include_images: bool) -> Vec<C
     }
 }
 
-/// Count the number of images in a ContentPart
-pub fn count_images_in_part(part: &ContentPart) -> usize {
-    match part {
-        ContentPart::Image { .. } => 1,
-        ContentPart::PdfDocument { pages, .. } => pages.len(),
-        _ => 0,
-    }
-}
-
 /// Convert a list of ContentParts to ContentBlocks with image limit enforcement
 ///
 /// # Arguments

@@ -9,6 +9,7 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 const MAX_PNG_BYTES: usize = 30 * 1024 * 1024; // 30MB
+#[cfg(target_os = "macos")]
 const MAX_INLINE_DATA_URL_PNG_BYTES: usize = 2 * 1024 * 1024; // 2MB: avoid massive HTML/text payloads
 
 fn strip_data_url_prefix(input: &str) -> &str {

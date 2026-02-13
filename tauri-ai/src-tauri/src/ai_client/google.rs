@@ -190,6 +190,7 @@ struct GenerateContentRequest {
 #[serde(rename_all = "camelCase")]
 struct GenerateContentResponse {
     candidates: Option<Vec<Candidate>>,
+    #[allow(dead_code)]
     usage_metadata: Option<UsageMetadata>,
 }
 

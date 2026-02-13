@@ -897,36 +897,6 @@ fn build_skill_prompt_block(skills: &[SkillEntry]) -> String {
     out
 }
 
-fn inject_skills_prompt(
-    messages: &mut Vec<Message>,
-    conversation_id: &str,
-    skills: Vec<SkillEntry>,
-) {
-    if skills.is_empty() {
-        return;
-    }
-    let content = build_skill_prompt_block(&skills);
-    let insert_at = messages
-        .iter()
-        .take_while(|m| m.role == MessageRole::System)
-        .count();
-    messages.insert(
-        insert_at,
-        Message {
-            id: uuid::Uuid::new_v4().to_string(),
-            conversation_id: conversation_id.to_string(),
-            role: MessageRole::System,
-            content,
-            content_parts: Vec::new(),
-            thinking: None,
-            meta: None,
-            created_at: chrono::Utc::now(),
-            status: MessageStatus::Success,
-            error_message: None,
-        },
-    );
-}
-
 fn select_enabled_skills(
     config: &crate::models::AppConfig,
     agent: &crate::models::Agent,
@@ -2614,7 +2584,6 @@ fn expand_persisted_blocks_for_model_input(messages: Vec<Message>) -> Vec<Messag
 
         #[derive(Default)]
         struct TurnBundle {
-            turn_id: Option<String>,
             turn_index: Option<u32>,
             text_parts: Vec<String>,
             thinking_parts: Vec<String>,
@@ -2644,7 +2613,6 @@ fn expand_persisted_blocks_for_model_input(messages: Vec<Message>) -> Vec<Messag
 
             let idx = bundles.len();
             bundles.push(TurnBundle {
-                turn_id: turn_id.clone(),
                 turn_index: *turn_index,
                 ..Default::default()
             });
@@ -4934,19 +4902,21 @@ async fn stream_one_turn(
 
         // 请求级重试：本轮尚未产生任何增量输出，可以安全清空本地缓冲。
         // 流式重连：保留已输出内容，只清理本轮临时信息。
-        if !emitted_any_delta {
-            full_content.clear();
-            full_thinking.clear();
-            debug_info = None;
-            usage = None;
-            last_error = None;
-            tool_calls = None;
-            turn_state = None;
-        } else {
-            debug_info = None;
-            usage = None;
-            last_error = None;
-            tool_calls = None;
+        if attempt > 1 {
+            if !emitted_any_delta {
+                full_content.clear();
+                full_thinking.clear();
+                debug_info = None;
+                usage = None;
+                last_error = None;
+                tool_calls = None;
+                turn_state = None;
+            } else {
+                debug_info = None;
+                usage = None;
+                last_error = None;
+                tool_calls = None;
+            }
         }
 
         let client = client.clone();
@@ -5139,7 +5109,6 @@ async fn stream_one_turn(
                 });
 
                 // 避免把“上一轮错误”带到最终返回
-                last_error = None;
                 tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
                 continue;
             }

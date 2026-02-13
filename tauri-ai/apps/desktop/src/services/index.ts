@@ -37,10 +37,13 @@ export {
   lspNotify,
   lspRequest,
   lspShutdownWorkstudio,
+  lspShutdownLanguage,
   lspStatus,
+  lspDetectServer,
   astDocumentSymbols,
   type LspEnsureServerArgs,
   type LspNotifyArgs,
   type LspRequestArgs,
+  type LspDetectServerArgs,
   type AstDocumentSymbolsArgs,
 } from './codeIntelService';

@@ -235,6 +235,7 @@ struct StreamToolCallDelta {
     index: Option<u32>,
     #[serde(default)]
     id: Option<String>,
+    #[allow(dead_code)]
     #[serde(default, rename = "type")]
     tool_type: Option<String>,
     #[serde(default)]

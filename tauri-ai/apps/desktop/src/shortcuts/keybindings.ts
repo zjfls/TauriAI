@@ -49,6 +49,9 @@ const KEY_ALIASES: Record<string, string> = {
 const KEY_CODE_ALIASES: Record<string, string> = {
   Minus: '-',
   NumpadSubtract: '-',
+  // Zoom-in defaults typically use "Ctrl/Cmd + =" (with Shift producing "+") so we canonicalize to "=".
+  Equal: '=',
+  NumpadAdd: '=',
 };
 
 export const isModifierOnlyKey = (key: string): boolean => {

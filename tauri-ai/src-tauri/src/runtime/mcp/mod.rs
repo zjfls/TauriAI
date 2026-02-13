@@ -646,6 +646,7 @@ enum SseTransportError {
     #[error("JSON 解析失败: {0}")]
     Json(#[from] serde_json::Error),
     #[error("SSE 未提供 endpoint（event: endpoint）")]
+    #[allow(dead_code)]
     MissingEndpoint,
     #[error("等待 SSE endpoint 超时（{0:?}）")]
     EndpointTimeout(Duration),
