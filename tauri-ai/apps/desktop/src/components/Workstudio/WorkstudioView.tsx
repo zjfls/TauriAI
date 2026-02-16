@@ -2012,8 +2012,6 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     }
 
     if (!monaco || !wsId) return;
-    // Auto-config must finish before enabling LSP bridge to avoid spawning with an unresolved command.
-    if (lspAutoConfigStatus !== 'done') return;
     if (lspBridgeWorkstudioIdRef.current === wsId) return;
 
     lspBridgeRef.current?.dispose();
@@ -2046,7 +2044,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
         // 如果 ws 已经就绪，尽早 attach（否则由 useEffect 在 ws.id 就绪后再 attach）
         const wsId = ws?.id ?? null;
-        if (wsId && lspAutoConfigStatus === 'done' && lspBridgeWorkstudioIdRef.current !== wsId) {
+        if (wsId && lspBridgeWorkstudioIdRef.current !== wsId) {
           lspBridgeRef.current?.dispose();
           lspBridgeRef.current = attachMonacoLspBridge({
             monaco,
