@@ -77,7 +77,8 @@ const defaultServer = (): LspServerConfig => ({
   languageId: 'rust',
   enabled: true,
   command: 'rust-analyzer',
-  args: ['--stdio'],
+  // rust-analyzer 默认使用 stdio 通信；无需 `--stdio`（部分版本会报 unknown flag）。
+  args: [],
   env: {},
   initializationOptions: {},
   settings: {},
@@ -304,7 +305,8 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
         languageId: 'rust',
         enabled: true,
         command: foundCmd,
-        args: recommendedArgs.length > 0 ? recommendedArgs : ['--stdio'],
+        // rust-analyzer 默认使用 stdio 通信；无需 `--stdio`（部分版本会报 unknown flag）。
+        args: recommendedArgs,
         env: {},
         initializationOptions: {},
         settings: {},
@@ -346,10 +348,8 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
     if (!command) return;
 
     updateServer(selectedIndex, (s) => {
-      const lang = String(s.languageId || '').trim();
       const existingArgs = Array.isArray(s.args) ? s.args : [];
-      const nextArgs = lang === 'rust' && existingArgs.length === 0 ? ['--stdio'] : existingArgs;
-      return { ...s, enabled: true, command, args: nextArgs };
+      return { ...s, enabled: true, command, args: existingArgs };
     });
     setAutoConfigMessage(`已选择命令：${command}`);
   };
@@ -538,7 +538,7 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
                   value={argsDraft}
                   onChange={(e) => setArgsDraft(e.target.value)}
                   className="min-h-[92px] w-full rounded-lg border border-gray-300 bg-white px-3 py-2 font-mono text-xs dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
-                  placeholder="--stdio"
+                  placeholder="（可留空；每行一个参数）"
                 />
               </div>
 
@@ -593,4 +593,3 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
     </div>
   );
 };
-

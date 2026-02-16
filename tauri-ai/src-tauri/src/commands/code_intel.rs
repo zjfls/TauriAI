@@ -180,12 +180,12 @@ pub async fn lsp_detect_server(args: LspDetectServerArgs) -> Result<LspDetectSer
 
     match lang {
         "rust" => {
-            // rust-analyzer 推荐带 --stdio（与 VS Code 一致）。
+            // rust-analyzer 默认使用 stdio 通信；无需传 `--stdio`（部分版本会报 unknown flag）。
             let resolved = resolve_lsp_spawn_program("rust-analyzer", "", &[])?;
             Ok(LspDetectServerResult {
                 language_id: "rust".to_string(),
                 command: resolved.target,
-                args: vec!["--stdio".to_string()],
+                args: vec![],
                 via: resolved.via,
                 warnings: resolved.warnings,
             })
@@ -225,10 +225,17 @@ fn resolve_launch_config(
         .collect::<Vec<_>>();
     env.sort_by(|(a, _), (b, _)| a.cmp(b));
 
+    // 兼容性兜底：rust-analyzer 默认就是 stdio，无需 `--stdio`。
+    // 某些版本会直接报 `unexpected flag: --stdio` 并退出（code=2）。
+    let mut args = server.args.clone();
+    if lang == "rust" {
+        args.retain(|a| a.trim() != "--stdio");
+    }
+
     Ok(LspLaunchConfig {
         language_id: server.language_id.clone(),
         command: server.command.clone(),
-        args: server.args.clone(),
+        args,
         env,
         initialization_options: server.initialization_options.clone(),
         settings: server.settings.clone(),

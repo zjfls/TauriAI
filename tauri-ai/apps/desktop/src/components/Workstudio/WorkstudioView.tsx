@@ -3312,7 +3312,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   }, [ws?.id]);
 
   // Auto-config rust-analyzer（产品级兜底）：当 command 为空/非绝对路径时，尝试探测并写回配置。
-  // - 成功：把绝对路径写入配置（并尽量补齐 --stdio），后续启动不依赖 PATH。
+  // - 成功：把绝对路径写入配置（rust-analyzer 默认 stdio，无需 `--stdio`），后续启动不依赖 PATH。
   // - 失败：只尝试一次，随后等待用户在设置页“一键配置”或手动修正后重启。
   useEffect(() => {
     if (!isTauri()) return;
@@ -3384,7 +3384,8 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
             languageId: 'rust',
             enabled: true,
             command: foundCmd,
-            args: recommendedArgs.length > 0 ? recommendedArgs : ['--stdio'],
+            // rust-analyzer 默认使用 stdio 通信；无需 `--stdio`（部分版本会报 unknown flag）。
+            args: recommendedArgs,
             env: {},
             initializationOptions: {},
             settings: {},

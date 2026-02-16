@@ -1457,7 +1457,8 @@ impl Default for CodeIntelligenceSettings {
                 language_id: "rust".to_string(),
                 enabled: true,
                 command: "rust-analyzer".to_string(),
-                args: vec!["--stdio".to_string()],
+                // rust-analyzer 默认使用 stdio 通信；无需传 `--stdio`（部分版本会报 unknown flag）。
+                args: vec![],
                 ..Default::default()
             }],
         }
