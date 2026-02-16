@@ -1,6 +1,11 @@
 import type * as Monaco from 'monaco-editor';
 
 import 'monaco-editor/esm/vs/basic-languages/cpp/cpp.contribution';
+import 'monaco-editor/esm/vs/basic-languages/lua/lua.contribution';
+import 'monaco-editor/esm/vs/basic-languages/python/python.contribution';
+import 'monaco-editor/esm/vs/editor/contrib/gotoSymbol/browser/goToCommands';
+import 'monaco-editor/esm/vs/editor/contrib/gotoSymbol/browser/link/goToDefinitionAtPosition';
+import 'monaco-editor/esm/vs/editor/standalone/browser/referenceSearch/standaloneReferenceSearch';
 import { setupMonacoEnvironment } from './monacoEnv';
 
 let configured = false;

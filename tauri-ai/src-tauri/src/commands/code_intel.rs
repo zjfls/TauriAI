@@ -169,8 +169,8 @@ pub struct LspDetectServerResult {
 /// Detect LSP server executable and return an absolute command path.
 ///
 /// 说明：
-/// - 主要用于“一键配置”（自动把 rust-analyzer 的绝对路径写入配置）。
-/// - 目前先支持 rust（rust-analyzer）。后续可扩展 python/cpp 等。
+/// - 主要用于“一键配置”（自动把语言服务器的绝对路径写入配置）。
+/// - 当前支持 rust/python/cpp/c/lua。
 #[tauri::command]
 pub async fn lsp_detect_server(args: LspDetectServerArgs) -> Result<LspDetectServerResult, String> {
     let lang = args.language_id.trim();
@@ -179,19 +179,48 @@ pub async fn lsp_detect_server(args: LspDetectServerArgs) -> Result<LspDetectSer
     }
 
     match lang {
-        "rust" => {
-            // rust-analyzer 默认使用 stdio 通信；无需传 `--stdio`（部分版本会报 unknown flag）。
-            let resolved = resolve_lsp_spawn_program("rust-analyzer", "", &[])?;
-            Ok(LspDetectServerResult {
-                language_id: "rust".to_string(),
-                command: resolved.target,
-                args: vec![],
-                via: resolved.via,
-                warnings: resolved.warnings,
-            })
-        }
+        "rust" => detect_lsp_by_candidates(lang, &[("rust-analyzer", &[])]),
+        // pylsp 不需要显式 --stdio；pyright/basedpyright 需要 --stdio。
+        "python" => detect_lsp_by_candidates(
+            lang,
+            &[
+                ("pylsp", &[]),
+                ("pyright-langserver", &["--stdio"]),
+                ("basedpyright-langserver", &["--stdio"]),
+            ],
+        ),
+        "cpp" | "c" => detect_lsp_by_candidates(lang, &[("clangd", &[])]),
+        "lua" => detect_lsp_by_candidates(lang, &[("lua-language-server", &[])]),
         _ => Err(format!("暂不支持自动探测该语言的 LSP：{lang}")),
     }
+}
+
+fn detect_lsp_by_candidates(
+    language_id: &str,
+    candidates: &[(&str, &[&str])],
+) -> Result<LspDetectServerResult, String> {
+    let mut tried: Vec<String> = Vec::new();
+    for (command, args) in candidates {
+        tried.push(command.to_string());
+        match resolve_lsp_spawn_program(command, "", &[]) {
+            Ok(resolved) => {
+                return Ok(LspDetectServerResult {
+                    language_id: language_id.to_string(),
+                    command: resolved.target,
+                    args: args.iter().map(|x| x.to_string()).collect(),
+                    via: resolved.via,
+                    warnings: resolved.warnings,
+                });
+            }
+            Err(_) => {
+                continue;
+            }
+        }
+    }
+    Err(format!(
+        "未找到可用的 LSP 可执行文件（languageId={language_id}，候选={})",
+        tried.join(", ")
+    ))
 }
 
 fn resolve_launch_config(

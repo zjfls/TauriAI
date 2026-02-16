@@ -171,11 +171,16 @@ const languageForPath = (path: string) => {
     lower.endsWith('.cppm')
   )
     return 'cpp';
+  if (lower.endsWith('.lua')) return 'lua';
   if (lower.endsWith('.toml')) return 'toml';
   if (lower.endsWith('.yaml') || lower.endsWith('.yml')) return 'yaml';
   if (lower.endsWith('.sh') || lower.endsWith('.bash') || lower.endsWith('.zsh')) return 'shell';
   return 'plaintext';
 };
+
+const AUTO_DETECT_LSP_LANGUAGES = ['rust', 'python', 'cpp', 'c', 'lua'] as const;
+const isAutoDetectableLspLanguage = (languageId: string) =>
+  AUTO_DETECT_LSP_LANGUAGES.includes(languageId as (typeof AUTO_DETECT_LSP_LANGUAGES)[number]);
 
 const basename = (p: string) => {
   const normalized = p.replace(/\\/g, '/');
@@ -2182,18 +2187,29 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     return parts.join('|');
   }, [codeIntelligenceConfig?.enabled, codeIntelligenceConfig?.lspServers]);
 
-  // 当用户通过“设置 -> 一键配置”把 command 修复为绝对路径时，自动解除该语言的错误阻塞。
+  // 当用户通过“设置 -> 一键配置”把 command 修复为绝对路径时，自动解除对应语言的错误阻塞。
   useEffect(() => {
     if (!isTauri()) return;
     if (!codeIntelligenceConfig?.enabled) return;
     const servers = Array.isArray(codeIntelligenceConfig?.lspServers) ? codeIntelligenceConfig!.lspServers : [];
-    const rust = servers.find((s) => s.enabled && String(s.languageId || '').trim() === 'rust') ?? null;
-    const cmd = String(rust?.command || '').trim();
-    if (!cmd || !isAbsoluteFsPath(cmd)) return;
+    const resolvedLanguages = servers
+      .map((s) => ({
+        languageId: String(s.languageId || '').trim(),
+        command: String(s.command || '').trim(),
+        enabled: Boolean(s.enabled),
+      }))
+      .filter((s) => s.enabled && s.languageId && s.command && isAbsoluteFsPath(s.command))
+      .map((s) => s.languageId);
+    if (resolvedLanguages.length === 0) return;
     setLspEnsureErrors((prev) => {
-      if (!prev.rust) return prev;
+      let changed = false;
       const next = { ...prev };
-      delete next.rust;
+      for (const lang of resolvedLanguages) {
+        if (!next[lang]) continue;
+        delete next[lang];
+        changed = true;
+      }
+      if (!changed) return prev;
       return next;
     });
   }, [codeIntelligenceConfig?.enabled, lspConfigFingerprint]);
@@ -2310,7 +2326,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
   const lspSummary = useMemo(() => {
     if (!isTauri()) {
-      return { label: '代码智能：仅桌面端', dotClass: 'bg-gray-400', title: '仅 Tauri 桌面端支持 LSP（rust-analyzer 等）' };
+      return { label: '代码智能：仅桌面端', dotClass: 'bg-gray-400', title: '仅 Tauri 桌面端支持 LSP' };
     }
     if (!codeIntelligenceConfig?.enabled) {
       return { label: '代码智能：关闭', dotClass: 'bg-gray-400', title: '设置 -> Code Intelligence 中开启' };
@@ -2333,9 +2349,9 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     if (hasStarting) return { label: '代码智能：启动中', dotClass: 'bg-yellow-500', title: 'LSP 正在初始化' };
     if (hasIndexing) {
       const detail = enabledLspLanguageIds.map((lang) => getLanguageProgressText(lang)).find(Boolean) ?? null;
-      return { label: '代码智能：索引中', dotClass: 'bg-yellow-500', title: detail ?? 'rust-analyzer 正在索引' };
+      return { label: '代码智能：索引中', dotClass: 'bg-yellow-500', title: detail ?? '语言服务器正在索引' };
     }
-    return { label: '代码智能：就绪', dotClass: 'bg-green-500', title: 'rust-analyzer 等已就绪' };
+    return { label: '代码智能：就绪', dotClass: 'bg-green-500', title: '语言服务器已就绪' };
   }, [codeIntelligenceConfig?.enabled, describeLspLanguage, enabledLspLanguageIds, getLanguageProgressText, globallyEnabledLspLanguageIds.length]);
 
   const ensureLspForLanguage = useCallback(
@@ -3311,9 +3327,10 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     setLspAutoConfigStatus('idle');
   }, [ws?.id]);
 
-  // Auto-config rust-analyzer（产品级兜底）：当 command 为空/非绝对路径时，尝试探测并写回配置。
-  // - 成功：把绝对路径写入配置（rust-analyzer 默认 stdio，无需 `--stdio`），后续启动不依赖 PATH。
-  // - 失败：只尝试一次，随后等待用户在设置页“一键配置”或手动修正后重启。
+  // Auto-config LSP（产品级兜底）：
+  // - 当 command 为空/非绝对路径时，尝试探测并写回绝对路径，避免依赖 PATH。
+  // - 优先修复已有配置；当配置为空时，尝试自动创建常见语言（rust/python/cpp/c/lua）。
+  // - 失败仅记录，不阻塞其它语言。
   useEffect(() => {
     if (!isTauri()) return;
     if (!uiStateRestored) return;
@@ -3332,17 +3349,31 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     }
 
     const servers = Array.isArray(cfg.lspServers) ? cfg.lspServers : [];
-    const rust = servers.find((s) => s.enabled && String(s.languageId || '').trim() === 'rust') ?? null;
-    if (!rust && servers.length !== 0) {
-      setLspAutoConfigStatus('done');
-      return;
-    }
-
-    const rawCmd = String(rust?.command || '').trim();
-    const shouldAuto = rust
-      ? !rawCmd || rawCmd === 'rust-analyzer' || rawCmd === 'rust-analyzer.exe' || !isAbsoluteFsPath(rawCmd)
-      : true;
-    if (!shouldAuto) {
+    const shouldAutoForCommand = (command: string) => {
+      const cmd = String(command || '').trim();
+      return !cmd || !isAbsoluteFsPath(cmd);
+    };
+    const existingEnabledLangSet = new Set(
+      servers
+        .filter((s) => Boolean(s.enabled))
+        .map((s) => String(s.languageId || '').trim())
+        .filter((lang) => Boolean(lang))
+    );
+    const candidateLangs = servers.length === 0
+      ? [...AUTO_DETECT_LSP_LANGUAGES]
+      : Array.from(
+          new Set(
+            servers
+              .map((s) => ({
+                enabled: Boolean(s.enabled),
+                languageId: String(s.languageId || '').trim(),
+                command: String(s.command || '').trim(),
+              }))
+              .filter((s) => s.enabled && s.languageId && isAutoDetectableLspLanguage(s.languageId) && shouldAutoForCommand(s.command))
+              .map((s) => s.languageId)
+          )
+        );
+    if (candidateLangs.length === 0) {
       setLspAutoConfigStatus('done');
       return;
     }
@@ -3350,18 +3381,50 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     setLspAutoConfigStatus('running');
     void (async () => {
       try {
-        console.info('[Workstudio][LSP] auto-config rust-analyzer: start', { workstudioId: wsId, rawCommand: rawCmd });
-        const res = await lspDetectServer({ languageId: 'rust' });
-        const foundCmd = String(res?.command || '').trim();
-        if (!foundCmd) {
-          throw new Error('未找到 rust-analyzer（返回 command 为空）');
+        console.info('[Workstudio][LSP] auto-config: start', { workstudioId: wsId, languages: candidateLangs });
+        const detected = new Map<string, { command: string; args: string[] }>();
+        const failed = new Map<string, string>();
+
+        for (const languageId of candidateLangs) {
+          try {
+            const res = await lspDetectServer({ languageId });
+            const foundCmd = String(res?.command || '').trim();
+            if (!foundCmd) {
+              failed.set(languageId, '未找到可执行文件（返回 command 为空）');
+              continue;
+            }
+            const recommendedArgs = Array.isArray(res?.args)
+              ? res.args.map((x) => String(x || '').trim()).filter(Boolean)
+              : [];
+            detected.set(languageId, { command: foundCmd, args: recommendedArgs });
+          } catch (e) {
+            failed.set(languageId, e instanceof Error ? e.message : String(e));
+          }
         }
-        const recommendedArgs = Array.isArray(res?.args) ? res.args.map((x) => String(x || '').trim()).filter(Boolean) : [];
-        console.info('[Workstudio][LSP] auto-config rust-analyzer: ok', {
+
+        if (detected.size === 0) {
+          console.warn('[Workstudio][LSP] auto-config: no language resolved', {
+            workstudioId: wsId,
+            failed: Object.fromEntries(failed),
+          });
+          const shouldShowError = servers.length > 0;
+          if (shouldShowError && failed.size > 0) {
+            setLspEnsureErrors((prev) => {
+              const next = { ...prev };
+              for (const [lang, msg] of failed.entries()) {
+                if (!existingEnabledLangSet.has(lang)) continue;
+                next[lang] = `自动配置失败：${msg}`;
+              }
+              return next;
+            });
+          }
+          return;
+        }
+
+        console.info('[Workstudio][LSP] auto-config: resolved', {
           workstudioId: wsId,
-          command: foundCmd,
-          via: String(res?.via || ''),
-          warnings: Array.isArray(res?.warnings) ? res.warnings : [],
+          detected: Array.from(detected.keys()),
+          failed: Object.fromEntries(failed),
         });
 
         const currentConfig = useConfigStore.getState().config;
@@ -3371,25 +3434,41 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
         const currentCi = currentConfig.codeIntelligence ?? { enabled: true, lspServers: [] };
         const currentServers = Array.isArray(currentCi.lspServers) ? currentCi.lspServers : [];
-        let patched = false;
-        const nextServers = currentServers.map((s) => {
-          if (String(s.languageId || '').trim() !== 'rust') return s;
-          patched = true;
-          const existingArgs = Array.isArray(s.args) ? s.args : [];
-          const nextArgs = existingArgs.length === 0 && recommendedArgs.length > 0 ? recommendedArgs : existingArgs;
-          return { ...s, enabled: true, command: foundCmd, args: nextArgs };
-        });
-        if (!patched) {
-          nextServers.push({
-            languageId: 'rust',
+        const nextServers = currentServers.slice();
+        const patchedLangs = new Set<string>();
+
+        for (let idx = 0; idx < nextServers.length; idx += 1) {
+          const server = nextServers[idx];
+          const lang = String(server.languageId || '').trim();
+          if (!lang || !detected.has(lang)) continue;
+          if (!server.enabled) continue;
+          if (!shouldAutoForCommand(server.command || '')) continue;
+          const found = detected.get(lang)!;
+          const existingArgs = Array.isArray(server.args) ? server.args : [];
+          const nextArgs = existingArgs.length === 0 && found.args.length > 0 ? found.args : existingArgs;
+          nextServers[idx] = {
+            ...server,
             enabled: true,
-            command: foundCmd,
-            // rust-analyzer 默认使用 stdio 通信；无需 `--stdio`（部分版本会报 unknown flag）。
-            args: recommendedArgs,
-            env: {},
-            initializationOptions: {},
-            settings: {},
-          });
+            command: found.command,
+            args: nextArgs,
+          };
+          patchedLangs.add(lang);
+        }
+
+        if (currentServers.length === 0) {
+          for (const [lang, found] of detected.entries()) {
+            if (patchedLangs.has(lang)) continue;
+            nextServers.push({
+              languageId: lang,
+              enabled: true,
+              command: found.command,
+              args: found.args,
+              env: {},
+              initializationOptions: {},
+              settings: {},
+            });
+            patchedLangs.add(lang);
+          }
         }
 
         useConfigStore.getState().saveConfigDebounced(
@@ -3401,22 +3480,26 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         );
 
         setLspEnsureErrors((prev) => {
-          if (!prev.rust) return prev;
           const next = { ...prev };
-          delete next.rust;
+          for (const lang of patchedLangs) {
+            if (next[lang]) delete next[lang];
+          }
+          for (const [lang, msg] of failed.entries()) {
+            if (!existingEnabledLangSet.has(lang)) continue;
+            next[lang] = `自动配置失败：${msg}`;
+          }
           return next;
         });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        console.warn('[Workstudio][LSP] auto-config rust-analyzer: failed', { workstudioId: wsId, msg });
-        setLspEnsureErrors((prev) => ({ ...prev, rust: `自动配置失败：${msg}` }));
+        console.warn('[Workstudio][LSP] auto-config: failed', { workstudioId: wsId, msg });
       } finally {
         setLspAutoConfigStatus('done');
       }
     })();
   }, [uiStateRestored, ws?.id, lspAutoConfigStatus, codeIntelligenceConfig?.enabled, codeIntelligenceConfig?.lspServers?.length]);
 
-  // Auto-start LSP servers (best-effort) so rust-analyzer 的“启动/索引/就绪”可见。
+  // Auto-start LSP servers (best-effort) so 启动/索引/就绪状态可见。
   useEffect(() => {
     if (!isTauri()) return;
     if (!uiStateRestored) return;
@@ -3537,7 +3620,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     };
   }, [ws?.id]);
 
-  // Listen to server->client notifications to surface progress/logs (e.g. rust-analyzer indexing).
+  // Listen to server->client notifications to surface progress/logs.
   useEffect(() => {
     if (!isTauri()) return;
     const wsId = ws?.id ?? null;
@@ -4292,8 +4375,8 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           <div className="flex items-start justify-between gap-3 border-b border-gray-200 px-3 py-2 dark:border-gray-700">
             <div className="min-w-0">
               <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">代码智能</div>
-              <div className="mt-0.5 truncate text-[11px] text-gray-500 dark:text-gray-400" title="LSP: rust-analyzer / pylsp / clangd 等">
-                LSP 状态与进度（rust-analyzer 索引/就绪）
+              <div className="mt-0.5 truncate text-[11px] text-gray-500 dark:text-gray-400" title="LSP: rust-analyzer / pylsp / clangd / lua-language-server 等">
+                LSP 状态与进度（多语言索引/就绪）
               </div>
             </div>
             <div className="flex flex-shrink-0 items-center gap-2">
@@ -4345,7 +4428,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
                 {lspMenuServers.length === 0 ? (
                   <div className="text-sm text-gray-600 dark:text-gray-300">
-                    未配置 LSP server：在 设置 → Code Intelligence 中添加 rust-analyzer 等。
+                    未配置 LSP server：在 设置 → Code Intelligence 中添加 rust-analyzer / pylsp / clangd / lua-language-server 等。
                   </div>
                 ) : (
                   <div className="rounded-lg border border-gray-200 bg-white p-2 dark:border-gray-700 dark:bg-gray-900">
@@ -4523,7 +4606,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                           })}
 
                         <div className="pt-1 text-[11px] text-gray-500 dark:text-gray-400">
-                          提示：某些语言服务器（例如 rust-analyzer）首次索引可能需要一段时间；索引进度会通过 <code>$/progress</code> 显示在这里。
+                          提示：某些语言服务器首次索引可能需要一段时间；索引进度会通过 <code>$/progress</code> 显示在这里。
                         </div>
                       </div>
                     )}

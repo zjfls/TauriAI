@@ -84,6 +84,16 @@ const defaultServer = (): LspServerConfig => ({
   settings: {},
 });
 
+const AUTO_DETECT_LANGUAGE_ORDER = ['rust', 'python', 'cpp', 'c', 'lua'] as const;
+const AUTO_DETECT_LANGUAGE_SET = new Set<string>(AUTO_DETECT_LANGUAGE_ORDER);
+const AUTO_DETECT_LANGUAGE_LABEL: Record<string, string> = {
+  rust: 'rust-analyzer',
+  python: 'pylsp',
+  cpp: 'clangd',
+  c: 'clangd',
+  lua: 'lua-language-server',
+};
+
 export const CodeIntelligenceConfigForm: React.FC = () => {
   const { config, saveConfigDebounced } = useConfigStore();
   const [selectedIndex, setSelectedIndex] = useState<number>(0);
@@ -239,8 +249,8 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
       setAutoConfigError('languageId 为空');
       return;
     }
-    if (lang !== 'rust') {
-      setAutoConfigError(`暂仅支持 rust：${lang}`);
+    if (!AUTO_DETECT_LANGUAGE_SET.has(lang)) {
+      setAutoConfigError(`暂不支持该语言的一键探测：${lang}（支持：${AUTO_DETECT_LANGUAGE_ORDER.join(' / ')}）`);
       return;
     }
 
@@ -274,8 +284,9 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
 
       const warnings = Array.isArray(res?.warnings) ? res.warnings : [];
       const via = String(res?.via || '').trim();
+      const label = AUTO_DETECT_LANGUAGE_LABEL[lang] ?? lang;
       setAutoConfigMessage(
-        `已自动配置 rust-analyzer：${foundCmd}${via ? `（via=${via}）` : ''}${warnings.length > 0 ? `；警告：${warnings.join(' | ')}` : ''}`
+        `已自动配置 ${label}：${foundCmd}${via ? `（via=${via}）` : ''}${warnings.length > 0 ? `；警告：${warnings.join(' | ')}` : ''}`
       );
     } catch (e) {
       setAutoConfigError(e instanceof Error ? e.message : String(e));
@@ -284,7 +295,7 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
     }
   };
 
-  const autoConfigureRustFromEmpty = async () => {
+  const autoConfigureRecommendedFromEmpty = async () => {
     if (!config) return;
     if (servers.length !== 0) return;
 
@@ -292,25 +303,36 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
     setAutoConfigMessage(null);
     setAutoConfigError(null);
     try {
-      const res = await lspDetectServer({ languageId: 'rust' });
-      const foundCmd = String(res?.command || '').trim();
-      if (!foundCmd) {
-        setAutoConfigError('未找到可执行文件（返回 command 为空）');
-        return;
+      const detected: LspServerConfig[] = [];
+      const failures: string[] = [];
+
+      for (const languageId of AUTO_DETECT_LANGUAGE_ORDER) {
+        try {
+          const res = await lspDetectServer({ languageId });
+          const foundCmd = String(res?.command || '').trim();
+          if (!foundCmd) {
+            failures.push(`${languageId}: 返回 command 为空`);
+            continue;
+          }
+          const recommendedArgs = Array.isArray(res?.args) ? res.args.map((x) => String(x || '').trim()).filter(Boolean) : [];
+          detected.push({
+            languageId,
+            enabled: true,
+            command: foundCmd,
+            args: recommendedArgs,
+            env: {},
+            initializationOptions: {},
+            settings: {},
+          });
+        } catch (e) {
+          failures.push(`${languageId}: ${e instanceof Error ? e.message : String(e)}`);
+        }
       }
 
-      const recommendedArgs = Array.isArray(res?.args) ? res.args.map((x) => String(x || '').trim()).filter(Boolean) : [];
-
-      const nextServer: LspServerConfig = {
-        languageId: 'rust',
-        enabled: true,
-        command: foundCmd,
-        // rust-analyzer 默认使用 stdio 通信；无需 `--stdio`（部分版本会报 unknown flag）。
-        args: recommendedArgs,
-        env: {},
-        initializationOptions: {},
-        settings: {},
-      };
+      if (detected.length === 0) {
+        setAutoConfigError(`未探测到可用语言服务器。${failures.length > 0 ? `失败详情：${failures.join(' | ')}` : ''}`);
+        return;
+      }
 
       const currentCi = config.codeIntelligence ?? { enabled: true, lspServers: [] };
       saveConfigDebounced(
@@ -319,17 +341,19 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
           codeIntelligence: {
             ...currentCi,
             enabled: true,
-            lspServers: [nextServer],
+            lspServers: detected,
           },
         },
         0
       );
 
-      const warnings = Array.isArray(res?.warnings) ? res.warnings : [];
-      const via = String(res?.via || '').trim();
       setAutoConfigMessage(
-        `已自动配置 rust-analyzer：${foundCmd}${via ? `（via=${via}）` : ''}${warnings.length > 0 ? `；警告：${warnings.join(' | ')}` : ''}`
+        `已自动配置：${detected.map((s) => `${s.languageId}=${s.command}`).join('；')}`
       );
+      if (failures.length > 0) {
+        setAutoConfigError(`部分语言未探测成功：${failures.join(' | ')}`);
+      }
+      setSelectedIndex(0);
     } catch (e) {
       setAutoConfigError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -390,16 +414,16 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
         <div className="flex-1 space-y-1 overflow-auto">
           {serverLabels.length === 0 ? (
             <div className="rounded-lg border border-dashed border-gray-300 px-3 py-3 text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400">
-              <div>暂无 LSP 配置，点击右上角“新增”添加，或直接一键配置 rust-analyzer。</div>
+              <div>暂无 LSP 配置，点击右上角“新增”添加，或直接一键配置推荐语言（Rust/Python/C++/Lua）。</div>
               <div className="mt-2 flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => void autoConfigureRustFromEmpty()}
+                  onClick={() => void autoConfigureRecommendedFromEmpty()}
                   disabled={autoConfigBusy}
                   className="rounded-md border border-gray-200 px-2 py-1 text-xs text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
-                  title="自动探测 rust-analyzer 并创建默认 Rust LSP 配置"
+                  title="自动探测常见语言服务器并创建默认配置"
                 >
-                  {autoConfigBusy ? '配置中...' : '一键配置 Rust'}
+                  {autoConfigBusy ? '配置中...' : '一键配置推荐语言'}
                 </button>
               </div>
               {autoConfigMessage && (
@@ -484,7 +508,7 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
                       updateServer(selectedIndex, (s) => ({ ...s, languageId: e.target.value }));
                     }}
                     className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
-                    placeholder="rust / python / cpp ..."
+                    placeholder="rust / python / cpp / c / lua ..."
                   />
                 </div>
               </div>
@@ -505,9 +529,9 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => void autoConfigureSelected()}
-                      disabled={autoConfigBusy || String(selectedServer.languageId || '').trim() !== 'rust'}
+                      disabled={autoConfigBusy}
                       className="rounded-md border border-gray-200 px-2 py-1 text-xs text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
-                      title={String(selectedServer.languageId || '').trim() === 'rust' ? '自动探测 rust-analyzer 并填入绝对路径' : '暂仅支持 rust 一键配置'}
+                      title="自动探测该语言服务器并填入绝对路径"
                     >
                       {autoConfigBusy ? '配置中...' : '一键配置'}
                     </button>
@@ -522,7 +546,7 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
                     updateServer(selectedIndex, (s) => ({ ...s, command: e.target.value }));
                   }}
                   className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
-                  placeholder="rust-analyzer / pylsp / clangd ..."
+                  placeholder="rust-analyzer / pylsp / clangd / lua-language-server ..."
                 />
                 {autoConfigMessage && (
                   <div className="text-xs text-green-700 dark:text-green-300">{autoConfigMessage}</div>

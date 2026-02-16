@@ -57,6 +57,7 @@ const getEnabledServerLanguageIds = (cfg: CodeIntelligenceSettings | null | unde
   out.add('python');
   out.add('cpp');
   out.add('c');
+  out.add('lua');
   return Array.from(out);
 };
 
