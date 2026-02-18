@@ -37,7 +37,7 @@ import { useTerminalSessionStore } from '../../stores/terminalSessionStore';
 import { type WindowPane, useWindowLayoutStore } from '../../stores/windowLayoutStore';
 import { useRemoteDragSplitPreview } from '../../hooks/useRemoteDragSplitPreview';
 import { useDragGhostSession } from '../../hooks/useDragGhostSession';
-import { getViewWindowParams } from '../../utils/viewWindow';
+import { focusMainWindow, getViewWindowParams } from '../../utils/viewWindow';
 import { setupMonaco } from '../../utils/monaco';
 import { attachMonacoLspBridge } from '../../utils/monacoLspBridge';
 import { TerminalSurface, type TerminalSurfaceHandle } from '../Terminal/TerminalSurface';
@@ -414,8 +414,9 @@ const isSubpath = (child: string, parent: string) => {
 };
 
 export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ workstudioId: workstudioIdProp }) => {
-  const { workstudioId: workstudioIdFromUrl, filePath, line, column, endLine, endColumn } = getViewWindowParams();
+  const { workstudioId: workstudioIdFromUrl, filePath, line, column, endLine, endColumn, standalone } = getViewWindowParams();
   const workstudioId = (workstudioIdProp ?? workstudioIdFromUrl ?? '').trim() || null;
+  const isStandaloneWorkstudioWindow = Boolean(standalone);
   const editorByPaneRef = useRef(
     new Map<string, import('monaco-editor').editor.IStandaloneCodeEditor>()
   );
@@ -437,6 +438,21 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const keyboardShortcuts = useConfigStore((s) => s.config?.general?.keyboardShortcuts);
   const codeIntelligenceConfig = useConfigStore((s) => s.config?.codeIntelligence);
   const shortcutPlatform = useMemo(() => detectShortcutPlatform(), []);
+  const backToMainShortcutLabel = useMemo(() => {
+    const def = SHORTCUT_ACTIONS.find((a) => a.id === 'workstudio.backToMain');
+    const userRaw =
+      shortcutPlatform === 'mac'
+        ? keyboardShortcuts?.mac?.['workstudio.backToMain']
+        : keyboardShortcuts?.windows?.['workstudio.backToMain'];
+    const raw =
+      userRaw ??
+      (shortcutPlatform === 'mac' ? def?.defaultMac : def?.defaultWindows) ??
+      (shortcutPlatform === 'mac' ? 'Cmd+Shift+M' : 'Ctrl+Shift+M');
+    return (
+      normalizeKeybindingString(String(raw || ''), shortcutPlatform) ??
+      (shortcutPlatform === 'mac' ? 'Cmd+Shift+M' : 'Ctrl+Shift+M')
+    );
+  }, [keyboardShortcuts, shortcutPlatform]);
   const fileSearchShortcutLabel = useMemo(() => {
     const def = SHORTCUT_ACTIONS.find((a) => a.id === 'workstudio.fileSearch');
     const userRaw =
@@ -3120,6 +3136,13 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     await openFileAtPath(selected);
   }, [openFileAtPath]);
 
+  const returnToMainWindow = useCallback(async () => {
+    const ok = await focusMainWindow();
+    if (!ok) {
+      showNavToast('未找到主窗口');
+    }
+  }, [showNavToast]);
+
   const setEditorFontSizeFromUser = useCallback(
     (nextFontSize: number) => {
       const next = clampEditorFontSize(nextFontSize);
@@ -3159,6 +3182,11 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     const onShortcut = (event: Event) => {
       const e = event as CustomEvent<{ action?: string }>;
       const action = e.detail?.action;
+      if (action === 'workstudio.backToMain') {
+        if (!isStandaloneWorkstudioWindow) return;
+        void returnToMainWindow();
+        return;
+      }
       if (action === 'workstudio.fileSearch') {
         setFilePaletteOpen(true);
         window.setTimeout(() => filePaletteInputRef.current?.focus(), 0);
@@ -3202,7 +3230,19 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     };
     window.addEventListener('tauri-ai:shortcut', onShortcut as EventListener);
     return () => window.removeEventListener('tauri-ai:shortcut', onShortcut as EventListener);
-  }, [goToDefinition, goToReferences, goToTypeDefinition, navigateBack, navigateForward, peekDefinition, resetEditorFont, zoomInEditorFont, zoomOutEditorFont]);
+  }, [
+    goToDefinition,
+    goToReferences,
+    goToTypeDefinition,
+    isStandaloneWorkstudioWindow,
+    navigateBack,
+    navigateForward,
+    peekDefinition,
+    resetEditorFont,
+    returnToMainWindow,
+    zoomInEditorFont,
+    zoomOutEditorFont,
+  ]);
 
   // Esc: close palette (local behavior)
   useEffect(() => {
@@ -4211,7 +4251,17 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	              </span>
 	            </div>
               </div>
-	            <div className="flex items-center gap-2">
+		            <div className="flex items-center gap-2">
+                {isStandaloneWorkstudioWindow && (
+                  <button
+                    type="button"
+                    className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                    onClick={() => void returnToMainWindow()}
+                    title={`返回主窗口（${backToMainShortcutLabel}）`}
+                  >
+                    返回主窗口
+                  </button>
+                )}
                 <button
                   ref={lspStatusButtonRef}
                   type="button"

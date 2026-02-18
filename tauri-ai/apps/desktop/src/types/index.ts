@@ -981,6 +981,7 @@ export type KeyboardShortcutActionId =
   | 'session.close'
   | 'session.next'
   | 'session.previous'
+  | 'workstudio.backToMain'
   | 'workstudio.fileSearch'
   | 'workstudio.navigateBack'
   | 'workstudio.navigateForward'

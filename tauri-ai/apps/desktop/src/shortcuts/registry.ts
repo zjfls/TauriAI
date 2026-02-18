@@ -122,6 +122,15 @@ export const SHORTCUT_ACTIONS: ShortcutActionDefinition[] = [
     allowWhenTyping: true,
   },
   {
+    id: 'workstudio.backToMain',
+    title: '返回主窗口（Workstudio）',
+    description: '从独立 Workstudio 窗口返回并聚焦主窗口',
+    category: 'Workstudio',
+    defaultMac: 'Cmd+Shift+M',
+    defaultWindows: 'Ctrl+Shift+M',
+    allowWhenTyping: true,
+  },
+  {
     id: 'workstudio.fileSearch',
     title: '文件搜索（Workstudio）',
     description: '打开 Workstudio 文件搜索面板（类似 VS Code 快速打开）',
@@ -254,4 +263,3 @@ export const DEFAULT_SHORTCUTS_WINDOWS: Record<KeyboardShortcutActionId, string>
 export const getDefaultShortcut = (platform: ShortcutPlatform, actionId: KeyboardShortcutActionId): string => {
   return platform === 'mac' ? DEFAULT_SHORTCUTS_MAC[actionId] : DEFAULT_SHORTCUTS_WINDOWS[actionId];
 };
-

@@ -1060,6 +1060,14 @@ export const dockWorkspaceItemToWindow = async (
   void targetWin.setFocus().catch(() => {});
 };
 
+export const focusMainWindow = async (): Promise<boolean> => {
+  if (!isTauri()) return false;
+  const mainWin = await WebviewWindow.getByLabel('main').catch(() => null);
+  if (!mainWin) return false;
+  await ensureWindowVisible(mainWin);
+  return true;
+};
+
 export const closeCurrentWindow = async () => {
   try {
     if (!isTauri()) {
