@@ -65,13 +65,21 @@ type TabViewModel =
       workdir?: string | null;
     };
 
-const SortableTab: React.FC<{
+type SortableTabProps = {
   tab: TabViewModel;
   isActive: boolean;
   pinnedWhileDragging?: boolean;
-  onSelect: () => void;
-  onContextMenu: (e: React.MouseEvent<HTMLDivElement>) => void;
-}> = ({ tab, isActive, pinnedWhileDragging, onSelect, onContextMenu }) => {
+  onSelect: (tabId: WorkspaceTabId) => void;
+  onContextMenu: (tabId: WorkspaceTabId, event: React.MouseEvent<HTMLDivElement>) => void;
+};
+
+const SortableTabBase: React.FC<SortableTabProps> = ({
+  tab,
+  isActive,
+  pinnedWhileDragging,
+  onSelect,
+  onContextMenu,
+}) => {
   const [isRenaming, setIsRenaming] = useState(false);
   const [draftTitle, setDraftTitle] = useState(tab.title);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
@@ -143,12 +151,12 @@ const SortableTab: React.FC<{
       ref={setNodeRef}
       style={style}
       data-workspace-tab-id={tab.id}
-      onClick={onSelect}
-      onContextMenu={onContextMenu}
+      onClick={() => onSelect(tab.id)}
+      onContextMenu={(event) => onContextMenu(tab.id, event)}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
-          onSelect();
+          onSelect(tab.id);
         }
       }}
       className={[
@@ -212,6 +220,17 @@ const SortableTab: React.FC<{
     </div>
   );
 };
+
+const SortableTab = React.memo(
+  SortableTabBase,
+  (prev, next) =>
+    prev.tab === next.tab &&
+    prev.isActive === next.isActive &&
+    prev.pinnedWhileDragging === next.pinnedWhileDragging &&
+    prev.onSelect === next.onSelect &&
+    prev.onContextMenu === next.onContextMenu
+);
+SortableTab.displayName = 'SortableTab';
 
 export const WindowPaneHeader: React.FC<WindowPaneHeaderProps> = ({
   paneId,
@@ -353,6 +372,54 @@ export const WindowPaneHeader: React.FC<WindowPaneHeaderProps> = ({
 
   const closeTabContextMenu = () => setTabContextMenu(null);
 
+  const handleSelectTab = useCallback(
+    (tabId: WorkspaceTabId) => {
+      onSelectTab(tabId);
+    },
+    [onSelectTab]
+  );
+
+  const handleOpenTabContextMenu = useCallback(
+    (tabId: WorkspaceTabId, event: React.MouseEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setTabContextMenu({
+        visible: true,
+        position: { x: event.clientX, y: event.clientY },
+        targetId: tabId,
+        anchorEl: event.currentTarget,
+      });
+    },
+    []
+  );
+
+  const tabContextTarget = useMemo(() => {
+    if (!tabContextMenu) return null;
+    return items.find((t) => t.id === tabContextMenu.targetId) ?? null;
+  }, [items, tabContextMenu?.targetId]);
+
+  const canDockContextTarget = Boolean(
+    tabContextTarget?.kind === 'chat' &&
+      !tabContextTarget.session.isGenerating &&
+      Boolean(tabContextTarget.session.conversationId)
+  );
+
+  const canOpenContextTargetInNewWindow = (() => {
+    if (!tabContextTarget) return false;
+    if (tabContextTarget.kind === 'chat') {
+      return !tabContextTarget.session.isGenerating && Boolean(tabContextTarget.session.conversationId);
+    }
+    if (tabContextTarget.kind === 'document') return Boolean(tabContextTarget.path);
+    return true;
+  })();
+
+  const handleDockContextTarget = useCallback(() => {
+    if (!tabContextTarget || tabContextTarget.kind !== 'chat') return;
+    const anchor = tabContextMenu?.anchorEl;
+    if (!anchor) return;
+    void openDockMenu(tabContextTarget.session, anchor);
+  }, [openDockMenu, tabContextMenu?.anchorEl, tabContextTarget]);
+
   const closeTabsInCurrentPane = useCallback(
     async (ids: WorkspaceTabId[]) => {
       for (const id of ids) {
@@ -476,17 +543,8 @@ export const WindowPaneHeader: React.FC<WindowPaneHeaderProps> = ({
               tab={t}
               isActive={t.id === activeTabId}
               pinnedWhileDragging={Boolean(pinnedTabId && pinnedTabId === t.id)}
-              onSelect={() => onSelectTab(t.id)}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setTabContextMenu({
-                  visible: true,
-                  position: { x: e.clientX, y: e.clientY },
-                  targetId: t.id,
-                  anchorEl: e.currentTarget,
-                });
-              }}
+              onSelect={handleSelectTab}
+              onContextMenu={handleOpenTabContextMenu}
             />
           ))}
         </SortableContext>
@@ -583,28 +641,9 @@ export const WindowPaneHeader: React.FC<WindowPaneHeaderProps> = ({
           position={tabContextMenu.position}
           tabIds={tabIds}
           targetId={tabContextMenu.targetId}
-          canDockToOtherWindow={(() => {
-            const target = items.find((t) => t.id === tabContextMenu.targetId) ?? null;
-            return Boolean(
-              target?.kind === 'chat' && !target.session.isGenerating && Boolean(target.session.conversationId)
-            );
-          })()}
-          onDockToOtherWindow={(() => {
-            const target = items.find((t) => t.id === tabContextMenu.targetId) ?? null;
-            if (!target || target.kind !== 'chat') return undefined;
-            return () => {
-              const anchor = tabContextMenu.anchorEl;
-              if (!anchor) return;
-              void openDockMenu(target.session, anchor);
-            };
-          })()}
-          canOpenInNewWindow={(() => {
-            const target = items.find((t) => t.id === tabContextMenu.targetId) ?? null;
-            if (!target) return false;
-            if (target.kind === 'chat') return !target.session.isGenerating && Boolean(target.session.conversationId);
-            if (target.kind === 'document') return Boolean(target.path);
-            return true;
-          })()}
+          canDockToOtherWindow={canDockContextTarget}
+          onDockToOtherWindow={tabContextTarget?.kind === 'chat' ? handleDockContextTarget : undefined}
+          canOpenInNewWindow={canOpenContextTargetInNewWindow}
           onOpenInNewWindow={() => void popoutTab(tabContextMenu.targetId)}
           onCloseCurrent={() => void onCloseTab(tabContextMenu.targetId)}
           onCloseOthers={() => {
