@@ -10,9 +10,10 @@ import { useSessionStore } from '../stores/sessionStore';
 import { useConfigStore } from '../stores/configStore';
 import { useUIStore } from '../stores/uiStore';
 import { markChatOpenProfile, startChatOpenProfile } from '../utils/chatOpenProfile';
+import { openOrFocusWorkstudioWindow } from '../utils/viewWindow';
 import { detectShortcutPlatform, eventToKeybindingString, isEditableElement, normalizeKeybindingString } from '../shortcuts';
 import { SHORTCUT_ACTIONS } from '../shortcuts/registry';
-import type { AgentSession, AppConfig } from '../types';
+import type { AgentSession, AppConfig, Workstudio } from '../types';
 
 interface KeyboardShortcutsOptions {
   /** Whether shortcuts are enabled */
@@ -280,6 +281,28 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
     }
   }, []);
 
+  const openWorkstudioFromActiveSession = useCallback(async (): Promise<boolean> => {
+    if (!isTauri()) return false;
+    const state = useSessionStore.getState();
+    const activeSessionId = state.activeSessionId;
+    if (!activeSessionId) return false;
+    const activeSession = state.sessions.get(activeSessionId);
+    const conversationId = activeSession?.conversationId;
+    if (!conversationId) return false;
+
+    try {
+      const ws = await invoke<Workstudio>('ensure_workstudio_for_conversation', { conversationId });
+      await openOrFocusWorkstudioWindow(`Workstudio: ${ws.mainFolder}`, {
+        workstudioId: ws.id,
+        mainFolder: ws.mainFolder,
+      });
+      return true;
+    } catch (error) {
+      console.error('Failed to open workstudio from shortcut:', error);
+      return false;
+    }
+  }, []);
+
   const executeAction = useCallback(
     async (actionId: string): Promise<boolean> => {
       switch (actionId) {
@@ -350,9 +373,13 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
           return true;
         }
         case 'chat.openWorkstudio': {
-          if (useUIStore.getState().activeView !== 'chat') return false;
-          dispatchShortcutEvent(actionId);
-          return true;
+          const activeView = useUIStore.getState().activeView;
+          if (activeView === 'workstudio') return false;
+          if (activeView === 'chat') {
+            dispatchShortcutEvent(actionId);
+            return true;
+          }
+          return openWorkstudioFromActiveSession();
         }
         case 'workstudio.fileSearch': {
           if (useUIStore.getState().activeView !== 'workstudio') return false;
@@ -406,6 +433,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
       handleCreateSession,
       handleNextSession,
       handlePreviousSession,
+      openWorkstudioFromActiveSession,
     ]
   );
 
@@ -498,7 +526,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
         case 'chat.toggleOutline':
           return useUIStore.getState().activeView === 'chat';
         case 'chat.openWorkstudio':
-          return useUIStore.getState().activeView === 'chat';
+          return useUIStore.getState().activeView !== 'workstudio';
         default:
           return true;
       }

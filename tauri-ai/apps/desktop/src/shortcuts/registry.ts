@@ -97,7 +97,7 @@ export const SHORTCUT_ACTIONS: ShortcutActionDefinition[] = [
   {
     id: 'chat.openWorkstudio',
     title: '打开 Workstudio',
-    description: '在聊天中打开/聚焦当前会话的 Workstudio（需要该会话启用 workspace）',
+    description: '在主窗口打开/聚焦当前会话的 Workstudio（聊天视图直接打开，其他视图自动按当前会话打开）',
     category: 'Chat',
     defaultMac: 'Cmd+W',
     defaultWindows: 'Ctrl+W',
