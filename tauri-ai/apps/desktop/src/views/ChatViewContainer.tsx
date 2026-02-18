@@ -128,7 +128,10 @@ const WindowPaneView: React.FC<{
         isFocused ? 'outline outline-1 outline-blue-500/30' : 'outline outline-1 outline-transparent',
       ].join(' ')}
       style={{ flex: `${pane.weight} 1 0px`, minWidth: 0 }}
-      onPointerDownCapture={onFocus}
+      onPointerDownCapture={(event) => {
+        if (event.button !== 0) return;
+        onFocus();
+      }}
     >
       <WindowPaneHeader
         paneId={pane.id}

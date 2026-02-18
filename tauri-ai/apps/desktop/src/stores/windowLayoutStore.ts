@@ -15,6 +15,9 @@ export interface WindowPane {
 const STORAGE_KEY_PREFIX = 'tauri-ai:window-layout:v2';
 const LEGACY_STORAGE_KEY = 'tauri-ai:workspace-layout:v2';
 const LEGACY_GLOBAL_STORAGE_KEY = 'tauri-ai:workspace-layout:v1';
+const FOCUSED_PANE_PERSIST_DEBOUNCE_MS = 120;
+
+let focusedPanePersistTimeout: ReturnType<typeof setTimeout> | null = null;
 
 const getStorageKey = (): string => getWindowScopedStorageKey(STORAGE_KEY_PREFIX);
 
@@ -175,6 +178,17 @@ const persistLayout = (next: { panes: WindowPane[]; focusedPaneId: string | null
   }
 };
 
+const scheduleFocusedPanePersist = (readLayout: () => { panes: WindowPane[]; focusedPaneId: string | null }) => {
+  if (typeof window === 'undefined') return;
+  if (focusedPanePersistTimeout !== null) {
+    window.clearTimeout(focusedPanePersistTimeout);
+  }
+  focusedPanePersistTimeout = window.setTimeout(() => {
+    focusedPanePersistTimeout = null;
+    persistLayout(readLayout());
+  }, FOCUSED_PANE_PERSIST_DEBOUNCE_MS);
+};
+
 const findPaneIndexByTabId = (panes: WindowPane[], tabId: WindowTabId): number => {
   return panes.findIndex((p) => p.tabIds.includes(tabId));
 };
@@ -204,8 +218,12 @@ export const useWindowLayoutStore = create<WindowLayoutState>((set, get) => {
     focusedPaneId: initial.focusedPaneId,
 
     setFocusedPane: (paneId) => {
+      if (get().focusedPaneId === paneId) return;
       set({ focusedPaneId: paneId });
-      persistLayout({ panes: get().panes, focusedPaneId: paneId });
+      scheduleFocusedPanePersist(() => {
+        const state = get();
+        return { panes: state.panes, focusedPaneId: state.focusedPaneId };
+      });
     },
 
     setActiveTabInPane: (paneId, tabId) => {

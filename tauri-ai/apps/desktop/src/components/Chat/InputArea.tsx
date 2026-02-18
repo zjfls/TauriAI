@@ -2202,7 +2202,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
    * 
    * Validation:
    * - Prevents sending if input is empty/whitespace-only AND no attachments
-   * - Prevents sending if disabled or currently generating
+   * - Prevents sending if disabled
    * 
    * Content building:
    * - Trims whitespace from text content
@@ -2229,7 +2229,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
       pendingTextFiles.length > 0 ||
       pendingPdfs.length > 0 ||
       hasWorkspaceMentionTokens(content);
-    if ((isWhitespaceOnly(content) && !hasAttachments) || disabled || isGenerating) {
+    if ((isWhitespaceOnly(content) && !hasAttachments) || disabled) {
       return;
     }
 
@@ -2306,7 +2306,6 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
     workspaceMentions,
     workspaceRoots,
     disabled,
-    isGenerating,
     onSend,
     supportsThinking,
     thinkingMode,
@@ -3253,7 +3252,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
                 autoComplete="off"
                 spellCheck={false}
                 placeholder={supportsVision ? "输入消息，或粘贴/拖拽图片、文本文件和 PDF..." : "输入消息，或粘贴/拖拽文本文件和 PDF..."}
-                disabled={disabled || isGenerating}
+                disabled={disabled}
                 rows={1}
                 aria-label="消息输入框"
                 className="relative z-10 w-full resize-none bg-transparent px-2 py-0 text-transparent caret-gray-900 placeholder-gray-500 focus:outline-none dark:caret-gray-100 dark:placeholder-gray-400 disabled:cursor-not-allowed disabled:opacity-50"
@@ -3262,30 +3261,29 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
             </div>
           </div>
         </div>
-        {isGenerating ? (
-          // Requirement 4.5: Show loading indicator when generating
-          <button
-            type="button"
-            onClick={handleAbort}
-            className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-red-500 text-white transition-colors hover:bg-red-600 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2"
-            title="停止生成"
-            aria-label="停止生成"
-          >
-            <Square size={18} />
-          </button>
-        ) : (
-          // Requirement 4.5: Disable send button when generating
+        <div className="flex flex-shrink-0 items-center gap-2">
+          {isGenerating ? (
+            <button
+              type="button"
+              onClick={handleAbort}
+              className="flex h-10 w-10 items-center justify-center rounded-lg bg-red-500 text-white transition-colors hover:bg-red-600 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2"
+              title="停止生成"
+              aria-label="停止生成"
+            >
+              <Square size={18} />
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={handleSend}
             disabled={isSendDisabled}
-            className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-blue-500 text-white transition-colors hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-blue-500"
-            title="发送消息"
-            aria-label="发送消息"
+            className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-500 text-white transition-colors hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-blue-500"
+            title={isGenerating ? '加入队列' : '发送消息'}
+            aria-label={isGenerating ? '加入队列' : '发送消息'}
           >
             <Send size={18} />
           </button>
-        )}
+        </div>
       </div>
 
       {/* Attachment menu + extra actions */}

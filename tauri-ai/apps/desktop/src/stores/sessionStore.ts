@@ -296,6 +296,83 @@ let pendingUndoOperation: Promise<any> = Promise.resolve();
 // 撤回/删除属于“强一致性操作”：需要忽略当前正在进行的流式 run 的 done/error，避免 UI/状态被回写。
 const discardNextFinalizeByConversationId = new Set<string>();
 
+type QueuedMessagePayload = {
+  content: string;
+  thinking?: boolean | string;
+  images?: ContentPart[];
+};
+
+const queuedMessagesBySessionId = new Map<string, QueuedMessagePayload[]>();
+const drainingQueuedSessions = new Set<string>();
+
+const enqueueQueuedMessage = (
+  sessionId: string,
+  content: string,
+  thinking?: boolean | string,
+  images?: ContentPart[]
+) => {
+  const queue = queuedMessagesBySessionId.get(sessionId) ?? [];
+  queue.push({
+    content,
+    thinking,
+    images: images ? [...images] : undefined,
+  });
+  queuedMessagesBySessionId.set(sessionId, queue);
+};
+
+const shiftQueuedMessage = (sessionId: string): QueuedMessagePayload | undefined => {
+  const queue = queuedMessagesBySessionId.get(sessionId);
+  if (!queue || queue.length === 0) return undefined;
+  const next = queue.shift();
+  if (queue.length === 0) {
+    queuedMessagesBySessionId.delete(sessionId);
+  }
+  return next;
+};
+
+const clearQueuedMessagesForSession = (sessionId: string) => {
+  queuedMessagesBySessionId.delete(sessionId);
+  drainingQueuedSessions.delete(sessionId);
+};
+
+const drainQueuedMessages = async (sessionId: string): Promise<void> => {
+  if (drainingQueuedSessions.has(sessionId)) return;
+  drainingQueuedSessions.add(sessionId);
+
+  try {
+    while (true) {
+      const state = useSessionStore.getState();
+      const session = state.sessions.get(sessionId);
+      if (!session) {
+        clearQueuedMessagesForSession(sessionId);
+        return;
+      }
+
+      if (session.isGenerating) {
+        return;
+      }
+
+      const nextQueuedMessage = shiftQueuedMessage(sessionId);
+      if (!nextQueuedMessage) {
+        return;
+      }
+
+      try {
+        await state.sendMessage(
+          sessionId,
+          nextQueuedMessage.content,
+          nextQueuedMessage.thinking,
+          nextQueuedMessage.images
+        );
+      } catch (error) {
+        console.error('Failed to send queued message:', error);
+      }
+    }
+  } finally {
+    drainingQueuedSessions.delete(sessionId);
+  }
+};
+
 export const useSessionStore = create<SessionState>((set, get) => ({
   sessions: new Map<string, AgentSession>(),
   activeSessionId: null,
@@ -476,6 +553,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const session = sessions.get(sessionId);
 
     if (!session) return;
+    clearQueuedMessagesForSession(sessionId);
 
     // Remove session from state
     set((state) => {
@@ -675,6 +753,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (paneIndex < 0) return;
 
     const toClose = panes[paneIndex]!.sessionIds.filter((id) => id !== keepSessionId);
+    for (const id of toClose) clearQueuedMessagesForSession(id);
 
     set((state) => {
       const newSessions = new Map(state.sessions);
@@ -728,6 +807,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (targetIndex <= 0) return;
 
     const toClose = pane.sessionIds.slice(0, targetIndex);
+    for (const id of toClose) clearQueuedMessagesForSession(id);
 
     set((state) => {
       const newSessions = new Map(state.sessions);
@@ -787,6 +867,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (targetIndex < 0 || targetIndex >= pane.sessionIds.length - 1) return;
 
     const toClose = pane.sessionIds.slice(targetIndex + 1);
+    for (const id of toClose) clearQueuedMessagesForSession(id);
 
     set((state) => {
       const newSessions = new Map(state.sessions);
@@ -1106,6 +1187,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       throw new Error('Session has no conversation');
     }
 
+    if (session.isGenerating) {
+      enqueueQueuedMessage(sessionId, content, thinking, images);
+      return;
+    }
+
     // 新一轮发送开始：确保不会被“上一次撤回”的 discard 标记误伤
     discardNextFinalizeByConversationId.delete(session.conversationId);
 
@@ -1169,6 +1255,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       });
     } catch (err) {
       get().handleError(sessionId, (err as any).message || String(err));
+    } finally {
+      void drainQueuedMessages(sessionId);
     }
   },
 
@@ -1202,6 +1290,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       clearTurnIndexesForSession(sessionId);
     } catch (error) {
       console.error('Failed to abort generation:', error);
+    } finally {
+      void drainQueuedMessages(sessionId);
     }
   },
 
@@ -1664,6 +1754,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         get().generateTitle(sessionId);
       }
     }
+    void drainQueuedMessages(sessionId);
   },
 
   /**
@@ -1830,6 +1921,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
 
     clearTurnIndexesForSession(sessionId);
+    void drainQueuedMessages(sessionId);
   },
 
   /**

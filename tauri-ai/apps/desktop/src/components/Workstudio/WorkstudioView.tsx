@@ -181,11 +181,58 @@ const languageForPath = (path: string) => {
 const AUTO_DETECT_LSP_LANGUAGES = ['rust', 'python', 'cpp', 'c', 'lua'] as const;
 const isAutoDetectableLspLanguage = (languageId: string) =>
   AUTO_DETECT_LSP_LANGUAGES.includes(languageId as (typeof AUTO_DETECT_LSP_LANGUAGES)[number]);
+const AUTO_DETECT_LSP_FILE_QUERIES: Record<string, string[]> = {
+  rust: ['.rs', 'cargo.toml'],
+  python: ['.py', 'pyproject.toml', 'requirements.txt'],
+  cpp: ['.cpp', '.cc', '.cxx', '.hpp', '.hh', '.hxx', '.ixx', '.cppm'],
+  c: ['.c'],
+  lua: ['.lua'],
+};
+
+const escapeCssSelectorValue = (value: string): string => {
+  const cssAny = (globalThis as any).CSS;
+  if (cssAny && typeof cssAny.escape === 'function') return cssAny.escape(value);
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+};
 
 const basename = (p: string) => {
   const normalized = p.replace(/\\/g, '/');
   const segments = normalized.split('/').filter(Boolean);
   return segments.length === 0 ? p : segments[segments.length - 1];
+};
+
+const isAutoDetectMatchForLanguage = (languageId: string, filePath: string): boolean => {
+  const lower = String(filePath ?? '').toLowerCase();
+  if (!lower) return false;
+  const name = basename(lower);
+  switch (languageId) {
+    case 'rust':
+      return lower.endsWith('.rs') || name === 'cargo.toml';
+    case 'python':
+      return (
+        lower.endsWith('.py') ||
+        name === 'pyproject.toml' ||
+        name === 'requirements.txt' ||
+        name === 'setup.py'
+      );
+    case 'cpp':
+      return (
+        lower.endsWith('.cc') ||
+        lower.endsWith('.cpp') ||
+        lower.endsWith('.cxx') ||
+        lower.endsWith('.hpp') ||
+        lower.endsWith('.hh') ||
+        lower.endsWith('.hxx') ||
+        lower.endsWith('.ixx') ||
+        lower.endsWith('.cppm')
+      );
+    case 'c':
+      return lower.endsWith('.c');
+    case 'lua':
+      return lower.endsWith('.lua');
+    default:
+      return false;
+  }
 };
 
 const UNTITLED_PREFIX = 'untitled:';
@@ -523,9 +570,45 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     | { visible: true; x: number; y: number }
     | null
   >(null);
-  // Workstudio-scoped language filter for code intelligence (null => auto/all configured languages).
+  // Workstudio-scoped language filter for code intelligence:
+  // - null: 自动（按项目文件检测）
+  // - string[]: 手动指定启用语言
   const [wsEnabledLspLanguageIds, setWsEnabledLspLanguageIds] = useState<string[] | null>(null);
+  const [projectScannedLspLanguageIds, setProjectScannedLspLanguageIds] = useState<string[]>([]);
+  const openedAutoDetectableLspLanguageIds = useMemo(() => {
+    const set = new Set<string>();
+    for (const file of openFiles) {
+      const lang = languageForPath(file.path);
+      if (!isAutoDetectableLspLanguage(lang)) continue;
+      set.add(lang);
+    }
+    const out = Array.from(set);
+    out.sort((a, b) => a.localeCompare(b));
+    return out;
+  }, [openFiles]);
+  const projectAutoDetectedLspLanguageIds = useMemo(() => {
+    const set = new Set<string>();
+    for (const lang of projectScannedLspLanguageIds) {
+      const normalized = String(lang ?? '').trim();
+      if (!normalized) continue;
+      set.add(normalized);
+    }
+    for (const lang of openedAutoDetectableLspLanguageIds) {
+      const normalized = String(lang ?? '').trim();
+      if (!normalized) continue;
+      set.add(normalized);
+    }
+    const out = Array.from(set);
+    out.sort((a, b) => a.localeCompare(b));
+    return out;
+  }, [openedAutoDetectableLspLanguageIds, projectScannedLspLanguageIds]);
+  const projectAutoDetectedLspLanguageFingerprint = useMemo(
+    () => projectAutoDetectedLspLanguageIds.join('|'),
+    [projectAutoDetectedLspLanguageIds]
+  );
+
   const wsEnabledLspLanguageSetRef = useRef<Set<string> | null>(null);
+  const projectAutoDetectedLspLanguageSetRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (wsEnabledLspLanguageIds === null) {
       wsEnabledLspLanguageSetRef.current = null;
@@ -535,12 +618,17 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       wsEnabledLspLanguageIds.map((x) => String(x ?? '').trim()).filter((x) => Boolean(x))
     );
   }, [wsEnabledLspLanguageIds]);
+  useEffect(() => {
+    projectAutoDetectedLspLanguageSetRef.current = new Set(
+      projectAutoDetectedLspLanguageIds.map((x) => String(x ?? '').trim()).filter((x) => Boolean(x))
+    );
+  }, [projectAutoDetectedLspLanguageIds]);
 
   const isLspLanguageEnabledForWorkstudio = useCallback((languageId: string) => {
     const lang = String(languageId ?? '').trim();
     if (!lang) return false;
     const set = wsEnabledLspLanguageSetRef.current;
-    if (!set) return true; // auto
+    if (!set) return projectAutoDetectedLspLanguageSetRef.current.has(lang); // auto
     return set.has(lang);
   }, []);
   const [lspStatuses, setLspStatuses] = useState<LspServerStatus[]>([]);
@@ -2217,12 +2305,69 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     out.sort((a, b) => a.localeCompare(b));
     return Array.from(new Set(out));
   }, [lspMenuServers]);
+  const configuredAutoDetectableLspLanguageIds = useMemo(
+    () => configuredLspLanguageIds.filter((lang) => isAutoDetectableLspLanguage(lang)),
+    [configuredLspLanguageIds]
+  );
+  const configuredAutoDetectableLspLanguageFingerprint = useMemo(
+    () => configuredAutoDetectableLspLanguageIds.join('|'),
+    [configuredAutoDetectableLspLanguageIds]
+  );
+
+  // 自动模式：根据当前项目文件判断需要启用的语言，避免把全局所有语言都在该工作区启动。
+  useEffect(() => {
+    const wsId = ws?.id ?? null;
+    if (!isTauri() || !wsId || !codeIntelligenceConfig?.enabled) {
+      setProjectScannedLspLanguageIds([]);
+      return;
+    }
+    if (configuredAutoDetectableLspLanguageIds.length === 0) {
+      setProjectScannedLspLanguageIds([]);
+      return;
+    }
+
+    let disposed = false;
+    void (async () => {
+      const found = new Set<string>();
+      for (const lang of configuredAutoDetectableLspLanguageIds) {
+        if (disposed) return;
+        const queries = AUTO_DETECT_LSP_FILE_QUERIES[lang] ?? [];
+        if (queries.length === 0) continue;
+        for (const query of queries) {
+          if (disposed) return;
+          try {
+            const matches = await invoke<string[]>('workstudio_find_files', {
+              args: { workstudioId: wsId, query, limit: 80 },
+            });
+            if (Array.isArray(matches) && matches.some((path) => isAutoDetectMatchForLanguage(lang, path))) {
+              found.add(lang);
+              break;
+            }
+          } catch {
+            // ignore
+          }
+        }
+      }
+      if (disposed) return;
+      const out = Array.from(found);
+      out.sort((a, b) => a.localeCompare(b));
+      setProjectScannedLspLanguageIds(out);
+    })();
+
+    return () => {
+      disposed = true;
+    };
+  }, [ws?.id, codeIntelligenceConfig?.enabled, configuredAutoDetectableLspLanguageFingerprint]);
+  const autoSelectedLspLanguageIds = useMemo(() => {
+    const allow = new Set(projectAutoDetectedLspLanguageIds.map((x) => String(x ?? '').trim()).filter((x) => Boolean(x)));
+    return configuredLspLanguageIds.filter((lang) => allow.has(lang));
+  }, [configuredLspLanguageIds, projectAutoDetectedLspLanguageIds]);
 
   const wsSelectedLspLanguageIds = useMemo(() => {
-    if (wsEnabledLspLanguageIds === null) return configuredLspLanguageIds;
+    if (wsEnabledLspLanguageIds === null) return autoSelectedLspLanguageIds;
     const allow = new Set(wsEnabledLspLanguageIds.map((x) => String(x ?? '').trim()).filter((x) => Boolean(x)));
     return configuredLspLanguageIds.filter((lang) => allow.has(lang));
-  }, [configuredLspLanguageIds, wsEnabledLspLanguageIds]);
+  }, [autoSelectedLspLanguageIds, configuredLspLanguageIds, wsEnabledLspLanguageIds]);
   const wsSelectedLspLanguageIdSet = useMemo(() => new Set(wsSelectedLspLanguageIds), [wsSelectedLspLanguageIds]);
 
   const globallyEnabledLspLanguageIds = useMemo(() => {
@@ -2242,10 +2387,13 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   }, [codeIntelligenceConfig?.enabled, codeIntelligenceConfig?.lspServers]);
 
   const enabledLspLanguageIds = useMemo(() => {
-    if (wsEnabledLspLanguageIds === null) return globallyEnabledLspLanguageIds;
+    if (wsEnabledLspLanguageIds === null) {
+      const allow = new Set(projectAutoDetectedLspLanguageIds.map((x) => String(x ?? '').trim()).filter((x) => Boolean(x)));
+      return globallyEnabledLspLanguageIds.filter((lang) => allow.has(lang));
+    }
     const allow = new Set(wsEnabledLspLanguageIds.map((x) => String(x ?? '').trim()).filter((x) => Boolean(x)));
     return globallyEnabledLspLanguageIds.filter((lang) => allow.has(lang));
-  }, [globallyEnabledLspLanguageIds, wsEnabledLspLanguageIds]);
+  }, [globallyEnabledLspLanguageIds, projectAutoDetectedLspLanguageIds, wsEnabledLspLanguageIds]);
 
   const getLanguageProgressText = useCallback(
     (languageId: string) => {
@@ -2493,7 +2641,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
   const restoreWorkstudioLspLanguageAuto = useCallback(() => {
     setWsEnabledLspLanguageIds(null);
-    showNavToast('已恢复自动语言（使用全局配置）');
+    showNavToast('已恢复自动语言（按项目文件自动启用）');
   }, [showNavToast]);
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
@@ -2515,6 +2663,71 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     },
     []
   );
+
+  const paneTabSelectionFingerprint = useMemo(
+    () =>
+      resolvedPanes
+        .map((pane) => `${pane.id}:${pane.activeTabId ?? ''}:${pane.tabIds.join(',')}`)
+        .join('|'),
+    [resolvedPanes]
+  );
+
+  const scrollActiveTabIntoView = useCallback(() => {
+    for (const pane of resolvedPanes) {
+      const activeTabId =
+        pane.activeTabId && pane.tabIds.includes(pane.activeTabId)
+          ? pane.activeTabId
+          : pane.tabIds[0] ?? null;
+      if (!activeTabId) continue;
+      const stripEl = paneTabStripRefs.current.get(pane.id);
+      if (!stripEl) continue;
+      const selector = `[data-workstudio-tab-id="${escapeCssSelectorValue(activeTabId)}"]`;
+      const tabEl = stripEl.querySelector(selector) as HTMLElement | null;
+      if (!tabEl) continue;
+      const stripRect = stripEl.getBoundingClientRect();
+      const tabRect = tabEl.getBoundingClientRect();
+      const outLeft = tabRect.left < stripRect.left + 2;
+      const outRight = tabRect.right > stripRect.right - 2;
+      if (!outLeft && !outRight) continue;
+      try {
+        tabEl.scrollIntoView({ inline: 'nearest', block: 'nearest' });
+      } catch {
+        // ignore
+      }
+    }
+  }, [resolvedPanes]);
+
+  useEffect(() => {
+    let disposed = false;
+    let attempts = 8;
+    const tick = () => {
+      if (disposed) return;
+      scrollActiveTabIntoView();
+      let hasMissingDom = false;
+      for (const pane of resolvedPanes) {
+        const activeTabId =
+          pane.activeTabId && pane.tabIds.includes(pane.activeTabId)
+            ? pane.activeTabId
+            : pane.tabIds[0] ?? null;
+        if (!activeTabId) continue;
+        const stripEl = paneTabStripRefs.current.get(pane.id);
+        if (!stripEl) {
+          hasMissingDom = true;
+          continue;
+        }
+        const selector = `[data-workstudio-tab-id="${escapeCssSelectorValue(activeTabId)}"]`;
+        if (!stripEl.querySelector(selector)) hasMissingDom = true;
+      }
+      attempts -= 1;
+      if (hasMissingDom && attempts > 0) {
+        window.setTimeout(tick, 60);
+      }
+    };
+    window.requestAnimationFrame(tick);
+    return () => {
+      disposed = true;
+    };
+  }, [paneTabSelectionFingerprint, resolvedPanes, scrollActiveTabIntoView]);
 
   const registerPaneBodyRef = useCallback(
     (paneId: string) => (el: HTMLDivElement | null) => {
@@ -3532,6 +3745,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     lspListenerReadyWsId,
     lspAutoConfigStatus,
     wsEnabledLspLanguageIds,
+    projectAutoDetectedLspLanguageFingerprint,
     codeIntelligenceConfig?.enabled,
     lspConfigFingerprint,
     isLspLanguageEnabledForWorkstudio,
@@ -4439,7 +4653,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                           type="button"
                           className="rounded border border-gray-200 px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
                           onClick={restoreWorkstudioLspLanguageAuto}
-                          title="恢复自动：使用全局 Code Intelligence 配置"
+                          title="恢复自动：按项目文件自动启用语言"
                         >
                           恢复自动
                         </button>
@@ -4464,7 +4678,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                     </div>
 
                     <div className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
-                      {wsEnabledLspLanguageIds === null ? '当前：自动（使用全局配置）' : '当前：自定义（仅启用勾选语言）'}
+                      {wsEnabledLspLanguageIds === null ? '当前：自动（按项目文件检测）' : '当前：自定义（仅启用勾选语言）'}
                     </div>
                   </div>
                 )}
