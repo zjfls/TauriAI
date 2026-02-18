@@ -9,8 +9,8 @@ use tokio::sync::mpsc;
 
 use super::content_converter::{content_parts_to_blocks_with_limit, parse_data_url, ContentBlock};
 use super::traits::{
-    AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent, TokenUsage,
-    ToolCall, ToolDefinition,
+    AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent,
+    StreamTerminationInfo, StreamTerminationSource, TokenUsage, ToolCall, ToolDefinition,
 };
 use super::utf8_stream::Utf8StreamDecoder;
 use crate::models::{Message, MessageRole, ModelConfig};
@@ -779,6 +779,7 @@ impl AiClient for GoogleClient {
         let mut full_grounding: Option<GroundingMetadata> = None;
         let mut stream = response.bytes_stream();
         let mut token_usage: Option<TokenUsage> = None;
+        let mut chunk_count: u32 = 0;
         // SSE 可能跨 chunk 切分；用行缓冲拼接，避免 JSON 被拆开后无法解析、导致 thinking/text 丢失。
         let mut tool_calls: Vec<ToolCall> = Vec::new();
         let mut tool_calls_to_emit: Option<Vec<ToolCall>> = None;
@@ -788,6 +789,7 @@ impl AiClient for GoogleClient {
         'stream: while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result.map_err(|e| AiError::StreamError(e.to_string()))?;
             let chunk_str = utf8.push(&chunk);
+            chunk_count = chunk_count.saturating_add(1);
 
             sse_buffer.push_str(&chunk_str);
 
@@ -949,6 +951,15 @@ impl AiClient for GoogleClient {
                         "thoughtsTokenCount": u.reasoning_tokens
                     }))
                 }),
+            }),
+            stream_termination: Some(StreamTerminationInfo {
+                protocol_complete: None,
+                termination_source: Some(StreamTerminationSource::Unknown),
+                protocol_kind: Some("sse_json_chunk".to_string()),
+                expected_signal: None,
+                observed_signal: None,
+                last_event_type: None,
+                chunk_count: Some(chunk_count),
             }),
         };
 

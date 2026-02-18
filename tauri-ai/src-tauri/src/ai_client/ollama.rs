@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 
 use super::traits::{
     AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent,
-    ToolDefinition,
+    StreamTerminationInfo, StreamTerminationSource, ToolDefinition,
 };
 use super::utf8_stream::Utf8StreamDecoder;
 use crate::models::{Message, MessageRole, ModelConfig};
@@ -237,6 +237,15 @@ impl AiClient for OllamaClient {
                     body: serde_json::from_str(&error_text)
                         .unwrap_or(serde_json::Value::String(error_text.clone())),
                 }),
+                stream_termination: Some(StreamTerminationInfo {
+                    protocol_complete: Some(false),
+                    termination_source: Some(StreamTerminationSource::HttpError),
+                    protocol_kind: Some("ndjson_field".to_string()),
+                    expected_signal: Some("done=true".to_string()),
+                    observed_signal: None,
+                    last_event_type: None,
+                    chunk_count: Some(0),
+                }),
             };
 
             if let Ok(error_response) = serde_json::from_str::<OllamaErrorResponse>(&error_text) {
@@ -272,10 +281,12 @@ impl AiClient for OllamaClient {
         // Ollama 返回的是 NDJSON；同样可能在任意字节边界切片，需做行缓冲避免 JSON 被拆分。
         let mut line_buffer = String::new();
         let mut utf8 = Utf8StreamDecoder::default();
+        let mut chunk_count: u32 = 0;
 
         while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result.map_err(|e| AiError::StreamError(e.to_string()))?;
             let chunk_str = utf8.push(&chunk);
+            chunk_count = chunk_count.saturating_add(1);
             line_buffer.push_str(&chunk_str);
 
             // Ollama sends newline-delimited JSON
@@ -312,6 +323,15 @@ impl AiClient for OllamaClient {
                                     "done": true,
                                     "thinking": serde_json::Value::Null
                                 }),
+                            }),
+                            stream_termination: Some(StreamTerminationInfo {
+                                protocol_complete: Some(true),
+                                termination_source: Some(StreamTerminationSource::ProtocolSignal),
+                                protocol_kind: Some("ndjson_field".to_string()),
+                                expected_signal: Some("done=true".to_string()),
+                                observed_signal: Some("done=true".to_string()),
+                                last_event_type: Some("done".to_string()),
+                                chunk_count: Some(chunk_count),
                             }),
                         };
 
@@ -358,6 +378,15 @@ impl AiClient for OllamaClient {
                         "note": "NDJSON stream ended without an explicit done=true line"
                     }
                 }),
+            }),
+            stream_termination: Some(StreamTerminationInfo {
+                protocol_complete: Some(false),
+                termination_source: Some(StreamTerminationSource::EofFallback),
+                protocol_kind: Some("ndjson_field".to_string()),
+                expected_signal: Some("done=true".to_string()),
+                observed_signal: None,
+                last_event_type: Some("stream_eof".to_string()),
+                chunk_count: Some(chunk_count),
             }),
         };
 

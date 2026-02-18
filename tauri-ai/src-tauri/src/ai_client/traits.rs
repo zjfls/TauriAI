@@ -115,11 +115,56 @@ pub struct TokenUsage {
     pub cache_read_input_tokens: Option<u32>,
 }
 
+/// Source of stream termination for provider protocol.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamTerminationSource {
+    /// Received explicit protocol-level completion marker/event.
+    ProtocolSignal,
+    /// Underlying stream ended (EOF) before explicit completion marker.
+    EofFallback,
+    /// Request failed at HTTP layer before a streaming completion marker.
+    HttpError,
+    /// Stream terminated due to local/user abort.
+    Aborted,
+    /// Unknown termination source.
+    Unknown,
+}
+
+/// Protocol-level stream completion diagnostics.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamTerminationInfo {
+    /// Whether provider protocol completed explicitly (e.g. [DONE], message_stop, done=true).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol_complete: Option<bool>,
+    /// Where completion result comes from (explicit marker vs EOF fallback, etc.).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub termination_source: Option<StreamTerminationSource>,
+    /// Protocol family (e.g. sse_marker, sse_event, ndjson_field).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol_kind: Option<String>,
+    /// Expected completion signal for this provider.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_signal: Option<String>,
+    /// Observed completion signal if detected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed_signal: Option<String>,
+    /// Last parsed provider event type (if available).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_event_type: Option<String>,
+    /// Number of received stream chunks (for diagnostics).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chunk_count: Option<u32>,
+}
+
 /// Debug information for HTTP request/response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DebugInfoData {
     pub request: Option<DebugRequestData>,
     pub response: Option<DebugResponseData>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "streamTermination")]
+    pub stream_termination: Option<StreamTerminationInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
