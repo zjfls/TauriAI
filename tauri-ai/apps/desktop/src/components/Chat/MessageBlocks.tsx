@@ -282,6 +282,7 @@ type TaskPatchSummaryGroup = {
   workTree: string;
   ghostBefore: string;
   ghostAfter: string;
+  patchCount: number;
   affectedPaths: string[];
   createdPaths: string[];
 };
@@ -320,6 +321,7 @@ const buildTaskPatchSummaryGroups = (blocks: MessageBlock[]): TaskPatchSummaryGr
         workTree: effectiveWorkTree,
         ghostBefore,
         ghostAfter: ghostAfter || '',
+        patchCount: 1,
         affectedPaths: [...affectedPaths],
         createdPaths: [...createdPaths],
       });
@@ -327,6 +329,7 @@ const buildTaskPatchSummaryGroups = (blocks: MessageBlock[]): TaskPatchSummaryGr
     }
 
     // Keep the earliest ghostBefore; update ghostAfter to the latest non-empty snapshot.
+    existing.patchCount += 1;
     if (ghostAfter) existing.ghostAfter = ghostAfter;
     existing.affectedPaths.push(...affectedPaths);
     existing.createdPaths.push(...createdPaths);
@@ -892,21 +895,22 @@ const TaskPatchSummaryCard: React.FC<{
     setDiffLoading(true);
     setDiffError(null);
     setUndoMsg('');
-    const req = group.ghostAfter
-      ? invoke<GitDiffCommitsResponse>('git_diff_commits', {
-          args: {
-            repoRoot: group.repoRoot,
-            from: group.ghostBefore,
-            to: group.ghostAfter,
-            paths: group.affectedPaths,
-            options: { detectRenames: true },
-          },
-        })
-      : invoke<GitDiffCommitsResponse>('git_diff_ghost_worktree', {
+    const useGhostWorktree = group.patchCount > 1 || !group.ghostAfter;
+    const req = useGhostWorktree
+      ? invoke<GitDiffCommitsResponse>('git_diff_ghost_worktree', {
           args: {
             repoRoot: group.repoRoot,
             workTree: group.workTree || undefined,
             ghostBefore: group.ghostBefore,
+            paths: group.affectedPaths,
+            options: { detectRenames: true },
+          },
+        })
+      : invoke<GitDiffCommitsResponse>('git_diff_commits', {
+          args: {
+            repoRoot: group.repoRoot,
+            from: group.ghostBefore,
+            to: group.ghostAfter,
             paths: group.affectedPaths,
             options: { detectRenames: true },
           },
@@ -930,7 +934,7 @@ const TaskPatchSummaryCard: React.FC<{
     return () => {
       cancelled = true;
     };
-  }, [isExpanded, canLoad, group.key, refreshSeq]);
+  }, [isExpanded, canLoad, group.key, group.ghostAfter, group.patchCount, refreshSeq]);
 
   const doUndo = useCallback(async () => {
     if (!canUseTauri) return;
