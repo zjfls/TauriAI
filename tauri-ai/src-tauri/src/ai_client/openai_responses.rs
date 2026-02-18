@@ -30,8 +30,8 @@ use tokio::sync::mpsc;
 
 use super::content_converter::ContentBlock;
 use super::traits::{
-    AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent, TokenUsage,
-    ToolCall, ToolDefinition,
+    AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent,
+    StreamTerminationInfo, StreamTerminationSource, TokenUsage, ToolCall, ToolDefinition,
 };
 use super::utf8_stream::Utf8StreamDecoder;
 use crate::models::{ImageDetail, Message, MessageRole, ModelConfig};
@@ -935,6 +935,15 @@ impl AiClient for OpenAiResponsesClient {
                     body: serde_json::from_str(&error_text)
                         .unwrap_or(serde_json::Value::String(error_text.clone())),
                 }),
+                stream_termination: Some(StreamTerminationInfo {
+                    protocol_complete: Some(false),
+                    termination_source: Some(StreamTerminationSource::HttpError),
+                    protocol_kind: Some("sse_event".to_string()),
+                    expected_signal: Some("response.completed|response.done|[DONE]".to_string()),
+                    observed_signal: None,
+                    last_event_type: None,
+                    chunk_count: Some(0),
+                }),
             };
 
             if let Ok(error_response) = serde_json::from_str::<ErrorResponse>(&error_text) {
@@ -975,6 +984,7 @@ impl AiClient for OpenAiResponsesClient {
         let mut tool_calls_for_debug: Option<Vec<ToolCall>> = None;
         let mut stream = response.bytes_stream();
         let mut chunk_count = 0;
+        let mut last_event_type: Option<String> = None;
         // SSE 可能跨 chunk 切分；用行缓冲拼接，避免 JSON 被拆开导致事件丢失（text/thinking/web_search/usage）。
         let mut sse_buffer = String::new();
         let mut utf8 = Utf8StreamDecoder::default();
@@ -1051,6 +1061,15 @@ impl AiClient for OpenAiResponsesClient {
                                 headers: response_headers.clone(),
                                 body: debug_response_body,
                             }),
+                            stream_termination: Some(StreamTerminationInfo {
+                                protocol_complete: Some(true),
+                                termination_source: Some(StreamTerminationSource::ProtocolSignal),
+                                protocol_kind: Some("sse_marker".to_string()),
+                                expected_signal: Some("[DONE]".to_string()),
+                                observed_signal: Some("[DONE]".to_string()),
+                                last_event_type: last_event_type.clone(),
+                                chunk_count: Some(chunk_count),
+                            }),
                         };
 
                         let _ = token_sender
@@ -1070,6 +1089,9 @@ impl AiClient for OpenAiResponsesClient {
 
                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
                         let event_type = v.get("type").and_then(|t| t.as_str()).unwrap_or_default();
+                        if !event_type.is_empty() {
+                            last_event_type = Some(event_type.to_string());
+                        }
 
                         match event_type {
                             "response.output_text.delta" => {
@@ -1343,6 +1365,19 @@ impl AiClient for OpenAiResponsesClient {
                                         headers: response_headers.clone(),
                                         body: debug_response_body,
                                     }),
+                                    stream_termination: Some(StreamTerminationInfo {
+                                        protocol_complete: Some(true),
+                                        termination_source: Some(
+                                            StreamTerminationSource::ProtocolSignal,
+                                        ),
+                                        protocol_kind: Some("sse_event".to_string()),
+                                        expected_signal: Some(
+                                            "response.completed|response.done".to_string(),
+                                        ),
+                                        observed_signal: Some(event_type.to_string()),
+                                        last_event_type: Some(event_type.to_string()),
+                                        chunk_count: Some(chunk_count),
+                                    }),
                                 };
 
                                 let _ = token_sender
@@ -1425,6 +1460,15 @@ impl AiClient for OpenAiResponsesClient {
                 status: response_status,
                 headers: response_headers,
                 body: debug_response_body,
+            }),
+            stream_termination: Some(StreamTerminationInfo {
+                protocol_complete: Some(false),
+                termination_source: Some(StreamTerminationSource::EofFallback),
+                protocol_kind: Some("sse_event".to_string()),
+                expected_signal: Some("response.completed|response.done|[DONE]".to_string()),
+                observed_signal: None,
+                last_event_type,
+                chunk_count: Some(chunk_count),
             }),
         };
 

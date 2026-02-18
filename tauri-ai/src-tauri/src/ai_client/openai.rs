@@ -13,8 +13,8 @@ use tokio::sync::mpsc;
 
 use super::content_converter::{content_part_to_blocks, ContentBlock};
 use super::traits::{
-    AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent, TokenUsage,
-    ToolCall, ToolDefinition,
+    AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent,
+    StreamTerminationInfo, StreamTerminationSource, TokenUsage, ToolCall, ToolDefinition,
 };
 use super::utf8_stream::Utf8StreamDecoder;
 use crate::models::{ImageDetail, Message, MessageRole, ModelConfig};
@@ -830,6 +830,15 @@ impl OpenAiBaseClient {
                     body: serde_json::from_str(&error_text)
                         .unwrap_or(serde_json::Value::String(error_text.clone())),
                 }),
+                stream_termination: Some(StreamTerminationInfo {
+                    protocol_complete: Some(false),
+                    termination_source: Some(StreamTerminationSource::HttpError),
+                    protocol_kind: Some("sse_marker".to_string()),
+                    expected_signal: Some("[DONE]".to_string()),
+                    observed_signal: None,
+                    last_event_type: None,
+                    chunk_count: Some(0),
+                }),
             };
 
             // Send Error event FIRST, then DoneWithDebug for debug/usage
@@ -876,7 +885,7 @@ impl OpenAiBaseClient {
         let mut legacy_function_args = String::new();
         let mut tool_calls_sent = false;
         let mut stream = response.bytes_stream();
-        let mut all_chunks: Vec<String> = Vec::new();
+        let mut chunk_count: u32 = 0;
         // SSE 可能在任意字节边界切片；用行缓冲拼接，避免 JSON 被拆分后解析失败导致丢 token。
         let mut sse_buffer = String::new();
         let mut utf8 = Utf8StreamDecoder::default();
@@ -884,7 +893,7 @@ impl OpenAiBaseClient {
         while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result.map_err(|e| AiError::StreamError(e.to_string()))?;
             let chunk_str = utf8.push(&chunk);
-            all_chunks.push(chunk_str.clone());
+            chunk_count = chunk_count.saturating_add(1);
 
             sse_buffer.push_str(&chunk_str);
 
@@ -965,6 +974,15 @@ impl OpenAiBaseClient {
                                 status: response_status,
                                 headers: response_headers.clone(),
                                 body: debug_response_body,
+                            }),
+                            stream_termination: Some(StreamTerminationInfo {
+                                protocol_complete: Some(true),
+                                termination_source: Some(StreamTerminationSource::ProtocolSignal),
+                                protocol_kind: Some("sse_marker".to_string()),
+                                expected_signal: Some("[DONE]".to_string()),
+                                observed_signal: Some("[DONE]".to_string()),
+                                last_event_type: None,
+                                chunk_count: Some(chunk_count),
                             }),
                         };
 
@@ -1151,6 +1169,15 @@ impl OpenAiBaseClient {
                 status: response_status,
                 headers: response_headers,
                 body: debug_response_body,
+            }),
+            stream_termination: Some(StreamTerminationInfo {
+                protocol_complete: Some(false),
+                termination_source: Some(StreamTerminationSource::EofFallback),
+                protocol_kind: Some("sse_marker".to_string()),
+                expected_signal: Some("[DONE]".to_string()),
+                observed_signal: None,
+                last_event_type: None,
+                chunk_count: Some(chunk_count),
             }),
         };
 

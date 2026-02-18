@@ -2905,6 +2905,7 @@ fn redact_debug_info_for_store(debug_info: &DebugInfoData) -> DebugInfoData {
             headers: redact_debug_headers(&resp.headers),
             body: resp.body.clone(),
         }),
+        stream_termination: debug_info.stream_termination.clone(),
     }
 }
 

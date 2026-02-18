@@ -5,7 +5,14 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { X, ChevronDown, ChevronRight, Copy, Check, ChevronLeft } from 'lucide-react';
-import type { DebugInfo, MessageBlock, MessageTurn, AnsiColorMode, AnsiRenderMode } from '../../types';
+import type {
+  DebugInfo,
+  MessageBlock,
+  MessageTurn,
+  AnsiColorMode,
+  AnsiRenderMode,
+  StreamTerminationInfo,
+} from '../../types';
 import { useConfigStore } from '../../stores/configStore';
 import { getTurnDebugInfo } from '../../services/conversationService';
 import { AnsiText } from './AnsiText';
@@ -100,6 +107,12 @@ type ApiErrorInfo = {
   type?: string;
   code?: string;
   status?: number;
+};
+
+type StreamTerminationSummary = {
+  label: string;
+  detail: string;
+  tone: 'success' | 'warn' | 'error' | 'neutral';
 };
 
 // Check if response body contains SSE info
@@ -223,6 +236,101 @@ const extractApiErrorInfo = (body: any, httpStatus: number | null): ApiErrorInfo
   }
 
   return null;
+};
+
+const normalizeStreamTerminationInfo = (debugInfo: DebugInfo | null | undefined): StreamTerminationInfo | null => {
+  const raw = (debugInfo as any)?.streamTermination ?? (debugInfo as any)?.stream_termination;
+  if (!raw || typeof raw !== 'object') return null;
+
+  const pickString = (v: unknown): string | undefined => {
+    if (typeof v !== 'string') return undefined;
+    const t = v.trim();
+    return t.length > 0 ? t : undefined;
+  };
+
+  const protocolComplete =
+    typeof (raw as any).protocolComplete === 'boolean'
+      ? (raw as any).protocolComplete
+      : typeof (raw as any).protocol_complete === 'boolean'
+        ? (raw as any).protocol_complete
+        : null;
+
+  const chunkCount =
+    typeof (raw as any).chunkCount === 'number'
+      ? (raw as any).chunkCount
+      : typeof (raw as any).chunk_count === 'number'
+        ? (raw as any).chunk_count
+        : undefined;
+
+  return {
+    protocolComplete,
+    terminationSource: pickString((raw as any).terminationSource) ?? pickString((raw as any).termination_source),
+    protocolKind: pickString((raw as any).protocolKind) ?? pickString((raw as any).protocol_kind),
+    expectedSignal: pickString((raw as any).expectedSignal) ?? pickString((raw as any).expected_signal),
+    observedSignal: pickString((raw as any).observedSignal) ?? pickString((raw as any).observed_signal),
+    lastEventType: pickString((raw as any).lastEventType) ?? pickString((raw as any).last_event_type),
+    chunkCount,
+  };
+};
+
+const summarizeStreamTermination = (info: StreamTerminationInfo | null): StreamTerminationSummary => {
+  if (!info) {
+    return {
+      label: '未知',
+      detail: '未携带协议终止诊断字段',
+      tone: 'neutral',
+    };
+  }
+
+  const source = (info.terminationSource || '').toLowerCase();
+  const protocol = info.protocolKind || 'unknown';
+  const expected = info.expectedSignal || 'unknown';
+  const observed = info.observedSignal || 'none';
+  const chunkText = typeof info.chunkCount === 'number' ? `，chunks=${info.chunkCount}` : '';
+  const eventText = info.lastEventType ? `，last_event=${info.lastEventType}` : '';
+
+  if (info.protocolComplete === true) {
+    return {
+      label: '完整',
+      detail: `协议标记已确认（source=${source || 'protocol_signal'}，protocol=${protocol}，expected=${expected}，observed=${observed}${chunkText}${eventText}）`,
+      tone: 'success',
+    };
+  }
+
+  if (source === 'eof_fallback') {
+    return {
+      label: 'EOF兜底',
+      detail: `未观察到显式协议完成标记（protocol=${protocol}，expected=${expected}，observed=${observed}${chunkText}${eventText}）`,
+      tone: 'warn',
+    };
+  }
+  if (source === 'http_error') {
+    return {
+      label: 'HTTP错误',
+      detail: `HTTP 层失败导致流提前结束（protocol=${protocol}，expected=${expected}，observed=${observed}${chunkText}${eventText}）`,
+      tone: 'error',
+    };
+  }
+  if (source === 'aborted') {
+    return {
+      label: '已中止',
+      detail: `流被中止（protocol=${protocol}，expected=${expected}，observed=${observed}${chunkText}${eventText}）`,
+      tone: 'warn',
+    };
+  }
+  if (info.protocolComplete === false) {
+    return {
+      label: '不完整',
+      detail: `协议终止未完整确认（source=${source || 'unknown'}，protocol=${protocol}，expected=${expected}，observed=${observed}${chunkText}${eventText}）`,
+      tone: 'warn',
+    };
+  }
+
+  return {
+    label: '未知',
+    detail: `终止信息不足以判定（source=${source || 'unknown'}，protocol=${protocol}，expected=${expected}，observed=${observed}${chunkText}${eventText}）`,
+    tone: 'neutral',
+  };
 };
 
 const JsonViewer: React.FC<JsonViewerProps> = ({ data, label }) => {
@@ -586,6 +694,30 @@ export const DebugModal: React.FC<DebugModalProps> = ({
     () => extractApiErrorInfo(effectiveDebugInfo?.response?.body as any, httpStatus),
     [effectiveDebugInfo?.response?.body, httpStatus]
   );
+  const streamTerminationInfo = useMemo(
+    () => normalizeStreamTerminationInfo(effectiveDebugInfo),
+    [effectiveDebugInfo]
+  );
+  const streamTerminationSummary = useMemo(
+    () => summarizeStreamTermination(streamTerminationInfo),
+    [streamTerminationInfo]
+  );
+  const streamTerminationClass =
+    streamTerminationSummary.tone === 'success'
+      ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
+      : streamTerminationSummary.tone === 'warn'
+        ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300'
+        : streamTerminationSummary.tone === 'error'
+          ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'
+          : 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300';
+  const streamTerminationPanelClass =
+    streamTerminationSummary.tone === 'success'
+      ? 'border-green-200 bg-green-50/70 dark:border-green-800 dark:bg-green-900/20'
+      : streamTerminationSummary.tone === 'warn'
+        ? 'border-yellow-200 bg-yellow-50/70 dark:border-yellow-800 dark:bg-yellow-900/20'
+        : streamTerminationSummary.tone === 'error'
+          ? 'border-red-200 bg-red-50/70 dark:border-red-800 dark:bg-red-900/20'
+          : 'border-gray-200 bg-gray-50/70 dark:border-gray-700 dark:bg-gray-800/40';
 
   const endReasonSummary = useMemo(() => {
     const parts: string[] = [];
@@ -613,6 +745,7 @@ export const DebugModal: React.FC<DebugModalProps> = ({
 
     if (typeof httpStatus === 'number') parts.push(`HTTP ${httpStatus}`);
     if (providerFinishReasonSource && providerFinishReason) parts.push(`来源 ${providerFinishReasonSource}`);
+    if (effectiveDebugInfo) parts.push(`协议终止：${streamTerminationSummary.label}`);
 
     return parts.filter(Boolean).join('；') || null;
   }, [
@@ -625,6 +758,8 @@ export const DebugModal: React.FC<DebugModalProps> = ({
     apiErrorInfo?.code,
     httpStatus,
     errorMessage,
+    effectiveDebugInfo,
+    streamTerminationSummary.label,
   ]);
 
   // Lazy-load per-turn debug info when needed (history initialization strips it by default).
@@ -818,10 +953,20 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                     HTTP: {httpStatus}
                   </span>
                 )}
+                {effectiveDebugInfo && (
+                  <span className={`inline-flex items-center rounded px-2 py-0.5 font-medium ${streamTerminationClass}`}>
+                    协议终止: {streamTerminationSummary.label}
+                  </span>
+                )}
               </div>
               {endReasonSummary && (
                 <div className="mt-1 text-[11px] text-gray-600 dark:text-gray-300">
                   {endReasonSummary}
+                </div>
+              )}
+              {effectiveDebugInfo && (
+                <div className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
+                  协议终止详情：{streamTerminationSummary.detail}
                 </div>
               )}
               {errorMessage && (
@@ -1047,6 +1192,42 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                       >
                         {effectiveDebugInfo.response.status}
                       </span>
+                    </div>
+                    <div className={`rounded-lg border px-3 py-2 text-xs ${streamTerminationPanelClass}`}>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-medium text-gray-700 dark:text-gray-200">协议终止</span>
+                        <span className={`inline-flex items-center rounded px-2 py-0.5 font-medium ${streamTerminationClass}`}>
+                          {streamTerminationSummary.label}
+                        </span>
+                        {streamTerminationInfo?.protocolKind && (
+                          <span className="text-gray-500 dark:text-gray-400">
+                            protocol: {streamTerminationInfo.protocolKind}
+                          </span>
+                        )}
+                        {streamTerminationInfo?.expectedSignal && (
+                          <span className="text-gray-500 dark:text-gray-400">
+                            expected: {streamTerminationInfo.expectedSignal}
+                          </span>
+                        )}
+                        {streamTerminationInfo?.observedSignal && (
+                          <span className="text-gray-500 dark:text-gray-400">
+                            observed: {streamTerminationInfo.observedSignal}
+                          </span>
+                        )}
+                        {streamTerminationInfo?.lastEventType && (
+                          <span className="text-gray-500 dark:text-gray-400">
+                            last_event: {streamTerminationInfo.lastEventType}
+                          </span>
+                        )}
+                        {typeof streamTerminationInfo?.chunkCount === 'number' && (
+                          <span className="text-gray-500 dark:text-gray-400">
+                            chunks: {streamTerminationInfo.chunkCount}
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-1 text-[11px] text-gray-600 dark:text-gray-300">
+                        {streamTerminationSummary.detail}
+                      </div>
                     </div>
 
                     {Object.keys(effectiveDebugInfo.response.headers).length > 0 && (

@@ -9,8 +9,8 @@ use tokio::sync::mpsc;
 
 use super::content_converter::{image_url_to_base64, ContentBlock};
 use super::traits::{
-    AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent, TokenUsage,
-    ToolCall, ToolDefinition,
+    AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent,
+    StreamTerminationInfo, StreamTerminationSource, TokenUsage, ToolCall, ToolDefinition,
 };
 use super::utf8_stream::Utf8StreamDecoder;
 use crate::models::{Message, MessageRole, ModelConfig};
@@ -749,6 +749,7 @@ impl AiClient for AnthropicClient {
         let mut current_tool_use: Option<ToolUseInProgress> = None;
         let mut sse_buffer = String::new();
         let mut utf8 = Utf8StreamDecoder::default();
+        let mut chunk_count: u32 = 0;
 
         // Store debug parts for later assembly
         // We'll build the final debug_info with full_content at the end
@@ -756,6 +757,7 @@ impl AiClient for AnthropicClient {
         while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result.map_err(|e| AiError::StreamError(e.to_string()))?;
             let chunk_str = utf8.push(&chunk);
+            chunk_count = chunk_count.saturating_add(1);
             sse_buffer.push_str(&chunk_str);
 
             // Parse SSE events (line-buffered)
@@ -929,6 +931,17 @@ impl AiClient for AnthropicClient {
                                             })),
                                         }),
                                     }),
+                                    stream_termination: Some(StreamTerminationInfo {
+                                        protocol_complete: Some(true),
+                                        termination_source: Some(
+                                            StreamTerminationSource::ProtocolSignal,
+                                        ),
+                                        protocol_kind: Some("sse_event".to_string()),
+                                        expected_signal: Some("message_stop".to_string()),
+                                        observed_signal: Some("message_stop".to_string()),
+                                        last_event_type: Some("message_stop".to_string()),
+                                        chunk_count: Some(chunk_count),
+                                    }),
                                 };
                                 let _ = token_sender
                                     .send(StreamEvent::DoneWithDebug {
@@ -1004,6 +1017,15 @@ impl AiClient for AnthropicClient {
                         "cache_read_input_tokens": u.cache_read_input_tokens
                     })),
                 }),
+            }),
+            stream_termination: Some(StreamTerminationInfo {
+                protocol_complete: Some(false),
+                termination_source: Some(StreamTerminationSource::EofFallback),
+                protocol_kind: Some("sse_event".to_string()),
+                expected_signal: Some("message_stop".to_string()),
+                observed_signal: None,
+                last_event_type: Some("stream_eof".to_string()),
+                chunk_count: Some(chunk_count),
             }),
         };
         let _ = token_sender

@@ -794,6 +794,16 @@ export type RunEventPayload =
 /**
  * Debug information for a message (raw HTTP request/response)
  */
+export interface StreamTerminationInfo {
+  protocolComplete?: boolean | null;
+  terminationSource?: 'protocol_signal' | 'eof_fallback' | 'http_error' | 'aborted' | 'unknown' | string;
+  protocolKind?: string;
+  expectedSignal?: string;
+  observedSignal?: string;
+  lastEventType?: string;
+  chunkCount?: number;
+}
+
 export interface DebugInfo {
   request?: {
     url: string;
@@ -806,6 +816,9 @@ export interface DebugInfo {
     headers: Record<string, string>;
     body: unknown;
   };
+  streamTermination?: StreamTerminationInfo;
+  // Backward-compatible read path for legacy snake_case payloads.
+  stream_termination?: StreamTerminationInfo;
 }
 
 /**
