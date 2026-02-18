@@ -9,7 +9,7 @@ import { useShallow } from 'zustand/shallow';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
-import { Folder, ChevronDown, Shield, ListOrdered } from 'lucide-react';
+import { Folder, ChevronDown, Shield, ListOrdered, ArrowUp, ArrowDown, Pencil, Trash2, Check, X } from 'lucide-react';
 import { useSessionStore } from '../../stores/sessionStore';
 import { useConfigStore } from '../../stores/configStore';
 import { MessageList, type MessageListHandle } from './MessageList';
@@ -36,36 +36,44 @@ const EMPTY_PTY_SESSIONS: PtySessionInfo[] = [];
 
 export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false }) => {
   // Get session from SessionStore
-	  const {
-	    session,
-	    sendMessage,
-	    abortGeneration,
-	    retry: retryMessage,
-	    retryTurn,
-	    cloneConversation,
-	    setSessionModel,
-	    undoToMessage,
-	    setSessionRunMode,
-	    setSessionThinkingMode,
-	    setSessionDraftContent,
-	  } = useSessionStore(
-	    useShallow((state) => ({
-	      session: sessionId ? state.sessions.get(sessionId) : undefined,
-	      sendMessage: state.sendMessage,
-	      abortGeneration: state.abortGeneration,
-	      retry: state.retry,
-	      retryTurn: state.retryTurn,
-	      cloneConversation: state.cloneConversation,
-	      setSessionModel: state.setSessionModel,
-	      undoToMessage: state.undoToMessage,
-	      setSessionRunMode: state.setSessionRunMode,
-	      setSessionThinkingMode: state.setSessionThinkingMode,
-	      setSessionDraftContent: state.setSessionDraftContent,
-	    }))
-  );
+		  const {
+		    session,
+		    sendMessage,
+		    abortGeneration,
+		    retry: retryMessage,
+		    retryTurn,
+		    cloneConversation,
+		    setSessionModel,
+		    undoToMessage,
+		    moveQueuedMessage,
+		    removeQueuedMessage,
+		    updateQueuedMessageContent,
+		    setSessionRunMode,
+		    setSessionThinkingMode,
+		    setSessionDraftContent,
+		  } = useSessionStore(
+		    useShallow((state) => ({
+		      session: sessionId ? state.sessions.get(sessionId) : undefined,
+		      sendMessage: state.sendMessage,
+		      abortGeneration: state.abortGeneration,
+		      retry: state.retry,
+		      retryTurn: state.retryTurn,
+		      cloneConversation: state.cloneConversation,
+		      setSessionModel: state.setSessionModel,
+		      undoToMessage: state.undoToMessage,
+		      moveQueuedMessage: state.moveQueuedMessage,
+		      removeQueuedMessage: state.removeQueuedMessage,
+		      updateQueuedMessageContent: state.updateQueuedMessageContent,
+		      setSessionRunMode: state.setSessionRunMode,
+		      setSessionThinkingMode: state.setSessionThinkingMode,
+		      setSessionDraftContent: state.setSessionDraftContent,
+		    }))
+	  );
   const [showToolSessions, setShowToolSessions] = useState(false);
   const [selectedRequestMessageId, setSelectedRequestMessageId] = useState<string | null>(null);
   const [outlineOpen, setOutlineOpen] = useState(false);
+  const [editingQueueMessageId, setEditingQueueMessageId] = useState<string | null>(null);
+  const [editingQueueContent, setEditingQueueContent] = useState('');
 
   const inputRef = useRef<InputAreaHandle>(null);
   const messageListRef = useRef<MessageListHandle>(null);
@@ -94,6 +102,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
 
   // Extract session state with defaults for when no session exists
   const messages = session?.messages ?? [];
+  const queuedMessages = session?.queuedMessages ?? [];
   const streamingBlocks = session?.streamingBlocks ?? null;
   const streamingTurns = session?.streamingTurns ? Array.from(session.streamingTurns.values()) : undefined;
   const isGenerating = session?.isGenerating ?? false;
@@ -152,6 +161,33 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
     if (selectedRequestMessageId && outlineItems.some((i) => i.messageId === selectedRequestMessageId)) return;
     setSelectedRequestMessageId(outlineItems[outlineItems.length - 1]?.messageId ?? null);
   }, [outlineItems, selectedRequestMessageId]);
+
+  useEffect(() => {
+    if (!editingQueueMessageId) return;
+    if (queuedMessages.some((item) => item.id === editingQueueMessageId)) return;
+    setEditingQueueMessageId(null);
+    setEditingQueueContent('');
+  }, [editingQueueMessageId, queuedMessages]);
+
+  const beginEditQueuedMessage = useCallback((messageId: string, content: string) => {
+    setEditingQueueMessageId(messageId);
+    setEditingQueueContent(content);
+  }, []);
+
+  const cancelEditQueuedMessage = useCallback(() => {
+    setEditingQueueMessageId(null);
+    setEditingQueueContent('');
+  }, []);
+
+  const saveEditQueuedMessage = useCallback(
+    (messageId: string) => {
+      if (!sessionId) return;
+      updateQueuedMessageContent(sessionId, messageId, editingQueueContent);
+      setEditingQueueMessageId(null);
+      setEditingQueueContent('');
+    },
+    [editingQueueContent, sessionId, updateQueuedMessageContent]
+  );
 
   const handleSelectOutline = useCallback((messageId: string) => {
     setSelectedRequestMessageId(messageId);
@@ -1559,6 +1595,118 @@ Guidelines:
           </span>
         </div>
       )}
+      {queuedMessages.length > 0 && (
+        <div className="border-t border-amber-200 bg-amber-50/70 px-4 py-2 dark:border-amber-900/50 dark:bg-amber-900/10">
+          <div className="mb-2 flex items-center justify-between">
+            <div className="text-xs font-medium text-amber-700 dark:text-amber-300">
+              排队消息（{queuedMessages.length}）
+            </div>
+            <div className="text-[11px] text-amber-600/90 dark:text-amber-300/80">
+              当前回复完成后将按顺序自动发送
+            </div>
+          </div>
+          <div className="max-h-44 space-y-2 overflow-auto pr-1">
+            {queuedMessages.map((item, index) => {
+              const isEditing = editingQueueMessageId === item.id;
+              const attachmentCount = item.images?.length ?? 0;
+              const displayText = item.content.trim().length > 0 ? item.content : attachmentCount > 0 ? '（仅附件）' : '（空消息）';
+              const canSave = editingQueueContent.trim().length > 0 || attachmentCount > 0;
+              return (
+                <div
+                  key={item.id}
+                  className="rounded border border-amber-200 bg-white/90 px-2 py-2 dark:border-amber-900/60 dark:bg-gray-900/80"
+                >
+                  <div className="mb-1 flex items-start gap-2">
+                    <div className="mt-0.5 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-900/50 dark:text-amber-200">
+                      #{index + 1}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      {isEditing ? (
+                        <textarea
+                          value={editingQueueContent}
+                          onChange={(e) => setEditingQueueContent(e.target.value)}
+                          rows={2}
+                          className="w-full resize-y rounded border border-amber-200 bg-white px-2 py-1 text-xs text-gray-800 focus:outline-none focus:ring-2 focus:ring-amber-400 dark:border-amber-900/60 dark:bg-gray-950 dark:text-gray-100"
+                        />
+                      ) : (
+                        <div className="whitespace-pre-wrap break-words text-xs text-gray-700 dark:text-gray-200">
+                          {displayText}
+                        </div>
+                      )}
+                      <div className="mt-1 flex flex-wrap items-center gap-1 text-[10px] text-gray-500 dark:text-gray-400">
+                        {item.thinking !== undefined && <span>thinking: {String(item.thinking)}</span>}
+                        {attachmentCount > 0 && <span>附件: {attachmentCount}</span>}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-end gap-1">
+                    <button
+                      type="button"
+                      className="rounded border border-gray-200 p-1 text-gray-600 hover:bg-gray-100 disabled:opacity-40 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                      disabled={index === 0}
+                      title="上移"
+                      onClick={() => sessionId && moveQueuedMessage(sessionId, item.id, 'up')}
+                    >
+                      <ArrowUp size={12} />
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded border border-gray-200 p-1 text-gray-600 hover:bg-gray-100 disabled:opacity-40 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                      disabled={index === queuedMessages.length - 1}
+                      title="下移"
+                      onClick={() => sessionId && moveQueuedMessage(sessionId, item.id, 'down')}
+                    >
+                      <ArrowDown size={12} />
+                    </button>
+                    {isEditing ? (
+                      <>
+                        <button
+                          type="button"
+                          className="rounded border border-emerald-200 p-1 text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 dark:border-emerald-900/60 dark:text-emerald-300 dark:hover:bg-emerald-900/30"
+                          title="保存"
+                          disabled={!canSave}
+                          onClick={() => saveEditQueuedMessage(item.id)}
+                        >
+                          <Check size={12} />
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded border border-gray-200 p-1 text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                          title="取消编辑"
+                          onClick={cancelEditQueuedMessage}
+                        >
+                          <X size={12} />
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        className="rounded border border-gray-200 p-1 text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                        title="编辑"
+                        onClick={() => beginEditQueuedMessage(item.id, item.content)}
+                      >
+                        <Pencil size={12} />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="rounded border border-red-200 p-1 text-red-600 hover:bg-red-50 dark:border-red-900/60 dark:text-red-300 dark:hover:bg-red-900/20"
+                      title="移除"
+                      onClick={() => {
+                        if (!sessionId) return;
+                        if (editingQueueMessageId === item.id) cancelEditQueuedMessage();
+                        removeQueuedMessage(sessionId, item.id);
+                      }}
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
       <InputArea
         ref={inputRef}
         onSend={handleSend}
@@ -1579,6 +1727,7 @@ Guidelines:
         }
         disabled={false}
         isGenerating={isGenerating}
+        queuedCount={queuedMessages.length}
         runMode={session?.runMode ?? 'chat'}
         onRunModeChange={(mode) => {
           if (!sessionId) return;

@@ -1255,6 +1255,14 @@ export interface TestResult {
   message: string;
 }
 
+export interface QueuedSessionMessage {
+  id: string;
+  content: string;
+  thinking?: boolean | string;
+  images?: ContentPart[];
+  enqueuedAt: string;
+}
+
 // ============================================================================
 // Multi-Agent Workspace Types (Primary - Use These)
 // ============================================================================
@@ -1287,6 +1295,7 @@ export interface AgentSession {
 
   // Session state
   messages: Message[];                // Message history for this session
+  queuedMessages: QueuedSessionMessage[]; // Cached messages queued while generating
   // Unified streaming output blocks (chat/event -> blocks)
   // - null: not streaming
   // - []: stream started but no blocks yet (e.g., first-token latency)

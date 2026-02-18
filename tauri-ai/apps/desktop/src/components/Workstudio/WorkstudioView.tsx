@@ -27,11 +27,21 @@ import {
   FileText,
   Folder,
   FolderOpen,
+  ListTree,
+  RefreshCw,
   X,
 } from 'lucide-react';
 import type { LspServerStatus, TerminalScope, Workstudio, WorkstudioUiState } from '../../types';
 import { SHORTCUT_ACTIONS, detectShortcutPlatform, normalizeKeybindingString } from '../../shortcuts';
-import { lspDetectServer, lspEnsureServer, lspNotify, lspShutdownLanguage, lspStatus } from '../../services';
+import {
+  astDocumentSymbols,
+  lspDetectServer,
+  lspEnsureServer,
+  lspNotify,
+  lspRequest,
+  lspShutdownLanguage,
+  lspStatus,
+} from '../../services';
 import { useConfigStore } from '../../stores/configStore';
 import { useTerminalSessionStore } from '../../stores/terminalSessionStore';
 import { type WindowPane, useWindowLayoutStore } from '../../stores/windowLayoutStore';
@@ -71,6 +81,24 @@ type NavLocation = {
 type PaneNavHistory = {
   back: NavLocation[];
   forward: NavLocation[];
+};
+
+type OutlineRange = {
+  startLine: number;
+  startColumn: number;
+  endLine: number;
+  endColumn: number;
+};
+
+type OutlineItem = {
+  id: string;
+  name: string;
+  kind: string;
+  detail: string;
+  range: OutlineRange;
+  selectionLine: number;
+  selectionColumn: number;
+  children: OutlineItem[];
 };
 
 const DEFAULT_EDITOR_FONT_SIZE = 13;
@@ -413,6 +441,130 @@ const isSubpath = (child: string, parent: string) => {
   return c.startsWith(`${p}/`);
 };
 
+const clampOutlineLine = (line: number) => Math.max(1, Number.isFinite(line) ? Math.floor(line) : 1);
+const clampOutlineColumn = (column: number) => Math.max(1, Number.isFinite(column) ? Math.floor(column) : 1);
+
+const toOutlineRangeFromLsp = (range: any): OutlineRange => {
+  const startLine = clampOutlineLine(Number(range?.start?.line ?? 0) + 1);
+  const startColumn = clampOutlineColumn(Number(range?.start?.character ?? 0) + 1);
+  const endLine = clampOutlineLine(Number(range?.end?.line ?? range?.start?.line ?? 0) + 1);
+  const endColumn = clampOutlineColumn(Number(range?.end?.character ?? range?.start?.character ?? 0) + 1);
+  return { startLine, startColumn, endLine, endColumn };
+};
+
+const lspSymbolKindToLabel = (kind: any): string => {
+  const k = Number(kind ?? 0);
+  switch (k) {
+    case 5: return 'class';
+    case 6: return 'method';
+    case 7: return 'property';
+    case 8: return 'field';
+    case 9: return 'constructor';
+    case 10: return 'enum';
+    case 11: return 'interface';
+    case 12: return 'function';
+    case 13: return 'variable';
+    case 14: return 'constant';
+    case 22: return 'enum_member';
+    case 23: return 'struct';
+    case 25: return 'operator';
+    case 26: return 'type_param';
+    default: return 'symbol';
+  }
+};
+
+const lspDocumentSymbolsToOutline = (result: any): OutlineItem[] => {
+  if (!Array.isArray(result)) return [];
+
+  const fromDocumentSymbol = (node: any, parentKey: string, index: number): OutlineItem | null => {
+    const name = String(node?.name ?? '').trim();
+    const rangeRaw = node?.range;
+    if (!name || !rangeRaw) return null;
+    const range = toOutlineRangeFromLsp(rangeRaw);
+    const selectionRaw = node?.selectionRange ?? rangeRaw;
+    const selection = toOutlineRangeFromLsp(selectionRaw);
+    const id = `${parentKey}:${index}:${name}:${selection.startLine}:${selection.startColumn}`;
+    const childrenRaw = Array.isArray(node?.children) ? node.children : [];
+    const children = childrenRaw
+      .map((child: any, childIdx: number) => fromDocumentSymbol(child, id, childIdx))
+      .filter(Boolean) as OutlineItem[];
+    return {
+      id,
+      name,
+      kind: lspSymbolKindToLabel(node?.kind),
+      detail: typeof node?.detail === 'string' ? node.detail : '',
+      range,
+      selectionLine: selection.startLine,
+      selectionColumn: selection.startColumn,
+      children,
+    };
+  };
+
+  const fromSymbolInformation = (node: any, index: number): OutlineItem | null => {
+    const name = String(node?.name ?? '').trim();
+    const rangeRaw = node?.location?.range;
+    if (!name || !rangeRaw) return null;
+    const range = toOutlineRangeFromLsp(rangeRaw);
+    return {
+      id: `si:${index}:${name}:${range.startLine}:${range.startColumn}`,
+      name,
+      kind: lspSymbolKindToLabel(node?.kind),
+      detail: '',
+      range,
+      selectionLine: range.startLine,
+      selectionColumn: range.startColumn,
+      children: [],
+    };
+  };
+
+  const looksLikeSymbolInformation = result.some((item) => item && typeof item === 'object' && 'location' in item);
+  if (looksLikeSymbolInformation) {
+    return result
+      .map((node, index) => fromSymbolInformation(node, index))
+      .filter(Boolean) as OutlineItem[];
+  }
+
+  return result
+    .map((node, index) => fromDocumentSymbol(node, 'ds', index))
+    .filter(Boolean) as OutlineItem[];
+};
+
+const astSymbolsToOutline = (symbols: any, parentKey = 'ast'): OutlineItem[] => {
+  if (!Array.isArray(symbols)) return [];
+  return symbols
+    .map((node: any, index: number) => {
+      const name = String(node?.name ?? '').trim();
+      if (!name) return null;
+      const range = toOutlineRangeFromLsp(node?.range ?? null);
+      const selection = toOutlineRangeFromLsp(node?.selectionRange ?? node?.range ?? null);
+      const id = `${parentKey}:${index}:${name}:${selection.startLine}:${selection.startColumn}`;
+      const children = astSymbolsToOutline(node?.children ?? [], id);
+      return {
+        id,
+        name,
+        kind: String(node?.kind ?? 'symbol').trim() || 'symbol',
+        detail: '',
+        range,
+        selectionLine: selection.startLine,
+        selectionColumn: selection.startColumn,
+        children,
+      } as OutlineItem;
+    })
+    .filter(Boolean) as OutlineItem[];
+};
+
+const countOutlineItems = (items: OutlineItem[]): number => {
+  let total = 0;
+  const walk = (nodes: OutlineItem[]) => {
+    for (const node of nodes) {
+      total += 1;
+      if (node.children.length > 0) walk(node.children);
+    }
+  };
+  walk(items);
+  return total;
+};
+
 export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ workstudioId: workstudioIdProp }) => {
   const { workstudioId: workstudioIdFromUrl, filePath, line, column, endLine, endColumn, standalone } = getViewWindowParams();
   const workstudioId = (workstudioIdProp ?? workstudioIdFromUrl ?? '').trim() || null;
@@ -582,6 +734,14 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     | null
   >(null);
   const lspStatusButtonRef = useRef<HTMLButtonElement | null>(null);
+  const [outlineOpen, setOutlineOpen] = useState(true);
+  const [outlineItems, setOutlineItems] = useState<OutlineItem[]>([]);
+  const [outlineLoading, setOutlineLoading] = useState(false);
+  const [outlineError, setOutlineError] = useState<string | null>(null);
+  const [outlineSource, setOutlineSource] = useState<'lsp' | 'ast' | 'none'>('none');
+  const [outlineActiveId, setOutlineActiveId] = useState<string | null>(null);
+  const [outlineRefreshSeq, setOutlineRefreshSeq] = useState(0);
+  const outlineRequestSeqRef = useRef(0);
   const [lspMenu, setLspMenu] = useState<
     | { visible: true; x: number; y: number }
     | null
@@ -665,6 +825,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     },
     [isLspLanguageEnabledForWorkstudio]
   );
+
   const ensuredLspLangRef = useRef<Set<string>>(new Set());
   const [lspProgress, setLspProgress] = useState<
     Record<
@@ -808,9 +969,130 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     return raw ? normalizeFsPath(raw) : null;
   }, [focusedPane?.activeTabId, openFiles]);
 
+  const activeTextFileInFocusedPane = useMemo(() => {
+    const activeId = focusedPane?.activeTabId ?? null;
+    if (!activeId) return null;
+    const file = openFiles.find((f) => f.id === activeId) ?? null;
+    if (!file || file.kind !== 'text') return null;
+    return file;
+  }, [focusedPane?.activeTabId, openFiles]);
+
+  const activeTextLanguageId = useMemo(
+    () => (activeTextFileInFocusedPane ? languageForPath(activeTextFileInFocusedPane.path) : ''),
+    [activeTextFileInFocusedPane]
+  );
+
+  const outlineItemCount = useMemo(() => countOutlineItems(outlineItems), [outlineItems]);
+  const outlineSourceLabel = outlineSource === 'lsp' ? 'LSP' : outlineSource === 'ast' ? 'AST' : '';
+
   useEffect(() => {
     setExplorerSelectedFilePath(activeFilePathInFocusedPane);
   }, [activeFilePathInFocusedPane]);
+
+  useEffect(() => {
+    setOutlineActiveId(null);
+  }, [activeTextFileInFocusedPane?.id]);
+
+  useEffect(() => {
+    if (!outlineOpen) return;
+    if (!isTauri()) {
+      setOutlineItems([]);
+      setOutlineSource('none');
+      setOutlineError(null);
+      setOutlineLoading(false);
+      return;
+    }
+
+    const wsId = ws?.id ?? null;
+    const activeFile = activeTextFileInFocusedPane;
+    if (!wsId || !activeFile) {
+      setOutlineItems([]);
+      setOutlineSource('none');
+      setOutlineError(null);
+      setOutlineLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    const reqSeq = ++outlineRequestSeqRef.current;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        setOutlineLoading(true);
+        setOutlineError(null);
+
+        const languageId = activeTextLanguageId;
+        const uri = toMonacoModelPath(activeFile.path);
+        const canTryLsp = Boolean(
+          codeIntelligenceConfig?.enabled &&
+          isLspLanguageEnabledForBridge(languageId) &&
+          uri.startsWith('file://')
+        );
+
+        let nextItems: OutlineItem[] = [];
+        let nextSource: 'lsp' | 'ast' | 'none' = 'none';
+        let lspError: string | null = null;
+
+        if (canTryLsp) {
+          try {
+            const result = await lspRequest<any>({
+              workstudioId: wsId,
+              languageId,
+              method: 'textDocument/documentSymbol',
+              params: {
+                textDocument: { uri },
+              },
+              timeoutMs: 8000,
+            });
+            const fromLsp = lspDocumentSymbolsToOutline(result);
+            if (fromLsp.length > 0) {
+              nextItems = fromLsp;
+              nextSource = 'lsp';
+            }
+          } catch (e) {
+            lspError = String(e);
+          }
+        }
+
+        if (nextItems.length === 0) {
+          try {
+            const fromAst = astSymbolsToOutline(
+              await astDocumentSymbols({
+                languageId,
+                text: activeFile.content ?? '',
+              })
+            );
+            if (fromAst.length > 0) {
+              nextItems = fromAst;
+              nextSource = 'ast';
+            }
+          } catch {
+            // ignore AST fallback errors (unsupported language is expected for many files)
+          }
+        }
+
+        if (cancelled || reqSeq !== outlineRequestSeqRef.current) return;
+        setOutlineItems(nextItems);
+        setOutlineSource(nextSource);
+        setOutlineActiveId((prev) => (prev && nextItems.some((item) => item.id === prev) ? prev : null));
+        setOutlineError(nextItems.length === 0 ? lspError : null);
+        setOutlineLoading(false);
+      })();
+    }, 180);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [
+    outlineOpen,
+    ws?.id,
+    activeTextFileInFocusedPane?.id,
+    activeTextFileInFocusedPane?.content,
+    activeTextLanguageId,
+    codeIntelligenceConfig?.enabled,
+    isLspLanguageEnabledForBridge,
+    outlineRefreshSeq,
+  ]);
 
   // Monaco 编辑器在 flex 布局变化（拆分/关闭 Pane/拖拽/分屏比例调整）时偶发不会自动重算尺寸，
   // 导致右侧出现“白色死区”。这里在布局相关状态变化后，强制触发一次 layout。
@@ -1759,6 +2041,78 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       runFocusedEditorAction('editor.action.peekDefinition', { ...opts, recordNavBeforeRun: true }),
     [runFocusedEditorAction]
   );
+
+  const jumpToOutlineItem = useCallback(
+    (item: OutlineItem) => {
+      const state = useWindowLayoutStore.getState();
+      const paneId =
+        (state.focusedPaneId && state.panes.some((p) => p.id === state.focusedPaneId) ? state.focusedPaneId : null) ??
+        resolvedFocusedPaneId ??
+        (state.panes[0]?.id ?? fallbackPaneIdRef.current);
+      if (!paneId) return;
+
+      const pane = state.panes.find((p) => p.id === paneId) ?? null;
+      const tabId =
+        pane?.activeTabId && pane.tabIds.includes(pane.activeTabId)
+          ? pane.activeTabId
+          : pane?.tabIds[0] ?? null;
+      if (!tabId) return;
+
+      const editor = editorByPaneRef.current.get(paneId) ?? null;
+      if (!editor) return;
+
+      const line = clampOutlineLine(item.selectionLine);
+      const column = clampOutlineColumn(item.selectionColumn);
+      const endLine = Math.max(line, clampOutlineLine(item.range.endLine));
+      const endColumn = Math.max(column, clampOutlineColumn(item.range.endColumn));
+
+      const prevLocation =
+        suppressNavRecordDepthRef.current === 0 ? getCurrentNavLocationForPane(paneId) : null;
+      const targetLocation: NavLocation = { tabId, line, column };
+      if (prevLocation && isMeaningfulNavTransition(prevLocation, targetLocation)) {
+        commitNavBackEntry(paneId, prevLocation);
+      }
+
+      setFocusedPane(paneId);
+      editor.focus();
+      editor.setSelection({
+        startLineNumber: line,
+        startColumn: column,
+        endLineNumber: endLine,
+        endColumn,
+      });
+      editor.revealPositionInCenter({ lineNumber: line, column });
+      setOutlineActiveId(item.id);
+    },
+    [commitNavBackEntry, getCurrentNavLocationForPane, isMeaningfulNavTransition, resolvedFocusedPaneId, setFocusedPane]
+  );
+
+  const renderOutlineNodes = (nodes: OutlineItem[], depth = 0): React.ReactNode =>
+    nodes.map((item) => {
+      const active = outlineActiveId === item.id;
+      return (
+        <React.Fragment key={item.id}>
+          <button
+            type="button"
+            className={[
+              'flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs',
+              active
+                ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200'
+                : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800',
+            ].join(' ')}
+            style={{ paddingLeft: 8 + depth * 14 }}
+            title={`${item.name} · ${item.kind} · ${item.selectionLine}:${item.selectionColumn}`}
+            onClick={() => jumpToOutlineItem(item)}
+          >
+            <span className="min-w-0 flex-1 truncate font-medium">{item.name}</span>
+            <span className="shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-gray-500 dark:bg-gray-800 dark:text-gray-400">
+              {item.kind}
+            </span>
+          </button>
+          {item.children.length > 0 ? renderOutlineNodes(item.children, depth + 1) : null}
+        </React.Fragment>
+      );
+    });
 
   const activateTabInPane = useCallback((paneId: string, tabId: string) => {
     const prevLocation = suppressNavRecordDepthRef.current === 0 ? getCurrentNavLocationForPane(paneId) : null;
@@ -4284,10 +4638,24 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                   <span className="whitespace-nowrap">{lspSummary.label}</span>
                   <ChevronDown size={12} className="opacity-70" />
                 </button>
-	              <button
-	                type="button"
-	                className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-	                onClick={() => setTerminalOpen((v) => !v)}
+                <button
+                  type="button"
+                  className={[
+                    'inline-flex items-center gap-2 rounded border px-2 py-1 text-xs',
+                    outlineOpen
+                      ? 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 dark:border-blue-700/60 dark:bg-blue-900/30 dark:text-blue-200 dark:hover:bg-blue-900/40'
+                      : 'border-gray-200 text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800',
+                  ].join(' ')}
+                  onClick={() => setOutlineOpen((v) => !v)}
+                  title={outlineOpen ? '隐藏 Outline' : '显示 Outline'}
+                >
+                  <ListTree size={12} />
+                  <span className="whitespace-nowrap">Outline{outlineItemCount > 0 ? `(${outlineItemCount})` : ''}</span>
+                </button>
+		              <button
+		                type="button"
+		                className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+		                onClick={() => setTerminalOpen((v) => !v)}
 	                title="终端"
 	              >
 	                {terminalOpen ? '关闭终端' : '终端'}
@@ -4305,12 +4673,14 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	            </div>
 	          )}
 
-	          <DndContext
-	            sensors={sensors}
-	            collisionDetection={collisionDetection}
-	            onDragStart={handleDragStart}
-	            onDragMove={handleDragMove}
-	            onDragEnd={handleDragEnd}
+		          <div className="flex min-h-0 flex-1 overflow-hidden">
+		            <div className="min-w-0 flex-1 overflow-hidden">
+		          <DndContext
+		            sensors={sensors}
+		            collisionDetection={collisionDetection}
+		            onDragStart={handleDragStart}
+		            onDragMove={handleDragMove}
+		            onDragEnd={handleDragEnd}
 	            onDragCancel={handleDragCancel}
 	          >
 	            <div ref={paneRowRef} className="flex min-h-0 flex-1 flex-row overflow-hidden">
@@ -4535,16 +4905,66 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	                  height: `${remoteSplitPreview.rect.height}px`,
 	                }}
 	              >
-	                <div className="h-full w-full rounded bg-blue-500/10 outline outline-2 outline-blue-500/40" />
-	                <div className="absolute left-2 top-2 rounded bg-blue-600 px-2 py-1 text-xs text-white shadow">
-	                  {remoteSplitPreview.direction === 'left' ? '分屏到左侧' : '分屏到右侧'}
-	                </div>
-	              </div>
-	            )}
-	          </DndContext>
+		                <div className="h-full w-full rounded bg-blue-500/10 outline outline-2 outline-blue-500/40" />
+		                <div className="absolute left-2 top-2 rounded bg-blue-600 px-2 py-1 text-xs text-white shadow">
+		                  {remoteSplitPreview.direction === 'left' ? '分屏到左侧' : '分屏到右侧'}
+		                </div>
+		              </div>
+		            )}
+		          </DndContext>
+		            </div>
 
-	        </div>
-      </div>
+		            {outlineOpen && (
+		              <div className="flex w-[300px] flex-shrink-0 flex-col border-l border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-950">
+		                <div className="flex items-center gap-2 border-b border-gray-200 px-3 py-2 dark:border-gray-800">
+		                  <div className="min-w-0 flex-1">
+		                    <div className="truncate text-xs font-semibold text-gray-800 dark:text-gray-100">
+		                      Outline
+		                    </div>
+		                    <div className="mt-0.5 truncate text-[11px] text-gray-500 dark:text-gray-400">
+		                      {activeTextFileInFocusedPane
+		                        ? `${basename(activeTextFileInFocusedPane.path)}${outlineSourceLabel ? ` · ${outlineSourceLabel}` : ''}`
+		                        : '当前无文本文件'}
+		                    </div>
+		                  </div>
+		                  <button
+		                    type="button"
+		                    className="rounded border border-gray-200 p-1 text-gray-500 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+		                    onClick={() => setOutlineRefreshSeq((v) => v + 1)}
+		                    title="刷新 Outline"
+		                  >
+		                    <RefreshCw size={12} />
+		                  </button>
+		                </div>
+		                <div className="min-h-0 flex-1 overflow-auto px-2 py-2">
+		                  {!activeTextFileInFocusedPane ? (
+		                    <div className="px-2 py-2 text-xs text-gray-500 dark:text-gray-400">
+		                      打开文本文件后可查看函数、属性与符号结构。
+		                    </div>
+		                  ) : outlineLoading ? (
+		                    <div className="px-2 py-2 text-xs text-gray-500 dark:text-gray-400">
+		                      生成 Outline 中...
+		                    </div>
+		                  ) : outlineError ? (
+		                    <div className="px-2 py-2 text-xs text-red-600 dark:text-red-300">
+		                      {outlineError}
+		                    </div>
+		                  ) : outlineItems.length === 0 ? (
+		                    <div className="px-2 py-2 text-xs text-gray-500 dark:text-gray-400">
+		                      未检测到可展示的符号。
+		                    </div>
+		                  ) : (
+		                    <div className="space-y-0.5">
+		                      {renderOutlineNodes(outlineItems)}
+		                    </div>
+		                  )}
+		                </div>
+		              </div>
+		            )}
+		          </div>
+
+		        </div>
+	      </div>
 
       {filePaletteOpen && (
         <div className="fixed inset-0 z-[210]">

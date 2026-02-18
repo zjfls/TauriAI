@@ -273,6 +273,16 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
     }
   }, [getOrderedSessions]);
 
+  const reportCloneFailure = useCallback((reason: string) => {
+    try {
+      if (typeof window !== 'undefined' && typeof window.alert === 'function') {
+        window.alert(`克隆失败：${reason}`);
+      }
+    } catch {
+      // ignore UI errors
+    }
+  }, []);
+
   const dispatchShortcutEvent = useCallback((actionId: string) => {
     try {
       window.dispatchEvent(new CustomEvent('tauri-ai:shortcut', { detail: { action: actionId } }));
@@ -329,14 +339,22 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
         }
         case 'session.clone': {
           const activeView = useUIStore.getState().activeView;
-          if (activeView !== 'chat') return false;
+          if (activeView !== 'chat') {
+            reportCloneFailure('当前不在聊天视图');
+            return false;
+          }
           const activeSessionId = useSessionStore.getState().activeSessionId;
-          if (!activeSessionId) return false;
+          if (!activeSessionId) {
+            reportCloneFailure('当前没有可克隆的会话');
+            return false;
+          }
           try {
             await useSessionStore.getState().cloneConversation(activeSessionId);
             return true;
           } catch (e) {
+            const message = e instanceof Error ? e.message : String(e);
             console.error('Failed to clone conversation:', e);
+            reportCloneFailure(message || '未知错误');
             return false;
           }
         }
@@ -434,6 +452,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
       handleNextSession,
       handlePreviousSession,
       openWorkstudioFromActiveSession,
+      reportCloneFailure,
     ]
   );
 

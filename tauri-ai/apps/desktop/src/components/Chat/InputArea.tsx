@@ -377,6 +377,7 @@ interface InputAreaProps {
   onCloneConversation?: () => void;
   disabled: boolean;
   isGenerating: boolean;
+  queuedCount?: number;
   supportsThinking?: boolean;  // Whether current model supports thinking
   supportsVision?: boolean;    // Whether current model supports vision/images
   contextUsage?: ContextUsageBreakdown | null;  // Context usage for indicator
@@ -970,6 +971,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   onCloneConversation,
   disabled,
   isGenerating,
+  queuedCount = 0,
   supportsThinking = false,
   supportsVision = false,
   contextUsage = null,
@@ -2932,7 +2934,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
                 options={RUN_MODE_OPTIONS}
                 currentValue={runMode}
                 onSelect={(value) => onRunModeChange(value as RunMode)}
-                disabled={isGenerating}
+                disabled={disabled}
                 placeholder="模式"
               />
             )}
@@ -2958,7 +2960,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
                 providerType={providerType}
                 value={thinkingMode}
                 onChange={handleThinkingModeChange}
-                disabled={isGenerating}
+                disabled={disabled}
                 useReasoningEffort={useReasoningEffort}
               />
             )}
@@ -3278,8 +3280,8 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
             onClick={handleSend}
             disabled={isSendDisabled}
             className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-500 text-white transition-colors hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-blue-500"
-            title={isGenerating ? '加入队列' : '发送消息'}
-            aria-label={isGenerating ? '加入队列' : '发送消息'}
+            title={isGenerating ? `加入队列${queuedCount > 0 ? `（当前 ${queuedCount}）` : ''}` : '发送消息'}
+            aria-label={isGenerating ? `加入队列${queuedCount > 0 ? `（当前 ${queuedCount}）` : ''}` : '发送消息'}
           >
             <Send size={18} />
           </button>

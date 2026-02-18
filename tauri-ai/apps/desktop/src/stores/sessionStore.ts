@@ -8,7 +8,7 @@ import { create } from 'zustand';
 import { arrayMove } from '@dnd-kit/sortable';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import type { AgentSession, Message, DebugInfo, TokenUsage, PersistedSession, PersistedSessionState, ContentPart, ThinkingMode, ApiProtocolType, RunEventPayload, MessageBlock, ProviderType, MessageTurn, Workstudio, RunMode, Conversation } from '../types';
+import type { AgentSession, Message, DebugInfo, TokenUsage, PersistedSession, PersistedSessionState, ContentPart, ThinkingMode, ApiProtocolType, RunEventPayload, MessageBlock, ProviderType, MessageTurn, Workstudio, RunMode, Conversation, QueuedSessionMessage } from '../types';
 import { getApiProtocol, getDefaultThinkingMode, getProviderType } from '../utils/apiUtils';
 import { hydrateMessagesFromBackend } from '../utils/hydrateMessages';
 import { markChatOpenProfile, setChatOpenProfileTarget } from '../utils/chatOpenProfile';
@@ -245,6 +245,9 @@ export interface SessionState {
   retry: (sessionId: string, messageId: string) => Promise<void>;
   retryTurn: (sessionId: string, assistantMessageId: string, turnId: string) => Promise<void>;
   undoToMessage: (sessionId: string, messageId: string) => void;
+  moveQueuedMessage: (sessionId: string, messageId: string, direction: 'up' | 'down') => void;
+  removeQueuedMessage: (sessionId: string, messageId: string) => void;
+  updateQueuedMessageContent: (sessionId: string, messageId: string, content: string) => void;
 
   // Streaming updates (internal use)
   appendStreamingToken: (sessionId: string, token: string) => void;
@@ -296,14 +299,10 @@ let pendingUndoOperation: Promise<any> = Promise.resolve();
 // 撤回/删除属于“强一致性操作”：需要忽略当前正在进行的流式 run 的 done/error，避免 UI/状态被回写。
 const discardNextFinalizeByConversationId = new Set<string>();
 
-type QueuedMessagePayload = {
-  content: string;
-  thinking?: boolean | string;
-  images?: ContentPart[];
-};
-
-const queuedMessagesBySessionId = new Map<string, QueuedMessagePayload[]>();
 const drainingQueuedSessions = new Set<string>();
+
+const cloneQueuedImages = (images?: ContentPart[]): ContentPart[] | undefined =>
+  images ? images.map((part) => ({ ...part })) : undefined;
 
 const enqueueQueuedMessage = (
   sessionId: string,
@@ -311,27 +310,58 @@ const enqueueQueuedMessage = (
   thinking?: boolean | string,
   images?: ContentPart[]
 ) => {
-  const queue = queuedMessagesBySessionId.get(sessionId) ?? [];
-  queue.push({
-    content,
-    thinking,
-    images: images ? [...images] : undefined,
+  useSessionStore.setState((state) => {
+    const newSessions = new Map(state.sessions);
+    const session = newSessions.get(sessionId);
+    if (!session) return {};
+    const nextQueue: QueuedSessionMessage[] = [
+      ...(session.queuedMessages ?? []),
+      {
+        id: crypto.randomUUID(),
+        content,
+        thinking,
+        images: cloneQueuedImages(images),
+        enqueuedAt: new Date().toISOString(),
+      },
+    ];
+    newSessions.set(sessionId, {
+      ...session,
+      queuedMessages: nextQueue,
+    });
+    return { sessions: newSessions };
   });
-  queuedMessagesBySessionId.set(sessionId, queue);
 };
 
-const shiftQueuedMessage = (sessionId: string): QueuedMessagePayload | undefined => {
-  const queue = queuedMessagesBySessionId.get(sessionId);
-  if (!queue || queue.length === 0) return undefined;
-  const next = queue.shift();
-  if (queue.length === 0) {
-    queuedMessagesBySessionId.delete(sessionId);
-  }
+const shiftQueuedMessage = (sessionId: string): QueuedSessionMessage | undefined => {
+  let next: QueuedSessionMessage | undefined;
+  useSessionStore.setState((state) => {
+    const newSessions = new Map(state.sessions);
+    const session = newSessions.get(sessionId);
+    if (!session) return {};
+    const queue = session.queuedMessages ?? [];
+    if (queue.length === 0) return {};
+    next = queue[0];
+    newSessions.set(sessionId, {
+      ...session,
+      queuedMessages: queue.slice(1),
+    });
+    return { sessions: newSessions };
+  });
   return next;
 };
 
 const clearQueuedMessagesForSession = (sessionId: string) => {
-  queuedMessagesBySessionId.delete(sessionId);
+  useSessionStore.setState((state) => {
+    const newSessions = new Map(state.sessions);
+    const session = newSessions.get(sessionId);
+    if (!session) return {};
+    if (!session.queuedMessages || session.queuedMessages.length === 0) return {};
+    newSessions.set(sessionId, {
+      ...session,
+      queuedMessages: [],
+    });
+    return { sessions: newSessions };
+  });
   drainingQueuedSessions.delete(sessionId);
 };
 
@@ -492,6 +522,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       thinkingMode,
       draftContent: '',
       messages: [],
+      queuedMessages: [],
       streamingBlocks: null,
       isGenerating: false,
       error: null,
@@ -1469,6 +1500,63 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     get().saveSessionState();
   },
 
+  moveQueuedMessage: (sessionId: string, messageId: string, direction: 'up' | 'down') => {
+    set((state) => {
+      const newSessions = new Map(state.sessions);
+      const session = newSessions.get(sessionId);
+      if (!session) return {};
+      const queue = session.queuedMessages ?? [];
+      const currentIndex = queue.findIndex((item) => item.id === messageId);
+      if (currentIndex === -1) return {};
+      const targetIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1;
+      if (targetIndex < 0 || targetIndex >= queue.length) return {};
+      const nextQueue = queue.slice();
+      const [item] = nextQueue.splice(currentIndex, 1);
+      nextQueue.splice(targetIndex, 0, item);
+      newSessions.set(sessionId, {
+        ...session,
+        queuedMessages: nextQueue,
+      });
+      return { sessions: newSessions };
+    });
+  },
+
+  removeQueuedMessage: (sessionId: string, messageId: string) => {
+    set((state) => {
+      const newSessions = new Map(state.sessions);
+      const session = newSessions.get(sessionId);
+      if (!session) return {};
+      const queue = session.queuedMessages ?? [];
+      const nextQueue = queue.filter((item) => item.id !== messageId);
+      if (nextQueue.length === queue.length) return {};
+      newSessions.set(sessionId, {
+        ...session,
+        queuedMessages: nextQueue,
+      });
+      return { sessions: newSessions };
+    });
+  },
+
+  updateQueuedMessageContent: (sessionId: string, messageId: string, content: string) => {
+    set((state) => {
+      const newSessions = new Map(state.sessions);
+      const session = newSessions.get(sessionId);
+      if (!session) return {};
+      const queue = session.queuedMessages ?? [];
+      const idx = queue.findIndex((item) => item.id === messageId);
+      if (idx === -1) return {};
+      const nextQueue = queue.slice();
+      const current = nextQueue[idx]!;
+      if (current.content === content) return {};
+      nextQueue[idx] = { ...current, content };
+      newSessions.set(sessionId, {
+        ...session,
+        queuedMessages: nextQueue,
+      });
+      return { sessions: newSessions };
+    });
+  },
+
   /**
    * Append a streaming token to a session
    * Requirements: 7.5
@@ -2364,6 +2452,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           webSearchProvider: persisted.webSearchProvider,
           draftContent: persisted.draftContent ?? '',
           messages,
+          queuedMessages: [],
           streamingBlocks: null,
           isGenerating: false,
           error: null,
@@ -2653,6 +2742,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       thinkingMode: coerceThinkingModeForProtocol(conversation?.thinkingMode, apiProtocol, providerType),
       draftContent: '',
       messages,
+      queuedMessages: [],
       streamingBlocks: null,
       isGenerating: false,
       error: null,
