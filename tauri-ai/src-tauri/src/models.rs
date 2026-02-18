@@ -555,6 +555,10 @@ pub struct WorkstudioUiState {
     /// - 设置后：仅对该 Workstudio 启用指定语言
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code_intelligence: Option<WorkstudioCodeIntelligenceState>,
+
+    /// Outline 折叠/浏览状态（可选）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outline: Option<WorkstudioOutlineState>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -563,6 +567,30 @@ pub struct WorkstudioCodeIntelligenceState {
     /// 允许启用的 Monaco language id 列表（例如 rust/python/cpp）。
     #[serde(default)]
     pub enabled_language_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkstudioOutlineState {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub open: Option<bool>,
+    #[serde(default)]
+    pub files: HashMap<String, WorkstudioOutlineFileState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkstudioOutlineFileState {
+    #[serde(default)]
+    pub collapsed_keys: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_key: Option<String>,
+    #[serde(default)]
+    pub recent_keys: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scroll_top: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_at_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

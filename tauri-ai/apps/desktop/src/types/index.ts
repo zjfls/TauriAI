@@ -892,6 +892,19 @@ export interface WorkstudioCodeIntelligenceUiState {
   enabledLanguageIds?: string[];
 }
 
+export interface WorkstudioOutlineFileUiState {
+  collapsedKeys?: string[];
+  activeKey?: string;
+  recentKeys?: string[];
+  scrollTop?: number;
+  updatedAtMs?: number;
+}
+
+export interface WorkstudioOutlineUiState {
+  open?: boolean;
+  files?: Record<string, WorkstudioOutlineFileUiState>;
+}
+
 /**
  * Workstudio UI 持久化状态（用于恢复上次打开的文件/分屏等）。
  */
@@ -916,6 +929,8 @@ export interface WorkstudioUiState {
   editorFontSize?: number;
   /** Workstudio 级别的代码智能偏好（可选） */
   codeIntelligence?: WorkstudioCodeIntelligenceUiState;
+  /** Outline 展开/浏览状态（可选） */
+  outline?: WorkstudioOutlineUiState;
 }
 
 // ============================================================================

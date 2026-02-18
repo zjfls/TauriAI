@@ -33,7 +33,7 @@ import { chatTabId, docTabId, terminalTabId, useWorkspaceTabStore, webTabId, typ
 const SESSION_STORAGE_KEY_PREFIX = 'tauri-ai:sessions:v3';
 const LEGACY_SESSION_STORAGE_KEY = 'tauri-ai:sessions';
 const PERSISTENCE_VERSION = 2;
-const MAX_SESSIONS = 10;
+const MAX_SESSIONS = 20;
 const DRAFT_PERSIST_DEBOUNCE_MS = 500;
 let draftPersistTimeout: ReturnType<typeof setTimeout> | null = null;
 

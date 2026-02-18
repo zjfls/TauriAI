@@ -92,6 +92,7 @@ type OutlineRange = {
 
 type OutlineItem = {
   id: string;
+  key: string;
   name: string;
   kind: string;
   detail: string;
@@ -101,9 +102,20 @@ type OutlineItem = {
   children: OutlineItem[];
 };
 
+type OutlineFileViewState = {
+  collapsedKeys: string[];
+  activeKey?: string;
+  recentKeys: string[];
+  scrollTop?: number;
+  updatedAtMs: number;
+};
+
 const DEFAULT_EDITOR_FONT_SIZE = 13;
 const MIN_EDITOR_FONT_SIZE = 10;
 const MAX_EDITOR_FONT_SIZE = 28;
+const OUTLINE_RECENT_KEY_LIMIT = 64;
+const OUTLINE_FILE_STATE_LIMIT = 120;
+const OUTLINE_COLLAPSED_KEY_LIMIT = 512;
 
 const clampEditorFontSize = (value: number): number => {
   if (!Number.isFinite(value)) return DEFAULT_EDITOR_FONT_SIZE;
@@ -473,6 +485,245 @@ const lspSymbolKindToLabel = (kind: any): string => {
   }
 };
 
+const normalizeOutlineKind = (kind: string): string =>
+  String(kind ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_') || 'symbol';
+
+const OUTLINE_CONTAINER_KINDS = new Set<string>([
+  'class',
+  'struct',
+  'interface',
+  'enum',
+  'trait',
+  'impl',
+  'module',
+  'namespace',
+  'package',
+  'object',
+]);
+const OUTLINE_CALLABLE_KINDS = new Set<string>(['method', 'function', 'constructor', 'operator']);
+const OUTLINE_VALUE_KINDS = new Set<string>([
+  'property',
+  'field',
+  'variable',
+  'constant',
+  'enum_member',
+  'parameter',
+  'type_param',
+]);
+
+const outlineKindRank = (kind: string): number => {
+  const normalized = normalizeOutlineKind(kind);
+  if (OUTLINE_CONTAINER_KINDS.has(normalized)) return 0;
+  if (OUTLINE_CALLABLE_KINDS.has(normalized)) return 1;
+  if (OUTLINE_VALUE_KINDS.has(normalized)) return 2;
+  return 3;
+};
+
+const compareOutlinePosition = (a: OutlineItem, b: OutlineItem): number => {
+  if (a.selectionLine !== b.selectionLine) return a.selectionLine - b.selectionLine;
+  if (a.selectionColumn !== b.selectionColumn) return a.selectionColumn - b.selectionColumn;
+  if (a.range.endLine !== b.range.endLine) return b.range.endLine - a.range.endLine;
+  if (a.range.endColumn !== b.range.endColumn) return b.range.endColumn - a.range.endColumn;
+  const kindDiff = outlineKindRank(a.kind) - outlineKindRank(b.kind);
+  if (kindDiff !== 0) return kindDiff;
+  const nameDiff = a.name.localeCompare(b.name);
+  if (nameDiff !== 0) return nameDiff;
+  return a.detail.localeCompare(b.detail);
+};
+
+const outlineRangeContains = (parent: OutlineItem, child: OutlineItem): boolean => {
+  const startsBefore =
+    parent.range.startLine < child.range.startLine ||
+    (parent.range.startLine === child.range.startLine &&
+      parent.range.startColumn <= child.range.startColumn);
+  const endsAfter =
+    parent.range.endLine > child.range.endLine ||
+    (parent.range.endLine === child.range.endLine &&
+      parent.range.endColumn >= child.range.endColumn);
+  const sameRange =
+    parent.range.startLine === child.range.startLine &&
+    parent.range.startColumn === child.range.startColumn &&
+    parent.range.endLine === child.range.endLine &&
+    parent.range.endColumn === child.range.endColumn;
+  return startsBefore && endsAfter && !sameRange;
+};
+
+const outlineCanContain = (parent: OutlineItem, child: OutlineItem): boolean => {
+  const parentKind = normalizeOutlineKind(parent.kind);
+  const childKind = normalizeOutlineKind(child.kind);
+  if (OUTLINE_VALUE_KINDS.has(parentKind)) return false;
+  if (OUTLINE_CALLABLE_KINDS.has(parentKind)) {
+    return OUTLINE_VALUE_KINDS.has(childKind) || OUTLINE_CALLABLE_KINDS.has(childKind) || childKind === 'symbol';
+  }
+  if (OUTLINE_CONTAINER_KINDS.has(parentKind)) return true;
+  return true;
+};
+
+const flattenOutlineItems = (items: OutlineItem[]): OutlineItem[] => {
+  const out: OutlineItem[] = [];
+  const walk = (nodes: OutlineItem[]) => {
+    for (const node of nodes) {
+      out.push({ ...node, children: [] });
+      if (node.children.length > 0) walk(node.children);
+    }
+  };
+  walk(items);
+  return out;
+};
+
+const buildOutlineHierarchy = (flatItems: OutlineItem[]): OutlineItem[] => {
+  const nodes = flatItems.map((node) => ({ ...node, children: [] as OutlineItem[] }));
+  nodes.sort(compareOutlinePosition);
+
+  const roots: OutlineItem[] = [];
+  const stack: OutlineItem[] = [];
+
+  for (const node of nodes) {
+    while (stack.length > 0 && !outlineRangeContains(stack[stack.length - 1]!, node)) {
+      stack.pop();
+    }
+
+    let parent: OutlineItem | null = null;
+    for (let index = stack.length - 1; index >= 0; index -= 1) {
+      const candidate = stack[index]!;
+      if (!outlineRangeContains(candidate, node)) continue;
+      if (!outlineCanContain(candidate, node)) continue;
+      parent = candidate;
+      break;
+    }
+
+    if (parent) parent.children.push(node);
+    else roots.push(node);
+
+    stack.push(node);
+  }
+
+  return roots;
+};
+
+const sortOutlineTree = (items: OutlineItem[]): void => {
+  items.sort(compareOutlinePosition);
+  for (const item of items) {
+    if (item.children.length > 0) sortOutlineTree(item.children);
+  }
+};
+
+const assignOutlineStableKeys = (items: OutlineItem[]): OutlineItem[] => {
+  const seen = new Map<string, number>();
+  const walk = (nodes: OutlineItem[]): OutlineItem[] =>
+    nodes.map((node) => {
+      const base = `${normalizeOutlineKind(node.kind)}:${node.name}:${node.selectionLine}:${node.selectionColumn}:${node.range.endLine}:${node.range.endColumn}`;
+      const nextCount = (seen.get(base) ?? 0) + 1;
+      seen.set(base, nextCount);
+      const key = nextCount === 1 ? base : `${base}#${nextCount}`;
+      return {
+        ...node,
+        id: key,
+        key,
+        children: walk(node.children),
+      };
+    });
+  return walk(items);
+};
+
+const normalizeOutlineItems = (items: OutlineItem[]): OutlineItem[] => {
+  if (items.length === 0) return [];
+  const flat = flattenOutlineItems(items);
+  if (flat.length === 0) return [];
+  const tree = buildOutlineHierarchy(flat);
+  sortOutlineTree(tree);
+  return assignOutlineStableKeys(tree);
+};
+
+const collectOutlineKeys = (items: OutlineItem[]): Set<string> => {
+  const keys = new Set<string>();
+  const walk = (nodes: OutlineItem[]) => {
+    for (const node of nodes) {
+      keys.add(node.key);
+      if (node.children.length > 0) walk(node.children);
+    }
+  };
+  walk(items);
+  return keys;
+};
+
+const collectOutlineCollapsibleKeys = (items: OutlineItem[]): string[] => {
+  const keys: string[] = [];
+  const walk = (nodes: OutlineItem[]) => {
+    for (const node of nodes) {
+      if (node.children.length > 0) {
+        keys.push(node.key);
+        walk(node.children);
+      }
+    }
+  };
+  walk(items);
+  return keys;
+};
+
+const trimOutlineRecentKeys = (keys: string[]): string[] => {
+  const unique: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of keys) {
+    const key = String(raw ?? '').trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    unique.push(key);
+    if (unique.length >= OUTLINE_RECENT_KEY_LIMIT) break;
+  }
+  return unique;
+};
+
+const trimOutlineCollapsedKeys = (keys: string[]): string[] => {
+  const unique: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of keys) {
+    const key = String(raw ?? '').trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    unique.push(key);
+    if (unique.length >= OUTLINE_COLLAPSED_KEY_LIMIT) break;
+  }
+  return unique;
+};
+
+const normalizeOutlineFileViewState = (raw: any): OutlineFileViewState => {
+  const collapsedKeys = Array.isArray(raw?.collapsedKeys)
+    ? trimOutlineCollapsedKeys(raw.collapsedKeys)
+    : [];
+  const activeKeyRaw = String(raw?.activeKey ?? '').trim();
+  const recentKeys = Array.isArray(raw?.recentKeys) ? trimOutlineRecentKeys(raw.recentKeys) : [];
+  const scrollTop =
+    typeof raw?.scrollTop === 'number' && Number.isFinite(raw.scrollTop) && raw.scrollTop >= 0
+      ? Math.floor(raw.scrollTop)
+      : undefined;
+  const updatedAtMs =
+    typeof raw?.updatedAtMs === 'number' && Number.isFinite(raw.updatedAtMs)
+      ? Math.floor(raw.updatedAtMs)
+      : Date.now();
+  return {
+    collapsedKeys,
+    activeKey: activeKeyRaw || undefined,
+    recentKeys,
+    scrollTop,
+    updatedAtMs,
+  };
+};
+
+const normalizeOutlineFileStateMap = (raw: any): Record<string, OutlineFileViewState> => {
+  if (!raw || typeof raw !== 'object') return {};
+  const entries = Object.entries(raw as Record<string, unknown>);
+  if (entries.length === 0) return {};
+  const normalized: Array<[string, OutlineFileViewState]> = [];
+  for (const [filePathRaw, value] of entries) {
+    const filePath = normalizeFsPath(String(filePathRaw ?? '').trim());
+    if (!filePath) continue;
+    normalized.push([filePath, normalizeOutlineFileViewState(value)]);
+  }
+  normalized.sort((a, b) => (b[1].updatedAtMs ?? 0) - (a[1].updatedAtMs ?? 0));
+  return Object.fromEntries(normalized.slice(0, OUTLINE_FILE_STATE_LIMIT));
+};
+
 const lspDocumentSymbolsToOutline = (result: any): OutlineItem[] => {
   if (!Array.isArray(result)) return [];
 
@@ -490,6 +741,7 @@ const lspDocumentSymbolsToOutline = (result: any): OutlineItem[] => {
       .filter(Boolean) as OutlineItem[];
     return {
       id,
+      key: id,
       name,
       kind: lspSymbolKindToLabel(node?.kind),
       detail: typeof node?.detail === 'string' ? node.detail : '',
@@ -507,6 +759,7 @@ const lspDocumentSymbolsToOutline = (result: any): OutlineItem[] => {
     const range = toOutlineRangeFromLsp(rangeRaw);
     return {
       id: `si:${index}:${name}:${range.startLine}:${range.startColumn}`,
+      key: `si:${index}:${name}:${range.startLine}:${range.startColumn}`,
       name,
       kind: lspSymbolKindToLabel(node?.kind),
       detail: '',
@@ -519,19 +772,21 @@ const lspDocumentSymbolsToOutline = (result: any): OutlineItem[] => {
 
   const looksLikeSymbolInformation = result.some((item) => item && typeof item === 'object' && 'location' in item);
   if (looksLikeSymbolInformation) {
-    return result
+    const flat = result
       .map((node, index) => fromSymbolInformation(node, index))
       .filter(Boolean) as OutlineItem[];
+    return normalizeOutlineItems(flat);
   }
 
-  return result
+  const tree = result
     .map((node, index) => fromDocumentSymbol(node, 'ds', index))
     .filter(Boolean) as OutlineItem[];
+  return normalizeOutlineItems(tree);
 };
 
 const astSymbolsToOutline = (symbols: any, parentKey = 'ast'): OutlineItem[] => {
   if (!Array.isArray(symbols)) return [];
-  return symbols
+  const tree = symbols
     .map((node: any, index: number) => {
       const name = String(node?.name ?? '').trim();
       if (!name) return null;
@@ -541,6 +796,7 @@ const astSymbolsToOutline = (symbols: any, parentKey = 'ast'): OutlineItem[] => 
       const children = astSymbolsToOutline(node?.children ?? [], id);
       return {
         id,
+        key: id,
         name,
         kind: String(node?.kind ?? 'symbol').trim() || 'symbol',
         detail: '',
@@ -551,6 +807,7 @@ const astSymbolsToOutline = (symbols: any, parentKey = 'ast'): OutlineItem[] => 
       } as OutlineItem;
     })
     .filter(Boolean) as OutlineItem[];
+  return normalizeOutlineItems(tree);
 };
 
 const countOutlineItems = (items: OutlineItem[]): number => {
@@ -576,6 +833,8 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const lspBridgeRef = useRef<{ dispose: () => void } | null>(null);
   const lspBridgeWorkstudioIdRef = useRef<string | null>(null);
   const explorerContainerRef = useRef<HTMLDivElement | null>(null);
+  const outlineContainerRef = useRef<HTMLDivElement | null>(null);
+  const outlineScrollSaveTimerRef = useRef<number | null>(null);
   const openFilesRef = useRef<OpenFile[]>([]);
   const openingPathsRef = useRef<Set<string>>(new Set());
   const filePaletteInputRef = useRef<HTMLInputElement | null>(null);
@@ -739,7 +998,13 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const [outlineLoading, setOutlineLoading] = useState(false);
   const [outlineError, setOutlineError] = useState<string | null>(null);
   const [outlineSource, setOutlineSource] = useState<'lsp' | 'ast' | 'none'>('none');
-  const [outlineActiveId, setOutlineActiveId] = useState<string | null>(null);
+  const [outlineActiveKey, setOutlineActiveKey] = useState<string | null>(null);
+  const [outlineCollapsedKeys, setOutlineCollapsedKeys] = useState<Set<string>>(() => new Set());
+  const [outlineFileStateByPath, setOutlineFileStateByPath] = useState<Record<string, OutlineFileViewState>>({});
+  const outlineFileStateByPathRef = useRef<Record<string, OutlineFileViewState>>(outlineFileStateByPath);
+  useEffect(() => {
+    outlineFileStateByPathRef.current = outlineFileStateByPath;
+  }, [outlineFileStateByPath]);
   const [outlineRefreshSeq, setOutlineRefreshSeq] = useState(0);
   const outlineRequestSeqRef = useRef(0);
   const [lspMenu, setLspMenu] = useState<
@@ -984,14 +1249,115 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
   const outlineItemCount = useMemo(() => countOutlineItems(outlineItems), [outlineItems]);
   const outlineSourceLabel = outlineSource === 'lsp' ? 'LSP' : outlineSource === 'ast' ? 'AST' : '';
+  const activeOutlineFilePath = useMemo(
+    () => (activeTextFileInFocusedPane ? normalizeFsPath(activeTextFileInFocusedPane.path) : null),
+    [activeTextFileInFocusedPane]
+  );
+
+  const updateOutlineFileViewState = useCallback(
+    (filePathRaw: string, updater: (prev: OutlineFileViewState) => OutlineFileViewState) => {
+      const filePath = normalizeFsPath(String(filePathRaw ?? '').trim());
+      if (!filePath) return;
+      setOutlineFileStateByPath((prevMap) => {
+        const prev = prevMap[filePath] ?? {
+          collapsedKeys: [],
+          recentKeys: [],
+          updatedAtMs: Date.now(),
+        };
+        const next = normalizeOutlineFileViewState({
+          ...updater(prev),
+          updatedAtMs: Date.now(),
+        });
+        const merged = { ...prevMap, [filePath]: next };
+        const sorted = Object.entries(merged).sort(
+          (a, b) => (b[1].updatedAtMs ?? 0) - (a[1].updatedAtMs ?? 0)
+        );
+        return Object.fromEntries(sorted.slice(0, OUTLINE_FILE_STATE_LIMIT));
+      });
+    },
+    []
+  );
+
+  const persistOutlineCollapsedSet = useCallback(
+    (filePath: string | null, collapsed: Set<string>) => {
+      if (!filePath) return;
+      const collapsedKeys = trimOutlineCollapsedKeys(Array.from(collapsed));
+      updateOutlineFileViewState(filePath, (prev) => ({
+        ...prev,
+        collapsedKeys,
+      }));
+    },
+    [updateOutlineFileViewState]
+  );
+
+  const markOutlineVisited = useCallback(
+    (filePath: string | null, outlineKey: string) => {
+      if (!filePath) return;
+      const key = String(outlineKey ?? '').trim();
+      if (!key) return;
+      updateOutlineFileViewState(filePath, (prev) => ({
+        ...prev,
+        activeKey: key,
+        recentKeys: trimOutlineRecentKeys([key, ...(prev.recentKeys ?? [])]),
+      }));
+    },
+    [updateOutlineFileViewState]
+  );
+
+  const handleOutlineScroll = useCallback(
+    (event: React.UIEvent<HTMLDivElement>) => {
+      const filePath = activeOutlineFilePath;
+      if (!filePath) return;
+      const scrollTop = Math.max(0, Math.floor(event.currentTarget.scrollTop));
+      if (outlineScrollSaveTimerRef.current) {
+        window.clearTimeout(outlineScrollSaveTimerRef.current);
+      }
+      outlineScrollSaveTimerRef.current = window.setTimeout(() => {
+        outlineScrollSaveTimerRef.current = null;
+        updateOutlineFileViewState(filePath, (prev) => ({
+          ...prev,
+          scrollTop,
+        }));
+      }, 120);
+    },
+    [activeOutlineFilePath, updateOutlineFileViewState]
+  );
 
   useEffect(() => {
     setExplorerSelectedFilePath(activeFilePathInFocusedPane);
   }, [activeFilePathInFocusedPane]);
 
   useEffect(() => {
-    setOutlineActiveId(null);
+    setOutlineActiveKey(null);
+    setOutlineCollapsedKeys(new Set());
   }, [activeTextFileInFocusedPane?.id]);
+
+  useEffect(() => {
+    return () => {
+      if (outlineScrollSaveTimerRef.current) {
+        window.clearTimeout(outlineScrollSaveTimerRef.current);
+        outlineScrollSaveTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!outlineOpen) return;
+    if (outlineLoading) return;
+    const filePath = activeOutlineFilePath;
+    if (!filePath) return;
+    const top = outlineFileStateByPath[filePath]?.scrollTop;
+    if (typeof top !== 'number' || !Number.isFinite(top)) return;
+    let rafId = 0;
+    rafId = window.requestAnimationFrame(() => {
+      const container = outlineContainerRef.current;
+      if (!container) return;
+      container.scrollTop = Math.max(0, Math.floor(top));
+    });
+    return () => {
+      if (rafId) window.cancelAnimationFrame(rafId);
+    };
+  }, [activeOutlineFilePath, outlineFileStateByPath, outlineItems.length, outlineLoading, outlineOpen]);
 
   useEffect(() => {
     if (!outlineOpen) return;
@@ -1000,16 +1366,19 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       setOutlineSource('none');
       setOutlineError(null);
       setOutlineLoading(false);
+      setOutlineCollapsedKeys(new Set());
       return;
     }
 
     const wsId = ws?.id ?? null;
     const activeFile = activeTextFileInFocusedPane;
-    if (!wsId || !activeFile) {
+    const outlineFilePath = activeFile ? normalizeFsPath(activeFile.path) : null;
+    if (!wsId || !activeFile || !outlineFilePath) {
       setOutlineItems([]);
       setOutlineSource('none');
       setOutlineError(null);
       setOutlineLoading(false);
+      setOutlineCollapsedKeys(new Set());
       return;
     }
 
@@ -1071,9 +1440,24 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         }
 
         if (cancelled || reqSeq !== outlineRequestSeqRef.current) return;
+        const allKeys = collectOutlineKeys(nextItems);
+        const collapsibleKeys = collectOutlineCollapsibleKeys(nextItems);
+        const collapsibleKeySet = new Set(collapsibleKeys);
+        const persistedViewState = outlineFileStateByPathRef.current[outlineFilePath];
+        const persistedCollapsed = Array.isArray(persistedViewState?.collapsedKeys)
+          ? persistedViewState.collapsedKeys.filter((key) => collapsibleKeySet.has(key))
+          : collapsibleKeys;
+        const collapsedSet = new Set(persistedCollapsed);
+        const persistedActiveKey = String(persistedViewState?.activeKey ?? '').trim();
+        const restoredActiveKey = persistedActiveKey && allKeys.has(persistedActiveKey) ? persistedActiveKey : null;
+
         setOutlineItems(nextItems);
         setOutlineSource(nextSource);
-        setOutlineActiveId((prev) => (prev && nextItems.some((item) => item.id === prev) ? prev : null));
+        setOutlineCollapsedKeys(collapsedSet);
+        setOutlineActiveKey((prev) => {
+          if (restoredActiveKey) return restoredActiveKey;
+          return prev && allKeys.has(prev) ? prev : null;
+        });
         setOutlineError(nextItems.length === 0 ? lspError : null);
         setOutlineLoading(false);
       })();
@@ -2042,6 +2426,20 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     [runFocusedEditorAction]
   );
 
+  const toggleOutlineCollapsed = useCallback(
+    (item: OutlineItem) => {
+      if (item.children.length === 0) return;
+      setOutlineCollapsedKeys((prev) => {
+        const next = new Set(prev);
+        if (next.has(item.key)) next.delete(item.key);
+        else next.add(item.key);
+        persistOutlineCollapsedSet(activeOutlineFilePath, next);
+        return next;
+      });
+    },
+    [activeOutlineFilePath, persistOutlineCollapsedSet]
+  );
+
   const jumpToOutlineItem = useCallback(
     (item: OutlineItem) => {
       const state = useWindowLayoutStore.getState();
@@ -2082,34 +2480,58 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         endColumn,
       });
       editor.revealPositionInCenter({ lineNumber: line, column });
-      setOutlineActiveId(item.id);
+      setOutlineActiveKey(item.key);
+      markOutlineVisited(activeOutlineFilePath, item.key);
     },
-    [commitNavBackEntry, getCurrentNavLocationForPane, isMeaningfulNavTransition, resolvedFocusedPaneId, setFocusedPane]
+    [
+      activeOutlineFilePath,
+      commitNavBackEntry,
+      getCurrentNavLocationForPane,
+      isMeaningfulNavTransition,
+      markOutlineVisited,
+      resolvedFocusedPaneId,
+      setFocusedPane,
+    ]
   );
 
   const renderOutlineNodes = (nodes: OutlineItem[], depth = 0): React.ReactNode =>
     nodes.map((item) => {
-      const active = outlineActiveId === item.id;
+      const active = outlineActiveKey === item.key;
+      const hasChildren = item.children.length > 0;
+      const collapsed = hasChildren && outlineCollapsedKeys.has(item.key);
       return (
         <React.Fragment key={item.id}>
-          <button
-            type="button"
-            className={[
-              'flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs',
-              active
-                ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200'
-                : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800',
-            ].join(' ')}
-            style={{ paddingLeft: 8 + depth * 14 }}
-            title={`${item.name} · ${item.kind} · ${item.selectionLine}:${item.selectionColumn}`}
-            onClick={() => jumpToOutlineItem(item)}
-          >
-            <span className="min-w-0 flex-1 truncate font-medium">{item.name}</span>
-            <span className="shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-gray-500 dark:bg-gray-800 dark:text-gray-400">
-              {item.kind}
-            </span>
-          </button>
-          {item.children.length > 0 ? renderOutlineNodes(item.children, depth + 1) : null}
+          <div className="flex items-center gap-1" style={{ paddingLeft: 6 + depth * 14 }}>
+            {hasChildren ? (
+              <button
+                type="button"
+                className="rounded p-0.5 text-gray-500 hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+                title={collapsed ? '展开' : '折叠'}
+                onClick={() => toggleOutlineCollapsed(item)}
+              >
+                {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+              </button>
+            ) : (
+              <span className="inline-block h-4 w-4" />
+            )}
+            <button
+              type="button"
+              className={[
+                'flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1 text-left text-xs',
+                active
+                  ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200'
+                  : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800',
+              ].join(' ')}
+              title={`${item.name} · ${item.kind} · ${item.selectionLine}:${item.selectionColumn}`}
+              onClick={() => jumpToOutlineItem(item)}
+            >
+              <span className="min-w-0 flex-1 truncate font-medium">{item.name}</span>
+              <span className="shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-gray-500 dark:bg-gray-800 dark:text-gray-400">
+                {item.kind}
+              </span>
+            </button>
+          </div>
+          {hasChildren && !collapsed ? renderOutlineNodes(item.children, depth + 1) : null}
         </React.Fragment>
       );
     });
@@ -2585,6 +3007,16 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     [commitNavBackEntry, isMeaningfulNavTransition, lspAutoConfigStatus, openLinkTarget, saveFile, ws?.id]
   );
 
+  const relayoutAllEditors = useCallback(() => {
+    for (const editor of editorByPaneRef.current.values()) {
+      try {
+        editor.layout();
+      } catch {
+        // ignore
+      }
+    }
+  }, []);
+
   useEffect(() => {
     // Ensure existing editors are updated immediately when font size changes.
     for (const editor of editorByPaneRef.current.values()) {
@@ -2596,6 +3028,37 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       }
     }
   }, [editorFontSize]);
+
+  const editorLayoutKey = useMemo(() => {
+    return `${outlineOpen ? '1' : '0'}|${resolvedPanes
+      .map((pane) => `${pane.id}:${pane.weight}:${pane.activeTabId ?? ''}:${pane.tabIds.join(',')}`)
+      .join('|')}`;
+  }, [outlineOpen, resolvedPanes]);
+
+  useEffect(() => {
+    let rafId1 = 0;
+    let rafId2 = 0;
+    rafId1 = window.requestAnimationFrame(() => {
+      relayoutAllEditors();
+      rafId2 = window.requestAnimationFrame(() => {
+        relayoutAllEditors();
+      });
+    });
+    return () => {
+      if (rafId1) window.cancelAnimationFrame(rafId1);
+      if (rafId2) window.cancelAnimationFrame(rafId2);
+    };
+  }, [editorLayoutKey, relayoutAllEditors]);
+
+  useEffect(() => {
+    const onResize = () => {
+      relayoutAllEditors();
+    };
+    window.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+    };
+  }, [relayoutAllEditors]);
 
   const editorTheme = useMemo(() => {
     return document.documentElement.classList.contains('dark') ? 'vs-dark' : 'vs';
@@ -3658,6 +4121,10 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     setOpenFiles([]);
     setWsEnabledLspLanguageIds(null);
     setEditorFontSize(DEFAULT_EDITOR_FONT_SIZE);
+    setOutlineOpen(true);
+    setOutlineCollapsedKeys(new Set());
+    setOutlineActiveKey(null);
+    setOutlineFileStateByPath({});
     replaceLayout({
       panes: [
         {
@@ -3692,6 +4159,11 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         if (typeof rawFontSize === 'number' && Number.isFinite(rawFontSize)) {
           setEditorFontSize(clampEditorFontSize(rawFontSize));
         }
+
+        if (typeof state.outline?.open === 'boolean') {
+          setOutlineOpen(state.outline.open);
+        }
+        setOutlineFileStateByPath(normalizeOutlineFileStateMap(state.outline?.files));
 
         const legacyPaths = Array.isArray(state.openFiles)
           ? state.openFiles.map((p) => normalizeFsPath(String(p))).filter((p) => Boolean(p))
@@ -3884,6 +4356,8 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     if (saveStateTimerRef.current) window.clearTimeout(saveStateTimerRef.current);
     saveStateTimerRef.current = window.setTimeout(() => {
       const persistedOpenFiles = openFiles.filter((f) => !isUntitledPath(f.path));
+      const outlineFiles = normalizeOutlineFileStateMap(outlineFileStateByPath);
+      const hasOutlineFiles = Object.keys(outlineFiles).length > 0;
       const state: WorkstudioUiState = {
         openFiles: Array.from(new Set(persistedOpenFiles.map((f) => f.path))),
         panes: resolvedPanes
@@ -3897,6 +4371,14 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         focusedPaneId: resolvedFocusedPaneId ?? undefined,
         expandedDirs: Array.from(expandedDirs),
         ...(editorFontSize === DEFAULT_EDITOR_FONT_SIZE ? {} : { editorFontSize }),
+        ...(!outlineOpen || hasOutlineFiles
+          ? {
+              outline: {
+                ...(outlineOpen ? {} : { open: false }),
+                ...(hasOutlineFiles ? { files: outlineFiles } : {}),
+              },
+            }
+          : {}),
         ...(wsEnabledLspLanguageIds === null
           ? {}
           : {
@@ -3912,7 +4394,17 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     return () => {
       if (saveStateTimerRef.current) window.clearTimeout(saveStateTimerRef.current);
     };
-  }, [ws, openFiles, resolvedPanes, resolvedFocusedPaneId, expandedDirs, editorFontSize, wsEnabledLspLanguageIds]);
+  }, [
+    ws,
+    openFiles,
+    resolvedPanes,
+    resolvedFocusedPaneId,
+    expandedDirs,
+    editorFontSize,
+    outlineOpen,
+    outlineFileStateByPath,
+    wsEnabledLspLanguageIds,
+  ]);
 
   useEffect(() => {
     if (!ws) return;
@@ -4542,7 +5034,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         </div>
       )}
 		      <div className="flex flex-1 overflow-hidden">
-        <div className="flex w-[280px] flex-shrink-0 flex-col border-r border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-950">
+        <div className="flex w-[300px] flex-shrink-0 flex-col border-r border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-950">
           <div className="flex items-center justify-between border-b border-gray-200 px-3 py-2 dark:border-gray-800">
             <div className="min-w-0">
               <div className="truncate text-[11px] text-gray-500 dark:text-gray-400" title={ws.mainFolder}>
@@ -4554,21 +5046,81 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
             </div>
           </div>
 
-          <div
-            className="flex-1 overflow-auto px-2 py-2"
-            ref={explorerContainerRef}
-            onContextMenu={(e) => {
-              const target = e.target as HTMLElement | null;
-              if (target && target.closest('[data-ws-node="1"]')) return;
-              e.preventDefault();
-              setContextMenu({ visible: true, x: e.clientX, y: e.clientY, kind: 'blank' });
-            }}
-          >
-            <div className="space-y-1">
-              {rootFolders.map((folder) =>
-                renderDirNode(folder, 0, { isRoot: true, isMainRoot: folder === ws.mainFolder })
-              )}
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div
+              className={[
+                'min-h-0 overflow-auto px-2 py-2',
+                outlineOpen ? 'flex-[3_1_0%]' : 'flex-1',
+              ].join(' ')}
+              ref={explorerContainerRef}
+              onContextMenu={(e) => {
+                const target = e.target as HTMLElement | null;
+                if (target && target.closest('[data-ws-node="1"]')) return;
+                e.preventDefault();
+                setContextMenu({ visible: true, x: e.clientX, y: e.clientY, kind: 'blank' });
+              }}
+            >
+              <div className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                Explorer
+              </div>
+              <div className="space-y-1">
+                {rootFolders.map((folder) =>
+                  renderDirNode(folder, 0, { isRoot: true, isMainRoot: folder === ws.mainFolder })
+                )}
+              </div>
             </div>
+
+            {outlineOpen && (
+              <div className="flex min-h-[180px] flex-[2_1_0%] flex-col border-t border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-950">
+                <div className="flex items-center gap-2 border-b border-gray-200 px-3 py-2 dark:border-gray-800">
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-xs font-semibold text-gray-800 dark:text-gray-100">
+                      Outline
+                    </div>
+                    <div className="mt-0.5 truncate text-[11px] text-gray-500 dark:text-gray-400">
+                      {activeTextFileInFocusedPane
+                        ? `${basename(activeTextFileInFocusedPane.path)}${outlineSourceLabel ? ` · ${outlineSourceLabel}` : ''}`
+                        : '当前无文本文件'}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="rounded border border-gray-200 p-1 text-gray-500 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                    onClick={() => setOutlineRefreshSeq((v) => v + 1)}
+                    title="刷新 Outline"
+                  >
+                    <RefreshCw size={12} />
+                  </button>
+                </div>
+                <div
+                  className="min-h-0 flex-1 overflow-auto px-2 py-2"
+                  ref={outlineContainerRef}
+                  onScroll={handleOutlineScroll}
+                >
+                  {!activeTextFileInFocusedPane ? (
+                    <div className="px-2 py-2 text-xs text-gray-500 dark:text-gray-400">
+                      打开文本文件后可查看函数、属性与符号结构。
+                    </div>
+                  ) : outlineLoading ? (
+                    <div className="px-2 py-2 text-xs text-gray-500 dark:text-gray-400">
+                      生成 Outline 中...
+                    </div>
+                  ) : outlineError ? (
+                    <div className="px-2 py-2 text-xs text-red-600 dark:text-red-300">
+                      {outlineError}
+                    </div>
+                  ) : outlineItems.length === 0 ? (
+                    <div className="px-2 py-2 text-xs text-gray-500 dark:text-gray-400">
+                      未检测到可展示的符号。
+                    </div>
+                  ) : (
+                    <div className="space-y-0.5">
+                      {renderOutlineNodes(outlineItems)}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -4840,7 +5392,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	                                    <iframe
 	                                      title={activeFile.title}
 	                                      className="h-full w-full"
-	                                      src={`data:application/pdf;base64,${activeFile.base64}`}
+	                                      src={`data:application/pdf;base64,${activeFile.base64}#page=1&view=FitH`}
 	                                    />
 	                                  </div>
 	                                ) : (
@@ -4914,53 +5466,6 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 		          </DndContext>
 		            </div>
 
-		            {outlineOpen && (
-		              <div className="flex w-[300px] flex-shrink-0 flex-col border-l border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-950">
-		                <div className="flex items-center gap-2 border-b border-gray-200 px-3 py-2 dark:border-gray-800">
-		                  <div className="min-w-0 flex-1">
-		                    <div className="truncate text-xs font-semibold text-gray-800 dark:text-gray-100">
-		                      Outline
-		                    </div>
-		                    <div className="mt-0.5 truncate text-[11px] text-gray-500 dark:text-gray-400">
-		                      {activeTextFileInFocusedPane
-		                        ? `${basename(activeTextFileInFocusedPane.path)}${outlineSourceLabel ? ` · ${outlineSourceLabel}` : ''}`
-		                        : '当前无文本文件'}
-		                    </div>
-		                  </div>
-		                  <button
-		                    type="button"
-		                    className="rounded border border-gray-200 p-1 text-gray-500 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-		                    onClick={() => setOutlineRefreshSeq((v) => v + 1)}
-		                    title="刷新 Outline"
-		                  >
-		                    <RefreshCw size={12} />
-		                  </button>
-		                </div>
-		                <div className="min-h-0 flex-1 overflow-auto px-2 py-2">
-		                  {!activeTextFileInFocusedPane ? (
-		                    <div className="px-2 py-2 text-xs text-gray-500 dark:text-gray-400">
-		                      打开文本文件后可查看函数、属性与符号结构。
-		                    </div>
-		                  ) : outlineLoading ? (
-		                    <div className="px-2 py-2 text-xs text-gray-500 dark:text-gray-400">
-		                      生成 Outline 中...
-		                    </div>
-		                  ) : outlineError ? (
-		                    <div className="px-2 py-2 text-xs text-red-600 dark:text-red-300">
-		                      {outlineError}
-		                    </div>
-		                  ) : outlineItems.length === 0 ? (
-		                    <div className="px-2 py-2 text-xs text-gray-500 dark:text-gray-400">
-		                      未检测到可展示的符号。
-		                    </div>
-		                  ) : (
-		                    <div className="space-y-0.5">
-		                      {renderOutlineNodes(outlineItems)}
-		                    </div>
-		                  )}
-		                </div>
-		              </div>
-		            )}
 		          </div>
 
 		        </div>
