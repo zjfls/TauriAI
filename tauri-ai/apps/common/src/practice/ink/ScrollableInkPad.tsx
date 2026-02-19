@@ -30,15 +30,14 @@ function computeDesiredHeightPx(strokes: InkStroke[], viewportHeightPx: number, 
 
 function scaleStrokes(
   strokes: InkStroke[],
-  scaleX: number,
-  scaleY: number,
+  scale: number,
 ): InkStroke[] {
-  if (!Number.isFinite(scaleX) || !Number.isFinite(scaleY)) return strokes;
-  if (Math.abs(scaleX - 1) < 1e-6 && Math.abs(scaleY - 1) < 1e-6) return strokes;
+  if (!Number.isFinite(scale)) return strokes;
+  if (Math.abs(scale - 1) < 1e-6) return strokes;
   return strokes.map((s) => ({
     ...s,
-    size: s.size * Math.max(scaleX, scaleY),
-    points: s.points.map((p) => ({ ...p, x: p.x * scaleX, y: p.y * scaleY })),
+    size: s.size * scale,
+    points: s.points.map((p) => ({ ...p, x: p.x * scale, y: p.y * scale })),
   }));
 }
 
@@ -67,6 +66,7 @@ function drawStrokeSegment(
   const lineCap = stroke.lineCap ?? brush?.lineCap ?? "round";
   const lineJoin = stroke.lineJoin ?? brush?.lineJoin ?? "round";
   const blendMode = stroke.blendMode ?? brush?.blendMode ?? "source-over";
+  const baseSize = clamp(stroke.size, 0.5, 64);
   const rawPressure =
     (typeof b.pressure === "number" && b.pressure > 0 ? b.pressure : undefined) ??
     (typeof a.pressure === "number" && a.pressure > 0 ? a.pressure : undefined) ??
@@ -74,8 +74,8 @@ function drawStrokeSegment(
   const pressure = clamp(rawPressure, 0.1, 1);
   const width =
     stroke.tool === "eraser"
-      ? stroke.size
-      : Math.max(0.5, stroke.size * (1 - pressureSensitivity + pressureSensitivity * pressure));
+      ? baseSize
+      : Math.max(0.5, baseSize * (1 - pressureSensitivity + pressureSensitivity * pressure));
 
   ctx.save();
   if (stroke.tool === "eraser") {
@@ -84,7 +84,7 @@ function drawStrokeSegment(
     ctx.globalAlpha = 1;
   } else {
     ctx.globalCompositeOperation = blendMode;
-    ctx.strokeStyle = stroke.color;
+    ctx.strokeStyle = typeof stroke.color === "string" && stroke.color.trim() ? stroke.color : "#111827";
     ctx.globalAlpha = opacity;
   }
   ctx.lineWidth = width;
@@ -303,30 +303,37 @@ export function ScrollableInkPad({
     };
   }, []);
 
-  // When viewport size changes, scale existing strokes into the new coordinate space.
+  // When viewport width changes, scale existing strokes into the new coordinate space.
   useEffect(() => {
     if (inking) return;
     const w = desiredContentWidth;
-    const h = desiredContentHeight;
-    if (!w || !h) return;
-    const prevW = value.width || w;
-    const prevH = value.height || h;
-    const needScale = Math.abs(prevW - w) >= 1 || Math.abs(prevH - h) >= 1;
-    if (!needScale) return;
-    const sx = w / prevW;
-    const sy = h / prevH;
-    const scaled = scaleStrokes(value.strokes, sx, sy);
-    const next: InkState = { width: w, height: h, strokes: scaled };
+    if (!w) return;
+
+    const prev = draftRef.current;
+    const prevW = Number.isFinite(prev.width) ? prev.width : 0;
+    const safePrevW = prevW >= 50 ? prevW : w;
+    if (Math.abs(safePrevW - w) < 1) return;
+
+    const scale = w / safePrevW;
+    if (!Number.isFinite(scale) || Math.abs(scale - 1) < 1e-6) return;
+
+    const scaled = scaleStrokes(prev.strokes, scale);
+    const nextHeight = computeDesiredHeightPx(
+      scaled,
+      viewportSize.h,
+      Math.max(0, (Number.isFinite(prev.height) ? prev.height : 0) * scale),
+    );
+    const next: InkState = { width: w, height: nextHeight, strokes: scaled };
     setDraft(next);
     draftRef.current = next;
     onChange(next, true);
     const strokeCtx = strokeCtxRef.current;
     if (strokeCtx) {
-      redrawAll(strokeCtx, next.strokes, Math.max(1, Math.round(w)), Math.max(1, Math.round(h)));
+      redrawAll(strokeCtx, next.strokes, Math.max(1, Math.round(w)), Math.max(1, Math.round(nextHeight)));
       schedulePresent();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [desiredContentWidth, desiredContentHeight]);
+  }, [desiredContentWidth, inking, viewportSize.h]);
 
   // Setup canvas devicePixelRatio scaling.
   useLayoutEffect(() => {

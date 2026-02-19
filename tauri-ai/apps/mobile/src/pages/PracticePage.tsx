@@ -55,6 +55,8 @@ function formatModelLabel(
 }
 
 function drawInkSegment(ctx: CanvasRenderingContext2D, stroke: InkStroke, a: InkPoint, b: InkPoint) {
+  const rawSize = typeof stroke.size === "number" && Number.isFinite(stroke.size) ? stroke.size : 1;
+  const baseSize = Math.max(0.5, Math.min(64, rawSize));
   const opacity =
     typeof stroke.opacity === "number"
       ? Math.max(0.05, Math.min(1, stroke.opacity))
@@ -76,10 +78,10 @@ function drawInkSegment(ctx: CanvasRenderingContext2D, stroke: InkStroke, a: Ink
   );
   const lineWidth =
     stroke.tool === "eraser"
-      ? Math.max(1, stroke.size || 1)
+      ? Math.max(1, baseSize)
       : Math.max(
           1,
-          (stroke.size || 1) * (1 - pressureSensitivity + pressureSensitivity * pressure),
+          baseSize * (1 - pressureSensitivity + pressureSensitivity * pressure),
         );
 
   ctx.save();
