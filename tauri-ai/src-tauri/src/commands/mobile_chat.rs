@@ -786,16 +786,29 @@ pub async fn mobile_chat_stream_start(
         let mut final_content: Option<String> = None;
         let mut final_thinking: Option<String> = None;
 
-        // Tool-call loop (only MCP tools for mobile for now).
+        // Model-call loop (with optional MCP tool calls for mobile).
+        //
+        // 现象（Android 端用户反馈）：
+        // - MCP 工具调用完成后，有时“任务”会错误结束（没有继续等待模型基于工具结果输出后续内容）。
+        // 原因之一是：某些 provider/gateway 组合会出现“本轮请求结束但没有任何有效输出”的空响应；
+        // PC 端有更完整的容错/重试与空输出保护，而移动端这里需要补齐。
+        let mut model_rounds: u32 = 0;
+        let max_model_rounds: u32 = 16;
+
+        // Tool-call loop guard (avoid infinite ReAct loops).
         let mut tool_rounds: u32 = 0;
         let max_tool_rounds: u32 = 8;
+
+        // Allow a couple of consecutive empty model rounds (no tokens/thinking/tool_calls).
+        let mut empty_model_rounds: u32 = 0;
+        let max_empty_model_rounds: u32 = 2;
 
         // Some("done") | Some("error") | None
         let mut terminal: Option<&'static str> = None;
 
         while terminal != Some("done") && terminal != Some("error") {
-            tool_rounds += 1;
-            if tool_rounds > max_tool_rounds {
+            model_rounds += 1;
+            if model_rounds > max_model_rounds {
                 emit_mobile_stream_event(
                     &app2,
                     MobileChatStreamPayload {
@@ -807,7 +820,7 @@ pub async fn mobile_chat_stream_start(
                         content: None,
                         thinking: None,
                         data: None,
-                        error: Some("工具调用轮次过多（可能出现循环）。".to_string()),
+                        error: Some("模型调用轮次过多（可能出现循环/空响应重试）。".to_string()),
                     },
                 );
                 terminal = Some("error");
@@ -815,6 +828,11 @@ pub async fn mobile_chat_stream_start(
             }
 
             let (tx, mut rx) = mpsc::channel::<StreamEvent>(128);
+            let content_len_before_round = content_buf.len();
+            let thinking_len_before_round = thinking_buf.len();
+            final_content = None;
+            final_thinking = None;
+            let mut saw_web_search = false;
 
             // 重要：不要额外 `tokio::spawn` 一个 chat_stream 任务，否则取消（abort）外层任务时，
             // chat_stream 仍可能继续跑，导致请求无法可靠取消、占用带宽/额度。
@@ -877,19 +895,16 @@ pub async fn mobile_chat_stream_start(
                             StreamEvent::Done(content) => {
                                 final_content = Some(content);
                                 terminal = Some("done");
-                                break;
                             }
                             StreamEvent::DoneWithThinking { content, thinking } => {
                                 final_content = Some(content);
                                 final_thinking = Some(thinking);
                                 terminal = Some("done");
-                                break;
                             }
                             StreamEvent::DoneWithDebug { content, thinking, .. } => {
                                 final_content = Some(content);
                                 final_thinking = thinking;
                                 terminal = Some("done");
-                                break;
                             }
                             StreamEvent::Error(err) => {
                                 emit_mobile_stream_event(
@@ -911,7 +926,7 @@ pub async fn mobile_chat_stream_start(
                             }
                             StreamEvent::TurnState(_) => {}
                             StreamEvent::ToolCalls(calls) => {
-                                let normalized = normalize_tool_calls(calls, tool_rounds);
+                                let normalized = normalize_tool_calls(calls, model_rounds);
                                 emit_mobile_stream_event(
                                     &app2,
                                     MobileChatStreamPayload {
@@ -931,6 +946,7 @@ pub async fn mobile_chat_stream_start(
                                 // 让本轮调试信息与 usage 有机会完整落地。
                             }
                             StreamEvent::WebSearch { id, status, action } => {
+                                saw_web_search = true;
                                 emit_mobile_stream_event(
                                     &app2,
                                     MobileChatStreamPayload {
@@ -973,8 +989,71 @@ pub async fn mobile_chat_stream_start(
                 }
             }
 
+            let done_content_nonempty = final_content
+                .as_deref()
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            let done_thinking_nonempty = final_thinking
+                .as_deref()
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            let round_emitted_any = content_buf.len() > content_len_before_round
+                || thinking_buf.len() > thinking_len_before_round
+                || done_content_nonempty
+                || done_thinking_nonempty
+                || saw_web_search
+                || pending_tool_calls.as_ref().is_some_and(|c| !c.is_empty());
+
+            if round_emitted_any {
+                empty_model_rounds = 0;
+            } else if terminal != Some("error") {
+                // 空响应：在移动端偶发（尤其是 MCP 工具回合后续 turn），PC 端会把它当作可重试的流错误。
+                // 这里先做一个小范围的连续空轮次重试，避免“工具调用后任务直接结束”的体验。
+                empty_model_rounds = empty_model_rounds.saturating_add(1);
+                if empty_model_rounds <= max_empty_model_rounds {
+                    terminal = None;
+                    continue;
+                }
+
+                emit_mobile_stream_event(
+                    &app2,
+                    MobileChatStreamPayload {
+                        stream_id: stream_id2.clone(),
+                        conversation_id: conversation_id2.clone(),
+                        assistant_message_id: assistant_message_id2.clone(),
+                        kind: "error".to_string(),
+                        delta: None,
+                        content: None,
+                        thinking: None,
+                        data: None,
+                        error: Some("模型返回空响应（多次重试后仍为空）".to_string()),
+                    },
+                );
+                terminal = Some("error");
+            }
+
             match terminal {
                 Some("tool_calls") => {
+                    tool_rounds += 1;
+                    if tool_rounds > max_tool_rounds {
+                        emit_mobile_stream_event(
+                            &app2,
+                            MobileChatStreamPayload {
+                                stream_id: stream_id2.clone(),
+                                conversation_id: conversation_id2.clone(),
+                                assistant_message_id: assistant_message_id2.clone(),
+                                kind: "error".to_string(),
+                                delta: None,
+                                content: None,
+                                thinking: None,
+                                data: None,
+                                error: Some("工具调用轮次过多（可能出现循环）。".to_string()),
+                            },
+                        );
+                        terminal = Some("error");
+                        break;
+                    }
+
                     let calls = pending_tool_calls.take().unwrap_or_default();
                     if calls.is_empty() {
                         emit_mobile_stream_event(
@@ -1138,12 +1217,12 @@ pub async fn mobile_chat_stream_start(
                 Some("error") => break,
                 None => {
                     // 容错：如果流被关闭但已经拿到内容，按 done 处理；否则报错。
-                    let content_trimmed = content_buf.trim();
-                    let thinking_trimmed = thinking_buf.trim();
-                    if !content_trimmed.is_empty() || !thinking_trimmed.is_empty() {
+                    let round_has_output = content_buf.len() > content_len_before_round
+                        || thinking_buf.len() > thinking_len_before_round;
+                    if round_has_output {
                         terminal = Some("done");
                         final_content = Some(content_buf.clone());
-                        if !thinking_trimmed.is_empty() {
+                        if thinking_buf.len() > thinking_len_before_round {
                             final_thinking = Some(thinking_buf.clone());
                         }
                         break;
@@ -1191,15 +1270,26 @@ pub async fn mobile_chat_stream_start(
         }
 
         if terminal == Some("done") {
-            let thinking = final_thinking.or_else(|| {
-                let t = thinking_buf.trim();
-                if t.is_empty() {
-                    None
-                } else {
-                    Some(thinking_buf)
-                }
-            });
-            let content = final_content.take().unwrap_or(content_buf);
+            let thinking = final_thinking
+                .and_then(|t| {
+                    if t.trim().is_empty() {
+                        None
+                    } else {
+                        Some(t)
+                    }
+                })
+                .or_else(|| {
+                    let t = thinking_buf.trim();
+                    if t.is_empty() {
+                        None
+                    } else {
+                        Some(thinking_buf)
+                    }
+                });
+            let content = match final_content.take() {
+                Some(c) if !c.trim().is_empty() => c,
+                _ => content_buf,
+            };
             emit_mobile_stream_event(
                 &app2,
                 MobileChatStreamPayload {
