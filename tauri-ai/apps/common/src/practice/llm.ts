@@ -9,6 +9,15 @@ import type {
 export type LlmInvoke = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
 
 type MobileChatMessage = { role: string; content: string };
+type MobileChatImagePart = {
+  type: "image";
+  url: string;
+  detail?: "auto" | "low" | "high";
+};
+type MobileChatContentPart = MobileChatImagePart;
+type MobileChatMessageWithParts = MobileChatMessage & {
+  contentParts?: MobileChatContentPart[];
+};
 
 function now(): number {
   return Date.now();
@@ -162,7 +171,7 @@ function normalizeQuizPayload(payload: any): { title: string; questions: Practic
 
 export async function mobileChat(
   invoke: LlmInvoke,
-  opts: { messages: MobileChatMessage[]; agentName?: string },
+  opts: { messages: MobileChatMessageWithParts[]; agentName?: string },
 ): Promise<string> {
   const res = await invoke<{ content: string }>("mobile_chat", {
     messages: opts.messages,
@@ -310,11 +319,15 @@ export async function gradePracticeAnswer(
     agentName?: string;
     question: PracticeQuestion;
     studentAnswer: string;
+    studentAnswerImages?: MobileChatImagePart[];
   },
 ): Promise<PracticeGrading> {
   const answer = opts.studentAnswer.trim();
-  if (!answer) {
-    throw new Error("作答不能为空（可以先写一句总结/关键步骤）");
+  const answerImages = Array.isArray(opts.studentAnswerImages)
+    ? opts.studentAnswerImages.filter((item) => item && typeof item.url === "string" && item.url.trim())
+    : [];
+  if (!answer && answerImages.length === 0) {
+    throw new Error("作答不能为空（可填写文字总结，或提交手写图片）");
   }
 
   const system = [
@@ -345,13 +358,18 @@ export async function gradePracticeAnswer(
       : `参考答案：\n${(opts.question as any).referenceAnswer || ""}`,
     `满分：${maxScore}`,
     `学生作答：\n${answer}`,
+    answerImages.length > 0 ? `学生作答图片：共 ${answerImages.length} 张（已附在消息内容中）` : "",
   ].join("\n\n");
 
   let content = await mobileChat(invoke, {
     agentName: opts.agentName,
     messages: [
       { role: "system", content: system },
-      { role: "user", content: user },
+      {
+        role: "user",
+        content: user,
+        contentParts: answerImages.length > 0 ? answerImages : undefined,
+      },
     ],
   });
   const firstContent = content;
@@ -377,7 +395,11 @@ export async function gradePracticeAnswer(
       agentName: opts.agentName,
       messages: [
         { role: "system", content: repairSystem },
-        { role: "user", content: repairUser },
+        {
+          role: "user",
+          content: repairUser,
+          contentParts: answerImages.length > 0 ? answerImages : undefined,
+        },
       ],
     });
     parsed = safeJsonParse(content);

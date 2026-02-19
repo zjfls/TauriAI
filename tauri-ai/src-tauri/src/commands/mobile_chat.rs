@@ -11,7 +11,7 @@ use crate::ai_client::get_client;
 use crate::ai_client::{StreamEvent, StreamOptions, ToolCall, ToolDefinition};
 use crate::config::ConfigManager;
 use crate::models::{
-    AppConfig, McpServerConfig, Message, MessageMeta, MessageRole, MessageStatus, ModelConfig,
+    AppConfig, ContentPart, McpServerConfig, Message, MessageMeta, MessageRole, MessageStatus, ModelConfig,
     ModelParameters,
 };
 use crate::runtime::mcp::global_mcp_runtime;
@@ -24,6 +24,8 @@ use tokio::sync::{mpsc, Mutex};
 pub struct MobileChatMessage {
     pub role: String,
     pub content: String,
+    #[serde(default)]
+    pub content_parts: Vec<ContentPart>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -205,7 +207,7 @@ fn to_messages(conversation_id: &str, messages: Vec<MobileChatMessage>) -> Vec<M
                 _ => MessageRole::User,
             },
             content: m.content,
-            content_parts: Vec::new(),
+            content_parts: m.content_parts,
             thinking: None,
             meta: None,
             created_at: now,
@@ -213,6 +215,64 @@ fn to_messages(conversation_id: &str, messages: Vec<MobileChatMessage>) -> Vec<M
             error_message: None,
         })
         .collect()
+}
+
+async fn collect_streamed_text(
+    client: Arc<dyn crate::ai_client::AiClient>,
+    messages: Vec<Message>,
+    config: ModelConfig,
+) -> Result<String, String> {
+    let (tx, mut rx) = mpsc::channel::<StreamEvent>(256);
+
+    let handle = tokio::spawn({
+        let client = client.clone();
+        let config = config.clone();
+        async move {
+            client
+                .chat_stream(messages, &config, None, tx, StreamOptions::default())
+                .await
+        }
+    });
+
+    let mut content_buf = String::new();
+    let mut thinking_buf = String::new();
+    let mut final_content: Option<String> = None;
+
+    while let Some(event) = rx.recv().await {
+        match event {
+            StreamEvent::Token(t) => content_buf.push_str(&t),
+            StreamEvent::Thinking(t) => thinking_buf.push_str(&t),
+            StreamEvent::Done(content) => {
+                final_content = Some(content);
+                break;
+            }
+            StreamEvent::DoneWithThinking { content, .. } => {
+                final_content = Some(content);
+                break;
+            }
+            StreamEvent::DoneWithDebug { content, .. } => {
+                final_content = Some(content);
+                break;
+            }
+            StreamEvent::Error(err) => return Err(err),
+            StreamEvent::TurnState(_) => {}
+            StreamEvent::ToolCalls(_) | StreamEvent::WebSearch { .. } => {
+                return Err("标题生成收到非预期的工具事件".to_string());
+            }
+        }
+    }
+
+    if let Ok(joined) = handle.await {
+        if let Err(err) = joined {
+            return Err(err.to_string());
+        }
+    }
+
+    let mut content = final_content.unwrap_or(content_buf);
+    if content.trim().is_empty() {
+        content = thinking_buf;
+    }
+    Ok(content)
 }
 
 const MCP_TOOL_NAME_DELIMITER: &str = "__";
@@ -283,6 +343,40 @@ fn find_last_user_text(messages: &[MobileChatMessage]) -> String {
         .find(|m| m.role.trim().eq_ignore_ascii_case("user"))
         .map(|m| m.content.clone())
         .unwrap_or_default()
+}
+
+fn normalize_tool_calls(calls: Vec<ToolCall>, round_index: u32) -> Vec<ToolCall> {
+    let mut out: Vec<ToolCall> = Vec::with_capacity(calls.len());
+    let mut used_ids: HashSet<String> = HashSet::new();
+
+    for (i, call) in calls.into_iter().enumerate() {
+        let mut id = call.id.trim().to_string();
+        if id.is_empty() {
+            id = format!("call_{}_{}", round_index, i);
+        }
+
+        if used_ids.contains(&id) {
+            let base = id.clone();
+            let mut suffix = 1usize;
+            loop {
+                let candidate = format!("{base}_{suffix}");
+                if !used_ids.contains(&candidate) {
+                    id = candidate;
+                    break;
+                }
+                suffix = suffix.saturating_add(1);
+            }
+        }
+        used_ids.insert(id.clone());
+
+        out.push(ToolCall {
+            id,
+            name: call.name,
+            arguments: call.arguments,
+        });
+    }
+
+    out
 }
 
 fn collect_requested_mcp_servers_lower(text: &str) -> HashSet<String> {
@@ -520,6 +614,82 @@ pub async fn mobile_chat(
     Ok(MobileChatResponse { content })
 }
 
+#[tauri::command]
+pub async fn mobile_generate_title(
+    messages: Vec<MobileChatMessage>,
+    agent_name: Option<String>,
+    config_manager: tauri::State<'_, Arc<ConfigManager>>,
+) -> Result<String, String> {
+    let cfg = config_manager.ensure_default().map_err(|e| e.to_string())?;
+
+    let (provider_name, model_name) =
+        resolve_provider_model(&cfg, agent_name.as_deref()).ok_or_else(|| {
+            "未配置 provider/model。请先在 Settings 中配置模型。".to_string()
+        })?;
+
+    let mut model_cfg = build_model_config(&cfg, &provider_name, &model_name)?;
+    model_cfg.thinking_level = None;
+    model_cfg.thinking_budget_tokens = None;
+    model_cfg.vision_enabled = false;
+    model_cfg.web_search_enabled = false;
+    model_cfg.max_images = None;
+    model_cfg.use_reasoning_effort = None;
+
+    let compact = messages
+        .iter()
+        .take(6)
+        .map(|m| {
+            let role = match m.role.as_str() {
+                "assistant" => "助手",
+                "system" => "系统",
+                _ => "用户",
+            };
+            format!("{}: {}", role, m.content.trim())
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if compact.trim().is_empty() {
+        return Err("没有可用于生成标题的消息".to_string());
+    }
+
+    let prompt = Message {
+        id: uuid::Uuid::new_v4().to_string(),
+        conversation_id: "mobile_title".to_string(),
+        role: MessageRole::User,
+        content: format!("根据对话生成简洁标题（不超20字）：\n{}", compact),
+        content_parts: Vec::new(),
+        thinking: None,
+        meta: None,
+        created_at: chrono::Utc::now(),
+        status: MessageStatus::Success,
+        error_message: None,
+    };
+
+    let client = get_client(&model_cfg.provider).map_err(|e| e.to_string())?;
+    let raw = collect_streamed_text(client, vec![prompt], model_cfg).await?;
+
+    let mut title = raw
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .replace('\r', " ")
+        .replace('\n', " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    if title.chars().count() > 24 {
+        title = title.chars().take(24).collect();
+    }
+
+    if title.is_empty() {
+        return Err("生成标题为空".to_string());
+    }
+
+    Ok(title)
+}
+
 /// Start a streaming chat request for mobile.
 ///
 /// Frontend should:
@@ -741,6 +911,7 @@ pub async fn mobile_chat_stream_start(
                             }
                             StreamEvent::TurnState(_) => {}
                             StreamEvent::ToolCalls(calls) => {
+                                let normalized = normalize_tool_calls(calls, tool_rounds);
                                 emit_mobile_stream_event(
                                     &app2,
                                     MobileChatStreamPayload {
@@ -751,13 +922,13 @@ pub async fn mobile_chat_stream_start(
                                         delta: None,
                                         content: None,
                                         thinking: None,
-                                        data: Some(serde_json::json!({ "calls": &calls })),
+                                        data: Some(serde_json::json!({ "calls": &normalized })),
                                         error: None,
                                     },
                                 );
-                                pending_tool_calls = Some(calls);
-                                terminal = Some("tool_calls");
-                                break;
+                                pending_tool_calls = Some(normalized);
+                                // 与 PC 端保持一致：先记录 tool calls，继续等待 DoneWithDebug/Done，
+                                // 让本轮调试信息与 usage 有机会完整落地。
                             }
                             StreamEvent::WebSearch { id, status, action } => {
                                 emit_mobile_stream_event(
@@ -790,6 +961,14 @@ pub async fn mobile_chat_stream_start(
                         // 注意：此处不要 break。chat_stream 结束时，通道里可能仍有排队的
                         // Done/ToolCalls/Error 事件（尤其是 tool-call turn）。
                         // 需要继续 drain rx，否则会误判为“提前结束未收到 Done/Error”。
+                    }
+                }
+            }
+
+            if terminal != Some("error") {
+                if let Some(calls) = pending_tool_calls.as_ref() {
+                    if !calls.is_empty() {
+                        terminal = Some("tool_calls");
                     }
                 }
             }

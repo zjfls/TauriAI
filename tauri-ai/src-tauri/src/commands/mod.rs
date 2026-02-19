@@ -46,7 +46,9 @@ mod workstudio_terminal;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use clipboard::clipboard_write_png_base64;
 pub use config::{fetch_provider_models, get_app_config, save_app_config, test_connection};
-pub use mobile_chat::{mobile_chat, mobile_chat_stream_cancel, mobile_chat_stream_start};
+pub use mobile_chat::{
+    mobile_chat, mobile_chat_stream_cancel, mobile_chat_stream_start, mobile_generate_title,
+};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use conversation::{
     clone_conversation, create_conversation, delete_conversation, delete_messages_from,

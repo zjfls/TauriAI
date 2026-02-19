@@ -5,7 +5,7 @@ export type PracticeQuestionId = string;
 
 export type InkStrokeId = string;
 
-export type InkToolKind = "pen";
+export type InkToolKind = "pen" | "pencil" | "eraser";
 
 export type InkColor = string; // CSS color
 
@@ -24,6 +24,12 @@ export interface InkStroke {
   tool: InkToolKind;
   color: InkColor;
   size: number;
+  brushId?: string;
+  opacity?: number;
+  pressureSensitivity?: number;
+  blendMode?: "source-over" | "multiply";
+  lineCap?: "round" | "butt" | "square";
+  lineJoin?: "round" | "bevel" | "miter";
   points: InkPoint[];
 }
 
@@ -90,4 +96,3 @@ export interface PracticeQuiz {
   questions: PracticeQuestion[];
   progress?: PracticeQuizProgress;
 }
-

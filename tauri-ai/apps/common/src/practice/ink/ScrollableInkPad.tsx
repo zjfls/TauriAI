@@ -1,8 +1,14 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { InkPoint, InkState, InkStroke } from "../types";
+import type { InkPoint, InkState, InkStroke, InkToolKind } from "../types";
+import { findInkBrushPreset } from "./brushes";
 
 function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(" ");
+}
+
+function clamp(v: number, min: number, max: number): number {
+  if (!Number.isFinite(v)) return min;
+  return Math.min(max, Math.max(min, v));
 }
 
 function computeMaxY(strokes: InkStroke[]): number {
@@ -55,11 +61,35 @@ function drawStrokeSegment(
   a: InkPoint,
   b: InkPoint,
 ) {
+  const brush = findInkBrushPreset(stroke.brushId);
+  const pressureSensitivity = clamp(stroke.pressureSensitivity ?? brush?.pressureSensitivity ?? 0, 0, 1);
+  const opacity = clamp(stroke.opacity ?? brush?.opacity ?? (stroke.tool === "pencil" ? 0.65 : 1), 0.05, 1);
+  const lineCap = stroke.lineCap ?? brush?.lineCap ?? "round";
+  const lineJoin = stroke.lineJoin ?? brush?.lineJoin ?? "round";
+  const blendMode = stroke.blendMode ?? brush?.blendMode ?? "source-over";
+  const rawPressure =
+    (typeof b.pressure === "number" && b.pressure > 0 ? b.pressure : undefined) ??
+    (typeof a.pressure === "number" && a.pressure > 0 ? a.pressure : undefined) ??
+    0.5;
+  const pressure = clamp(rawPressure, 0.1, 1);
+  const width =
+    stroke.tool === "eraser"
+      ? stroke.size
+      : Math.max(0.5, stroke.size * (1 - pressureSensitivity + pressureSensitivity * pressure));
+
   ctx.save();
-  ctx.strokeStyle = stroke.color;
-  ctx.lineWidth = stroke.size;
-  ctx.lineCap = "round";
-  ctx.lineJoin = "round";
+  if (stroke.tool === "eraser") {
+    ctx.globalCompositeOperation = "destination-out";
+    ctx.strokeStyle = "rgba(0,0,0,1)";
+    ctx.globalAlpha = 1;
+  } else {
+    ctx.globalCompositeOperation = blendMode;
+    ctx.strokeStyle = stroke.color;
+    ctx.globalAlpha = opacity;
+  }
+  ctx.lineWidth = width;
+  ctx.lineCap = lineCap;
+  ctx.lineJoin = lineJoin;
   ctx.beginPath();
   ctx.moveTo(a.x, a.y);
   ctx.lineTo(b.x, b.y);
@@ -83,6 +113,50 @@ function redrawAll(
   }
 }
 
+const PAPER_COLOR = "#f6efdb";
+
+function redrawPaperBackground(
+  ctx: CanvasRenderingContext2D,
+  template: "blank" | "ruled" | "grid",
+  w: number,
+  h: number,
+) {
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = PAPER_COLOR;
+  ctx.fillRect(0, 0, w, h);
+
+  if (template === "blank") return;
+
+  ctx.save();
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = template === "grid" ? "rgba(148,120,72,0.22)" : "rgba(148,120,72,0.30)";
+  ctx.beginPath();
+
+  if (template === "grid") {
+    const step = 24;
+    for (let x = 0; x <= w; x += step) {
+      const xx = Math.round(x) + 0.5;
+      ctx.moveTo(xx, 0);
+      ctx.lineTo(xx, h);
+    }
+    for (let y = 0; y <= h; y += step) {
+      const yy = Math.round(y) + 0.5;
+      ctx.moveTo(0, yy);
+      ctx.lineTo(w, yy);
+    }
+  } else {
+    const step = 28;
+    for (let y = 0; y <= h; y += step) {
+      const yy = Math.round(y) + 0.5;
+      ctx.moveTo(0, yy);
+      ctx.lineTo(w, yy);
+    }
+  }
+
+  ctx.stroke();
+  ctx.restore();
+}
+
 export function createEmptyInkState(): InkState {
   return { width: 0, height: 0, strokes: [] };
 }
@@ -100,6 +174,8 @@ export type ScrollableInkPadProps = {
   viewportClassName?: string;
   contentClassName?: string;
   template?: "blank" | "ruled" | "grid";
+  tool?: InkToolKind;
+  brushId?: string;
   penColor?: string;
   penSize?: number;
   disabled?: boolean;
@@ -112,6 +188,8 @@ export function ScrollableInkPad({
   viewportClassName,
   contentClassName,
   template = "ruled",
+  tool = "pen",
+  brushId,
   penColor = "#111827",
   penSize = 3,
   disabled,
@@ -119,9 +197,12 @@ export function ScrollableInkPad({
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
+  const strokeCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const strokeCtxRef = useRef<CanvasRenderingContext2D | null>(null);
   const drawingRef = useRef(false);
   const lastPointRef = useRef<InkPoint | null>(null);
   const activeStrokeIdRef = useRef<string | null>(null);
+  const presentRafRef = useRef<number | null>(null);
 
   const [viewportSize, setViewportSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const [inking, setInking] = useState(false);
@@ -134,6 +215,13 @@ export function ScrollableInkPad({
     if (inking) return;
     setDraft(value);
     draftRef.current = value;
+    const strokeCtx = strokeCtxRef.current;
+    if (strokeCtx) {
+      const w = Math.max(1, Math.round(desiredContentWidth));
+      const h = Math.max(1, Math.round(desiredContentHeight));
+      redrawAll(strokeCtx, value.strokes, w, h);
+      schedulePresent();
+    }
   }, [inking, value]);
 
   useLayoutEffect(() => {
@@ -176,6 +264,45 @@ export function ScrollableInkPad({
 
   const desiredContentWidth = useMemo(() => Math.max(1, viewportSize.w), [viewportSize.w]);
 
+  const presentComposite = useMemo(() => {
+    return () => {
+      const ctx = ctxRef.current;
+      const strokeCanvas = strokeCanvasRef.current;
+      if (!ctx || !strokeCanvas) return;
+
+      const w = Math.max(1, Math.round(desiredContentWidth));
+      const h = Math.max(1, Math.round(desiredContentHeight));
+      redrawPaperBackground(ctx, template, w, h);
+      ctx.save();
+      ctx.globalCompositeOperation = "source-over";
+      ctx.globalAlpha = 1;
+      ctx.drawImage(strokeCanvas, 0, 0, w, h);
+      ctx.restore();
+    };
+  }, [desiredContentHeight, desiredContentWidth, template]);
+
+  const schedulePresent = useMemo(() => {
+    return () => {
+      if (typeof requestAnimationFrame === "undefined") {
+        presentComposite();
+        return;
+      }
+      if (presentRafRef.current != null) return;
+      presentRafRef.current = requestAnimationFrame(() => {
+        presentRafRef.current = null;
+        presentComposite();
+      });
+    };
+  }, [presentComposite]);
+
+  useEffect(() => {
+    return () => {
+      if (presentRafRef.current != null && typeof cancelAnimationFrame !== "undefined") {
+        cancelAnimationFrame(presentRafRef.current);
+      }
+    };
+  }, []);
+
   // When viewport size changes, scale existing strokes into the new coordinate space.
   useEffect(() => {
     if (inking) return;
@@ -193,6 +320,11 @@ export function ScrollableInkPad({
     setDraft(next);
     draftRef.current = next;
     onChange(next, true);
+    const strokeCtx = strokeCtxRef.current;
+    if (strokeCtx) {
+      redrawAll(strokeCtx, next.strokes, Math.max(1, Math.round(w)), Math.max(1, Math.round(h)));
+      schedulePresent();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [desiredContentWidth, desiredContentHeight]);
 
@@ -204,54 +336,51 @@ export function ScrollableInkPad({
     const w = Math.max(1, Math.round(desiredContentWidth));
     const h = Math.max(1, Math.round(desiredContentHeight));
 
+    if (!strokeCanvasRef.current && typeof document !== "undefined") {
+      strokeCanvasRef.current = document.createElement("canvas");
+    }
+    const strokeCanvas = strokeCanvasRef.current;
+    if (!strokeCanvas) return;
+
+    strokeCanvas.width = w * dpr;
+    strokeCanvas.height = h * dpr;
+    let strokeCtx = strokeCanvas.getContext("2d", { alpha: true });
+    if (!strokeCtx) strokeCtx = strokeCanvas.getContext("2d");
+    if (!strokeCtx) return;
+    strokeCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    strokeCtxRef.current = strokeCtx;
+
     canvas.width = w * dpr;
     canvas.height = h * dpr;
     canvas.style.width = `${w}px`;
     canvas.style.height = `${h}px`;
 
-    const ctx = canvas.getContext("2d");
+    let ctx = canvas.getContext("2d", { alpha: false });
+    if (!ctx) ctx = canvas.getContext("2d");
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctxRef.current = ctx;
 
-    redrawAll(ctx, draftRef.current.strokes, w, h);
-  }, [desiredContentWidth, desiredContentHeight]);
-
-  // Re-draw on committed draft change.
-  useEffect(() => {
-    const ctx = ctxRef.current;
-    if (!ctx) return;
-    const w = Math.max(1, Math.round(desiredContentWidth));
-    const h = Math.max(1, Math.round(desiredContentHeight));
-    redrawAll(ctx, draft.strokes, w, h);
-  }, [draft.strokes, desiredContentWidth, desiredContentHeight]);
-
-  const templateBg = useMemo(() => {
-    if (template === "grid") {
-      return {
-        backgroundColor: "white",
-        backgroundImage:
-          "linear-gradient(to right, rgba(17,24,39,0.08) 1px, transparent 1px), linear-gradient(to bottom, rgba(17,24,39,0.08) 1px, transparent 1px)",
-        backgroundSize: "24px 24px",
-      } as React.CSSProperties;
-    }
-    if (template === "ruled") {
-      return {
-        backgroundColor: "white",
-        backgroundImage: "linear-gradient(to bottom, rgba(17,24,39,0.10) 1px, transparent 1px)",
-        backgroundSize: "100% 28px",
-      } as React.CSSProperties;
-    }
-    return { backgroundColor: "white" } as React.CSSProperties;
-  }, [template]);
+    redrawAll(strokeCtx, draftRef.current.strokes, w, h);
+    presentComposite();
+  }, [desiredContentWidth, desiredContentHeight, presentComposite]);
 
   const beginStroke = (p: InkPoint) => {
+    const brush = findInkBrushPreset(brushId);
+    const strokeTool = brush?.tool ?? tool;
+    const strokeSize = Math.max(0.5, penSize * (brush?.sizeScale ?? 1));
     const id = newId("stroke");
     const stroke: InkStroke = {
       id,
-      tool: "pen",
+      tool: strokeTool,
       color: penColor,
-      size: penSize,
+      size: strokeSize,
+      brushId: brush?.id,
+      opacity: brush?.opacity,
+      pressureSensitivity: brush?.pressureSensitivity,
+      blendMode: brush?.blendMode,
+      lineCap: brush?.lineCap,
+      lineJoin: brush?.lineJoin,
       points: [p],
     };
     activeStrokeIdRef.current = id;
@@ -269,7 +398,7 @@ export function ScrollableInkPad({
   const appendPoint = (p: InkPoint) => {
     const strokeId = activeStrokeIdRef.current;
     if (!strokeId) return;
-    const ctx = ctxRef.current;
+    const strokeCtx = strokeCtxRef.current;
     const last = lastPointRef.current;
 
     const nextState = draftRef.current;
@@ -279,8 +408,9 @@ export function ScrollableInkPad({
     const stroke = nextState.strokes[idx]!;
     stroke.points.push(p);
 
-    if (ctx && last) {
-      drawStrokeSegment(ctx, stroke, last, p);
+    if (strokeCtx && last) {
+      drawStrokeSegment(strokeCtx, stroke, last, p);
+      schedulePresent();
     }
   };
 
@@ -363,6 +493,11 @@ export function ScrollableInkPad({
     setDraft(next);
     draftRef.current = next;
     onChange(next, true);
+    const strokeCtx = strokeCtxRef.current;
+    if (strokeCtx) {
+      redrawAll(strokeCtx, next.strokes, Math.max(1, Math.round(desiredContentWidth)), Math.max(1, Math.round(desiredContentHeight)));
+      schedulePresent();
+    }
   };
 
   const undo = () => {
@@ -372,6 +507,11 @@ export function ScrollableInkPad({
     setDraft(next);
     draftRef.current = next;
     onChange(next, true);
+    const strokeCtx = strokeCtxRef.current;
+    if (strokeCtx) {
+      redrawAll(strokeCtx, next.strokes, Math.max(1, Math.round(desiredContentWidth)), Math.max(1, Math.round(desiredContentHeight)));
+      schedulePresent();
+    }
   };
 
   return (
@@ -386,17 +526,17 @@ export function ScrollableInkPad({
       >
         <div
           className={cx("relative w-full", contentClassName)}
-          style={{ height: `${desiredContentHeight}px`, ...templateBg }}
+          style={{ height: `${desiredContentHeight}px` }}
         >
           <canvas
             ref={canvasRef}
-            className="block"
+            className="relative block"
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}
             onPointerCancel={onPointerCancel}
             // Let finger pan vertically when not writing; we toggle to `none` during pen write.
-            style={{ touchAction: inking ? "none" : "pan-y" }}
+            style={{ backgroundColor: "transparent", touchAction: inking ? "none" : "pan-y" }}
           />
         </div>
       </div>

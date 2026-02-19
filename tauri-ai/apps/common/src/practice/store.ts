@@ -25,6 +25,7 @@ type State = {
   deleteQuiz: (id: PracticeQuizId) => void;
   setActiveQuiz: (id: PracticeQuizId) => void;
   renameQuiz: (id: PracticeQuizId, title: string) => void;
+  appendGeneratedQuestions: (quizId: PracticeQuizId, questions: PracticeQuestion[]) => void;
 
   addQuestion: (quizId: PracticeQuizId, type: PracticeQuestionType) => PracticeQuestionId;
   deleteQuestion: (quizId: PracticeQuizId, questionId: PracticeQuestionId) => void;
@@ -200,6 +201,34 @@ export const usePracticeStore = create<State>((set) => {
         const quizzes = prev.quizzes.map((q) =>
           q.id === id ? { ...q, title: nextTitle, updatedAt: now() } : q,
         );
+        return { quizzes, activeQuizId: prev.activeQuizId };
+      }, true);
+    },
+
+    appendGeneratedQuestions: (quizId, questions) => {
+      if (!Array.isArray(questions) || questions.length === 0) return;
+      updateQuizzes((prev) => {
+        const quizzes = prev.quizzes.map((q) => {
+          if (q.id !== quizId) return q;
+
+          const quiz = ensureProgress(q);
+          const existedIds = new Set(quiz.questions.map((qq) => qq.id));
+          const incoming = questions
+            .filter((item) => item && typeof item === "object")
+            .map((item) => {
+              let id = String(item.id ?? "").trim();
+              if (!id || existedIds.has(id)) {
+                do {
+                  id = newId("pq");
+                } while (existedIds.has(id));
+              }
+              existedIds.add(id);
+              return { ...item, id } as PracticeQuestion;
+            });
+
+          if (incoming.length === 0) return quiz;
+          return { ...quiz, questions: [...quiz.questions, ...incoming], updatedAt: now() };
+        });
         return { quizzes, activeQuizId: prev.activeQuizId };
       }, true);
     },
