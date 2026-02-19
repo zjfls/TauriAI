@@ -63,6 +63,9 @@ const getEnabledServerLanguageIds = (cfg: CodeIntelligenceSettings | null | unde
 
 const isCodeIntelEnabled = (cfg: CodeIntelligenceSettings | null | undefined) => Boolean(cfg?.enabled);
 
+const isLspCompletionEnabled = (cfg: CodeIntelligenceSettings | null | undefined) =>
+  cfg?.lspCompletionEnabled !== false;
+
 const isLspEnabled = (
   cfg: CodeIntelligenceSettings | null | undefined,
   languageId: string,
@@ -432,6 +435,7 @@ export const attachMonacoLspBridge = (opts: {
         provideCompletionItems: async (model, position, _context, token) => {
           if (token.isCancellationRequested) return { suggestions: [] };
           const cfg = getConfig();
+          if (!isLspCompletionEnabled(cfg)) return { suggestions: [] };
           if (!isLspEnabled(cfg, model.getLanguageId(), isLanguageEnabled)) return { suggestions: [] };
 
           const uri = model.uri.toString();

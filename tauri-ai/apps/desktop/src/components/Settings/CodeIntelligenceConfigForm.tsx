@@ -7,9 +7,16 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Plus, Trash2 } from 'lucide-react';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 
+import { SHORTCUT_ACTIONS, detectShortcutPlatform, normalizeKeybindingString } from '../../shortcuts';
 import { useConfigStore } from '../../stores/configStore';
 import { lspDetectServer } from '../../services';
-import type { AppConfig, LspServerConfig } from '../../types';
+import type {
+  AiCompletionQueueScope,
+  AiCompletionSettings,
+  AiCompletionTriggerMode,
+  AppConfig,
+  LspServerConfig,
+} from '../../types';
 
 const Toggle: React.FC<{
   checked: boolean;
@@ -84,6 +91,23 @@ const defaultServer = (): LspServerConfig => ({
   settings: {},
 });
 
+const defaultAiCompletionSettings = (): AiCompletionSettings => ({
+  enabled: false,
+  modelRef: '',
+  inlineEnabled: true,
+  listEnabled: true,
+  triggerMode: 'hybrid',
+  queueScope: 'global',
+  debounceMs: 350,
+  timeoutMs: 2500,
+  maxTokens: 8192,
+  temperature: 0.2,
+  maxPrefixChars: 8000,
+  maxSuffixChars: 2000,
+  includeProjectContext: true,
+  listSuggestionCount: 3,
+});
+
 const AUTO_DETECT_LANGUAGE_ORDER = ['rust', 'python', 'cpp', 'c', 'lua'] as const;
 const AUTO_DETECT_LANGUAGE_SET = new Set<string>(AUTO_DETECT_LANGUAGE_ORDER);
 const AUTO_DETECT_LANGUAGE_LABEL: Record<string, string> = {
@@ -95,7 +119,7 @@ const AUTO_DETECT_LANGUAGE_LABEL: Record<string, string> = {
 };
 
 export const CodeIntelligenceConfigForm: React.FC = () => {
-  const { config, saveConfigDebounced } = useConfigStore();
+  const { config, getModelOptions, saveConfigDebounced } = useConfigStore();
   const [selectedIndex, setSelectedIndex] = useState<number>(0);
 
   const [autoConfigBusy, setAutoConfigBusy] = useState(false);
@@ -111,6 +135,22 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
 
   const servers = config?.codeIntelligence?.lspServers ?? [];
   const selectedServer = servers[selectedIndex] ?? null;
+
+  const modelOptions = getModelOptions();
+  const aiCompletion: AiCompletionSettings = config?.codeIntelligence?.aiCompletion ?? defaultAiCompletionSettings();
+  const currentModelRef = String(config?.currentModelRef ?? '').trim();
+  const keyboardShortcuts = config?.general?.keyboardShortcuts;
+  const shortcutPlatform = useMemo(() => detectShortcutPlatform(), []);
+  const aiSuggestShortcutLabel = useMemo(() => {
+    const def = SHORTCUT_ACTIONS.find((a) => a.id === 'workstudio.triggerSuggest') ?? null;
+    if (!def) return '';
+    const userRaw =
+      shortcutPlatform === 'mac'
+        ? keyboardShortcuts?.mac?.['workstudio.triggerSuggest']
+        : keyboardShortcuts?.windows?.['workstudio.triggerSuggest'];
+    const raw = userRaw ?? (shortcutPlatform === 'mac' ? def.defaultMac : def.defaultWindows);
+    return normalizeKeybindingString(String(raw || ''), shortcutPlatform) ?? '';
+  }, [keyboardShortcuts, shortcutPlatform]);
 
   const save = (updated: AppConfig) => saveConfigDebounced(updated, 400);
 
@@ -185,6 +225,16 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
       ...cfg,
       codeIntelligence: { ...cfg.codeIntelligence, lspServers: nextServers },
     }));
+  };
+
+  const updateAiCompletion = (updater: (s: AiCompletionSettings) => AiCompletionSettings) => {
+    updateConfig((cfg) => {
+      const prev = cfg.codeIntelligence?.aiCompletion ?? defaultAiCompletionSettings();
+      return {
+        ...cfg,
+        codeIntelligence: { ...cfg.codeIntelligence, aiCompletion: updater(prev) },
+      };
+    });
   };
 
   const commitAdvancedDrafts = () => {
@@ -456,11 +506,304 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
       {/* Right editor */}
       <div className="flex-1 overflow-auto">
         <div className="max-w-3xl space-y-6">
-          <div>
-            <h3 className="text-base font-semibold text-gray-800 dark:text-white">Code Intelligence</h3>
-            <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">
-              这里配置 Workstudio 的代码智能能力：后端启动 LSP 进程（stdio），前端 Monaco 通过 LSP 提供转到定义/引用等功能。
-            </p>
+	          <div>
+	            <h3 className="text-base font-semibold text-gray-800 dark:text-white">Code Intelligence</h3>
+	            <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">
+	              这里配置 Workstudio 的代码智能能力：LSP（转到定义/引用/诊断等）与 AI Completion（幽灵补全 + 建议列表）。
+	            </p>
+	          </div>
+
+            {/* LSP */}
+            <div className="space-y-4 rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-semibold text-gray-800 dark:text-white">LSP</div>
+                  <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                    用于控制 LSP 的部分功能开关，便于排查/调试 AI Completion。
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-950">
+                <div className="min-w-0">
+                  <div className="text-xs text-gray-500 dark:text-gray-400">Completion</div>
+                  <div className="text-sm text-gray-800 dark:text-gray-100">启用 LSP 建议列表</div>
+                  <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                    关闭后不会再向 LSP 请求 completion（仍保留 hover/跳转/诊断等能力）。
+                  </div>
+                </div>
+                <Toggle
+                  checked={config.codeIntelligence?.lspCompletionEnabled ?? true}
+                  onChange={(lspCompletionEnabled) =>
+                    updateConfig((cfg) => ({
+                      ...cfg,
+                      codeIntelligence: { ...cfg.codeIntelligence, lspCompletionEnabled },
+                    }))
+                  }
+                  title="是否启用 LSP completion 建议列表（用于调试 AI Completion）"
+                />
+              </div>
+
+              <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-950">
+                <div className="min-w-0">
+                  <div className="text-xs text-gray-500 dark:text-gray-400">Monaco</div>
+                  <div className="text-sm text-gray-800 dark:text-gray-100">启用本地词汇建议</div>
+                  <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                    关闭后 Suggest 列表不会再显示来自当前/已打开文件内容的词汇补全（不依赖 LSP）。
+                  </div>
+                </div>
+                <Toggle
+                  checked={config.codeIntelligence?.monacoWordSuggestionsEnabled ?? true}
+                  onChange={(monacoWordSuggestionsEnabled) =>
+                    updateConfig((cfg) => ({
+                      ...cfg,
+                      codeIntelligence: { ...cfg.codeIntelligence, monacoWordSuggestionsEnabled },
+                    }))
+                  }
+                  title="是否启用 Monaco 内置的词汇建议（用于调试 AI Completion）"
+                />
+              </div>
+            </div>
+
+	          {/* AI Completion */}
+	            <div className="space-y-5 rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
+	            <div className="flex items-center justify-between">
+	              <div>
+	                <div className="text-sm font-semibold text-gray-800 dark:text-white">AI Completion</div>
+	                <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                  幽灵补全（Inline）+ 建议列表（快捷键触发）。建议先选好模型再打开总开关。
+                </div>
+              </div>
+              <Toggle
+                checked={Boolean(aiCompletion.enabled)}
+                onChange={(enabled) => updateAiCompletion((s) => ({ ...s, enabled }))}
+                title="启用 AI 补全"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">使用模型</label>
+                <select
+                  value={aiCompletion.modelRef ?? ''}
+                  onChange={(e) => updateAiCompletion((s) => ({ ...s, modelRef: e.target.value }))}
+                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                >
+                  <option value="">（自动：跟随当前模型）</option>
+                  {modelOptions.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+                {modelOptions.length === 0 && (
+                  <div className="text-xs text-gray-500 dark:text-gray-400">
+                    暂无可用模型：请先在 Settings → Providers 中启用 provider 并添加 model。
+                  </div>
+                )}
+                <div className="text-xs text-gray-500 dark:text-gray-400">
+                  当前全局模型：{currentModelRef || '（未选择）'}。
+                  {!String(aiCompletion.modelRef || '').trim() ? '（本项留空则跟随全局模型）' : ''}
+                </div>
+                {aiCompletion.enabled && !String(aiCompletion.modelRef || '').trim() && !currentModelRef && (
+                  <div className="text-xs text-red-600 dark:text-red-300">
+                    AI 补全已启用，但未指定模型：请选择 modelRef，或先在主界面选择“当前模型”。
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">触发模式</label>
+                  <select
+                    value={(aiCompletion.triggerMode ?? 'hybrid') as AiCompletionTriggerMode}
+                  onChange={(e) =>
+                    updateAiCompletion((s) => ({ ...s, triggerMode: e.target.value as AiCompletionTriggerMode }))
+                  }
+                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                >
+                  <option value="hybrid">Hybrid（推荐：幽灵自动 + 列表手动）</option>
+                  <option value="auto">Auto（幽灵自动）</option>
+                  <option value="manual">Manual（仅手动触发）</option>
+                </select>
+                <div className="text-xs text-gray-500 dark:text-gray-400">
+                  注意：建议列表只会在用户显式调用时请求 AI（避免打字时刷屏）。
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-950">
+                <div className="min-w-0">
+                  <div className="text-xs text-gray-500 dark:text-gray-400">Inline</div>
+                  <div className="text-sm text-gray-800 dark:text-gray-100">幽灵补全</div>
+                </div>
+                <Toggle
+                  checked={Boolean(aiCompletion.inlineEnabled)}
+                  onChange={(inlineEnabled) => updateAiCompletion((s) => ({ ...s, inlineEnabled }))}
+                />
+              </div>
+              <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-950">
+                <div className="min-w-0">
+                  <div className="text-xs text-gray-500 dark:text-gray-400">List</div>
+                  <div className="text-sm text-gray-800 dark:text-gray-100">
+                    AI 建议列表{aiSuggestShortcutLabel ? `（${aiSuggestShortcutLabel}）` : '（快捷键）'}
+                  </div>
+                </div>
+                <Toggle
+                  checked={Boolean(aiCompletion.listEnabled)}
+                  onChange={(listEnabled) => updateAiCompletion((s) => ({ ...s, listEnabled }))}
+                />
+              </div>
+            </div>
+
+            <details className="rounded-lg border border-gray-200 bg-white px-3 py-2 dark:border-gray-700 dark:bg-gray-900">
+              <summary className="cursor-pointer text-sm font-medium text-gray-700 dark:text-gray-200">
+                高级参数（延迟 / 超时 / Token / 上下文）
+              </summary>
+              <div className="mt-3 grid grid-cols-1 gap-4 md:grid-cols-2">
+                <div className="space-y-1">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">请求队列作用域</label>
+                  <select
+                    value={(aiCompletion.queueScope ?? 'global') as AiCompletionQueueScope}
+                    onChange={(e) =>
+                      updateAiCompletion((s) => ({ ...s, queueScope: e.target.value as AiCompletionQueueScope }))
+                    }
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                  >
+                    <option value="global">Global（默认：全局单队列）</option>
+                    <option value="language">Language（按语言队列，减少互相阻塞）</option>
+                  </select>
+                  <div className="text-xs text-gray-500 dark:text-gray-400">
+                    全局队列更省资源，但建议列表可能被正在进行的幽灵请求阻塞。
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">列表候选条数</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={8}
+                    value={aiCompletion.listSuggestionCount ?? 3}
+                    onChange={(e) => {
+                      const n = Number(e.target.value);
+                      const next = Number.isFinite(n) ? Math.max(1, Math.min(8, Math.floor(n))) : 3;
+                      updateAiCompletion((s) => ({ ...s, listSuggestionCount: next }));
+                    }}
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">自动触发去抖（ms）</label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={5000}
+                    value={aiCompletion.debounceMs ?? 350}
+                    onChange={(e) => {
+                      const n = Number(e.target.value);
+                      const next = Number.isFinite(n) ? Math.max(0, Math.min(5000, Math.floor(n))) : 350;
+                      updateAiCompletion((s) => ({ ...s, debounceMs: next }));
+                    }}
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">超时（ms）</label>
+                  <input
+                    type="number"
+                    min={200}
+                    max={30000}
+                    value={aiCompletion.timeoutMs ?? 2500}
+                    onChange={(e) => {
+                      const n = Number(e.target.value);
+                      const next = Number.isFinite(n) ? Math.max(200, Math.min(30000, Math.floor(n))) : 2500;
+                      updateAiCompletion((s) => ({ ...s, timeoutMs: next }));
+                    }}
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">maxTokens</label>
+                  <input
+                    type="number"
+                    min={16}
+                    max={32768}
+                    value={aiCompletion.maxTokens ?? 8192}
+                    onChange={(e) => {
+                      const n = Number(e.target.value);
+                      const next = Number.isFinite(n) ? Math.max(16, Math.min(32768, Math.floor(n))) : 8192;
+                      updateAiCompletion((s) => ({ ...s, maxTokens: next }));
+                    }}
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">temperature</label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={2}
+                    step={0.05}
+                    value={aiCompletion.temperature ?? 0.2}
+                    onChange={(e) => {
+                      const n = Number(e.target.value);
+                      const next = Number.isFinite(n) ? Math.max(0, Math.min(2, n)) : 0.2;
+                      updateAiCompletion((s) => ({ ...s, temperature: next }));
+                    }}
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">maxPrefixChars</label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={200000}
+                    value={aiCompletion.maxPrefixChars ?? 8000}
+                    onChange={(e) => {
+                      const n = Number(e.target.value);
+                      const next = Number.isFinite(n) ? Math.max(0, Math.min(200000, Math.floor(n))) : 8000;
+                      updateAiCompletion((s) => ({ ...s, maxPrefixChars: next }));
+                    }}
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">maxSuffixChars</label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={200000}
+                    value={aiCompletion.maxSuffixChars ?? 2000}
+                    onChange={(e) => {
+                      const n = Number(e.target.value);
+                      const next = Number.isFinite(n) ? Math.max(0, Math.min(200000, Math.floor(n))) : 2000;
+                      updateAiCompletion((s) => ({ ...s, maxSuffixChars: next }));
+                    }}
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                  />
+                </div>
+              </div>
+
+              <div className="mt-4 flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-950">
+                <div className="min-w-0">
+                  <div className="text-xs text-gray-500 dark:text-gray-400">Context</div>
+                  <div className="text-sm text-gray-800 dark:text-gray-100">发送项目上下文</div>
+                </div>
+                <Toggle
+                  checked={Boolean(aiCompletion.includeProjectContext)}
+                  onChange={(includeProjectContext) => updateAiCompletion((s) => ({ ...s, includeProjectContext }))}
+                  title="允许把 projectRoot/filePath 等信息带给模型"
+                />
+              </div>
+            </details>
           </div>
 
           {!selectedServer ? (

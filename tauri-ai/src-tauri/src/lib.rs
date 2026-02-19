@@ -694,8 +694,11 @@ fn run_desktop() {
             lsp_detect_server,
             // Code intelligence (AST)
             ast_document_symbols,
-            // Workstudio terminal (UI)
-            workstudio_terminal_create,
+	            // AI code completion
+	            ai_code_completion,
+	            ai_chat_with_selection,
+	            // Workstudio terminal (UI)
+	            workstudio_terminal_create,
             workstudio_terminal_write,
             workstudio_terminal_read,
             workstudio_terminal_read_base64,
@@ -781,6 +784,7 @@ fn run_desktop() {
             read_local_file_base64,
             list_local_directory,
             write_local_text_file,
+            delete_local_path,
         ])
         .setup(|app| {
             // Skills watcher for realtime refresh

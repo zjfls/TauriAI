@@ -278,3 +278,108 @@ pub async fn write_local_text_file(path: String, content: String) -> Result<(), 
 
     Ok(())
 }
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteLocalPathArgs {
+    pub path: String,
+    /// Safety guard: only allow deleting paths under these roots.
+    #[serde(default)]
+    pub allowed_roots: Vec<String>,
+    /// When deleting directories, require explicit recursive=true.
+    #[serde(default)]
+    pub recursive: Option<bool>,
+}
+
+/// Delete a local path (file or directory).
+///
+/// Security notes:
+/// - Requires an allow-list of workspace roots (`allowedRoots`) to prevent arbitrary file deletion.
+/// - Resolves symlinks via canonicalize for non-symlink targets to avoid path traversal through symlink components.
+#[tauri::command]
+pub async fn delete_local_path(args: DeleteLocalPathArgs) -> Result<(), String> {
+    let path_raw = args.path.trim();
+    if path_raw.is_empty() {
+        return Err("路径为空".to_string());
+    }
+
+    let target = std::path::PathBuf::from(path_raw);
+    if !target.is_absolute() {
+        return Err("仅支持绝对路径".to_string());
+    }
+
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    for r in args.allowed_roots {
+        let raw = r.trim();
+        if raw.is_empty() {
+            continue;
+        }
+        let p = std::path::PathBuf::from(raw);
+        if p.is_absolute() {
+            roots.push(p);
+        }
+    }
+    if roots.is_empty() {
+        return Err("allowedRoots 为空：拒绝删除".to_string());
+    }
+
+    let roots_canon = {
+        let mut out: Vec<std::path::PathBuf> = Vec::new();
+        for r in roots {
+            if let Ok(p) = fs::canonicalize(&r).await {
+                out.push(p);
+            }
+        }
+        out
+    };
+    if roots_canon.is_empty() {
+        return Err("allowedRoots 无有效路径：拒绝删除".to_string());
+    }
+
+    // Use symlink_metadata to detect symlinks without following them.
+    let meta = fs::symlink_metadata(&target)
+        .await
+        .map_err(|e| format!("无法读取文件信息: {e}"))?;
+
+    let is_symlink = meta.file_type().is_symlink();
+
+    let allowed = if is_symlink {
+        // Deleting the symlink itself: guard by its parent directory, and do not follow the link.
+        let parent = target
+            .parent()
+            .ok_or_else(|| "非法路径：缺少父目录".to_string())?;
+        let parent_canon = fs::canonicalize(parent)
+            .await
+            .map_err(|e| format!("无法解析父目录: {e}"))?;
+        roots_canon.iter().any(|root| {
+            parent_canon == *root || parent_canon.starts_with(root)
+        })
+    } else {
+        // Non-symlink target: canonicalize full path to avoid traversal through symlink components.
+        let canon = fs::canonicalize(&target)
+            .await
+            .map_err(|e| format!("无法解析路径: {e}"))?;
+        roots_canon
+            .iter()
+            .any(|root| canon == *root || canon.starts_with(root))
+    };
+
+    if !allowed {
+        return Err("拒绝删除：目标不在允许的工作区目录下".to_string());
+    }
+
+    if meta.is_dir() {
+        if !args.recursive.unwrap_or(false) {
+            return Err("目标是文件夹；如需删除请开启 recursive".to_string());
+        }
+        fs::remove_dir_all(&target)
+            .await
+            .map_err(|e| format!("删除文件夹失败: {e}"))?;
+        return Ok(());
+    }
+
+    fs::remove_file(&target)
+        .await
+        .map_err(|e| format!("删除文件失败: {e}"))?;
+    Ok(())
+}

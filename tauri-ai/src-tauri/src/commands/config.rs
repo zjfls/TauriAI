@@ -5,6 +5,8 @@
 
 use std::sync::Arc;
 
+use tauri::Emitter;
+
 use crate::ai_client::get_client;
 use crate::config::ConfigManager;
 use crate::models::{AppConfig, Message, MessageRole, MessageStatus, ModelConfig, ModelParameters};
@@ -33,6 +35,10 @@ pub async fn save_app_config(
             let _ = app.set_menu(menu);
         }
     }
+
+    // Broadcast to all windows so standalone Workstudio windows can refresh their local config state.
+    // (Each window has its own JS runtime; Zustand stores are not shared.)
+    let _ = app.emit("app_config:changed", ());
 
     Ok(())
 }

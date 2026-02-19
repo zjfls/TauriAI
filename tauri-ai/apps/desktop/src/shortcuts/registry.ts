@@ -140,6 +140,16 @@ export const SHORTCUT_ACTIONS: ShortcutActionDefinition[] = [
     allowWhenTyping: true,
   },
   {
+    id: 'workstudio.triggerSuggest',
+    title: '触发补全建议（Workstudio）',
+    description: '手动触发 Monaco 建议列表（用于 AI Completion 列表/语言服务补全）',
+    category: 'Workstudio',
+    // 避免 Ctrl+Space（常与系统输入法快捷键冲突）。
+    defaultMac: 'Cmd+Shift+A',
+    defaultWindows: 'Ctrl+Shift+A',
+    allowWhenTyping: true,
+  },
+  {
     id: 'workstudio.navigateBack',
     title: '后退（Workstudio）',
     description: '返回到上一个浏览位置（文件/行号）',

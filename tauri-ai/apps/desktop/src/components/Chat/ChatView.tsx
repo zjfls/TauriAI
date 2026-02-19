@@ -18,7 +18,23 @@ import { ToolSessionsPanel } from './ToolSessionsPanel';
 import { estimateTokens, estimateTokensForTexts } from '../../utils/tokenizer';
 import { getApiProtocol } from '../../utils/apiUtils';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import type { TokenUsage, ContextUsageBreakdown, ContextMessageGroups, ContentPart, ThinkingMode, PtySessionInfo, Workstudio, Agent, SkillEntry, SkillLoadOutcome, SandboxPolicy, SecurityPolicyConfig, Message, MessageBlock } from '../../types';
+import type {
+  TokenUsage,
+  ContextUsageBreakdown,
+  ContextMessageGroups,
+  ContentPart,
+  CodeSnippetContentPart,
+  ThinkingMode,
+  PtySessionInfo,
+  Workstudio,
+  Agent,
+  SkillEntry,
+  SkillLoadOutcome,
+  SandboxPolicy,
+  SecurityPolicyConfig,
+  Message,
+  MessageBlock,
+} from '../../types';
 import { useToolSessionStore } from '../../stores/toolSessionStore';
 import { endChatOpenProfile, getActiveChatOpenProfile, markChatOpenProfile } from '../../utils/chatOpenProfile';
 import { openOrFocusWorkstudioWindow } from '../../utils/viewWindow';
@@ -48,27 +64,29 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
 		    moveQueuedMessage,
 		    removeQueuedMessage,
 		    updateQueuedMessageContent,
-		    setSessionRunMode,
-		    setSessionThinkingMode,
-		    setSessionDraftContent,
-		  } = useSessionStore(
-		    useShallow((state) => ({
-		      session: sessionId ? state.sessions.get(sessionId) : undefined,
-		      sendMessage: state.sendMessage,
-		      abortGeneration: state.abortGeneration,
+			    setSessionRunMode,
+			    setSessionThinkingMode,
+			    setSessionDraftContent,
+			    setSessionDraftCodeSnippets,
+			  } = useSessionStore(
+			    useShallow((state) => ({
+			      session: sessionId ? state.sessions.get(sessionId) : undefined,
+			      sendMessage: state.sendMessage,
+			      abortGeneration: state.abortGeneration,
 		      retry: state.retry,
 		      retryTurn: state.retryTurn,
 		      cloneConversation: state.cloneConversation,
 		      setSessionModel: state.setSessionModel,
 		      undoToMessage: state.undoToMessage,
 		      moveQueuedMessage: state.moveQueuedMessage,
-		      removeQueuedMessage: state.removeQueuedMessage,
-		      updateQueuedMessageContent: state.updateQueuedMessageContent,
-		      setSessionRunMode: state.setSessionRunMode,
-		      setSessionThinkingMode: state.setSessionThinkingMode,
-		      setSessionDraftContent: state.setSessionDraftContent,
-		    }))
-	  );
+			      removeQueuedMessage: state.removeQueuedMessage,
+			      updateQueuedMessageContent: state.updateQueuedMessageContent,
+			      setSessionRunMode: state.setSessionRunMode,
+			      setSessionThinkingMode: state.setSessionThinkingMode,
+			      setSessionDraftContent: state.setSessionDraftContent,
+			      setSessionDraftCodeSnippets: state.setSessionDraftCodeSnippets,
+			    }))
+		  );
   const [showToolSessions, setShowToolSessions] = useState(false);
   const [selectedRequestMessageId, setSelectedRequestMessageId] = useState<string | null>(null);
   const [outlineOpen, setOutlineOpen] = useState(false);
@@ -1336,10 +1354,10 @@ Guidelines:
           console.error('Failed to process retry action', e);
         }
         break;
-      case 'undo':
-        if (sessionId && action.payload) {
-          try {
-            const parsed = JSON.parse(action.payload) as { messageId?: string; content?: string };
+	      case 'undo':
+	        if (sessionId && action.payload) {
+	          try {
+	            const parsed = JSON.parse(action.payload) as { messageId?: string; content?: string };
             const messageId = parsed.messageId;
             if (!messageId) return;
 
@@ -1357,16 +1375,21 @@ Guidelines:
                   })()
                 : undefined;
 
-            const contentToRestore = resolvedUserMessage?.content ?? parsed.content ?? '';
-            const partsToRestore =
-              resolvedUserMessage?.contentParts?.filter((p) => p.type !== 'text') ?? [];
+	            const contentToRestore = resolvedUserMessage?.content ?? parsed.content ?? '';
+	            const codeSnippetsToRestore =
+	              resolvedUserMessage?.contentParts?.filter(
+	                (p): p is CodeSnippetContentPart => p.type === 'code_snippet'
+	              ) ?? [];
+	            const partsToRestore =
+	              resolvedUserMessage?.contentParts?.filter((p) => p.type !== 'text' && p.type !== 'code_snippet') ?? [];
 
-            undoToMessage(sessionId, messageId);
+	            undoToMessage(sessionId, messageId);
+	            setSessionDraftCodeSnippets(sessionId, codeSnippetsToRestore);
 
-            if (inputRef.current) {
-              inputRef.current.setValue(contentToRestore);
-              inputRef.current.setContentParts(partsToRestore);
-              inputRef.current.focus();
+	            if (inputRef.current) {
+	              inputRef.current.setValue(contentToRestore);
+	              inputRef.current.setContentParts(partsToRestore);
+	              inputRef.current.focus();
             }
           } catch (e) {
             console.error("Failed to process undo action", e);
@@ -1765,9 +1788,14 @@ Guidelines:
           if (!sessionId) return;
           useSessionStore.getState().setSessionWebSearchProvider(sessionId, provider);
         }}
-        webSearchDetails={webSearchDetails}
-        workstudio={workstudio ?? null}
-      />
+	        webSearchDetails={webSearchDetails}
+	        workstudio={workstudio ?? null}
+	        codeSnippets={session?.draftCodeSnippets ?? []}
+	        onCodeSnippetsChange={(snips) => {
+	          if (!sessionId) return;
+	          setSessionDraftCodeSnippets(sessionId, snips);
+	        }}
+	      />
       {persistanceShellEnhance && conversationId && (
         <ToolSessionsPanel
           conversationId={conversationId}

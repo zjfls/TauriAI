@@ -28,7 +28,10 @@ function basenameFromPath(path: string): string {
   return parts.length > 0 ? parts[parts.length - 1] : path;
 }
 
-function renderUserTextWithPathChips(text: string): React.ReactNode {
+function renderUserTextWithPathChips(
+  text: string,
+  codeSnippetLabels?: Map<string, { label: string; title?: string }>
+): React.ReactNode {
   if (!text) return text;
 
   const nodes: React.ReactNode[] = [];
@@ -45,6 +48,32 @@ function renderUserTextWithPathChips(text: string): React.ReactNode {
     const raw = match[0];
     const end = start + raw.length;
     if (start > last) nodes.push(<span key={`t-${last}`}>{text.slice(last, start)}</span>);
+
+    // Code snippet token: "@{snippet:<uuid>}"
+    const token = match[1];
+    if (token.startsWith('{snippet:') && token.endsWith('}')) {
+      const id = token.slice('{snippet:'.length, -1);
+      const info = codeSnippetLabels?.get(id) ?? null;
+      if (info) {
+        nodes.push(
+          <span
+            key={`snip-${start}`}
+            className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700 dark:bg-emerald-900/25 dark:text-emerald-200 align-baseline"
+            title={info.title || info.label}
+          >
+            <span className="truncate max-w-56">{info.label}</span>
+          </span>
+        );
+      } else {
+        nodes.push(
+          <span key={`snip-missing-${start}`} className="text-gray-400">
+            {raw}
+          </span>
+        );
+      }
+      last = end;
+      continue;
+    }
 
     let path = match[1];
     if (path.startsWith('"') && path.endsWith('"') && path.length >= 2) {
@@ -146,6 +175,21 @@ const ContentPartsRenderer: React.FC<ContentPartsRendererProps> = ({
 }) => {
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const closePreviewImage = useCallback(() => setPreviewImage(null), []);
+  const codeSnippetLabels = useMemo(() => {
+    const map = new Map<string, { label: string; title?: string }>();
+    for (const p of contentParts ?? []) {
+      if (p.type !== 'code_snippet') continue;
+      const titleParts: string[] = [];
+      if (p.filePath) titleParts.push(p.filePath);
+      if (p.range) {
+        titleParts.push(
+          `${p.range.startLine}:${p.range.startColumn} - ${p.range.endLine}:${p.range.endColumn}`
+        );
+      }
+      map.set(p.id, { label: p.label, title: titleParts.join('\n') });
+    }
+    return map;
+  }, [contentParts]);
 
   // If no content parts, just render text
   if (!contentParts || contentParts.length === 0) {
@@ -162,7 +206,7 @@ const ContentPartsRenderer: React.FC<ContentPartsRendererProps> = ({
           if (isUser) {
             return (
               <p key={index} className="whitespace-pre-wrap">
-                {renderUserTextWithPathChips(part.text)}
+                {renderUserTextWithPathChips(part.text, codeSnippetLabels)}
               </p>
             );
           }

@@ -326,6 +326,36 @@ export interface FileRefContentPart {
   label?: string;    // UI label (usually basename)
 }
 
+export interface CodeSnippetRange {
+  startLine: number;
+  startColumn: number;
+  endLine: number;
+  endColumn: number;
+}
+
+/**
+ * Code snippet content part (selection-based)
+ *
+ * Used for "Add to chat" chips from Workstudio editor selections.
+ * - Frontend: shows as a chip label in input / message
+ * - Backend: replaces the token `@{snippet:<id>}` with the actual code text when building the prompt
+ */
+export interface CodeSnippetContentPart {
+  type: 'code_snippet';
+  /** UUID (referenced by @{snippet:<id>} token) */
+  id: string;
+  /** Short label shown in UI */
+  label: string;
+  /** Full selected code text (sent to backend for token replacement) */
+  text: string;
+  /** Monaco language id (optional) */
+  languageId?: string;
+  /** Absolute file path (optional, for display/debug) */
+  filePath?: string;
+  /** 1-based editor range (optional, for display/debug) */
+  range?: CodeSnippetRange;
+}
+
 /**
  * Pending text file for attachment (before sending)
  */
@@ -448,7 +478,8 @@ export type ContentPart =
   | ImageContentPart
   | TextFileContentPart
   | PdfDocumentContentPart
-  | FileRefContentPart;
+  | FileRefContentPart
+  | CodeSnippetContentPart;
 
 // ============================================================================
 // Message & Conversation
@@ -1011,6 +1042,7 @@ export type KeyboardShortcutActionId =
   | 'session.previous'
   | 'workstudio.backToMain'
   | 'workstudio.fileSearch'
+  | 'workstudio.triggerSuggest'
   | 'workstudio.navigateBack'
   | 'workstudio.navigateForward'
   | 'workstudio.goToDefinition'
@@ -1076,6 +1108,48 @@ export interface LspServerConfig {
 export interface CodeIntelligenceSettings {
   enabled: boolean;
   lspServers: LspServerConfig[];
+  /**
+   * 是否启用 LSP completion（建议列表）。
+   * 关闭后仍可保留 hover/定义跳转/诊断等其它 LSP 能力，便于调试 AI Completion。
+   * 默认为 true。
+   */
+  lspCompletionEnabled?: boolean;
+  /**
+   * 是否启用 Monaco 内置的“词汇建议”（来自打开的文件内容，不依赖 LSP）。
+   * 关闭后 Suggest 列表会更“干净”，便于调试 AI Completion。
+   * 默认为 true。
+   */
+  monacoWordSuggestionsEnabled?: boolean;
+  /** AI 辅助补全（幽灵补全 + Ctrl+Space 建议列表） */
+  aiCompletion?: AiCompletionSettings;
+}
+
+export type AiCompletionQueueScope = 'global' | 'language';
+
+export type AiCompletionTriggerMode = 'auto' | 'manual' | 'hybrid';
+
+export interface AiCompletionSettings {
+  enabled: boolean;
+  /** 使用的模型，格式：provider_name/model_name */
+  modelRef: string;
+  /** 幽灵补全（Inline) */
+  inlineEnabled: boolean;
+  /** Ctrl+Space 建议列表（Completion list） */
+  listEnabled: boolean;
+  /** 触发模式：auto=自动；manual=仅手动；hybrid=幽灵自动 + 列表手动 */
+  triggerMode: AiCompletionTriggerMode;
+  /** 请求队列作用域：先用 global；后续可扩展为按语言并发 */
+  queueScope: AiCompletionQueueScope;
+  debounceMs: number;
+  timeoutMs: number;
+  maxTokens: number;
+  temperature: number;
+  maxPrefixChars: number;
+  maxSuffixChars: number;
+  /** 是否允许发送项目上下文（路径、工作区信息等） */
+  includeProjectContext: boolean;
+  /** Ctrl+Space 列表里返回的候选条数 */
+  listSuggestionCount: number;
 }
 
 export interface LspServerStatus {
@@ -1320,6 +1394,8 @@ export interface AgentSession {
   thinkingMode?: ThinkingMode;        // Current thinking mode/level for this session
   webSearchProvider?: 'native' | 'tavily' | 'google' | 'brave' | null;  // Selected web search provider for this session
   draftContent?: string;              // Unsent input text for this session
+  /** 草稿里的“代码片段 chip”（来自 Workstudio 选中内容右键 Add to chat） */
+  draftCodeSnippets?: CodeSnippetContentPart[];
 
   // Session state
   messages: Message[];                // Message history for this session
@@ -1355,6 +1431,8 @@ export interface PersistedSession {
   thinkingMode?: ThinkingMode;      // Persisted thinking mode/level
   webSearchProvider?: 'native' | 'tavily' | 'google' | 'brave' | null;  // Persisted web search provider selection
   draftContent?: string;            // Persisted unsent input text
+  /** 持久化草稿里的代码片段 chip（可能较大；存储层会做限制） */
+  draftCodeSnippets?: CodeSnippetContentPart[];
   createdAt: string;
   lastActiveAt: string;
 }

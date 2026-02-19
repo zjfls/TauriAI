@@ -3,6 +3,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { openPath, revealItemInDir } from '@tauri-apps/plugin-opener';
+import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import Editor, { type OnMount } from '@monaco-editor/react';
 import {
   DndContext,
@@ -22,16 +23,26 @@ import { CSS } from '@dnd-kit/utilities';
 import {
   ArrowLeft,
   ArrowRight,
+  AlertTriangle,
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
   FileText,
   Folder,
   FolderOpen,
+  Loader2,
   ListTree,
+  MessageSquare,
   RefreshCw,
   X,
 } from 'lucide-react';
-import type { LspServerStatus, TerminalScope, Workstudio, WorkstudioUiState } from '../../types';
+import type {
+  CodeSnippetContentPart,
+  LspServerStatus,
+  TerminalScope,
+  Workstudio,
+  WorkstudioUiState,
+} from '../../types';
 import { SHORTCUT_ACTIONS, detectShortcutPlatform, normalizeKeybindingString } from '../../shortcuts';
 import {
   astDocumentSymbols,
@@ -50,7 +61,9 @@ import { useDragGhostSession } from '../../hooks/useDragGhostSession';
 import { focusMainWindow, getViewWindowParams } from '../../utils/viewWindow';
 import { setupMonaco } from '../../utils/monaco';
 import { attachMonacoLspBridge } from '../../utils/monacoLspBridge';
+import { attachMonacoAiCompletionBridge } from '../../utils/monacoAiCompletionBridge';
 import { TerminalSurface, type TerminalSurfaceHandle } from '../Terminal/TerminalSurface';
+import { DeferredMarkdown } from '../Chat/DeferredMarkdown';
 
 type DirEntry = {
   name: string;
@@ -88,6 +101,27 @@ type OutlineRange = {
   startColumn: number;
   endLine: number;
   endColumn: number;
+};
+
+type InlineChatSelection = {
+  filePath: string;
+  languageId: string;
+  text: string;
+  range: OutlineRange;
+  label: string;
+};
+
+type InlineChatBubble = {
+  id: string;
+  name: string;
+  selectionLabel: string;
+  question: string;
+  status: 'running' | 'done' | 'error';
+  answer?: string;
+  error?: string;
+  modelRef?: string;
+  latencyMs?: number;
+  createdAt: string;
 };
 
 type OutlineItem = {
@@ -832,6 +866,8 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const monacoRef = useRef<typeof import('monaco-editor') | null>(null);
   const lspBridgeRef = useRef<{ dispose: () => void } | null>(null);
   const lspBridgeWorkstudioIdRef = useRef<string | null>(null);
+  const aiCompletionBridgeRef = useRef<{ dispose: () => void } | null>(null);
+  const aiCompletionBridgeWorkstudioIdRef = useRef<string | null>(null);
   const explorerContainerRef = useRef<HTMLDivElement | null>(null);
   const outlineContainerRef = useRef<HTMLDivElement | null>(null);
   const outlineScrollSaveTimerRef = useRef<number | null>(null);
@@ -840,14 +876,106 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const filePaletteInputRef = useRef<HTMLInputElement | null>(null);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const terminalSurfaceRef = useRef<TerminalSurfaceHandle | null>(null);
+  const [inlineChatComposer, setInlineChatComposer] = useState<{
+    open: boolean;
+    selection: InlineChatSelection | null;
+    question: string;
+  }>({ open: false, selection: null, question: '' });
+  const openInlineChatComposer = useCallback((selection: InlineChatSelection) => {
+    setInlineChatComposer({ open: true, selection, question: '' });
+  }, []);
+  const closeInlineChatComposer = useCallback(() => {
+    setInlineChatComposer((prev) => ({ ...prev, open: false }));
+  }, []);
+  const [inlineChatBubbles, setInlineChatBubbles] = useState<InlineChatBubble[]>([]);
+  const [inlineChatViewerId, setInlineChatViewerId] = useState<string | null>(null);
+  const inlineChatViewer = useMemo(() => {
+    if (!inlineChatViewerId) return null;
+    return inlineChatBubbles.find((b) => b.id === inlineChatViewerId) ?? null;
+  }, [inlineChatBubbles, inlineChatViewerId]);
+  const openInlineChatViewer = useCallback((id: string) => setInlineChatViewerId(id), []);
+  const closeInlineChatViewer = useCallback(() => {
+    if (!inlineChatViewerId) return;
+    setInlineChatBubbles((prev) => prev.filter((b) => b.id !== inlineChatViewerId));
+    setInlineChatViewerId(null);
+  }, [inlineChatViewerId]);
+  const submitInlineChat = useCallback(async () => {
+    const selection = inlineChatComposer.selection;
+    const question = inlineChatComposer.question.trim();
+    if (!selection || !question) return;
+
+    const id = crypto.randomUUID();
+    const name = question.length > 28 ? `${question.slice(0, 28)}…` : question;
+    const createdAt = new Date().toISOString();
+    const bubble: InlineChatBubble = {
+      id,
+      name,
+      selectionLabel: selection.label,
+      question,
+      status: 'running',
+      createdAt,
+    };
+    setInlineChatBubbles((prev) => [...prev, bubble]);
+    closeInlineChatComposer();
+
+    try {
+      if (!isTauri()) throw new Error('Not running in Tauri');
+      const res = await invoke<{ answer: string; modelRef: string; latencyMs: number }>('ai_chat_with_selection', {
+        args: {
+          workstudioId: workstudioId ?? '',
+          languageId: selection.languageId,
+          filePath: selection.filePath,
+          selection: selection.text,
+          question,
+        },
+      });
+
+      setInlineChatBubbles((prev) =>
+        prev.map((b) =>
+          b.id === id
+            ? {
+                ...b,
+                status: 'done',
+                answer: res.answer,
+                modelRef: res.modelRef,
+                latencyMs: res.latencyMs,
+              }
+            : b
+        )
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setInlineChatBubbles((prev) =>
+        prev.map((b) => (b.id === id ? { ...b, status: 'error', error: message } : b))
+      );
+    }
+  }, [closeInlineChatComposer, inlineChatComposer.question, inlineChatComposer.selection, workstudioId]);
   const terminalScope: TerminalScope | null = useMemo(() => {
     if (!workstudioId) return null;
     return { kind: 'workstudio', id: workstudioId };
   }, [workstudioId]);
   const terminalSessionId = useTerminalSessionStore((s) => (terminalScope ? s.getSessionId(terminalScope) : null));
 
-  const keyboardShortcuts = useConfigStore((s) => s.config?.general?.keyboardShortcuts);
-  const codeIntelligenceConfig = useConfigStore((s) => s.config?.codeIntelligence);
+	  const keyboardShortcuts = useConfigStore((s) => s.config?.general?.keyboardShortcuts);
+	  const codeIntelligenceConfig = useConfigStore((s) => s.config?.codeIntelligence);
+
+  // 某些 Monaco 选项（如 suggest/wordBasedSuggestions）在 React wrapper 下更新不一定稳定，
+  // 这里显式对已挂载的 editor 实例执行 updateOptions，确保设置切换立即生效。
+  useEffect(() => {
+    const enabled = codeIntelligenceConfig?.monacoWordSuggestionsEnabled !== false;
+    for (const editor of editorByPaneRef.current.values()) {
+      try {
+        editor.updateOptions({
+          suggest: { showWords: enabled },
+          wordBasedSuggestions: enabled ? 'matchingDocuments' : 'off',
+          wordBasedSuggestionsOnlySameLanguage: true,
+        });
+      } catch (err) {
+        console.warn('[Workstudio] updateOptions failed:', err);
+      }
+    }
+  }, [codeIntelligenceConfig?.monacoWordSuggestionsEnabled]);
+
   const shortcutPlatform = useMemo(() => detectShortcutPlatform(), []);
   const backToMainShortcutLabel = useMemo(() => {
     const def = SHORTCUT_ACTIONS.find((a) => a.id === 'workstudio.backToMain');
@@ -985,6 +1113,8 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
   const [contextMenu, setContextMenu] = useState<
     | { visible: true; x: number; y: number; kind: 'root'; folder: string }
+    | { visible: true; x: number; y: number; kind: 'folder'; folder: string }
+    | { visible: true; x: number; y: number; kind: 'file'; file: string }
     | { visible: true; x: number; y: number; kind: 'blank' }
     | null
   >(null);
@@ -994,6 +1124,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   >(null);
   const lspStatusButtonRef = useRef<HTMLButtonElement | null>(null);
   const [outlineOpen, setOutlineOpen] = useState(true);
+  const [leftSidebarTab, setLeftSidebarTab] = useState<'explorer' | 'outline'>('explorer');
   const [outlineItems, setOutlineItems] = useState<OutlineItem[]>([]);
   const [outlineLoading, setOutlineLoading] = useState(false);
   const [outlineError, setOutlineError] = useState<string | null>(null);
@@ -1122,6 +1253,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const paneRootRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const paneTabStripRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const paneBodyRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const paneBodyResizeObserversRef = useRef<Map<string, ResizeObserver>>(new Map());
   const resizeRef = useRef<{
     dragging: boolean;
     leftPaneId: string;
@@ -1331,6 +1463,13 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     setOutlineActiveKey(null);
     setOutlineCollapsedKeys(new Set());
   }, [activeTextFileInFocusedPane?.id]);
+
+  useEffect(() => {
+    if (outlineOpen) return;
+    if (leftSidebarTab !== 'explorer') {
+      setLeftSidebarTab('explorer');
+    }
+  }, [leftSidebarTab, outlineOpen]);
 
   useEffect(() => {
     return () => {
@@ -2425,6 +2564,11 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       runFocusedEditorAction('editor.action.peekDefinition', { ...opts, recordNavBeforeRun: true }),
     [runFocusedEditorAction]
   );
+  const triggerSuggest = useCallback(
+    (opts?: { requireTextFocus?: boolean }) =>
+      runFocusedEditorAction('editor.action.triggerSuggest', opts),
+    [runFocusedEditorAction]
+  );
 
   const toggleOutlineCollapsed = useCallback(
     (item: OutlineItem) => {
@@ -2653,6 +2797,122 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     [closeTabInLayout]
   );
 
+  const formatPathForChatRef = useCallback(
+    (absPathRaw: string, kind: 'file' | 'folder') => {
+      const absPath = normalizeFsPath(String(absPathRaw ?? '').trim());
+      if (!absPath) return '';
+
+      const rootsRaw = rootFoldersRef.current;
+      let bestRoot: string | null = null;
+      for (const raw of rootsRaw) {
+        const norm = normalizeFsPath(raw);
+        if (!norm) continue;
+        if (absPath === norm || absPath.startsWith(`${norm}/`)) {
+          if (!bestRoot || norm.length > bestRoot.length) bestRoot = norm;
+        }
+      }
+
+      let refPath = absPath;
+      if (bestRoot) {
+        const rel = absPath.slice(bestRoot.length).replace(/^\/+/, '');
+        refPath = rel || basename(absPath);
+      }
+      if (kind === 'folder' && refPath && !refPath.endsWith('/')) {
+        refPath += '/';
+      }
+      return `\`${refPath}\``;
+    },
+    []
+  );
+
+  const addPathToMainChat = useCallback(
+    async (absPathRaw: string, kind: 'file' | 'folder') => {
+      const refText = formatPathForChatRef(absPathRaw, kind);
+      if (!refText) return;
+
+      // 保底：先复制到剪贴板（即使主窗口未打开也可手动粘贴）。
+      try {
+        await navigator.clipboard.writeText(refText);
+      } catch {
+        // ignore
+      }
+
+      if (!isTauri()) return;
+
+      // 尝试把引用直接追加到主窗口聊天输入框（如果主窗口存在）。
+      await focusMainWindow();
+      const mainWin = await WebviewWindow.getByLabel('main').catch(() => null);
+      if (!mainWin) return;
+      await mainWin.emit('chat:insert_text', { text: refText }).catch(() => {});
+    },
+    [formatPathForChatRef]
+  );
+
+  const formatPathForSnippetLabel = useCallback(
+    (absPathRaw: string) => {
+      const token = formatPathForChatRef(absPathRaw, 'file');
+      if (token.startsWith('`') && token.endsWith('`') && token.length >= 2) return token.slice(1, -1);
+      return token;
+    },
+    [formatPathForChatRef]
+  );
+
+  const addCodeSnippetToMainChat = useCallback(
+    async (token: string, snippet: CodeSnippetContentPart) => {
+      const label = String(snippet?.label ?? '').trim();
+      const code = String(snippet?.text ?? '');
+      if (!label || !code) return;
+
+      // 保底：复制到剪贴板（主窗口不存在/未响应时用户仍可粘贴）。
+      const fenceLang = String(snippet.languageId ?? '').trim();
+      const fallback = `${label}\n\`\`\`${fenceLang}\n${code}\n\`\`\``;
+      try {
+        await navigator.clipboard.writeText(fallback);
+      } catch {
+        // ignore
+      }
+
+      if (!isTauri()) return;
+      await focusMainWindow();
+      const mainWin = await WebviewWindow.getByLabel('main').catch(() => null);
+      if (!mainWin) return;
+      await mainWin.emit('chat:insert_code_snippet', { token, snippet }).catch(() => {});
+    },
+    [focusMainWindow]
+  );
+
+  const deleteExplorerFile = useCallback(
+    async (absPathRaw: string) => {
+      const absPath = normalizeFsPath(String(absPathRaw ?? '').trim());
+      if (!absPath) return;
+      if (!ws) return;
+
+      const ok = window.confirm(`确定要删除该文件吗？\n\n${absPath}`);
+      if (!ok) return;
+
+      try {
+        await invoke('delete_local_path', { path: absPath, allowedRoots: rootFoldersRef.current });
+      } catch (error) {
+        console.error('delete_local_path failed:', error);
+        return;
+      }
+
+      // 如果该文件已在 editor 中打开，删除后需要关闭 tab，避免出现“保存/写回”到已不存在文件。
+      const toClose = openFilesRef.current
+        .filter((f) => normalizeFsPath(f.path) === absPath)
+        .map((f) => f.id);
+      for (const id of toClose) closeFileTab(id);
+
+      setExplorerSelectedFilePath((prev) => (prev === absPath ? null : prev));
+
+      const parent = absPath.split('/').slice(0, -1).join('/');
+      if (parent) {
+        void listDir(parent);
+      }
+    },
+    [closeFileTab, listDir, ws]
+  );
+
   const startResize = useCallback(
     (leftPaneId: string, rightPaneId: string, startClientX: number) => {
       const leftEl = paneRootRefs.current.get(leftPaneId);
@@ -2870,45 +3130,67 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     terminalSurfaceRef.current?.reset();
   }, [terminalScope]);
 
-  // 初始化 Monaco <-> LSP Bridge（仅在 Tauri 桌面端）。
+  // 初始化 Monaco <-> Bridge（仅在 Tauri 桌面端）。
   // - 在 Workstudio 首次挂载 editor 时拿到 monaco 实例
-  // - 当 ws.id 就绪后，启动 LSP Bridge（注册 provider + editor opener + 文档同步）
+  // - 当 ws.id 就绪后，启动 LSP Bridge / AI Completion Bridge（注册 provider + opener + 文档同步）
   useEffect(() => {
     return () => {
       lspBridgeRef.current?.dispose();
       lspBridgeRef.current = null;
       lspBridgeWorkstudioIdRef.current = null;
+      aiCompletionBridgeRef.current?.dispose();
+      aiCompletionBridgeRef.current = null;
+      aiCompletionBridgeWorkstudioIdRef.current = null;
     };
   }, []);
 
-  useEffect(() => {
-    const monaco = monacoRef.current;
-    const wsId = ws?.id ?? null;
-    // Switching workstudio: dispose immediately (do not keep old listeners/processes around).
-    if (lspBridgeWorkstudioIdRef.current && lspBridgeWorkstudioIdRef.current !== wsId) {
-      lspBridgeRef.current?.dispose();
-      lspBridgeRef.current = null;
-      lspBridgeWorkstudioIdRef.current = null;
-    }
+	  useEffect(() => {
+	    const monaco = monacoRef.current;
+	    const wsId = ws?.id ?? null;
+	    // Switching workstudio: dispose immediately (do not keep old listeners/processes around).
+	    if (lspBridgeWorkstudioIdRef.current && lspBridgeWorkstudioIdRef.current !== wsId) {
+	      lspBridgeRef.current?.dispose();
+	      lspBridgeRef.current = null;
+	      lspBridgeWorkstudioIdRef.current = null;
+	    }
+	    if (aiCompletionBridgeWorkstudioIdRef.current && aiCompletionBridgeWorkstudioIdRef.current !== wsId) {
+	      aiCompletionBridgeRef.current?.dispose();
+	      aiCompletionBridgeRef.current = null;
+	      aiCompletionBridgeWorkstudioIdRef.current = null;
+	    }
 
-    if (!monaco || !wsId) return;
-    if (lspBridgeWorkstudioIdRef.current === wsId) return;
+	    if (!monaco || !wsId) return;
+	    const hasLspBridge = lspBridgeWorkstudioIdRef.current === wsId;
+	    const hasAiCompletionBridge = aiCompletionBridgeWorkstudioIdRef.current === wsId;
+	    if (hasLspBridge && hasAiCompletionBridge) return;
 
-    lspBridgeRef.current?.dispose();
-    lspBridgeRef.current = attachMonacoLspBridge({
-      monaco,
-      workstudioId: wsId,
-      openFile: async (t) => {
-        await openLinkTarget(t);
-      },
-      getConfig: () => useConfigStore.getState().config?.codeIntelligence,
-      isLanguageEnabled: isLspLanguageEnabledForBridge,
-    });
-    lspBridgeWorkstudioIdRef.current = wsId;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    ws?.id,
-    lspAutoConfigStatus,
+	    if (!hasLspBridge) {
+	      lspBridgeRef.current?.dispose();
+	      lspBridgeRef.current = attachMonacoLspBridge({
+	        monaco,
+	        workstudioId: wsId,
+	        openFile: async (t) => {
+	          await openLinkTarget(t);
+	        },
+	        getConfig: () => useConfigStore.getState().config?.codeIntelligence,
+	        isLanguageEnabled: isLspLanguageEnabledForBridge,
+	      });
+	      lspBridgeWorkstudioIdRef.current = wsId;
+	    }
+
+	    if (!hasAiCompletionBridge) {
+	      aiCompletionBridgeRef.current?.dispose();
+	      aiCompletionBridgeRef.current = attachMonacoAiCompletionBridge({
+	        monaco,
+	        workstudioId: wsId,
+	        getConfig: () => useConfigStore.getState().config?.codeIntelligence,
+	      });
+	      aiCompletionBridgeWorkstudioIdRef.current = wsId;
+	    }
+	    // eslint-disable-next-line react-hooks/exhaustive-deps
+	  }, [
+	    ws?.id,
+	    lspAutoConfigStatus,
     openLinkTarget,
     codeIntelligenceConfig?.enabled,
     codeIntelligenceConfig?.lspServers?.length,
@@ -2937,6 +3219,15 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           });
           lspBridgeWorkstudioIdRef.current = wsId;
         }
+        if (wsId && aiCompletionBridgeWorkstudioIdRef.current !== wsId) {
+          aiCompletionBridgeRef.current?.dispose();
+          aiCompletionBridgeRef.current = attachMonacoAiCompletionBridge({
+            monaco,
+            workstudioId: wsId,
+            getConfig: () => useConfigStore.getState().config?.codeIntelligence,
+          });
+          aiCompletionBridgeWorkstudioIdRef.current = wsId;
+        }
 
         editor.onDidDispose(() => {
           editorByPaneRef.current.delete(paneId);
@@ -2961,6 +3252,80 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
               : pane.tabIds[0] ?? null;
           return active ?? null;
         };
+
+        const snapshotSelection = (): {
+          filePath: string;
+          languageId: string;
+          text: string;
+          range: { startLine: number; startColumn: number; endLine: number; endColumn: number };
+          labelPath: string;
+        } | null => {
+          const filePath = readActiveTabId();
+          if (!filePath || filePath.startsWith(UNTITLED_PREFIX)) return null;
+          const model = editor.getModel();
+          if (!model) return null;
+          const sel = editor.getSelection();
+          if (!sel || sel.isEmpty()) return null;
+          const text = model.getValueInRange(sel);
+          if (!String(text ?? '').trim()) return null;
+          const start = sel.getStartPosition();
+          const end = sel.getEndPosition();
+          const range = {
+            startLine: start.lineNumber,
+            startColumn: start.column,
+            endLine: end.lineNumber,
+            endColumn: end.column,
+          };
+          const languageId = String(model.getLanguageId?.() ?? '').trim() || 'plaintext';
+          const labelPath = formatPathForSnippetLabel(filePath);
+          return { filePath, languageId, text, range, labelPath };
+        };
+
+        // Monaco editor context menu actions (selection-based)
+        editor.addAction({
+          id: 'tauri-ai.addSelectionToChat',
+          label: 'Add to chat',
+          precondition: 'editorHasSelection',
+          contextMenuGroupId: 'navigation',
+          contextMenuOrder: 1.41,
+          run: async () => {
+            const snap = snapshotSelection();
+            if (!snap) return;
+            const id = crypto.randomUUID();
+            const token = `@{snippet:${id}}`;
+            const label = `片段 ${snap.labelPath}:${snap.range.startLine}-${snap.range.endLine}`;
+            const snippet: CodeSnippetContentPart = {
+              type: 'code_snippet',
+              id,
+              label,
+              text: snap.text,
+              languageId: snap.languageId,
+              filePath: snap.filePath,
+              range: snap.range,
+            };
+            await addCodeSnippetToMainChat(token, snippet);
+          },
+        });
+
+        editor.addAction({
+          id: 'tauri-ai.chatWithSelection',
+          label: 'Chat with…',
+          precondition: 'editorHasSelection',
+          contextMenuGroupId: 'navigation',
+          contextMenuOrder: 1.42,
+          run: async () => {
+            const snap = snapshotSelection();
+            if (!snap) return;
+            // Placeholder: the full bubble UI is implemented below; here we only open the composer.
+            openInlineChatComposer({
+              filePath: snap.filePath,
+              languageId: snap.languageId,
+              text: snap.text,
+              range: snap.range,
+              label: `选中 ${snap.labelPath}:${snap.range.startLine}-${snap.range.endLine}`,
+            });
+          },
+        });
 
         const snapshotCurrentLocation = (): NavLocation | null => {
           const tabId = readActiveTabId();
@@ -3004,7 +3369,17 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           commitNavBackEntry(paneId, prev);
         });
       },
-    [commitNavBackEntry, isMeaningfulNavTransition, lspAutoConfigStatus, openLinkTarget, saveFile, ws?.id]
+    [
+      addCodeSnippetToMainChat,
+      commitNavBackEntry,
+      formatPathForSnippetLabel,
+      isMeaningfulNavTransition,
+      lspAutoConfigStatus,
+      openInlineChatComposer,
+      openLinkTarget,
+      saveFile,
+      ws?.id,
+    ]
   );
 
   const relayoutAllEditors = useCallback(() => {
@@ -3565,11 +3940,71 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const registerPaneBodyRef = useCallback(
     (paneId: string) => (el: HTMLDivElement | null) => {
       const map = paneBodyRefs.current;
-      if (el) map.set(paneId, el);
-      else map.delete(paneId);
+      const observers = paneBodyResizeObserversRef.current;
+      const oldObserver = observers.get(paneId) ?? null;
+      if (oldObserver) {
+        oldObserver.disconnect();
+        observers.delete(paneId);
+      }
+
+      if (!el) {
+        map.delete(paneId);
+        return;
+      }
+
+      map.set(paneId, el);
+
+      if (typeof ResizeObserver !== 'undefined') {
+        try {
+          const observer = new ResizeObserver(() => {
+            const editor = editorByPaneRef.current.get(paneId) ?? null;
+            if (!editor) return;
+            try {
+              editor.layout({ width: el.clientWidth, height: el.clientHeight });
+            } catch {
+              try {
+                editor.layout();
+              } catch {
+                // ignore
+              }
+            }
+          });
+          observer.observe(el);
+          observers.set(paneId, observer);
+        } catch {
+          // ignore
+        }
+      }
+
+      window.requestAnimationFrame(() => {
+        const editor = editorByPaneRef.current.get(paneId) ?? null;
+        if (!editor) return;
+        try {
+          editor.layout({ width: el.clientWidth, height: el.clientHeight });
+        } catch {
+          try {
+            editor.layout();
+          } catch {
+            // ignore
+          }
+        }
+      });
     },
     []
   );
+
+  useEffect(() => {
+    return () => {
+      for (const observer of paneBodyResizeObserversRef.current.values()) {
+        try {
+          observer.disconnect();
+        } catch {
+          // ignore
+        }
+      }
+      paneBodyResizeObserversRef.current.clear();
+    };
+  }, []);
 
   type SplitPreview = {
     paneId: string;
@@ -4009,6 +4444,10 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         window.setTimeout(() => filePaletteInputRef.current?.focus(), 0);
         return;
       }
+      if (action === 'workstudio.triggerSuggest') {
+        void triggerSuggest();
+        return;
+      }
       if (action === 'workstudio.navigateBack') {
         void navigateBack();
         return;
@@ -4057,6 +4496,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     peekDefinition,
     resetEditorFont,
     returnToMainWindow,
+    triggerSuggest,
     zoomInEditorFont,
     zoomOutEditorFont,
   ]);
@@ -4122,6 +4562,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     setWsEnabledLspLanguageIds(null);
     setEditorFontSize(DEFAULT_EDITOR_FONT_SIZE);
     setOutlineOpen(true);
+    setLeftSidebarTab('explorer');
     setOutlineCollapsedKeys(new Set());
     setOutlineActiveKey(null);
     setOutlineFileStateByPath({});
@@ -4914,29 +5355,32 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     };
   }, [createUntitledRichTxt]);
 
-  const renderDirNode = (dirPath: string, depth: number, opts?: { isRoot?: boolean; isMainRoot?: boolean }) => {
-    const expanded = expandedDirs.has(dirPath);
-    const entries = entriesByDir[dirPath] ?? [];
-    const isLoading = loadingDirs[dirPath];
-    const isRoot = Boolean(opts?.isRoot);
-    const isMainRoot = Boolean(opts?.isMainRoot);
+	  const renderDirNode = (dirPath: string, depth: number, opts?: { isRoot?: boolean; isMainRoot?: boolean }) => {
+	    const expanded = expandedDirs.has(dirPath);
+	    const entries = entriesByDir[dirPath] ?? [];
+	    const isLoading = loadingDirs[dirPath];
+	    const isRoot = Boolean(opts?.isRoot);
+	    const isMainRoot = Boolean(opts?.isMainRoot);
 
     return (
       <div key={dirPath}>
-        <button
-          type="button"
-          data-ws-node="1"
-          onClick={() => void toggleDir(dirPath)}
-          onContextMenu={(e) => {
-            if (!isRoot) return;
-            e.preventDefault();
-            e.stopPropagation();
-            setContextMenu({ visible: true, x: e.clientX, y: e.clientY, kind: 'root', folder: dirPath });
-          }}
-          className={[
-            'flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-xs',
-            isMainRoot
-              ? 'bg-blue-50 text-blue-700 hover:bg-blue-100 dark:bg-blue-900/30 dark:text-blue-200 dark:hover:bg-blue-900/40'
+	        <button
+	          type="button"
+	          data-ws-node="1"
+	          onClick={() => void toggleDir(dirPath)}
+	          onContextMenu={(e) => {
+	            e.preventDefault();
+	            e.stopPropagation();
+	            setContextMenu(
+	              isRoot
+	                ? { visible: true, x: e.clientX, y: e.clientY, kind: 'root', folder: dirPath }
+	                : { visible: true, x: e.clientX, y: e.clientY, kind: 'folder', folder: dirPath }
+	            );
+	          }}
+	          className={[
+	            'flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-xs',
+	            isMainRoot
+	              ? 'bg-blue-50 text-blue-700 hover:bg-blue-100 dark:bg-blue-900/30 dark:text-blue-200 dark:hover:bg-blue-900/40'
               : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800',
           ].join(' ')}
           style={{ paddingLeft: 8 + depth * 14 }}
@@ -4965,17 +5409,22 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                 const normalizedEntryPath = normalizeFsPath(entry.path);
                 const isActive =
                   Boolean(normalizedEntryPath) && explorerSelectedFilePath === normalizedEntryPath;
-                return (
-                  <button
-                    key={entry.path}
-                    type="button"
-                    data-ws-node="1"
-                    onClick={() => void openFileAtPath(entry.path)}
-                    className={[
-                      'flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-xs',
-                      isActive
-                        ? 'bg-blue-200/70 text-blue-900 ring-1 ring-blue-300/60 dark:bg-blue-900/60 dark:text-blue-100 dark:ring-blue-700/60'
-                        : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800',
+	                return (
+	                  <button
+	                    key={entry.path}
+	                    type="button"
+	                    data-ws-node="1"
+	                    onClick={() => void openFileAtPath(entry.path)}
+	                    onContextMenu={(e) => {
+	                      e.preventDefault();
+	                      e.stopPropagation();
+	                      setContextMenu({ visible: true, x: e.clientX, y: e.clientY, kind: 'file', file: entry.path });
+	                    }}
+	                    className={[
+	                      'flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-xs',
+	                      isActive
+	                        ? 'bg-blue-200/70 text-blue-900 ring-1 ring-blue-300/60 dark:bg-blue-900/60 dark:text-blue-100 dark:ring-blue-700/60'
+	                        : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800',
                     ].join(' ')}
                     style={{ paddingLeft: 8 + (depth + 1) * 14 }}
                     title={normalizedEntryPath || entry.path}
@@ -5024,21 +5473,180 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     );
   }
 
-  return (
-    <div className="flex h-full flex-col overflow-hidden bg-gray-50 dark:bg-gray-900">
-      {navToast && (
-        <div className="pointer-events-none fixed bottom-4 right-4 z-[200]">
-          <div className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-gray-700 shadow-lg dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200">
-            {navToast}
-          </div>
-        </div>
-      )}
-		      <div className="flex flex-1 overflow-hidden">
-        <div className="flex w-[300px] flex-shrink-0 flex-col border-r border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-950">
-          <div className="flex items-center justify-between border-b border-gray-200 px-3 py-2 dark:border-gray-800">
-            <div className="min-w-0">
-              <div className="truncate text-[11px] text-gray-500 dark:text-gray-400" title={ws.mainFolder}>
-                主工作区:{' '}
+	  return (
+	    <div className="flex h-full flex-col overflow-hidden bg-gray-50 dark:bg-gray-900">
+	      {navToast && (
+	        <div className="pointer-events-none fixed bottom-4 right-4 z-[200]">
+	          <div className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-gray-700 shadow-lg dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200">
+	            {navToast}
+	          </div>
+	        </div>
+	      )}
+	      {inlineChatBubbles.length > 0 && (
+	        <div className="fixed bottom-4 right-4 z-[210] flex max-w-[360px] flex-col items-end gap-2">
+	          {inlineChatBubbles.map((b) => {
+	            const isClickable = b.status !== 'running';
+	            return (
+	              <button
+	                key={b.id}
+	                type="button"
+	                disabled={!isClickable}
+	                onClick={() => isClickable && openInlineChatViewer(b.id)}
+	                className={[
+	                  'flex w-full items-center gap-2 rounded-xl border px-3 py-2 text-left shadow-sm',
+	                  'bg-white/95 hover:bg-white disabled:opacity-70 dark:bg-gray-950/90 dark:hover:bg-gray-950',
+	                  'border-gray-200 dark:border-gray-800',
+	                  isClickable ? 'cursor-pointer' : 'cursor-default',
+	                ].join(' ')}
+	                title={b.selectionLabel}
+	              >
+	                <span className="shrink-0">
+	                  {b.status === 'running' && <Loader2 size={14} className="animate-spin text-gray-500" />}
+	                  {b.status === 'done' && <CheckCircle2 size={14} className="text-emerald-600 dark:text-emerald-300" />}
+	                  {b.status === 'error' && <AlertTriangle size={14} className="text-red-600 dark:text-red-300" />}
+	                </span>
+	                <div className="min-w-0 flex-1">
+	                  <div className="truncate text-xs font-semibold text-gray-800 dark:text-gray-100">
+	                    {b.name}
+	                  </div>
+	                  <div className="truncate text-[11px] text-gray-500 dark:text-gray-400">
+	                    {b.status === 'running' ? '请求中…' : b.status === 'done' ? '完成，点击查看' : '失败，点击查看'}
+	                  </div>
+	                </div>
+	                <MessageSquare size={14} className="shrink-0 opacity-60" />
+	              </button>
+	            );
+	          })}
+	        </div>
+	      )}
+
+	      {inlineChatComposer.open && inlineChatComposer.selection && (
+	        <div className="fixed inset-0 z-[220] flex items-center justify-center bg-black/30 p-4">
+	          <div className="w-full max-w-2xl rounded-xl border border-gray-200 bg-white p-4 shadow-xl dark:border-gray-800 dark:bg-gray-950">
+	            <div className="flex items-start justify-between gap-3">
+	              <div className="min-w-0">
+	                <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">Chat with</div>
+	                <div className="mt-0.5 truncate text-[11px] text-gray-500 dark:text-gray-400">
+	                  {inlineChatComposer.selection.label}
+	                </div>
+	              </div>
+	              <button
+	                type="button"
+	                className="rounded p-1 text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+	                onClick={closeInlineChatComposer}
+	                title="关闭"
+	              >
+	                <X size={16} />
+	              </button>
+	            </div>
+
+	            <div className="mt-3">
+	              <div className="mb-1 text-[11px] font-medium text-gray-600 dark:text-gray-300">选中代码</div>
+	              <pre className="max-h-40 overflow-auto rounded-lg border border-gray-200 bg-gray-50 p-2 text-[11px] text-gray-800 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-100">
+	                {(() => {
+	                  const raw = inlineChatComposer.selection?.text ?? '';
+	                  const limit = 2200;
+	                  return raw.length > limit ? `${raw.slice(0, limit)}\n…（已截断）` : raw;
+	                })()}
+	              </pre>
+	            </div>
+
+	            <div className="mt-3">
+	              <div className="mb-1 text-[11px] font-medium text-gray-600 dark:text-gray-300">你的问题</div>
+	              <textarea
+	                value={inlineChatComposer.question}
+	                onChange={(e) => setInlineChatComposer((prev) => ({ ...prev, question: e.target.value }))}
+	                rows={3}
+	                className="w-full resize-y rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none focus:ring-2 focus:ring-blue-500/40 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-100"
+	                placeholder="例如：这段代码为什么会这样设计？可能的 bug 在哪？"
+	              />
+	            </div>
+
+	            <div className="mt-4 flex items-center justify-end gap-2">
+	              <button
+	                type="button"
+	                className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-800 dark:text-gray-200 dark:hover:bg-gray-900/40"
+	                onClick={closeInlineChatComposer}
+	              >
+	                取消
+	              </button>
+	              <button
+	                type="button"
+	                className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+	                disabled={!inlineChatComposer.question.trim()}
+	                onClick={() => void submitInlineChat()}
+	              >
+	                发送
+	              </button>
+	            </div>
+	          </div>
+	        </div>
+	      )}
+
+	      {inlineChatViewer && (
+	        <div className="fixed inset-0 z-[230] flex items-center justify-center bg-black/35 p-4">
+	          <div className="w-full max-w-3xl rounded-xl border border-gray-200 bg-white p-4 shadow-xl dark:border-gray-800 dark:bg-gray-950">
+	            <div className="flex items-start justify-between gap-3">
+	              <div className="min-w-0">
+	                <div className="truncate text-sm font-semibold text-gray-900 dark:text-gray-100">
+	                  {inlineChatViewer.name}
+	                </div>
+	                <div className="mt-0.5 truncate text-[11px] text-gray-500 dark:text-gray-400">
+	                  {inlineChatViewer.selectionLabel}
+	                </div>
+	              </div>
+	              <button
+	                type="button"
+	                className="rounded p-1 text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+	                onClick={closeInlineChatViewer}
+	                title="关闭并移除气泡"
+	              >
+	                <X size={16} />
+	              </button>
+	            </div>
+
+	            <div className="mt-3">
+	              <div className="mb-1 text-[11px] font-medium text-gray-600 dark:text-gray-300">问题</div>
+	              <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-900 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-100">
+	                {inlineChatViewer.question}
+	              </div>
+	            </div>
+
+	            <div className="mt-3">
+	              <div className="mb-1 text-[11px] font-medium text-gray-600 dark:text-gray-300">回答</div>
+	              <div className="max-h-[60vh] overflow-auto rounded-lg border border-gray-200 bg-white px-3 py-2 dark:border-gray-800 dark:bg-gray-950">
+	                {inlineChatViewer.status === 'error' ? (
+	                  <pre className="whitespace-pre-wrap break-words text-xs text-red-700 dark:text-red-300">
+	                    {inlineChatViewer.error || '未知错误'}
+	                  </pre>
+	                ) : (
+	                  <DeferredMarkdown content={inlineChatViewer.answer || ''} conversationId={null} minDelayMs={120} />
+	                )}
+	              </div>
+	              <div className="mt-2 flex items-center justify-between text-[11px] text-gray-500 dark:text-gray-400">
+	                <div className="truncate">
+	                  {inlineChatViewer.modelRef ? `model: ${inlineChatViewer.modelRef}` : ''}
+	                  {inlineChatViewer.latencyMs ? `  ·  ${inlineChatViewer.latencyMs}ms` : ''}
+	                </div>
+	                <button
+	                  type="button"
+	                  className="rounded px-2 py-1 text-[11px] font-semibold text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
+	                  onClick={closeInlineChatViewer}
+	                >
+	                  关闭
+	                </button>
+	              </div>
+	            </div>
+	          </div>
+	        </div>
+	      )}
+
+			      <div className="flex flex-1 overflow-hidden">
+	        <div className="flex w-[300px] flex-shrink-0 flex-col border-r border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-950">
+	          <div className="flex items-center justify-between border-b border-gray-200 px-3 py-2 dark:border-gray-800">
+	            <div className="min-w-0">
+	              <div className="truncate text-[11px] text-gray-500 dark:text-gray-400" title={ws.mainFolder}>
+	                主工作区:{' '}
                 <span className="font-semibold text-blue-700 dark:text-blue-200">
                   {basename(ws.mainFolder)}
                 </span>
@@ -5047,31 +5655,56 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           </div>
 
           <div className="flex min-h-0 flex-1 flex-col">
-            <div
-              className={[
-                'min-h-0 overflow-auto px-2 py-2',
-                outlineOpen ? 'flex-[3_1_0%]' : 'flex-1',
-              ].join(' ')}
-              ref={explorerContainerRef}
-              onContextMenu={(e) => {
-                const target = e.target as HTMLElement | null;
-                if (target && target.closest('[data-ws-node="1"]')) return;
-                e.preventDefault();
-                setContextMenu({ visible: true, x: e.clientX, y: e.clientY, kind: 'blank' });
-              }}
-            >
-              <div className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+            <div className="flex items-center gap-1 border-b border-gray-200 px-2 py-1.5 dark:border-gray-800">
+              <button
+                type="button"
+                className={[
+                  'rounded px-2 py-1 text-[11px] font-semibold uppercase tracking-wide',
+                  leftSidebarTab === 'explorer' || !outlineOpen
+                    ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
+                    : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800',
+                ].join(' ')}
+                onClick={() => setLeftSidebarTab('explorer')}
+              >
                 Explorer
-              </div>
-              <div className="space-y-1">
-                {rootFolders.map((folder) =>
-                  renderDirNode(folder, 0, { isRoot: true, isMainRoot: folder === ws.mainFolder })
-                )}
-              </div>
+              </button>
+              {outlineOpen && (
+                <button
+                  type="button"
+                  className={[
+                    'rounded px-2 py-1 text-[11px] font-semibold uppercase tracking-wide',
+                    leftSidebarTab === 'outline'
+                      ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
+                      : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800',
+                  ].join(' ')}
+                  onClick={() => setLeftSidebarTab('outline')}
+                >
+                  Outline{outlineItemCount > 0 ? `(${outlineItemCount})` : ''}
+                </button>
+              )}
             </div>
 
-            {outlineOpen && (
-              <div className="flex min-h-[180px] flex-[2_1_0%] flex-col border-t border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-950">
+            {(!outlineOpen || leftSidebarTab === 'explorer') && (
+              <div
+                className="min-h-0 flex-1 overflow-auto px-2 py-2"
+                ref={explorerContainerRef}
+                onContextMenu={(e) => {
+                  const target = e.target as HTMLElement | null;
+                  e.preventDefault();
+                  if (target && target.closest('[data-ws-node="1"]')) return;
+                  setContextMenu({ visible: true, x: e.clientX, y: e.clientY, kind: 'blank' });
+                }}
+              >
+                <div className="space-y-1">
+                  {rootFolders.map((folder) =>
+                    renderDirNode(folder, 0, { isRoot: true, isMainRoot: folder === ws.mainFolder })
+                  )}
+                </div>
+              </div>
+            )}
+
+            {outlineOpen && leftSidebarTab === 'outline' && (
+              <div className="flex min-h-0 flex-1 flex-col bg-white dark:bg-gray-950">
                 <div className="flex items-center gap-2 border-b border-gray-200 px-3 py-2 dark:border-gray-800">
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-xs font-semibold text-gray-800 dark:text-gray-100">
@@ -5198,7 +5831,13 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                       ? 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 dark:border-blue-700/60 dark:bg-blue-900/30 dark:text-blue-200 dark:hover:bg-blue-900/40'
                       : 'border-gray-200 text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800',
                   ].join(' ')}
-                  onClick={() => setOutlineOpen((v) => !v)}
+                  onClick={() => {
+                    setOutlineOpen((prev) => {
+                      const next = !prev;
+                      setLeftSidebarTab(next ? 'outline' : 'explorer');
+                      return next;
+                    });
+                  }}
                   title={outlineOpen ? '隐藏 Outline' : '显示 Outline'}
                 >
                   <ListTree size={12} />
@@ -5235,7 +5874,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 		            onDragEnd={handleDragEnd}
 	            onDragCancel={handleDragCancel}
 	          >
-	            <div ref={paneRowRef} className="flex min-h-0 flex-1 flex-row overflow-hidden">
+		            <div ref={paneRowRef} className="flex h-full min-h-0 w-full flex-row overflow-hidden">
 	              {resolvedPanes.map((pane, idx) => {
 	                const activeFileId =
 	                  pane.activeTabId && pane.tabIds.includes(pane.activeTabId)
@@ -5316,11 +5955,11 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	                          </div>
 	                        </div>
 
-	                        <div ref={registerPaneBodyRef(pane.id)} className="min-h-0 flex-1">
-	                          {activeFile ? (
-	                            activeFile.kind === 'text' ? (
-	                              <div className="h-full w-full" onWheelCapture={onEditorWheelCapture}>
-	                                <Editor
+	                        <div ref={registerPaneBodyRef(pane.id)} className="min-h-0 flex-1 overflow-hidden">
+		                          {activeFile ? (
+		                            activeFile.kind === 'text' ? (
+		                              <div className="h-full min-h-0 w-full" onWheelCapture={onEditorWheelCapture}>
+		                                <Editor
 	                                  path={toMonacoModelPath(activeFile.path)}
 	                                  language={languageForPath(activeFile.path)}
 	                                  value={activeFile.content ?? ''}
@@ -5330,7 +5969,8 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	                                  beforeMount={setupMonaco}
 	                                  onMount={handleEditorMountForPane(pane.id)}
 	                                  onChange={(value) => {
-	                                    const nextValue = value ?? '';
+	                                    if (typeof value !== 'string') return;
+	                                    const nextValue = value;
 	                                    setOpenFiles((prev) =>
 	                                      prev.map((file) =>
 	                                        file.id === activeFile.id
@@ -5343,21 +5983,30 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	                                      )
 	                                    );
 	                                  }}
-	                                  theme={editorTheme}
-	                                  options={{
-	                                    minimap: { enabled: false },
-	                                    codeLens: false,
-	                                    fontSize: editorFontSize,
-	                                    fontFamily:
-	                                      'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
-	                                    lineNumbers: 'on',
-	                                    wordWrap: 'on',
-	                                    renderWhitespace: 'selection',
-	                                    automaticLayout: true,
-	                                    scrollBeyondLastLine: false,
-	                                  }}
-	                                />
-	                              </div>
+		                                  theme={editorTheme}
+		                                  options={{
+		                                    minimap: { enabled: false },
+		                                    codeLens: false,
+		                                    suggest: {
+		                                      showWords: codeIntelligenceConfig?.monacoWordSuggestionsEnabled !== false,
+		                                    },
+		                                    wordBasedSuggestions:
+		                                      codeIntelligenceConfig?.monacoWordSuggestionsEnabled === false
+		                                        ? 'off'
+		                                        : 'matchingDocuments',
+		                                    wordBasedSuggestionsOnlySameLanguage: true,
+		                                    inlineSuggest: { enabled: true },
+		                                    fontSize: editorFontSize,
+		                                    fontFamily:
+		                                      'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+		                                    lineNumbers: 'on',
+		                                    wordWrap: 'on',
+		                                    renderWhitespace: 'selection',
+		                                    automaticLayout: true,
+		                                    scrollBeyondLastLine: false,
+		                                  }}
+		                                />
+		                              </div>
 	                            ) : (
 	                              <div className="flex h-full flex-col gap-3 p-4">
 	                                <div className="flex items-center justify-between">
@@ -5854,6 +6503,128 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                 }}
               >
                 在系统中打开主工作区
+              </button>
+            </div>
+          )}
+
+          {contextMenu.kind === 'folder' && (
+            <div className="py-1 text-sm">
+              <div
+                className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400 truncate"
+                title={contextMenu.folder}
+              >
+                {contextMenu.folder}
+              </div>
+              <button
+                type="button"
+                className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+                onClick={() => {
+                  const folder = contextMenu.folder;
+                  setContextMenu(null);
+                  void toggleDir(folder);
+                }}
+              >
+                {expandedDirs.has(contextMenu.folder) ? '折叠' : '展开'}
+              </button>
+              <button
+                type="button"
+                className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+                onClick={() => {
+                  const folder = contextMenu.folder;
+                  setContextMenu(null);
+                  void revealItemInDir(folder);
+                }}
+              >
+                在系统中打开
+              </button>
+              <button
+                type="button"
+                className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+                onClick={() => {
+                  const folder = contextMenu.folder;
+                  setContextMenu(null);
+                  void navigator.clipboard.writeText(folder);
+                }}
+              >
+                复制路径
+              </button>
+              <button
+                type="button"
+                className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+                onClick={() => {
+                  const folder = contextMenu.folder;
+                  setContextMenu(null);
+                  void addPathToMainChat(folder, 'folder');
+                }}
+              >
+                加入到 Chat
+              </button>
+            </div>
+          )}
+
+          {contextMenu.kind === 'file' && (
+            <div className="py-1 text-sm">
+              <div
+                className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400 truncate"
+                title={contextMenu.file}
+              >
+                {contextMenu.file}
+              </div>
+              <button
+                type="button"
+                className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+                onClick={() => {
+                  const file = contextMenu.file;
+                  setContextMenu(null);
+                  void openFileAtPath(file);
+                }}
+              >
+                打开
+              </button>
+              <button
+                type="button"
+                className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+                onClick={() => {
+                  const file = contextMenu.file;
+                  setContextMenu(null);
+                  void revealItemInDir(file);
+                }}
+              >
+                在系统中打开所在文件夹
+              </button>
+              <button
+                type="button"
+                className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+                onClick={() => {
+                  const file = contextMenu.file;
+                  setContextMenu(null);
+                  void navigator.clipboard.writeText(file);
+                }}
+              >
+                复制路径
+              </button>
+              <button
+                type="button"
+                className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+                onClick={() => {
+                  const file = contextMenu.file;
+                  setContextMenu(null);
+                  void addPathToMainChat(file, 'file');
+                }}
+              >
+                加入到 Chat
+              </button>
+              <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
+              <button
+                type="button"
+                className="w-full px-3 py-2 text-left text-red-600 hover:bg-gray-100 dark:text-red-400 dark:hover:bg-gray-800"
+                onClick={() => {
+                  const file = contextMenu.file;
+                  setContextMenu(null);
+                  void deleteExplorerFile(file);
+                }}
+              >
+                删除文件
               </button>
             </div>
           )}

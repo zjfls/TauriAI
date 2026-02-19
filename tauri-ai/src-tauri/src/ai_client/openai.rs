@@ -174,6 +174,10 @@ struct ChatChoice {
 #[derive(Debug, Deserialize)]
 struct ChatMessageResponse {
     content: Option<String>,
+    /// Some OpenAI-compatible providers (e.g. "thinking" style gateways) may put output here
+    /// even when `message.content` is `null`.
+    #[serde(default)]
+    reasoning_content: Option<String>,
 }
 
 /// OpenAI streaming response chunk
@@ -678,11 +682,29 @@ impl OpenAiBaseClient {
             }
         };
 
-        completion
+        let msg = completion
             .choices
             .first()
-            .and_then(|c| c.message.content.clone())
-            .ok_or_else(|| AiError::InvalidResponse("No content in response".to_string()))
+            .map(|c| &c.message)
+            .ok_or_else(|| AiError::InvalidResponse("No choices in response".to_string()))?;
+
+        if let Some(content) = msg.content.clone() {
+            return Ok(content);
+        }
+
+        // Some OpenAI-compatible gateways (e.g. GLM / certain proxies) return `content=null`
+        // while placing the actual output in `reasoning_content` even when thinking is disabled.
+        //
+        // Safety: avoid leaking chain-of-thought when thinking is enabled (then reasoning_content
+        // is more likely to contain internal reasoning tokens rather than the final answer).
+        let thinking_enabled = matches!(config.thinking_level.as_deref(), Some(level) if level != "disabled");
+        if !thinking_enabled {
+            if let Some(reasoning) = msg.reasoning_content.clone() {
+                return Ok(reasoning);
+            }
+        }
+
+        Err(AiError::InvalidResponse("No content in response".to_string()))
     }
 
     async fn chat_stream_impl(

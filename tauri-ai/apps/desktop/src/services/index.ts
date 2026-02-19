@@ -41,9 +41,13 @@ export {
   lspStatus,
   lspDetectServer,
   astDocumentSymbols,
+  aiCodeCompletion,
   type LspEnsureServerArgs,
   type LspNotifyArgs,
   type LspRequestArgs,
   type LspDetectServerArgs,
   type AstDocumentSymbolsArgs,
+  type AiCodeCompletionArgs,
+  type AiCodeCompletionItem,
+  type AiCodeCompletionResult,
 } from './codeIntelService';

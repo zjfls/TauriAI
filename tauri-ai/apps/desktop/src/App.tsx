@@ -21,13 +21,14 @@ import { useWebTabStore } from './stores/webTabStore';
 import { useTerminalTabStore } from './stores/terminalTabStore';
 import { useUIStore } from './stores/uiStore';
 import { useWindowLayoutStore } from './stores/windowLayoutStore';
-import { docTabId, terminalTabId, webTabId } from './stores/workspaceTabStore';
+import { chatTabId, docTabId, terminalTabId, webTabId } from './stores/workspaceTabStore';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { getViewDefinition } from './views/registry';
 import { ChatViewContainer } from './views/ChatViewContainer';
 import { getViewWindowParams, openOrFocusViewWindow } from './utils/viewWindow';
 import { resolveActiveWorkstudioMainFolder } from './utils/terminalWorkdir';
 import { getCurrentWindowLabelSafe, removeWindowPresence, writeWindowPresence } from './utils/windowPresence';
+import type { CodeSnippetContentPart } from './types';
 import {
   clearAppClosingIfStale,
   isAppClosingRecently,
@@ -733,6 +734,207 @@ function App() {
       });
     }
   }, [loadConfig, loadConversations, shouldInitChatRuntime, isDragGhostWindow]);
+
+  // ---------------------------------------------------------------------------
+  // 配置同步（跨窗口）
+  // - Settings 在主窗口修改 config 后，独立 Workstudio 窗口需要更新自己的 configStore
+  // - 反过来同理：Workstudio 保存的配置也应通知主窗口刷新
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    if (!isTauri()) return;
+    if (isDragGhostWindow) return;
+
+    let disposed = false;
+    let unlisten: null | (() => void) = null;
+
+    void listen('app_config:changed', () => {
+      if (disposed) return;
+      // 小延迟：避免与 save debounce/队列写入产生竞态，尽量读取到最新落盘内容。
+      window.setTimeout(() => {
+        if (disposed) return;
+        void useConfigStore.getState().loadConfig();
+      }, 50);
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch((err) => {
+        console.error('listen app_config:changed failed:', err);
+      });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [isDragGhostWindow]);
+
+  // ---------------------------------------------------------------------------
+  // Workstudio -> Main window: insert text into chat draft
+  // - Used by Workstudio explorer context menu (“加入到 Chat”)
+  // - Main window receives 'chat:insert_text' events and appends to the active chat draft
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    if (!isTauri()) return;
+    if (!shouldInitChatRuntime) return;
+    if (isDragGhostWindow) return;
+
+    let disposed = false;
+    let unlisten: null | (() => void) = null;
+
+    void listen('chat:insert_text', (event) => {
+      if (disposed) return;
+      const payload = (event as any)?.payload ?? null;
+      const text = String(payload?.text ?? '').trim();
+      if (!text) return;
+
+      const layout = useWindowLayoutStore.getState();
+      const panes = layout.panes ?? [];
+      const focusedPaneId = layout.focusedPaneId;
+      const pane =
+        (focusedPaneId ? panes.find((p) => p.id === focusedPaneId) : null) ?? panes[0] ?? null;
+      const activeTabIdRaw =
+        pane?.activeTabId && pane.tabIds.includes(pane.activeTabId)
+          ? pane.activeTabId
+          : pane?.tabIds[0] ?? null;
+
+      const sessionStore = useSessionStore.getState();
+      const sessions = sessionStore.sessions;
+
+      const fromFocusedPane =
+        typeof activeTabIdRaw === 'string' && activeTabIdRaw.startsWith('chat:')
+          ? activeTabIdRaw.slice('chat:'.length)
+          : '';
+      const candidateSessionId = fromFocusedPane || sessionStore.activeSessionId || '';
+
+      const targetSessionId = (() => {
+        const sid = candidateSessionId.trim();
+        if (sid && sessions.has(sid)) return sid;
+        const first = sessions.keys().next().value as string | undefined;
+        return first && sessions.has(first) ? first : null;
+      })();
+
+      if (!targetSessionId) return;
+
+      const prevDraft = sessions.get(targetSessionId)?.draftContent ?? '';
+      const nextDraft = prevDraft ? `${prevDraft}${prevDraft.endsWith('\n') ? '' : '\n'}${text}` : text;
+
+      sessionStore.setSessionDraftContent(targetSessionId, nextDraft);
+      useWindowLayoutStore.getState().openTabInFocusedPane(chatTabId(targetSessionId));
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch((err) => {
+        console.error('listen chat:insert_text failed:', err);
+      });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [isDragGhostWindow, shouldInitChatRuntime]);
+
+  // ---------------------------------------------------------------------------
+  // Workstudio -> Main window: insert code snippet chip into chat draft
+  // - Used by Workstudio editor context menu (“Add to chat”)
+  // - Payload includes token + code snippet content part (backend will replace token with code)
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    if (!isTauri()) return;
+    if (!shouldInitChatRuntime) return;
+    if (isDragGhostWindow) return;
+
+    let disposed = false;
+    let unlisten: null | (() => void) = null;
+
+    void listen('chat:insert_code_snippet', (event) => {
+      if (disposed) return;
+      const payload = (event as any)?.payload ?? null;
+      const tokenRaw = String(payload?.token ?? '').trim();
+      const snippetRaw = payload?.snippet ?? null;
+      const id = String(snippetRaw?.id ?? '').trim();
+      const text = String(snippetRaw?.text ?? '');
+      const label = String(snippetRaw?.label ?? '').trim();
+      const languageId = String(snippetRaw?.languageId ?? '').trim() || undefined;
+      const filePath = String(snippetRaw?.filePath ?? '').trim() || undefined;
+      const rangeRaw = snippetRaw?.range ?? null;
+      const range =
+        rangeRaw &&
+        typeof rangeRaw.startLine === 'number' &&
+        typeof rangeRaw.startColumn === 'number' &&
+        typeof rangeRaw.endLine === 'number' &&
+        typeof rangeRaw.endColumn === 'number'
+          ? {
+              startLine: rangeRaw.startLine,
+              startColumn: rangeRaw.startColumn,
+              endLine: rangeRaw.endLine,
+              endColumn: rangeRaw.endColumn,
+            }
+          : undefined;
+
+      if (!id || !text) return;
+      const token = tokenRaw && tokenRaw.includes(id) ? tokenRaw : `@{snippet:${id}}`;
+      const snippet: CodeSnippetContentPart = {
+        type: 'code_snippet',
+        id,
+        label: label || `代码片段 ${id.slice(0, 8)}`,
+        text,
+        languageId,
+        filePath,
+        range,
+      };
+
+      const layout = useWindowLayoutStore.getState();
+      const panes = layout.panes ?? [];
+      const focusedPaneId = layout.focusedPaneId;
+      const pane =
+        (focusedPaneId ? panes.find((p) => p.id === focusedPaneId) : null) ?? panes[0] ?? null;
+      const activeTabIdRaw =
+        pane?.activeTabId && pane.tabIds.includes(pane.activeTabId)
+          ? pane.activeTabId
+          : pane?.tabIds[0] ?? null;
+
+      const sessionStore = useSessionStore.getState();
+      const sessions = sessionStore.sessions;
+
+      const fromFocusedPane =
+        typeof activeTabIdRaw === 'string' && activeTabIdRaw.startsWith('chat:')
+          ? activeTabIdRaw.slice('chat:'.length)
+          : '';
+      const candidateSessionId = fromFocusedPane || sessionStore.activeSessionId || '';
+
+      const targetSessionId = (() => {
+        const sid = candidateSessionId.trim();
+        if (sid && sessions.has(sid)) return sid;
+        const first = sessions.keys().next().value as string | undefined;
+        return first && sessions.has(first) ? first : null;
+      })();
+
+      if (!targetSessionId) return;
+
+      const prevDraft = sessions.get(targetSessionId)?.draftContent ?? '';
+      const spacer = prevDraft && !/\s$/.test(prevDraft) ? ' ' : '';
+      const nextDraft = prevDraft ? `${prevDraft}${spacer}${token} ` : `${token} `;
+
+      const prevSnips = sessions.get(targetSessionId)?.draftCodeSnippets ?? [];
+      const nextSnips = prevSnips.some((s) => s.id === id) ? prevSnips : [...prevSnips, snippet];
+
+      sessionStore.setSessionDraftContent(targetSessionId, nextDraft);
+      sessionStore.setSessionDraftCodeSnippets(targetSessionId, nextSnips);
+      useWindowLayoutStore.getState().openTabInFocusedPane(chatTabId(targetSessionId));
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch((err) => {
+        console.error('listen chat:insert_code_snippet failed:', err);
+      });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [isDragGhostWindow, shouldInitChatRuntime]);
 
   /**
    * Restore session state after config is loaded

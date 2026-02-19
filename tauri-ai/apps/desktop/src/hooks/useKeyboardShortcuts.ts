@@ -404,6 +404,11 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
           dispatchShortcutEvent(actionId);
           return true;
         }
+        case 'workstudio.triggerSuggest': {
+          if (useUIStore.getState().activeView !== 'workstudio') return false;
+          dispatchShortcutEvent(actionId);
+          return true;
+        }
         case 'workstudio.backToMain': {
           if (useUIStore.getState().activeView !== 'workstudio') return false;
           dispatchShortcutEvent(actionId);
@@ -513,6 +518,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
           return isTauri();
         case 'workstudio.backToMain':
         case 'workstudio.fileSearch':
+        case 'workstudio.triggerSuggest':
           return useUIStore.getState().activeView === 'workstudio';
         case 'workstudio.navigateBack':
         case 'workstudio.navigateForward':
@@ -560,6 +566,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
     // Workstudio 编辑器内动作：避免被 Monaco/其它监听重复处理（例如 F12 内置跳转）。
     if (
       actionId === 'workstudio.backToMain' ||
+      actionId === 'workstudio.triggerSuggest' ||
       actionId === 'workstudio.goToDefinition' ||
       actionId === 'workstudio.goToTypeDefinition' ||
       actionId === 'workstudio.goToReferences' ||

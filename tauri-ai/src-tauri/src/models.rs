@@ -60,6 +60,16 @@ pub struct PdfMetadata {
     pub keywords: Option<String>,
 }
 
+/// Code snippet range (1-based editor coordinates)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeSnippetRange {
+    pub start_line: u32,
+    pub start_column: u32,
+    pub end_line: u32,
+    pub end_column: u32,
+}
+
 /// A single part of message content (text, image, text file, or PDF document)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -79,6 +89,18 @@ pub enum ContentPart {
         path: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         label: Option<String>,
+    },
+    /// Code snippet (selection-based, referenced by token `@{snippet:<id>}` in text)
+    CodeSnippet {
+        id: String,
+        label: String,
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none", rename = "languageId")]
+        language_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none", rename = "filePath")]
+        file_path: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        range: Option<CodeSnippetRange>,
     },
     /// PDF document (multimodal: text + images)
     PdfDocument {
@@ -126,6 +148,24 @@ impl ContentPart {
         Self::FileRef {
             path: path.into(),
             label,
+        }
+    }
+
+    pub fn code_snippet(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        text: impl Into<String>,
+        language_id: Option<String>,
+        file_path: Option<String>,
+        range: Option<CodeSnippetRange>,
+    ) -> Self {
+        Self::CodeSnippet {
+            id: id.into(),
+            label: label.into(),
+            text: text.into(),
+            language_id,
+            file_path,
+            range,
         }
     }
 
@@ -1466,14 +1506,146 @@ impl Default for LspServerConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum AiCompletionQueueScope {
+    Global,
+    Language,
+}
+
+impl Default for AiCompletionQueueScope {
+    fn default() -> Self {
+        Self::Global
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum AiCompletionTriggerMode {
+    Auto,
+    Manual,
+    Hybrid,
+}
+
+impl Default for AiCompletionTriggerMode {
+    fn default() -> Self {
+        Self::Hybrid
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiCompletionSettings {
+    /// 总开关：关闭后不请求模型
+    #[serde(default)]
+    pub enabled: bool,
+    /// 使用的模型（provider/model）
+    #[serde(default)]
+    pub model_ref: String,
+    /// 幽灵补全（Inline）
+    #[serde(default = "default_true")]
+    pub inline_enabled: bool,
+    /// Ctrl+Space 建议列表
+    #[serde(default = "default_true")]
+    pub list_enabled: bool,
+    /// 触发模式：auto/manual/hybrid
+    #[serde(default)]
+    pub trigger_mode: AiCompletionTriggerMode,
+    /// 请求队列作用域：global/language
+    #[serde(default)]
+    pub queue_scope: AiCompletionQueueScope,
+    /// 自动触发去抖（毫秒）
+    #[serde(default = "default_ai_completion_debounce_ms")]
+    pub debounce_ms: u64,
+    /// 单次请求超时（毫秒）
+    #[serde(default = "default_ai_completion_timeout_ms")]
+    pub timeout_ms: u64,
+    /// 最大生成 tokens（补全建议小一些，避免延迟过高）
+    #[serde(default = "default_ai_completion_max_tokens")]
+    pub max_tokens: u32,
+    /// 温度（补全建议低温）
+    #[serde(default = "default_ai_completion_temperature")]
+    pub temperature: f64,
+    /// 发送给模型的 prefix 最大字符数
+    #[serde(default = "default_ai_completion_max_prefix_chars")]
+    pub max_prefix_chars: usize,
+    /// 发送给模型的 suffix 最大字符数
+    #[serde(default = "default_ai_completion_max_suffix_chars")]
+    pub max_suffix_chars: usize,
+    /// 是否允许发送项目上下文（路径、工作区信息等）
+    #[serde(default = "default_true")]
+    pub include_project_context: bool,
+    /// Ctrl+Space 列表候选条数
+    #[serde(default = "default_ai_completion_list_suggestion_count")]
+    pub list_suggestion_count: u32,
+}
+
+fn default_ai_completion_debounce_ms() -> u64 {
+    350
+}
+
+fn default_ai_completion_timeout_ms() -> u64 {
+    2_500
+}
+
+fn default_ai_completion_max_tokens() -> u32 {
+    8192
+}
+
+fn default_ai_completion_temperature() -> f64 {
+    0.2
+}
+
+fn default_ai_completion_max_prefix_chars() -> usize {
+    8_000
+}
+
+fn default_ai_completion_max_suffix_chars() -> usize {
+    2_000
+}
+
+fn default_ai_completion_list_suggestion_count() -> u32 {
+    3
+}
+
+impl Default for AiCompletionSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            model_ref: String::new(),
+            inline_enabled: true,
+            list_enabled: true,
+            trigger_mode: AiCompletionTriggerMode::Hybrid,
+            queue_scope: AiCompletionQueueScope::Global,
+            debounce_ms: default_ai_completion_debounce_ms(),
+            timeout_ms: default_ai_completion_timeout_ms(),
+            max_tokens: default_ai_completion_max_tokens(),
+            temperature: default_ai_completion_temperature(),
+            max_prefix_chars: default_ai_completion_max_prefix_chars(),
+            max_suffix_chars: default_ai_completion_max_suffix_chars(),
+            include_project_context: true,
+            list_suggestion_count: default_ai_completion_list_suggestion_count(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodeIntelligenceSettings {
     /// 总开关：关闭后前端不会启动/请求 LSP（保留纯编辑器能力）
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// 是否启用 LSP completion（建议列表）。关闭后仍可保留 hover/定义跳转/诊断等其它能力，便于调试 AI Completion。
+    #[serde(default = "default_true")]
+    pub lsp_completion_enabled: bool,
+    /// 是否启用 Monaco 内置“词汇建议”（来自打开的文件内容，不依赖 LSP）。关闭后 Suggest 列表更“干净”，便于调试 AI Completion。
+    #[serde(default = "default_true")]
+    pub monaco_word_suggestions_enabled: bool,
     #[serde(default)]
     pub lsp_servers: Vec<LspServerConfig>,
+    /// AI 辅助补全（幽灵补全 + Ctrl+Space 建议列表）
+    #[serde(default)]
+    pub ai_completion: AiCompletionSettings,
 }
 
 impl Default for CodeIntelligenceSettings {
@@ -1481,6 +1653,8 @@ impl Default for CodeIntelligenceSettings {
         // 默认开启 Rust（若本机未安装 rust-analyzer，会在 UI 层提示；不会影响其它功能）
         Self {
             enabled: true,
+            lsp_completion_enabled: true,
+            monaco_word_suggestions_enabled: true,
             lsp_servers: vec![LspServerConfig {
                 language_id: "rust".to_string(),
                 enabled: true,
@@ -1489,6 +1663,7 @@ impl Default for CodeIntelligenceSettings {
                 args: vec![],
                 ..Default::default()
             }],
+            ai_completion: AiCompletionSettings::default(),
         }
     }
 }

@@ -77,3 +77,33 @@ export const astDocumentSymbols = async (args: AstDocumentSymbolsArgs): Promise<
   return invoke<AstSymbol[]>('ast_document_symbols', { args });
 };
 
+// ============================================================================
+// AI Code Completion (ghost inline + Ctrl+Space list)
+// ============================================================================
+
+export type AiCodeCompletionArgs = {
+  workstudioId: string;
+  languageId: string;
+  filePath: string;
+  prefix: string;
+  suffix: string;
+  count?: number;
+};
+
+export type AiCodeCompletionItem = {
+  label: string;
+  insertText: string;
+};
+
+export type AiCodeCompletionResult = {
+  items: AiCodeCompletionItem[];
+  modelRef: string;
+  latencyMs: number;
+};
+
+export const aiCodeCompletion = async (args: AiCodeCompletionArgs): Promise<AiCodeCompletionResult> => {
+  if (!isTauri()) {
+    throw new Error('Not running in Tauri');
+  }
+  return invoke<AiCodeCompletionResult>('ai_code_completion', { args });
+};

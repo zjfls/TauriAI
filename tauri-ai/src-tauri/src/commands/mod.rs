@@ -55,10 +55,11 @@ pub use conversation::{
     update_conversation_metadata, update_conversation_title,
 };
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-pub use code_intel::{
-    ast_document_symbols, lsp_detect_server, lsp_ensure_server, lsp_notify, lsp_request,
-    lsp_shutdown_workstudio, lsp_shutdown_language, lsp_status,
-};
+	pub use code_intel::{
+	    ai_chat_with_selection, ai_code_completion, ast_document_symbols, lsp_detect_server,
+	    lsp_ensure_server, lsp_notify,
+	    lsp_request, lsp_shutdown_workstudio, lsp_shutdown_language, lsp_status,
+	};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use devtools::open_devtools_current_window;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -68,7 +69,7 @@ pub use drag_ghost::{
     drag_ghost_move_client,
 };
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-pub use file::{list_local_directory, read_local_file_base64, write_local_text_file};
+pub use file::{delete_local_path, list_local_directory, read_local_file_base64, write_local_text_file};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use git_tools::{
     git_checkout_branch, git_create_and_checkout_branch, git_diff_commits, git_diff_ghost_worktree,

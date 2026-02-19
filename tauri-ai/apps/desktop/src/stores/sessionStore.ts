@@ -8,7 +8,26 @@ import { create } from 'zustand';
 import { arrayMove } from '@dnd-kit/sortable';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import type { AgentSession, Message, DebugInfo, TokenUsage, PersistedSession, PersistedSessionState, ContentPart, ThinkingMode, ApiProtocolType, RunEventPayload, MessageBlock, ProviderType, MessageTurn, Workstudio, RunMode, Conversation, QueuedSessionMessage } from '../types';
+import type {
+  AgentSession,
+  Message,
+  DebugInfo,
+  TokenUsage,
+  PersistedSession,
+  PersistedSessionState,
+  ContentPart,
+  CodeSnippetContentPart,
+  ThinkingMode,
+  ApiProtocolType,
+  RunEventPayload,
+  MessageBlock,
+  ProviderType,
+  MessageTurn,
+  Workstudio,
+  RunMode,
+  Conversation,
+  QueuedSessionMessage,
+} from '../types';
 import { getApiProtocol, getDefaultThinkingMode, getProviderType } from '../utils/apiUtils';
 import { hydrateMessagesFromBackend } from '../utils/hydrateMessages';
 import { markChatOpenProfile, setChatOpenProfileTarget } from '../utils/chatOpenProfile';
@@ -35,6 +54,7 @@ const LEGACY_SESSION_STORAGE_KEY = 'tauri-ai:sessions';
 const PERSISTENCE_VERSION = 2;
 const MAX_SESSIONS = 20;
 const DRAFT_PERSIST_DEBOUNCE_MS = 500;
+const MAX_PERSISTED_DRAFT_CODE_SNIPPET_CHARS = 200_000;
 let draftPersistTimeout: ReturnType<typeof setTimeout> | null = null;
 
 const isStandaloneWindow = (): boolean => {
@@ -262,10 +282,11 @@ export interface SessionState {
   setSessionAgent: (sessionId: string, agentName: string) => void;
 
   // Per-session settings
-  setSessionRunMode: (sessionId: string, runMode: RunMode) => void;
-  setSessionThinkingMode: (sessionId: string, thinkingMode: ThinkingMode) => void;
-  setSessionWebSearchProvider: (sessionId: string, provider: 'native' | 'tavily' | 'google' | 'brave' | null) => void;
-  setSessionDraftContent: (sessionId: string, draftContent: string) => void;
+	  setSessionRunMode: (sessionId: string, runMode: RunMode) => void;
+	  setSessionThinkingMode: (sessionId: string, thinkingMode: ThinkingMode) => void;
+	  setSessionWebSearchProvider: (sessionId: string, provider: 'native' | 'tavily' | 'google' | 'brave' | null) => void;
+	  setSessionDraftContent: (sessionId: string, draftContent: string) => void;
+	  setSessionDraftCodeSnippets: (sessionId: string, snippets: CodeSnippetContentPart[]) => void;
 
   // Title (conversation title shown in tab)
   setSessionTitle: (sessionId: string, title: string) => void;
@@ -519,10 +540,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       workstudioId: resolvedWorkstudioId,
       apiType: apiProtocol, // 当前会话协议（不再做“首条消息锁定”）
       runMode,
-      thinkingMode,
-      draftContent: '',
-      messages: [],
-      queuedMessages: [],
+	      thinkingMode,
+	      draftContent: '',
+	      draftCodeSnippets: [],
+	      messages: [],
+	      queuedMessages: [],
       streamingBlocks: null,
       isGenerating: false,
       error: null,
@@ -2236,6 +2258,30 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }, DRAFT_PERSIST_DEBOUNCE_MS);
   },
 
+  setSessionDraftCodeSnippets: (sessionId: string, snippets: CodeSnippetContentPart[]) => {
+    set((state) => {
+      const newSessions = new Map(state.sessions);
+      const session = newSessions.get(sessionId);
+      if (!session) return {};
+
+      const next = Array.isArray(snippets) ? snippets.filter((s) => s?.type === 'code_snippet') : [];
+      newSessions.set(sessionId, {
+        ...session,
+        draftCodeSnippets: next,
+      });
+
+      return { sessions: newSessions };
+    });
+
+    if (draftPersistTimeout) {
+      clearTimeout(draftPersistTimeout);
+    }
+    draftPersistTimeout = setTimeout(() => {
+      draftPersistTimeout = null;
+      void get().saveSessionState();
+    }, DRAFT_PERSIST_DEBOUNCE_MS);
+  },
+
   setSessionTitle: (sessionId: string, title: string) => {
     const next = (title ?? '').trim();
     if (!next) return;
@@ -2318,23 +2364,46 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    * Save session state to localStorage
    * Requirements: 5.1
    */
-  saveSessionState: async () => {
-    const { sessions, activeSessionId, panes, focusedPaneId } = get();
+	  saveSessionState: async () => {
+	    const { sessions, activeSessionId, panes, focusedPaneId } = get();
 
-    const persistedSessions: PersistedSession[] = Array.from(sessions.values()).map(session => ({
-      id: session.id,
-      agentName: session.agentName,
-      modelRef: session.modelRef,
-      conversationId: session.conversationId,
-      workstudioId: session.workstudioId ?? null,
-      apiType: session.apiType,
-      runMode: session.runMode,
-      thinkingMode: session.thinkingMode,
-      webSearchProvider: session.webSearchProvider,
-      draftContent: session.draftContent,
-      createdAt: session.createdAt,
-      lastActiveAt: session.lastActiveAt,
-    }));
+	    const persistedSessions: PersistedSession[] = Array.from(sessions.values()).map((session) => {
+	      const rawSnippets = Array.isArray(session.draftCodeSnippets) ? session.draftCodeSnippets : [];
+	      let draftCodeSnippets: CodeSnippetContentPart[] | undefined;
+	      if (rawSnippets.length > 0) {
+	        let totalChars = 0;
+	        const kept: CodeSnippetContentPart[] = [];
+	        for (const s of rawSnippets) {
+	          if (!s || s.type !== 'code_snippet') continue;
+	          totalChars += typeof s.text === 'string' ? s.text.length : 0;
+	          if (totalChars > MAX_PERSISTED_DRAFT_CODE_SNIPPET_CHARS) {
+	            // 太大就不持久化，避免 localStorage 爆掉
+	            kept.length = 0;
+	            break;
+	          }
+	          kept.push(s);
+	        }
+	        if (kept.length > 0) {
+	          draftCodeSnippets = kept;
+	        }
+	      }
+
+	      return {
+	        id: session.id,
+	        agentName: session.agentName,
+	        modelRef: session.modelRef,
+	        conversationId: session.conversationId,
+	        workstudioId: session.workstudioId ?? null,
+	        apiType: session.apiType,
+	        runMode: session.runMode,
+	        thinkingMode: session.thinkingMode,
+	        webSearchProvider: session.webSearchProvider,
+	        draftContent: session.draftContent,
+	        draftCodeSnippets,
+	        createdAt: session.createdAt,
+	        lastActiveAt: session.lastActiveAt,
+	      };
+	    });
 
     const state: PersistedSessionState = {
       version: PERSISTENCE_VERSION,
@@ -2439,26 +2508,29 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         const defaultRunMode: RunMode = (agent?.type ?? 'chat') === 'tool' ? 'agent' : 'chat';
         const runMode = persisted.runMode ?? defaultRunMode;
 
-        const session: AgentSession = {
-          id: persisted.id,
-          agentName,
-          title,
-          modelRef,
-          conversationId: persisted.conversationId,
-          workstudioId: persisted.workstudioId ?? convWorkstudioId,
-          apiType: apiProtocol,
-          runMode,
-          thinkingMode: coerceThinkingModeForProtocol(persisted.thinkingMode, apiProtocol, providerType),
-          webSearchProvider: persisted.webSearchProvider,
-          draftContent: persisted.draftContent ?? '',
-          messages,
-          queuedMessages: [],
-          streamingBlocks: null,
-          isGenerating: false,
-          error: null,
-          createdAt: persisted.createdAt,
-          lastActiveAt: persisted.lastActiveAt,
-        };
+	        const session: AgentSession = {
+	          id: persisted.id,
+	          agentName,
+	          title,
+	          modelRef,
+	          conversationId: persisted.conversationId,
+	          workstudioId: persisted.workstudioId ?? convWorkstudioId,
+	          apiType: apiProtocol,
+	          runMode,
+	          thinkingMode: coerceThinkingModeForProtocol(persisted.thinkingMode, apiProtocol, providerType),
+	          webSearchProvider: persisted.webSearchProvider,
+	          draftContent: persisted.draftContent ?? '',
+	          draftCodeSnippets: Array.isArray(persisted.draftCodeSnippets)
+	            ? persisted.draftCodeSnippets.filter((s) => s?.type === 'code_snippet')
+	            : [],
+	          messages,
+	          queuedMessages: [],
+	          streamingBlocks: null,
+	          isGenerating: false,
+	          error: null,
+	          createdAt: persisted.createdAt,
+	          lastActiveAt: persisted.lastActiveAt,
+	        };
 
         newSessions.set(session.id, session);
       }

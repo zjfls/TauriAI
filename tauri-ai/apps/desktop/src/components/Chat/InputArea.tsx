@@ -13,7 +13,22 @@ import { ThinkingSelector } from './ThinkingSelector';
 import { WebSearchToggle, type WebSearchProvider } from './WebSearchToggle';
 import { isSupportedTextFile, readTextFile, validateFileCount } from '../../utils/textFileUtils';
 import { isValidPdfFile, validatePdfSize, processPdfFile, MAX_PDF_SIZE } from '../../utils/pdfUtils';
-import type { ContextUsageBreakdown, Agent, ContentPart, PendingImage, PendingTextFile, PendingPdf, ApiProtocolType, ThinkingMode, ProviderType, RunMode, SkillEntry, SkillLoadOutcome, Workstudio } from '../../types';
+import type {
+  ContextUsageBreakdown,
+  Agent,
+  ContentPart,
+  CodeSnippetContentPart,
+  PendingImage,
+  PendingTextFile,
+  PendingPdf,
+  ApiProtocolType,
+  ThinkingMode,
+  ProviderType,
+  RunMode,
+  SkillEntry,
+  SkillLoadOutcome,
+  Workstudio,
+} from '../../types';
 import { SUPPORTED_TEXT_EXTENSIONS, MAX_PDF_COUNT, MAX_TEXT_FILES } from '../../types';
 import { FILE_ERROR_MESSAGES } from '../../utils/textFileUtils';
 import { invoke, isTauri } from '@tauri-apps/api/core';
@@ -238,11 +253,18 @@ function parseWorkspaceUri(uri: string): { rootKey: string; relPath: string } | 
 }
 
 const WORKSPACE_MENTION_TOKEN_RE = /@\{ref:([0-9a-fA-F-]{36})\}/g;
+const CODE_SNIPPET_TOKEN_RE = /@\{snippet:([0-9a-fA-F-]{36})\}/g;
 
 function hasWorkspaceMentionTokens(text: string): boolean {
   if (!text) return false;
   WORKSPACE_MENTION_TOKEN_RE.lastIndex = 0;
   return WORKSPACE_MENTION_TOKEN_RE.test(text);
+}
+
+function hasCodeSnippetTokens(text: string): boolean {
+  if (!text) return false;
+  CODE_SNIPPET_TOKEN_RE.lastIndex = 0;
+  return CODE_SNIPPET_TOKEN_RE.test(text);
 }
 
 function quoteIfNeededForAtPath(path: string): string {
@@ -276,6 +298,23 @@ function findWorkspaceMentionTokenAt(
   return null;
 }
 
+function findCodeSnippetTokenAt(
+  text: string,
+  index: number
+): { start: number; end: number; id: string } | null {
+  if (index < 0 || index > text.length) return null;
+  CODE_SNIPPET_TOKEN_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = CODE_SNIPPET_TOKEN_RE.exec(text))) {
+    const start = match.index;
+    const end = start + match[0].length;
+    if (index >= start && index < end) {
+      return { start, end, id: match[1] };
+    }
+  }
+  return null;
+}
+
 function findActiveAtQuery(text: string, cursor: number): { start: number; query: string } | null {
   if (cursor < 0 || cursor > text.length) return null;
   const before = text.slice(0, cursor);
@@ -287,7 +326,7 @@ function findActiveAtQuery(text: string, cursor: number): { start: number; query
   if (prev && /[A-Za-z0-9_]/.test(prev)) return null;
   const query = before.slice(lastAt + 1);
   // Ignore our internal workspace mention tokens: "@{ref:<uuid>}"
-  if (query.startsWith('{ref:')) return null;
+  if (query.startsWith('{ref:') || query.startsWith('{snippet:')) return null;
   if (/\s/.test(query)) return null;
   return { start: lastAt, query };
 }
@@ -409,6 +448,9 @@ interface InputAreaProps {
   pdfDebugMode?: boolean;  // Whether to enable PDF debug mode controls
   // Workstudio (for @ mention file chips)
   workstudio?: Workstudio | null;
+  /** 草稿里的“代码片段 chip”（来自 Workstudio 选中内容右键 Add to chat） */
+  codeSnippets?: CodeSnippetContentPart[];
+  onCodeSnippetsChange?: (snippets: CodeSnippetContentPart[]) => void;
 }
 
 /**
@@ -998,6 +1040,8 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   webSearchDetails,
   pdfDebugMode = false,
   workstudio,
+  codeSnippets = [],
+  onCodeSnippetsChange,
 }, ref) => {
   const [contentDraft, setContentDraft] = useState('');
 
@@ -2224,26 +2268,33 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
    * Requirements 3.1, 3.2, 3.3, 3.4: Text file content formatting and sending
    * Requirements 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7: PDF content formatting and sending
    */
-  const handleSend = useCallback(async () => {
-    // Requirement 4.6: Don't send empty/whitespace-only input (unless there are attachments)
-    const hasAttachments =
-      pendingImages.length > 0 ||
-      pendingTextFiles.length > 0 ||
-      pendingPdfs.length > 0 ||
-      hasWorkspaceMentionTokens(content);
-    if ((isWhitespaceOnly(content) && !hasAttachments) || disabled) {
-      return;
-    }
+	  const handleSend = useCallback(async () => {
+	    // Requirement 4.6: Don't send empty/whitespace-only input (unless there are attachments)
+	    const hasAttachments =
+	      pendingImages.length > 0 ||
+	      pendingTextFiles.length > 0 ||
+	      pendingPdfs.length > 0 ||
+	      hasWorkspaceMentionTokens(content) ||
+	      hasCodeSnippetTokens(content) ||
+	      codeSnippets.length > 0;
+	    if ((isWhitespaceOnly(content) && !hasAttachments) || disabled) {
+	      return;
+	    }
 
     const expandedContent = expandWorkspaceMentionTokens(content, workspaceMentions);
     const trimmedContent = expandedContent.trim();
     let nextFileError: string | null = null;
 
-    // Build content parts for images, text files, and PDFs
-    let contentParts: ContentPart[] | undefined;
+	    // Build content parts for images, text files, and PDFs
+	    let contentParts: ContentPart[] | undefined;
 
-    if (pendingImages.length > 0 || pendingTextFiles.length > 0 || pendingPdfs.length > 0) {
-      contentParts = [];
+	    if (
+	      pendingImages.length > 0 ||
+	      pendingTextFiles.length > 0 ||
+	      pendingPdfs.length > 0 ||
+	      codeSnippets.length > 0
+	    ) {
+	      contentParts = [];
 
       // Add image content parts
       for (const img of pendingImages) {
@@ -2265,28 +2316,34 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
       }
 
       // Add PDF content parts (Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7)
-      for (const pdf of pendingPdfs) {
-        contentParts.push({
-          type: 'pdf_document' as const,
-          filename: pdf.filename,
-          pages: pdf.pages,
-          totalPages: pdf.totalPages,
-          metadata: pdf.metadata,
-        });
-      }
-    }
+	      for (const pdf of pendingPdfs) {
+	        contentParts.push({
+	          type: 'pdf_document' as const,
+	          filename: pdf.filename,
+	          pages: pdf.pages,
+	          totalPages: pdf.totalPages,
+	          metadata: pdf.metadata,
+	        });
+	      }
 
-    onSend(trimmedContent, supportsThinking ? thinkingMode : undefined, contentParts);
-    handleContentChange('');
+	      // Add code snippet content parts (selection chips from Workstudio)
+	      if (codeSnippets.length > 0) {
+	        contentParts.push(...codeSnippets);
+	      }
+	    }
+
+	    onSend(trimmedContent, supportsThinking ? thinkingMode : undefined, contentParts);
+	    handleContentChange('');
     setPendingImages([]);
     // Requirement 3.3: Clear pending text files after sending
     setPendingTextFiles([]);
-    // Clear pending PDFs after sending
-    setPendingPdfs([]);
-    setWorkspaceMentions([]);
-    setAtQuery(null);
-    setAtResults([]);
-    setAtIndex(0);
+	    // Clear pending PDFs after sending
+	    setPendingPdfs([]);
+	    setWorkspaceMentions([]);
+	    onCodeSnippetsChange?.([]);
+	    setAtQuery(null);
+	    setAtResults([]);
+	    setAtIndex(0);
     setDollarQuery(null);
     setDollarResults([]);
     setDollarIndex(0);
@@ -2300,19 +2357,20 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
 
     // Refocus textarea after sending
     textareaRef.current?.focus();
-  }, [
-    content,
-    pendingImages,
-    pendingTextFiles,
-    pendingPdfs,
-    workspaceMentions,
-    workspaceRoots,
-    disabled,
-    onSend,
-    supportsThinking,
-    thinkingMode,
-    handleContentChange,
-  ]);
+	  }, [
+	    content,
+	    pendingImages,
+	    pendingTextFiles,
+	    pendingPdfs,
+	    workspaceMentions,
+	    codeSnippets,
+	    disabled,
+	    onSend,
+	    supportsThinking,
+	    thinkingMode,
+	    handleContentChange,
+	    onCodeSnippetsChange,
+	  ]);
 
   /**
    * Handle keyboard events in textarea
@@ -2452,30 +2510,50 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
         }
       }
 
-      if (e.key === 'Backspace' || e.key === 'Delete') {
-        const el = textareaRef.current;
-        if (el && el.selectionStart === el.selectionEnd) {
-          const cursor = el.selectionStart ?? content.length;
-          const probeIndex = e.key === 'Backspace' ? cursor - 1 : cursor;
-          const hit = findWorkspaceMentionTokenAt(content, probeIndex);
-          if (hit) {
-            e.preventDefault();
-            const next = content.slice(0, hit.start) + content.slice(hit.end);
-            handleContentChange(next);
-            setWorkspaceMentions((prev) => prev.filter((m) => m.id !== hit.id));
-            window.setTimeout(() => {
-              const el2 = textareaRef.current;
-              if (!el2) return;
-              try {
-                el2.setSelectionRange(hit.start, hit.start);
-              } catch {
-                // ignore
-              }
-            }, 0);
-            return;
-          }
-        }
-      }
+	      if (e.key === 'Backspace' || e.key === 'Delete') {
+	        const el = textareaRef.current;
+	        if (el && el.selectionStart === el.selectionEnd) {
+	          const cursor = el.selectionStart ?? content.length;
+	          const probeIndex = e.key === 'Backspace' ? cursor - 1 : cursor;
+	          const hit = findWorkspaceMentionTokenAt(content, probeIndex);
+	          if (hit) {
+	            e.preventDefault();
+	            const next = content.slice(0, hit.start) + content.slice(hit.end);
+	            handleContentChange(next);
+	            setWorkspaceMentions((prev) => prev.filter((m) => m.id !== hit.id));
+	            window.setTimeout(() => {
+	              const el2 = textareaRef.current;
+	              if (!el2) return;
+	              try {
+	                el2.setSelectionRange(hit.start, hit.start);
+	              } catch {
+	                // ignore
+	              }
+	            }, 0);
+	            return;
+	          }
+
+	          const snippetHit = findCodeSnippetTokenAt(content, probeIndex);
+	          if (snippetHit) {
+	            e.preventDefault();
+	            const next = content.slice(0, snippetHit.start) + content.slice(snippetHit.end);
+	            handleContentChange(next);
+	            if (onCodeSnippetsChange) {
+	              onCodeSnippetsChange(codeSnippets.filter((s) => s.id !== snippetHit.id));
+	            }
+	            window.setTimeout(() => {
+	              const el2 = textareaRef.current;
+	              if (!el2) return;
+	              try {
+	                el2.setSelectionRange(snippetHit.start, snippetHit.start);
+	              } catch {
+	                // ignore
+	              }
+	            }, 0);
+	            return;
+	          }
+	        }
+	      }
 
       if (e.key === 'Enter') {
         if (e.shiftKey) return;
@@ -2483,19 +2561,21 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
         void handleSend();
       }
     },
-    [
-      workstudio?.id,
-      atQuery,
-      atResults,
-      atIndex,
-      dollarQuery,
-      dollarResults,
-      dollarIndex,
-      content,
-      handleContentChange,
-      handleSend,
-    ]
-  );
+	    [
+	      workstudio?.id,
+	      atQuery,
+	      atResults,
+	      atIndex,
+	      dollarQuery,
+	      dollarResults,
+	      dollarIndex,
+	      content,
+	      codeSnippets,
+	      onCodeSnippetsChange,
+	      handleContentChange,
+	      handleSend,
+	    ]
+	  );
 
   /**
    * Handle input change in textarea
@@ -2526,13 +2606,17 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
     setDollarQuery(nextAt ? null : findActiveDollarQuery(content, cursor));
   }, [content, workstudio?.id]);
 
-  const workspaceMentionsById = useMemo(() => {
-    return new Map(workspaceMentions.map((m) => [m.id, m]));
-  }, [workspaceMentions]);
+	  const workspaceMentionsById = useMemo(() => {
+	    return new Map(workspaceMentions.map((m) => [m.id, m]));
+	  }, [workspaceMentions]);
 
-  const textareaOverlayNodes = useMemo(() => {
-    const text = content ?? '';
-    if (!text) return null;
+	  const codeSnippetsById = useMemo(() => {
+	    return new Map(codeSnippets.map((s) => [s.id, s]));
+	  }, [codeSnippets]);
+
+	  const textareaOverlayNodes = useMemo(() => {
+	    const text = content ?? '';
+	    if (!text) return null;
 
     const COMMON_ENV_VARS = new Set([
       'PATH',
@@ -2562,9 +2646,9 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
     let i = 0;
     let lastTextStart = 0;
 
-    while (i < text.length) {
-      // Workspace mention token: @{ref:<uuid>}
-      if (text.startsWith('@{ref:', i)) {
+	    while (i < text.length) {
+	      // Workspace mention token: @{ref:<uuid>}
+	      if (text.startsWith('@{ref:', i)) {
         const m = text.slice(i).match(/^@\{ref:([0-9a-fA-F-]+)\}/);
         if (m) {
           const raw = m[0];
@@ -2596,11 +2680,53 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
           lastTextStart = i;
           continue;
         }
-      }
+	      }
 
-      // Linked mention: [${name}](mcp://...) / [${name}](app://...) / skill links
-      // We only highlight the `$name` portion to keep caret alignment stable.
-      if (text[i] === '[' && text[i + 1] === '$') {
+	      // Code snippet token: @{snippet:<uuid>}
+	      if (text.startsWith('@{snippet:', i)) {
+	        const m = text.slice(i).match(/^@\{snippet:([0-9a-fA-F-]+)\}/);
+	        if (m) {
+	          const raw = m[0];
+	          const id = m[1];
+	          const start = i;
+	          const end = i + raw.length;
+
+	          flushText(lastTextStart, start);
+	          const snippet = codeSnippetsById.get(id);
+	          if (snippet) {
+	            const titleParts: string[] = [];
+	            if (snippet.filePath) titleParts.push(snippet.filePath);
+	            if (snippet.range) {
+	              titleParts.push(
+	                `${snippet.range.startLine}:${snippet.range.startColumn} - ${snippet.range.endLine}:${snippet.range.endColumn}`
+	              );
+	            }
+	            nodes.push(
+	              <span
+	                key={`snip-${id}-${start}`}
+	                className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700 dark:bg-emerald-900/25 dark:text-emerald-200 align-baseline"
+	                title={titleParts.join('\n')}
+	              >
+	                {snippet.label}
+	              </span>
+	            );
+	          } else {
+	            nodes.push(
+	              <span key={`snip-missing-${id}-${start}`} className="text-gray-400">
+	                {raw}
+	              </span>
+	            );
+	          }
+
+	          i = end;
+	          lastTextStart = i;
+	          continue;
+	        }
+	      }
+
+	      // Linked mention: [${name}](mcp://...) / [${name}](app://...) / skill links
+	      // We only highlight the `$name` portion to keep caret alignment stable.
+	      if (text[i] === '[' && text[i + 1] === '$') {
         const nameStart = i + 2;
         let nameEnd = nameStart;
         while (nameEnd < text.length && isDollarMentionChar(text[nameEnd]!)) nameEnd++;
@@ -2648,9 +2774,9 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
       i += 1;
     }
 
-    flushText(lastTextStart, text.length);
-    return nodes;
-  }, [content, workspaceMentionsById]);
+	    flushText(lastTextStart, text.length);
+	    return nodes;
+	  }, [content, workspaceMentionsById, codeSnippetsById]);
 
   const handleTextareaScroll = useCallback(() => {
     const el = textareaRef.current;

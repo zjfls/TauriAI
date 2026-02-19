@@ -3,7 +3,7 @@
 //! This module provides shared logic for converting ContentPart to provider-specific formats.
 //! It eliminates code duplication across different AI client implementations.
 
-use crate::models::{ContentPart, ImageDetail, PdfPage};
+use crate::models::{CodeSnippetRange, ContentPart, ImageDetail, PdfPage};
 
 /// Intermediate representation of a content block
 /// This is a provider-agnostic format that can be easily converted to any provider's format
@@ -59,6 +59,23 @@ pub fn content_part_to_blocks(part: &ContentPart, include_images: bool) -> Vec<C
             }]
         }
 
+        ContentPart::CodeSnippet {
+            label,
+            text,
+            language_id,
+            file_path,
+            range,
+            ..
+        } => vec![ContentBlock::Text {
+            text: format_code_snippet(
+                label,
+                language_id.as_deref(),
+                file_path.as_deref(),
+                range.as_ref(),
+                text,
+            ),
+        }],
+
         ContentPart::PdfDocument {
             filename, pages, ..
         } => pdf_to_blocks(filename, pages, include_images),
@@ -79,6 +96,18 @@ pub fn content_parts_to_blocks_with_limit(
     include_images: bool,
     max_images: Option<u32>,
 ) -> (Vec<ContentBlock>, bool) {
+    // 后端替换：把 `@{snippet:<id>}` token 替换为真实选中代码文本（来自 ContentPart::CodeSnippet），
+    // 并在替换后移除已使用的 CodeSnippet parts，避免重复发送。
+    let normalized_parts = if parts
+        .iter()
+        .any(|p| matches!(p, ContentPart::CodeSnippet { .. }))
+    {
+        Some(inject_code_snippets_into_text(parts))
+    } else {
+        None
+    };
+    let parts = normalized_parts.as_deref().unwrap_or(parts);
+
     // 指令/数据分离：当用户消息同时包含“文本指令 + 多模态数据(图片/文件/PDF…)”时，
     // 在两者之间插入一个明确分隔的 Text block，避免模型把第一段数据误当成指令的一部分。
     //（OpenAI Responses API 下会映射为一个单独的 `input_text`。）
@@ -163,6 +192,149 @@ pub fn content_parts_to_blocks_with_limit(
     }
 
     (blocks, skip_pdf_images)
+}
+
+fn inject_code_snippets_into_text(parts: &[ContentPart]) -> Vec<ContentPart> {
+    use std::collections::{HashMap, HashSet};
+
+    let mut by_id: HashMap<String, String> = HashMap::new();
+    for part in parts {
+        if let ContentPart::CodeSnippet {
+            id,
+            label,
+            text,
+            language_id,
+            file_path,
+            range,
+            ..
+        } = part
+        {
+            by_id.insert(
+                id.clone(),
+                format_code_snippet(
+                    label,
+                    language_id.as_deref(),
+                    file_path.as_deref(),
+                    range.as_ref(),
+                    text,
+                ),
+            );
+        }
+    }
+
+    if by_id.is_empty() {
+        return parts.to_vec();
+    }
+
+    let mut used: HashSet<String> = HashSet::new();
+    for part in parts {
+        if let ContentPart::Text { text } = part {
+            collect_snippet_token_ids(text, &mut used);
+        }
+    }
+
+    let mut out: Vec<ContentPart> = Vec::with_capacity(parts.len());
+    for part in parts {
+        match part {
+            ContentPart::Text { text } => out.push(ContentPart::Text {
+                text: replace_snippet_tokens(text, &by_id),
+            }),
+            ContentPart::CodeSnippet { id, .. } => {
+                if used.contains(id) {
+                    continue;
+                }
+                out.push(part.clone());
+            }
+            _ => out.push(part.clone()),
+        }
+    }
+
+    out
+}
+
+fn collect_snippet_token_ids(text: &str, out: &mut std::collections::HashSet<String>) {
+    const PREFIX: &str = "@{snippet:";
+    let mut i = 0;
+    while i < text.len() {
+        let Some(rel) = text[i..].find(PREFIX) else { break };
+        let token_start = i + rel;
+        let id_start = token_start + PREFIX.len();
+        let rest = &text[id_start..];
+        let Some(end_brace) = rest.find('}') else { break };
+        let id = &rest[..end_brace];
+        if !id.trim().is_empty() {
+            out.insert(id.to_string());
+        }
+        i = id_start + end_brace + 1;
+    }
+}
+
+fn replace_snippet_tokens(text: &str, by_id: &std::collections::HashMap<String, String>) -> String {
+    const PREFIX: &str = "@{snippet:";
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < text.len() {
+        let Some(rel) = text[i..].find(PREFIX) else {
+            out.push_str(&text[i..]);
+            break;
+        };
+        let token_start = i + rel;
+        out.push_str(&text[i..token_start]);
+        let id_start = token_start + PREFIX.len();
+        let rest = &text[id_start..];
+        let Some(end_brace) = rest.find('}') else {
+            // malformed token; keep remaining text as-is
+            out.push_str(&text[token_start..]);
+            break;
+        };
+        let id = &rest[..end_brace];
+        let token_end = id_start + end_brace + 1;
+
+        if let Some(repl) = by_id.get(id) {
+            out.push_str(repl);
+        } else {
+            out.push_str(&format!("（缺失代码片段：{}）", id));
+        }
+        i = token_end;
+    }
+    out
+}
+
+fn format_code_snippet(
+    label: &str,
+    language_id: Option<&str>,
+    file_path: Option<&str>,
+    range: Option<&CodeSnippetRange>,
+    text: &str,
+) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("🧩 代码片段：{}\n", label));
+    if let Some(p) = file_path {
+        let p = p.trim();
+        if !p.is_empty() {
+            out.push_str(&format!("路径：{}\n", p));
+        }
+    }
+    if let Some(r) = range {
+        out.push_str(&format!(
+            "范围：{}:{} - {}:{}\n",
+            r.start_line, r.start_column, r.end_line, r.end_column
+        ));
+    }
+    out.push_str("```");
+    if let Some(lang) = language_id {
+        let lang = lang.trim();
+        if !lang.is_empty() {
+            out.push_str(lang);
+        }
+    }
+    out.push('\n');
+    out.push_str(text);
+    if !text.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str("```\n");
+    out
 }
 
 /// Format a text file as markdown code block
