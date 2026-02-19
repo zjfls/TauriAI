@@ -15,7 +15,7 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate::models::WorkstudioUiState;
-use crate::models::{ContentPart, Conversation, Message, MessageRole, Workstudio};
+use crate::models::{CodeSnippetRange, ContentPart, Conversation, Message, MessageRole, Workstudio, WorkstudioSymbolAnalysis};
 
 /// Errors that can occur during storage operations
 #[derive(Debug, Error)]
@@ -183,6 +183,42 @@ impl Database {
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (main_folder, kind)
             )",
+            [],
+        )?;
+
+        // Create workstudio_symbol_analyses table (persisted AI analysis results for Outline symbols)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS workstudio_symbol_analyses (
+                id TEXT PRIMARY KEY,
+                workstudio_id TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                language_id TEXT NOT NULL,
+                symbol_key TEXT NOT NULL,
+                symbol_name TEXT NOT NULL,
+                symbol_kind TEXT NOT NULL,
+                selection_line INTEGER NOT NULL,
+                selection_column INTEGER NOT NULL,
+                range_start_line INTEGER NOT NULL,
+                range_start_column INTEGER NOT NULL,
+                range_end_line INTEGER NOT NULL,
+                range_end_column INTEGER NOT NULL,
+                answer_md TEXT NOT NULL,
+                model_ref TEXT,
+                latency_ms INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(workstudio_id, file_path, symbol_key)
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_workstudio_symbol_analyses_ws
+             ON workstudio_symbol_analyses(workstudio_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_workstudio_symbol_analyses_file
+             ON workstudio_symbol_analyses(file_path)",
             [],
         )?;
 
@@ -1969,6 +2005,193 @@ impl Database {
             params![main_folder, kind, json, now_str],
         )?;
 
+        Ok(())
+    }
+
+    // ==================== Workstudio Symbol Analysis (AI) ====================
+
+    pub fn get_workstudio_symbol_analysis(
+        &self,
+        workstudio_id: &str,
+        file_path: &str,
+        symbol_key: &str,
+    ) -> Result<Option<WorkstudioSymbolAnalysis>, StorageError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Lock(e.to_string()))?;
+
+        let mut stmt = conn.prepare(
+            "SELECT
+                id,
+                workstudio_id,
+                file_path,
+                language_id,
+                symbol_key,
+                symbol_name,
+                symbol_kind,
+                selection_line,
+                selection_column,
+                range_start_line,
+                range_start_column,
+                range_end_line,
+                range_end_column,
+                answer_md,
+                model_ref,
+                latency_ms,
+                created_at,
+                updated_at
+             FROM workstudio_symbol_analyses
+             WHERE workstudio_id = ?1 AND file_path = ?2 AND symbol_key = ?3",
+        )?;
+
+        let row = stmt
+            .query_row(params![workstudio_id, file_path, symbol_key], |r| {
+                let created_at_str: String = r.get(16)?;
+                let updated_at_str: String = r.get(17)?;
+
+                let selection_line: i64 = r.get(7)?;
+                let selection_column: i64 = r.get(8)?;
+                let start_line: i64 = r.get(9)?;
+                let start_column: i64 = r.get(10)?;
+                let end_line: i64 = r.get(11)?;
+                let end_column: i64 = r.get(12)?;
+
+                Ok(WorkstudioSymbolAnalysis {
+                    id: r.get(0)?,
+                    workstudio_id: r.get(1)?,
+                    file_path: r.get(2)?,
+                    language_id: r.get(3)?,
+                    symbol_key: r.get(4)?,
+                    symbol_name: r.get(5)?,
+                    symbol_kind: r.get(6)?,
+                    selection_line: selection_line.max(0) as u32,
+                    selection_column: selection_column.max(0) as u32,
+                    range: CodeSnippetRange {
+                        start_line: start_line.max(0) as u32,
+                        start_column: start_column.max(0) as u32,
+                        end_line: end_line.max(0) as u32,
+                        end_column: end_column.max(0) as u32,
+                    },
+                    answer_md: r.get(13)?,
+                    model_ref: r.get(14)?,
+                    latency_ms: r.get::<_, Option<i64>>(15)?.map(|v| v.max(0) as u64),
+                    created_at: DateTime::parse_from_rfc3339(&created_at_str)
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .unwrap_or_else(|_| Utc::now()),
+                    updated_at: DateTime::parse_from_rfc3339(&updated_at_str)
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .unwrap_or_else(|_| Utc::now()),
+                })
+            })
+            .optional()?;
+
+        Ok(row)
+    }
+
+    pub fn upsert_workstudio_symbol_analysis(
+        &self,
+        workstudio_id: &str,
+        file_path: &str,
+        language_id: &str,
+        symbol_key: &str,
+        symbol_name: &str,
+        symbol_kind: &str,
+        selection_line: u32,
+        selection_column: u32,
+        range: &CodeSnippetRange,
+        answer_md: &str,
+        model_ref: Option<&str>,
+        latency_ms: Option<u64>,
+    ) -> Result<WorkstudioSymbolAnalysis, StorageError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Lock(e.to_string()))?;
+
+        let now = Utc::now();
+        let now_str = now.to_rfc3339();
+        let id = uuid::Uuid::new_v4().to_string();
+
+        conn.execute(
+            "INSERT INTO workstudio_symbol_analyses (
+                id,
+                workstudio_id,
+                file_path,
+                language_id,
+                symbol_key,
+                symbol_name,
+                symbol_kind,
+                selection_line,
+                selection_column,
+                range_start_line,
+                range_start_column,
+                range_end_line,
+                range_end_column,
+                answer_md,
+                model_ref,
+                latency_ms,
+                created_at,
+                updated_at
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18
+            )
+            ON CONFLICT(workstudio_id, file_path, symbol_key) DO UPDATE
+              SET language_id = excluded.language_id,
+                  symbol_name = excluded.symbol_name,
+                  symbol_kind = excluded.symbol_kind,
+                  selection_line = excluded.selection_line,
+                  selection_column = excluded.selection_column,
+                  range_start_line = excluded.range_start_line,
+                  range_start_column = excluded.range_start_column,
+                  range_end_line = excluded.range_end_line,
+                  range_end_column = excluded.range_end_column,
+                  answer_md = excluded.answer_md,
+                  model_ref = excluded.model_ref,
+                  latency_ms = excluded.latency_ms,
+                  updated_at = excluded.updated_at",
+            params![
+                id,
+                workstudio_id,
+                file_path,
+                language_id,
+                symbol_key,
+                symbol_name,
+                symbol_kind,
+                selection_line as i64,
+                selection_column as i64,
+                range.start_line as i64,
+                range.start_column as i64,
+                range.end_line as i64,
+                range.end_column as i64,
+                answer_md,
+                model_ref,
+                latency_ms.map(|v| v as i64),
+                now_str,
+                now_str,
+            ],
+        )?;
+
+        self.get_workstudio_symbol_analysis(workstudio_id, file_path, symbol_key)?
+            .ok_or_else(|| StorageError::NotFound("workstudio_symbol_analysis missing after upsert".to_string()))
+    }
+
+    pub fn delete_workstudio_symbol_analysis(
+        &self,
+        workstudio_id: &str,
+        file_path: &str,
+        symbol_key: &str,
+    ) -> Result<(), StorageError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Lock(e.to_string()))?;
+
+        conn.execute(
+            "DELETE FROM workstudio_symbol_analyses
+             WHERE workstudio_id = ?1 AND file_path = ?2 AND symbol_key = ?3",
+            params![workstudio_id, file_path, symbol_key],
+        )?;
         Ok(())
     }
 

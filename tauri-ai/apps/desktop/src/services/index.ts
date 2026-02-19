@@ -42,6 +42,9 @@ export {
   lspDetectServer,
   astDocumentSymbols,
   aiCodeCompletion,
+  aiAnalyzeWorkstudioSymbol,
+  getWorkstudioSymbolAnalysis,
+  deleteWorkstudioSymbolAnalysis,
   type LspEnsureServerArgs,
   type LspNotifyArgs,
   type LspRequestArgs,
@@ -50,4 +53,6 @@ export {
   type AiCodeCompletionArgs,
   type AiCodeCompletionItem,
   type AiCodeCompletionResult,
+  type WorkstudioSymbolAnalysisKey,
+  type AiAnalyzeWorkstudioSymbolArgs,
 } from './codeIntelService';

@@ -41,11 +41,15 @@ import type {
   LspServerStatus,
   TerminalScope,
   Workstudio,
+  WorkstudioSymbolAnalysis,
   WorkstudioUiState,
 } from '../../types';
 import { SHORTCUT_ACTIONS, detectShortcutPlatform, normalizeKeybindingString } from '../../shortcuts';
 import {
+  aiAnalyzeWorkstudioSymbol,
   astDocumentSymbols,
+  deleteWorkstudioSymbolAnalysis,
+  getWorkstudioSymbolAnalysis,
   lspDetectServer,
   lspEnsureServer,
   lspNotify,
@@ -111,11 +115,14 @@ type InlineChatSelection = {
   label: string;
 };
 
-type InlineChatBubble = {
+type WorkstudioAiBubbleKind = 'inline_chat' | 'symbol_analysis';
+
+type WorkstudioAiBubble = {
   id: string;
+  kind: WorkstudioAiBubbleKind;
   name: string;
-  selectionLabel: string;
-  question: string;
+  subtitle: string;
+  prompt: string;
   status: 'running' | 'done' | 'error';
   answer?: string;
   error?: string;
@@ -887,18 +894,18 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const closeInlineChatComposer = useCallback(() => {
     setInlineChatComposer((prev) => ({ ...prev, open: false }));
   }, []);
-  const [inlineChatBubbles, setInlineChatBubbles] = useState<InlineChatBubble[]>([]);
-  const [inlineChatViewerId, setInlineChatViewerId] = useState<string | null>(null);
-  const inlineChatViewer = useMemo(() => {
-    if (!inlineChatViewerId) return null;
-    return inlineChatBubbles.find((b) => b.id === inlineChatViewerId) ?? null;
-  }, [inlineChatBubbles, inlineChatViewerId]);
-  const openInlineChatViewer = useCallback((id: string) => setInlineChatViewerId(id), []);
-  const closeInlineChatViewer = useCallback(() => {
-    if (!inlineChatViewerId) return;
-    setInlineChatBubbles((prev) => prev.filter((b) => b.id !== inlineChatViewerId));
-    setInlineChatViewerId(null);
-  }, [inlineChatViewerId]);
+  const [aiBubbles, setAiBubbles] = useState<WorkstudioAiBubble[]>([]);
+  const [aiViewerId, setAiViewerId] = useState<string | null>(null);
+  const aiViewer = useMemo(() => {
+    if (!aiViewerId) return null;
+    return aiBubbles.find((b) => b.id === aiViewerId) ?? null;
+  }, [aiBubbles, aiViewerId]);
+  const openAiViewer = useCallback((id: string) => setAiViewerId(id), []);
+  const closeAiViewer = useCallback(() => {
+    if (!aiViewerId) return;
+    setAiBubbles((prev) => prev.filter((b) => b.id !== aiViewerId));
+    setAiViewerId(null);
+  }, [aiViewerId]);
   const submitInlineChat = useCallback(async () => {
     const selection = inlineChatComposer.selection;
     const question = inlineChatComposer.question.trim();
@@ -907,15 +914,16 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     const id = crypto.randomUUID();
     const name = question.length > 28 ? `${question.slice(0, 28)}…` : question;
     const createdAt = new Date().toISOString();
-    const bubble: InlineChatBubble = {
+    const bubble: WorkstudioAiBubble = {
       id,
+      kind: 'inline_chat',
       name,
-      selectionLabel: selection.label,
-      question,
+      subtitle: selection.label,
+      prompt: question,
       status: 'running',
       createdAt,
     };
-    setInlineChatBubbles((prev) => [...prev, bubble]);
+    setAiBubbles((prev) => [...prev, bubble]);
     closeInlineChatComposer();
 
     try {
@@ -930,7 +938,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         },
       });
 
-      setInlineChatBubbles((prev) =>
+      setAiBubbles((prev) =>
         prev.map((b) =>
           b.id === id
             ? {
@@ -945,7 +953,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      setInlineChatBubbles((prev) =>
+      setAiBubbles((prev) =>
         prev.map((b) => (b.id === id ? { ...b, status: 'error', error: message } : b))
       );
     }
@@ -1122,6 +1130,27 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     | { visible: true; x: number; y: number; paneId: string; fileId: string; path: string }
     | null
   >(null);
+  const [outlineMenu, setOutlineMenu] = useState<
+    | {
+        visible: true;
+        x: number;
+        y: number;
+        filePath: string;
+        languageId: string;
+        item: OutlineItem;
+        analysis: WorkstudioSymbolAnalysis | null | undefined;
+      }
+    | null
+  >(null);
+  const [symbolAnalysisCache, setSymbolAnalysisCache] = useState<Record<string, WorkstudioSymbolAnalysis | null>>({});
+  const symbolAnalysisCacheRef = useRef<Record<string, WorkstudioSymbolAnalysis | null>>({});
+  useEffect(() => {
+    symbolAnalysisCacheRef.current = symbolAnalysisCache;
+  }, [symbolAnalysisCache]);
+  useEffect(() => {
+    // Workstudio 切换时清空缓存，避免跨工作区误命中。
+    setSymbolAnalysisCache({});
+  }, [ws?.id]);
   const lspStatusButtonRef = useRef<HTMLButtonElement | null>(null);
   const [outlineOpen, setOutlineOpen] = useState(true);
   const [leftSidebarTab, setLeftSidebarTab] = useState<'explorer' | 'outline'>('explorer');
@@ -2638,6 +2667,268 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     ]
   );
 
+  const makeSymbolAnalysisCacheKey = useCallback(
+    (filePathRaw: string, symbolKey: string) => {
+      const fp = normalizeFsPath(String(filePathRaw ?? '').trim());
+      return `${workstudioId ?? ''}::${fp}::${symbolKey}`;
+    },
+    [workstudioId]
+  );
+
+  const ensureSymbolAnalysis = useCallback(
+    async (filePath: string, symbolKey: string): Promise<WorkstudioSymbolAnalysis | null> => {
+      if (!workstudioId) return null;
+      const cacheKey = makeSymbolAnalysisCacheKey(filePath, symbolKey);
+      const cache = symbolAnalysisCacheRef.current;
+      if (Object.prototype.hasOwnProperty.call(cache, cacheKey)) {
+        return cache[cacheKey] ?? null;
+      }
+
+      try {
+        const res = await getWorkstudioSymbolAnalysis({ workstudioId, filePath, symbolKey });
+        setSymbolAnalysisCache((prev) => ({ ...prev, [cacheKey]: res }));
+        return res;
+      } catch (err) {
+        console.warn('[Workstudio][Outline] getWorkstudioSymbolAnalysis failed:', err);
+        setSymbolAnalysisCache((prev) => ({ ...prev, [cacheKey]: null }));
+        return null;
+      }
+    },
+    [makeSymbolAnalysisCacheKey, workstudioId]
+  );
+
+  const outlineAnalysisActionLabel = useCallback((kindRaw: string): string => {
+    const kind = normalizeOutlineKind(kindRaw);
+    if (OUTLINE_CALLABLE_KINDS.has(kind)) return '分析函数';
+    if (OUTLINE_VALUE_KINDS.has(kind)) return '分析变量';
+    if (kind === 'class') return '分析类';
+    if (OUTLINE_CONTAINER_KINDS.has(kind)) return '分析结构';
+    return '分析符号';
+  }, []);
+
+  const outlineAnalysisPromptPreview = useCallback((kindRaw: string): string => {
+    const kind = normalizeOutlineKind(kindRaw);
+    if (OUTLINE_CALLABLE_KINDS.has(kind)) return '请分析该函数/方法，并尽可能给出潜在调用链与风险点。';
+    if (OUTLINE_VALUE_KINDS.has(kind)) return '请分析该变量/字段的含义、生命周期与常见误用。';
+    if (OUTLINE_CONTAINER_KINDS.has(kind)) return '请分析该类型/容器符号的职责、关键成员与设计风险。';
+    return '请分析该符号在模块中的角色、用途与潜在问题。';
+  }, []);
+
+  const extractTextFromOutlineRange = useCallback((content: string, range: OutlineRange): string => {
+    if (!content) return '';
+    const lines = content.split(/\r?\n/);
+    const startLineIdx = Math.max(0, Math.min(lines.length - 1, Math.floor(range.startLine - 1)));
+    const endLineIdx = Math.max(0, Math.min(lines.length - 1, Math.floor(range.endLine - 1)));
+    if (endLineIdx < startLineIdx) return '';
+
+    const slice = lines.slice(startLineIdx, endLineIdx + 1);
+    const startColIdx = Math.max(0, Math.floor(range.startColumn - 1));
+    const endColIdx = Math.max(0, Math.floor(range.endColumn - 1));
+
+    if (slice.length === 1) {
+      const line = slice[0] ?? '';
+      const a = Math.min(startColIdx, line.length);
+      const b = Math.min(Math.max(a, endColIdx), line.length);
+      slice[0] = line.slice(a, b);
+      return slice.join('\n');
+    }
+
+    // first line: trim left
+    slice[0] = (slice[0] ?? '').slice(startColIdx);
+    // last line: trim right
+    const lastIdx = slice.length - 1;
+    slice[lastIdx] = (slice[lastIdx] ?? '').slice(0, endColIdx);
+    return slice.join('\n');
+  }, []);
+
+  const runOutlineSymbolAnalysis = useCallback(
+    async (filePath: string, languageId: string, item: OutlineItem) => {
+      if (!workstudioId) return;
+      const file = activeTextFileInFocusedPane;
+      if (!file || file.path !== filePath) {
+        throw new Error('当前焦点文件已变化，请重新打开 Outline 并再试一次');
+      }
+
+      const content = String(file.content ?? '');
+      const maxChars = 12_000;
+      let code = extractTextFromOutlineRange(content, item.range).trim();
+      if (!code) {
+        // fallback: selection line
+        const lines = content.split(/\r?\n/);
+        const idx = Math.max(0, Math.min(lines.length - 1, item.selectionLine - 1));
+        code = String(lines[idx] ?? '').trim();
+      }
+      if (!code) {
+        throw new Error('无法提取符号代码：请确认文件已加载且 Outline range 正常');
+      }
+      if (code.length > maxChars) {
+        code = `${code.slice(0, maxChars)}\n…（已截断）`;
+      }
+
+      const actionLabel = outlineAnalysisActionLabel(item.kind);
+      const promptPreview = outlineAnalysisPromptPreview(item.kind);
+      const id = crypto.randomUUID();
+      const createdAt = new Date().toISOString();
+      const displayName = `${actionLabel}：${item.name}`;
+      const name = displayName.length > 32 ? `${displayName.slice(0, 32)}…` : displayName;
+      const subtitle = `${basename(filePath)}:${item.selectionLine}:${item.selectionColumn}`;
+
+      const bubble: WorkstudioAiBubble = {
+        id,
+        kind: 'symbol_analysis',
+        name,
+        subtitle,
+        prompt: promptPreview,
+        status: 'running',
+        createdAt,
+      };
+      setAiBubbles((prev) => [...prev, bubble]);
+
+      try {
+        const symbolKind = normalizeOutlineKind(item.kind);
+        const res = await aiAnalyzeWorkstudioSymbol({
+          workstudioId,
+          languageId,
+          filePath,
+          symbolKey: item.key,
+          symbolName: item.name,
+          symbolKind,
+          selectionLine: item.selectionLine,
+          selectionColumn: item.selectionColumn,
+          range: item.range,
+          code,
+        });
+
+        setAiBubbles((prev) =>
+          prev.map((b) =>
+            b.id === id
+              ? {
+                  ...b,
+                  status: 'done',
+                  answer: res.answerMd,
+                  modelRef: res.modelRef,
+                  latencyMs: res.latencyMs,
+                }
+              : b
+          )
+        );
+
+        const cacheKey = makeSymbolAnalysisCacheKey(filePath, item.key);
+        setSymbolAnalysisCache((prev) => ({ ...prev, [cacheKey]: res }));
+        setOutlineMenu((prev) => {
+          if (!prev) return prev;
+          if (prev.filePath !== filePath) return prev;
+          if (prev.item.key !== item.key) return prev;
+          return { ...prev, analysis: res };
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setAiBubbles((prev) =>
+          prev.map((b) => (b.id === id ? { ...b, status: 'error', error: message } : b))
+        );
+      }
+    },
+    [
+      activeTextFileInFocusedPane,
+      aiAnalyzeWorkstudioSymbol,
+      extractTextFromOutlineRange,
+      makeSymbolAnalysisCacheKey,
+      outlineAnalysisActionLabel,
+      outlineAnalysisPromptPreview,
+      workstudioId,
+    ]
+  );
+
+  const viewOutlineSymbolAnalysis = useCallback(
+    async (filePath: string, item: OutlineItem) => {
+      if (!workstudioId) return;
+      const res = await ensureSymbolAnalysis(filePath, item.key);
+      if (!res) {
+        showNavToast('暂无已保存的分析结果');
+        return;
+      }
+
+      const id = crypto.randomUUID();
+      const createdAt = new Date().toISOString();
+      const nameBase = `查看分析：${item.name}`;
+      const name = nameBase.length > 32 ? `${nameBase.slice(0, 32)}…` : nameBase;
+      const subtitle = `${basename(filePath)}:${item.selectionLine}:${item.selectionColumn}`;
+      setAiBubbles((prev) => [
+        ...prev,
+        {
+          id,
+          kind: 'symbol_analysis',
+          name,
+          subtitle,
+          prompt: '已保存的分析结果（右键可刷新/删除）',
+          status: 'done',
+          answer: res.answerMd,
+          modelRef: res.modelRef,
+          latencyMs: res.latencyMs,
+          createdAt,
+        } satisfies WorkstudioAiBubble,
+      ]);
+      openAiViewer(id);
+    },
+    [ensureSymbolAnalysis, openAiViewer, showNavToast, workstudioId]
+  );
+
+  const deleteOutlineSymbolAnalysis = useCallback(
+    async (filePath: string, item: OutlineItem) => {
+      if (!workstudioId) return;
+      const ok = window.confirm(`确定删除该符号的分析结果吗？\n\n${basename(filePath)} · ${item.name}`);
+      if (!ok) return;
+
+      await deleteWorkstudioSymbolAnalysis({ workstudioId, filePath, symbolKey: item.key });
+      const cacheKey = makeSymbolAnalysisCacheKey(filePath, item.key);
+      setSymbolAnalysisCache((prev) => ({ ...prev, [cacheKey]: null }));
+      setOutlineMenu((prev) => {
+        if (!prev) return prev;
+        if (prev.filePath !== filePath) return prev;
+        if (prev.item.key !== item.key) return prev;
+        return { ...prev, analysis: null };
+      });
+      showNavToast('已删除分析结果');
+    },
+    [deleteWorkstudioSymbolAnalysis, makeSymbolAnalysisCacheKey, showNavToast, workstudioId]
+  );
+
+  const openOutlineItemMenu = useCallback(
+    (e: React.MouseEvent, item: OutlineItem) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const filePath = activeTextFileInFocusedPane?.path ?? '';
+      if (!filePath) return;
+      const languageId = languageForPath(filePath);
+
+      const cacheKey = makeSymbolAnalysisCacheKey(filePath, item.key);
+      const cache = symbolAnalysisCacheRef.current;
+      const analysis = Object.prototype.hasOwnProperty.call(cache, cacheKey) ? cache[cacheKey] : undefined;
+
+      setOutlineMenu({
+        visible: true,
+        x: e.clientX,
+        y: e.clientY,
+        filePath,
+        languageId,
+        item,
+        analysis,
+      });
+
+      if (analysis === undefined) {
+        void ensureSymbolAnalysis(filePath, item.key).then((res) => {
+          setOutlineMenu((prev) => {
+            if (!prev) return prev;
+            if (prev.filePath !== filePath) return prev;
+            if (prev.item.key !== item.key) return prev;
+            return { ...prev, analysis: res };
+          });
+        });
+      }
+    },
+    [activeTextFileInFocusedPane?.path, ensureSymbolAnalysis, makeSymbolAnalysisCacheKey]
+  );
+
   const renderOutlineNodes = (nodes: OutlineItem[], depth = 0): React.ReactNode =>
     nodes.map((item) => {
       const active = outlineActiveKey === item.key;
@@ -2668,6 +2959,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
               ].join(' ')}
               title={`${item.name} · ${item.kind} · ${item.selectionLine}:${item.selectionColumn}`}
               onClick={() => jumpToOutlineItem(item)}
+              onContextMenu={(e) => openOutlineItemMenu(e, item)}
             >
               <span className="min-w-0 flex-1 truncate font-medium">{item.name}</span>
               <span className="shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-gray-500 dark:bg-gray-800 dark:text-gray-400">
@@ -5295,15 +5587,16 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   }, [ws, expandedDirs, entriesByDir, loadingDirs, listDir]);
 
   useEffect(() => {
-    if (!contextMenu && !tabMenu && !lspMenu) return;
+    if (!contextMenu && !tabMenu && !lspMenu && !outlineMenu) return;
     const onDown = () => {
       setContextMenu(null);
       setTabMenu(null);
       setLspMenu(null);
+      setOutlineMenu(null);
     };
     window.addEventListener('mousedown', onDown);
     return () => window.removeEventListener('mousedown', onDown);
-  }, [contextMenu, lspMenu, tabMenu]);
+  }, [contextMenu, lspMenu, outlineMenu, tabMenu]);
 
   useEffect(() => {
     let disposed = false;
@@ -5482,43 +5775,47 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	          </div>
 	        </div>
 	      )}
-	      {inlineChatBubbles.length > 0 && (
-	        <div className="fixed bottom-4 right-4 z-[210] flex max-w-[360px] flex-col items-end gap-2">
-	          {inlineChatBubbles.map((b) => {
-	            const isClickable = b.status !== 'running';
-	            return (
-	              <button
-	                key={b.id}
-	                type="button"
-	                disabled={!isClickable}
-	                onClick={() => isClickable && openInlineChatViewer(b.id)}
-	                className={[
-	                  'flex w-full items-center gap-2 rounded-xl border px-3 py-2 text-left shadow-sm',
-	                  'bg-white/95 hover:bg-white disabled:opacity-70 dark:bg-gray-950/90 dark:hover:bg-gray-950',
-	                  'border-gray-200 dark:border-gray-800',
-	                  isClickable ? 'cursor-pointer' : 'cursor-default',
-	                ].join(' ')}
-	                title={b.selectionLabel}
-	              >
-	                <span className="shrink-0">
-	                  {b.status === 'running' && <Loader2 size={14} className="animate-spin text-gray-500" />}
-	                  {b.status === 'done' && <CheckCircle2 size={14} className="text-emerald-600 dark:text-emerald-300" />}
-	                  {b.status === 'error' && <AlertTriangle size={14} className="text-red-600 dark:text-red-300" />}
-	                </span>
-	                <div className="min-w-0 flex-1">
-	                  <div className="truncate text-xs font-semibold text-gray-800 dark:text-gray-100">
-	                    {b.name}
-	                  </div>
-	                  <div className="truncate text-[11px] text-gray-500 dark:text-gray-400">
-	                    {b.status === 'running' ? '请求中…' : b.status === 'done' ? '完成，点击查看' : '失败，点击查看'}
-	                  </div>
-	                </div>
-	                <MessageSquare size={14} className="shrink-0 opacity-60" />
-	              </button>
-	            );
-	          })}
-	        </div>
-	      )}
+		      {aiBubbles.length > 0 && (
+		        <div className="fixed bottom-4 right-4 z-[210] flex max-w-[360px] flex-col items-end gap-2">
+		          {aiBubbles.map((b) => {
+		            const isClickable = b.status !== 'running';
+		            return (
+		              <button
+		                key={b.id}
+		                type="button"
+		                disabled={!isClickable}
+		                onClick={() => isClickable && openAiViewer(b.id)}
+		                className={[
+		                  'flex w-full items-center gap-2 rounded-xl border px-3 py-2 text-left shadow-sm',
+		                  'bg-white/95 hover:bg-white disabled:opacity-70 dark:bg-gray-950/90 dark:hover:bg-gray-950',
+		                  'border-gray-200 dark:border-gray-800',
+		                  isClickable ? 'cursor-pointer' : 'cursor-default',
+		                ].join(' ')}
+		                title={b.subtitle}
+		              >
+		                <span className="shrink-0">
+		                  {b.status === 'running' && <Loader2 size={14} className="animate-spin text-gray-500" />}
+		                  {b.status === 'done' && <CheckCircle2 size={14} className="text-emerald-600 dark:text-emerald-300" />}
+		                  {b.status === 'error' && <AlertTriangle size={14} className="text-red-600 dark:text-red-300" />}
+		                </span>
+		                <div className="min-w-0 flex-1">
+		                  <div className="truncate text-xs font-semibold text-gray-800 dark:text-gray-100">
+		                    {b.name}
+		                  </div>
+		                  <div className="truncate text-[11px] text-gray-500 dark:text-gray-400">
+		                    {b.status === 'running' ? '请求中…' : b.status === 'done' ? '完成，点击查看' : '失败，点击查看'}
+		                  </div>
+		                </div>
+		                {b.kind === 'symbol_analysis' ? (
+		                  <ListTree size={14} className="shrink-0 opacity-60" />
+		                ) : (
+		                  <MessageSquare size={14} className="shrink-0 opacity-60" />
+		                )}
+		              </button>
+		            );
+		          })}
+		        </div>
+		      )}
 
 	      {inlineChatComposer.open && inlineChatComposer.selection && (
 	        <div className="fixed inset-0 z-[220] flex items-center justify-center bg-black/30 p-4">
@@ -5583,63 +5880,67 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	        </div>
 	      )}
 
-	      {inlineChatViewer && (
-	        <div className="fixed inset-0 z-[230] flex items-center justify-center bg-black/35 p-4">
-	          <div className="w-full max-w-3xl rounded-xl border border-gray-200 bg-white p-4 shadow-xl dark:border-gray-800 dark:bg-gray-950">
-	            <div className="flex items-start justify-between gap-3">
-	              <div className="min-w-0">
-	                <div className="truncate text-sm font-semibold text-gray-900 dark:text-gray-100">
-	                  {inlineChatViewer.name}
-	                </div>
-	                <div className="mt-0.5 truncate text-[11px] text-gray-500 dark:text-gray-400">
-	                  {inlineChatViewer.selectionLabel}
-	                </div>
-	              </div>
-	              <button
-	                type="button"
-	                className="rounded p-1 text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
-	                onClick={closeInlineChatViewer}
-	                title="关闭并移除气泡"
-	              >
-	                <X size={16} />
-	              </button>
-	            </div>
+		      {aiViewer && (
+		        <div className="fixed inset-0 z-[230] flex items-center justify-center bg-black/35 p-4">
+		          <div className="w-full max-w-3xl rounded-xl border border-gray-200 bg-white p-4 shadow-xl dark:border-gray-800 dark:bg-gray-950">
+		            <div className="flex items-start justify-between gap-3">
+		              <div className="min-w-0">
+		                <div className="truncate text-sm font-semibold text-gray-900 dark:text-gray-100">
+		                  {aiViewer.name}
+		                </div>
+		                <div className="mt-0.5 truncate text-[11px] text-gray-500 dark:text-gray-400">
+		                  {aiViewer.subtitle}
+		                </div>
+		              </div>
+		              <button
+		                type="button"
+		                className="rounded p-1 text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+		                onClick={closeAiViewer}
+		                title="关闭并移除气泡"
+		              >
+		                <X size={16} />
+		              </button>
+		            </div>
 
-	            <div className="mt-3">
-	              <div className="mb-1 text-[11px] font-medium text-gray-600 dark:text-gray-300">问题</div>
-	              <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-900 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-100">
-	                {inlineChatViewer.question}
-	              </div>
-	            </div>
+		            <div className="mt-3">
+		              <div className="mb-1 text-[11px] font-medium text-gray-600 dark:text-gray-300">
+		                {aiViewer.kind === 'symbol_analysis' ? '分析指令' : '问题'}
+		              </div>
+		              <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-900 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-100">
+		                {aiViewer.prompt}
+		              </div>
+		            </div>
 
-	            <div className="mt-3">
-	              <div className="mb-1 text-[11px] font-medium text-gray-600 dark:text-gray-300">回答</div>
-	              <div className="max-h-[60vh] overflow-auto rounded-lg border border-gray-200 bg-white px-3 py-2 dark:border-gray-800 dark:bg-gray-950">
-	                {inlineChatViewer.status === 'error' ? (
-	                  <pre className="whitespace-pre-wrap break-words text-xs text-red-700 dark:text-red-300">
-	                    {inlineChatViewer.error || '未知错误'}
-	                  </pre>
-	                ) : (
-	                  <DeferredMarkdown content={inlineChatViewer.answer || ''} conversationId={null} minDelayMs={120} />
-	                )}
-	              </div>
-	              <div className="mt-2 flex items-center justify-between text-[11px] text-gray-500 dark:text-gray-400">
-	                <div className="truncate">
-	                  {inlineChatViewer.modelRef ? `model: ${inlineChatViewer.modelRef}` : ''}
-	                  {inlineChatViewer.latencyMs ? `  ·  ${inlineChatViewer.latencyMs}ms` : ''}
-	                </div>
-	                <button
-	                  type="button"
-	                  className="rounded px-2 py-1 text-[11px] font-semibold text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
-	                  onClick={closeInlineChatViewer}
-	                >
-	                  关闭
-	                </button>
-	              </div>
-	            </div>
-	          </div>
-	        </div>
-	      )}
+		            <div className="mt-3">
+		              <div className="mb-1 text-[11px] font-medium text-gray-600 dark:text-gray-300">
+		                {aiViewer.kind === 'symbol_analysis' ? '分析结果' : '回答'}
+		              </div>
+		              <div className="max-h-[60vh] overflow-auto rounded-lg border border-gray-200 bg-white px-3 py-2 dark:border-gray-800 dark:bg-gray-950">
+		                {aiViewer.status === 'error' ? (
+		                  <pre className="whitespace-pre-wrap break-words text-xs text-red-700 dark:text-red-300">
+		                    {aiViewer.error || '未知错误'}
+		                  </pre>
+		                ) : (
+		                  <DeferredMarkdown content={aiViewer.answer || ''} conversationId={null} minDelayMs={120} />
+		                )}
+		              </div>
+		              <div className="mt-2 flex items-center justify-between text-[11px] text-gray-500 dark:text-gray-400">
+		                <div className="truncate">
+		                  {aiViewer.modelRef ? `model: ${aiViewer.modelRef}` : ''}
+		                  {aiViewer.latencyMs ? `  ·  ${aiViewer.latencyMs}ms` : ''}
+		                </div>
+		                <button
+		                  type="button"
+		                  className="rounded px-2 py-1 text-[11px] font-semibold text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
+		                  onClick={closeAiViewer}
+		                >
+		                  关闭
+		                </button>
+		              </div>
+		            </div>
+		          </div>
+		        </div>
+		      )}
 
 			      <div className="flex flex-1 overflow-hidden">
 	        <div className="flex w-[300px] flex-shrink-0 flex-col border-r border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-950">
@@ -6452,12 +6753,97 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
             )}
           </div>
         </div>
-      )}
+	      )}
 
-      {contextMenu && (
-        <div
-          className="fixed z-[200] min-w-[180px] rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
+	      {outlineMenu && (
+	        <div
+	          className="fixed z-[205] min-w-[220px] rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900"
+	          style={{ left: outlineMenu.x, top: outlineMenu.y }}
+	          onMouseDown={(e) => e.stopPropagation()}
+	        >
+	          <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400 truncate" title={outlineMenu.item.name}>
+	            {outlineMenu.item.name}
+	            <span className="ml-2 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-gray-500 dark:bg-gray-800 dark:text-gray-400">
+	              {normalizeOutlineKind(outlineMenu.item.kind)}
+	            </span>
+	          </div>
+	          <div className="py-1 text-sm">
+	            <button
+	              type="button"
+	              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+	              onClick={() => {
+	                const menu = outlineMenu;
+	                setOutlineMenu(null);
+	                void (async () => {
+	                  try {
+	                    await runOutlineSymbolAnalysis(menu.filePath, menu.languageId, menu.item);
+	                  } catch (err) {
+	                    const msg = err instanceof Error ? err.message : String(err);
+	                    showNavToast(msg);
+	                  }
+	                })();
+	              }}
+	            >
+	              {outlineAnalysisActionLabel(outlineMenu.item.kind)}
+	            </button>
+
+	            {outlineMenu.analysis === undefined ? (
+	              <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">加载分析状态中…</div>
+	            ) : outlineMenu.analysis ? (
+	              <>
+	                <button
+	                  type="button"
+	                  className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+	                  onClick={() => {
+	                    const menu = outlineMenu;
+	                    setOutlineMenu(null);
+	                    void viewOutlineSymbolAnalysis(menu.filePath, menu.item);
+	                  }}
+	                >
+	                  查看分析
+	                </button>
+	                <button
+	                  type="button"
+	                  className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+	                  onClick={() => {
+	                    const menu = outlineMenu;
+	                    setOutlineMenu(null);
+	                    void (async () => {
+	                      try {
+	                        await runOutlineSymbolAnalysis(menu.filePath, menu.languageId, menu.item);
+	                      } catch (err) {
+	                        const msg = err instanceof Error ? err.message : String(err);
+	                        showNavToast(msg);
+	                      }
+	                    })();
+	                  }}
+	                >
+	                  刷新分析
+	                </button>
+	                <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
+	                <button
+	                  type="button"
+	                  className="w-full px-3 py-2 text-left text-red-600 hover:bg-gray-100 dark:text-red-400 dark:hover:bg-gray-800"
+	                  onClick={() => {
+	                    const menu = outlineMenu;
+	                    setOutlineMenu(null);
+	                    void deleteOutlineSymbolAnalysis(menu.filePath, menu.item);
+	                  }}
+	                >
+	                  删除分析
+	                </button>
+	              </>
+	            ) : (
+	              <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">尚无分析结果</div>
+	            )}
+	          </div>
+	        </div>
+	      )}
+
+	      {contextMenu && (
+	        <div
+	          className="fixed z-[200] min-w-[180px] rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900"
+	          style={{ left: contextMenu.x, top: contextMenu.y }}
           onMouseDown={(e) => e.stopPropagation()}
         >
           {contextMenu.kind === 'blank' && (

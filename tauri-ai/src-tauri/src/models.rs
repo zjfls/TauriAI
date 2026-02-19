@@ -661,6 +661,39 @@ fn default_group_weight() -> f32 {
 }
 
 // ============================================================================
+// Workstudio Symbol Analysis (AI, persisted)
+// ============================================================================
+
+/// Persisted AI analysis result for a symbol in Workstudio outline.
+///
+/// 说明：
+/// - 用于右键 Outline 元素 -> “分析类/函数/变量”等能力的结果缓存。
+/// - 存储为 Markdown（前端用富文本渲染组件展示）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkstudioSymbolAnalysis {
+    pub id: String,
+    pub workstudio_id: String,
+    pub file_path: String,
+    pub language_id: String,
+    /// A stable key from Outline item (frontend-generated).
+    pub symbol_key: String,
+    pub symbol_name: String,
+    pub symbol_kind: String,
+    pub selection_line: u32,
+    pub selection_column: u32,
+    pub range: CodeSnippetRange,
+    /// Markdown content (rich text).
+    pub answer_md: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u64>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+// ============================================================================
 // New Provider-Model-Agent Architecture
 // ============================================================================
 

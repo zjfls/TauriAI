@@ -927,6 +927,28 @@ export interface Workstudio {
 }
 
 /**
+ * Persisted AI analysis result for a symbol in Workstudio Outline.
+ * - answerMd is Markdown (rendered as rich text in UI).
+ */
+export interface WorkstudioSymbolAnalysis {
+  id: string;
+  workstudioId: string;
+  filePath: string;
+  languageId: string;
+  symbolKey: string;
+  symbolName: string;
+  symbolKind: string;
+  selectionLine: number;
+  selectionColumn: number;
+  range: { startLine: number; startColumn: number; endLine: number; endColumn: number };
+  answerMd: string;
+  modelRef?: string;
+  latencyMs?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
  * Workstudio-scoped code intelligence preferences (persisted in Workstudio UI state).
  * - 未设置时：默认使用全局配置（所有已配置语言都可用）
  * - 设置后：仅对该 workstudio 启用选择的语言

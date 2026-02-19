@@ -48,12 +48,6 @@ const clampInt = (value: unknown, min: number, max: number, fallback: number) =>
   return Math.max(min, Math.min(max, Math.floor(n)));
 };
 
-const clampFloat = (value: unknown, min: number, max: number, fallback: number) => {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.max(min, Math.min(max, n));
-};
-
 const getModelFilePath = (model: Monaco.editor.ITextModel): string => {
   const uriAny = model.uri as any;
   const fsPath = typeof uriAny?.fsPath === 'string' ? uriAny.fsPath : '';
@@ -88,6 +82,41 @@ const stripLeadingOverlap = (leftContext: string, insertText: string): string =>
     }
   }
   return insertText;
+};
+
+const truncateChars = (text: string, maxChars: number): string => {
+  const max = Math.max(0, Math.floor(maxChars));
+  if (max === 0) return '';
+  const chars = Array.from(text);
+  if (chars.length <= max) return text;
+  return `${chars.slice(0, max).join('')}…`;
+};
+
+const buildCompletionPreview = (insertText: string, maxChars: number): string => {
+  const raw = String(insertText ?? '');
+  const lines = raw
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => Boolean(l));
+  if (lines.length === 0) return 'AI';
+  const joined =
+    lines.length === 1
+      ? lines[0]!
+      : lines.length === 2
+        ? `${lines[0]!} ⏎ ${lines[1]!}`
+        : `${lines[0]!} ⏎ ${lines[1]!} ⏎ …`;
+  return truncateChars(joined, maxChars);
+};
+
+const buildCompletionDocumentation = (languageId: string, insertText: string): Monaco.IMarkdownString => {
+  const lang = String(languageId ?? '').trim();
+  const raw = String(insertText ?? '').trimEnd();
+  const maxDocChars = 24_000;
+  const clipped = Array.from(raw).length > maxDocChars;
+  const body = clipped ? truncateChars(raw, maxDocChars) : raw;
+  const fence = lang || '';
+  const value = `\`\`\`${fence}\n${body}\n\`\`\`${clipped ? '\n\n（内容过长，已截断）' : ''}`;
+  return { value };
 };
 
 const delayOrCancel = (ms: number, token: Monaco.CancellationToken): Promise<boolean> =>
@@ -320,16 +349,15 @@ export const attachMonacoAiCompletionBridge = (opts: {
               const rawInsertText = String((it as any)?.insertText ?? '');
               const insertText = stripLeadingOverlap(linePrefix, rawInsertText);
               if (!insertText) return null;
-              const label = String((it as any)?.label ?? '').trim() || 'AI';
-              const temperature = clampFloat(cfg.temperature, 0, 2, 0.2);
+              const preview = buildCompletionPreview(insertText, 120);
               return {
-                label: `AI: ${label}`,
+                label: { label: preview, description: 'AI' },
                 kind: monaco.languages.CompletionItemKind.User,
                 insertText,
                 range: defaultRange,
-                detail: `AI Completion · T=${temperature}`,
+                documentation: buildCompletionDocumentation(languageId, insertText),
                 sortText: `0_ai_${String(idx).padStart(2, '0')}`,
-                // Monaco 会按“当前光标处的 word 前缀”过滤建议项；如果 label 以 "AI:" 开头，常会被过滤掉。
+                // Monaco 会按“当前光标处的 word 前缀”过滤建议项；
                 // 用 filterText 强制让 AI 建议在任何前缀下都可见（再靠 sortText 排到最前）。
                 filterText: currentWord,
               } satisfies Monaco.languages.CompletionItem;

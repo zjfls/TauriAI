@@ -694,11 +694,14 @@ fn run_desktop() {
             lsp_detect_server,
             // Code intelligence (AST)
             ast_document_symbols,
-	            // AI code completion
-	            ai_code_completion,
-	            ai_chat_with_selection,
-	            // Workstudio terminal (UI)
-	            workstudio_terminal_create,
+		            // AI code completion
+		            ai_code_completion,
+		            ai_chat_with_selection,
+		            ai_analyze_workstudio_symbol,
+		            get_workstudio_symbol_analysis,
+		            delete_workstudio_symbol_analysis,
+		            // Workstudio terminal (UI)
+		            workstudio_terminal_create,
             workstudio_terminal_write,
             workstudio_terminal_read,
             workstudio_terminal_read_base64,

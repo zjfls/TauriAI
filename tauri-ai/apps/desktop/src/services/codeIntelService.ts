@@ -1,6 +1,6 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 
-import type { AstSymbol, LspDetectServerResult, LspServerStatus } from '../types';
+import type { AstSymbol, LspDetectServerResult, LspServerStatus, WorkstudioSymbolAnalysis } from '../types';
 
 export type LspEnsureServerArgs = {
   workstudioId: string;
@@ -106,4 +106,52 @@ export const aiCodeCompletion = async (args: AiCodeCompletionArgs): Promise<AiCo
     throw new Error('Not running in Tauri');
   }
   return invoke<AiCodeCompletionResult>('ai_code_completion', { args });
+};
+
+// ============================================================================
+// AI Symbol Analysis (Workstudio Outline, persisted in DB)
+// ============================================================================
+
+export type WorkstudioSymbolAnalysisKey = {
+  workstudioId: string;
+  filePath: string;
+  symbolKey: string;
+};
+
+export const getWorkstudioSymbolAnalysis = async (
+  args: WorkstudioSymbolAnalysisKey
+): Promise<WorkstudioSymbolAnalysis | null> => {
+  if (!isTauri()) {
+    throw new Error('Not running in Tauri');
+  }
+  return invoke<WorkstudioSymbolAnalysis | null>('get_workstudio_symbol_analysis', { args });
+};
+
+export const deleteWorkstudioSymbolAnalysis = async (args: WorkstudioSymbolAnalysisKey): Promise<void> => {
+  if (!isTauri()) {
+    throw new Error('Not running in Tauri');
+  }
+  await invoke<void>('delete_workstudio_symbol_analysis', { args });
+};
+
+export type AiAnalyzeWorkstudioSymbolArgs = {
+  workstudioId: string;
+  languageId: string;
+  filePath: string;
+  symbolKey: string;
+  symbolName: string;
+  symbolKind: string;
+  selectionLine: number;
+  selectionColumn: number;
+  range: { startLine: number; startColumn: number; endLine: number; endColumn: number };
+  code: string;
+};
+
+export const aiAnalyzeWorkstudioSymbol = async (
+  args: AiAnalyzeWorkstudioSymbolArgs
+): Promise<WorkstudioSymbolAnalysis> => {
+  if (!isTauri()) {
+    throw new Error('Not running in Tauri');
+  }
+  return invoke<WorkstudioSymbolAnalysis>('ai_analyze_workstudio_symbol', { args });
 };

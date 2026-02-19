@@ -16,7 +16,7 @@ use crate::code_intel::lsp::resolve_lsp_spawn_program;
 use crate::code_intel::ast::{AstDocumentSymbolsArgs, AstSymbol};
 use crate::code_intel::types::{LspLaunchConfig, LspServerStatus};
 use crate::config::ConfigManager;
-use crate::models::{AppConfig, Message, MessageRole, MessageStatus, Workstudio};
+use crate::models::{AppConfig, CodeSnippetRange, Message, MessageRole, MessageStatus, Workstudio, WorkstudioSymbolAnalysis};
 use crate::storage::Database;
 
 #[derive(Debug, serde::Deserialize)]
@@ -654,6 +654,270 @@ pub async fn ai_chat_with_selection(
     })
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetWorkstudioSymbolAnalysisArgs {
+    pub workstudio_id: String,
+    pub file_path: String,
+    pub symbol_key: String,
+}
+
+#[tauri::command]
+pub async fn get_workstudio_symbol_analysis(
+    args: GetWorkstudioSymbolAnalysisArgs,
+    db: tauri::State<'_, Arc<Mutex<Database>>>,
+) -> Result<Option<WorkstudioSymbolAnalysis>, String> {
+    let ws_id = args.workstudio_id.trim();
+    let file_path = args.file_path.trim();
+    let symbol_key = args.symbol_key.trim();
+
+    if ws_id.is_empty() {
+        return Err("workstudioId 为空".to_string());
+    }
+    if file_path.is_empty() {
+        return Err("filePath 为空".to_string());
+    }
+    if symbol_key.is_empty() {
+        return Err("symbolKey 为空".to_string());
+    }
+
+    let db = db.lock().await;
+    db.get_workstudio_symbol_analysis(ws_id, file_path, symbol_key)
+        .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteWorkstudioSymbolAnalysisArgs {
+    pub workstudio_id: String,
+    pub file_path: String,
+    pub symbol_key: String,
+}
+
+#[tauri::command]
+pub async fn delete_workstudio_symbol_analysis(
+    args: DeleteWorkstudioSymbolAnalysisArgs,
+    db: tauri::State<'_, Arc<Mutex<Database>>>,
+) -> Result<(), String> {
+    let ws_id = args.workstudio_id.trim();
+    let file_path = args.file_path.trim();
+    let symbol_key = args.symbol_key.trim();
+
+    if ws_id.is_empty() {
+        return Err("workstudioId 为空".to_string());
+    }
+    if file_path.is_empty() {
+        return Err("filePath 为空".to_string());
+    }
+    if symbol_key.is_empty() {
+        return Err("symbolKey 为空".to_string());
+    }
+
+    let db = db.lock().await;
+    db.delete_workstudio_symbol_analysis(ws_id, file_path, symbol_key)
+        .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiAnalyzeWorkstudioSymbolArgs {
+    pub workstudio_id: String,
+    pub language_id: String,
+    pub file_path: String,
+    pub symbol_key: String,
+    pub symbol_name: String,
+    pub symbol_kind: String,
+    pub selection_line: u32,
+    pub selection_column: u32,
+    pub range: CodeSnippetRange,
+    pub code: String,
+}
+
+#[tauri::command]
+pub async fn ai_analyze_workstudio_symbol(
+    args: AiAnalyzeWorkstudioSymbolArgs,
+    db: tauri::State<'_, Arc<Mutex<Database>>>,
+    config_manager: tauri::State<'_, Arc<ConfigManager>>,
+) -> Result<WorkstudioSymbolAnalysis, String> {
+    let ws_id = args.workstudio_id.trim();
+    let lang = args.language_id.trim();
+    let file_path = args.file_path.trim();
+    let symbol_key = args.symbol_key.trim();
+    let symbol_name = args.symbol_name.trim();
+    let symbol_kind_raw = args.symbol_kind.trim();
+    let code = args.code.trim();
+
+    if ws_id.is_empty() {
+        return Err("workstudioId 为空".to_string());
+    }
+    if lang.is_empty() {
+        return Err("languageId 为空".to_string());
+    }
+    if file_path.is_empty() {
+        return Err("filePath 为空".to_string());
+    }
+    if symbol_key.is_empty() {
+        return Err("symbolKey 为空".to_string());
+    }
+    if symbol_name.is_empty() {
+        return Err("symbolName 为空".to_string());
+    }
+    if symbol_kind_raw.is_empty() {
+        return Err("symbolKind 为空".to_string());
+    }
+    if code.is_empty() {
+        return Err("code 为空".to_string());
+    }
+
+    let ws: Workstudio = {
+        let db = db.lock().await;
+        db.get_workstudio(ws_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "Workstudio not found".to_string())?
+    };
+
+    let config = config_manager
+        .ensure_default()
+        .map_err(|e| e.to_string())?;
+    let settings = &config.code_intelligence.ai_completion;
+    if !settings.enabled {
+        return Err("AI 补全已关闭（设置 -> Code Intelligence -> AI Completion）".to_string());
+    }
+
+    // modelRef 优先级：
+    // 1) codeIntelligence.aiCompletion.modelRef（显式指定）
+    // 2) AppConfig.currentModelRef（全局“当前模型”）
+    let effective_model_ref = settings.model_ref.trim().to_string();
+    let effective_model_ref = if effective_model_ref.is_empty() {
+        config
+            .current_model_ref
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    } else {
+        effective_model_ref
+    };
+    let model_ref = effective_model_ref.trim();
+    if model_ref.is_empty() {
+        return Err("未配置 AI Completion 的 modelRef（也未设置 currentModelRef）".to_string());
+    }
+
+    let (provider_name, model_name) =
+        AppConfig::parse_model_ref(model_ref).ok_or_else(|| "无效 modelRef（应为 provider/model）".to_string())?;
+    let provider = config
+        .get_provider(provider_name)
+        .ok_or_else(|| format!("未找到 provider：{provider_name}"))?;
+    if !provider.enabled {
+        return Err(format!("Provider 未启用：{provider_name}"));
+    }
+    let model = provider
+        .models
+        .iter()
+        .find(|m| m.name == model_name)
+        .ok_or_else(|| format!("未找到 model：{model_name}"))?;
+
+    let mut model_config = build_model_config(
+        provider,
+        model,
+        Some(serde_json::Value::Bool(false)),
+        Some(false),
+    );
+    // 分析不需要“思考/推理”字段，避免部分网关返回 content=null
+    model_config.thinking_level = None;
+    model_config.parameters.temperature = Some(settings.temperature.max(0.0).min(2.0) as f32);
+    model_config
+        .parameters
+        .max_tokens = Some(settings.max_tokens.max(8_192));
+
+    let client = get_client(&model_config.provider).map_err(|e| e.to_string())?;
+
+    let rel_path = file_path
+        .strip_prefix(ws.main_folder.as_str())
+        .unwrap_or(file_path)
+        .trim_start_matches(std::path::MAIN_SEPARATOR)
+        .to_string();
+
+    let symbol_kind = symbol_kind_raw.to_lowercase();
+    let system_prompt = symbol_analysis_system_prompt();
+    let user_prompt = symbol_analysis_user_prompt(
+        lang,
+        &rel_path,
+        ws.main_folder.as_str(),
+        symbol_name,
+        &symbol_kind,
+        args.selection_line,
+        args.selection_column,
+        &args.range,
+        code,
+    );
+
+    let now = chrono::Utc::now();
+    let conversation_id = format!("workstudio:{ws_id}:symbol_analysis");
+    let messages = vec![
+        Message {
+            id: uuid::Uuid::new_v4().to_string(),
+            conversation_id: conversation_id.clone(),
+            role: MessageRole::System,
+            content: system_prompt,
+            content_parts: Vec::new(),
+            thinking: None,
+            meta: None,
+            created_at: now,
+            status: MessageStatus::Success,
+            error_message: None,
+        },
+        Message {
+            id: uuid::Uuid::new_v4().to_string(),
+            conversation_id,
+            role: MessageRole::User,
+            content: user_prompt,
+            content_parts: Vec::new(),
+            thinking: None,
+            meta: None,
+            created_at: now,
+            status: MessageStatus::Success,
+            error_message: None,
+        },
+    ];
+
+    let started = Instant::now();
+    let timeout_ms = settings.timeout_ms.max(20_000);
+    let answer_md = match tokio::time::timeout(
+        Duration::from_millis(timeout_ms),
+        client.chat(messages, &model_config, None),
+    )
+    .await
+    {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => return Err(e.to_string()),
+        Err(_) => return Err(format!("符号分析超时（{}ms）", timeout_ms)),
+    };
+
+    let latency_ms = started.elapsed().as_millis() as u64;
+
+    let analysis = {
+        let db = db.lock().await;
+        db.upsert_workstudio_symbol_analysis(
+            ws_id,
+            file_path,
+            lang,
+            symbol_key,
+            symbol_name,
+            &symbol_kind,
+            args.selection_line,
+            args.selection_column,
+            &args.range,
+            &answer_md,
+            Some(model_ref),
+            Some(latency_ms),
+        )
+        .map_err(|e| e.to_string())?
+    };
+
+    Ok(analysis)
+}
+
 fn ai_completion_system_prompt() -> String {
     // 说明：
     // - 这里用“严格 JSON 输出”来让前端稳定解析；
@@ -733,6 +997,92 @@ fn inline_chat_user_prompt(
     out.push_str(question);
     out.push_str("\n\n选中代码：\n");
     out.push_str(&format!("```{language_id}\n{selection}\n```\n"));
+    out
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SymbolAnalysisKind {
+    Class,
+    Function,
+    Variable,
+    Symbol,
+}
+
+fn classify_symbol_analysis_kind(symbol_kind: &str) -> SymbolAnalysisKind {
+    let k = symbol_kind.trim().to_lowercase();
+    match k.as_str() {
+        // “容器/类型”类：优先当作 class 来分析
+        "class" | "struct" | "interface" | "enum" | "trait" | "impl" | "module" | "namespace"
+        | "package" | "object" => SymbolAnalysisKind::Class,
+        // 可调用
+        "method" | "function" | "constructor" | "operator" => SymbolAnalysisKind::Function,
+        // 值/成员
+        "property" | "field" | "variable" | "constant" | "enum_member" => SymbolAnalysisKind::Variable,
+        _ => SymbolAnalysisKind::Symbol,
+    }
+}
+
+fn symbol_analysis_system_prompt() -> String {
+    r#"你是 IDE 中的“代码符号分析助手”。
+
+你会收到：
+- 一个代码符号（类/函数/变量等）的元信息
+- 该符号对应的代码片段（可能不完整）
+- 一些工程元信息（languageId、filePath、projectRoot）
+
+请输出 **Markdown**，并遵循：
+- 先给结论摘要（1-3 句）
+- 再给结构化分析（分点/小标题均可）
+- 尽可能指出潜在问题与可执行改进建议
+- 当缺少关键上下文时，明确指出需要看的文件/关键搜索词，而不是臆测
+"#
+    .to_string()
+}
+
+fn symbol_analysis_user_prompt(
+    language_id: &str,
+    file_path: &str,
+    project_root: &str,
+    symbol_name: &str,
+    symbol_kind: &str,
+    selection_line: u32,
+    selection_column: u32,
+    range: &CodeSnippetRange,
+    code: &str,
+) -> String {
+    let kind = classify_symbol_analysis_kind(symbol_kind);
+    let request = match kind {
+        SymbolAnalysisKind::Class => {
+            "请分析该类型/容器符号的职责、关键字段/方法、对外接口、可能的设计模式与风险点。"
+        }
+        SymbolAnalysisKind::Function => {
+            "请分析该函数/方法的输入输出、关键流程、依赖与副作用，并尽可能推测潜在调用链（它可能调用谁、又可能被谁调用）。"
+        }
+        SymbolAnalysisKind::Variable => {
+            "请分析该变量/字段的含义、作用域与生命周期、可能的约束/不变量、以及易错用法。"
+        }
+        SymbolAnalysisKind::Symbol => "请分析该符号的含义、用途与在模块中的角色，并指出可能的风险点。",
+    };
+
+    let mut out = String::new();
+    out.push_str(request);
+    out.push('\n');
+    out.push_str(&format!("languageId: {language_id}\n"));
+    out.push_str(&format!("filePath: {file_path}\n"));
+    out.push_str(&format!("projectRoot: {project_root}\n"));
+    out.push_str(&format!("symbolName: {symbol_name}\n"));
+    out.push_str(&format!("symbolKind: {symbol_kind}\n"));
+    out.push_str(&format!(
+        "symbolSelection: {}:{}\n",
+        selection_line, selection_column
+    ));
+    out.push_str(&format!(
+        "symbolRange: {}:{}-{}:{}\n",
+        range.start_line, range.start_column, range.end_line, range.end_column
+    ));
+    out.push('\n');
+    out.push_str("代码片段：\n");
+    out.push_str(&format!("```{language_id}\n{code}\n```\n"));
     out
 }
 
