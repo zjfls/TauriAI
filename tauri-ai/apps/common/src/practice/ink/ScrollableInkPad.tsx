@@ -21,6 +21,16 @@ function computeMaxY(strokes: InkStroke[]): number {
   return maxY;
 }
 
+function computeMaxX(strokes: InkStroke[]): number {
+  let maxX = 0;
+  for (const s of strokes) {
+    for (const p of s.points) {
+      if (p.x > maxX) maxX = p.x;
+    }
+  }
+  return maxX;
+}
+
 function computeDesiredHeightPx(strokes: InkStroke[], viewportHeightPx: number, minHeightPx: number): number {
   const vh = Math.max(1, Math.round(viewportHeightPx));
   const base = Math.max(vh * 2, Math.round(minHeightPx || 0));
@@ -114,6 +124,7 @@ function redrawAll(
 }
 
 const PAPER_COLOR = "#f6efdb";
+const MIN_VALID_VIEWPORT_PX = 50;
 
 function redrawPaperBackground(
   ctx: CanvasRenderingContext2D,
@@ -264,7 +275,13 @@ export function ScrollableInkPad({
     return computeDesiredHeightPx(draft.strokes, viewportSize.h, value.height || 0);
   }, [draft.strokes, value.height, viewportSize.h]);
 
-  const desiredContentWidth = useMemo(() => Math.max(1, viewportSize.w), [viewportSize.w]);
+  const desiredContentWidth = useMemo(() => {
+    const measured = Math.max(0, Math.round(viewportSize.w));
+    if (measured >= MIN_VALID_VIEWPORT_PX) return measured;
+    const fallback = Number.isFinite(value.width) ? value.width : 0;
+    if (fallback >= MIN_VALID_VIEWPORT_PX) return fallback;
+    return Math.max(1, measured);
+  }, [value.width, viewportSize.w]);
 
   const presentComposite = useMemo(() => {
     return () => {
@@ -297,21 +314,19 @@ export function ScrollableInkPad({
     };
   }, [presentComposite]);
 
-  useEffect(() => {
-    return () => {
-      mountedRef.current = false;
-      if (presentRafRef.current != null && typeof cancelAnimationFrame !== "undefined") {
-        cancelAnimationFrame(presentRafRef.current);
-      }
-    };
-  }, []);
-
   const commitDraft = useMemo(() => {
     return () => {
       const raw = draftRef.current;
+      const rawWidth = Number.isFinite(raw.width) ? raw.width : 0;
+      // When the viewport is being hidden / torn down, ResizeObserver can transiently report 0 width.
+      // Avoid committing a bogus width=1 that can later break scaling heuristics.
+      const commitWidth =
+        desiredContentWidth < MIN_VALID_VIEWPORT_PX && rawWidth >= MIN_VALID_VIEWPORT_PX
+          ? rawWidth
+          : desiredContentWidth;
       const committed: InkState = {
         ...raw,
-        width: desiredContentWidth,
+        width: commitWidth,
         height: computeDesiredHeightPx(
           raw.strokes,
           viewportSize.h,
@@ -345,6 +360,15 @@ export function ScrollableInkPad({
     };
   }, [commitDraft]);
 
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+      if (presentRafRef.current != null && typeof cancelAnimationFrame !== "undefined") {
+        cancelAnimationFrame(presentRafRef.current);
+      }
+    };
+  }, []);
+
   // When viewport width changes, scale existing strokes into the new coordinate space.
   useEffect(() => {
     if (inking) return;
@@ -353,10 +377,61 @@ export function ScrollableInkPad({
 
     const prev = draftRef.current;
     const prevW = Number.isFinite(prev.width) ? prev.width : 0;
-    const safePrevW = prevW >= 50 ? prevW : w;
-    if (Math.abs(safePrevW - w) < 1) return;
 
-    const scale = w / safePrevW;
+    // Ignore transient "collapsed" sizes (e.g., during fullscreen close/unmount) to avoid destructively
+    // scaling strokes down to near-zero.
+    if (w < MIN_VALID_VIEWPORT_PX) return;
+
+    if (prevW < MIN_VALID_VIEWPORT_PX) {
+      const maxX = computeMaxX(prev.strokes);
+      const maxY = computeMaxY(prev.strokes);
+      const looksNormalized = maxX <= MIN_VALID_VIEWPORT_PX && maxY <= MIN_VALID_VIEWPORT_PX;
+
+      // If the saved ink width is bogus but points are already in px space, just fix the metadata width.
+      if (!looksNormalized) {
+        const nextHeight = computeDesiredHeightPx(
+          prev.strokes,
+          viewportSize.h,
+          Math.max(0, Number.isFinite(prev.height) ? prev.height : 0),
+        );
+        const next: InkState = { width: w, height: nextHeight, strokes: [...prev.strokes] };
+        setDraft(next);
+        draftRef.current = next;
+        onChange(next, true);
+        const strokeCtx = strokeCtxRef.current;
+        if (strokeCtx) {
+          redrawAll(strokeCtx, next.strokes, Math.max(1, Math.round(w)), Math.max(1, Math.round(nextHeight)));
+          schedulePresent();
+        }
+        return;
+      }
+
+      // Heal "normalized" strokes (0..1) back into the current viewport coordinate space.
+      const safePrevW = Math.max(1, prevW);
+      const scale = w / safePrevW;
+      if (!Number.isFinite(scale) || Math.abs(scale - 1) < 1e-6) return;
+
+      const scaled = scaleStrokes(prev.strokes, scale);
+      const nextHeight = computeDesiredHeightPx(
+        scaled,
+        viewportSize.h,
+        Math.max(0, (Number.isFinite(prev.height) ? prev.height : 0) * scale),
+      );
+      const next: InkState = { width: w, height: nextHeight, strokes: scaled };
+      setDraft(next);
+      draftRef.current = next;
+      onChange(next, true);
+      const strokeCtx = strokeCtxRef.current;
+      if (strokeCtx) {
+        redrawAll(strokeCtx, next.strokes, Math.max(1, Math.round(w)), Math.max(1, Math.round(nextHeight)));
+        schedulePresent();
+      }
+      return;
+    }
+
+    if (Math.abs(prevW - w) < 1) return;
+
+    const scale = w / prevW;
     if (!Number.isFinite(scale) || Math.abs(scale - 1) < 1e-6) return;
 
     const scaled = scaleStrokes(prev.strokes, scale);
