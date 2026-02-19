@@ -200,6 +200,8 @@ export function ScrollableInkPad({
   const strokeCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const strokeCtxRef = useRef<CanvasRenderingContext2D | null>(null);
   const drawingRef = useRef(false);
+  const dirtyRef = useRef(false);
+  const mountedRef = useRef(true);
   const lastPointRef = useRef<InkPoint | null>(null);
   const activeStrokeIdRef = useRef<string | null>(null);
   const presentRafRef = useRef<number | null>(null);
@@ -297,11 +299,51 @@ export function ScrollableInkPad({
 
   useEffect(() => {
     return () => {
+      mountedRef.current = false;
       if (presentRafRef.current != null && typeof cancelAnimationFrame !== "undefined") {
         cancelAnimationFrame(presentRafRef.current);
       }
     };
   }, []);
+
+  const commitDraft = useMemo(() => {
+    return () => {
+      const raw = draftRef.current;
+      const committed: InkState = {
+        ...raw,
+        width: desiredContentWidth,
+        height: computeDesiredHeightPx(
+          raw.strokes,
+          viewportSize.h,
+          Math.max(
+            0,
+            Number.isFinite(raw.height) ? raw.height : 0,
+            Number.isFinite(value.height) ? value.height : 0,
+          ),
+        ),
+        strokes: [...raw.strokes],
+      };
+      dirtyRef.current = false;
+      draftRef.current = committed;
+      if (mountedRef.current) setDraft(committed);
+      onChange(committed, true);
+    };
+  }, [desiredContentWidth, onChange, value.height, viewportSize.h]);
+
+  // Flush draft when the app is backgrounded / view is torn down.
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const onVis = () => {
+      if (document.visibilityState === "hidden" && dirtyRef.current) {
+        commitDraft();
+      }
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      if (dirtyRef.current) commitDraft();
+    };
+  }, [commitDraft]);
 
   // When viewport width changes, scale existing strokes into the new coordinate space.
   useEffect(() => {
@@ -398,6 +440,7 @@ export function ScrollableInkPad({
       height: desiredContentHeight,
       strokes: [...prev.strokes, stroke],
     };
+    dirtyRef.current = true;
     draftRef.current = next;
     setDraft(next);
   };
@@ -414,6 +457,7 @@ export function ScrollableInkPad({
 
     const stroke = nextState.strokes[idx]!;
     stroke.points.push(p);
+    dirtyRef.current = true;
 
     if (strokeCtx && last) {
       drawStrokeSegment(strokeCtx, stroke, last, p);
@@ -471,17 +515,7 @@ export function ScrollableInkPad({
     if (canvas) canvas.style.touchAction = "pan-y";
     e.preventDefault();
     endStroke();
-
-    const raw = draftRef.current;
-    const committed: InkState = {
-      ...raw,
-      width: desiredContentWidth,
-      height: computeDesiredHeightPx(raw.strokes, viewportSize.h, Math.max(value.height || 0, raw.height || 0)),
-      strokes: [...raw.strokes],
-    };
-    draftRef.current = committed;
-    setDraft(committed);
-    onChange(committed, true);
+    if (dirtyRef.current) commitDraft();
   };
 
   const onPointerCancel = () => {
@@ -491,7 +525,9 @@ export function ScrollableInkPad({
     const canvas = canvasRef.current;
     if (canvas) canvas.style.touchAction = "pan-y";
     endStroke();
-    // Do not commit on cancel.
+    // iOS/WKWebView may emit pointercancel for gestures / app backgrounding.
+    // Commit to avoid losing the last stroke.
+    if (dirtyRef.current) commitDraft();
   };
 
   const clear = () => {
