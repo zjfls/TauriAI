@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Plus, SendHorizontal } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type TouchEvent } from "react";
+import { ListOrdered, Plus, SendHorizontal } from "lucide-react";
 import { isTauriRuntime, tauriInvoke, tauriListen, type UnlistenFn } from "../lib/tauri";
 import { clsx } from "../lib/clsx";
 import { useLayoutSize } from "../lib/breakpoints";
 import { loadChatRenderMode } from "../lib/chatRenderPrefs";
 import { Button } from "../ui/Button";
 import { ThinkingBlock, ToolCallBlock, WebSearchBlock } from "../ui/ChatBlocks";
+import { ChatOutlineDrawer } from "../ui/ChatOutlineDrawer";
 import { Input } from "../ui/Input";
 import { RichText } from "../ui/RichText";
 import type { ChatMessage } from "../types/chat";
@@ -63,10 +64,53 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
     conversationId: string;
     assistantMessageId: string;
   } | null>(null);
+  const messageNodeByIdRef = useRef<Map<string, HTMLDivElement>>(new Map());
+  const touchGestureRef = useRef<{ startX: number; startY: number } | null>(null);
+  const [outlineOpen, setOutlineOpen] = useState(false);
+  const [selectedRequestMessageId, setSelectedRequestMessageId] = useState<string | null>(null);
 
   const messages = conversation?.messages ?? [];
+  const outlineItems = useMemo(() => {
+    const items: Array<{ messageId: string; index: number; preview: string }> = [];
+    let index = 0;
+    for (const m of messages) {
+      if (m.role !== "user") continue;
+      index += 1;
+      const preview = m.content.replace(/\s+/g, " ").trim().slice(0, 96);
+      items.push({
+        messageId: m.id,
+        index,
+        preview: preview || "（空消息）",
+      });
+    }
+    return items;
+  }, [messages]);
+
+  const selectedOutlineFullText = useMemo(() => {
+    if (!selectedRequestMessageId) return null;
+    const msg = messages.find((m) => m.id === selectedRequestMessageId && m.role === "user");
+    return msg?.content ?? null;
+  }, [messages, selectedRequestMessageId]);
+
   // 读取渲染模式（默认 rich）。不做 memo，方便 Settings 修改后即时生效。
   const renderMode = loadChatRenderMode();
+
+  useEffect(() => {
+    if (outlineItems.length === 0) {
+      if (selectedRequestMessageId !== null) setSelectedRequestMessageId(null);
+      return;
+    }
+    const exists = selectedRequestMessageId
+      ? outlineItems.some((item) => item.messageId === selectedRequestMessageId)
+      : false;
+    if (!exists) {
+      setSelectedRequestMessageId(outlineItems[outlineItems.length - 1]?.messageId ?? null);
+    }
+  }, [outlineItems, selectedRequestMessageId]);
+
+  useEffect(() => {
+    setOutlineOpen(false);
+  }, [conversation?.id, layout]);
 
   const loadConfig = useCallback(async () => {
     if (!isTauriRuntime()) return;
@@ -106,6 +150,108 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
 
   const activeAgentName = conversation?.agentName || fallbackAgentName || "";
   const activeAgentLabel = activeAgentName ? agentLabels[activeAgentName] || activeAgentName : "";
+
+  const maybeGenerateConversationTitle = useCallback(
+    async (conversationId: string, assistantContent: string) => {
+      if (!isTauriRuntime()) return;
+
+      const state = useConversationStore.getState();
+      const target = state.conversations.find((c) => c.id === conversationId);
+      if (!target) return;
+      if (!target.title.startsWith("新对话")) return;
+
+      const latestAssistant = [...target.messages]
+        .reverse()
+        .find((m) => m.role === "assistant");
+      const toolRoundCount = Array.isArray(latestAssistant?.toolCalls)
+        ? latestAssistant.toolCalls.length
+        : 0;
+
+      const shouldGenerate =
+        target.messages.length >= 3 ||
+        assistantContent.trim().length >= 100 ||
+        toolRoundCount >= 2;
+      if (!shouldGenerate) return;
+
+      const requestMessages = target.messages.slice(0, 6).map((m) => ({
+        role: m.role,
+        content: m.content,
+      }));
+      if (requestMessages.length === 0) return;
+
+      try {
+        const rawTitle = await tauriInvoke<string>("mobile_generate_title", {
+          messages: requestMessages,
+          agentName: target.agentName || fallbackAgentName || null,
+        });
+
+        const title = String(rawTitle ?? "")
+          .trim()
+          .replace(/\s+/g, " ")
+          .slice(0, 48);
+        if (!title) return;
+        state.setTitle(conversationId, title);
+      } catch {
+        // ignore
+      }
+    },
+    [fallbackAgentName],
+  );
+
+  const bindMessageNode = useCallback((messageId: string, node: HTMLDivElement | null) => {
+    if (!node) {
+      messageNodeByIdRef.current.delete(messageId);
+      return;
+    }
+    messageNodeByIdRef.current.set(messageId, node);
+  }, []);
+
+  const scrollToMessage = useCallback((messageId: string) => {
+    const node = messageNodeByIdRef.current.get(messageId);
+    if (!node) return;
+    node.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, []);
+
+  const handleOutlineSelect = useCallback(
+    (messageId: string) => {
+      setSelectedRequestMessageId(messageId);
+      scrollToMessage(messageId);
+      setOutlineOpen(false);
+    },
+    [scrollToMessage],
+  );
+
+  const handleTouchStartCapture = (event: TouchEvent<HTMLDivElement>) => {
+    if (layout !== "compact") return;
+    if (event.touches.length !== 1) return;
+    const touch = event.touches[0];
+    touchGestureRef.current = { startX: touch.clientX, startY: touch.clientY };
+  };
+
+  const handleTouchEndCapture = (event: TouchEvent<HTMLDivElement>) => {
+    if (layout !== "compact") return;
+    const start = touchGestureRef.current;
+    touchGestureRef.current = null;
+    if (!start || event.changedTouches.length !== 1) return;
+
+    const touch = event.changedTouches[0];
+    const dx = touch.clientX - start.startX;
+    const dy = touch.clientY - start.startY;
+
+    if (Math.abs(dx) < 44) return;
+    if (Math.abs(dx) < Math.abs(dy) * 1.2) return;
+
+    if (!outlineOpen) {
+      if (start.startX <= 24 && dx > 56) {
+        setOutlineOpen(true);
+      }
+      return;
+    }
+
+    if (dx < -56) {
+      setOutlineOpen(false);
+    }
+  };
 
   const insertDollar = () => {
     if (sending) return;
@@ -219,7 +365,6 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
             if (p.delta && assistantMessageId) {
               appendMessageDelta(conversation.id, assistantMessageId, p.delta);
             }
-            queueMicrotask(scrollToBottom);
             return;
           }
 
@@ -227,7 +372,6 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
             if (p.delta && assistantMessageId) {
               appendThinkingDelta(conversation.id, assistantMessageId, p.delta);
             }
-            queueMicrotask(scrollToBottom);
             return;
           }
 
@@ -277,10 +421,10 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
                 patch.thinking = p.thinking;
               }
               finalizeMessage(conversation.id, assistantMessageId, patch);
+              void maybeGenerateConversationTitle(conversation.id, final);
             }
             setSending(false);
             void cleanupStream(false);
-            queueMicrotask(scrollToBottom);
             return;
           }
 
@@ -332,13 +476,16 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
       // sending 的关闭由 done/error/canceled 事件驱动；这里兜底，防止 start 之前抛错导致卡住。
       if (activeStreamRef.current == null) {
         setSending(false);
-        queueMicrotask(scrollToBottom);
       }
     }
   };
 
   return (
-    <div className="h-full flex flex-col overflow-x-hidden">
+    <div
+      className="relative h-full flex flex-col overflow-x-hidden"
+      onTouchStartCapture={handleTouchStartCapture}
+      onTouchEndCapture={handleTouchEndCapture}
+    >
       {layout === "compact" ? (
         <div className="safe-top border-b border-white/10 bg-white/5">
           <div className="h-12 flex items-center justify-between px-3">
@@ -348,26 +495,51 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
                 {activeAgentLabel ? `Agent: ${activeAgentLabel}` : "Agent: 未选择"}
               </div>
             </div>
-            {onNewConversation ? (
-              <Button size="sm" variant="ghost" onClick={onNewConversation} title="新建对话">
-                <Plus size={16} />
+            <div className="flex items-center gap-1">
+              <Button
+                size="sm"
+                variant="ghost"
+                className={clsx("gap-1 px-2", outlineOpen ? "bg-white/10" : "")}
+                onClick={() => setOutlineOpen((v) => !v)}
+                title={outlineOpen ? "隐藏消息目录" : "显示消息目录"}
+              >
+                <ListOrdered size={16} />
+                <span className="text-[10px] leading-none">{outlineItems.length}</span>
               </Button>
-            ) : null}
+              {onNewConversation ? (
+                <Button size="sm" variant="ghost" onClick={onNewConversation} title="新建对话">
+                  <Plus size={16} />
+                </Button>
+              ) : null}
+            </div>
           </div>
         </div>
       ) : null}
 
-	      <div
-	        ref={listRef}
-	        className="flex-1 min-h-0 overflow-y-auto overscroll-none overflow-x-hidden p-3 space-y-3"
-	      >
-	        {messages.map((m) => (
-	          <div
-	            key={m.id}
-	            className={clsx("flex", m.role === "user" ? "justify-end" : "justify-start")}
-	          >
-	            {m.role === "assistant" ? (
-	              <div className="max-w-[85%] w-full min-w-0 space-y-2 overflow-x-hidden">
+      {layout === "compact" ? (
+        <ChatOutlineDrawer
+          open={outlineOpen}
+          items={outlineItems}
+          selectedMessageId={selectedRequestMessageId}
+          selectedFullText={selectedOutlineFullText}
+          onClose={() => setOutlineOpen(false)}
+          onToggle={() => setOutlineOpen((v) => !v)}
+          onSelect={handleOutlineSelect}
+        />
+      ) : null}
+
+      <div
+        ref={listRef}
+        className="flex-1 min-h-0 overflow-y-auto overscroll-none overflow-x-hidden p-3 space-y-3"
+      >
+        {messages.map((m) => (
+          <div
+            key={m.id}
+            ref={(node) => bindMessageNode(m.id, node)}
+            className={clsx("flex", m.role === "user" ? "justify-end" : "justify-start")}
+          >
+            {m.role === "assistant" ? (
+              <div className="max-w-[85%] w-full min-w-0 space-y-2 overflow-x-hidden">
                 {m.thinking ? (
                   <ThinkingBlock
                     text={m.thinking}
@@ -396,12 +568,12 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
                     ))
                   : null}
 
-	                <div
-	                  className={clsx(
-	                    "rounded-2xl px-3 py-2 text-sm break-words border overflow-x-hidden min-w-0",
-	                    "bg-white/5 border-white/10",
-	                  )}
-	                >
+                <div
+                  className={clsx(
+                    "rounded-2xl px-3 py-2 text-sm break-words border overflow-x-hidden min-w-0",
+                    "bg-white/5 border-white/10",
+                  )}
+                >
                   {renderMode === "rich" ? (
                     <RichText content={m.content} />
                   ) : (
@@ -409,13 +581,13 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
                   )}
                 </div>
               </div>
-	            ) : (
-	              <div
-	                className={clsx(
-	                  "max-w-[85%] min-w-0 rounded-2xl px-3 py-2 text-sm break-words border overflow-x-hidden",
-	                  "bg-indigo-500/20 border-indigo-400/30",
-	                )}
-	              >
+            ) : (
+              <div
+                className={clsx(
+                  "max-w-[85%] min-w-0 rounded-2xl px-3 py-2 text-sm break-words border overflow-x-hidden",
+                  "bg-indigo-500/20 border-indigo-400/30",
+                )}
+              >
                 {renderMode === "rich" ? (
                   <RichText content={m.content} />
                 ) : (

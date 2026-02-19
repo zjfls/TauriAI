@@ -931,6 +931,7 @@ fn run_mobile() {
     use crate::commands::{
         fetch_provider_models, get_app_config, mobile_chat, mobile_chat_stream_cancel,
         mobile_chat_stream_start, save_app_config, test_connection,
+        mobile_generate_title,
         // MCP commands (mobile)
         delete_mcp_server, delete_mcp_set, list_mcp_server_resources, list_mcp_server_tools,
         list_mcp_servers, list_mcp_sets, set_agent_mcp_set, test_mcp_server, upsert_mcp_server,
@@ -947,6 +948,7 @@ fn run_mobile() {
             test_connection,
             fetch_provider_models,
             mobile_chat,
+            mobile_generate_title,
             mobile_chat_stream_start,
             mobile_chat_stream_cancel,
             // MCP commands

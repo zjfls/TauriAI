@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { loadJson, saveJson } from "./storage";
 import type {
   InkState,
+  InkStroke,
   PracticeAnswer,
   PracticeGrading,
   PracticeQuestion,
@@ -25,6 +26,7 @@ type State = {
   deleteQuiz: (id: PracticeQuizId) => void;
   setActiveQuiz: (id: PracticeQuizId) => void;
   renameQuiz: (id: PracticeQuizId, title: string) => void;
+  appendGeneratedQuestions: (quizId: PracticeQuizId, questions: PracticeQuestion[]) => void;
 
   addQuestion: (quizId: PracticeQuizId, type: PracticeQuestionType) => PracticeQuestionId;
   deleteQuestion: (quizId: PracticeQuizId, questionId: PracticeQuestionId) => void;
@@ -63,6 +65,134 @@ function now(): number {
 
 function newId(prefix: string): string {
   return `${prefix}_${Math.random().toString(36).slice(2)}_${Date.now().toString(36)}`;
+}
+
+const INK_SIZE_MIN = 0.5;
+const INK_SIZE_MAX = 64;
+
+function clampNumber(v: unknown, min: number, max: number, fallback: number): number {
+  const n = typeof v === "number" ? v : Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, n));
+}
+
+function normalizeInkState(raw: unknown): { ink: InkState; changed: boolean } {
+  const inkObj = (raw && typeof raw === "object" ? (raw as any) : {}) as any;
+  const width = clampNumber(inkObj.width, 0, 100000, 0);
+  const height = clampNumber(inkObj.height, 0, 100000, 0);
+  const strokesIn: any[] = Array.isArray(inkObj.strokes) ? inkObj.strokes : [];
+
+  let changed = false;
+  const strokesOut: InkStroke[] = [];
+  for (const s0 of strokesIn) {
+    const s = (s0 && typeof s0 === "object" ? s0 : {}) as any;
+    const tool =
+      s.tool === "pen" || s.tool === "pencil" || s.tool === "eraser" ? (s.tool as any) : "pen";
+    const color = typeof s.color === "string" && s.color.trim() ? s.color : "#111827";
+    const size = clampNumber(s.size, INK_SIZE_MIN, INK_SIZE_MAX, 3);
+    const id = typeof s.id === "string" && s.id.trim() ? s.id : newId("stroke");
+
+    const pointsIn: any[] = Array.isArray(s.points) ? s.points : [];
+    const pointsOut: any[] = [];
+    for (const p0 of pointsIn) {
+      const p = (p0 && typeof p0 === "object" ? p0 : {}) as any;
+      const x = typeof p.x === "number" ? p.x : Number(p.x);
+      const y = typeof p.y === "number" ? p.y : Number(p.y);
+      const t = typeof p.t === "number" ? p.t : Number(p.t);
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(t)) {
+        changed = true;
+        continue;
+      }
+      const pressure = typeof p.pressure === "number" && Number.isFinite(p.pressure) ? p.pressure : undefined;
+      const tiltX = typeof p.tiltX === "number" && Number.isFinite(p.tiltX) ? p.tiltX : undefined;
+      const tiltY = typeof p.tiltY === "number" && Number.isFinite(p.tiltY) ? p.tiltY : undefined;
+      const twist = typeof p.twist === "number" && Number.isFinite(p.twist) ? p.twist : undefined;
+      pointsOut.push({ x, y, t, pressure, tiltX, tiltY, twist });
+    }
+
+    if (pointsOut.length === 0) {
+      changed = true;
+      continue;
+    }
+
+    const opacity = typeof s.opacity === "number" ? clampNumber(s.opacity, 0.05, 1, 1) : undefined;
+    const pressureSensitivity =
+      typeof s.pressureSensitivity === "number"
+        ? clampNumber(s.pressureSensitivity, 0, 1, 0)
+        : undefined;
+    const blendMode = s.blendMode === "multiply" || s.blendMode === "source-over" ? s.blendMode : undefined;
+    const lineCap = s.lineCap === "butt" || s.lineCap === "round" || s.lineCap === "square" ? s.lineCap : undefined;
+    const lineJoin = s.lineJoin === "bevel" || s.lineJoin === "miter" || s.lineJoin === "round" ? s.lineJoin : undefined;
+    const brushId = typeof s.brushId === "string" && s.brushId.trim() ? s.brushId : undefined;
+
+    if (
+      tool !== s.tool ||
+      color !== s.color ||
+      size !== s.size ||
+      id !== s.id ||
+      (opacity ?? null) !== (typeof s.opacity === "number" ? s.opacity : null) ||
+      (pressureSensitivity ?? null) !== (typeof s.pressureSensitivity === "number" ? s.pressureSensitivity : null) ||
+      (blendMode ?? null) !== (s.blendMode ?? null) ||
+      (lineCap ?? null) !== (s.lineCap ?? null) ||
+      (lineJoin ?? null) !== (s.lineJoin ?? null) ||
+      (brushId ?? null) !== (s.brushId ?? null) ||
+      pointsOut.length !== pointsIn.length
+    ) {
+      changed = true;
+    }
+
+    strokesOut.push({
+      id,
+      tool,
+      color,
+      size,
+      brushId,
+      opacity,
+      pressureSensitivity,
+      blendMode,
+      lineCap,
+      lineJoin,
+      points: pointsOut,
+    } as InkStroke);
+  }
+
+  const widthOut = Math.max(0, Math.round(width));
+  const heightOut = Math.max(0, Math.round(height));
+  if (widthOut !== inkObj.width || heightOut !== inkObj.height || strokesOut.length !== strokesIn.length) {
+    changed = true;
+  }
+  return { ink: { width: widthOut, height: heightOut, strokes: strokesOut }, changed };
+}
+
+function normalizeProgressAnswer(answer: PracticeAnswer | undefined): { answer: PracticeAnswer | undefined; changed: boolean } {
+  if (!answer) return { answer, changed: false };
+  if (answer.kind !== "ink") return { answer, changed: false };
+  const normalized = normalizeInkState((answer as any).ink);
+  if (!normalized.changed) return { answer, changed: false };
+  return { answer: { ...(answer as any), ink: normalized.ink }, changed: true };
+}
+
+function normalizeQuizzesOnLoad(
+  quizzes: PracticeQuiz[],
+): { quizzes: PracticeQuiz[]; changed: boolean } {
+  let changed = false;
+  const next = quizzes.map((q) => {
+    const quiz = ensureProgress(q);
+    const by = quiz.progress?.byQuestionId ?? {};
+    const nextBy: Record<PracticeQuestionId, PracticeQuestionProgress> = { ...by };
+    let quizChanged = false;
+    for (const [qid, prog] of Object.entries(by)) {
+      const normalized = normalizeProgressAnswer(prog?.answer);
+      if (normalized.changed) {
+        quizChanged = true;
+        nextBy[qid] = { ...(prog ?? {}), answer: normalized.answer };
+      }
+    }
+    if (!quizChanged) return quiz;
+    changed = true;
+    return { ...quiz, progress: { byQuestionId: nextBy } };
+  });
+  return { quizzes: next, changed };
 }
 
 function ensureProgress(quiz: PracticeQuiz): PracticeQuiz {
@@ -131,11 +261,16 @@ function loadInitial(): Pick<State, "quizzes" | "activeQuizId"> {
     const quiz = createEmptyQuiz();
     return { quizzes: [quiz], activeQuizId: quiz.id };
   }
+  const normalized = normalizeQuizzesOnLoad(data.quizzes);
   const active =
     data.activeQuizId && data.quizzes.some((q) => q.id === data.activeQuizId)
       ? data.activeQuizId
       : data.quizzes[0]?.id ?? null;
-  return { quizzes: data.quizzes, activeQuizId: active };
+  const initial = { quizzes: normalized.quizzes, activeQuizId: active };
+  if (normalized.changed) {
+    saveJson(STORAGE_KEY, initial);
+  }
+  return initial;
 }
 
 export const usePracticeStore = create<State>((set) => {
@@ -204,6 +339,34 @@ export const usePracticeStore = create<State>((set) => {
       }, true);
     },
 
+    appendGeneratedQuestions: (quizId, questions) => {
+      if (!Array.isArray(questions) || questions.length === 0) return;
+      updateQuizzes((prev) => {
+        const quizzes = prev.quizzes.map((q) => {
+          if (q.id !== quizId) return q;
+
+          const quiz = ensureProgress(q);
+          const existedIds = new Set(quiz.questions.map((qq) => qq.id));
+          const incoming = questions
+            .filter((item) => item && typeof item === "object")
+            .map((item) => {
+              let id = String(item.id ?? "").trim();
+              if (!id || existedIds.has(id)) {
+                do {
+                  id = newId("pq");
+                } while (existedIds.has(id));
+              }
+              existedIds.add(id);
+              return { ...item, id } as PracticeQuestion;
+            });
+
+          if (incoming.length === 0) return quiz;
+          return { ...quiz, questions: [...quiz.questions, ...incoming], updatedAt: now() };
+        });
+        return { quizzes, activeQuizId: prev.activeQuizId };
+      }, true);
+    },
+
     addQuestion: (quizId, type) => {
       const question = createBlankQuestion(type);
       updateQuizzes((prev) => {
@@ -258,10 +421,11 @@ export const usePracticeStore = create<State>((set) => {
 
     setInkDraft: (quizId, questionId, ink, opts) => {
       const commit = opts?.commit ?? true;
+      const normalizedInk = normalizeInkState(ink).ink;
       updateQuizzes((prev) => {
         const quizzes = prev.quizzes.map((q) => {
           if (q.id !== quizId) return q;
-          const answer: PracticeAnswer = { kind: "ink", ink, summaryText: opts?.summaryText };
+          const answer: PracticeAnswer = { kind: "ink", ink: normalizedInk, summaryText: opts?.summaryText };
           return setQuestionProgress(ensureProgress(q), questionId, { answer });
         });
         return { quizzes, activeQuizId: prev.activeQuizId };
