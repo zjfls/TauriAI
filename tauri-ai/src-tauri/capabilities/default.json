@@ -2,8 +2,17 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the main window",
-  "platforms": ["macOS", "windows", "linux"],
-  "windows": ["main", "view-*", "workspace-*", "__tauriai_ghost__*"],
+  "platforms": [
+    "macOS",
+    "windows",
+    "linux"
+  ],
+  "windows": [
+    "main",
+    "view-*",
+    "workspace-*",
+    "__tauriai_ghost__*"
+  ],
   "permissions": [
     "core:default",
     "core:window:allow-create",
@@ -17,6 +26,10 @@
     "core:webview:allow-get-all-webviews",
     "opener:default",
     "dialog:allow-open",
-    "dialog:allow-save"
+    "dialog:allow-save",
+    "dialog:allow-message",
+    "dialog:allow-ask",
+    "dialog:allow-confirm",
+    "dialog:default"
   ]
 }
