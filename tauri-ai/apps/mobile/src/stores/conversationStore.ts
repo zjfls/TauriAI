@@ -407,32 +407,83 @@ export const useConversationStore = create<State>((set) => {
             if (m.id !== messageId) return m;
             const nextMsg: ChatMessage = { ...m, ...patch };
 
-            let nextBlocks: ChatMessageBlock[] = Array.isArray(m.blocks) ? [...m.blocks] : [];
+            // Important: after introducing `blocks` (ordered by stream events), we must keep
+            // blocks in sync when the backend sends a final `done` payload that contains the
+            // full accumulated content (or when an `error` happens after tool calls).
+            //
+            // Otherwise, UI will keep rendering old blocks and appear to "stop" after MCP.
+            const nextBlocks: ChatMessageBlock[] = ensureBlocks(m);
 
-            const hasThinkingBlock = nextBlocks.some((b) => b.type === "thinking" && b.text.trim());
-            const hasTextBlock = nextBlocks.some((b) => b.type === "text" && b.text.trim());
+            const concatTextBlocks = (blocks: ChatMessageBlock[]) =>
+              blocks
+                .filter(
+                  (b): b is Extract<ChatMessageBlock, { type: "text" }> => b.type === "text",
+                )
+                .map((b) => b.text || "")
+                .join("");
 
-            if (!hasThinkingBlock && typeof nextMsg.thinking === "string" && nextMsg.thinking.trim()) {
-              nextBlocks.push({
-                id: newId("b_thinking_final"),
-                type: "thinking",
-                text: nextMsg.thinking,
-              });
+            const concatThinkingBlocks = (blocks: ChatMessageBlock[]) =>
+              blocks
+                .filter(
+                  (b): b is Extract<ChatMessageBlock, { type: "thinking" }> =>
+                    b.type === "thinking",
+                )
+                .map((b) => b.text || "")
+                .join("");
+
+            if (typeof patch?.thinking === "string") {
+              const target = nextMsg.thinking ?? "";
+              const rendered = concatThinkingBlocks(nextBlocks);
+              if (target.trim()) {
+                if (rendered === "") {
+                  nextBlocks.push({
+                    id: newId("b_thinking_final"),
+                    type: "thinking",
+                    text: target,
+                  });
+                } else if (target !== rendered) {
+                  const suffix = target.startsWith(rendered)
+                    ? target.slice(rendered.length)
+                    : target;
+                  if (suffix.trim().length > 0) {
+                    nextBlocks.push({
+                      id: newId("b_thinking_suffix"),
+                      type: "thinking",
+                      text: suffix,
+                    });
+                  }
+                }
+              }
             }
 
-            if (!hasTextBlock && typeof nextMsg.content === "string" && nextMsg.content.trim()) {
-              nextBlocks.push({
-                id: newId("b_text_final"),
-                type: "text",
-                format: "markdown",
-                text: nextMsg.content,
-              });
+            if (typeof patch?.content === "string") {
+              const target = nextMsg.content ?? "";
+              const rendered = concatTextBlocks(nextBlocks);
+              if (target.trim()) {
+                if (rendered === "") {
+                  nextBlocks.push({
+                    id: newId("b_text_final"),
+                    type: "text",
+                    format: "markdown",
+                    text: target,
+                  });
+                } else if (target !== rendered) {
+                  const suffix = target.startsWith(rendered)
+                    ? target.slice(rendered.length)
+                    : target;
+                  if (suffix.trim().length > 0) {
+                    nextBlocks.push({
+                      id: newId("b_text_suffix"),
+                      type: "text",
+                      format: "markdown",
+                      text: suffix,
+                    });
+                  }
+                }
+              }
             }
 
-            if (nextBlocks.length > 0) {
-              nextMsg.blocks = nextBlocks;
-            }
-
+            nextMsg.blocks = nextBlocks;
             return nextMsg;
           });
           return { ...c, messages, updatedAt: now() };
