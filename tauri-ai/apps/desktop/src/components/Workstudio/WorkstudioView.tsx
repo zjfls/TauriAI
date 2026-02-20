@@ -1043,12 +1043,13 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   }, []);
 
   // AI Agent Panel state — must be declared before submitInlineChat which references selectedAgentName
-  // NOTE: use a stable selector (avoid `?? []` inline which creates a new ref on every render)
-  const codingAgents = useConfigStore((s) => {
-    const agents = s.config?.agents;
-    if (!agents || agents.length === 0) return EMPTY_AGENTS;
-    return agents.filter((a) => a.type === 'coding' || (a as any).workstudioEnabled === true);
-  });
+  // Two-step stable pattern: raw selector reads the agents array reference (store-level stable),
+  // then useMemo filters — only re-runs when agents array itself changes, not on unrelated store updates.
+  const configAgents = useConfigStore((s) => s.config?.agents ?? EMPTY_AGENTS);
+  const codingAgents = useMemo(
+    () => configAgents.filter((a) => a.type === 'coding' || (a as any).workstudioEnabled === true),
+    [configAgents]
+  );
   const [selectedAgentName, setSelectedAgentName] = useState<string>('');
   const [agentPanelInput, setAgentPanelInput] = useState('');
   // Auto-select first available coding agent — use functional update to avoid selectedAgentName in deps
