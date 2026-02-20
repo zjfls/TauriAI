@@ -6768,62 +6768,49 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	            </span>
 	          </div>
 	          <div className="py-1 text-sm">
-	            <button
-	              type="button"
-	              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
-	              onClick={() => {
-	                const menu = outlineMenu;
-	                setOutlineMenu(null);
-	                void (async () => {
-	                  try {
-	                    await runOutlineSymbolAnalysis(menu.filePath, menu.languageId, menu.item);
-	                  } catch (err) {
+		            <button
+		              type="button"
+		              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+		              onClick={() => {
+		                const menu = outlineMenu;
+		                const hasExisting = Boolean(menu.analysis);
+		                if (hasExisting) {
+		                  const ok = confirm('已存在分析结果，确定重新分析并覆盖吗？');
+		                  if (!ok) return;
+		                }
+		                setOutlineMenu(null);
+		                void (async () => {
+		                  try {
+		                    await runOutlineSymbolAnalysis(menu.filePath, menu.languageId, menu.item);
+		                  } catch (err) {
 	                    const msg = err instanceof Error ? err.message : String(err);
 	                    showNavToast(msg);
 	                  }
-	                })();
-	              }}
-	            >
-	              {outlineAnalysisActionLabel(outlineMenu.item.kind)}
-	            </button>
+		                })();
+		              }}
+		            >
+		              {outlineMenu.analysis ? '重新分析' : outlineAnalysisActionLabel(outlineMenu.item.kind)}
+		            </button>
 
 	            {outlineMenu.analysis === undefined ? (
 	              <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">加载分析状态中…</div>
 	            ) : outlineMenu.analysis ? (
 	              <>
-	                <button
-	                  type="button"
-	                  className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
-	                  onClick={() => {
-	                    const menu = outlineMenu;
-	                    setOutlineMenu(null);
-	                    void viewOutlineSymbolAnalysis(menu.filePath, menu.item);
-	                  }}
-	                >
-	                  查看分析
-	                </button>
-	                <button
-	                  type="button"
-	                  className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
-	                  onClick={() => {
-	                    const menu = outlineMenu;
-	                    setOutlineMenu(null);
-	                    void (async () => {
-	                      try {
-	                        await runOutlineSymbolAnalysis(menu.filePath, menu.languageId, menu.item);
-	                      } catch (err) {
-	                        const msg = err instanceof Error ? err.message : String(err);
-	                        showNavToast(msg);
-	                      }
-	                    })();
-	                  }}
-	                >
-	                  刷新分析
-	                </button>
-	                <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
-	                <button
-	                  type="button"
-	                  className="w-full px-3 py-2 text-left text-red-600 hover:bg-gray-100 dark:text-red-400 dark:hover:bg-gray-800"
+		                <button
+		                  type="button"
+		                  className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+		                  onClick={() => {
+		                    const menu = outlineMenu;
+		                    setOutlineMenu(null);
+		                    void viewOutlineSymbolAnalysis(menu.filePath, menu.item);
+		                  }}
+		                >
+		                  查看分析
+		                </button>
+		                <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
+		                <button
+		                  type="button"
+		                  className="w-full px-3 py-2 text-left text-red-600 hover:bg-gray-100 dark:text-red-400 dark:hover:bg-gray-800"
 	                  onClick={() => {
 	                    const menu = outlineMenu;
 	                    setOutlineMenu(null);

@@ -1664,6 +1664,54 @@ impl Default for AiCompletionSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SymbolAnalysisSettings {
+    /// 总开关：关闭后不请求模型
+    #[serde(default)]
+    pub enabled: bool,
+    /// 使用的模型（provider/model）。为空则跟随 AppConfig.currentModelRef
+    #[serde(default)]
+    pub model_ref: String,
+    /// 单次请求超时（毫秒）
+    #[serde(default = "default_symbol_analysis_timeout_ms")]
+    pub timeout_ms: u64,
+    /// 最大生成 tokens
+    #[serde(default = "default_symbol_analysis_max_tokens")]
+    pub max_tokens: u32,
+    /// 温度（分析建议低温）
+    #[serde(default = "default_symbol_analysis_temperature")]
+    pub temperature: f64,
+    /// 是否允许发送项目上下文（路径、工作区信息等）
+    #[serde(default = "default_true")]
+    pub include_project_context: bool,
+}
+
+fn default_symbol_analysis_timeout_ms() -> u64 {
+    20_000
+}
+
+fn default_symbol_analysis_max_tokens() -> u32 {
+    8192
+}
+
+fn default_symbol_analysis_temperature() -> f64 {
+    0.2
+}
+
+impl Default for SymbolAnalysisSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            model_ref: String::new(),
+            timeout_ms: default_symbol_analysis_timeout_ms(),
+            max_tokens: default_symbol_analysis_max_tokens(),
+            temperature: default_symbol_analysis_temperature(),
+            include_project_context: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CodeIntelligenceSettings {
     /// 总开关：关闭后前端不会启动/请求 LSP（保留纯编辑器能力）
     #[serde(default = "default_true")]
@@ -1679,6 +1727,9 @@ pub struct CodeIntelligenceSettings {
     /// AI 辅助补全（幽灵补全 + Ctrl+Space 建议列表）
     #[serde(default)]
     pub ai_completion: AiCompletionSettings,
+    /// Workstudio 符号分析（Outline 右键“分析类/函数/变量”等）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol_analysis: Option<SymbolAnalysisSettings>,
 }
 
 impl Default for CodeIntelligenceSettings {
@@ -1697,6 +1748,7 @@ impl Default for CodeIntelligenceSettings {
                 ..Default::default()
             }],
             ai_completion: AiCompletionSettings::default(),
+            symbol_analysis: Some(SymbolAnalysisSettings::default()),
         }
     }
 }
@@ -2176,6 +2228,22 @@ impl AppConfig {
     pub fn normalize(&mut self) -> bool {
         let mut changed = false;
         if self.security.normalize() {
+            changed = true;
+        }
+
+        // Backward compatibility: symbol analysis used to reuse aiCompletion settings.
+        // If existing config doesn't have symbolAnalysis, initialize it based on aiCompletion so
+        // upgrading won't silently break Workstudio 的“分析类/函数/变量”等功能。
+        if self.code_intelligence.symbol_analysis.is_none() {
+            let mut migrated = SymbolAnalysisSettings::default();
+            migrated.enabled = self.code_intelligence.ai_completion.enabled;
+            migrated.model_ref = self.code_intelligence.ai_completion.model_ref.clone();
+            migrated.max_tokens = self.code_intelligence.ai_completion.max_tokens;
+            migrated.temperature = self.code_intelligence.ai_completion.temperature;
+            migrated.include_project_context = self.code_intelligence.ai_completion.include_project_context;
+            // Keep analysis timeout reasonably large even if aiCompletion.timeoutMs was small.
+            migrated.timeout_ms = default_symbol_analysis_timeout_ms().max(self.code_intelligence.ai_completion.timeout_ms);
+            self.code_intelligence.symbol_analysis = Some(migrated);
             changed = true;
         }
 

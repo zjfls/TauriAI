@@ -1144,6 +1144,8 @@ export interface CodeIntelligenceSettings {
   monacoWordSuggestionsEnabled?: boolean;
   /** AI 辅助补全（幽灵补全 + Ctrl+Space 建议列表） */
   aiCompletion?: AiCompletionSettings;
+  /** Workstudio 符号分析（Outline 右键“分析类/函数/变量”等） */
+  symbolAnalysis?: SymbolAnalysisSettings;
 }
 
 export type AiCompletionQueueScope = 'global' | 'language';
@@ -1172,6 +1174,17 @@ export interface AiCompletionSettings {
   includeProjectContext: boolean;
   /** Ctrl+Space 列表里返回的候选条数 */
   listSuggestionCount: number;
+}
+
+export interface SymbolAnalysisSettings {
+  enabled: boolean;
+  /** 使用的模型，格式：provider_name/model_name。为空则跟随 currentModelRef */
+  modelRef: string;
+  timeoutMs: number;
+  maxTokens: number;
+  temperature: number;
+  /** 是否允许发送项目上下文（路径、工作区信息等） */
+  includeProjectContext: boolean;
 }
 
 export interface LspServerStatus {

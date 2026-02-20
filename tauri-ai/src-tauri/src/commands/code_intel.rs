@@ -779,13 +779,17 @@ pub async fn ai_analyze_workstudio_symbol(
     let config = config_manager
         .ensure_default()
         .map_err(|e| e.to_string())?;
-    let settings = &config.code_intelligence.ai_completion;
+    let settings = config
+        .code_intelligence
+        .symbol_analysis
+        .clone()
+        .unwrap_or_default();
     if !settings.enabled {
-        return Err("AI 补全已关闭（设置 -> Code Intelligence -> AI Completion）".to_string());
+        return Err("符号分析已关闭（设置 -> 代码智能 -> 符号分析）".to_string());
     }
 
     // modelRef 优先级：
-    // 1) codeIntelligence.aiCompletion.modelRef（显式指定）
+    // 1) codeIntelligence.symbolAnalysis.modelRef（显式指定）
     // 2) AppConfig.currentModelRef（全局“当前模型”）
     let effective_model_ref = settings.model_ref.trim().to_string();
     let effective_model_ref = if effective_model_ref.is_empty() {
@@ -800,7 +804,7 @@ pub async fn ai_analyze_workstudio_symbol(
     };
     let model_ref = effective_model_ref.trim();
     if model_ref.is_empty() {
-        return Err("未配置 AI Completion 的 modelRef（也未设置 currentModelRef）".to_string());
+        return Err("未配置符号分析的 modelRef（也未设置 currentModelRef）".to_string());
     }
 
     let (provider_name, model_name) =
@@ -850,6 +854,7 @@ pub async fn ai_analyze_workstudio_symbol(
         args.selection_column,
         &args.range,
         code,
+        settings.include_project_context,
     );
 
     let now = chrono::Utc::now();
@@ -1049,6 +1054,7 @@ fn symbol_analysis_user_prompt(
     selection_column: u32,
     range: &CodeSnippetRange,
     code: &str,
+    include_project_context: bool,
 ) -> String {
     let kind = classify_symbol_analysis_kind(symbol_kind);
     let request = match kind {
@@ -1068,8 +1074,10 @@ fn symbol_analysis_user_prompt(
     out.push_str(request);
     out.push('\n');
     out.push_str(&format!("languageId: {language_id}\n"));
-    out.push_str(&format!("filePath: {file_path}\n"));
-    out.push_str(&format!("projectRoot: {project_root}\n"));
+    if include_project_context {
+        out.push_str(&format!("filePath: {file_path}\n"));
+        out.push_str(&format!("projectRoot: {project_root}\n"));
+    }
     out.push_str(&format!("symbolName: {symbol_name}\n"));
     out.push_str(&format!("symbolKind: {symbol_kind}\n"));
     out.push_str(&format!(

@@ -16,6 +16,7 @@ import type {
   AiCompletionTriggerMode,
   AppConfig,
   LspServerConfig,
+  SymbolAnalysisSettings,
 } from '../../types';
 
 const Toggle: React.FC<{
@@ -108,6 +109,15 @@ const defaultAiCompletionSettings = (): AiCompletionSettings => ({
   listSuggestionCount: 3,
 });
 
+const defaultSymbolAnalysisSettings = (): SymbolAnalysisSettings => ({
+  enabled: false,
+  modelRef: '',
+  timeoutMs: 20000,
+  maxTokens: 8192,
+  temperature: 0.2,
+  includeProjectContext: true,
+});
+
 const AUTO_DETECT_LANGUAGE_ORDER = ['rust', 'python', 'cpp', 'c', 'lua'] as const;
 const AUTO_DETECT_LANGUAGE_SET = new Set<string>(AUTO_DETECT_LANGUAGE_ORDER);
 const AUTO_DETECT_LANGUAGE_LABEL: Record<string, string> = {
@@ -138,6 +148,8 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
 
   const modelOptions = getModelOptions();
   const aiCompletion: AiCompletionSettings = config?.codeIntelligence?.aiCompletion ?? defaultAiCompletionSettings();
+  const symbolAnalysis: SymbolAnalysisSettings =
+    config?.codeIntelligence?.symbolAnalysis ?? defaultSymbolAnalysisSettings();
   const currentModelRef = String(config?.currentModelRef ?? '').trim();
   const keyboardShortcuts = config?.general?.keyboardShortcuts;
   const shortcutPlatform = useMemo(() => detectShortcutPlatform(), []);
@@ -233,6 +245,16 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
       return {
         ...cfg,
         codeIntelligence: { ...cfg.codeIntelligence, aiCompletion: updater(prev) },
+      };
+    });
+  };
+
+  const updateSymbolAnalysis = (updater: (s: SymbolAnalysisSettings) => SymbolAnalysisSettings) => {
+    updateConfig((cfg) => {
+      const prev = cfg.codeIntelligence?.symbolAnalysis ?? defaultSymbolAnalysisSettings();
+      return {
+        ...cfg,
+        codeIntelligence: { ...cfg.codeIntelligence, symbolAnalysis: updater(prev) },
       };
     });
   };
@@ -802,14 +824,133 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
                   onChange={(includeProjectContext) => updateAiCompletion((s) => ({ ...s, includeProjectContext }))}
                   title="允许把 projectRoot/filePath 等信息带给模型"
                 />
-              </div>
-            </details>
-          </div>
+	              </div>
+	            </details>
+	          </div>
 
-          {!selectedServer ? (
-            <div className="rounded-lg border border-gray-200 bg-white p-4 text-sm text-gray-600 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300">
-              请选择左侧一条 LSP 配置，或点击“新增”。
-            </div>
+	          {/* Symbol Analysis */}
+	          <div className="space-y-5 rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
+	            <div className="flex items-center justify-between">
+	              <div>
+	                <div className="text-sm font-semibold text-gray-800 dark:text-white">符号分析</div>
+	                <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+	                  Workstudio Outline 右键“分析类/函数/变量”等会发起大模型请求。建议先选好模型再打开总开关。
+	                </div>
+	              </div>
+	              <Toggle
+	                checked={Boolean(symbolAnalysis.enabled)}
+	                onChange={(enabled) => updateSymbolAnalysis((s) => ({ ...s, enabled }))}
+	                title="启用符号分析"
+	              />
+	            </div>
+
+	            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+	              <div className="space-y-2">
+	                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">使用模型</label>
+	                <select
+	                  value={symbolAnalysis.modelRef ?? ''}
+	                  onChange={(e) => updateSymbolAnalysis((s) => ({ ...s, modelRef: e.target.value }))}
+	                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+	                >
+	                  <option value="">（自动：跟随当前模型）</option>
+	                  {modelOptions.map((opt) => (
+	                    <option key={opt.value} value={opt.value}>
+	                      {opt.label}
+	                    </option>
+	                  ))}
+	                </select>
+	                {modelOptions.length === 0 && (
+	                  <div className="text-xs text-gray-500 dark:text-gray-400">
+	                    暂无可用模型：请先在 Settings → Providers 中启用 provider 并添加 model。
+	                  </div>
+	                )}
+	                <div className="text-xs text-gray-500 dark:text-gray-400">
+	                  当前全局模型：{currentModelRef || '（未选择）'}。
+	                  {!String(symbolAnalysis.modelRef || '').trim() ? '（本项留空则跟随全局模型）' : ''}
+	                </div>
+	                {symbolAnalysis.enabled && !String(symbolAnalysis.modelRef || '').trim() && !currentModelRef && (
+	                  <div className="text-xs text-red-600 dark:text-red-300">
+	                    符号分析已启用，但未指定模型：请选择 modelRef，或先在主界面选择“当前模型”。
+	                  </div>
+	                )}
+	              </div>
+	            </div>
+
+	            <details className="rounded-lg border border-gray-200 bg-white px-3 py-2 dark:border-gray-700 dark:bg-gray-900">
+	              <summary className="cursor-pointer text-sm font-medium text-gray-700 dark:text-gray-200">
+	                高级参数（超时 / Token / 温度）
+	              </summary>
+	              <div className="mt-3 grid grid-cols-1 gap-4 md:grid-cols-2">
+	                <div className="space-y-1">
+	                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">超时（ms）</label>
+	                  <input
+	                    type="number"
+	                    min={2000}
+	                    max={180000}
+	                    value={symbolAnalysis.timeoutMs ?? 20000}
+	                    onChange={(e) => {
+	                      const n = Number(e.target.value);
+	                      const next = Number.isFinite(n) ? Math.max(2000, Math.min(180000, Math.floor(n))) : 20000;
+	                      updateSymbolAnalysis((s) => ({ ...s, timeoutMs: next }));
+	                    }}
+	                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+	                  />
+	                </div>
+
+	                <div className="space-y-1">
+	                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">maxTokens</label>
+	                  <input
+	                    type="number"
+	                    min={256}
+	                    max={65536}
+	                    value={symbolAnalysis.maxTokens ?? 8192}
+	                    onChange={(e) => {
+	                      const n = Number(e.target.value);
+	                      const next = Number.isFinite(n) ? Math.max(256, Math.min(65536, Math.floor(n))) : 8192;
+	                      updateSymbolAnalysis((s) => ({ ...s, maxTokens: next }));
+	                    }}
+	                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+	                  />
+	                </div>
+
+	                <div className="space-y-1">
+	                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">温度</label>
+	                  <input
+	                    type="number"
+	                    step={0.05}
+	                    min={0}
+	                    max={2}
+	                    value={symbolAnalysis.temperature ?? 0.2}
+	                    onChange={(e) => {
+	                      const n = Number(e.target.value);
+	                      const next = Number.isFinite(n) ? Math.max(0, Math.min(2, n)) : 0.2;
+	                      updateSymbolAnalysis((s) => ({ ...s, temperature: next }));
+	                    }}
+	                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+	                  />
+	                </div>
+
+	                <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-950">
+	                  <div className="min-w-0">
+	                    <div className="text-xs text-gray-500 dark:text-gray-400">Context</div>
+	                    <div className="text-sm text-gray-800 dark:text-gray-100">发送项目上下文</div>
+	                  </div>
+	                  <Toggle
+	                    checked={Boolean(symbolAnalysis.includeProjectContext)}
+	                    onChange={(includeProjectContext) =>
+	                      updateSymbolAnalysis((s) => ({ ...s, includeProjectContext }))
+	                    }
+	                    title="是否在分析请求里包含 filePath / projectRoot 等信息"
+	                  />
+	                </div>
+	              </div>
+	            </details>
+	          </div>
+
+	          {!selectedServer ? (
+	            <div className="rounded-lg border border-gray-200 bg-white p-4 text-sm text-gray-600 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300">
+	              请选择左侧一条 LSP 配置，或点击“新增”。
+	            </div>
           ) : (
             <div className="space-y-5 rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
               <div className="flex items-center justify-between">
