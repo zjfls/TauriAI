@@ -710,23 +710,28 @@ fn run_desktop() {
             lsp_shutdown_workstudio,
             lsp_shutdown_language,
             lsp_status,
-            lsp_detect_server,
-            // Code intelligence (AST)
-            ast_document_symbols,
-		            // AI code completion
-		            ai_code_completion,
-		            ai_chat_with_selection,
-		            ai_analyze_workstudio_symbol,
-		            get_workstudio_symbol_analysis,
-		            delete_workstudio_symbol_analysis,
-		            workstudio_run_agent_stream,
-		            workstudio_abort_agent,
-		            // Workstudio terminal (UI)
-		            workstudio_terminal_create,
-            workstudio_terminal_write,
-            workstudio_terminal_read,
-            workstudio_terminal_read_base64,
-            workstudio_terminal_close,
+	            lsp_detect_server,
+	            // Code intelligence (AST)
+	            ast_document_symbols,
+	            // Code index (workstudio-scoped persisted cache)
+	            code_index_request_document_symbols,
+	            code_index_start_workspace_scan,
+	            code_index_status,
+	            code_index_summary,
+	            // AI code completion
+	            ai_code_completion,
+	            ai_chat_with_selection,
+	            ai_analyze_workstudio_symbol,
+	            get_workstudio_symbol_analysis,
+	            delete_workstudio_symbol_analysis,
+	            workstudio_run_agent_stream,
+	            workstudio_abort_agent,
+	            // Workstudio terminal (UI)
+	            workstudio_terminal_create,
+	            workstudio_terminal_write,
+	            workstudio_terminal_read,
+	            workstudio_terminal_read_base64,
+	            workstudio_terminal_close,
             // Unified terminal (UI)
             terminal_create,
             terminal_write,
@@ -818,6 +823,20 @@ fn run_desktop() {
             app.manage(Arc::new(crate::code_intel::lsp::LspManager::new(
                 app.handle().clone(),
             )));
+
+            // Code index: workstudio-scoped persisted cache (separate DB files; not the main data.db)
+            // - 主要用于：符号/Outline 等“可重建的索引结果”落盘缓存
+            // - 目标：重启后可快速恢复展示，后台再增量更新
+            if let Some(home) = dirs::home_dir() {
+                let index_root = home.join(".tauri-ai").join("code-index");
+                if let Some(db) = app.try_state::<Arc<Mutex<Database>>>() {
+                    app.manage(crate::code_intel::index_manager::CodeIndexManager::new(
+                        app.handle().clone(),
+                        index_root,
+                        db.inner().clone(),
+                    ));
+                }
+            }
 
             // 预创建单例 Ghost 窗口（避免运行期 `builder.build()` 偶发卡死导致“窗口创建了但没内容/卡住”）。
             // 运行期只做 show/move/update，不再动态创建。

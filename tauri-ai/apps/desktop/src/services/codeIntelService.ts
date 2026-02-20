@@ -78,6 +78,91 @@ export const astDocumentSymbols = async (args: AstDocumentSymbolsArgs): Promise<
 };
 
 // ============================================================================
+// Code Index (persisted cache, separate DB; used for fast restore and background indexing)
+// ============================================================================
+
+export type CodeIndexRequestDocumentSymbolsArgs = {
+  workstudioId: string;
+  filePath: string;
+  languageId?: string;
+  priority?: number;
+  force?: boolean;
+};
+
+export type CodeIndexDocumentSymbolsSnapshot = {
+  filePath: string;
+  languageId: string;
+  source: string;
+  symbols: any;
+  updatedAtMs: number;
+  isStale: boolean;
+  fileMtimeMs?: number | null;
+  fileSizeBytes?: number | null;
+};
+
+export type CodeIndexRequestDocumentSymbolsResult = {
+  cached?: CodeIndexDocumentSymbolsSnapshot | null;
+  queued: boolean;
+};
+
+export const codeIndexRequestDocumentSymbols = async (
+  args: CodeIndexRequestDocumentSymbolsArgs
+): Promise<CodeIndexRequestDocumentSymbolsResult> => {
+  if (!isTauri()) {
+    throw new Error('Not running in Tauri');
+  }
+  return invoke<CodeIndexRequestDocumentSymbolsResult>('code_index_request_document_symbols', { args });
+};
+
+export type CodeIndexStartWorkspaceScanArgs = {
+  workstudioId: string;
+  priority?: number;
+};
+
+export const codeIndexStartWorkspaceScan = async (args: CodeIndexStartWorkspaceScanArgs): Promise<void> => {
+  if (!isTauri()) {
+    throw new Error('Not running in Tauri');
+  }
+  await invoke<void>('code_index_start_workspace_scan', { args });
+};
+
+export type CodeIndexStatus = {
+  pendingJobs: number;
+  runningJob?: string | null;
+  scanPendingDirs: number;
+  scanScannedFiles: number;
+  scanQueuedFiles: number;
+};
+
+export const codeIndexStatus = async (workstudioId: string): Promise<CodeIndexStatus> => {
+  if (!isTauri()) {
+    throw new Error('Not running in Tauri');
+  }
+  return invoke<CodeIndexStatus>('code_index_status', { workstudioId });
+};
+
+export type CodeIndexSummary = {
+  workstudioId: string;
+  dbPath: string;
+  dbFileSizeBytes?: number | null;
+  dbFileMtimeMs?: number | null;
+  fileSymbolsCount: number;
+  fullScanRoots?: string | null;
+  fullScanCompletedAtMs?: number | null;
+  currentRoots: string;
+  sameRoots: boolean;
+  isFresh: boolean;
+  shouldSkipFullScan: boolean;
+};
+
+export const codeIndexSummary = async (workstudioId: string): Promise<CodeIndexSummary> => {
+  if (!isTauri()) {
+    throw new Error('Not running in Tauri');
+  }
+  return invoke<CodeIndexSummary>('code_index_summary', { workstudioId });
+};
+
+// ============================================================================
 // AI Code Completion (ghost inline + Ctrl+Space list)
 // ============================================================================
 

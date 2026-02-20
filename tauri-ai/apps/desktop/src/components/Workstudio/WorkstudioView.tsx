@@ -47,6 +47,9 @@ import type {
 import { SHORTCUT_ACTIONS, detectShortcutPlatform, normalizeKeybindingString } from '../../shortcuts';
 import {
   astDocumentSymbols,
+  codeIndexRequestDocumentSymbols,
+  codeIndexSummary,
+  codeIndexStartWorkspaceScan,
   deleteWorkstudioSymbolAnalysis,
   getWorkstudioSymbolAnalysis,
   lspDetectServer,
@@ -184,6 +187,22 @@ const MAX_EDITOR_FONT_SIZE = 28;
 const OUTLINE_RECENT_KEY_LIMIT = 64;
 const OUTLINE_FILE_STATE_LIMIT = 120;
 const OUTLINE_COLLAPSED_KEY_LIMIT = 512;
+
+// Code Index（落盘缓存）优先级：数值越大越优先。
+// 与后端约定保持一致（index_manager.rs），但前端不强依赖具体实现细节。
+const CODE_INDEX_PRIORITY_USER = 120;
+const CODE_INDEX_PRIORITY_OPEN_FILE = 80;
+const CODE_INDEX_PRIORITY_SAVE_FILE = 60;
+const CODE_INDEX_PRIORITY_BACKGROUND = 10;
+
+type LspIndexBrief = {
+  languageId: string;
+  completedAtMs: number;
+  durationMs?: number;
+  lastProgress?: string;
+  commandLine?: string;
+  hadError?: boolean;
+};
 
 const clampEditorFontSize = (value: number): number => {
   if (!Number.isFinite(value)) return DEFAULT_EDITOR_FONT_SIZE;
@@ -1292,9 +1311,17 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
 
   const [outlineItems, setOutlineItems] = useState<OutlineItem[]>([]);
+  const outlineItemsRef = useRef<OutlineItem[]>([]);
+  useEffect(() => {
+    outlineItemsRef.current = outlineItems;
+  }, [outlineItems]);
   const [outlineLoading, setOutlineLoading] = useState(false);
   const [outlineError, setOutlineError] = useState<string | null>(null);
   const [outlineSource, setOutlineSource] = useState<'lsp' | 'ast' | 'none'>('none');
+  const outlineSourceRef = useRef<'lsp' | 'ast' | 'none'>('none');
+  useEffect(() => {
+    outlineSourceRef.current = outlineSource;
+  }, [outlineSource]);
   const [outlineActiveKey, setOutlineActiveKey] = useState<string | null>(null);
   const [outlineCollapsedKeys, setOutlineCollapsedKeys] = useState<Set<string>>(() => new Set());
   const [outlineFileStateByPath, setOutlineFileStateByPath] = useState<Record<string, OutlineFileViewState>>({});
@@ -1304,6 +1331,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   }, [outlineFileStateByPath]);
   const [outlineRefreshSeq, setOutlineRefreshSeq] = useState(0);
   const outlineRequestSeqRef = useRef(0);
+  const codeIndexScanStartedRef = useRef<Set<string>>(new Set());
   const [lspMenu, setLspMenu] = useState<
     | { visible: true; x: number; y: number }
     | null
@@ -1408,6 +1436,13 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const [lspExited, setLspExited] = useState<Record<string, { code?: number | null; signal?: number | null; timestampMs: number }>>({});
   const [lspListenerReadyWsId, setLspListenerReadyWsId] = useState<string | null>(null);
   const [lspAutoConfigStatus, setLspAutoConfigStatus] = useState<'idle' | 'running' | 'done'>('idle');
+  const [lspIndexBriefs, setLspIndexBriefs] = useState<LspIndexBrief[]>([]);
+  const prevLspStateByLangRef = useRef<Record<string, string>>({});
+  const lspIndexStartAtMsByLangRef = useRef<Record<string, number>>({});
+  const lspIndexLastProgressByLangRef = useRef<Record<string, string>>({});
+
+  const [codeIndexBrief, setCodeIndexBrief] = useState<Awaited<ReturnType<typeof codeIndexSummary>> | null>(null);
+  const [codeIndexBriefError, setCodeIndexBriefError] = useState<string | null>(null);
 
   const [filePaletteOpen, setFilePaletteOpen] = useState(false);
   const [filePaletteQuery, setFilePaletteQuery] = useState('');
@@ -1552,6 +1587,10 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     () => (activeTextFileInFocusedPane ? normalizeFsPath(activeTextFileInFocusedPane.path) : null),
     [activeTextFileInFocusedPane]
   );
+  const activeOutlineFilePathRef = useRef<string | null>(activeOutlineFilePath);
+  useEffect(() => {
+    activeOutlineFilePathRef.current = activeOutlineFilePath;
+  }, [activeOutlineFilePath]);
 
   const updateOutlineFileViewState = useCallback(
     (filePathRaw: string, updater: (prev: OutlineFileViewState) => OutlineFileViewState) => {
@@ -1626,9 +1665,79 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     setExplorerSelectedFilePath(activeFilePathInFocusedPane);
   }, [activeFilePathInFocusedPane]);
 
+  // Code Index（落盘缓存）：
+  // - 用户切换到某个文件时，把该文件的索引任务提到高优先级
+  // - 目的是：大项目后台扫描很慢时，用户正在看的文件永远最优先
+  useEffect(() => {
+    if (!isTauri()) return;
+    const wsId = ws?.id ?? null;
+    const file = activeTextFileInFocusedPane;
+    if (!wsId || !file) return;
+
+    const normalizedPath = normalizeFsPath(file.path);
+    if (!normalizedPath || isUntitledPath(normalizedPath)) return;
+    const indexable = ['rust', 'typescript', 'javascript', 'python', 'c', 'cpp', 'lua'].includes(activeTextLanguageId);
+    if (!indexable) return;
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await codeIndexRequestDocumentSymbols({
+          workstudioId: wsId,
+          filePath: normalizedPath,
+          languageId: activeTextLanguageId,
+          priority: CODE_INDEX_PRIORITY_OPEN_FILE,
+          force: false,
+        });
+        if (cancelled) return;
+
+        // 仅作为“快速恢复”的缓存：如果当前已经使用 LSP 且有内容，就不要用缓存覆盖。
+        if (outlineSourceRef.current === 'lsp' && outlineItemsRef.current.length > 0) return;
+
+        const cached = res?.cached ?? null;
+        const symbols = cached?.symbols ?? null;
+        if (!symbols) return;
+
+        const nextItems = astSymbolsToOutline(symbols as any);
+        if (nextItems.length === 0) return;
+
+        const allKeys = collectOutlineKeys(nextItems);
+        const collapsibleKeys = collectOutlineCollapsibleKeys(nextItems);
+        const collapsibleKeySet = new Set(collapsibleKeys);
+        const persistedViewState = outlineFileStateByPathRef.current[normalizedPath];
+        const persistedCollapsed = Array.isArray(persistedViewState?.collapsedKeys)
+          ? persistedViewState.collapsedKeys.filter((key) => collapsibleKeySet.has(key))
+          : collapsibleKeys;
+        const collapsedSet = new Set(persistedCollapsed);
+        const persistedActiveKey = String(persistedViewState?.activeKey ?? '').trim();
+        const restoredActiveKey = persistedActiveKey && allKeys.has(persistedActiveKey) ? persistedActiveKey : null;
+
+        setOutlineItems(nextItems);
+        setOutlineSource('ast');
+        setOutlineCollapsedKeys(collapsedSet);
+        setOutlineActiveKey((prev) => {
+          if (restoredActiveKey) return restoredActiveKey;
+          return prev && allKeys.has(prev) ? prev : null;
+        });
+        setOutlineError(null);
+        setOutlineLoading(Boolean(cached?.isStale || res?.queued));
+      } catch {
+        // ignore
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [ws?.id, activeTextFileInFocusedPane?.id, activeTextLanguageId]);
+
   useEffect(() => {
     setOutlineActiveKey(null);
     setOutlineCollapsedKeys(new Set());
+    setOutlineItems([]);
+    setOutlineSource('none');
+    setOutlineError(null);
+    setOutlineLoading(true);
   }, [activeTextFileInFocusedPane?.id]);
 
   useEffect(() => {
@@ -1638,6 +1747,26 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     }
   }, [leftSidebarTab, outlineOpen]);
 
+  // 背景扫描（低优先级）：
+  // - 只在用户打开 Outline 时启动一次（每个 workstudio 一次）
+  // - 避免大项目“全量索引”抢占用户正在看的文件：真正的高优先级由上面的 open-file effect 提升
+  useEffect(() => {
+    if (!isTauri()) return;
+    if (!outlineOpen) return;
+    const wsId = ws?.id ?? null;
+    if (!wsId) return;
+    if (codeIndexScanStartedRef.current.has(wsId)) return;
+    codeIndexScanStartedRef.current.add(wsId);
+
+    const timer = window.setTimeout(() => {
+      void codeIndexStartWorkspaceScan({
+        workstudioId: wsId,
+        priority: CODE_INDEX_PRIORITY_BACKGROUND,
+      }).catch(() => {});
+    }, 900);
+
+    return () => window.clearTimeout(timer);
+  }, [outlineOpen, ws?.id]);
 
   useEffect(() => {
     return () => {
@@ -1747,6 +1876,12 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         }
 
         if (cancelled || reqSeq !== outlineRequestSeqRef.current) return;
+        if (nextItems.length === 0 && outlineItemsRef.current.length > 0) {
+          // 已经有缓存/旧结果时，不要用空结果覆盖（避免“有内容 -> 变空”的闪烁）。
+          setOutlineError(lspError);
+          setOutlineLoading(false);
+          return;
+        }
         const allKeys = collectOutlineKeys(nextItems);
         const collapsibleKeys = collectOutlineCollapsibleKeys(nextItems);
         const collapsibleKeySet = new Set(collapsibleKeys);
@@ -3474,6 +3609,22 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           if (!normalizedPath) return;
 
           await invoke('write_local_text_file', { path: normalizedPath, content: latest });
+          try {
+            const wsId = ws?.id ?? null;
+            const languageId = languageForPath(normalizedPath);
+            const indexable = ['rust', 'typescript', 'javascript', 'python', 'c', 'cpp', 'lua'].includes(languageId);
+            if (wsId && indexable && !isUntitledPath(normalizedPath)) {
+              void codeIndexRequestDocumentSymbols({
+                workstudioId: wsId,
+                filePath: normalizedPath,
+                languageId,
+                priority: CODE_INDEX_PRIORITY_SAVE_FILE,
+                force: true,
+              }).catch(() => {});
+            }
+          } catch {
+            // ignore
+          }
 
           setOpenFiles((prev) => {
             const existing = prev.find((f) => f.id === normalizedPath);
@@ -3558,6 +3709,25 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
               method: 'textDocument/didSave',
               params: { textDocument: { uri }, text: latest },
             });
+          }
+        } catch {
+          // ignore
+        }
+
+        // Best-effort: 写回磁盘后，刷新落盘索引缓存（用于重启快速恢复 Outline）
+        try {
+          const wsId = ws?.id ?? null;
+          const normalizedPath = normalizeFsPath(file.path);
+          const languageId = languageForPath(normalizedPath);
+          const indexable = ['rust', 'typescript', 'javascript', 'python', 'c', 'cpp', 'lua'].includes(languageId);
+          if (wsId && indexable && normalizedPath && !isUntitledPath(normalizedPath)) {
+            void codeIndexRequestDocumentSymbols({
+              workstudioId: wsId,
+              filePath: normalizedPath,
+              languageId,
+              priority: CODE_INDEX_PRIORITY_SAVE_FILE,
+              force: true,
+            }).catch(() => {});
           }
         } catch {
           // ignore
@@ -4089,6 +4259,22 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     [lspProgress]
   );
 
+  // 记录“索引开始时间”（基于是否存在 $/progress token），用于索引完成后的简报。
+  useEffect(() => {
+    const byLang = lspProgress ?? {};
+    for (const [lang, byToken] of Object.entries(byLang)) {
+      const tokens = Object.keys(byToken ?? {});
+      if (tokens.length === 0) continue;
+      if (!lspIndexStartAtMsByLangRef.current[lang]) {
+        const items = Object.values(byToken ?? {});
+        const minUpdatedAt = items.reduce((acc, it) => Math.min(acc, it?.updatedAtMs ?? Date.now()), Date.now());
+        lspIndexStartAtMsByLangRef.current[lang] = minUpdatedAt;
+      }
+      const text = getLanguageProgressText(lang);
+      if (text) lspIndexLastProgressByLangRef.current[lang] = text;
+    }
+  }, [getLanguageProgressText, lspProgress]);
+
   const describeLspLanguage = useCallback(
     (languageId: string) => {
       const st = lspStatusByLanguageId.get(languageId) ?? null;
@@ -4179,6 +4365,70 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     }
     return { label: '代码智能：就绪', dotClass: 'bg-green-500', title: '语言服务器已就绪' };
   }, [codeIntelligenceConfig?.enabled, describeLspLanguage, enabledLspLanguageIds, getLanguageProgressText, globallyEnabledLspLanguageIds.length]);
+
+  const refreshCodeIndexBrief = useCallback(async () => {
+    if (!isTauri()) return;
+    const wsId = ws?.id ?? null;
+    if (!wsId) return;
+    try {
+      const res = await codeIndexSummary(wsId);
+      setCodeIndexBrief(res);
+      setCodeIndexBriefError(null);
+    } catch (e) {
+      setCodeIndexBrief(null);
+      setCodeIndexBriefError(e instanceof Error ? e.message : String(e));
+    }
+  }, [ws?.id]);
+
+  // 当 LSP 从“索引中”切换到“就绪”时，生成一次简报（用于判断“上一次索引是否完成/是否明显复用缓存”）。
+  useEffect(() => {
+    const wsId = ws?.id ?? null;
+    if (!wsId) return;
+    if (!isTauri()) return;
+
+    const enabled = new Set(enabledLspLanguageIds);
+    const prevMap = prevLspStateByLangRef.current;
+
+    for (const lang of enabledLspLanguageIds) {
+      const desc = describeLspLanguage(lang);
+      const nextState = desc.state;
+      const prevState = prevMap[lang];
+      prevMap[lang] = nextState;
+
+      if (prevState === 'indexing' && nextState === 'ready') {
+        const completedAtMs = Date.now();
+        const startAt = lspIndexStartAtMsByLangRef.current[lang];
+        const durationMs = startAt ? Math.max(0, completedAtMs - startAt) : undefined;
+        delete lspIndexStartAtMsByLangRef.current[lang];
+
+        const lastProgress = lspIndexLastProgressByLangRef.current[lang];
+        delete lspIndexLastProgressByLangRef.current[lang];
+
+        const st = lspStatusByLanguageId.get(lang) ?? null;
+        const commandLine = st?.command ? [st.command, ...((st.args ?? []) as any[])].join(' ') : undefined;
+
+        setLspIndexBriefs((prev) => {
+          const next: LspIndexBrief[] = [
+            {
+              languageId: lang,
+              completedAtMs,
+              durationMs,
+              lastProgress,
+              commandLine,
+              hadError: Boolean(desc.lastError),
+            },
+            ...prev,
+          ];
+          return next.slice(0, 24);
+        });
+      }
+    }
+
+    // 清理已不再启用的语言状态缓存，避免 Workstudio 切换时“串台”。
+    for (const key of Object.keys(prevMap)) {
+      if (!enabled.has(key)) delete prevMap[key];
+    }
+  }, [describeLspLanguage, enabledLspLanguageIds, lspStatusByLanguageId, ws?.id]);
 
   const ensureLspForLanguage = useCallback(
     async (languageId: string) => {
@@ -5774,6 +6024,98 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     return () => window.clearInterval(timer);
   }, [ws, expandedDirs, entriesByDir, loadingDirs, listDir]);
 
+  // Code Index 事件（后端后台扫描/写入缓存）-> 让 Outline 可以“增量更新”，且重启后快速恢复。
+  useEffect(() => {
+    if (!isTauri()) return;
+    const wsId = ws?.id ?? null;
+    if (!wsId) return;
+
+    let disposed = false;
+    let unlisten: null | (() => void) = null;
+    void listen('code-index:event', (event) => {
+      const payload = (event as any)?.payload as any;
+      if (!payload) return;
+      if (payload.workstudioId !== wsId) return;
+      const type = String(payload.type ?? '').trim();
+      if (!type) return;
+
+      // 扫描完成 -> 刷新简报（用于判断“上一次索引落盘是否成功”）
+      if (type === 'progress') {
+        const phase = String(payload.phase ?? '').trim();
+        const message = String(payload.message ?? '').trim();
+        const done = typeof payload.done === 'number' ? payload.done : null;
+        const total = typeof payload.total === 'number' ? payload.total : null;
+        if (phase === 'scan' && (message.includes('索引扫描完成') || (done === 1 && total === 1))) {
+          void refreshCodeIndexBrief();
+        }
+        return;
+      }
+
+      if (type !== 'document_symbols_updated') return;
+
+      const filePath = normalizeFsPath(String(payload.filePath ?? '').trim());
+      if (!filePath) return;
+      const activePath = activeOutlineFilePathRef.current;
+      if (!activePath || normalizeFsPath(activePath) !== filePath) return;
+
+      // 如果当前已经用 LSP 成功生成过 Outline，就不要被 AST 缓存覆盖。
+      if (outlineSourceRef.current === 'lsp' && outlineItemsRef.current.length > 0) return;
+
+      const symbols = payload.symbols ?? null;
+      if (!symbols) return;
+
+      let nextItems: OutlineItem[] = [];
+      try {
+        nextItems = astSymbolsToOutline(symbols as any);
+      } catch {
+        return;
+      }
+      if (nextItems.length === 0) return;
+
+      const allKeys = collectOutlineKeys(nextItems);
+      const collapsibleKeys = collectOutlineCollapsibleKeys(nextItems);
+      const collapsibleKeySet = new Set(collapsibleKeys);
+      const persistedViewState = outlineFileStateByPathRef.current[filePath];
+      const persistedCollapsed = Array.isArray(persistedViewState?.collapsedKeys)
+        ? persistedViewState.collapsedKeys.filter((key) => collapsibleKeySet.has(key))
+        : collapsibleKeys;
+      const collapsedSet = new Set(persistedCollapsed);
+      const persistedActiveKey = String(persistedViewState?.activeKey ?? '').trim();
+      const restoredActiveKey = persistedActiveKey && allKeys.has(persistedActiveKey) ? persistedActiveKey : null;
+
+      setOutlineItems(nextItems);
+      setOutlineSource('ast');
+      setOutlineCollapsedKeys(collapsedSet);
+      setOutlineActiveKey((prev) => {
+        if (restoredActiveKey) return restoredActiveKey;
+        return prev && allKeys.has(prev) ? prev : null;
+      });
+      setOutlineError(null);
+      setOutlineLoading(false);
+    })
+      .then((fn) => {
+        if (disposed) {
+          fn();
+          return;
+        }
+        unlisten = fn;
+      })
+      .catch((e) => {
+        console.warn('[Workstudio][CodeIndex] listen code-index:event failed:', e);
+      });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [refreshCodeIndexBrief, ws?.id]);
+
+  // 打开“代码智能”面板时，拉取一次索引落盘简报（DB meta + 统计）。
+  useEffect(() => {
+    if (!lspMenu) return;
+    void refreshCodeIndexBrief();
+  }, [lspMenu, refreshCodeIndexBrief]);
+
   useEffect(() => {
     if (!contextMenu && !tabMenu && !lspMenu && !outlineMenu) return;
     const onDown = () => {
@@ -6280,7 +6622,27 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                   <button
                     type="button"
                     className="rounded border border-gray-200 p-1 text-gray-500 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-                    onClick={() => setOutlineRefreshSeq((v) => v + 1)}
+                    onClick={() => {
+                      setOutlineRefreshSeq((v) => v + 1);
+                      if (!isTauri()) return;
+                      const wsId = ws?.id ?? null;
+                      const file = activeTextFileInFocusedPane;
+                      if (!wsId || !file) return;
+                      const normalizedPath = normalizeFsPath(file.path);
+                      if (!normalizedPath || isUntitledPath(normalizedPath)) return;
+                      const indexable = ['rust', 'typescript', 'javascript', 'python', 'c', 'cpp', 'lua'].includes(
+                        activeTextLanguageId
+                      );
+                      if (!indexable) return;
+                      setOutlineLoading(true);
+                      void codeIndexRequestDocumentSymbols({
+                        workstudioId: wsId,
+                        filePath: normalizedPath,
+                        languageId: activeTextLanguageId,
+                        priority: CODE_INDEX_PRIORITY_USER,
+                        force: true,
+                      }).catch(() => {});
+                    }}
                     title="刷新 Outline"
                   >
                     <RefreshCw size={12} />
@@ -6295,22 +6657,38 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                     <div className="px-2 py-2 text-xs text-gray-500 dark:text-gray-400">
                       打开文本文件后可查看函数、属性与符号结构。
                     </div>
-                  ) : outlineLoading ? (
-                    <div className="px-2 py-2 text-xs text-gray-500 dark:text-gray-400">
-                      生成 Outline 中...
-                    </div>
-                  ) : outlineError ? (
-                    <div className="px-2 py-2 text-xs text-red-600 dark:text-red-300">
-                      {outlineError}
-                    </div>
-                  ) : outlineItems.length === 0 ? (
-                    <div className="px-2 py-2 text-xs text-gray-500 dark:text-gray-400">
-                      未检测到可展示的符号。
-                    </div>
                   ) : (
-                    <div className="space-y-0.5">
-                      {renderOutlineNodes(outlineItems)}
-                    </div>
+                    <>
+                      {outlineItems.length > 0 ? (
+                        <div className="space-y-1">
+                          {outlineLoading && (
+                            <div className="px-2 pb-1 text-[11px] text-gray-500 dark:text-gray-400">
+                              更新中...
+                            </div>
+                          )}
+                          {outlineError && (
+                            <div className="px-2 pb-1 text-[11px] text-red-600 dark:text-red-300">
+                              {outlineError}
+                            </div>
+                          )}
+                          <div className="space-y-0.5">
+                            {renderOutlineNodes(outlineItems)}
+                          </div>
+                        </div>
+                      ) : outlineLoading ? (
+                        <div className="px-2 py-2 text-xs text-gray-500 dark:text-gray-400">
+                          生成 Outline 中...
+                        </div>
+                      ) : outlineError ? (
+                        <div className="px-2 py-2 text-xs text-red-600 dark:text-red-300">
+                          {outlineError}
+                        </div>
+                      ) : (
+                        <div className="px-2 py-2 text-xs text-gray-500 dark:text-gray-400">
+                          未检测到可展示的符号。
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               </div>
@@ -6888,12 +7266,85 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                   </div>
                 )}
 
-                {codeIntelligenceConfig?.enabled && lspMenuServers.length > 0 && (
-                  <>
-                    {wsSelectedLspLanguageIds.length === 0 ? (
-                      <div className="text-sm text-gray-600 dark:text-gray-300">
-                        本工作区未启用任何语言：请在上方勾选需要的语言。
-                      </div>
+	                {codeIntelligenceConfig?.enabled && lspMenuServers.length > 0 && (
+	                  <>
+	                    <div className="rounded-lg border border-gray-200 bg-white p-2 dark:border-gray-700 dark:bg-gray-900">
+	                      <div className="flex items-center justify-between gap-2">
+	                        <div className="text-xs font-semibold text-gray-900 dark:text-gray-100">索引简报</div>
+	                        <button
+	                          type="button"
+	                          className="rounded border border-gray-200 px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+	                          onClick={() => void refreshCodeIndexBrief()}
+	                          title="重新拉取本地落盘索引状态"
+	                        >
+	                          刷新
+	                        </button>
+	                      </div>
+
+	                      <div className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
+	                        用于判断上一次“本地索引缓存”是否落盘成功（与 rust-analyzer 自身缓存不同）。
+	                      </div>
+
+	                      {codeIndexBriefError ? (
+	                        <div className="mt-1 text-[11px] text-red-700 dark:text-red-200 whitespace-pre-wrap break-words">
+	                          读取索引缓存简报失败：{codeIndexBriefError}
+	                        </div>
+	                      ) : codeIndexBrief ? (
+	                        <div className="mt-2 space-y-1 text-[11px] text-gray-700 dark:text-gray-200">
+	                          <div className="flex items-center justify-between gap-2">
+	                            <div className="min-w-0 truncate">
+	                              DB：<span className="font-mono">{codeIndexBrief.dbPath}</span>
+	                            </div>
+	                            <div className="flex flex-shrink-0 items-center gap-2 text-gray-500 dark:text-gray-400">
+	                              <span>symbols={codeIndexBrief.fileSymbolsCount}</span>
+	                              <span>
+	                                {codeIndexBrief.shouldSkipFullScan ? '可跳过全量扫描' : '可能触发全量扫描'}
+	                              </span>
+	                            </div>
+	                          </div>
+	                          <div className="text-gray-500 dark:text-gray-400">
+	                            上次扫描完成：
+	                            {codeIndexBrief.fullScanCompletedAtMs
+	                              ? new Date(codeIndexBrief.fullScanCompletedAtMs).toLocaleString()
+	                              : '（未记录）'}
+	                            {codeIndexBrief.fullScanCompletedAtMs
+	                              ? ` · roots=${codeIndexBrief.sameRoots ? '一致' : '变化'} · fresh=${
+	                                  codeIndexBrief.isFresh ? '是' : '否'
+	                                }`
+	                              : ''}
+	                          </div>
+	                        </div>
+	                      ) : (
+	                        <div className="mt-2 text-[11px] text-gray-500 dark:text-gray-400">（尚未生成简报）</div>
+	                      )}
+
+	                      {lspIndexBriefs.length > 0 && (
+	                        <div className="mt-2 border-t border-gray-200 pt-2 dark:border-gray-800">
+	                          <div className="text-[11px] font-semibold text-gray-800 dark:text-gray-100">
+	                            LSP 最近完成索引
+	                          </div>
+	                          <div className="mt-1 space-y-1">
+	                            {lspIndexBriefs.slice(0, 3).map((b) => (
+	                              <div key={`lsp-brief:${b.languageId}:${b.completedAtMs}`} className="text-[11px] text-gray-600 dark:text-gray-300">
+	                                <span className="font-mono">{b.languageId}</span> ·{' '}
+	                                {new Date(b.completedAtMs).toLocaleTimeString()}
+	                                {typeof b.durationMs === 'number' ? ` · ${Math.round(b.durationMs / 1000)}s` : ''}
+	                                {b.hadError ? ' · 有错误' : ''}
+	                                {b.lastProgress ? ` · ${b.lastProgress}` : ''}
+	                              </div>
+	                            ))}
+	                          </div>
+	                          <div className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
+	                            说明：LSP “索引完成”表示已就绪可用；是否复用 rust-analyzer 内部落盘缓存，本应用无法直接确认（可用重启耗时对比判断）。
+	                          </div>
+	                        </div>
+	                      )}
+	                    </div>
+
+	                    {wsSelectedLspLanguageIds.length === 0 ? (
+	                      <div className="text-sm text-gray-600 dark:text-gray-300">
+	                        本工作区未启用任何语言：请在上方勾选需要的语言。
+	                      </div>
                     ) : (
                       <div className="space-y-2">
                         {lspMenuServers

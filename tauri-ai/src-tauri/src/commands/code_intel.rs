@@ -12,8 +12,11 @@ use tokio::sync::Mutex;
 use crate::agents::chat::build_model_config;
 use crate::ai_client::get_client;
 use crate::code_intel::ast::{AstDocumentSymbolsArgs, AstSymbol};
-use crate::code_intel::lsp::resolve_lsp_spawn_program;
-use crate::code_intel::lsp::LspManager;
+use crate::code_intel::index_manager::{
+    CodeIndexManager, CodeIndexRequestDocumentSymbolsArgs, CodeIndexRequestDocumentSymbolsResult,
+    CodeIndexStartWorkspaceScanArgs, CodeIndexStatus, CodeIndexSummary,
+};
+use crate::code_intel::lsp::{resolve_lsp_spawn_program, LspManager};
 use crate::code_intel::types::{LspLaunchConfig, LspServerStatus};
 use crate::config::ConfigManager;
 use crate::models::{
@@ -158,6 +161,42 @@ pub async fn lsp_status(
 #[tauri::command]
 pub async fn ast_document_symbols(args: AstDocumentSymbolsArgs) -> Result<Vec<AstSymbol>, String> {
     crate::code_intel::ast::document_symbols(args)
+}
+
+// ============================================================================
+// Code Index (workstudio-scoped, persisted cache; not the main DB)
+// ============================================================================
+
+#[tauri::command]
+pub async fn code_index_request_document_symbols(
+    args: CodeIndexRequestDocumentSymbolsArgs,
+    index: tauri::State<'_, Arc<CodeIndexManager>>,
+) -> Result<CodeIndexRequestDocumentSymbolsResult, String> {
+    index.request_document_symbols(args).await
+}
+
+#[tauri::command]
+pub async fn code_index_start_workspace_scan(
+    args: CodeIndexStartWorkspaceScanArgs,
+    index: tauri::State<'_, Arc<CodeIndexManager>>,
+) -> Result<(), String> {
+    index.start_workspace_scan(args).await
+}
+
+#[tauri::command]
+pub async fn code_index_status(
+    workstudio_id: String,
+    index: tauri::State<'_, Arc<CodeIndexManager>>,
+) -> Result<CodeIndexStatus, String> {
+    Ok(index.status(&workstudio_id).await)
+}
+
+#[tauri::command]
+pub async fn code_index_summary(
+    workstudio_id: String,
+    index: tauri::State<'_, Arc<CodeIndexManager>>,
+) -> Result<CodeIndexSummary, String> {
+    index.summary(&workstudio_id).await
 }
 
 #[derive(Debug, serde::Deserialize)]

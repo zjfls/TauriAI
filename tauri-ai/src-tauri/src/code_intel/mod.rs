@@ -8,3 +8,6 @@
 pub mod lsp;
 pub mod ast;
 pub mod types;
+pub mod index_db;
+pub mod index_types;
+pub mod index_manager;

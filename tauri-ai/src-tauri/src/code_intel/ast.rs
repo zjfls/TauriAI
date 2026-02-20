@@ -46,6 +46,10 @@ pub fn document_symbols(args: AstDocumentSymbolsArgs) -> Result<Vec<AstSymbol>, 
         "typescript" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
         "javascript" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
         "tsx" => tree_sitter_typescript::LANGUAGE_TSX.into(),
+        "python" => tree_sitter_python::LANGUAGE.into(),
+        "c" => tree_sitter_c::LANGUAGE.into(),
+        "cpp" => tree_sitter_cpp::LANGUAGE.into(),
+        "lua" => tree_sitter_lua::LANGUAGE.into(),
         _ => return Err(format!("AST 暂不支持该语言: {lang}")),
     };
 
@@ -86,6 +90,9 @@ fn symbol_from_node(
     match language_id {
         "rust" => rust_symbol_from_node(node, src),
         "typescript" | "javascript" | "tsx" => ts_symbol_from_node(node, src),
+        "python" => python_symbol_from_node(node, src),
+        "c" | "cpp" => c_like_symbol_from_node(node, src, language_id),
+        "lua" => lua_symbol_from_node(node, src),
         _ => None,
     }
 }
@@ -149,7 +156,92 @@ fn ts_symbol_from_node(node: tree_sitter::Node, src: &str) -> Option<AstSymbol> 
     })
 }
 
-fn find_first_type_identifier(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
+fn python_symbol_from_node(node: tree_sitter::Node, src: &str) -> Option<AstSymbol> {
+    let kind = node.kind();
+    let (sym_kind, name_node) = match kind {
+        "function_definition" => ("function", node.child_by_field_name("name")),
+        "class_definition" => ("class", node.child_by_field_name("name")),
+        _ => return None,
+    };
+
+    let name_node = name_node?;
+    let name = node_text(src, name_node).trim().to_string();
+    if name.is_empty() {
+        return None;
+    }
+
+    Some(AstSymbol {
+        name,
+        kind: sym_kind.to_string(),
+        range: to_range(node),
+        selection_range: to_range(name_node),
+        children: Vec::new(),
+    })
+}
+
+fn c_like_symbol_from_node(
+    node: tree_sitter::Node,
+    src: &str,
+    language_id: &str,
+) -> Option<AstSymbol> {
+    let kind = node.kind();
+
+    let (sym_kind, name_node) = match kind {
+        "function_definition" => ("function", find_first_identifier_in_field(node, "declarator")),
+        "struct_specifier" => ("struct", node.child_by_field_name("name").or_else(|| find_first_type_identifier(node))),
+        "enum_specifier" => ("enum", node.child_by_field_name("name").or_else(|| find_first_type_identifier(node))),
+        // C++ only
+        "class_specifier" if language_id == "cpp" => {
+            ("class", node.child_by_field_name("name").or_else(|| find_first_type_identifier(node)))
+        }
+        "namespace_definition" if language_id == "cpp" => ("namespace", node.child_by_field_name("name")),
+        _ => return None,
+    };
+
+    let name_node = name_node?;
+    let name = node_text(src, name_node).trim().to_string();
+    if name.is_empty() {
+        return None;
+    }
+
+    Some(AstSymbol {
+        name,
+        kind: sym_kind.to_string(),
+        range: to_range(node),
+        selection_range: to_range(name_node),
+        children: Vec::new(),
+    })
+}
+
+fn lua_symbol_from_node(node: tree_sitter::Node, src: &str) -> Option<AstSymbol> {
+    let kind = node.kind();
+
+    // tree-sitter-lua 的节点命名在不同版本/方言可能略有差异；这里做 best-effort 识别：
+    // - function_declaration / function_definition / local_function / function_statement
+    // - assignment 里形如 `foo = function() end`（可能需要更深解析，这里只覆盖常见声明）
+    let (sym_kind, name_node) = match kind {
+        "function_declaration" | "function_definition" | "local_function" | "function_statement" => {
+            ("function", node.child_by_field_name("name").or_else(|| find_first_identifier(node)))
+        }
+        _ => return None,
+    };
+
+    let name_node = name_node?;
+    let name = node_text(src, name_node).trim().to_string();
+    if name.is_empty() {
+        return None;
+    }
+
+    Some(AstSymbol {
+        name,
+        kind: sym_kind.to_string(),
+        range: to_range(node),
+        selection_range: to_range(name_node),
+        children: Vec::new(),
+    })
+}
+
+fn find_first_type_identifier<'a>(node: tree_sitter::Node<'a>) -> Option<tree_sitter::Node<'a>> {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "type_identifier" {
@@ -160,6 +252,27 @@ fn find_first_type_identifier(node: tree_sitter::Node) -> Option<tree_sitter::No
         }
     }
     None
+}
+
+fn find_first_identifier<'a>(node: tree_sitter::Node<'a>) -> Option<tree_sitter::Node<'a>> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "identifier" {
+            return Some(child);
+        }
+        if let Some(found) = find_first_identifier(child) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn find_first_identifier_in_field<'a>(
+    node: tree_sitter::Node<'a>,
+    field: &str,
+) -> Option<tree_sitter::Node<'a>> {
+    let target = node.child_by_field_name(field)?;
+    find_first_identifier(target)
 }
 
 fn node_text<'a>(src: &'a str, node: tree_sitter::Node) -> &'a str {
@@ -181,4 +294,3 @@ fn to_range(node: tree_sitter::Node) -> AstRange {
         },
     }
 }
-

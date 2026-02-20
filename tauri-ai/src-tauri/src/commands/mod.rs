@@ -48,6 +48,8 @@ pub use clipboard::clipboard_write_png_base64;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use code_intel::{
     ai_analyze_workstudio_symbol, ai_chat_with_selection, ai_code_completion, ast_document_symbols,
+    code_index_request_document_symbols, code_index_start_workspace_scan, code_index_status,
+    code_index_summary,
     delete_workstudio_symbol_analysis, get_workstudio_symbol_analysis, lsp_detect_server,
     lsp_ensure_server, lsp_notify, lsp_request, lsp_shutdown_language, lsp_shutdown_workstudio,
     lsp_status, workstudio_abort_agent, workstudio_run_agent_stream,
@@ -59,7 +61,6 @@ pub use conversation::{
     ensure_conversation_file_indexes, generate_title, get_conversations, get_messages,
     get_turn_debug_info, update_conversation_metadata, update_conversation_title,
 };
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use devtools::open_devtools_current_window;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use drag_ghost::{
