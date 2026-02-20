@@ -14,6 +14,29 @@ export type ToolCallEvent = {
   error?: string;
 };
 
+export type ChatMessageBlock =
+  | {
+      id: string;
+      type: "text";
+      format: "markdown" | "plain";
+      text: string;
+    }
+  | {
+      id: string;
+      type: "thinking";
+      text: string;
+    }
+  | {
+      id: string;
+      type: "web_search";
+      event: WebSearchEvent;
+    }
+  | {
+      id: string;
+      type: "tool_call";
+      call: ToolCallEvent;
+    };
+
 export type ChatMessage = {
   id: string;
   role: ChatRole;
@@ -21,6 +44,7 @@ export type ChatMessage = {
   thinking?: string;
   webSearch?: WebSearchEvent[];
   toolCalls?: ToolCallEvent[];
+  blocks?: ChatMessageBlock[];
   createdAt: number;
 };
 

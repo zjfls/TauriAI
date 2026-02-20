@@ -4,6 +4,7 @@ import { isTauriRuntime, tauriInvoke, tauriListen, type UnlistenFn } from "../li
 import { clsx } from "../lib/clsx";
 import { useLayoutSize } from "../lib/breakpoints";
 import { loadChatRenderMode } from "../lib/chatRenderPrefs";
+import { getAssistantMessageBlocks } from "../lib/messageBlocks";
 import { Button } from "../ui/Button";
 import { ThinkingBlock, ToolCallBlock, WebSearchBlock } from "../ui/ChatBlocks";
 import { ChatOutlineDrawer } from "../ui/ChatOutlineDrawer";
@@ -405,10 +406,11 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
 
           if (p.kind === "tool_result") {
             const id = String(p.data?.id ?? "").trim();
+            const name = p.data?.name != null ? String(p.data.name).trim() : undefined;
             const output = p.data?.output != null ? String(p.data.output) : undefined;
             const error = p.data?.error != null ? String(p.data.error) : undefined;
             if (assistantMessageId && id) {
-              setToolCallResult(conversation.id, assistantMessageId, { id, output, error });
+              setToolCallResult(conversation.id, assistantMessageId, { id, name, output, error });
             }
             return;
           }
@@ -540,46 +542,61 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
           >
             {m.role === "assistant" ? (
               <div className="max-w-[85%] w-full min-w-0 space-y-2 overflow-x-hidden">
-                {m.thinking ? (
-                  <ThinkingBlock
-                    text={m.thinking}
-                    isStreaming={sending && m.id === activeStreamRef.current?.assistantMessageId}
-                  />
-                ) : null}
-                {Array.isArray(m.webSearch) && m.webSearch.length > 0
-                  ? m.webSearch.map((w) => (
-                      <WebSearchBlock
-                        key={w.id}
-                        status={w.status}
-                        action={w.action}
-                        isStreaming={sending && w.status !== "completed" && w.status !== "failed"}
+                {getAssistantMessageBlocks(m).map((b) => {
+                  if (b.type === "thinking") {
+                    return (
+                      <ThinkingBlock
+                        key={b.id}
+                        text={b.text}
+                        isStreaming={sending && m.id === activeStreamRef.current?.assistantMessageId}
                       />
-                    ))
-                  : null}
-                {Array.isArray(m.toolCalls) && m.toolCalls.length > 0
-                  ? m.toolCalls.map((t) => (
-                      <ToolCallBlock
-                        key={t.id}
-                        name={t.name}
-                        args={t.arguments}
-                        output={t.output}
-                        error={t.error}
-                      />
-                    ))
-                  : null}
+                    );
+                  }
 
-                <div
-                  className={clsx(
-                    "rounded-2xl px-3 py-2 text-sm break-words border overflow-x-hidden min-w-0",
-                    "bg-white/5 border-white/10",
-                  )}
-                >
-                  {renderMode === "rich" ? (
-                    <RichText content={m.content} />
-                  ) : (
-                    <div className="whitespace-pre-wrap break-words">{m.content}</div>
-                  )}
-                </div>
+                  if (b.type === "web_search") {
+                    return (
+                      <WebSearchBlock
+                        key={b.id}
+                        status={b.event.status}
+                        action={b.event.action}
+                        isStreaming={
+                          sending &&
+                          b.event.status !== "completed" &&
+                          b.event.status !== "failed"
+                        }
+                      />
+                    );
+                  }
+
+                  if (b.type === "tool_call") {
+                    return (
+                      <ToolCallBlock
+                        key={b.id}
+                        name={b.call.name}
+                        args={b.call.arguments}
+                        output={b.call.output}
+                        error={b.call.error}
+                      />
+                    );
+                  }
+
+                  // text
+                  return (
+                    <div
+                      key={b.id}
+                      className={clsx(
+                        "rounded-2xl px-3 py-2 text-sm break-words border overflow-x-hidden min-w-0",
+                        "bg-white/5 border-white/10",
+                      )}
+                    >
+                      {renderMode === "rich" ? (
+                        <RichText content={b.text} />
+                      ) : (
+                        <div className="whitespace-pre-wrap break-words">{b.text}</div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             ) : (
               <div
