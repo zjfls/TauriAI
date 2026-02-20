@@ -2979,12 +2979,11 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         const symbolKind = normalizeOutlineKind(item.kind);
         // Use the new streaming command — the `workstudio:agent:event` listener
         // (set up in the useEffect above) will update this bubble's state in real-time.
-        // We invoke with the default 'Analyzer' agent; in the future this will be
-        // driven by the selected agent in the Agent Panel.
+        // We invoke with the configured symbolAnalysis agent or fallback to __system_symbol_analysis
         const runId = await invoke<string>('workstudio_run_agent_stream', {
           args: {
             workstudioId,
-            agentName: 'Analyzer',
+            agentName: codeIntelligenceConfig?.symbolAnalysis?.agentRef || '__system_symbol_analysis',
             languageId,
             filePath,
             symbolKey: item.key,
