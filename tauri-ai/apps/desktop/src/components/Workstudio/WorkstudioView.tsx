@@ -919,6 +919,9 @@ const countOutlineItems = (items: OutlineItem[]): number => {
   return total;
 };
 
+/** Stable empty array so that `?? EMPTY_AGENTS` doesn't create a new ref on every render */
+const EMPTY_AGENTS: import('../../types').Agent[] = [];
+
 export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ workstudioId: workstudioIdProp }) => {
   const { workstudioId: workstudioIdFromUrl, filePath, line, column, endLine, endColumn, standalone } = getViewWindowParams();
   const workstudioId = (workstudioIdProp ?? workstudioIdFromUrl ?? '').trim() || null;
@@ -1040,18 +1043,20 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   }, []);
 
   // AI Agent Panel state — must be declared before submitInlineChat which references selectedAgentName
-  const allAgents = useConfigStore((s) => s.config?.agents ?? []);
-  const codingAgents = useMemo(
-    () => allAgents.filter((a) => a.type === 'coding' || (a as any).workstudioEnabled === true),
-    [allAgents]
-  );
+  // NOTE: use a stable selector (avoid `?? []` inline which creates a new ref on every render)
+  const codingAgents = useConfigStore((s) => {
+    const agents = s.config?.agents;
+    if (!agents || agents.length === 0) return EMPTY_AGENTS;
+    return agents.filter((a) => a.type === 'coding' || (a as any).workstudioEnabled === true);
+  });
   const [selectedAgentName, setSelectedAgentName] = useState<string>('');
   const [agentPanelInput, setAgentPanelInput] = useState('');
+  // Auto-select first available coding agent — use functional update to avoid selectedAgentName in deps
   useEffect(() => {
-    if (codingAgents.length > 0 && !selectedAgentName) {
-      setSelectedAgentName(codingAgents[0]?.name ?? '');
+    if (codingAgents.length > 0) {
+      setSelectedAgentName((prev) => (prev ? prev : (codingAgents[0]?.name ?? '')));
     }
-  }, [codingAgents, selectedAgentName]);
+  }, [codingAgents]);
 
   const submitInlineChat = useCallback(async () => {
     const selection = inlineChatComposer.selection;
@@ -6279,7 +6284,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                     </div>
                   ) : (
                     <div className="flex flex-col gap-1">
-                      {codingAgents.map((ag) => (
+                      {codingAgents.map((ag: import('../../types').Agent) => (
                         <button
                           key={ag.name}
                           type="button"
