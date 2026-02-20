@@ -1382,8 +1382,36 @@ pub async fn workstudio_run_agent_stream(
         .agents
         .iter()
         .find(|a| a.name == agent_name)
-        .ok_or_else(|| format!("Agent not found: {agent_name}"))?
-        .clone();
+        .cloned()
+        .or_else(|| {
+            // Fallback for default system agents that might not be explicitly stored yet
+            if agent_name.starts_with("__system_") {
+                Some(crate::models::Agent {
+                    name: agent_name.clone(),
+                    enabled: true,
+                    agent_type: crate::models::AgentType::Chat,
+                    display_name: String::new(),
+                    description: None,
+                    model_ref: config.current_model_ref.clone().unwrap_or_default(),
+                    system_prompt: String::new(),
+                    format_type: crate::prompts::FormatPromptType::default(),
+                    default_run_mode: None,
+                    toolset: None,
+                    mcp_set: None,
+                    skill_set: None,
+                    security_policy: None,
+                    sandbox_policy: None,
+                    approval_policy: None,
+                    workspace_support: None,
+                    max_turns: None,
+                    reinject_thinking: false,
+                    context_policy: None,
+                })
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| format!("Agent not found: {agent_name}"))?;
 
     let model_ref = agent.model_ref.trim().to_string();
     if model_ref.is_empty() {
