@@ -95,23 +95,27 @@ export const AgentConfigForm: React.FC = () => {
   const mcpSetOptions = (config?.mcp?.sets ?? []).map((s) => ({ label: s.name, value: s.name }));
   const skillSetOptions = (config?.skills?.sets ?? []).map((s) => ({ label: s.name, value: s.name }));
 
-  // Split agents by category
+  // Base list from config
   const chatAgents = agents.filter((a) => !isWorkspaceAgent(a));
-
-  // Base workspace agents from user config
   const userWorkspaceAgents = agents.filter(isWorkspaceAgent);
 
-  // Inject system workspace agents (if user hasn't overridden them by systemRole)
-  const workspaceAgents = [
-    ...SYSTEM_WORKSPACE_AGENTS.map(sysAgt => {
-      // Find if user already customized this system agent
-      const configured = agents.find(a => a.name === sysAgt.name);
-      return configured ? { ...configured, isSystem: true, systemRole: sysAgt.systemRole } : sysAgt;
-    }),
-    ...userWorkspaceAgents.filter(a => !SYSTEM_WORKSPACE_AGENTS.some(s => s.name === a.name))
-  ];
+  // Combine with system agents
+  const workspaceAgents = [...SYSTEM_WORKSPACE_AGENTS];
+  workspaceAgents.forEach((sys, idx) => {
+    const userVersion = agents.find(a => a.name === sys.name);
+    if (userVersion) {
+      workspaceAgents[idx] = { ...userVersion, isSystem: true, systemRole: sys.systemRole };
+    }
+  });
+  // Add other user agents
+  userWorkspaceAgents.forEach(a => {
+    if (!SYSTEM_WORKSPACE_AGENTS.some(s => s.name === a.name)) {
+      workspaceAgents.push(a);
+    }
+  });
 
   const activeList = agentCategory === 'chat' ? chatAgents : workspaceAgents;
+
 
   const selectedAgentName = agentCategory === 'chat' ? selectedAgentNameChat : selectedAgentNameWs;
   const setSelectedAgentName = agentCategory === 'chat' ? setSelectedAgentNameChat : setSelectedAgentNameWs;
@@ -237,7 +241,8 @@ export const AgentConfigForm: React.FC = () => {
               agentCategory === tab.id
                 ? 'border-blue-500 text-blue-600 dark:text-blue-400'
                 : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200',
-            ].join('')}
+            ].join(' ')}
+
           >
             {tab.label}
             <span className="ml-1.5 rounded-full bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 text-[11px] text-gray-500 dark:text-gray-300">
@@ -642,30 +647,31 @@ const AgentForm: React.FC<AgentFormProps> = ({
         </div>
 
         <div className="grid grid-cols-2 gap-4">
-          {!isWorkspaceContext && (
-            <div className="space-y-1">
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">智能体类型</label>
-              <select
-                value={effectiveType}
-                onChange={(e) => {
-                  const nextType = e.target.value as AgentType;
-                  onFieldChange('type', nextType);
-                  if (nextType !== 'tool') {
-                    onFieldChange('toolset', undefined);
-                    onFieldChange('workspaceSupport', undefined);
-                  }
-                }}
-                disabled={!isEditing || isSystem}
-                className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800"
-              >
-                {agentTypeOptions.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
+          <div className="space-y-1">
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">智能体类型</label>
+            <select
+              value={effectiveType}
+              onChange={(e) => {
+                const nextType = e.target.value as AgentType;
+                onFieldChange('type', nextType);
+                if (nextType !== 'tool') {
+                  onFieldChange('toolset', undefined);
+                  onFieldChange('workspaceSupport', undefined);
+                }
+              }}
+              disabled={!isEditing || isSystem || isWorkspaceContext}
+              className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800"
+            >
+              {agentTypeOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+            {isWorkspaceContext && (
+              <p className="text-xs text-gray-500 mt-1">Workspace AI 固定为工具类型</p>
+            )}
+          </div>
 
           <div className={`space-y-1 ${isWorkspaceContext ? 'col-span-2' : ''}`}>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Toolset</label>
@@ -769,7 +775,7 @@ const AgentForm: React.FC<AgentFormProps> = ({
           </div>
         </div>
 
-        {supportsToolset && !isWorkspaceContext && (
+        {supportsToolset && (
           <div className="space-y-1">
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">WorkSpaceSupport</label>
             <div className="flex items-center gap-2">
@@ -777,7 +783,7 @@ const AgentForm: React.FC<AgentFormProps> = ({
                 type="checkbox"
                 checked={effectiveWorkspaceSupport}
                 onChange={(e) => onFieldChange('workspaceSupport', e.target.checked)}
-                disabled={!isEditing || isSystem}
+                disabled={!isEditing || isSystem || isWorkspaceContext}
                 className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
               />
               <span className="text-sm text-gray-700 dark:text-gray-300">
@@ -789,6 +795,7 @@ const AgentForm: React.FC<AgentFormProps> = ({
             </p>
           </div>
         )}
+
 
         <div className="space-y-1">
 
