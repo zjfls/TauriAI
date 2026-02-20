@@ -197,7 +197,7 @@ export const SkillsConfigForm: React.FC = () => {
 
   const createSkill = async () => {
     try {
-      const res = await invoke<string>('create_skill', {
+      await invoke<string>('create_skill', {
         args: {
           target: createForm.target,
           workstudioMainFolder:
@@ -210,7 +210,6 @@ export const SkillsConfigForm: React.FC = () => {
           overwrite: createForm.overwrite,
         },
       });
-      console.log('created skill:', res);
       setCreateOpen(false);
       setCreateForm(defaultCreateForm());
       await refresh();

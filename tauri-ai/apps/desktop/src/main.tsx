@@ -112,7 +112,7 @@ if (import.meta.env.DEV) {
       const icon = await Image.new(createDevIconRgba(32), 32, 32);
       await getCurrentWindow().setIcon(icon);
     } catch (error) {
-      console.warn('设置 DEV 窗口图标失败:', error);
+      // ignore (dev-only best-effort)
     }
   })();
 }

@@ -39,7 +39,7 @@ import {
 import './App.css';
 
 function App() {
-  const { loadConfig, config, isLoading: configLoading, error: configError } = useConfigStore();
+  const { loadConfig, config } = useConfigStore();
   const loadConversations = useConversationStore((state) => state.loadConversations);
   const { activeView, setActiveView } = useUIStore();
 
@@ -76,11 +76,6 @@ function App() {
   const initialStandaloneTabsAppliedRef = useRef(false);
   const chatKeepAliveLayerRef = useRef<HTMLDivElement>(null);
   const restoredWindowsRef = useRef(false);
-
-  // Debug logging
-  useEffect(() => {
-    console.log('App mounted, config:', config, 'loading:', configLoading, 'error:', configError);
-  }, [config, configLoading, configError]);
 
   // Cross-window "open conversation" presence:
   // - 供 History 列表标记“该对话已在其他窗口打开”
@@ -712,23 +707,17 @@ function App() {
   */
   useEffect(() => {
     if (isDragGhostWindow) return;
-    console.log('Initializing app...');
     // Initialize chat stream listeners only for chat-capable windows.
     if (shouldInitChatRuntime) {
       initStreamListeners();
     }
     // Load configuration from backend
-    loadConfig().then(() => {
-      console.log('Config loaded');
-    }).catch((err) => {
+    loadConfig().catch((err) => {
       console.error('Failed to load config:', err);
     });
     if (shouldInitChatRuntime) {
       // Load conversations from backend
       loadConversations()
-        .then(() => {
-          console.log('Conversations loaded');
-        })
         .catch((err) => {
           console.error('Failed to load conversations:', err);
       });
@@ -947,7 +936,6 @@ function App() {
       if (!shouldInitChatRuntime) return;
       // Wait for config to be loaded
       if (!config) {
-        console.log('Waiting for config to load...');
         return;
       }
       
@@ -955,12 +943,9 @@ function App() {
       if (sessionInitialized.current) return;
       sessionInitialized.current = true;
       
-      console.log('Initializing sessions with config:', config);
-      
       // Restore previous sessions from localStorage
       try {
         await restoreSessionState();
-        console.log('Session state restored');
         // 防御：历史/边界情况下可能残留空 pane 或失效 activeSessionId，统一在启动时修复一次。
         useSessionStore.getState().sanitizeLayoutState();
       } catch (err) {
@@ -987,7 +972,6 @@ function App() {
 
       // If no sessions exist after restore, create a default session
       const currentSessions = useSessionStore.getState().sessions;
-      console.log('Current sessions count:', currentSessions.size);
       
       if (currentSessions.size === 0) {
         const skipDefaultSession =
@@ -1002,11 +986,9 @@ function App() {
 
         if (skipDefaultSession) return;
         const defaultAgent = config.defaultAgent || config.agents?.[0]?.name;
-        console.log('Creating default session with agent:', defaultAgent);
         if (defaultAgent) {
           try {
             await createSession(defaultAgent);
-            console.log('Default session created');
           } catch (error) {
             console.error('Failed to create default session:', error);
           }

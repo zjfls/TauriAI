@@ -3502,7 +3502,6 @@ export const initStreamListeners = async () => {
       })();
     });
 
-    console.log('Session stream listeners initialized');
   } catch (error) {
     console.error('Failed to initialize stream listeners:', error);
     // Reset flag to allow retry

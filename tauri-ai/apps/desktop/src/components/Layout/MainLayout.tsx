@@ -55,10 +55,8 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
 
   // Handle new session creation
   const handleNewSession = async (agentName: string) => {
-    console.log('handleNewSession called with agent:', agentName);
     try {
       await createSession(agentName);
-      console.log('Session created successfully');
       setActiveView('chat');
     } catch (error) {
       console.error('Failed to create session:', error);

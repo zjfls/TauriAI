@@ -491,8 +491,7 @@ export const openViewWindow = (
   // 诊断日志（默认开启）：窗口创建的真实结果只会通过事件反映出来（很多时候不会 throw）。
   try {
     win.once('tauri://created', () => {
-      // eslint-disable-next-line no-console
-      console.log('[openViewWindow] tauri://created', { label, view, url });
+      // no-op (used to be debug logging)
     });
     win.once('tauri://error', (e) => {
       console.error('[openViewWindow] tauri://error', { label, view, url, payload: (e as any)?.payload });
@@ -643,8 +642,7 @@ export const openOrFocusViewWindow = async (
   // 诊断日志（默认开启）
   try {
     win.once('tauri://created', () => {
-      // eslint-disable-next-line no-console
-      console.log('[openOrFocusViewWindow] tauri://created', { label, view, url });
+      // no-op (used to be debug logging)
     });
     win.once('tauri://error', (e) => {
       console.error('[openOrFocusViewWindow] tauri://error', { label, view, url, payload: (e as any)?.payload });
