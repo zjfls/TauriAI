@@ -11,9 +11,10 @@ use crate::ai_client::get_client;
 use crate::ai_client::{StreamEvent, StreamOptions, ToolCall, ToolDefinition};
 use crate::config::ConfigManager;
 use crate::models::{
-    AppConfig, ContentPart, McpServerConfig, Message, MessageMeta, MessageRole, MessageStatus, ModelConfig,
-    ModelParameters,
+    AppConfig, ContentPart, McpServerConfig, Message, MessageMeta, MessageRole, MessageStatus,
+    ModelConfig, ModelParameters,
 };
+use crate::prompts::compose_system_prompt;
 use crate::runtime::mcp::global_mcp_runtime;
 use sha1::{Digest, Sha1};
 use tauri::Emitter;
@@ -180,8 +181,12 @@ fn build_model_config(cfg: &AppConfig, provider_name: &str, model_name: &str) ->
         api_key: provider.api_key.clone(),
         model: model.name.clone(),
         parameters,
-        thinking_level: None,
-        thinking_budget_tokens: None,
+        thinking_level: if model.capabilities.thinking {
+            Some("medium".to_string())
+        } else {
+            None
+        },
+        thinking_budget_tokens: model.thinking_budget_tokens,
         vision_enabled: model.capabilities.vision,
         web_search_enabled: model.capabilities.web_search,
         max_images: model.max_images.map(|v| v as u32),
@@ -215,6 +220,42 @@ fn to_messages(conversation_id: &str, messages: Vec<MobileChatMessage>) -> Vec<M
             error_message: None,
         })
         .collect()
+}
+
+fn prepend_agent_system_prompt(
+    cfg: &AppConfig,
+    conversation_id: &str,
+    agent_name: Option<&str>,
+    messages: &mut Vec<Message>,
+) {
+    let agent = resolve_enabled_agent(cfg, agent_name);
+    let base_prompt = agent
+        .and_then(|a| {
+            if a.system_prompt.trim().is_empty() {
+                None
+            } else {
+                Some(a.system_prompt.as_str())
+            }
+        });
+    let format_type = agent.map(|a| a.format_type).unwrap_or_default();
+
+    let Some(system_content) = compose_system_prompt(base_prompt, format_type) else {
+        return;
+    };
+
+    let system_message = Message {
+        id: uuid::Uuid::new_v4().to_string(),
+        conversation_id: conversation_id.to_string(),
+        role: MessageRole::System,
+        content: system_content,
+        content_parts: Vec::new(),
+        thinking: None,
+        meta: None,
+        created_at: chrono::Utc::now(),
+        status: MessageStatus::Success,
+        error_message: None,
+    };
+    messages.insert(0, system_message);
 }
 
 async fn collect_streamed_text(
@@ -604,7 +645,8 @@ pub async fn mobile_chat(
 
     let model_cfg = build_model_config(&cfg, &provider_name, &model_name)?;
     let client = get_client(&model_cfg.provider).map_err(|e| e.to_string())?;
-    let msgs = to_messages("mobile", messages);
+    let mut msgs = to_messages("mobile", messages);
+    prepend_agent_system_prompt(&cfg, "mobile", agent_name.as_deref(), &mut msgs);
 
     let content = client
         .chat(msgs, &model_cfg, None)
@@ -721,7 +763,8 @@ pub async fn mobile_chat_stream_start(
     let model_cfg = build_model_config(&cfg, &provider_name, &model_name)?;
     let client = get_client(&model_cfg.provider).map_err(|e| e.to_string())?;
     let user_text = find_last_user_text(&messages);
-    let msgs = to_messages(&conversation_id, messages);
+    let mut msgs = to_messages(&conversation_id, messages);
+    prepend_agent_system_prompt(&cfg, &conversation_id, agent_name.as_deref(), &mut msgs);
 
     // Cancel previous stream with same id if exists.
     {
