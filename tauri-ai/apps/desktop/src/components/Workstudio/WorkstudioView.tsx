@@ -2713,14 +2713,17 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       const editor = editorByPaneRef.current.get(paneId) ?? null;
       if (!editor) return;
 
-      const line = clampOutlineLine(item.selectionLine);
-      const column = clampOutlineColumn(item.selectionColumn);
-      const endLine = Math.max(line, clampOutlineLine(item.range.endLine));
-      const endColumn = Math.max(column, clampOutlineColumn(item.range.endColumn));
+      const selectionStartLine = clampOutlineLine(item.range.startLine);
+      const selectionStartColumn = clampOutlineColumn(item.range.startColumn);
+      const endLine = Math.max(selectionStartLine, clampOutlineLine(item.range.endLine));
+      const endColumn = Math.max(selectionStartColumn, clampOutlineColumn(item.range.endColumn));
+
+      const revealLine = clampOutlineLine(item.selectionLine);
+      const revealColumn = clampOutlineColumn(item.selectionColumn);
 
       const prevLocation =
         suppressNavRecordDepthRef.current === 0 ? getCurrentNavLocationForPane(paneId) : null;
-      const targetLocation: NavLocation = { tabId, line, column };
+      const targetLocation: NavLocation = { tabId, line: revealLine, column: revealColumn };
       if (prevLocation && isMeaningfulNavTransition(prevLocation, targetLocation)) {
         commitNavBackEntry(paneId, prevLocation);
       }
@@ -2728,12 +2731,13 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       setFocusedPane(paneId);
       editor.focus();
       editor.setSelection({
-        startLineNumber: line,
-        startColumn: column,
+        startLineNumber: selectionStartLine,
+        startColumn: selectionStartColumn,
         endLineNumber: endLine,
         endColumn,
       });
-      editor.revealPositionInCenter({ lineNumber: line, column });
+      // 仍然将视区滚动到函数名那一行
+      editor.revealPositionInCenter({ lineNumber: revealLine, column: revealColumn });
       setOutlineActiveKey(item.key);
       markOutlineVisited(activeOutlineFilePath, item.key);
     },
