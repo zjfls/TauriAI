@@ -1,4 +1,4 @@
-import { message } from '@tauri-apps/plugin-dialog';
+
 import { useConfigStore } from '../stores/configStore';
 
 // 记录当前处于激活状态的弹窗数量
@@ -16,8 +16,9 @@ const ERROR_THROTTLE_MS = 2000;
  * 
  * @param title 弹窗标题
  * @param errorMessage 错误详细信息
+ * @param err 原生 Error 对象（可选，用于提取 StackTrace）
  */
-export async function showGlobalError(title: string, errorMessage: string) {
+export async function showGlobalError(title: string, errorMessage: string, err?: unknown) {
     if (activeDialogCount >= MAX_ACTIVE_DIALOGS) {
         console.warn(`[GlobalError active limit reached] ${title}: ${errorMessage}`);
         return;
@@ -32,17 +33,26 @@ export async function showGlobalError(title: string, errorMessage: string) {
     lastErrorTime = now;
     activeDialogCount++;
 
-    try {
-        await message(errorMessage, {
-            title: title,
-            kind: 'error',
-        });
-    } catch (dialogErr) {
-        // 降级处理：如果底层弹窗插件本身出错了，只能退回控制台
-        console.error('Failed to show native error dialog:', dialogErr);
-    } finally {
-        activeDialogCount--;
-    }
+    const errorId = `err_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    const stack = err instanceof Error ? err.stack : undefined;
+
+    window.dispatchEvent(
+        new CustomEvent('tauriai:global-error', {
+            detail: {
+                id: errorId,
+                title,
+                message: errorMessage,
+                stack,
+            },
+        })
+    );
+}
+
+// 监听由于用户关闭弹窗引起的计数器下降
+if (typeof window !== 'undefined') {
+    window.addEventListener('tauriai:global-error-closed', () => {
+        activeDialogCount = Math.max(0, activeDialogCount - 1);
+    });
 }
 
 /**
@@ -69,7 +79,7 @@ export async function tauriInvoke<T>(command: string, args?: InvokeArgs): Promis
         if (isStrictMode) {
             const errorText = typeof err === 'string' ? err : err instanceof Error ? err.message : JSON.stringify(err);
             // 在严格模式下，即使业务外围包裹了 try...catch，错误也会强制曝光
-            void showGlobalError(`业务局部报错被捕获 (严格模式): ${command}`, errorText);
+            void showGlobalError(`业务局部报错被捕获 (严格模式): ${command}`, errorText, err);
         }
 
         // 原样跑出供业务层的 catch 做出例如 UI 降级或红字提示的局部渲染处理
