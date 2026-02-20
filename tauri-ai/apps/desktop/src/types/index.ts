@@ -48,7 +48,7 @@ export type ActiveView =
 export type FormatPromptType = 'chat' | 'plain' | 'json' | 'none';
 
 // Agent type for extensible runtime behaviors
-export type AgentType = 'chat' | 'tool';
+export type AgentType = 'chat' | 'tool' | 'coding';
 
 // Run mode (input-level): chat / agent / agent full access
 export type RunMode = 'chat' | 'agent' | 'agent-custom' | 'agent-full-access';
@@ -238,6 +238,8 @@ export interface Agent {
   maxTurns?: number;      // Max turns per run/task (backend default: 10000)
   reinjectThinking?: boolean; // Whether to reinject thinking into next turn context (default: false)
   contextPolicy?: ContextPolicyConfig; // Optional context management policy (agent-level)
+  /** workstudio AI panel visibility (default: true for 'coding' agents) */
+  workstudioEnabled?: boolean;
 }
 
 // ============================================================================

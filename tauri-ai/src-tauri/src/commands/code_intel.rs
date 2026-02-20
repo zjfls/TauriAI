@@ -11,12 +11,15 @@ use tokio::sync::Mutex;
 
 use crate::agents::chat::build_model_config;
 use crate::ai_client::get_client;
-use crate::code_intel::lsp::LspManager;
-use crate::code_intel::lsp::resolve_lsp_spawn_program;
 use crate::code_intel::ast::{AstDocumentSymbolsArgs, AstSymbol};
+use crate::code_intel::lsp::resolve_lsp_spawn_program;
+use crate::code_intel::lsp::LspManager;
 use crate::code_intel::types::{LspLaunchConfig, LspServerStatus};
 use crate::config::ConfigManager;
-use crate::models::{AppConfig, CodeSnippetRange, Message, MessageRole, MessageStatus, Workstudio, WorkstudioSymbolAnalysis};
+use crate::models::{
+    AppConfig, CodeSnippetRange, Message, MessageRole, MessageStatus, Workstudio,
+    WorkstudioSymbolAnalysis,
+};
 use crate::storage::Database;
 
 #[derive(Debug, serde::Deserialize)]
@@ -105,7 +108,13 @@ pub async fn lsp_request(
 
     let timeout = args
         .timeout_ms
-        .and_then(|ms| if ms == 0 { None } else { Some(Duration::from_millis(ms)) })
+        .and_then(|ms| {
+            if ms == 0 {
+                None
+            } else {
+                Some(Duration::from_millis(ms))
+            }
+        })
         .or(Some(Duration::from_secs(20)));
 
     server.request(&args.method, args.params, timeout).await
@@ -229,9 +238,7 @@ fn resolve_launch_config(
     config_manager: &Arc<ConfigManager>,
     language_id: &str,
 ) -> Result<LspLaunchConfig, String> {
-    let config = config_manager
-        .ensure_default()
-        .map_err(|e| e.to_string())?;
+    let config = config_manager.ensure_default().map_err(|e| e.to_string())?;
 
     if !config.code_intelligence.enabled {
         return Err("代码智能已关闭（设置 -> Code Intelligence）".to_string());
@@ -366,9 +373,7 @@ pub async fn ai_code_completion(
             .ok_or_else(|| "Workstudio not found".to_string())?
     };
 
-    let config = config_manager
-        .ensure_default()
-        .map_err(|e| e.to_string())?;
+    let config = config_manager.ensure_default().map_err(|e| e.to_string())?;
     let settings = &config.code_intelligence.ai_completion;
     if !settings.enabled {
         return Err("AI 补全已关闭（设置 -> Code Intelligence -> AI Completion）".to_string());
@@ -376,10 +381,7 @@ pub async fn ai_code_completion(
     // modelRef 优先级：
     // 1) codeIntelligence.aiCompletion.modelRef（显式指定）
     // 2) AppConfig.currentModelRef（全局“当前模型”，符合“全局一个 modelRef”诉求）
-    let effective_model_ref = settings
-        .model_ref
-        .trim()
-        .to_string();
+    let effective_model_ref = settings.model_ref.trim().to_string();
     let effective_model_ref = if effective_model_ref.is_empty() {
         config
             .current_model_ref
@@ -400,8 +402,8 @@ pub async fn ai_code_completion(
         .unwrap_or(settings.list_suggestion_count)
         .clamp(1, 8);
 
-    let (provider_name, model_name) =
-        AppConfig::parse_model_ref(model_ref).ok_or_else(|| "无效 modelRef（应为 provider/model）".to_string())?;
+    let (provider_name, model_name) = AppConfig::parse_model_ref(model_ref)
+        .ok_or_else(|| "无效 modelRef（应为 provider/model）".to_string())?;
     let provider = config
         .get_provider(provider_name)
         .ok_or_else(|| format!("未找到 provider：{provider_name}"))?;
@@ -430,9 +432,7 @@ pub async fn ai_code_completion(
     // 这里为补全请求设置一个更高的下限，保证有足够预算产出最终 content。
     //
     // 注意：AI Completion 是交互式能力，宁可浪费一点 token 也要保证稳定返回 content。
-    model_config
-        .parameters
-        .max_tokens = Some(settings.max_tokens.max(8_192));
+    model_config.parameters.max_tokens = Some(settings.max_tokens.max(8_192));
 
     let client = get_client(&model_config.provider).map_err(|e| e.to_string())?;
 
@@ -535,9 +535,7 @@ pub async fn ai_chat_with_selection(
             .ok_or_else(|| "Workstudio not found".to_string())?
     };
 
-    let config = config_manager
-        .ensure_default()
-        .map_err(|e| e.to_string())?;
+    let config = config_manager.ensure_default().map_err(|e| e.to_string())?;
     let settings = &config.code_intelligence.ai_completion;
     if !settings.enabled {
         return Err("AI 补全已关闭（设置 -> Code Intelligence -> AI Completion）".to_string());
@@ -561,8 +559,8 @@ pub async fn ai_chat_with_selection(
         return Err("未配置 AI Completion 的 modelRef（也未设置 currentModelRef）".to_string());
     }
 
-    let (provider_name, model_name) =
-        AppConfig::parse_model_ref(model_ref).ok_or_else(|| "无效 modelRef（应为 provider/model）".to_string())?;
+    let (provider_name, model_name) = AppConfig::parse_model_ref(model_ref)
+        .ok_or_else(|| "无效 modelRef（应为 provider/model）".to_string())?;
     let provider = config
         .get_provider(provider_name)
         .ok_or_else(|| format!("未找到 provider：{provider_name}"))?;
@@ -584,9 +582,7 @@ pub async fn ai_chat_with_selection(
     // Inline chat 不需要“思考/推理”字段，避免部分网关返回 content=null
     model_config.thinking_level = None;
     model_config.parameters.temperature = Some(settings.temperature.max(0.0).min(2.0) as f32);
-    model_config
-        .parameters
-        .max_tokens = Some(settings.max_tokens.max(8_192));
+    model_config.parameters.max_tokens = Some(settings.max_tokens.max(8_192));
 
     let client = get_client(&model_config.provider).map_err(|e| e.to_string())?;
 
@@ -776,9 +772,7 @@ pub async fn ai_analyze_workstudio_symbol(
             .ok_or_else(|| "Workstudio not found".to_string())?
     };
 
-    let config = config_manager
-        .ensure_default()
-        .map_err(|e| e.to_string())?;
+    let config = config_manager.ensure_default().map_err(|e| e.to_string())?;
     let settings = config
         .code_intelligence
         .symbol_analysis
@@ -807,8 +801,8 @@ pub async fn ai_analyze_workstudio_symbol(
         return Err("未配置符号分析的 modelRef（也未设置 currentModelRef）".to_string());
     }
 
-    let (provider_name, model_name) =
-        AppConfig::parse_model_ref(model_ref).ok_or_else(|| "无效 modelRef（应为 provider/model）".to_string())?;
+    let (provider_name, model_name) = AppConfig::parse_model_ref(model_ref)
+        .ok_or_else(|| "无效 modelRef（应为 provider/model）".to_string())?;
     let provider = config
         .get_provider(provider_name)
         .ok_or_else(|| format!("未找到 provider：{provider_name}"))?;
@@ -830,9 +824,7 @@ pub async fn ai_analyze_workstudio_symbol(
     // 分析不需要“思考/推理”字段，避免部分网关返回 content=null
     model_config.thinking_level = None;
     model_config.parameters.temperature = Some(settings.temperature.max(0.0).min(2.0) as f32);
-    model_config
-        .parameters
-        .max_tokens = Some(settings.max_tokens.max(8_192));
+    model_config.parameters.max_tokens = Some(settings.max_tokens.max(8_192));
 
     let client = get_client(&model_config.provider).map_err(|e| e.to_string())?;
 
@@ -1022,7 +1014,9 @@ fn classify_symbol_analysis_kind(symbol_kind: &str) -> SymbolAnalysisKind {
         // 可调用
         "method" | "function" | "constructor" | "operator" => SymbolAnalysisKind::Function,
         // 值/成员
-        "property" | "field" | "variable" | "constant" | "enum_member" => SymbolAnalysisKind::Variable,
+        "property" | "field" | "variable" | "constant" | "enum_member" => {
+            SymbolAnalysisKind::Variable
+        }
         _ => SymbolAnalysisKind::Symbol,
     }
 }
@@ -1212,4 +1206,345 @@ fn head_chars(text: &str, max_chars: usize) -> String {
         return text.to_string();
     }
     text.chars().take(max_chars).collect()
+}
+
+// ============================================================================
+// Workstudio Agent Stream
+// ============================================================================
+
+/// Abort sender registry: run_id → oneshot cancel sender
+fn agent_abort_map() -> &'static dashmap::DashMap<String, tokio::sync::oneshot::Sender<()>> {
+    static MAP: std::sync::OnceLock<dashmap::DashMap<String, tokio::sync::oneshot::Sender<()>>> =
+        std::sync::OnceLock::new();
+    MAP.get_or_init(dashmap::DashMap::new)
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkstudioRunAgentArgs {
+    pub workstudio_id: String,
+    pub agent_name: String,
+    pub language_id: Option<String>,
+    pub file_path: Option<String>,
+    pub symbol_key: Option<String>,
+    pub symbol_name: Option<String>,
+    pub symbol_kind: Option<String>,
+    pub code: Option<String>,
+    pub user_input: String,
+}
+
+/// Agent stream event payload emitted to the frontend as `workstudio:agent:event`
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase", tag = "type")]
+pub enum WorkstudioAgentEvent {
+    /// A content text delta was received
+    TextDelta { run_id: String, delta: String },
+    /// A thinking/reasoning delta was received
+    ThinkingDelta { run_id: String, delta: String },
+    /// A tool call was requested by the model
+    ToolCall {
+        run_id: String,
+        id: String,
+        name: String,
+        arguments: String,
+    },
+    /// A tool result was returned
+    ToolResult {
+        run_id: String,
+        id: String,
+        result: String,
+    },
+    /// Streaming completed successfully
+    Done {
+        run_id: String,
+        answer_md: String,
+        model_ref: String,
+        latency_ms: u64,
+    },
+    /// An error occurred
+    Error { run_id: String, message: String },
+}
+
+#[tauri::command]
+pub async fn workstudio_run_agent_stream(
+    args: WorkstudioRunAgentArgs,
+    app_handle: tauri::AppHandle,
+    db: tauri::State<'_, Arc<Mutex<Database>>>,
+    config_manager: tauri::State<'_, Arc<ConfigManager>>,
+) -> Result<String, String> {
+    use crate::ai_client::{StreamEvent, StreamOptions};
+    use tauri::Emitter;
+    use tokio::sync::{mpsc, oneshot};
+
+    let ws_id = args.workstudio_id.trim().to_string();
+    let agent_name = args.agent_name.trim().to_string();
+    let user_input = args.user_input.trim().to_string();
+
+    if ws_id.is_empty() {
+        return Err("workstudioId 为空".to_string());
+    }
+    if agent_name.is_empty() {
+        return Err("agentName 为空".to_string());
+    }
+    if user_input.is_empty() {
+        return Err("userInput 为空".to_string());
+    }
+
+    // --- Fetch workstudio ---
+    let ws: Workstudio = {
+        let db = db.lock().await;
+        db.get_workstudio(&ws_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "Workstudio not found".to_string())?
+    };
+
+    // --- Fetch config & agent ---
+    let config = config_manager.ensure_default().map_err(|e| e.to_string())?;
+    let agent = config
+        .agents
+        .iter()
+        .find(|a| a.name == agent_name)
+        .ok_or_else(|| format!("Agent not found: {agent_name}"))?
+        .clone();
+
+    let model_ref = agent.model_ref.trim().to_string();
+    if model_ref.is_empty() {
+        return Err(format!("Agent '{agent_name}' has no modelRef configured"));
+    }
+
+    let (provider_name, model_name) = AppConfig::parse_model_ref(&model_ref)
+        .ok_or_else(|| format!("Invalid modelRef: {model_ref}"))?;
+    let provider = config
+        .get_provider(provider_name)
+        .ok_or_else(|| format!("Provider not found: {provider_name}"))?;
+    if !provider.enabled {
+        return Err(format!("Provider not enabled: {provider_name}"));
+    }
+    let model = provider
+        .models
+        .iter()
+        .find(|m| m.name == model_name)
+        .ok_or_else(|| format!("Model not found: {model_name}"))?;
+
+    let mut model_config = build_model_config(
+        provider,
+        model,
+        Some(serde_json::Value::Bool(false)),
+        Some(false),
+    );
+    model_config.thinking_level = None;
+
+    let client = get_client(&model_config.provider).map_err(|e| e.to_string())?;
+
+    // --- Build messages ---
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now();
+    let conversation_id = format!("workstudio:{ws_id}:agent:{agent_name}");
+
+    let rel_path = args.file_path.as_deref().map(|fp| {
+        fp.strip_prefix(ws.main_folder.as_str())
+            .unwrap_or(fp)
+            .trim_start_matches(std::path::MAIN_SEPARATOR)
+            .to_string()
+    });
+
+    // Build system prompt from agent + context metadata
+    let mut system_parts = vec![agent.system_prompt.clone()];
+    if let Some(ref rp) = rel_path {
+        system_parts.push(format!("当前文件: {rp}"));
+    }
+    if let Some(ref sym) = args.symbol_name {
+        let kind = args.symbol_kind.as_deref().unwrap_or("symbol");
+        system_parts.push(format!("当前符号: {sym}（{kind}）"));
+    }
+    if !ws.main_folder.is_empty() {
+        system_parts.push(format!("项目根目录: {}", ws.main_folder));
+    }
+    let system_content = system_parts.join("\n");
+
+    // Build user content: optional code snippet + user question
+    let mut user_parts: Vec<String> = Vec::new();
+    if let Some(ref code) = args.code {
+        let lang = args.language_id.as_deref().unwrap_or("text");
+        user_parts.push(format!("```{lang}\n{code}\n```"));
+    }
+    user_parts.push(user_input.clone());
+    let user_content = user_parts.join("\n\n");
+
+    let messages = vec![
+        Message {
+            id: uuid::Uuid::new_v4().to_string(),
+            conversation_id: conversation_id.clone(),
+            role: MessageRole::System,
+            content: system_content,
+            content_parts: Vec::new(),
+            thinking: None,
+            meta: None,
+            created_at: now,
+            status: MessageStatus::Success,
+            error_message: None,
+        },
+        Message {
+            id: uuid::Uuid::new_v4().to_string(),
+            conversation_id,
+            role: MessageRole::User,
+            content: user_content,
+            content_parts: Vec::new(),
+            thinking: None,
+            meta: None,
+            created_at: now,
+            status: MessageStatus::Success,
+            error_message: None,
+        },
+    ];
+
+    // --- Set up abort channel ---
+    let (abort_tx, abort_rx) = oneshot::channel::<()>();
+    agent_abort_map().insert(run_id.clone(), abort_tx);
+
+    // --- Spawn streaming task ---
+    let run_id_clone = run_id.clone();
+    let app_handle_clone = app_handle.clone();
+    let file_path = args.file_path.clone();
+    let symbol_key = args.symbol_key.clone();
+    let symbol_name = args.symbol_name.clone();
+    let symbol_kind = args.symbol_kind.clone();
+    let lang_id = args.language_id.unwrap_or_else(|| "text".to_string());
+    let model_ref_clone = model_ref.clone();
+
+    tokio::spawn(async move {
+        let (tx, mut rx) = mpsc::channel::<StreamEvent>(256);
+        let started = Instant::now();
+
+        let stream_handle = tokio::spawn({
+            let model_config = model_config.clone();
+            let client = client.clone();
+            async move {
+                client
+                    .chat_stream(messages, &model_config, None, tx, StreamOptions::default())
+                    .await
+            }
+        });
+
+        let mut content_buf = String::new();
+        let mut thinking_buf = String::new();
+        let mut final_content: Option<String> = None;
+        let mut stream_error: Option<String> = None;
+
+        tokio::select! {
+            _ = abort_rx => {
+                stream_handle.abort();
+                let _ = app_handle_clone.emit(
+                    "workstudio:agent:event",
+                    WorkstudioAgentEvent::Error {
+                        run_id: run_id_clone.clone(),
+                        message: "已中止".to_string(),
+                    },
+                );
+                agent_abort_map().remove(&run_id_clone);
+                return;
+            }
+            _ = async {
+                while let Some(ev) = rx.recv().await {
+                    match ev {
+                        StreamEvent::Token(delta) => {
+                            content_buf.push_str(&delta);
+                            let _ = app_handle_clone.emit(
+                                "workstudio:agent:event",
+                                WorkstudioAgentEvent::TextDelta {
+                                    run_id: run_id_clone.clone(),
+                                    delta,
+                                },
+                            );
+                        }
+                        StreamEvent::Thinking(delta) => {
+                            thinking_buf.push_str(&delta);
+                            let _ = app_handle_clone.emit(
+                                "workstudio:agent:event",
+                                WorkstudioAgentEvent::ThinkingDelta {
+                                    run_id: run_id_clone.clone(),
+                                    delta,
+                                },
+                            );
+                        }
+                        StreamEvent::ToolCalls(calls) => {
+                            for call in calls {
+                                let _ = app_handle_clone.emit(
+                                    "workstudio:agent:event",
+                                    WorkstudioAgentEvent::ToolCall {
+                                        run_id: run_id_clone.clone(),
+                                        id: call.id,
+                                        name: call.name,
+                                        arguments: call.arguments,
+                                    },
+                                );
+                            }
+                        }
+                        StreamEvent::Done(content) => {
+                            final_content = Some(content);
+                            break;
+                        }
+                        StreamEvent::DoneWithThinking { content, .. } => {
+                            final_content = Some(content);
+                            break;
+                        }
+                        StreamEvent::DoneWithDebug { content, .. } => {
+                            final_content = Some(content);
+                            break;
+                        }
+                        StreamEvent::Error(e) => {
+                            stream_error = Some(e);
+                            break;
+                        }
+                        StreamEvent::TurnState(_) | StreamEvent::WebSearch { .. } => {}
+                    }
+                }
+            } => {}
+        }
+
+        agent_abort_map().remove(&run_id_clone);
+
+        if let Some(err) = stream_error {
+            let _ = app_handle_clone.emit(
+                "workstudio:agent:event",
+                WorkstudioAgentEvent::Error {
+                    run_id: run_id_clone,
+                    message: err,
+                },
+            );
+            return;
+        }
+
+        let answer_md = final_content.unwrap_or(content_buf);
+        let latency_ms = started.elapsed().as_millis() as u64;
+
+        // Persist to DB if we have a symbol key
+        if let (Some(fp), Some(sk)) = (file_path.as_deref(), symbol_key.as_deref()) {
+            // We have a db handle reference via the db State, but it was consumed during messages build.
+            // We emit the done event with full content and let frontend cache.
+            // For heavy persistence, a separate `workstudio_save_agent_result` command can be called by frontend.
+            let _ = sk; // suppress warning — persistence done client-side via separate invoke
+            let _ = fp;
+        }
+
+        let _ = app_handle_clone.emit(
+            "workstudio:agent:event",
+            WorkstudioAgentEvent::Done {
+                run_id: run_id_clone,
+                answer_md,
+                model_ref: model_ref_clone,
+                latency_ms,
+            },
+        );
+    });
+
+    Ok(run_id)
+}
+
+#[tauri::command]
+pub async fn workstudio_abort_agent(run_id: String) -> Result<(), String> {
+    if let Some((_, tx)) = agent_abort_map().remove(&run_id) {
+        let _ = tx.send(());
+    }
+    Ok(())
 }

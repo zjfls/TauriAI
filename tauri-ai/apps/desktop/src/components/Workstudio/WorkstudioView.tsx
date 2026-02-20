@@ -46,7 +46,6 @@ import type {
 } from '../../types';
 import { SHORTCUT_ACTIONS, detectShortcutPlatform, normalizeKeybindingString } from '../../shortcuts';
 import {
-  aiAnalyzeWorkstudioSymbol,
   astDocumentSymbols,
   deleteWorkstudioSymbolAnalysis,
   getWorkstudioSymbolAnalysis,
@@ -115,16 +114,43 @@ type InlineChatSelection = {
   label: string;
 };
 
-type WorkstudioAiBubbleKind = 'inline_chat' | 'symbol_analysis';
+type WorkstudioAiBubbleKind = 'inline_chat' | 'symbol_analysis' | 'agent_run';
+
+// Streaming state machine for AI Bubbles
+// idle → queued → connecting → thinking → streaming → tool_calling → done / error
+type WorkstudioAiBubbleStatus =
+  | 'idle'
+  | 'queued'
+  | 'connecting'
+  | 'thinking'
+  | 'streaming'
+  | 'tool_calling'
+  | 'done'
+  | 'error';
+
+type WorkstudioToolCallEntry = {
+  id: string;
+  name: string;
+  arguments: string;
+  result?: string;
+};
 
 type WorkstudioAiBubble = {
   id: string;
   kind: WorkstudioAiBubbleKind;
   name: string;
   subtitle: string;
+  /** Original prompt shown to the AI (collapsible for user) */
   prompt: string;
-  status: 'running' | 'done' | 'error';
+  status: WorkstudioAiBubbleStatus;
+  /** Streamed text content (updated in real-time) */
   answer?: string;
+  /** Streamed thinking / reasoning content (collapsible) */
+  thinking?: string;
+  /** Tool calls made during the run */
+  toolCalls?: WorkstudioToolCallEntry[];
+  /** Name of the agent that produced this bubble */
+  agentName?: string;
   error?: string;
   modelRef?: string;
   latencyMs?: number;
@@ -936,6 +962,83 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     setAiBubbles((prev) => prev.filter((b) => b.id !== aiViewerId));
     setAiViewerId(null);
   }, [aiViewerId]);
+
+  // ── workstudio:agent:event listener ─────────────────────────────────
+  // Listens to streaming events from `workstudio_run_agent_stream` and
+  // drives the Bubble state machine in real-time.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    // Lazily import listen to avoid crashing in non-Tauri environments
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      try {
+        // `listen` is already imported at the top of this file
+        unlisten = await listen<{
+          type: string;
+          run_id: string;
+          delta?: string;
+          answer_md?: string;
+          model_ref?: string;
+          latency_ms?: number;
+          message?: string;
+          id?: string;
+          name?: string;
+          arguments?: string;
+        }>('workstudio:agent:event', (ev) => {
+          const { type: evType, run_id } = ev.payload;
+          setAiBubbles((prev) => prev.map((b) => {
+            if (b.id !== run_id) return b;
+            switch (evType) {
+              case 'text_delta':
+                return {
+                  ...b,
+                  status: 'streaming' as WorkstudioAiBubbleStatus,
+                  answer: (b.answer ?? '') + (ev.payload.delta ?? ''),
+                };
+              case 'thinking_delta':
+                return {
+                  ...b,
+                  status: 'thinking' as WorkstudioAiBubbleStatus,
+                  thinking: (b.thinking ?? '') + (ev.payload.delta ?? ''),
+                };
+              case 'tool_call': {
+                const entry: WorkstudioToolCallEntry = {
+                  id: ev.payload.id ?? crypto.randomUUID(),
+                  name: ev.payload.name ?? '',
+                  arguments: ev.payload.arguments ?? '',
+                };
+                return {
+                  ...b,
+                  status: 'tool_calling' as WorkstudioAiBubbleStatus,
+                  toolCalls: [...(b.toolCalls ?? []), entry],
+                };
+              }
+              case 'done':
+                return {
+                  ...b,
+                  status: 'done' as WorkstudioAiBubbleStatus,
+                  answer: ev.payload.answer_md ?? b.answer,
+                  modelRef: ev.payload.model_ref ?? b.modelRef,
+                  latencyMs: ev.payload.latency_ms ?? b.latencyMs,
+                };
+              case 'error':
+                return {
+                  ...b,
+                  status: 'error' as WorkstudioAiBubbleStatus,
+                  error: ev.payload.message ?? 'Unknown error',
+                };
+              default:
+                return b;
+            }
+          }));
+        });
+      } catch {
+        // Not in Tauri or listen failed — ignore
+      }
+    })();
+    return () => { unlisten?.(); };
+  }, []);
+
   const submitInlineChat = useCallback(async () => {
     const selection = inlineChatComposer.selection;
     const question = inlineChatComposer.question.trim();
@@ -950,7 +1053,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       name,
       subtitle: selection.label,
       prompt: question,
-      status: 'running',
+      status: 'connecting',
       createdAt,
     };
     setAiBubbles((prev) => [...prev, bubble]);
@@ -2864,48 +2967,37 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         name,
         subtitle,
         prompt: promptPreview,
-        status: 'running',
+        status: 'connecting',
         createdAt,
       };
       setAiBubbles((prev) => [...prev, bubble]);
 
       try {
         const symbolKind = normalizeOutlineKind(item.kind);
-        const res = await aiAnalyzeWorkstudioSymbol({
-          workstudioId,
-          languageId,
-          filePath,
-          symbolKey: item.key,
-          symbolName: item.name,
-          symbolKind,
-          selectionLine: item.selectionLine,
-          selectionColumn: item.selectionColumn,
-          range: item.range,
-          code,
+        // Use the new streaming command — the `workstudio:agent:event` listener
+        // (set up in the useEffect above) will update this bubble's state in real-time.
+        // We invoke with the default 'Analyzer' agent; in the future this will be
+        // driven by the selected agent in the Agent Panel.
+        const runId = await invoke<string>('workstudio_run_agent_stream', {
+          args: {
+            workstudioId,
+            agentName: 'Analyzer',
+            languageId,
+            filePath,
+            symbolKey: item.key,
+            symbolName: item.name,
+            symbolKind,
+            code,
+            userInput: `请分析这段 ${symbolKind} 代码的结构、参数、返回类型和核心逻辑。`,
+          },
         });
-
+        // The run_id returned by the backend is used to correlate events.
+        // We rename the bubble id to match run_id so the listener can find it.
         setAiBubbles((prev) =>
-          prev.map((b) =>
-            b.id === id
-              ? {
-                ...b,
-                status: 'done',
-                answer: res.answerMd,
-                modelRef: res.modelRef,
-                latencyMs: res.latencyMs,
-              }
-              : b
-          )
+          prev.map((b) => (b.id === id ? { ...b, id: runId } : b))
         );
-
-        const cacheKey = makeSymbolAnalysisCacheKey(filePath, item.key);
-        setSymbolAnalysisCache((prev) => ({ ...prev, [cacheKey]: res }));
-        setOutlineMenu((prev) => {
-          if (!prev) return prev;
-          if (prev.filePath !== filePath) return prev;
-          if (prev.item.key !== item.key) return prev;
-          return { ...prev, analysis: res };
-        });
+        // If aiViewerId was pointing to this bubble, update that too
+        setAiViewerId((prev) => (prev === id ? runId : prev));
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         setAiBubbles((prev) =>
@@ -2915,7 +3007,6 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     },
     [
       activeTextFileInFocusedPane,
-      aiAnalyzeWorkstudioSymbol,
       extractTextFromOutlineRange,
       makeSymbolAnalysisCacheKey,
       outlineAnalysisActionLabel,
@@ -2923,6 +3014,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       workstudioId,
     ]
   );
+
 
   const viewOutlineSymbolAnalysis = useCallback(
     async (filePath: string, item: OutlineItem) => {
@@ -5874,7 +5966,9 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       {aiBubbles.length > 0 && (
         <div className="fixed bottom-4 right-4 z-[210] flex max-w-[360px] flex-col items-end gap-2">
           {aiBubbles.map((b) => {
-            const isClickable = b.status !== 'running';
+            const ACTIVE_STATUSES: WorkstudioAiBubbleStatus[] = ['queued', 'connecting', 'thinking', 'streaming', 'tool_calling'];
+            const isActive = ACTIVE_STATUSES.includes(b.status);
+            const isClickable = !isActive;
             return (
               <button
                 key={b.id}
@@ -5890,7 +5984,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                 title={b.subtitle}
               >
                 <span className="shrink-0">
-                  {b.status === 'running' && <Loader2 size={14} className="animate-spin text-gray-500" />}
+                  {isActive && <Loader2 size={14} className="animate-spin text-gray-500" />}
                   {b.status === 'done' && <CheckCircle2 size={14} className="text-emerald-600 dark:text-emerald-300" />}
                   {b.status === 'error' && <AlertTriangle size={14} className="text-red-600 dark:text-red-300" />}
                 </span>
@@ -5899,7 +5993,11 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                     {b.name}
                   </div>
                   <div className="truncate text-[11px] text-gray-500 dark:text-gray-400">
-                    {b.status === 'running' ? '请求中…' : b.status === 'done' ? '完成，点击查看' : '失败，点击查看'}
+                    {isActive
+                      ? b.status === 'thinking' ? '正在思考…'
+                        : b.status === 'tool_calling' ? '调用工具…'
+                          : '请求中…'
+                      : b.status === 'done' ? '完成，点击查看' : '失败，点击查看'}
                   </div>
                 </div>
                 {b.kind === 'symbol_analysis' ? (
@@ -5910,6 +6008,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
               </button>
             );
           })}
+
         </div>
       )}
 

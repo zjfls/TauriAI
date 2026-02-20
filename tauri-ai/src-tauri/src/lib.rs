@@ -3,10 +3,10 @@ pub mod agents;
 pub mod ai_client;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod bundled_tools;
-pub mod commands;
-pub mod config;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod code_intel;
+pub mod commands;
+pub mod config;
 pub mod errors;
 pub mod git_tools;
 pub mod mentions;
@@ -159,11 +159,17 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
             };
             items.push(MenuItem::with_id(app, id, label, true, accelerator)?);
         }
-        let item_refs: Vec<&dyn tauri::menu::IsMenuItem<R>> = items.iter().map(|i| i as _).collect();
+        let item_refs: Vec<&dyn tauri::menu::IsMenuItem<R>> =
+            items.iter().map(|i| i as _).collect();
         Submenu::with_items(app, "新建会话（按 Agent）", true, &item_refs)?
     } else {
-        let empty =
-            MenuItem::with_id(app, "new_session_agent_empty", "（未配置 Agent）", false, None::<&str>)?;
+        let empty = MenuItem::with_id(
+            app,
+            "new_session_agent_empty",
+            "（未配置 Agent）",
+            false,
+            None::<&str>,
+        )?;
         Submenu::with_items(app, "新建会话（按 Agent）", false, &[&empty])?
     };
 
@@ -246,7 +252,8 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
     if let Some(file) = file_submenu {
         file.insert_items(&[&new_richtxt, &open_file, &test_window, &separator], 0)?;
     } else {
-        let file = Submenu::with_items(app, "File", true, &[&new_richtxt, &open_file, &test_window])?;
+        let file =
+            Submenu::with_items(app, "File", true, &[&new_richtxt, &open_file, &test_window])?;
         // On macOS, index 0 is the app menu. Insert after it.
         let pos = if cfg!(target_os = "macos") { 1 } else { 0 };
         menu.insert(&file, pos)?;
@@ -328,13 +335,24 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
     }
 
     if let Some(session) = session_submenu {
-        session.insert_items(&[&open_history, &session_history_separator, &new_session_by_agent], 0)?;
+        session.insert_items(
+            &[
+                &open_history,
+                &session_history_separator,
+                &new_session_by_agent,
+            ],
+            0,
+        )?;
     } else {
         let session = Submenu::with_items(
             app,
             "会话",
             true,
-            &[&open_history, &session_history_separator, &new_session_by_agent],
+            &[
+                &open_history,
+                &session_history_separator,
+                &new_session_by_agent,
+            ],
         )?;
         // Insert after View submenu. On macOS index 0 is the app menu.
         let pos = if cfg!(target_os = "macos") { 3 } else { 2 };
@@ -369,11 +387,11 @@ fn run_desktop() {
     let config_manager = ConfigManager::new().expect("Failed to initialize config manager");
     let config_manager = Arc::new(config_manager);
 
-	    // Initialize run state (shared runtime controls: abort/wait)
-	    let run_state = Arc::new(RunState::new());
-	    let config_manager_for_menu = config_manager.clone();
+    // Initialize run state (shared runtime controls: abort/wait)
+    let run_state = Arc::new(RunState::new());
+    let config_manager_for_menu = config_manager.clone();
 
-	    tauri::Builder::default()
+    tauri::Builder::default()
 	        .menu(move |app| {
 	            let config = config_manager_for_menu.ensure_default().unwrap_or_default();
 	            build_desktop_menu(app, &config)
@@ -701,6 +719,8 @@ fn run_desktop() {
 		            ai_analyze_workstudio_symbol,
 		            get_workstudio_symbol_analysis,
 		            delete_workstudio_symbol_analysis,
+		            workstudio_run_agent_stream,
+		            workstudio_abort_agent,
 		            // Workstudio terminal (UI)
 		            workstudio_terminal_create,
             workstudio_terminal_write,
@@ -930,13 +950,26 @@ fn run_desktop() {
 #[cfg(any(target_os = "android", target_os = "ios"))]
 fn run_mobile() {
     use crate::commands::{
-        fetch_provider_models, get_app_config, mobile_chat, mobile_chat_stream_cancel,
-        mobile_chat_stream_start, save_app_config, test_connection,
-        mobile_generate_title,
         // MCP commands (mobile)
-        delete_mcp_server, delete_mcp_set, list_mcp_server_resources, list_mcp_server_tools,
-        list_mcp_servers, list_mcp_sets, set_agent_mcp_set, test_mcp_server, upsert_mcp_server,
-        upsert_mcp_set, warmup_mcp_servers,
+        delete_mcp_server,
+        delete_mcp_set,
+        fetch_provider_models,
+        get_app_config,
+        list_mcp_server_resources,
+        list_mcp_server_tools,
+        list_mcp_servers,
+        list_mcp_sets,
+        mobile_chat,
+        mobile_chat_stream_cancel,
+        mobile_chat_stream_start,
+        mobile_generate_title,
+        save_app_config,
+        set_agent_mcp_set,
+        test_connection,
+        test_mcp_server,
+        upsert_mcp_server,
+        upsert_mcp_set,
+        warmup_mcp_servers,
     };
     use tauri::Manager;
 
@@ -976,7 +1009,10 @@ fn run_mobile() {
         .expect("error while running tauri application");
 }
 
-#[cfg_attr(any(target_os = "android", target_os = "ios"), tauri::mobile_entry_point)]
+#[cfg_attr(
+    any(target_os = "android", target_os = "ios"),
+    tauri::mobile_entry_point
+)]
 pub fn run() {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     run_desktop();

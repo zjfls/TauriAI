@@ -3,14 +3,13 @@
 //! This module contains all Tauri command handlers that bridge
 //! the frontend and backend functionality.
 
-mod config;
-mod mobile_chat;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod clipboard;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-mod conversation;
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod code_intel;
+mod config;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+mod conversation;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod devtools;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -22,6 +21,7 @@ mod git_tools;
 mod mcp;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod mermaid_cache;
+mod mobile_chat;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod prompts;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -45,24 +45,20 @@ mod workstudio_terminal;
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use clipboard::clipboard_write_png_base64;
-pub use config::{fetch_provider_models, get_app_config, save_app_config, test_connection};
-pub use mobile_chat::{
-    mobile_chat, mobile_chat_stream_cancel, mobile_chat_stream_start, mobile_generate_title,
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub use code_intel::{
+    ai_analyze_workstudio_symbol, ai_chat_with_selection, ai_code_completion, ast_document_symbols,
+    delete_workstudio_symbol_analysis, get_workstudio_symbol_analysis, lsp_detect_server,
+    lsp_ensure_server, lsp_notify, lsp_request, lsp_shutdown_language, lsp_shutdown_workstudio,
+    lsp_status, workstudio_abort_agent, workstudio_run_agent_stream,
 };
+pub use config::{fetch_provider_models, get_app_config, save_app_config, test_connection};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use conversation::{
     clone_conversation, create_conversation, delete_conversation, delete_messages_from,
     ensure_conversation_file_indexes, generate_title, get_conversations, get_messages,
-    get_turn_debug_info,
-    update_conversation_metadata, update_conversation_title,
+    get_turn_debug_info, update_conversation_metadata, update_conversation_title,
 };
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-		pub use code_intel::{
-		    ai_analyze_workstudio_symbol, ai_chat_with_selection, ai_code_completion, ast_document_symbols,
-		    delete_workstudio_symbol_analysis, get_workstudio_symbol_analysis, lsp_detect_server,
-		    lsp_ensure_server, lsp_notify,
-		    lsp_request, lsp_shutdown_workstudio, lsp_shutdown_language, lsp_status,
-		};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use devtools::open_devtools_current_window;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -72,7 +68,9 @@ pub use drag_ghost::{
     drag_ghost_move_client,
 };
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-pub use file::{delete_local_path, list_local_directory, read_local_file_base64, write_local_text_file};
+pub use file::{
+    delete_local_path, list_local_directory, read_local_file_base64, write_local_text_file,
+};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use git_tools::{
     git_checkout_branch, git_create_and_checkout_branch, git_diff_commits, git_diff_ghost_worktree,
@@ -85,6 +83,9 @@ pub use mcp::{
 };
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use mermaid_cache::{get_mermaid_svg_cache, set_mermaid_svg_cache};
+pub use mobile_chat::{
+    mobile_chat, mobile_chat_stream_cancel, mobile_chat_stream_start, mobile_generate_title,
+};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use prompts::get_format_prompt;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
