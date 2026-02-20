@@ -18,8 +18,10 @@ console.error = (...args) => {
       typeof arg === 'string' ? arg : arg instanceof Error ? arg.message : JSON.stringify(arg)
     ).join(' ');
 
+    const firstObj = args.find(a => a instanceof Error);
+
     // 不要 await，避免阻塞控制台输出本身
-    void showGlobalError('捕获到隐藏日志错误 (控制台隔离)', errorText);
+    void showGlobalError('捕获到隐藏日志错误 (控制台隔离)', errorText, firstObj);
   }
 };
 
@@ -27,7 +29,7 @@ console.error = (...args) => {
 window.addEventListener('error', (event) => {
   console.error('Global error:', event.error);
   const errMsg = event.error?.message || event.message || '未知 JS 异常';
-  void showGlobalError('应用发生未知错误', errMsg);
+  void showGlobalError('应用发生未知错误', errMsg, event.error);
 });
 
 window.addEventListener('unhandledrejection', (event) => {
@@ -54,7 +56,7 @@ window.addEventListener('unhandledrejection', (event) => {
   console.error('Unhandled promise rejection:', reason);
 
   const reasonText = typeof reason === 'string' ? reason : reason instanceof Error ? reason.message : JSON.stringify(reason);
-  void showGlobalError('未处理的异步/后端异常', reasonText);
+  void showGlobalError('未处理的异步/后端异常', reasonText, reason);
 });
 
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(

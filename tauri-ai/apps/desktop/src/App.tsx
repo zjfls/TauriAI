@@ -11,6 +11,7 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { MainLayout } from './components/Layout/MainLayout';
 import { StandaloneLayout } from './components/Layout/StandaloneLayout';
+import { GlobalErrorModal } from './components/GlobalErrorModal';
 import { WorkstudioView } from './components/Workstudio/WorkstudioView';
 import { DragGhostView } from './components/DragGhost/DragGhostView';
 import { useConfigStore } from './stores/configStore';
@@ -64,12 +65,12 @@ function App() {
   const isWorkstudioWindow = viewOverride === 'workstudio';
   const isDragGhostWindow = viewOverride === 'drag-ghost' || isGhostLabel;
   const shouldInitChatRuntime = !isWorkstudioWindow && !isDragGhostWindow;
-  
+
   // Session store for multi-agent workspace
   const restoreSessionState = useSessionStore((state) => state.restoreSessionState);
   const createSession = useSessionStore((state) => state.createSession);
   const openHistoricalConversation = useSessionStore((state) => state.openHistoricalConversation);
-  
+
   // Track if session initialization has been done to prevent duplicate execution
   const sessionInitialized = useRef(false);
   const viewOverrideAppliedRef = useRef(false);
@@ -164,7 +165,7 @@ function App() {
     void win
       .onCloseRequested(async (event) => {
         event.preventDefault();
-        await invoke('close_invoking_window').catch(() => {});
+        await invoke('close_invoking_window').catch(() => { });
       })
       .then((fn) => {
         if (disposed) {
@@ -173,7 +174,7 @@ function App() {
         }
         unlistenClose = fn;
       })
-      .catch(() => {});
+      .catch(() => { });
 
     return () => {
       disposed = true;
@@ -234,13 +235,13 @@ function App() {
       .then((fn) => {
         unlistenMoved = fn;
       })
-      .catch(() => {});
+      .catch(() => { });
     void win
       .onResized(() => scheduleBounds())
       .then((fn) => {
         unlistenResized = fn;
       })
-      .catch(() => {});
+      .catch(() => { });
 
     void win
       .onCloseRequested(async (event) => {
@@ -251,7 +252,7 @@ function App() {
 
         // 主窗口 close(X)：隐藏到系统托盘，不销毁任何资源（避免会话/对话重建）。
         if (label === 'main') {
-          await invoke('hide_invoking_window').catch(() => {});
+          await invoke('hide_invoking_window').catch(() => { });
           return;
         }
 
@@ -263,12 +264,12 @@ function App() {
           if (!isAppClosingRecently()) removeWindowRecord(label);
         }
 
-        await invoke('close_invoking_window').catch(() => {});
+        await invoke('close_invoking_window').catch(() => { });
       })
       .then((fn) => {
         unlistenClose = fn;
       })
-      .catch(() => {});
+      .catch(() => { });
 
     return () => {
       disposed = true;
@@ -347,7 +348,7 @@ function App() {
         }
         unlistenNewAgent = fn;
       })
-      .catch(() => {});
+      .catch(() => { });
 
     void listen('menu:open_settings', () => {
       useUIStore.getState().setActiveView('settings');
@@ -359,7 +360,7 @@ function App() {
         }
         unlistenSettings = fn;
       })
-      .catch(() => {});
+      .catch(() => { });
 
     return () => {
       disposed = true;
@@ -390,7 +391,7 @@ function App() {
         }
         unlistenHistory = fn;
       })
-      .catch(() => {});
+      .catch(() => { });
 
     void listen('menu:open_practice', () => {
       useUIStore.getState().setActiveView('practice');
@@ -402,7 +403,7 @@ function App() {
         }
         unlistenPractice = fn;
       })
-      .catch(() => {});
+      .catch(() => { });
 
     return () => {
       disposed = true;
@@ -720,7 +721,7 @@ function App() {
       loadConversations()
         .catch((err) => {
           console.error('Failed to load conversations:', err);
-      });
+        });
     }
   }, [loadConfig, loadConversations, shouldInitChatRuntime, isDragGhostWindow]);
 
@@ -849,16 +850,16 @@ function App() {
       const rangeRaw = snippetRaw?.range ?? null;
       const range =
         rangeRaw &&
-        typeof rangeRaw.startLine === 'number' &&
-        typeof rangeRaw.startColumn === 'number' &&
-        typeof rangeRaw.endLine === 'number' &&
-        typeof rangeRaw.endColumn === 'number'
+          typeof rangeRaw.startLine === 'number' &&
+          typeof rangeRaw.startColumn === 'number' &&
+          typeof rangeRaw.endLine === 'number' &&
+          typeof rangeRaw.endColumn === 'number'
           ? {
-              startLine: rangeRaw.startLine,
-              startColumn: rangeRaw.startColumn,
-              endLine: rangeRaw.endLine,
-              endColumn: rangeRaw.endColumn,
-            }
+            startLine: rangeRaw.startLine,
+            startColumn: rangeRaw.startColumn,
+            endLine: rangeRaw.endLine,
+            endColumn: rangeRaw.endColumn,
+          }
           : undefined;
 
       if (!id || !text) return;
@@ -938,11 +939,11 @@ function App() {
       if (!config) {
         return;
       }
-      
+
       // Prevent duplicate initialization
       if (sessionInitialized.current) return;
       sessionInitialized.current = true;
-      
+
       // Restore previous sessions from localStorage
       try {
         await restoreSessionState();
@@ -972,7 +973,6 @@ function App() {
 
       // If no sessions exist after restore, create a default session
       const currentSessions = useSessionStore.getState().sessions;
-      
       if (currentSessions.size === 0) {
         const skipDefaultSession =
           isStandalone &&
@@ -997,7 +997,7 @@ function App() {
         }
       }
     };
-    
+
     initSessions();
   }, [
     config,
@@ -1067,13 +1067,19 @@ function App() {
   };
 
   if (isDragGhostWindow) {
-    return <DragGhostView />;
+    return (
+      <>
+        <DragGhostView />
+        <GlobalErrorModal />
+      </>
+    );
   }
 
   if (isWorkstudioWindow) {
     return (
       <StandaloneLayout title="Workstudio">
         <WorkstudioView workstudioId={workstudioIdOverride} />
+        <GlobalErrorModal />
       </StandaloneLayout>
     );
   }
@@ -1092,6 +1098,7 @@ function App() {
           <div className="absolute inset-0 z-10 bg-gray-50 dark:bg-gray-900">{renderNonChatView()}</div>
         )}
       </div>
+      <GlobalErrorModal />
     </MainLayout>
   );
 }
