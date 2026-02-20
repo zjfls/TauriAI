@@ -1767,26 +1767,54 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     }
   }, []);
 
-  const listDir = useCallback(async (dirPath: string) => {
-    setLoadingDirs((prev) => ({ ...prev, [dirPath]: true }));
-    setDirErrors((prev) => {
-      if (!prev[dirPath]) return prev;
-      const next = { ...prev };
-      delete next[dirPath];
-      return next;
-    });
-    try {
-      const entries = await invoke<DirEntry[]>('list_local_directory', { path: dirPath });
-      setEntriesByDir((prev) => ({ ...prev, [dirPath]: entries }));
-    } catch (error) {
-      const msg = toErrorMessage(error);
-      console.error('list_local_directory failed:', { dirPath, error });
-      setDirErrors((prev) => ({ ...prev, [dirPath]: msg }));
-      setEntriesByDir((prev) => ({ ...prev, [dirPath]: [] }));
-    } finally {
-      setLoadingDirs((prev) => ({ ...prev, [dirPath]: false }));
-    }
-  }, []);
+	  const listDir = useCallback(async (dirPath: string) => {
+	    setLoadingDirs((prev) => ({ ...prev, [dirPath]: true }));
+	    setDirErrors((prev) => {
+	      if (!prev[dirPath]) return prev;
+	      const next = { ...prev };
+	      delete next[dirPath];
+	      return next;
+	    });
+	    try {
+	      const entries = await invoke<DirEntry[]>('list_local_directory', { path: dirPath });
+	      setEntriesByDir((prev) => ({ ...prev, [dirPath]: entries }));
+	    } catch (error) {
+	      const msg = toErrorMessage(error);
+	      const isNotFound = (() => {
+	        const s = (msg ?? '').toLowerCase();
+	        return s.includes('os error 2') || s.includes('no such file or directory');
+	      })();
+
+	      if (isNotFound) {
+	        // Common case: restored stale expandedDirs after repo structure changed or folder was deleted.
+	        // Do not spam console.error (it may be intercepted into a modal). Just auto-collapse and forget it.
+	        setExpandedDirs((prev) => {
+	          if (!prev.has(dirPath)) return prev;
+	          const next = new Set(prev);
+	          next.delete(dirPath);
+	          return next;
+	        });
+	        setEntriesByDir((prev) => {
+	          if (!prev[dirPath]) return prev;
+	          const next = { ...prev };
+	          delete next[dirPath];
+	          return next;
+	        });
+	        setDirErrors((prev) => {
+	          if (!prev[dirPath]) return prev;
+	          const next = { ...prev };
+	          delete next[dirPath];
+	          return next;
+	        });
+	        return;
+	      }
+
+	      setDirErrors((prev) => ({ ...prev, [dirPath]: msg }));
+	      setEntriesByDir((prev) => ({ ...prev, [dirPath]: [] }));
+	    } finally {
+	      setLoadingDirs((prev) => ({ ...prev, [dirPath]: false }));
+	    }
+	  }, []);
 
   const toggleDir = useCallback(
     async (dirPath: string) => {
