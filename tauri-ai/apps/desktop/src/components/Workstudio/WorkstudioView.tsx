@@ -1047,7 +1047,11 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   // then useMemo filters — only re-runs when agents array itself changes, not on unrelated store updates.
   const configAgents = useConfigStore((s) => s.config?.agents ?? EMPTY_AGENTS);
   const codingAgents = useMemo(
-    () => configAgents.filter((a) => a.type === 'coding' || (a as any).workstudioEnabled === true),
+    () => configAgents.filter((a) => {
+      const isToolAgent = (a.type ?? 'chat') === 'tool';
+      const hasWorkspaceSupport = a.workspaceSupport !== false; // default true for tool agents
+      return isToolAgent && hasWorkspaceSupport;
+    }),
     [configAgents]
   );
   const [selectedAgentName, setSelectedAgentName] = useState<string>('');
@@ -6279,9 +6283,9 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                   <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">Agent</div>
                   {codingAgents.length === 0 ? (
                     <div className="rounded-lg border border-dashed border-gray-200 dark:border-gray-700 px-3 py-3 text-center text-[11px] text-gray-400 dark:text-gray-500">
-                      尚无 coding 类型的 Agent。
+                      暂无可用 Agent。
                       <br />
-                      请在设置页添加类型为 <span className="font-mono">coding</span> 的智能体。
+                      请在设置 → 智能体中开启 <span className="font-mono">WorkSpaceSupport</span> 的<br />工具类型智能体。
                     </div>
                   ) : (
                     <div className="flex flex-col gap-1">
