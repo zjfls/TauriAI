@@ -240,6 +240,13 @@ export interface Agent {
   contextPolicy?: ContextPolicyConfig; // Optional context management policy (agent-level)
   /** workstudio AI panel visibility (default: true for 'coding' agents) */
   workstudioEnabled?: boolean;
+  /**
+   * System-provided agent — shown in Workspace AI but cannot be deleted.
+   * If not user-configured, the backend falls back to built-in defaults for this role.
+   */
+  isSystem?: boolean;
+  /** Functional role key for system agents (e.g. 'code_completion', 'chat_with', 'symbol_analysis') */
+  systemRole?: string;
 }
 
 // ============================================================================
