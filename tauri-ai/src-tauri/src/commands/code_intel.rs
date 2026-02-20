@@ -379,9 +379,13 @@ pub async fn ai_code_completion(
         return Err("AI 补全已关闭（设置 -> Code Intelligence -> AI Completion）".to_string());
     }
     // modelRef 优先级：
-    // 1) codeIntelligence.aiCompletion.modelRef（显式指定）
-    // 2) AppConfig.currentModelRef（全局“当前模型”，符合“全局一个 modelRef”诉求）
-    let effective_model_ref = settings.model_ref.trim().to_string();
+    // 1) agent config (name: "__system_code_completion")
+    // 2) AppConfig.currentModelRef
+    let agent = config
+        .agents
+        .iter()
+        .find(|a| a.name == "__system_code_completion");
+    let effective_model_ref = agent.map(|a| a.model_ref.trim()).unwrap_or("");
     let effective_model_ref = if effective_model_ref.is_empty() {
         config
             .current_model_ref
@@ -390,7 +394,7 @@ pub async fn ai_code_completion(
             .trim()
             .to_string()
     } else {
-        effective_model_ref
+        effective_model_ref.to_string()
     };
     let model_ref = effective_model_ref.trim();
     if model_ref.is_empty() {
@@ -550,9 +554,13 @@ pub async fn ai_chat_with_selection(
         return Err("AI 补全已关闭（设置 -> Code Intelligence -> AI Completion）".to_string());
     }
     // modelRef 优先级：
-    // 1) codeIntelligence.aiCompletion.modelRef（显式指定）
-    // 2) AppConfig.currentModelRef（全局“当前模型”）
-    let effective_model_ref = settings.model_ref.trim().to_string();
+    // 1) agent config (name: "__system_chat_with")
+    // 2) AppConfig.currentModelRef
+    let agent = config
+        .agents
+        .iter()
+        .find(|a| a.name == "__system_chat_with");
+    let effective_model_ref = agent.map(|a| a.model_ref.trim()).unwrap_or("");
     let effective_model_ref = if effective_model_ref.is_empty() {
         config
             .current_model_ref
@@ -561,7 +569,7 @@ pub async fn ai_chat_with_selection(
             .trim()
             .to_string()
     } else {
-        effective_model_ref
+        effective_model_ref.to_string()
     };
     let model_ref = effective_model_ref.trim();
     if model_ref.is_empty() {
@@ -801,9 +809,13 @@ pub async fn ai_analyze_workstudio_symbol(
     }
 
     // modelRef 优先级：
-    // 1) codeIntelligence.symbolAnalysis.modelRef（显式指定）
-    // 2) AppConfig.currentModelRef（全局“当前模型”）
-    let effective_model_ref = settings.model_ref.trim().to_string();
+    // 1) agent config (name: "__system_symbol_analysis")
+    // 2) AppConfig.currentModelRef
+    let agent = config
+        .agents
+        .iter()
+        .find(|a| a.name == "__system_symbol_analysis");
+    let effective_model_ref = agent.map(|a| a.model_ref.trim()).unwrap_or("");
     let effective_model_ref = if effective_model_ref.is_empty() {
         config
             .current_model_ref
@@ -812,7 +824,7 @@ pub async fn ai_analyze_workstudio_symbol(
             .trim()
             .to_string()
     } else {
-        effective_model_ref
+        effective_model_ref.to_string()
     };
     let model_ref = effective_model_ref.trim();
     if model_ref.is_empty() {

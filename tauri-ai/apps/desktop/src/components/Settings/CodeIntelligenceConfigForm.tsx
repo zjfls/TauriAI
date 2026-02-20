@@ -27,15 +27,13 @@ const Toggle: React.FC<{
   <button
     type="button"
     onClick={() => onChange(!checked)}
-    className={`relative h-6 w-11 rounded-full transition-colors ${
-      checked ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'
-    }`}
+    className={`relative h-6 w-11 rounded-full transition-colors ${checked ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'
+      }`}
     title={title}
   >
     <span
-      className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
-        checked ? 'translate-x-5' : ''
-      }`}
+      className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${checked ? 'translate-x-5' : ''
+        }`}
     />
   </button>
 );
@@ -129,7 +127,7 @@ const AUTO_DETECT_LANGUAGE_LABEL: Record<string, string> = {
 };
 
 export const CodeIntelligenceConfigForm: React.FC = () => {
-  const { config, getModelOptions, saveConfigDebounced } = useConfigStore();
+  const { config, saveConfigDebounced } = useConfigStore();
   const [selectedIndex, setSelectedIndex] = useState<number>(0);
 
   const [autoConfigBusy, setAutoConfigBusy] = useState(false);
@@ -146,11 +144,11 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
   const servers = config?.codeIntelligence?.lspServers ?? [];
   const selectedServer = servers[selectedIndex] ?? null;
 
-  const modelOptions = getModelOptions();
+
   const aiCompletion: AiCompletionSettings = config?.codeIntelligence?.aiCompletion ?? defaultAiCompletionSettings();
   const symbolAnalysis: SymbolAnalysisSettings =
     config?.codeIntelligence?.symbolAnalysis ?? defaultSymbolAnalysisSettings();
-  const currentModelRef = String(config?.currentModelRef ?? '').trim();
+
   const keyboardShortcuts = config?.general?.keyboardShortcuts;
   const shortcutPlatform = useMemo(() => detectShortcutPlatform(), []);
   const aiSuggestShortcutLabel = useMemo(() => {
@@ -510,11 +508,10 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
               <button
                 key={it.idx}
                 type="button"
-                className={`w-full rounded-lg px-3 py-2 text-left transition-colors ${
-                  selectedIndex === it.idx
-                    ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200'
-                    : 'hover:bg-gray-100 dark:hover:bg-gray-800'
-                }`}
+                className={`w-full rounded-lg px-3 py-2 text-left transition-colors ${selectedIndex === it.idx
+                  ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200'
+                  : 'hover:bg-gray-100 dark:hover:bg-gray-800'
+                  }`}
                 onClick={() => setSelectedIndex(it.idx)}
               >
                 <div className="truncate text-sm font-medium">{it.label}</div>
@@ -528,71 +525,71 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
       {/* Right editor */}
       <div className="flex-1 overflow-auto">
         <div className="max-w-3xl space-y-6">
-	          <div>
-	            <h3 className="text-base font-semibold text-gray-800 dark:text-white">Code Intelligence</h3>
-	            <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">
-	              这里配置 Workstudio 的代码智能能力：LSP（转到定义/引用/诊断等）与 AI Completion（幽灵补全 + 建议列表）。
-	            </p>
-	          </div>
+          <div>
+            <h3 className="text-base font-semibold text-gray-800 dark:text-white">Code Intelligence</h3>
+            <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">
+              这里配置 Workstudio 的代码智能能力：LSP（转到定义/引用/诊断等）与 AI Completion（幽灵补全 + 建议列表）。
+            </p>
+          </div>
 
-            {/* LSP */}
-            <div className="space-y-4 rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-sm font-semibold text-gray-800 dark:text-white">LSP</div>
-                  <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-                    用于控制 LSP 的部分功能开关，便于排查/调试 AI Completion。
-                  </div>
+          {/* LSP */}
+          <div className="space-y-4 rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm font-semibold text-gray-800 dark:text-white">LSP</div>
+                <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                  用于控制 LSP 的部分功能开关，便于排查/调试 AI Completion。
                 </div>
-              </div>
-
-              <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-950">
-                <div className="min-w-0">
-                  <div className="text-xs text-gray-500 dark:text-gray-400">Completion</div>
-                  <div className="text-sm text-gray-800 dark:text-gray-100">启用 LSP 建议列表</div>
-                  <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-                    关闭后不会再向 LSP 请求 completion（仍保留 hover/跳转/诊断等能力）。
-                  </div>
-                </div>
-                <Toggle
-                  checked={config.codeIntelligence?.lspCompletionEnabled ?? true}
-                  onChange={(lspCompletionEnabled) =>
-                    updateConfig((cfg) => ({
-                      ...cfg,
-                      codeIntelligence: { ...cfg.codeIntelligence, lspCompletionEnabled },
-                    }))
-                  }
-                  title="是否启用 LSP completion 建议列表（用于调试 AI Completion）"
-                />
-              </div>
-
-              <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-950">
-                <div className="min-w-0">
-                  <div className="text-xs text-gray-500 dark:text-gray-400">Monaco</div>
-                  <div className="text-sm text-gray-800 dark:text-gray-100">启用本地词汇建议</div>
-                  <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-                    关闭后 Suggest 列表不会再显示来自当前/已打开文件内容的词汇补全（不依赖 LSP）。
-                  </div>
-                </div>
-                <Toggle
-                  checked={config.codeIntelligence?.monacoWordSuggestionsEnabled ?? true}
-                  onChange={(monacoWordSuggestionsEnabled) =>
-                    updateConfig((cfg) => ({
-                      ...cfg,
-                      codeIntelligence: { ...cfg.codeIntelligence, monacoWordSuggestionsEnabled },
-                    }))
-                  }
-                  title="是否启用 Monaco 内置的词汇建议（用于调试 AI Completion）"
-                />
               </div>
             </div>
 
-	          {/* AI Completion */}
-	            <div className="space-y-5 rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
-	            <div className="flex items-center justify-between">
-	              <div>
-	                <div className="text-sm font-semibold text-gray-800 dark:text-white">AI Completion</div>
-	                <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+            <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-950">
+              <div className="min-w-0">
+                <div className="text-xs text-gray-500 dark:text-gray-400">Completion</div>
+                <div className="text-sm text-gray-800 dark:text-gray-100">启用 LSP 建议列表</div>
+                <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                  关闭后不会再向 LSP 请求 completion（仍保留 hover/跳转/诊断等能力）。
+                </div>
+              </div>
+              <Toggle
+                checked={config.codeIntelligence?.lspCompletionEnabled ?? true}
+                onChange={(lspCompletionEnabled) =>
+                  updateConfig((cfg) => ({
+                    ...cfg,
+                    codeIntelligence: { ...cfg.codeIntelligence, lspCompletionEnabled },
+                  }))
+                }
+                title="是否启用 LSP completion 建议列表（用于调试 AI Completion）"
+              />
+            </div>
+
+            <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-950">
+              <div className="min-w-0">
+                <div className="text-xs text-gray-500 dark:text-gray-400">Monaco</div>
+                <div className="text-sm text-gray-800 dark:text-gray-100">启用本地词汇建议</div>
+                <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                  关闭后 Suggest 列表不会再显示来自当前/已打开文件内容的词汇补全（不依赖 LSP）。
+                </div>
+              </div>
+              <Toggle
+                checked={config.codeIntelligence?.monacoWordSuggestionsEnabled ?? true}
+                onChange={(monacoWordSuggestionsEnabled) =>
+                  updateConfig((cfg) => ({
+                    ...cfg,
+                    codeIntelligence: { ...cfg.codeIntelligence, monacoWordSuggestionsEnabled },
+                  }))
+                }
+                title="是否启用 Monaco 内置的词汇建议（用于调试 AI Completion）"
+              />
+            </div>
+          </div>
+
+          {/* AI Completion */}
+          <div className="space-y-5 rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm font-semibold text-gray-800 dark:text-white">AI Completion</div>
+                <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
                   幽灵补全（Inline）+ 建议列表（快捷键触发）。建议先选好模型再打开总开关。
                 </div>
               </div>
@@ -604,40 +601,12 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
             </div>
 
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              <div className="space-y-2">
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">使用模型</label>
-                <select
-                  value={aiCompletion.modelRef ?? ''}
-                  onChange={(e) => updateAiCompletion((s) => ({ ...s, modelRef: e.target.value }))}
-                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
-                >
-                  <option value="">（自动：跟随当前模型）</option>
-                  {modelOptions.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-                {modelOptions.length === 0 && (
-                  <div className="text-xs text-gray-500 dark:text-gray-400">
-                    暂无可用模型：请先在 Settings → Providers 中启用 provider 并添加 model。
-                  </div>
-                )}
-                <div className="text-xs text-gray-500 dark:text-gray-400">
-                  当前全局模型：{currentModelRef || '（未选择）'}。
-                  {!String(aiCompletion.modelRef || '').trim() ? '（本项留空则跟随全局模型）' : ''}
-                </div>
-                {aiCompletion.enabled && !String(aiCompletion.modelRef || '').trim() && !currentModelRef && (
-                  <div className="text-xs text-red-600 dark:text-red-300">
-                    AI 补全已启用，但未指定模型：请选择 modelRef，或先在主界面选择“当前模型”。
-                  </div>
-                )}
-              </div>
+              {/* 使用模型已迁移至“智能体”标签页中的内置 Agent */}
 
               <div className="space-y-2">
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">触发模式</label>
-                  <select
-                    value={(aiCompletion.triggerMode ?? 'hybrid') as AiCompletionTriggerMode}
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">触发模式</label>
+                <select
+                  value={(aiCompletion.triggerMode ?? 'hybrid') as AiCompletionTriggerMode}
                   onChange={(e) =>
                     updateAiCompletion((s) => ({ ...s, triggerMode: e.target.value as AiCompletionTriggerMode }))
                   }
@@ -824,133 +793,103 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
                   onChange={(includeProjectContext) => updateAiCompletion((s) => ({ ...s, includeProjectContext }))}
                   title="允许把 projectRoot/filePath 等信息带给模型"
                 />
-	              </div>
-	            </details>
-	          </div>
+              </div>
+            </details>
+          </div>
 
-	          {/* Symbol Analysis */}
-	          <div className="space-y-5 rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
-	            <div className="flex items-center justify-between">
-	              <div>
-	                <div className="text-sm font-semibold text-gray-800 dark:text-white">符号分析</div>
-	                <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-	                  Workstudio Outline 右键“分析类/函数/变量”等会发起大模型请求。建议先选好模型再打开总开关。
-	                </div>
-	              </div>
-	              <Toggle
-	                checked={Boolean(symbolAnalysis.enabled)}
-	                onChange={(enabled) => updateSymbolAnalysis((s) => ({ ...s, enabled }))}
-	                title="启用符号分析"
-	              />
-	            </div>
+          {/* Symbol Analysis */}
+          <div className="space-y-5 rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm font-semibold text-gray-800 dark:text-white">符号分析</div>
+                <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                  Workstudio Outline 右键“分析类/函数/变量”等会发起大模型请求。建议先选好模型再打开总开关。
+                </div>
+              </div>
+              <Toggle
+                checked={Boolean(symbolAnalysis.enabled)}
+                onChange={(enabled) => updateSymbolAnalysis((s) => ({ ...s, enabled }))}
+                title="启用符号分析"
+              />
+            </div>
 
-	            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-	              <div className="space-y-2">
-	                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">使用模型</label>
-	                <select
-	                  value={symbolAnalysis.modelRef ?? ''}
-	                  onChange={(e) => updateSymbolAnalysis((s) => ({ ...s, modelRef: e.target.value }))}
-	                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
-	                >
-	                  <option value="">（自动：跟随当前模型）</option>
-	                  {modelOptions.map((opt) => (
-	                    <option key={opt.value} value={opt.value}>
-	                      {opt.label}
-	                    </option>
-	                  ))}
-	                </select>
-	                {modelOptions.length === 0 && (
-	                  <div className="text-xs text-gray-500 dark:text-gray-400">
-	                    暂无可用模型：请先在 Settings → Providers 中启用 provider 并添加 model。
-	                  </div>
-	                )}
-	                <div className="text-xs text-gray-500 dark:text-gray-400">
-	                  当前全局模型：{currentModelRef || '（未选择）'}。
-	                  {!String(symbolAnalysis.modelRef || '').trim() ? '（本项留空则跟随全局模型）' : ''}
-	                </div>
-	                {symbolAnalysis.enabled && !String(symbolAnalysis.modelRef || '').trim() && !currentModelRef && (
-	                  <div className="text-xs text-red-600 dark:text-red-300">
-	                    符号分析已启用，但未指定模型：请选择 modelRef，或先在主界面选择“当前模型”。
-	                  </div>
-	                )}
-	              </div>
-	            </div>
+            {/* 使用模型已迁移至“智能体”标签页中的内置 Agent */}
 
-	            <details className="rounded-lg border border-gray-200 bg-white px-3 py-2 dark:border-gray-700 dark:bg-gray-900">
-	              <summary className="cursor-pointer text-sm font-medium text-gray-700 dark:text-gray-200">
-	                高级参数（超时 / Token / 温度）
-	              </summary>
-	              <div className="mt-3 grid grid-cols-1 gap-4 md:grid-cols-2">
-	                <div className="space-y-1">
-	                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">超时（ms）</label>
-	                  <input
-	                    type="number"
-	                    min={2000}
-	                    max={180000}
-	                    value={symbolAnalysis.timeoutMs ?? 20000}
-	                    onChange={(e) => {
-	                      const n = Number(e.target.value);
-	                      const next = Number.isFinite(n) ? Math.max(2000, Math.min(180000, Math.floor(n))) : 20000;
-	                      updateSymbolAnalysis((s) => ({ ...s, timeoutMs: next }));
-	                    }}
-	                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
-	                  />
-	                </div>
+            <details className="rounded-lg border border-gray-200 bg-white px-3 py-2 dark:border-gray-700 dark:bg-gray-900">
+              <summary className="cursor-pointer text-sm font-medium text-gray-700 dark:text-gray-200">
+                高级参数（超时 / Token / 温度）
+              </summary>
+              <div className="mt-3 grid grid-cols-1 gap-4 md:grid-cols-2">
+                <div className="space-y-1">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">超时（ms）</label>
+                  <input
+                    type="number"
+                    min={2000}
+                    max={180000}
+                    value={symbolAnalysis.timeoutMs ?? 20000}
+                    onChange={(e) => {
+                      const n = Number(e.target.value);
+                      const next = Number.isFinite(n) ? Math.max(2000, Math.min(180000, Math.floor(n))) : 20000;
+                      updateSymbolAnalysis((s) => ({ ...s, timeoutMs: next }));
+                    }}
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                  />
+                </div>
 
-	                <div className="space-y-1">
-	                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">maxTokens</label>
-	                  <input
-	                    type="number"
-	                    min={256}
-	                    max={65536}
-	                    value={symbolAnalysis.maxTokens ?? 8192}
-	                    onChange={(e) => {
-	                      const n = Number(e.target.value);
-	                      const next = Number.isFinite(n) ? Math.max(256, Math.min(65536, Math.floor(n))) : 8192;
-	                      updateSymbolAnalysis((s) => ({ ...s, maxTokens: next }));
-	                    }}
-	                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
-	                  />
-	                </div>
+                <div className="space-y-1">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">maxTokens</label>
+                  <input
+                    type="number"
+                    min={256}
+                    max={65536}
+                    value={symbolAnalysis.maxTokens ?? 8192}
+                    onChange={(e) => {
+                      const n = Number(e.target.value);
+                      const next = Number.isFinite(n) ? Math.max(256, Math.min(65536, Math.floor(n))) : 8192;
+                      updateSymbolAnalysis((s) => ({ ...s, maxTokens: next }));
+                    }}
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                  />
+                </div>
 
-	                <div className="space-y-1">
-	                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">温度</label>
-	                  <input
-	                    type="number"
-	                    step={0.05}
-	                    min={0}
-	                    max={2}
-	                    value={symbolAnalysis.temperature ?? 0.2}
-	                    onChange={(e) => {
-	                      const n = Number(e.target.value);
-	                      const next = Number.isFinite(n) ? Math.max(0, Math.min(2, n)) : 0.2;
-	                      updateSymbolAnalysis((s) => ({ ...s, temperature: next }));
-	                    }}
-	                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
-	                  />
-	                </div>
+                <div className="space-y-1">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">温度</label>
+                  <input
+                    type="number"
+                    step={0.05}
+                    min={0}
+                    max={2}
+                    value={symbolAnalysis.temperature ?? 0.2}
+                    onChange={(e) => {
+                      const n = Number(e.target.value);
+                      const next = Number.isFinite(n) ? Math.max(0, Math.min(2, n)) : 0.2;
+                      updateSymbolAnalysis((s) => ({ ...s, temperature: next }));
+                    }}
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                  />
+                </div>
 
-	                <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-950">
-	                  <div className="min-w-0">
-	                    <div className="text-xs text-gray-500 dark:text-gray-400">Context</div>
-	                    <div className="text-sm text-gray-800 dark:text-gray-100">发送项目上下文</div>
-	                  </div>
-	                  <Toggle
-	                    checked={Boolean(symbolAnalysis.includeProjectContext)}
-	                    onChange={(includeProjectContext) =>
-	                      updateSymbolAnalysis((s) => ({ ...s, includeProjectContext }))
-	                    }
-	                    title="是否在分析请求里包含 filePath / projectRoot 等信息"
-	                  />
-	                </div>
-	              </div>
-	            </details>
-	          </div>
+                <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-950">
+                  <div className="min-w-0">
+                    <div className="text-xs text-gray-500 dark:text-gray-400">Context</div>
+                    <div className="text-sm text-gray-800 dark:text-gray-100">发送项目上下文</div>
+                  </div>
+                  <Toggle
+                    checked={Boolean(symbolAnalysis.includeProjectContext)}
+                    onChange={(includeProjectContext) =>
+                      updateSymbolAnalysis((s) => ({ ...s, includeProjectContext }))
+                    }
+                    title="是否在分析请求里包含 filePath / projectRoot 等信息"
+                  />
+                </div>
+              </div>
+            </details>
+          </div>
 
-	          {!selectedServer ? (
-	            <div className="rounded-lg border border-gray-200 bg-white p-4 text-sm text-gray-600 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300">
-	              请选择左侧一条 LSP 配置，或点击“新增”。
-	            </div>
+          {!selectedServer ? (
+            <div className="rounded-lg border border-gray-200 bg-white p-4 text-sm text-gray-600 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300">
+              请选择左侧一条 LSP 配置，或点击“新增”。
+            </div>
           ) : (
             <div className="space-y-5 rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
               <div className="flex items-center justify-between">

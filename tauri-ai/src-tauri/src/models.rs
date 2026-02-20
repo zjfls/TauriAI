@@ -1572,9 +1572,6 @@ pub struct AiCompletionSettings {
     /// 总开关：关闭后不请求模型
     #[serde(default)]
     pub enabled: bool,
-    /// 使用的模型（provider/model）
-    #[serde(default)]
-    pub model_ref: String,
     /// 幽灵补全（Inline）
     #[serde(default = "default_true")]
     pub inline_enabled: bool,
@@ -1645,7 +1642,6 @@ impl Default for AiCompletionSettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            model_ref: String::new(),
             inline_enabled: true,
             list_enabled: true,
             trigger_mode: AiCompletionTriggerMode::Hybrid,
@@ -1668,9 +1664,6 @@ pub struct SymbolAnalysisSettings {
     /// 总开关：关闭后不请求模型
     #[serde(default)]
     pub enabled: bool,
-    /// 使用的模型（provider/model）。为空则跟随 AppConfig.currentModelRef
-    #[serde(default)]
-    pub model_ref: String,
     /// 单次请求超时（毫秒）
     #[serde(default = "default_symbol_analysis_timeout_ms")]
     pub timeout_ms: u64,
@@ -1701,7 +1694,6 @@ impl Default for SymbolAnalysisSettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            model_ref: String::new(),
             timeout_ms: default_symbol_analysis_timeout_ms(),
             max_tokens: default_symbol_analysis_max_tokens(),
             temperature: default_symbol_analysis_temperature(),
@@ -2245,7 +2237,6 @@ impl AppConfig {
         if self.code_intelligence.symbol_analysis.is_none() {
             let mut migrated = SymbolAnalysisSettings::default();
             migrated.enabled = self.code_intelligence.ai_completion.enabled;
-            migrated.model_ref = self.code_intelligence.ai_completion.model_ref.clone();
             migrated.max_tokens = self.code_intelligence.ai_completion.max_tokens;
             migrated.temperature = self.code_intelligence.ai_completion.temperature;
             migrated.include_project_context =
