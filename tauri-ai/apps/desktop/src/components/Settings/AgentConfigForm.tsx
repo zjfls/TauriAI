@@ -33,10 +33,6 @@ const defaultAgent: Agent = {
 
 type AgentCategory = 'chat' | 'workspace';
 
-/** Workspace AI = tool agents with workspaceSupport not explicitly disabled */
-const isWorkspaceAgent = (a: Agent) =>
-  (a.type ?? 'chat') === 'tool' && (a.workspaceSupport !== false);
-
 /**
  * Built-in non-deletable system agents for Workspace AI.
  * The backend falls back to these defaults when no user agent is configured for the role.
@@ -95,24 +91,18 @@ export const AgentConfigForm: React.FC = () => {
   const mcpSetOptions = (config?.mcp?.sets ?? []).map((s) => ({ label: s.name, value: s.name }));
   const skillSetOptions = (config?.skills?.sets ?? []).map((s) => ({ label: s.name, value: s.name }));
 
-  // Base list from config
-  const chatAgents = agents.filter((a) => !isWorkspaceAgent(a));
-  const userWorkspaceAgents = agents.filter(isWorkspaceAgent);
+  // All user agents go to Chat Agents. Workspace AI is system-only.
+  const chatAgents = agents.filter((a) => !a.isSystem);
 
-  // Combine with system agents
+  // Build workspace list: system agents first (merged with any saved user config)
   const workspaceAgents = [...SYSTEM_WORKSPACE_AGENTS];
   workspaceAgents.forEach((sys, idx) => {
-    const userVersion = agents.find(a => a.name === sys.name);
-    if (userVersion) {
-      workspaceAgents[idx] = { ...userVersion, isSystem: true, systemRole: sys.systemRole };
+    const saved = agents.find(a => a.name === sys.name);
+    if (saved) {
+      workspaceAgents[idx] = { ...saved, isSystem: true, systemRole: sys.systemRole };
     }
   });
-  // Add other user agents
-  userWorkspaceAgents.forEach(a => {
-    if (!SYSTEM_WORKSPACE_AGENTS.some(s => s.name === a.name)) {
-      workspaceAgents.push(a);
-    }
-  });
+  // (no extra user agents can exist in workspace tab)
 
   const activeList = agentCategory === 'chat' ? chatAgents : workspaceAgents;
 
@@ -172,6 +162,8 @@ export const AgentConfigForm: React.FC = () => {
 
   const handleDelete = () => {
     if (!selectedAgentName) return;
+    const agent = activeList.find(a => a.name === selectedAgentName);
+    if (agent?.isSystem) return; // system agents cannot be deleted
     if (confirm('确定要删除这个智能体吗？')) {
       if (!config) return;
       const nextAgents = agents.filter((a) => a.name !== selectedAgentName);
@@ -180,10 +172,9 @@ export const AgentConfigForm: React.FC = () => {
           ? nextAgents[0]?.name ?? ''
           : config.defaultAgent;
       saveConfigDebounced({ ...config, agents: nextAgents, defaultAgent: nextDefault });
-      const nextInCategory = nextAgents.filter(
-        agentCategory === 'workspace' ? isWorkspaceAgent : (a) => !isWorkspaceAgent(a)
-      );
-      setSelectedAgentName(nextInCategory[0]?.name ?? null);
+      // After delete, select the first in chat list (all deleteable agents are chat)
+      const nextChat = nextAgents.filter((a) => !a.isSystem);
+      setSelectedAgentName(nextChat[0]?.name ?? null);
     }
   };
 
@@ -231,6 +222,7 @@ export const AgentConfigForm: React.FC = () => {
         {([
           { id: 'chat' as AgentCategory, label: '聊天智能体', count: chatAgents.length },
           { id: 'workspace' as AgentCategory, label: 'Workspace AI', count: workspaceAgents.length },
+
         ] as const).map((tab) => (
           <button
             key={tab.id}
@@ -318,15 +310,22 @@ export const AgentConfigForm: React.FC = () => {
             ))}
           </div>
 
-          <button
-            onClick={handleCreateNew}
-            className="mt-3 flex items-center justify-center gap-2 w-full py-2 rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 text-gray-500 hover:border-blue-500 hover:text-blue-500 transition-colors"
-          >
-            <Plus size={16} />
-            <span className="text-sm">
-              {agentCategory === 'workspace' ? '添加 Workspace AI' : '添加智能体'}
-            </span>
-          </button>
+          {/* Only show add button in chat tab; workspace tab is system-only */}
+          {agentCategory === 'chat' && (
+            <button
+              onClick={handleCreateNew}
+              className="mt-3 flex items-center justify-center gap-2 w-full py-2 rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 text-gray-500 hover:border-blue-500 hover:text-blue-500 transition-colors"
+            >
+              <Plus size={16} />
+              <span className="text-sm">添加智能体</span>
+            </button>
+          )}
+          {agentCategory === 'workspace' && (
+            <p className="mt-3 text-xs text-center text-gray-400 dark:text-gray-500 px-2">
+              Workspace AI 由系统内置，不可新增或删除
+            </p>
+          )}
+
         </div>
 
         {/* Agent Form */}
