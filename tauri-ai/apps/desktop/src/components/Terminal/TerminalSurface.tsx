@@ -121,22 +121,43 @@ export const TerminalSurface = React.forwardRef<TerminalSurfaceHandle, TerminalS
       });
       const fit = new FitAddon();
       term.loadAddon(fit);
-      term.open(containerRef.current);
+      let isOpened = false;
 
-      termRef.current = term;
-      fitRef.current = fit;
+      const tryOpenAndFit = () => {
+        if (!containerRef.current) return;
+        if (containerRef.current.clientWidth === 0 || containerRef.current.clientHeight === 0) {
+          return;
+        }
 
-      // Fit once after mount; container may still be laying out.
-      window.setTimeout(() => {
+        if (!isOpened) {
+          try {
+            term.open(containerRef.current);
+            isOpened = true;
+            termRef.current = term;
+            fitRef.current = fit;
+          } catch (e) {
+            console.warn('Failed to open xterm:', e);
+            return;
+          }
+        }
+
+        // Fit after opened and confirmed visible
         try {
-          // Defense against xterm.js throwing "undefined is not an object (evaluating 'this._renderer.value.dimensions')"
-          // when the container has no layout or is display:none.
-          if (containerRef.current && containerRef.current.clientWidth > 0 && term.element) {
+          if (term.element) {
             fit.fit();
           }
-          if (activeRef.current) term.focus();
         } catch (e) {
-          console.warn('xterm fit/focus error on mount:', e);
+          console.warn('xterm fit error on resize/mount:', e);
+        }
+      };
+
+      // Try immediately
+      tryOpenAndFit();
+
+      // If successfully opened, optionally focus
+      window.setTimeout(() => {
+        if (isOpened && activeRef.current && term.element) {
+          try { term.focus(); } catch (e) { /* ignore */ }
         }
       }, 30);
 
@@ -148,19 +169,10 @@ export const TerminalSurface = React.forwardRef<TerminalSurfaceHandle, TerminalS
         schedule(0);
       });
 
-      // Observe container size changes (better than window resize for split panes / collapsing panels).
+      // Observe container size changes. This will also lazy-open the terminal when it finally gets dimensions.
       if (typeof ResizeObserver !== 'undefined') {
         const ro = new ResizeObserver(() => {
-          const fit = fitRef.current;
-          const term = termRef.current;
-          if (!fit || !term) return;
-          try {
-            if (containerRef.current && containerRef.current.clientWidth > 0 && term.element) {
-              fit.fit();
-            }
-          } catch (e) {
-            console.warn('xterm fit error on resize:', e);
-          }
+          tryOpenAndFit();
         });
         ro.observe(containerRef.current);
         resizeObserverRef.current = ro;
