@@ -129,10 +129,14 @@ export const TerminalSurface = React.forwardRef<TerminalSurfaceHandle, TerminalS
       // Fit once after mount; container may still be laying out.
       window.setTimeout(() => {
         try {
-          fit.fit();
+          // Defense against xterm.js throwing "undefined is not an object (evaluating 'this._renderer.value.dimensions')"
+          // when the container has no layout or is display:none.
+          if (containerRef.current && containerRef.current.clientWidth > 0 && term.element) {
+            fit.fit();
+          }
           if (activeRef.current) term.focus();
-        } catch {
-          // ignore
+        } catch (e) {
+          console.warn('xterm fit/focus error on mount:', e);
         }
       }, 30);
 
@@ -148,11 +152,14 @@ export const TerminalSurface = React.forwardRef<TerminalSurfaceHandle, TerminalS
       if (typeof ResizeObserver !== 'undefined') {
         const ro = new ResizeObserver(() => {
           const fit = fitRef.current;
-          if (!fit) return;
+          const term = termRef.current;
+          if (!fit || !term) return;
           try {
-            fit.fit();
-          } catch {
-            // ignore
+            if (containerRef.current && containerRef.current.clientWidth > 0 && term.element) {
+              fit.fit();
+            }
+          } catch (e) {
+            console.warn('xterm fit error on resize:', e);
           }
         });
         ro.observe(containerRef.current);
@@ -193,7 +200,7 @@ export const TerminalSurface = React.forwardRef<TerminalSurfaceHandle, TerminalS
     }, [schedule, scope, scopeKey]);
 
     // Read loop (single unified pump) — no duplicate loops anywhere else.
-    const tickRef = useRef<() => void>(() => {});
+    const tickRef = useRef<() => void>(() => { });
     useEffect(() => {
       cancelledRef.current = false;
 
@@ -265,10 +272,12 @@ export const TerminalSurface = React.forwardRef<TerminalSurfaceHandle, TerminalS
       if (!term || !fit) return;
       window.setTimeout(() => {
         try {
-          fit.fit();
+          if (containerRef.current && containerRef.current.clientWidth > 0 && term.element) {
+            fit.fit();
+          }
           term.focus();
-        } catch {
-          // ignore
+        } catch (e) {
+          console.warn('xterm fit/focus error on active:', e);
         }
       }, 30);
     }, [isActive, scopeKey]);
