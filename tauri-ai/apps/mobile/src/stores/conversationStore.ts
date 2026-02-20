@@ -1,6 +1,12 @@
 import { create } from "zustand";
 import { loadJson, saveJson } from "../lib/storage";
-import type { ChatMessage, Conversation, ToolCallEvent, WebSearchEvent } from "../types/chat";
+import type {
+  ChatMessage,
+  ChatMessageBlock,
+  Conversation,
+  ToolCallEvent,
+  WebSearchEvent,
+} from "../types/chat";
 
 export type CreateConversationOptions = {
   title?: string;
@@ -21,7 +27,7 @@ type State = {
   setToolCallResult: (
     conversationId: string,
     messageId: string,
-    result: { id: string; output?: string; error?: string },
+    result: { id: string; name?: string; output?: string; error?: string },
   ) => void;
   setMessageContent: (conversationId: string, messageId: string, content: string) => void;
   finalizeMessage: (
@@ -40,6 +46,53 @@ function now() {
 
 function newId(prefix: string) {
   return `${prefix}_${Math.random().toString(36).slice(2)}_${Date.now().toString(36)}`;
+}
+
+function ensureBlocks(message: ChatMessage): ChatMessageBlock[] {
+  if (Array.isArray(message.blocks)) return message.blocks;
+
+  const blocks: ChatMessageBlock[] = [];
+
+  if (message.thinking && message.thinking.trim().length > 0) {
+    blocks.push({
+      id: `thinking_${message.id}`,
+      type: "thinking",
+      text: message.thinking,
+    });
+  }
+
+  if (message.content && message.content.trim().length > 0) {
+    blocks.push({
+      id: `text_${message.id}`,
+      type: "text",
+      format: "markdown",
+      text: message.content,
+    });
+  }
+
+  if (Array.isArray(message.webSearch)) {
+    for (const ev of message.webSearch) {
+      if (!ev?.id) continue;
+      blocks.push({
+        id: `web_${ev.id}`,
+        type: "web_search",
+        event: ev,
+      });
+    }
+  }
+
+  if (Array.isArray(message.toolCalls)) {
+    for (const call of message.toolCalls) {
+      if (!call?.id) continue;
+      blocks.push({
+        id: `tool_${call.id}`,
+        type: "tool_call",
+        call,
+      });
+    }
+  }
+
+  return blocks;
 }
 
 function createEmptyConversation(opts?: CreateConversationOptions): Conversation {
@@ -119,9 +172,28 @@ export const useConversationStore = create<State>((set) => {
       set((s) => {
         const conversations = s.conversations.map((c) => {
           if (c.id !== conversationId) return c;
-          const messages = c.messages.map((m) =>
-            m.id === messageId ? { ...m, content: (m.content ?? "") + delta } : m,
-          );
+          const messages = c.messages.map((m) => {
+            if (m.id !== messageId) return m;
+            const nextContent = (m.content ?? "") + delta;
+            const prevBlocks = ensureBlocks(m);
+            const last = prevBlocks[prevBlocks.length - 1];
+            const nextBlocks: ChatMessageBlock[] =
+              last && last.type === "text"
+                ? [
+                    ...prevBlocks.slice(0, -1),
+                    { ...last, text: (last.text ?? "") + delta },
+                  ]
+                : [
+                    ...prevBlocks,
+                    {
+                      id: newId("b_text"),
+                      type: "text",
+                      format: "markdown",
+                      text: delta,
+                    },
+                  ];
+            return { ...m, content: nextContent, blocks: nextBlocks };
+          });
           return { ...c, messages, updatedAt: now() };
         });
         // 流式 token 更新非常频繁；这里不落盘，避免 localStorage 高频写入导致卡顿。
@@ -133,9 +205,27 @@ export const useConversationStore = create<State>((set) => {
       set((s) => {
         const conversations = s.conversations.map((c) => {
           if (c.id !== conversationId) return c;
-          const messages = c.messages.map((m) =>
-            m.id === messageId ? { ...m, thinking: (m.thinking ?? "") + delta } : m,
-          );
+          const messages = c.messages.map((m) => {
+            if (m.id !== messageId) return m;
+            const nextThinking = (m.thinking ?? "") + delta;
+            const prevBlocks = ensureBlocks(m);
+            const last = prevBlocks[prevBlocks.length - 1];
+            const nextBlocks: ChatMessageBlock[] =
+              last && last.type === "thinking"
+                ? [
+                    ...prevBlocks.slice(0, -1),
+                    { ...last, text: (last.text ?? "") + delta },
+                  ]
+                : [
+                    ...prevBlocks,
+                    {
+                      id: newId("b_thinking"),
+                      type: "thinking",
+                      text: delta,
+                    },
+                  ];
+            return { ...m, thinking: nextThinking, blocks: nextBlocks };
+          });
           return { ...c, messages, updatedAt: now() };
         });
         // thinking 也可能高频；同样不落盘。
@@ -152,7 +242,26 @@ export const useConversationStore = create<State>((set) => {
             const prev = Array.isArray(m.webSearch) ? m.webSearch : [];
             const idx = prev.findIndex((x) => x && x.id === ev.id);
             const next = idx >= 0 ? prev.map((x, i) => (i === idx ? { ...x, ...ev } : x)) : [...prev, ev];
-            return { ...m, webSearch: next };
+            const prevBlocks = ensureBlocks(m);
+            const existingIdx = prevBlocks.findIndex(
+              (b) => b.type === "web_search" && b.event?.id === ev.id,
+            );
+            const nextBlocks: ChatMessageBlock[] =
+              existingIdx >= 0
+                ? prevBlocks.map((b, i) =>
+                    i === existingIdx && b.type === "web_search"
+                      ? { ...b, event: { ...b.event, ...ev } }
+                      : b,
+                  )
+                : [
+                    ...prevBlocks,
+                    {
+                      id: `web_${ev.id}`,
+                      type: "web_search",
+                      event: ev,
+                    },
+                  ];
+            return { ...m, webSearch: next, blocks: nextBlocks };
           });
           return { ...c, messages, updatedAt: now() };
         });
@@ -183,7 +292,35 @@ export const useConversationStore = create<State>((set) => {
                 next.push(call);
               }
             }
-            return { ...m, toolCalls: next };
+            const byNextId = new Map(next.map((x) => [x.id, x] as const));
+            const prevBlocks = ensureBlocks(m);
+            const existingBlockIds = new Set(
+              prevBlocks
+                .filter((b): b is Extract<ChatMessageBlock, { type: "tool_call" }> => b.type === "tool_call")
+                .map((b) => b.call.id),
+            );
+
+            let nextBlocks = [...prevBlocks];
+            for (const call of calls) {
+              if (!call?.id) continue;
+              const merged = byNextId.get(call.id) ?? call;
+              if (existingBlockIds.has(call.id)) {
+                nextBlocks = nextBlocks.map((b) =>
+                  b.type === "tool_call" && b.call.id === call.id
+                    ? { ...b, call: { ...b.call, ...merged } }
+                    : b,
+                );
+                continue;
+              }
+              existingBlockIds.add(call.id);
+              nextBlocks.push({
+                id: `tool_${call.id}`,
+                type: "tool_call",
+                call: merged,
+              });
+            }
+
+            return { ...m, toolCalls: next, blocks: nextBlocks };
           });
           return { ...c, messages, updatedAt: now() };
         });
@@ -199,9 +336,51 @@ export const useConversationStore = create<State>((set) => {
             if (m.id !== messageId) return m;
             const prev = Array.isArray(m.toolCalls) ? m.toolCalls : [];
             const idx = prev.findIndex((x) => x && x.id === result.id);
-            if (idx < 0) return m;
-            const next = prev.map((x, i) => (i === idx ? { ...x, ...result } : x));
-            return { ...m, toolCalls: next };
+            const nextCalls =
+              idx >= 0
+                ? prev.map((x, i) => (i === idx ? { ...x, ...result } : x))
+                : result.name
+                  ? [
+                      ...prev,
+                      {
+                        id: result.id,
+                        name: result.name,
+                        arguments: "",
+                        output: result.output,
+                        error: result.error,
+                      },
+                    ]
+                  : prev;
+
+            const prevBlocks = ensureBlocks(m);
+            const blockIdx = prevBlocks.findIndex(
+              (b) => b.type === "tool_call" && b.call?.id === result.id,
+            );
+            const nextBlocks: ChatMessageBlock[] =
+              blockIdx >= 0
+                ? prevBlocks.map((b, i) =>
+                    i === blockIdx && b.type === "tool_call"
+                      ? { ...b, call: { ...b.call, ...result } }
+                      : b,
+                  )
+                : result.name
+                  ? [
+                      ...prevBlocks,
+                      {
+                        id: `tool_${result.id}`,
+                        type: "tool_call",
+                        call: {
+                          id: result.id,
+                          name: result.name,
+                          arguments: "",
+                          output: result.output,
+                          error: result.error,
+                        },
+                      },
+                    ]
+                  : prevBlocks;
+
+            return { ...m, toolCalls: nextCalls, blocks: nextBlocks };
           });
           return { ...c, messages, updatedAt: now() };
         });
@@ -224,9 +403,38 @@ export const useConversationStore = create<State>((set) => {
       set((s) => {
         const conversations = s.conversations.map((c) => {
           if (c.id !== conversationId) return c;
-          const messages = c.messages.map((m) =>
-            m.id === messageId ? { ...m, ...patch } : m,
-          );
+          const messages = c.messages.map((m) => {
+            if (m.id !== messageId) return m;
+            const nextMsg: ChatMessage = { ...m, ...patch };
+
+            let nextBlocks: ChatMessageBlock[] = Array.isArray(m.blocks) ? [...m.blocks] : [];
+
+            const hasThinkingBlock = nextBlocks.some((b) => b.type === "thinking" && b.text.trim());
+            const hasTextBlock = nextBlocks.some((b) => b.type === "text" && b.text.trim());
+
+            if (!hasThinkingBlock && typeof nextMsg.thinking === "string" && nextMsg.thinking.trim()) {
+              nextBlocks.push({
+                id: newId("b_thinking_final"),
+                type: "thinking",
+                text: nextMsg.thinking,
+              });
+            }
+
+            if (!hasTextBlock && typeof nextMsg.content === "string" && nextMsg.content.trim()) {
+              nextBlocks.push({
+                id: newId("b_text_final"),
+                type: "text",
+                format: "markdown",
+                text: nextMsg.content,
+              });
+            }
+
+            if (nextBlocks.length > 0) {
+              nextMsg.blocks = nextBlocks;
+            }
+
+            return nextMsg;
+          });
           return { ...c, messages, updatedAt: now() };
         });
         const next = { conversations, activeConversationId: s.activeConversationId };

@@ -505,6 +505,21 @@ fn extract_text_from_responses_response(resp: &ResponsesResponse) -> Result<Stri
     Ok(result)
 }
 
+fn extract_message_text_from_responses_response(resp: &ResponsesResponse) -> String {
+    let mut result = String::new();
+    for item in &resp.output {
+        let OutputItem::Message(msg) = item else {
+            continue;
+        };
+        for content in &msg.content {
+            if let ContentItem::OutputText { text } = content {
+                result.push_str(text);
+            }
+        }
+    }
+    result
+}
+
 fn parse_responses_sse_to_text(body: &str) -> Result<String, AiError> {
     let trimmed = body.trim_start();
     if !trimmed.starts_with("event:") && !trimmed.starts_with("data:") {
@@ -1102,6 +1117,40 @@ impl AiClient for OpenAiResponsesClient {
                                         .await;
                                 }
                             }
+                            "response.output_text.done" | "response.text.done" => {
+                                // Some gateways/providers may emit the full (or final) text via a `*.done`
+                                // event instead of streaming `*.delta` tokens. Treat it as a best-effort
+                                // delta while avoiding obvious duplication when the payload contains the
+                                // full accumulated text.
+                                let text = v
+                                    .get("text")
+                                    .and_then(|d| d.as_str())
+                                    .or_else(|| v.get("delta").and_then(|d| d.as_str()));
+                                if let Some(text) = text.filter(|t| !t.is_empty()) {
+                                    let mut emit: Option<&str> = None;
+                                    if full_content.is_empty() {
+                                        full_content.push_str(text);
+                                        emit = Some(text);
+                                    } else if text.len() > full_content.len()
+                                        && text.starts_with(full_content.as_str())
+                                    {
+                                        let suffix = &text[full_content.len()..];
+                                        if !suffix.is_empty() {
+                                            full_content.push_str(suffix);
+                                            emit = Some(suffix);
+                                        }
+                                    } else if !text.starts_with(full_content.as_str()) {
+                                        full_content.push_str(text);
+                                        emit = Some(text);
+                                    }
+
+                                    if let Some(delta) = emit {
+                                        let _ = token_sender
+                                            .send(StreamEvent::Token(delta.to_string()))
+                                            .await;
+                                    }
+                                }
+                            }
                             "response.text.delta" => {
                                 let delta = v
                                     .get("delta")
@@ -1251,6 +1300,24 @@ impl AiClient for OpenAiResponsesClient {
                                 return Err(AiError::StreamError(error_msg));
                             }
                             "response.completed" | "response.done" => {
+                                // Some gateways/providers only include the final text in the `response`
+                                // object (without streaming `output_text.delta`). If we haven't captured
+                                // any text yet, try to extract it here so callers won't see an "empty"
+                                // completion.
+                                if full_content.trim().is_empty() {
+                                    if let Some(resp) = v.get("response") {
+                                        if let Ok(parsed) =
+                                            serde_json::from_value::<ResponsesResponse>(resp.clone())
+                                        {
+                                            let text =
+                                                extract_message_text_from_responses_response(&parsed);
+                                            if !text.trim().is_empty() {
+                                                full_content = text;
+                                            }
+                                        }
+                                    }
+                                }
+
                                 // Capture usage from response.completed event (Responses API)
                                 if let Some(u) = v
                                     .get("response")

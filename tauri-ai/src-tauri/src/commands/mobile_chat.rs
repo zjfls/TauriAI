@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 
 use crate::ai_client::get_client;
-use crate::ai_client::{StreamEvent, StreamOptions, ToolCall, ToolDefinition};
+use crate::ai_client::{DebugInfoData, StreamEvent, StreamOptions, ToolCall, ToolDefinition};
 use crate::config::ConfigManager;
 use crate::models::{
     AppConfig, ContentPart, McpServerConfig, Message, MessageMeta, MessageRole, MessageStatus,
@@ -73,6 +73,66 @@ fn emit_mobile_stream_event(
 ) {
     // AppHandle.emit 会广播到所有窗口；移动端通常只有 main。
     let _ = app.emit("mobile_chat_stream", payload);
+}
+
+fn log_mobile(msg: impl AsRef<str>) {
+    eprintln!("[mobile][chat] {}", msg.as_ref());
+}
+
+fn summarize_debug_info(di: &DebugInfoData) -> String {
+    let mut parts: Vec<String> = Vec::new();
+
+    if let Some(st) = di.stream_termination.as_ref() {
+        parts.push(format!(
+            "streamTermination(protocol_complete={:?} source={:?} kind={:?} expected={:?} observed={:?} last_event={:?} chunks={:?})",
+            st.protocol_complete,
+            st.termination_source,
+            st.protocol_kind,
+            st.expected_signal,
+            st.observed_signal,
+            st.last_event_type,
+            st.chunk_count,
+        ));
+    }
+
+    if let Some(resp) = di.response.as_ref() {
+        parts.push(format!("http(status={})", resp.status));
+    }
+
+    if let Some(req) = di.request.as_ref() {
+        // Do NOT log request headers (contains Authorization).
+        parts.push(format!("req(url={}, method={})", req.url, req.method));
+        // Best-effort summarize request body shape (no full dump to avoid noisy logs).
+        if let Some(input) = req.body.get("input").and_then(|v| v.as_array()) {
+            let mut counts: HashMap<String, usize> = HashMap::new();
+            for item in input {
+                let ty = item
+                    .get("type")
+                    .and_then(|t| t.as_str())
+                    .map(|s| s.to_string())
+                    .or_else(|| {
+                        item.get("role")
+                            .and_then(|r| r.as_str())
+                            .map(|r| format!("message:{r}"))
+                    })
+                    .unwrap_or_else(|| "unknown".to_string());
+                *counts.entry(ty).or_default() += 1;
+            }
+            parts.push(format!("req.inputs(len={}, types={:?})", input.len(), counts));
+        } else if let Some(msgs) = req.body.get("messages").and_then(|v| v.as_array()) {
+            let mut counts: HashMap<String, usize> = HashMap::new();
+            for m in msgs {
+                let role = m
+                    .get("role")
+                    .and_then(|r| r.as_str())
+                    .unwrap_or("unknown");
+                *counts.entry(role.to_string()).or_default() += 1;
+            }
+            parts.push(format!("req.messages(len={}, roles={:?})", msgs.len(), counts));
+        }
+    }
+
+    parts.join(" ")
 }
 
 fn resolve_provider_model(cfg: &AppConfig, agent_name: Option<&str>) -> Option<(String, String)> {
@@ -765,6 +825,16 @@ pub async fn mobile_chat_stream_start(
     let user_text = find_last_user_text(&messages);
     let mut msgs = to_messages(&conversation_id, messages);
     prepend_agent_system_prompt(&cfg, &conversation_id, agent_name.as_deref(), &mut msgs);
+    log_mobile(format!(
+        "stream_start stream_id={} conv_id={} agent={:?} provider={} model={} tools_hint={} user_text_len={}",
+        stream_id,
+        conversation_id,
+        agent_name.as_deref(),
+        model_cfg.provider,
+        model_cfg.model,
+        if cfg.mcp.servers.iter().any(|s| s.config.enabled) { "mcp_on" } else { "mcp_off" },
+        user_text.len(),
+    ));
 
     // Cancel previous stream with same id if exists.
     {
@@ -876,6 +946,8 @@ pub async fn mobile_chat_stream_start(
             final_content = None;
             final_thinking = None;
             let mut saw_web_search = false;
+            let mut round_debug_info: Option<DebugInfoData> = None;
+            let mut round_turn_state: Option<String> = None;
 
             // 重要：不要额外 `tokio::spawn` 一个 chat_stream 任务，否则取消（abort）外层任务时，
             // chat_stream 仍可能继续跑，导致请求无法可靠取消、占用带宽/额度。
@@ -944,9 +1016,13 @@ pub async fn mobile_chat_stream_start(
                                 final_thinking = Some(thinking);
                                 terminal = Some("done");
                             }
-                            StreamEvent::DoneWithDebug { content, thinking, .. } => {
+                            StreamEvent::DoneWithDebug { content, thinking, debug_info, .. } => {
                                 final_content = Some(content);
                                 final_thinking = thinking;
+                                // Keep debug info for diagnosing "empty response" cases.
+                                if let Some(di) = debug_info {
+                                    round_debug_info = Some(di);
+                                }
                                 terminal = Some("done");
                             }
                             StreamEvent::Error(err) => {
@@ -967,7 +1043,12 @@ pub async fn mobile_chat_stream_start(
                                 terminal = Some("error");
                                 break;
                             }
-                            StreamEvent::TurnState(_) => {}
+                            StreamEvent::TurnState(state) => {
+                                let trimmed = state.trim();
+                                if !trimmed.is_empty() {
+                                    round_turn_state = Some(trimmed.to_string());
+                                }
+                            }
                             StreamEvent::ToolCalls(calls) => {
                                 let normalized = normalize_tool_calls(calls, model_rounds);
                                 emit_mobile_stream_event(
@@ -1052,6 +1133,26 @@ pub async fn mobile_chat_stream_start(
             } else if terminal != Some("error") {
                 // 空响应：在移动端偶发（尤其是 MCP 工具回合后续 turn），PC 端会把它当作可重试的流错误。
                 // 这里先做一个小范围的连续空轮次重试，避免“工具调用后任务直接结束”的体验。
+                if let Some(di) = round_debug_info.as_ref() {
+                    log_mobile(format!(
+                        "empty_round model_round={} tool_round={} provider={} model={} turn_state={:?} {}",
+                        model_rounds,
+                        tool_rounds,
+                        model_cfg.provider,
+                        model_cfg.model,
+                        round_turn_state.as_deref(),
+                        summarize_debug_info(di),
+                    ));
+                } else {
+                    log_mobile(format!(
+                        "empty_round model_round={} tool_round={} provider={} model={} turn_state={:?} (no debug_info)",
+                        model_rounds,
+                        tool_rounds,
+                        model_cfg.provider,
+                        model_cfg.model,
+                        round_turn_state.as_deref(),
+                    ));
+                }
                 empty_model_rounds = empty_model_rounds.saturating_add(1);
                 if empty_model_rounds <= max_empty_model_rounds {
                     terminal = None;
@@ -1118,11 +1219,23 @@ pub async fn mobile_chat_stream_start(
                     }
 
                     // Append an assistant message that carries tool_calls (OpenAI-compatible).
+                    let round_content = if content_buf.len() > content_len_before_round {
+                        content_buf[content_len_before_round..].to_string()
+                    } else {
+                        String::new()
+                    };
+                    log_mobile(format!(
+                        "tool_calls model_round={} tool_round={} calls={} round_content_len={}",
+                        model_rounds,
+                        tool_rounds,
+                        calls.len(),
+                        round_content.len(),
+                    ));
                     model_messages.push(Message {
                         id: uuid::Uuid::new_v4().to_string(),
                         conversation_id: conversation_id2.clone(),
                         role: MessageRole::Assistant,
-                        content: String::new(),
+                        content: round_content,
                         content_parts: Vec::new(),
                         thinking: None,
                         meta: Some(MessageMeta {
@@ -1138,6 +1251,12 @@ pub async fn mobile_chat_stream_start(
                         let call_id = call.id.clone();
                         let call_name = call.name.clone();
 
+                        log_mobile(format!(
+                            "mcp_call_start id={} name={} args_len={}",
+                            call_id,
+                            call_name,
+                            call.arguments.len(),
+                        ));
                         let binding = match tool_bindings.get(call.name.as_str()).cloned() {
                             Some(b) => b,
                             None => {
@@ -1214,6 +1333,12 @@ pub async fn mobile_chat_stream_start(
 
                         let output =
                             serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string());
+                        log_mobile(format!(
+                            "mcp_call_done id={} name={} output_len={}",
+                            call_id,
+                            call_name,
+                            output.len(),
+                        ));
 
                         emit_mobile_stream_event(
                             &app2,
