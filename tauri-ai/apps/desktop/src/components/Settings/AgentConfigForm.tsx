@@ -31,10 +31,19 @@ const defaultAgent: Agent = {
   workspaceSupport: undefined,
 };
 
+type AgentCategory = 'chat' | 'workspace';
+
+/** Workspace AI = tool agents with workspaceSupport not explicitly disabled */
+const isWorkspaceAgent = (a: Agent) =>
+  (a.type ?? 'chat') === 'tool' && (a.workspaceSupport !== false);
+
 export const AgentConfigForm: React.FC = () => {
   const { config, getModelOptions, saveConfigDebounced } = useConfigStore();
-  const [selectedAgentName, setSelectedAgentName] = useState<string | null>(null);
+  const [agentCategory, setAgentCategory] = useState<AgentCategory>('chat');
+  const [selectedAgentNameChat, setSelectedAgentNameChat] = useState<string | null>(null);
+  const [selectedAgentNameWs, setSelectedAgentNameWs] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+
 
   const agents = config?.agents || [];
   const defaultAgentName = config?.defaultAgent || '';
@@ -43,16 +52,33 @@ export const AgentConfigForm: React.FC = () => {
   const mcpSetOptions = (config?.mcp?.sets ?? []).map((s) => ({ label: s.name, value: s.name }));
   const skillSetOptions = (config?.skills?.sets ?? []).map((s) => ({ label: s.name, value: s.name }));
 
-  const filteredAgents = agents.filter(a =>
+  // Split agents by category
+  const chatAgents = agents.filter((a) => !isWorkspaceAgent(a));
+  const workspaceAgents = agents.filter(isWorkspaceAgent);
+  const activeList = agentCategory === 'chat' ? chatAgents : workspaceAgents;
+
+  const selectedAgentName = agentCategory === 'chat' ? selectedAgentNameChat : selectedAgentNameWs;
+  const setSelectedAgentName = agentCategory === 'chat' ? setSelectedAgentNameChat : setSelectedAgentNameWs;
+
+  const filteredAgents = activeList.filter(a =>
     a.displayName.toLowerCase().includes(searchQuery.toLowerCase()) ||
     a.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
+  // Auto-select first in each category
   useEffect(() => {
-    if (agents.length > 0 && !selectedAgentName) {
-      setSelectedAgentName(agents[0].name);
+    if (chatAgents.length > 0 && !selectedAgentNameChat) {
+      setSelectedAgentNameChat(chatAgents[0].name);
     }
-  }, [agents, selectedAgentName]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatAgents.length, selectedAgentNameChat]);
+
+  useEffect(() => {
+    if (workspaceAgents.length > 0 && !selectedAgentNameWs) {
+      setSelectedAgentNameWs(workspaceAgents[0].name);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceAgents.length, selectedAgentNameWs]);
 
   const handleSelectAgent = (name: string) => {
     setSelectedAgentName(name);
@@ -73,6 +99,10 @@ export const AgentConfigForm: React.FC = () => {
       ...defaultAgent,
       name,
       displayName: name,
+      // Workspace AI agents default to tool type + workspaceSupport
+      ...(agentCategory === 'workspace'
+        ? { type: 'tool' as AgentType, workspaceSupport: true }
+        : {}),
     };
 
     saveConfigDebounced({ ...config, agents: [...agents, created], defaultAgent: config.defaultAgent || name });
@@ -89,7 +119,10 @@ export const AgentConfigForm: React.FC = () => {
           ? nextAgents[0]?.name ?? ''
           : config.defaultAgent;
       saveConfigDebounced({ ...config, agents: nextAgents, defaultAgent: nextDefault });
-      setSelectedAgentName(nextAgents[0]?.name ?? null);
+      const nextInCategory = nextAgents.filter(
+        agentCategory === 'workspace' ? isWorkspaceAgent : (a) => !isWorkspaceAgent(a)
+      );
+      setSelectedAgentName(nextInCategory[0]?.name ?? null);
     }
   };
 
@@ -130,104 +163,149 @@ export const AgentConfigForm: React.FC = () => {
   const currentAgent = agents.find(a => a.name === selectedAgentName);
 
   return (
-    <div className="flex gap-6 h-full">
-      {/* Agent List */}
-      <div className="w-64 flex-shrink-0 flex flex-col">
-        <div className="mb-3">
-          <div className="relative">
-            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-            <input
-              type="text"
-              placeholder="搜索智能体..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-9 pr-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm"
-            />
-          </div>
-        </div>
-
-        <div className="flex-1 space-y-1 overflow-auto">
-          {filteredAgents.map((agent) => (
-            <div
-              key={agent.name}
-              onClick={() => handleSelectAgent(agent.name)}
-              className={`flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer transition-colors ${selectedAgentName === agent.name
-                  ? 'bg-blue-100 dark:bg-blue-900/50'
-                  : 'hover:bg-gray-100 dark:hover:bg-gray-700'
-                }`}
-            >
-              <span className={`text-sm truncate ${agent.enabled === false ? 'opacity-50' : ''}`}>
-                {agent.displayName}
-              </span>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (!config) return;
-                    const nextAgents = agents.map((a) =>
-                      a.name === agent.name ? { ...a, enabled: !(a.enabled ?? true) } : a
-                    );
-                    saveConfigDebounced({ ...config, agents: nextAgents });
-                  }}
-                  className={`relative w-10 h-5 rounded-full transition-colors ${(agent.enabled ?? true)
-                      ? 'bg-blue-600'
-                      : 'bg-gray-300 dark:bg-gray-600'
-                    }`}
-                  title={(agent.enabled ?? true) ? '已激活，点击关闭' : '已关闭，点击激活'}
-                >
-                  <span
-                    className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${(agent.enabled ?? true) ? 'translate-x-5' : ''}`}
-                  />
-                </button>
-                {agent.name === defaultAgentName && (
-                  <Star size={14} className="text-yellow-500 fill-yellow-500" />
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-
-        <button
-          onClick={handleCreateNew}
-          className="mt-3 flex items-center justify-center gap-2 w-full py-2 rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 text-gray-500 hover:border-blue-500 hover:text-blue-500 transition-colors"
-        >
-          <Plus size={16} />
-          <span className="text-sm">添加智能体</span>
-        </button>
+    <div className="flex flex-col h-full gap-0">
+      {/* Sub-tab bar */}
+      <div className="flex items-center gap-0 border-b border-gray-200 dark:border-gray-700 mb-4">
+        {([
+          { id: 'chat' as AgentCategory, label: '聊天智能体', count: chatAgents.length },
+          { id: 'workspace' as AgentCategory, label: 'Workspace AI', count: workspaceAgents.length },
+        ] as const).map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => { setAgentCategory(tab.id); setSearchQuery(''); }}
+            className={[
+              'px-5 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors',
+              agentCategory === tab.id
+                ? 'border-blue-500 text-blue-600 dark:text-blue-400'
+                : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200',
+            ].join(' ')}
+          >
+            {tab.label}
+            <span className="ml-1.5 rounded-full bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 text-[11px] text-gray-500 dark:text-gray-300">
+              {tab.count}
+            </span>
+          </button>
+        ))}
       </div>
 
-      {/* Agent Form */}
-      <div className="flex-1 min-w-0">
-        {currentAgent ? (
-          <AgentForm
-            agent={currentAgent}
-            isEditing={true}
-            isDefault={currentAgent.name === defaultAgentName}
-            modelOptions={modelOptions}
-            toolsetOptions={toolsetOptions}
-            mcpSetOptions={mcpSetOptions}
-            skillSetOptions={skillSetOptions}
-            skillSets={config?.skills?.sets ?? []}
-            securityPolicies={config?.security?.policies ?? []}
-            defaultSecurityPolicyName={config?.security?.defaultPolicy ?? ''}
-            onDuplicate={handleDuplicate}
-            onDelete={handleDelete}
-            onSetDefault={handleSetDefault}
-            onFieldChange={(field, value) => {
-              if (!config) return;
-              if (!selectedAgentName) return;
-              const nextAgents = agents.map((a) =>
-                a.name === selectedAgentName ? { ...a, [field]: value } : a
-              );
-              saveConfigDebounced({ ...config, agents: nextAgents });
-            }}
-          />
-        ) : (
-          <div className="flex items-center justify-center h-64 text-gray-500">
-            {agents.length === 0 ? '点击添加第一个智能体' : '选择一个智能体'}
+      <div className="flex gap-6 flex-1 min-h-0">
+        {/* Agent List */}
+        <div className="w-64 flex-shrink-0 flex flex-col">
+          <div className="mb-3">
+            <div className="relative">
+              <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+              <input
+                type="text"
+                placeholder={agentCategory === 'workspace' ? '搜索 Workspace AI...' : '搜索聊天智能体...'}
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full pl-9 pr-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm"
+              />
+            </div>
           </div>
-        )}
+
+          <div className="flex-1 space-y-1 overflow-auto">
+            {filteredAgents.map((agent) => (
+              <div
+                key={agent.name}
+                onClick={() => handleSelectAgent(agent.name)}
+                className={`flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer transition-colors ${selectedAgentName === agent.name
+                  ? 'bg-blue-100 dark:bg-blue-900/50'
+                  : 'hover:bg-gray-100 dark:hover:bg-gray-700'
+                  }`}
+              >
+                <span className={`text-sm truncate ${agent.enabled === false ? 'opacity-50' : ''}`}>
+                  {agent.displayName}
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (!config) return;
+                      const nextAgents = agents.map((a) =>
+                        a.name === agent.name ? { ...a, enabled: !(a.enabled ?? true) } : a
+                      );
+                      saveConfigDebounced({ ...config, agents: nextAgents });
+                    }}
+                    className={`relative w-10 h-5 rounded-full transition-colors ${(agent.enabled ?? true)
+                      ? 'bg-blue-600'
+                      : 'bg-gray-300 dark:bg-gray-600'
+                      }`}
+                    title={(agent.enabled ?? true) ? '已激活，点击关闭' : '已关闭，点击激活'}
+                  >
+                    <span
+                      className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${(agent.enabled ?? true) ? 'translate-x-5' : ''}`}
+                    />
+                  </button>
+                  {agent.name === defaultAgentName && (
+                    <Star size={14} className="text-yellow-500 fill-yellow-500" />
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <button
+            onClick={handleCreateNew}
+            className="mt-3 flex items-center justify-center gap-2 w-full py-2 rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 text-gray-500 hover:border-blue-500 hover:text-blue-500 transition-colors"
+          >
+            <Plus size={16} />
+            <span className="text-sm">
+              {agentCategory === 'workspace' ? '添加 Workspace AI' : '添加智能体'}
+            </span>
+          </button>
+        </div>
+
+        {/* Agent Form */}
+        <div className="flex-1 min-w-0 overflow-auto">
+          {currentAgent ? (
+            <AgentForm
+              agent={currentAgent}
+              isEditing={true}
+              isDefault={currentAgent.name === defaultAgentName}
+              modelOptions={modelOptions}
+              toolsetOptions={toolsetOptions}
+              mcpSetOptions={mcpSetOptions}
+              skillSetOptions={skillSetOptions}
+              skillSets={config?.skills?.sets ?? []}
+              securityPolicies={config?.security?.policies ?? []}
+              defaultSecurityPolicyName={config?.security?.defaultPolicy ?? ''}
+              onDuplicate={handleDuplicate}
+              onDelete={handleDelete}
+              onSetDefault={handleSetDefault}
+              onFieldChange={(field, value) => {
+                if (!config) return;
+                if (!selectedAgentName) return;
+                const nextAgents = agents.map((a) =>
+                  a.name === selectedAgentName ? { ...a, [field]: value } : a
+                );
+                saveConfigDebounced({ ...config, agents: nextAgents });
+              }}
+            />
+          ) : (
+            <div className="flex flex-col items-center justify-center h-64 gap-3 text-gray-500">
+              <p>
+                {activeList.length === 0
+                  ? agentCategory === 'workspace'
+                    ? '还没有 Workspace AI 智能体'
+                    : '点击添加第一个聊天智能体'
+                  : '选择一个智能体'}
+              </p>
+              {activeList.length === 0 && (
+                <button
+                  type="button"
+                  onClick={handleCreateNew}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 text-white text-sm hover:bg-blue-700"
+                >
+                  <Plus size={14} />
+                  {agentCategory === 'workspace' ? '创建 Workspace AI 智能体' : '创建智能体'}
+                </button>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -507,9 +585,9 @@ const AgentForm: React.FC<AgentFormProps> = ({
                 </option>
               ))}
             </select>
-              <p className="text-xs text-gray-500">
-                {supportsToolset ? '未绑定时默认 allow_all（再由工具权限过滤）。' : '仅 Tool 类型可绑定 toolset。'}
-              </p>
+            <p className="text-xs text-gray-500">
+              {supportsToolset ? '未绑定时默认 allow_all（再由工具权限过滤）。' : '仅 Tool 类型可绑定 toolset。'}
+            </p>
           </div>
         </div>
 
@@ -522,7 +600,7 @@ const AgentForm: React.FC<AgentFormProps> = ({
               onFieldChange('defaultRunMode', raw ? (raw as RunMode) : undefined);
             }}
             disabled={!isEditing}
-          className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800"
+            className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800"
           >
             <option value="">（自动：Tool→Agent，Chat→Chat）</option>
             {runModeOptions.map((opt) => (
@@ -819,212 +897,212 @@ const AgentForm: React.FC<AgentFormProps> = ({
 
           {contextPolicyType === 'normal_compact' && (
             <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-900/30 space-y-3">
-	              <div className="flex items-center justify-between">
-	                <div className="text-sm font-medium text-gray-800 dark:text-gray-200">Normal Compact</div>
-	                <div className="flex items-center gap-2">
-	                  <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
-	                    <input
-	                      type="checkbox"
-	                      checked={Boolean(normalCompactPolicy?.enabled ?? true)}
-	                      onChange={(e) =>
-	                        onFieldChange('contextPolicy', {
-	                          ...(normalCompactPolicy ?? { type: 'normal_compact' }),
-	                          enabled: e.target.checked,
-	                        })
-	                      }
-	                      disabled={!isEditing}
-	                      className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
-	                    />
-	                    启用
-	                  </label>
-	                </div>
-	              </div>
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-medium text-gray-800 dark:text-gray-200">Normal Compact</div>
+                <div className="flex items-center gap-2">
+                  <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(normalCompactPolicy?.enabled ?? true)}
+                      onChange={(e) =>
+                        onFieldChange('contextPolicy', {
+                          ...(normalCompactPolicy ?? { type: 'normal_compact' }),
+                          enabled: e.target.checked,
+                        })
+                      }
+                      disabled={!isEditing}
+                      className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
+                    />
+                    启用
+                  </label>
+                </div>
+              </div>
 
-	              <div className="space-y-3">
-	                {/* Trim (hard limit for runtime prompt; does NOT mutate history) */}
-	                <div className="rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-900/40 space-y-2">
-	                  <div className="flex items-center justify-between">
-	                    <div className="text-xs font-medium text-gray-700 dark:text-gray-300">硬裁剪（Trim）</div>
-	                    <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
-	                      <input
-	                        type="checkbox"
-	                        checked={Boolean(normalCompactPolicy?.trimEnabled ?? true)}
-	                        onChange={(e) =>
-	                          onFieldChange('contextPolicy', {
-	                            ...(normalCompactPolicy ?? { type: 'normal_compact' }),
-	                            trimEnabled: e.target.checked,
-	                          })
-	                        }
-	                        disabled={!isEditing || !(normalCompactPolicy?.enabled ?? true)}
-	                        className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
-	                      />
-	                      启用硬裁剪
-	                    </label>
-	                  </div>
+              <div className="space-y-3">
+                {/* Trim (hard limit for runtime prompt; does NOT mutate history) */}
+                <div className="rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-900/40 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs font-medium text-gray-700 dark:text-gray-300">硬裁剪（Trim）</div>
+                    <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(normalCompactPolicy?.trimEnabled ?? true)}
+                        onChange={(e) =>
+                          onFieldChange('contextPolicy', {
+                            ...(normalCompactPolicy ?? { type: 'normal_compact' }),
+                            trimEnabled: e.target.checked,
+                          })
+                        }
+                        disabled={!isEditing || !(normalCompactPolicy?.enabled ?? true)}
+                        className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
+                      />
+                      启用硬裁剪
+                    </label>
+                  </div>
 
-	                  <div className="grid grid-cols-2 gap-3">
-	                    <div className="space-y-1">
-	                      <label className="block text-xs text-gray-600 dark:text-gray-400">硬上限（%）</label>
-	                      <input
-	                        type="number"
-	                        min={1}
-	                        max={99}
-	                        value={normalCompactPolicy?.hardLimitPercent ?? 90}
-	                        onChange={(e) =>
-	                          onFieldChange('contextPolicy', {
-	                            ...(normalCompactPolicy ?? { type: 'normal_compact' }),
-	                            hardLimitPercent: Number(e.target.value || 90),
-	                          })
-	                        }
-	                        disabled={
-	                          !isEditing ||
-	                          !(normalCompactPolicy?.enabled ?? true) ||
-	                          !(normalCompactPolicy?.trimEnabled ?? true)
-	                        }
-	                        className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800 text-sm"
-	                      />
-	                      <p className="text-xs text-gray-500">
-	                        仅影响本次请求的 runtime prompt：会删除更老的非 system 消息，避免超窗；不会改写历史。
-	                      </p>
-	                    </div>
-	                  </div>
-	                </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="block text-xs text-gray-600 dark:text-gray-400">硬上限（%）</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={99}
+                        value={normalCompactPolicy?.hardLimitPercent ?? 90}
+                        onChange={(e) =>
+                          onFieldChange('contextPolicy', {
+                            ...(normalCompactPolicy ?? { type: 'normal_compact' }),
+                            hardLimitPercent: Number(e.target.value || 90),
+                          })
+                        }
+                        disabled={
+                          !isEditing ||
+                          !(normalCompactPolicy?.enabled ?? true) ||
+                          !(normalCompactPolicy?.trimEnabled ?? true)
+                        }
+                        className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800 text-sm"
+                      />
+                      <p className="text-xs text-gray-500">
+                        仅影响本次请求的 runtime prompt：会删除更老的非 system 消息，避免超窗；不会改写历史。
+                      </p>
+                    </div>
+                  </div>
+                </div>
 
-	                {/* Compaction (rewrite older history into a summary message) */}
-	                <div className="rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-900/40 space-y-2">
-	                  <div className="flex items-center justify-between">
-	                    <div className="text-xs font-medium text-gray-700 dark:text-gray-300">历史压缩（Compact）</div>
-	                    <div className="flex items-center gap-3">
-	                      <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
-	                        <input
-	                          type="checkbox"
-	                          checked={Boolean(normalCompactPolicy?.compactEnabled ?? true)}
-	                          onChange={(e) =>
-	                            onFieldChange('contextPolicy', {
-	                              ...(normalCompactPolicy ?? { type: 'normal_compact' }),
-	                              compactEnabled: e.target.checked,
-	                            })
-	                          }
-	                          disabled={!isEditing || !(normalCompactPolicy?.enabled ?? true)}
-	                          className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
-	                        />
-	                        启用 compact
-	                      </label>
-	                      <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
-	                        <input
-	                          type="checkbox"
-	                          checked={Boolean(normalCompactPolicy?.autoCompact ?? true)}
-	                          onChange={(e) =>
-	                            onFieldChange('contextPolicy', {
-	                              ...(normalCompactPolicy ?? { type: 'normal_compact' }),
-	                              autoCompact: e.target.checked,
-	                            })
-	                          }
-	                          disabled={
-	                            !isEditing ||
-	                            !(normalCompactPolicy?.enabled ?? true) ||
-	                            !(normalCompactPolicy?.compactEnabled ?? true)
-	                          }
-	                          className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
-	                        />
-	                        自动 compact
-	                      </label>
-	                    </div>
-	                  </div>
+                {/* Compaction (rewrite older history into a summary message) */}
+                <div className="rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-900/40 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs font-medium text-gray-700 dark:text-gray-300">历史压缩（Compact）</div>
+                    <div className="flex items-center gap-3">
+                      <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(normalCompactPolicy?.compactEnabled ?? true)}
+                          onChange={(e) =>
+                            onFieldChange('contextPolicy', {
+                              ...(normalCompactPolicy ?? { type: 'normal_compact' }),
+                              compactEnabled: e.target.checked,
+                            })
+                          }
+                          disabled={!isEditing || !(normalCompactPolicy?.enabled ?? true)}
+                          className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
+                        />
+                        启用 compact
+                      </label>
+                      <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(normalCompactPolicy?.autoCompact ?? true)}
+                          onChange={(e) =>
+                            onFieldChange('contextPolicy', {
+                              ...(normalCompactPolicy ?? { type: 'normal_compact' }),
+                              autoCompact: e.target.checked,
+                            })
+                          }
+                          disabled={
+                            !isEditing ||
+                            !(normalCompactPolicy?.enabled ?? true) ||
+                            !(normalCompactPolicy?.compactEnabled ?? true)
+                          }
+                          className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
+                        />
+                        自动 compact
+                      </label>
+                    </div>
+                  </div>
 
-	                  <div className="grid grid-cols-2 gap-3">
-	                    <div className="space-y-1">
-	                      <label className="block text-xs text-gray-600 dark:text-gray-400">触发阈值（%）</label>
-	                      <input
-	                        type="number"
-	                        min={1}
-	                        max={99}
-	                        value={normalCompactPolicy?.autoCompactThresholdPercent ?? 85}
-	                        onChange={(e) =>
-	                          onFieldChange('contextPolicy', {
-	                            ...(normalCompactPolicy ?? { type: 'normal_compact' }),
-	                            autoCompactThresholdPercent: Number(e.target.value || 85),
-	                          })
-	                        }
-	                        disabled={
-	                          !isEditing ||
-	                          !(normalCompactPolicy?.enabled ?? true) ||
-	                          !(normalCompactPolicy?.compactEnabled ?? true) ||
-	                          !(normalCompactPolicy?.autoCompact ?? true)
-	                        }
-	                        className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800 text-sm"
-	                      />
-	                    </div>
-	                    <div className="space-y-1">
-	                      <label className="block text-xs text-gray-600 dark:text-gray-400">保留最近消息数</label>
-	                      <input
-	                        type="number"
-	                        min={5}
-	                        max={200}
-	                        value={normalCompactPolicy?.keepLastMessages ?? 60}
-	                        onChange={(e) =>
-	                          onFieldChange('contextPolicy', {
-	                            ...(normalCompactPolicy ?? { type: 'normal_compact' }),
-	                            keepLastMessages: Number(e.target.value || 60),
-	                          })
-	                        }
-	                        disabled={
-	                          !isEditing ||
-	                          !(normalCompactPolicy?.enabled ?? true) ||
-	                          !(normalCompactPolicy?.compactEnabled ?? true)
-	                        }
-	                        className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800 text-sm"
-	                      />
-	                    </div>
-	                    <div className="space-y-1">
-	                      <label className="block text-xs text-gray-600 dark:text-gray-400">摘要 max_tokens</label>
-	                      <input
-	                        type="number"
-	                        min={64}
-	                        max={4096}
-	                        value={normalCompactPolicy?.maxSummaryTokens ?? 800}
-	                        onChange={(e) =>
-	                          onFieldChange('contextPolicy', {
-	                            ...(normalCompactPolicy ?? { type: 'normal_compact' }),
-	                            maxSummaryTokens: Number(e.target.value || 800),
-	                          })
-	                        }
-	                        disabled={
-	                          !isEditing ||
-	                          !(normalCompactPolicy?.enabled ?? true) ||
-	                          !(normalCompactPolicy?.compactEnabled ?? true)
-	                        }
-	                        className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800 text-sm"
-	                      />
-	                    </div>
-	                    <div className="space-y-1">
-	                      <label className="block text-xs text-gray-600 dark:text-gray-400">compact 输入消息上限</label>
-	                      <input
-	                        type="number"
-	                        min={50}
-	                        max={5000}
-	                        value={normalCompactPolicy?.maxCompactInputMessages ?? 400}
-	                        onChange={(e) =>
-	                          onFieldChange('contextPolicy', {
-	                            ...(normalCompactPolicy ?? { type: 'normal_compact' }),
-	                            maxCompactInputMessages: Number(e.target.value || 400),
-	                          })
-	                        }
-	                        disabled={
-	                          !isEditing ||
-	                          !(normalCompactPolicy?.enabled ?? true) ||
-	                          !(normalCompactPolicy?.compactEnabled ?? true)
-	                        }
-	                        className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800 text-sm"
-	                      />
-	                    </div>
-	                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="block text-xs text-gray-600 dark:text-gray-400">触发阈值（%）</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={99}
+                        value={normalCompactPolicy?.autoCompactThresholdPercent ?? 85}
+                        onChange={(e) =>
+                          onFieldChange('contextPolicy', {
+                            ...(normalCompactPolicy ?? { type: 'normal_compact' }),
+                            autoCompactThresholdPercent: Number(e.target.value || 85),
+                          })
+                        }
+                        disabled={
+                          !isEditing ||
+                          !(normalCompactPolicy?.enabled ?? true) ||
+                          !(normalCompactPolicy?.compactEnabled ?? true) ||
+                          !(normalCompactPolicy?.autoCompact ?? true)
+                        }
+                        className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800 text-sm"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="block text-xs text-gray-600 dark:text-gray-400">保留最近消息数</label>
+                      <input
+                        type="number"
+                        min={5}
+                        max={200}
+                        value={normalCompactPolicy?.keepLastMessages ?? 60}
+                        onChange={(e) =>
+                          onFieldChange('contextPolicy', {
+                            ...(normalCompactPolicy ?? { type: 'normal_compact' }),
+                            keepLastMessages: Number(e.target.value || 60),
+                          })
+                        }
+                        disabled={
+                          !isEditing ||
+                          !(normalCompactPolicy?.enabled ?? true) ||
+                          !(normalCompactPolicy?.compactEnabled ?? true)
+                        }
+                        className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800 text-sm"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="block text-xs text-gray-600 dark:text-gray-400">摘要 max_tokens</label>
+                      <input
+                        type="number"
+                        min={64}
+                        max={4096}
+                        value={normalCompactPolicy?.maxSummaryTokens ?? 800}
+                        onChange={(e) =>
+                          onFieldChange('contextPolicy', {
+                            ...(normalCompactPolicy ?? { type: 'normal_compact' }),
+                            maxSummaryTokens: Number(e.target.value || 800),
+                          })
+                        }
+                        disabled={
+                          !isEditing ||
+                          !(normalCompactPolicy?.enabled ?? true) ||
+                          !(normalCompactPolicy?.compactEnabled ?? true)
+                        }
+                        className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800 text-sm"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="block text-xs text-gray-600 dark:text-gray-400">compact 输入消息上限</label>
+                      <input
+                        type="number"
+                        min={50}
+                        max={5000}
+                        value={normalCompactPolicy?.maxCompactInputMessages ?? 400}
+                        onChange={(e) =>
+                          onFieldChange('contextPolicy', {
+                            ...(normalCompactPolicy ?? { type: 'normal_compact' }),
+                            maxCompactInputMessages: Number(e.target.value || 400),
+                          })
+                        }
+                        disabled={
+                          !isEditing ||
+                          !(normalCompactPolicy?.enabled ?? true) ||
+                          !(normalCompactPolicy?.compactEnabled ?? true)
+                        }
+                        className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800 text-sm"
+                      />
+                    </div>
+                  </div>
 
-		                  <p className="text-xs text-gray-500">
-		                    compact 不会删除原始历史：后端会新增一条摘要消息，并在构建 runtime prompt 时优先使用摘要来跳过更早消息；随后本次请求仍会按硬上限做裁剪以避免超窗。
-		                  </p>
-	                </div>
-	              </div>
+                  <p className="text-xs text-gray-500">
+                    compact 不会删除原始历史：后端会新增一条摘要消息，并在构建 runtime prompt 时优先使用摘要来跳过更早消息；随后本次请求仍会按硬上限做裁剪以避免超窗。
+                  </p>
+                </div>
+              </div>
             </div>
           )}
 
