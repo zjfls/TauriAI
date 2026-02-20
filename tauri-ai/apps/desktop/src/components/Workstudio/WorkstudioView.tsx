@@ -972,12 +972,12 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         prev.map((b) =>
           b.id === id
             ? {
-                ...b,
-                status: 'done',
-                answer: res.answer,
-                modelRef: res.modelRef,
-                latencyMs: res.latencyMs,
-              }
+              ...b,
+              status: 'done',
+              answer: res.answer,
+              modelRef: res.modelRef,
+              latencyMs: res.latencyMs,
+            }
             : b
         )
       );
@@ -994,8 +994,8 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   }, [workstudioId]);
   const terminalSessionId = useTerminalSessionStore((s) => (terminalScope ? s.getSessionId(terminalScope) : null));
 
-	  const keyboardShortcuts = useConfigStore((s) => s.config?.general?.keyboardShortcuts);
-	  const codeIntelligenceConfig = useConfigStore((s) => s.config?.codeIntelligence);
+  const keyboardShortcuts = useConfigStore((s) => s.config?.general?.keyboardShortcuts);
+  const codeIntelligenceConfig = useConfigStore((s) => s.config?.codeIntelligence);
 
   // 某些 Monaco 选项（如 suggest/wordBasedSuggestions）在 React wrapper 下更新不一定稳定，
   // 这里显式对已挂载的 editor 实例执行 updateOptions，确保设置切换立即生效。
@@ -1164,14 +1164,14 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   >(null);
   const [outlineMenu, setOutlineMenu] = useState<
     | {
-        visible: true;
-        x: number;
-        y: number;
-        filePath: string;
-        languageId: string;
-        item: OutlineItem;
-        analysis: WorkstudioSymbolAnalysis | null | undefined;
-      }
+      visible: true;
+      x: number;
+      y: number;
+      filePath: string;
+      languageId: string;
+      item: OutlineItem;
+      analysis: WorkstudioSymbolAnalysis | null | undefined;
+    }
     | null
   >(null);
   const [symbolAnalysisCache, setSymbolAnalysisCache] = useState<Record<string, WorkstudioSymbolAnalysis | null>>({});
@@ -1335,13 +1335,13 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       panes.length > 0
         ? panes
         : [
-            {
-              id: fallbackPaneIdRef.current,
-              tabIds: [],
-              activeTabId: null,
-              weight: 1,
-            } satisfies WindowPane,
-          ];
+          {
+            id: fallbackPaneIdRef.current,
+            tabIds: [],
+            activeTabId: null,
+            weight: 1,
+          } satisfies WindowPane,
+        ];
 
     const assigned = new Set<string>();
     const cleaned: WindowPane[] = base.map((p) => {
@@ -1780,7 +1780,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       setEntriesByDir((prev) => ({ ...prev, [dirPath]: entries }));
     } catch (error) {
       const msg = toErrorMessage(error);
-      console.error('list_local_directory failed:', { dirPath, error });
+      console.warn('list_local_directory failed (directory might have been deleted/moved):', { dirPath, error });
       setDirErrors((prev) => ({ ...prev, [dirPath]: msg }));
       setEntriesByDir((prev) => ({ ...prev, [dirPath]: [] }));
     } finally {
@@ -2168,8 +2168,8 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     };
     const shouldRecordSameFileJump = Boolean(
       prevLocationForHistory &&
-        prevLocationForHistory.tabId === targetLocationForHistory.tabId &&
-        isMeaningfulNavTransition(prevLocationForHistory, targetLocationForHistory)
+      prevLocationForHistory.tabId === targetLocationForHistory.tabId &&
+      isMeaningfulNavTransition(prevLocationForHistory, targetLocationForHistory)
     );
 
     const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
@@ -2301,9 +2301,9 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           rawEndLine === null && rawEndColumn === null
             ? startColumn
             : clampCol(
-                endLineNumber,
-                typeof rawEndColumn === 'number' ? rawEndColumn : model.getLineMaxColumn(endLineNumber)
-              );
+              endLineNumber,
+              typeof rawEndColumn === 'number' ? rawEndColumn : model.getLineMaxColumn(endLineNumber)
+            );
 
         const sel = (() => {
           if (endLineNumber < startLineNumber) {
@@ -2341,40 +2341,40 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       }
     };
 
-      const applyWithWait = async (openedFileId: string | null, expectedPath: string) => {
-        const startAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
-        const timeoutMs = 8000;
+    const applyWithWait = async (openedFileId: string | null, expectedPath: string) => {
+      const startAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      const timeoutMs = 8000;
 
-        // VS Code-like：在跳转时把目标 Pane 设为聚焦（确保 editor mount / focus 链路稳定）
-        if (useWindowLayoutStore.getState().focusedPaneId !== paneId) {
-          useWindowLayoutStore.getState().setFocusedPane(paneId);
-        }
+      // VS Code-like：在跳转时把目标 Pane 设为聚焦（确保 editor mount / focus 链路稳定）
+      if (useWindowLayoutStore.getState().focusedPaneId !== paneId) {
+        useWindowLayoutStore.getState().setFocusedPane(paneId);
+      }
 
-        while (openLinkSeqRef.current === seq) {
-          const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
-          if (now - startAt > timeoutMs) {
-            dbg('applyWithWait:timeout', {
-              seq,
-              paneId,
-              openedFileId,
-              expectedPath,
-              timeoutMs,
-              visibility: typeof document !== 'undefined' ? document.visibilityState : null,
-            });
-            if (typeof target.line === 'number' && target.line > 0) {
-              setOpenFromLinkError(`定位到行超时（${timeoutMs}ms）：${target.filePath}:${target.line}`);
-            }
-            return;
+      while (openLinkSeqRef.current === seq) {
+        const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        if (now - startAt > timeoutMs) {
+          dbg('applyWithWait:timeout', {
+            seq,
+            paneId,
+            openedFileId,
+            expectedPath,
+            timeoutMs,
+            visibility: typeof document !== 'undefined' ? document.visibilityState : null,
+          });
+          if (typeof target.line === 'number' && target.line > 0) {
+            setOpenFromLinkError(`定位到行超时（${timeoutMs}ms）：${target.filePath}:${target.line}`);
           }
-          const done = applySelection(openedFileId, expectedPath);
-          if (done) return;
+          return;
+        }
+        const done = applySelection(openedFileId, expectedPath);
+        if (done) return;
         // 等待 React commit + Monaco model ready
         // - 20ms：比 rAF 更宽松，避免主线程忙时错过帧
         // - 也避免 setTimeout(0) 过于频繁造成额外压力
         // eslint-disable-next-line no-await-in-loop
-          await sleep(20);
-        }
-      };
+        await sleep(20);
+      }
+    };
 
     setOpenFromLinkError(null);
     try {
@@ -2856,12 +2856,12 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           prev.map((b) =>
             b.id === id
               ? {
-                  ...b,
-                  status: 'done',
-                  answer: res.answerMd,
-                  modelRef: res.modelRef,
-                  latencyMs: res.latencyMs,
-                }
+                ...b,
+                status: 'done',
+                answer: res.answerMd,
+                modelRef: res.modelRef,
+                latencyMs: res.latencyMs,
+              }
               : b
           )
         );
@@ -3125,7 +3125,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       .then((fn) => {
         unlisten = fn;
       })
-      .catch(() => {});
+      .catch(() => { });
     return () => {
       unlisten?.();
     };
@@ -3188,7 +3188,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       await focusMainWindow();
       const mainWin = await WebviewWindow.getByLabel('main').catch(() => null);
       if (!mainWin) return;
-      await mainWin.emit('chat:insert_text', { text: refText }).catch(() => {});
+      await mainWin.emit('chat:insert_text', { text: refText }).catch(() => { });
     },
     [formatPathForChatRef]
   );
@@ -3221,7 +3221,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       await focusMainWindow();
       const mainWin = await WebviewWindow.getByLabel('main').catch(() => null);
       if (!mainWin) return;
-      await mainWin.emit('chat:insert_code_snippet', { token, snippet }).catch(() => {});
+      await mainWin.emit('chat:insert_code_snippet', { token, snippet }).catch(() => { });
     },
     [focusMainWindow]
   );
@@ -3358,16 +3358,16 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                 .map((f) =>
                   f.id === normalizedPath
                     ? {
-                        ...f,
-                        title: nextTitle,
-                        path: normalizedPath,
-                        kind: 'text',
-                        mime: 'text/plain',
-                        size: utf8Size(latest),
-                        content: latest,
-                        originalContent: latest,
-                        dirty: false,
-                      }
+                      ...f,
+                      title: nextTitle,
+                      path: normalizedPath,
+                      kind: 'text',
+                      mime: 'text/plain',
+                      size: utf8Size(latest),
+                      content: latest,
+                      originalContent: latest,
+                      dirty: false,
+                    }
                     : f
                 );
             }
@@ -3375,17 +3375,17 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
             return prev.map((f) =>
               f.id === file.id
                 ? {
-                    ...f,
-                    id: normalizedPath,
-                    title: nextTitle,
-                    path: normalizedPath,
-                    kind: 'text',
-                    mime: 'text/plain',
-                    size: utf8Size(latest),
-                    content: latest,
-                    originalContent: latest,
-                    dirty: false,
-                  }
+                  ...f,
+                  id: normalizedPath,
+                  title: nextTitle,
+                  path: normalizedPath,
+                  kind: 'text',
+                  mime: 'text/plain',
+                  size: utf8Size(latest),
+                  content: latest,
+                  originalContent: latest,
+                  dirty: false,
+                }
                 : f
             );
           });
@@ -3421,8 +3421,8 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           const languageId = typeof model?.getLanguageId === 'function' ? model.getLanguageId() : '';
           const hasServer = Boolean(
             cfg?.enabled &&
-              languageId &&
-              (cfg.lspServers ?? []).some((s) => s.enabled && s.languageId === languageId && String(s.command || '').trim())
+            languageId &&
+            (cfg.lspServers ?? []).some((s) => s.enabled && s.languageId === languageId && String(s.command || '').trim())
           );
           if (wsId && uri && uri.startsWith('file://') && hasServer) {
             await lspNotify({
@@ -3489,53 +3489,53 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     };
   }, []);
 
-	  useEffect(() => {
-	    const monaco = monacoRef.current;
-	    const wsId = ws?.id ?? null;
-	    // Switching workstudio: dispose immediately (do not keep old listeners/processes around).
-	    if (lspBridgeWorkstudioIdRef.current && lspBridgeWorkstudioIdRef.current !== wsId) {
-	      lspBridgeRef.current?.dispose();
-	      lspBridgeRef.current = null;
-	      lspBridgeWorkstudioIdRef.current = null;
-	    }
-	    if (aiCompletionBridgeWorkstudioIdRef.current && aiCompletionBridgeWorkstudioIdRef.current !== wsId) {
-	      aiCompletionBridgeRef.current?.dispose();
-	      aiCompletionBridgeRef.current = null;
-	      aiCompletionBridgeWorkstudioIdRef.current = null;
-	    }
+  useEffect(() => {
+    const monaco = monacoRef.current;
+    const wsId = ws?.id ?? null;
+    // Switching workstudio: dispose immediately (do not keep old listeners/processes around).
+    if (lspBridgeWorkstudioIdRef.current && lspBridgeWorkstudioIdRef.current !== wsId) {
+      lspBridgeRef.current?.dispose();
+      lspBridgeRef.current = null;
+      lspBridgeWorkstudioIdRef.current = null;
+    }
+    if (aiCompletionBridgeWorkstudioIdRef.current && aiCompletionBridgeWorkstudioIdRef.current !== wsId) {
+      aiCompletionBridgeRef.current?.dispose();
+      aiCompletionBridgeRef.current = null;
+      aiCompletionBridgeWorkstudioIdRef.current = null;
+    }
 
-	    if (!monaco || !wsId) return;
-	    const hasLspBridge = lspBridgeWorkstudioIdRef.current === wsId;
-	    const hasAiCompletionBridge = aiCompletionBridgeWorkstudioIdRef.current === wsId;
-	    if (hasLspBridge && hasAiCompletionBridge) return;
+    if (!monaco || !wsId) return;
+    const hasLspBridge = lspBridgeWorkstudioIdRef.current === wsId;
+    const hasAiCompletionBridge = aiCompletionBridgeWorkstudioIdRef.current === wsId;
+    if (hasLspBridge && hasAiCompletionBridge) return;
 
-	    if (!hasLspBridge) {
-	      lspBridgeRef.current?.dispose();
-	      lspBridgeRef.current = attachMonacoLspBridge({
-	        monaco,
-	        workstudioId: wsId,
-	        openFile: async (t) => {
-	          await openLinkTarget(t);
-	        },
-	        getConfig: () => useConfigStore.getState().config?.codeIntelligence,
-	        isLanguageEnabled: isLspLanguageEnabledForBridge,
-	      });
-	      lspBridgeWorkstudioIdRef.current = wsId;
-	    }
+    if (!hasLspBridge) {
+      lspBridgeRef.current?.dispose();
+      lspBridgeRef.current = attachMonacoLspBridge({
+        monaco,
+        workstudioId: wsId,
+        openFile: async (t) => {
+          await openLinkTarget(t);
+        },
+        getConfig: () => useConfigStore.getState().config?.codeIntelligence,
+        isLanguageEnabled: isLspLanguageEnabledForBridge,
+      });
+      lspBridgeWorkstudioIdRef.current = wsId;
+    }
 
-	    if (!hasAiCompletionBridge) {
-	      aiCompletionBridgeRef.current?.dispose();
-	      aiCompletionBridgeRef.current = attachMonacoAiCompletionBridge({
-	        monaco,
-	        workstudioId: wsId,
-	        getConfig: () => useConfigStore.getState().config?.codeIntelligence,
-	      });
-	      aiCompletionBridgeWorkstudioIdRef.current = wsId;
-	    }
-	    // eslint-disable-next-line react-hooks/exhaustive-deps
-	  }, [
-	    ws?.id,
-	    lspAutoConfigStatus,
+    if (!hasAiCompletionBridge) {
+      aiCompletionBridgeRef.current?.dispose();
+      aiCompletionBridgeRef.current = attachMonacoAiCompletionBridge({
+        monaco,
+        workstudioId: wsId,
+        getConfig: () => useConfigStore.getState().config?.codeIntelligence,
+      });
+      aiCompletionBridgeWorkstudioIdRef.current = wsId;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    ws?.id,
+    lspAutoConfigStatus,
     openLinkTarget,
     codeIntelligenceConfig?.enabled,
     codeIntelligenceConfig?.lspServers?.length,
@@ -5117,13 +5117,13 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           panes: nextPanes.length
             ? nextPanes
             : [
-                {
-                  id: fallbackPaneIdRef.current,
-                  tabIds: [],
-                  activeTabId: null,
-                  weight: 1,
-                },
-              ],
+              {
+                id: fallbackPaneIdRef.current,
+                tabIds: [],
+                activeTabId: null,
+                weight: 1,
+              },
+            ],
           focusedPaneId: focused ?? fallbackPaneIdRef.current,
         });
 
@@ -5167,23 +5167,23 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         ...(editorFontSize === DEFAULT_EDITOR_FONT_SIZE ? {} : { editorFontSize }),
         ...(!outlineOpen || hasOutlineFiles
           ? {
-              outline: {
-                ...(outlineOpen ? {} : { open: false }),
-                ...(hasOutlineFiles ? { files: outlineFiles } : {}),
-              },
-            }
+            outline: {
+              ...(outlineOpen ? {} : { open: false }),
+              ...(hasOutlineFiles ? { files: outlineFiles } : {}),
+            },
+          }
           : {}),
         ...(wsEnabledLspLanguageIds === null
           ? {}
           : {
-              codeIntelligence: {
-                enabledLanguageIds: Array.from(
-                  new Set(wsEnabledLspLanguageIds.map((x) => String(x ?? '').trim()).filter((x) => Boolean(x)))
-                ).sort((a, b) => a.localeCompare(b)),
-              },
-            }),
+            codeIntelligence: {
+              enabledLanguageIds: Array.from(
+                new Set(wsEnabledLspLanguageIds.map((x) => String(x ?? '').trim()).filter((x) => Boolean(x)))
+              ).sort((a, b) => a.localeCompare(b)),
+            },
+          }),
       };
-      void invoke('set_workstudio_ui_state', { workstudioId: ws.id, state }).catch(() => {});
+      void invoke('set_workstudio_ui_state', { workstudioId: ws.id, state }).catch(() => { });
     }, 500);
     return () => {
       if (saveStateTimerRef.current) window.clearTimeout(saveStateTimerRef.current);
@@ -5253,17 +5253,17 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     const candidateLangs = servers.length === 0
       ? [...AUTO_DETECT_LSP_LANGUAGES]
       : Array.from(
-          new Set(
-            servers
-              .map((s) => ({
-                enabled: Boolean(s.enabled),
-                languageId: String(s.languageId || '').trim(),
-                command: String(s.command || '').trim(),
-              }))
-              .filter((s) => s.enabled && s.languageId && isAutoDetectableLspLanguage(s.languageId) && shouldAutoForCommand(s.command))
-              .map((s) => s.languageId)
-          )
-        );
+        new Set(
+          servers
+            .map((s) => ({
+              enabled: Boolean(s.enabled),
+              languageId: String(s.languageId || '').trim(),
+              command: String(s.command || '').trim(),
+            }))
+            .filter((s) => s.enabled && s.languageId && isAutoDetectableLspLanguage(s.languageId) && shouldAutoForCommand(s.command))
+            .map((s) => s.languageId)
+        )
+      );
     if (candidateLangs.length === 0) {
       setLspAutoConfigStatus('done');
       return;
@@ -5676,7 +5676,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         }
         unlisten = fn;
       })
-      .catch(() => {});
+      .catch(() => { });
 
     return () => {
       disposed = true;
@@ -5701,7 +5701,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         }
         unlisten = fn;
       })
-      .catch(() => {});
+      .catch(() => { });
 
     return () => {
       disposed = true;
@@ -5709,32 +5709,32 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     };
   }, [createUntitledRichTxt]);
 
-	  const renderDirNode = (dirPath: string, depth: number, opts?: { isRoot?: boolean; isMainRoot?: boolean }) => {
-	    const expanded = expandedDirs.has(dirPath);
-	    const entries = entriesByDir[dirPath] ?? [];
-	    const isLoading = loadingDirs[dirPath];
-	    const isRoot = Boolean(opts?.isRoot);
-	    const isMainRoot = Boolean(opts?.isMainRoot);
+  const renderDirNode = (dirPath: string, depth: number, opts?: { isRoot?: boolean; isMainRoot?: boolean }) => {
+    const expanded = expandedDirs.has(dirPath);
+    const entries = entriesByDir[dirPath] ?? [];
+    const isLoading = loadingDirs[dirPath];
+    const isRoot = Boolean(opts?.isRoot);
+    const isMainRoot = Boolean(opts?.isMainRoot);
 
     return (
       <div key={dirPath}>
-	        <button
-	          type="button"
-	          data-ws-node="1"
-	          onClick={() => void toggleDir(dirPath)}
-	          onContextMenu={(e) => {
-	            e.preventDefault();
-	            e.stopPropagation();
-	            setContextMenu(
-	              isRoot
-	                ? { visible: true, x: e.clientX, y: e.clientY, kind: 'root', folder: dirPath }
-	                : { visible: true, x: e.clientX, y: e.clientY, kind: 'folder', folder: dirPath }
-	            );
-	          }}
-	          className={[
-	            'flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-xs',
-	            isMainRoot
-	              ? 'bg-blue-50 text-blue-700 hover:bg-blue-100 dark:bg-blue-900/30 dark:text-blue-200 dark:hover:bg-blue-900/40'
+        <button
+          type="button"
+          data-ws-node="1"
+          onClick={() => void toggleDir(dirPath)}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setContextMenu(
+              isRoot
+                ? { visible: true, x: e.clientX, y: e.clientY, kind: 'root', folder: dirPath }
+                : { visible: true, x: e.clientX, y: e.clientY, kind: 'folder', folder: dirPath }
+            );
+          }}
+          className={[
+            'flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-xs',
+            isMainRoot
+              ? 'bg-blue-50 text-blue-700 hover:bg-blue-100 dark:bg-blue-900/30 dark:text-blue-200 dark:hover:bg-blue-900/40'
               : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800',
           ].join(' ')}
           style={{ paddingLeft: 8 + depth * 14 }}
@@ -5746,42 +5746,42 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           {isLoading && <span className="ml-auto text-[10px] text-gray-400">...</span>}
         </button>
 
-	        {expanded && (
-	          <div>
-	            {entries.length === 0 && !isLoading ? (
-	              <div
-	                className={[
-	                  'px-2 py-1 text-[11px]',
-	                  dirErrors[dirPath] ? 'text-red-600 dark:text-red-300' : 'text-gray-400',
-	                ].join(' ')}
-	                style={{ paddingLeft: 8 + (depth + 1) * 14 }}
-	              >
-	                {dirErrors[dirPath] ? dirErrors[dirPath] : '(空)'}
-	              </div>
-	            ) : (
-	              entries.map((entry) => {
-	                if (entry.isDir) {
-	                  return renderDirNode(entry.path, depth + 1);
+        {expanded && (
+          <div>
+            {entries.length === 0 && !isLoading ? (
+              <div
+                className={[
+                  'px-2 py-1 text-[11px]',
+                  dirErrors[dirPath] ? 'text-red-600 dark:text-red-300' : 'text-gray-400',
+                ].join(' ')}
+                style={{ paddingLeft: 8 + (depth + 1) * 14 }}
+              >
+                {dirErrors[dirPath] ? dirErrors[dirPath] : '(空)'}
+              </div>
+            ) : (
+              entries.map((entry) => {
+                if (entry.isDir) {
+                  return renderDirNode(entry.path, depth + 1);
                 }
                 const normalizedEntryPath = normalizeFsPath(entry.path);
                 const isActive =
                   Boolean(normalizedEntryPath) && explorerSelectedFilePath === normalizedEntryPath;
-	                return (
-	                  <button
-	                    key={entry.path}
-	                    type="button"
-	                    data-ws-node="1"
-	                    onClick={() => void openFileAtPath(entry.path)}
-	                    onContextMenu={(e) => {
-	                      e.preventDefault();
-	                      e.stopPropagation();
-	                      setContextMenu({ visible: true, x: e.clientX, y: e.clientY, kind: 'file', file: entry.path });
-	                    }}
-	                    className={[
-	                      'flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-xs',
-	                      isActive
-	                        ? 'bg-blue-200/70 text-blue-900 ring-1 ring-blue-300/60 dark:bg-blue-900/60 dark:text-blue-100 dark:ring-blue-700/60'
-	                        : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800',
+                return (
+                  <button
+                    key={entry.path}
+                    type="button"
+                    data-ws-node="1"
+                    onClick={() => void openFileAtPath(entry.path)}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setContextMenu({ visible: true, x: e.clientX, y: e.clientY, kind: 'file', file: entry.path });
+                    }}
+                    className={[
+                      'flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-xs',
+                      isActive
+                        ? 'bg-blue-200/70 text-blue-900 ring-1 ring-blue-300/60 dark:bg-blue-900/60 dark:text-blue-100 dark:ring-blue-700/60'
+                        : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800',
                     ].join(' ')}
                     style={{ paddingLeft: 8 + (depth + 1) * 14 }}
                     title={normalizedEntryPath || entry.path}
@@ -5830,188 +5830,188 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     );
   }
 
-	  return (
-	    <div className="flex h-full flex-col overflow-hidden bg-gray-50 dark:bg-gray-900">
-	      {navToast && (
-	        <div className="pointer-events-none fixed bottom-4 right-4 z-[200]">
-	          <div className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-gray-700 shadow-lg dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200">
-	            {navToast}
-	          </div>
-	        </div>
-	      )}
-		      {aiBubbles.length > 0 && (
-		        <div className="fixed bottom-4 right-4 z-[210] flex max-w-[360px] flex-col items-end gap-2">
-		          {aiBubbles.map((b) => {
-		            const isClickable = b.status !== 'running';
-		            return (
-		              <button
-		                key={b.id}
-		                type="button"
-		                disabled={!isClickable}
-		                onClick={() => isClickable && openAiViewer(b.id)}
-		                className={[
-		                  'flex w-full items-center gap-2 rounded-xl border px-3 py-2 text-left shadow-sm',
-		                  'bg-white/95 hover:bg-white disabled:opacity-70 dark:bg-gray-950/90 dark:hover:bg-gray-950',
-		                  'border-gray-200 dark:border-gray-800',
-		                  isClickable ? 'cursor-pointer' : 'cursor-default',
-		                ].join(' ')}
-		                title={b.subtitle}
-		              >
-		                <span className="shrink-0">
-		                  {b.status === 'running' && <Loader2 size={14} className="animate-spin text-gray-500" />}
-		                  {b.status === 'done' && <CheckCircle2 size={14} className="text-emerald-600 dark:text-emerald-300" />}
-		                  {b.status === 'error' && <AlertTriangle size={14} className="text-red-600 dark:text-red-300" />}
-		                </span>
-		                <div className="min-w-0 flex-1">
-		                  <div className="truncate text-xs font-semibold text-gray-800 dark:text-gray-100">
-		                    {b.name}
-		                  </div>
-		                  <div className="truncate text-[11px] text-gray-500 dark:text-gray-400">
-		                    {b.status === 'running' ? '请求中…' : b.status === 'done' ? '完成，点击查看' : '失败，点击查看'}
-		                  </div>
-		                </div>
-		                {b.kind === 'symbol_analysis' ? (
-		                  <ListTree size={14} className="shrink-0 opacity-60" />
-		                ) : (
-		                  <MessageSquare size={14} className="shrink-0 opacity-60" />
-		                )}
-		              </button>
-		            );
-		          })}
-		        </div>
-		      )}
+  return (
+    <div className="flex h-full flex-col overflow-hidden bg-gray-50 dark:bg-gray-900">
+      {navToast && (
+        <div className="pointer-events-none fixed bottom-4 right-4 z-[200]">
+          <div className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-gray-700 shadow-lg dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200">
+            {navToast}
+          </div>
+        </div>
+      )}
+      {aiBubbles.length > 0 && (
+        <div className="fixed bottom-4 right-4 z-[210] flex max-w-[360px] flex-col items-end gap-2">
+          {aiBubbles.map((b) => {
+            const isClickable = b.status !== 'running';
+            return (
+              <button
+                key={b.id}
+                type="button"
+                disabled={!isClickable}
+                onClick={() => isClickable && openAiViewer(b.id)}
+                className={[
+                  'flex w-full items-center gap-2 rounded-xl border px-3 py-2 text-left shadow-sm',
+                  'bg-white/95 hover:bg-white disabled:opacity-70 dark:bg-gray-950/90 dark:hover:bg-gray-950',
+                  'border-gray-200 dark:border-gray-800',
+                  isClickable ? 'cursor-pointer' : 'cursor-default',
+                ].join(' ')}
+                title={b.subtitle}
+              >
+                <span className="shrink-0">
+                  {b.status === 'running' && <Loader2 size={14} className="animate-spin text-gray-500" />}
+                  {b.status === 'done' && <CheckCircle2 size={14} className="text-emerald-600 dark:text-emerald-300" />}
+                  {b.status === 'error' && <AlertTriangle size={14} className="text-red-600 dark:text-red-300" />}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-xs font-semibold text-gray-800 dark:text-gray-100">
+                    {b.name}
+                  </div>
+                  <div className="truncate text-[11px] text-gray-500 dark:text-gray-400">
+                    {b.status === 'running' ? '请求中…' : b.status === 'done' ? '完成，点击查看' : '失败，点击查看'}
+                  </div>
+                </div>
+                {b.kind === 'symbol_analysis' ? (
+                  <ListTree size={14} className="shrink-0 opacity-60" />
+                ) : (
+                  <MessageSquare size={14} className="shrink-0 opacity-60" />
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
-	      {inlineChatComposer.open && inlineChatComposer.selection && (
-	        <div className="fixed inset-0 z-[220] flex items-center justify-center bg-black/30 p-4">
-	          <div className="w-full max-w-2xl rounded-xl border border-gray-200 bg-white p-4 shadow-xl dark:border-gray-800 dark:bg-gray-950">
-	            <div className="flex items-start justify-between gap-3">
-	              <div className="min-w-0">
-	                <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">Chat with</div>
-	                <div className="mt-0.5 truncate text-[11px] text-gray-500 dark:text-gray-400">
-	                  {inlineChatComposer.selection.label}
-	                </div>
-	              </div>
-	              <button
-	                type="button"
-	                className="rounded p-1 text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
-	                onClick={closeInlineChatComposer}
-	                title="关闭"
-	              >
-	                <X size={16} />
-	              </button>
-	            </div>
+      {inlineChatComposer.open && inlineChatComposer.selection && (
+        <div className="fixed inset-0 z-[220] flex items-center justify-center bg-black/30 p-4">
+          <div className="w-full max-w-2xl rounded-xl border border-gray-200 bg-white p-4 shadow-xl dark:border-gray-800 dark:bg-gray-950">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">Chat with</div>
+                <div className="mt-0.5 truncate text-[11px] text-gray-500 dark:text-gray-400">
+                  {inlineChatComposer.selection.label}
+                </div>
+              </div>
+              <button
+                type="button"
+                className="rounded p-1 text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+                onClick={closeInlineChatComposer}
+                title="关闭"
+              >
+                <X size={16} />
+              </button>
+            </div>
 
-	            <div className="mt-3">
-	              <div className="mb-1 text-[11px] font-medium text-gray-600 dark:text-gray-300">选中代码</div>
-	              <pre className="max-h-40 overflow-auto rounded-lg border border-gray-200 bg-gray-50 p-2 text-[11px] text-gray-800 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-100">
-	                {(() => {
-	                  const raw = inlineChatComposer.selection?.text ?? '';
-	                  const limit = 2200;
-	                  return raw.length > limit ? `${raw.slice(0, limit)}\n…（已截断）` : raw;
-	                })()}
-	              </pre>
-	            </div>
+            <div className="mt-3">
+              <div className="mb-1 text-[11px] font-medium text-gray-600 dark:text-gray-300">选中代码</div>
+              <pre className="max-h-40 overflow-auto rounded-lg border border-gray-200 bg-gray-50 p-2 text-[11px] text-gray-800 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-100">
+                {(() => {
+                  const raw = inlineChatComposer.selection?.text ?? '';
+                  const limit = 2200;
+                  return raw.length > limit ? `${raw.slice(0, limit)}\n…（已截断）` : raw;
+                })()}
+              </pre>
+            </div>
 
-	            <div className="mt-3">
-	              <div className="mb-1 text-[11px] font-medium text-gray-600 dark:text-gray-300">你的问题</div>
-	              <textarea
-	                value={inlineChatComposer.question}
-	                onChange={(e) => setInlineChatComposer((prev) => ({ ...prev, question: e.target.value }))}
-	                rows={3}
-	                className="w-full resize-y rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none focus:ring-2 focus:ring-blue-500/40 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-100"
-	                placeholder="例如：这段代码为什么会这样设计？可能的 bug 在哪？"
-	              />
-	            </div>
+            <div className="mt-3">
+              <div className="mb-1 text-[11px] font-medium text-gray-600 dark:text-gray-300">你的问题</div>
+              <textarea
+                value={inlineChatComposer.question}
+                onChange={(e) => setInlineChatComposer((prev) => ({ ...prev, question: e.target.value }))}
+                rows={3}
+                className="w-full resize-y rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none focus:ring-2 focus:ring-blue-500/40 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-100"
+                placeholder="例如：这段代码为什么会这样设计？可能的 bug 在哪？"
+              />
+            </div>
 
-	            <div className="mt-4 flex items-center justify-end gap-2">
-	              <button
-	                type="button"
-	                className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-800 dark:text-gray-200 dark:hover:bg-gray-900/40"
-	                onClick={closeInlineChatComposer}
-	              >
-	                取消
-	              </button>
-	              <button
-	                type="button"
-	                className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
-	                disabled={!inlineChatComposer.question.trim()}
-	                onClick={() => void submitInlineChat()}
-	              >
-	                发送
-	              </button>
-	            </div>
-	          </div>
-	        </div>
-	      )}
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-800 dark:text-gray-200 dark:hover:bg-gray-900/40"
+                onClick={closeInlineChatComposer}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+                disabled={!inlineChatComposer.question.trim()}
+                onClick={() => void submitInlineChat()}
+              >
+                发送
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
-		      {aiViewer && (
-		        <div className="fixed inset-0 z-[230] flex items-center justify-center bg-black/35 p-4">
-		          <div className="w-full max-w-3xl rounded-xl border border-gray-200 bg-white p-4 shadow-xl dark:border-gray-800 dark:bg-gray-950">
-		            <div className="flex items-start justify-between gap-3">
-		              <div className="min-w-0">
-		                <div className="truncate text-sm font-semibold text-gray-900 dark:text-gray-100">
-		                  {aiViewer.name}
-		                </div>
-		                <div className="mt-0.5 truncate text-[11px] text-gray-500 dark:text-gray-400">
-		                  {aiViewer.subtitle}
-		                </div>
-		              </div>
-		              <button
-		                type="button"
-		                className="rounded p-1 text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
-		                onClick={closeAiViewer}
-		                title="关闭并移除气泡"
-		              >
-		                <X size={16} />
-		              </button>
-		            </div>
+      {aiViewer && (
+        <div className="fixed inset-0 z-[230] flex items-center justify-center bg-black/35 p-4">
+          <div className="w-full max-w-3xl rounded-xl border border-gray-200 bg-white p-4 shadow-xl dark:border-gray-800 dark:bg-gray-950">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="truncate text-sm font-semibold text-gray-900 dark:text-gray-100">
+                  {aiViewer.name}
+                </div>
+                <div className="mt-0.5 truncate text-[11px] text-gray-500 dark:text-gray-400">
+                  {aiViewer.subtitle}
+                </div>
+              </div>
+              <button
+                type="button"
+                className="rounded p-1 text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+                onClick={closeAiViewer}
+                title="关闭并移除气泡"
+              >
+                <X size={16} />
+              </button>
+            </div>
 
-		            <div className="mt-3">
-		              <div className="mb-1 text-[11px] font-medium text-gray-600 dark:text-gray-300">
-		                {aiViewer.kind === 'symbol_analysis' ? '分析指令' : '问题'}
-		              </div>
-		              <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-900 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-100">
-		                {aiViewer.prompt}
-		              </div>
-		            </div>
+            <div className="mt-3">
+              <div className="mb-1 text-[11px] font-medium text-gray-600 dark:text-gray-300">
+                {aiViewer.kind === 'symbol_analysis' ? '分析指令' : '问题'}
+              </div>
+              <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-900 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-100">
+                {aiViewer.prompt}
+              </div>
+            </div>
 
-		            <div className="mt-3">
-		              <div className="mb-1 text-[11px] font-medium text-gray-600 dark:text-gray-300">
-		                {aiViewer.kind === 'symbol_analysis' ? '分析结果' : '回答'}
-		              </div>
-		              <div className="max-h-[60vh] overflow-auto rounded-lg border border-gray-200 bg-white px-3 py-2 dark:border-gray-800 dark:bg-gray-950">
-		                {aiViewer.status === 'error' ? (
-		                  <pre className="whitespace-pre-wrap break-words text-xs text-red-700 dark:text-red-300">
-		                    {aiViewer.error || '未知错误'}
-		                  </pre>
-		                ) : (
-		                  <DeferredMarkdown content={aiViewer.answer || ''} conversationId={null} minDelayMs={120} />
-		                )}
-		              </div>
-		              <div className="mt-2 flex items-center justify-between text-[11px] text-gray-500 dark:text-gray-400">
-		                <div className="truncate">
-		                  {aiViewer.modelRef ? `model: ${aiViewer.modelRef}` : ''}
-		                  {aiViewer.latencyMs ? `  ·  ${aiViewer.latencyMs}ms` : ''}
-		                </div>
-		                <button
-		                  type="button"
-		                  className="rounded px-2 py-1 text-[11px] font-semibold text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
-		                  onClick={closeAiViewer}
-		                >
-		                  关闭
-		                </button>
-		              </div>
-		            </div>
-		          </div>
-		        </div>
-		      )}
+            <div className="mt-3">
+              <div className="mb-1 text-[11px] font-medium text-gray-600 dark:text-gray-300">
+                {aiViewer.kind === 'symbol_analysis' ? '分析结果' : '回答'}
+              </div>
+              <div className="max-h-[60vh] overflow-auto rounded-lg border border-gray-200 bg-white px-3 py-2 dark:border-gray-800 dark:bg-gray-950">
+                {aiViewer.status === 'error' ? (
+                  <pre className="whitespace-pre-wrap break-words text-xs text-red-700 dark:text-red-300">
+                    {aiViewer.error || '未知错误'}
+                  </pre>
+                ) : (
+                  <DeferredMarkdown content={aiViewer.answer || ''} conversationId={null} minDelayMs={120} />
+                )}
+              </div>
+              <div className="mt-2 flex items-center justify-between text-[11px] text-gray-500 dark:text-gray-400">
+                <div className="truncate">
+                  {aiViewer.modelRef ? `model: ${aiViewer.modelRef}` : ''}
+                  {aiViewer.latencyMs ? `  ·  ${aiViewer.latencyMs}ms` : ''}
+                </div>
+                <button
+                  type="button"
+                  className="rounded px-2 py-1 text-[11px] font-semibold text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
+                  onClick={closeAiViewer}
+                >
+                  关闭
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
-			      <div className="flex flex-1 overflow-hidden">
-	        <div className="flex w-[300px] flex-shrink-0 flex-col border-r border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-950">
-	          <div className="flex items-center justify-between border-b border-gray-200 px-3 py-2 dark:border-gray-800">
-	            <div className="min-w-0">
-	              <div className="truncate text-[11px] text-gray-500 dark:text-gray-400" title={ws.mainFolder}>
-	                主工作区:{' '}
+      <div className="flex flex-1 overflow-hidden">
+        <div className="flex w-[300px] flex-shrink-0 flex-col border-r border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-950">
+          <div className="flex items-center justify-between border-b border-gray-200 px-3 py-2 dark:border-gray-800">
+            <div className="min-w-0">
+              <div className="truncate text-[11px] text-gray-500 dark:text-gray-400" title={ws.mainFolder}>
+                主工作区:{' '}
                 <span className="font-semibold text-blue-700 dark:text-blue-200">
                   {basename(ws.mainFolder)}
                 </span>
@@ -6122,381 +6122,381 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           </div>
         </div>
 
-	        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-	          <div className="flex items-center justify-between border-b border-gray-200 bg-white px-3 py-2 dark:border-gray-800 dark:bg-gray-950">
-	            <div className="flex min-w-0 items-center gap-2">
-                <div className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    disabled={!canNavigateBack}
-                    onClick={() => void navigateBack()}
-                    title={`后退（${navigateBackShortcutLabel}）`}
-                    aria-label="后退"
-                    className="rounded border border-gray-200 p-1 text-gray-600 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-800 dark:text-gray-300 dark:hover:bg-gray-900/40"
-                  >
-                    <ArrowLeft size={14} />
-                  </button>
-                  <button
-                    type="button"
-                    disabled={!canNavigateForward}
-                    onClick={() => void navigateForward()}
-                    title={`前进（${navigateForwardShortcutLabel}）`}
-                    aria-label="前进"
-                    className="rounded border border-gray-200 p-1 text-gray-600 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-800 dark:text-gray-300 dark:hover:bg-gray-900/40"
-                  >
-                    <ArrowRight size={14} />
-                  </button>
+        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          <div className="flex items-center justify-between border-b border-gray-200 bg-white px-3 py-2 dark:border-gray-800 dark:bg-gray-950">
+            <div className="flex min-w-0 items-center gap-2">
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  disabled={!canNavigateBack}
+                  onClick={() => void navigateBack()}
+                  title={`后退（${navigateBackShortcutLabel}）`}
+                  aria-label="后退"
+                  className="rounded border border-gray-200 p-1 text-gray-600 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-800 dark:text-gray-300 dark:hover:bg-gray-900/40"
+                >
+                  <ArrowLeft size={14} />
+                </button>
+                <button
+                  type="button"
+                  disabled={!canNavigateForward}
+                  onClick={() => void navigateForward()}
+                  title={`前进（${navigateForwardShortcutLabel}）`}
+                  aria-label="前进"
+                  className="rounded border border-gray-200 p-1 text-gray-600 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-800 dark:text-gray-300 dark:hover:bg-gray-900/40"
+                >
+                  <ArrowRight size={14} />
+                </button>
+              </div>
+
+              <div className="min-w-0 text-xs text-gray-600 dark:text-gray-300">
+                窗格: {resolvedPanes.length}{' '}
+                <span className="text-gray-400">
+                  （聚焦 {Math.max(1, resolvedPanes.findIndex((p) => p.id === resolvedFocusedPaneId) + 1)}）
+                </span>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              {isStandaloneWorkstudioWindow && (
+                <button
+                  type="button"
+                  className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                  onClick={() => void returnToMainWindow()}
+                  title={`返回主窗口（${backToMainShortcutLabel}）`}
+                >
+                  返回主窗口
+                </button>
+              )}
+              <button
+                ref={lspStatusButtonRef}
+                type="button"
+                className="inline-flex items-center gap-2 rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                onClick={() => {
+                  const btn = lspStatusButtonRef.current;
+                  if (!btn) return;
+                  if (lspMenu) {
+                    setLspMenu(null);
+                    return;
+                  }
+                  const rect = btn.getBoundingClientRect();
+                  const menuWidth = 480;
+                  const x = Math.max(8, Math.min(rect.left, window.innerWidth - menuWidth - 8));
+                  setLspMenu({ visible: true, x, y: rect.bottom + 4 });
+                }}
+                title={lspSummary.title}
+              >
+                <span className={['h-2 w-2 rounded-full', lspSummary.dotClass].join(' ')} />
+                <span className="whitespace-nowrap">{lspSummary.label}</span>
+                <ChevronDown size={12} className="opacity-70" />
+              </button>
+              <button
+                type="button"
+                className={[
+                  'inline-flex items-center gap-2 rounded border px-2 py-1 text-xs',
+                  outlineOpen
+                    ? 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 dark:border-blue-700/60 dark:bg-blue-900/30 dark:text-blue-200 dark:hover:bg-blue-900/40'
+                    : 'border-gray-200 text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800',
+                ].join(' ')}
+                onClick={() => {
+                  setOutlineOpen((prev) => {
+                    const next = !prev;
+                    setLeftSidebarTab(next ? 'outline' : 'explorer');
+                    return next;
+                  });
+                }}
+                title={outlineOpen ? '隐藏 Outline' : '显示 Outline'}
+              >
+                <ListTree size={12} />
+                <span className="whitespace-nowrap">Outline{outlineItemCount > 0 ? `(${outlineItemCount})` : ''}</span>
+              </button>
+              <button
+                type="button"
+                className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                onClick={() => setTerminalOpen((v) => !v)}
+                title="终端"
+              >
+                {terminalOpen ? '关闭终端' : '终端'}
+              </button>
+            </div>
+          </div>
+          {saveError && (
+            <div className="border-b border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-200">
+              保存失败：{saveError}
+            </div>
+          )}
+          {openFromLinkError && (
+            <div className="border-b border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-200">
+              打开链接文件失败：{openFromLinkError}
+            </div>
+          )}
+
+          <div className="flex min-h-0 flex-1 overflow-hidden">
+            <div className="min-w-0 flex-1 overflow-hidden">
+              <DndContext
+                sensors={sensors}
+                collisionDetection={collisionDetection}
+                onDragStart={handleDragStart}
+                onDragMove={handleDragMove}
+                onDragEnd={handleDragEnd}
+                onDragCancel={handleDragCancel}
+              >
+                <div ref={paneRowRef} className="flex h-full min-h-0 w-full flex-row overflow-hidden">
+                  {resolvedPanes.map((pane, idx) => {
+                    const activeFileId =
+                      pane.activeTabId && pane.tabIds.includes(pane.activeTabId)
+                        ? pane.activeTabId
+                        : pane.tabIds[0] ?? null;
+                    const activeFile = activeFileId ? openFiles.find((f) => f.id === activeFileId) ?? null : null;
+                    const isFocused = pane.id === resolvedFocusedPaneId;
+                    const leftPaneId = idx > 0 ? resolvedPanes[idx - 1]!.id : null;
+                    return (
+                      <React.Fragment key={pane.id}>
+                        {idx > 0 && leftPaneId && (
+                          <div
+                            className="w-1 cursor-col-resize bg-transparent hover:bg-blue-200/60 dark:hover:bg-blue-900/40"
+                            onMouseDown={(e) => startResize(leftPaneId, pane.id, e.clientX)}
+                            title="拖拽调整分屏比例"
+                          />
+                        )}
+                        <div
+                          ref={registerPaneRootRef(pane.id)}
+                          className={[
+                            'flex min-w-0 flex-col overflow-hidden',
+                            isFocused ? 'bg-blue-50/30 dark:bg-blue-950/10' : '',
+                          ].join(' ')}
+                          style={{ flexGrow: pane.weight, flexBasis: 0 }}
+                          onPointerDownCapture={() => setFocusedPane(pane.id)}
+                        >
+                          <PaneDropZone paneId={pane.id}>
+                            <div
+                              ref={registerPaneTabStripRef(pane.id)}
+                              className="flex items-center gap-1 overflow-x-auto border-b border-gray-200 bg-white px-2 py-1 dark:border-gray-800 dark:bg-gray-950"
+                            >
+                              <SortableContext items={pane.tabIds} strategy={horizontalListSortingStrategy}>
+                                {pane.tabIds.length === 0 ? (
+                                  <div className="px-2 py-1 text-xs text-gray-400">未打开文件</div>
+                                ) : (
+                                  pane.tabIds.map((fileId) => {
+                                    const file = openFiles.find((f) => f.id === fileId);
+                                    if (!file) return null;
+                                    const active = file.id === activeFileId;
+                                    const title = `${file.title}${file.dirty ? ' *' : ''}`;
+                                    return (
+                                      <SortableTab
+                                        key={`${pane.id}:${file.id}`}
+                                        id={file.id}
+                                        active={active}
+                                        title={title}
+                                        pinnedWhileDragging={pinActiveTabWhileDragging && activeDragTabId === file.id}
+                                        onClick={() => activateTabInPane(pane.id, file.id)}
+                                        onClose={() => closeFileTab(file.id)}
+                                        onContextMenu={(e) => {
+                                          e.preventDefault();
+                                          e.stopPropagation();
+                                          setTabMenu({
+                                            visible: true,
+                                            x: e.clientX,
+                                            y: e.clientY,
+                                            paneId: pane.id,
+                                            fileId: file.id,
+                                            path: file.path,
+                                          });
+                                        }}
+                                      />
+                                    );
+                                  })
+                                )}
+                              </SortableContext>
+
+                              <div className="ml-auto flex items-center gap-2 px-1">
+                                <button
+                                  type="button"
+                                  disabled={resolvedPanes.length <= 1}
+                                  className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 disabled:opacity-60 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                                  onClick={() => closePaneAndMerge(pane.id)}
+                                  title="关闭窗格"
+                                >
+                                  关闭窗格
+                                </button>
+                              </div>
+                            </div>
+
+                            <div ref={registerPaneBodyRef(pane.id)} className="min-h-0 flex-1 overflow-hidden">
+                              {activeFile ? (
+                                activeFile.kind === 'text' ? (
+                                  <div className="h-full min-h-0 w-full" onWheelCapture={onEditorWheelCapture}>
+                                    <Editor
+                                      path={toMonacoModelPath(activeFile.path)}
+                                      language={languageForPath(activeFile.path)}
+                                      value={activeFile.content ?? ''}
+                                      // Configure MonacoEnvironment workers before the editor initializes.
+                                      // Otherwise Monaco may route TS/JS language-service requests to the simple editor worker,
+                                      // leading to errors like: "Missing requestHandler or method: getQuickInfoAtPosition".
+                                      beforeMount={setupMonaco}
+                                      onMount={handleEditorMountForPane(pane.id)}
+                                      onChange={(value) => {
+                                        if (typeof value !== 'string') return;
+                                        const nextValue = value;
+                                        setOpenFiles((prev) =>
+                                          prev.map((file) =>
+                                            file.id === activeFile.id
+                                              ? {
+                                                ...file,
+                                                content: nextValue,
+                                                dirty: nextValue !== (file.originalContent ?? ''),
+                                              }
+                                              : file
+                                          )
+                                        );
+                                      }}
+                                      theme={editorTheme}
+                                      options={{
+                                        minimap: { enabled: false },
+                                        codeLens: false,
+                                        suggest: {
+                                          showWords: codeIntelligenceConfig?.monacoWordSuggestionsEnabled !== false,
+                                        },
+                                        wordBasedSuggestions:
+                                          codeIntelligenceConfig?.monacoWordSuggestionsEnabled === false
+                                            ? 'off'
+                                            : 'matchingDocuments',
+                                        wordBasedSuggestionsOnlySameLanguage: true,
+                                        inlineSuggest: { enabled: true },
+                                        fontSize: editorFontSize,
+                                        fontFamily:
+                                          'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+                                        lineNumbers: 'on',
+                                        wordWrap: 'on',
+                                        renderWhitespace: 'selection',
+                                        automaticLayout: true,
+                                        scrollBeyondLastLine: false,
+                                      }}
+                                    />
+                                  </div>
+                                ) : (
+                                  <div className="flex h-full flex-col gap-3 p-4">
+                                    <div className="flex items-center justify-between">
+                                      <div className="min-w-0">
+                                        <div className="truncate text-sm font-medium text-gray-800 dark:text-gray-100">
+                                          {activeFile.title}
+                                        </div>
+                                        <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                                          {activeFile.kind} · {activeFile.mime} · {activeFile.size} bytes
+                                        </div>
+                                      </div>
+                                      <button
+                                        type="button"
+                                        className="rounded border border-gray-200 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+                                        onClick={() => void openPath(activeFile.path)}
+                                        title="在系统默认应用中打开"
+                                      >
+                                        在系统中打开
+                                      </button>
+                                    </div>
+
+                                    {activeFile.kind === 'image' && activeFile.dataUrl ? (
+                                      <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-950">
+                                        <img
+                                          src={activeFile.dataUrl}
+                                          alt={activeFile.title}
+                                          className="max-h-[70vh] max-w-full rounded"
+                                        />
+                                      </div>
+                                    ) : activeFile.kind === 'pdf' && activeFile.base64 ? (
+                                      <div className="min-h-0 flex-1 overflow-hidden rounded-lg border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-950">
+                                        <iframe
+                                          title={activeFile.title}
+                                          className="h-full w-full"
+                                          src={`data:application/pdf;base64,${activeFile.base64}#page=1&view=FitH`}
+                                        />
+                                      </div>
+                                    ) : (
+                                      <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-gray-200 bg-white p-3 text-xs text-gray-700 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-200">
+                                        <div className="font-medium">二进制预览（前 256 bytes）</div>
+                                        <div className="mt-2 font-mono break-words">
+                                          {activeFile.base64
+                                            ? bytesToHexPreview(decodeBase64ToBytes(activeFile.base64), 256)
+                                            : '(无数据)'}
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+                                )
+                              ) : (
+                                <div className="flex h-full items-center justify-center text-sm text-gray-400">
+                                  在左侧 Explorer 里选择一个文件
+                                </div>
+                              )}
+                            </div>
+                          </PaneDropZone>
+                        </div>
+                      </React.Fragment>
+                    );
+                  })}
                 </div>
 
-	            <div className="min-w-0 text-xs text-gray-600 dark:text-gray-300">
-	              窗格: {resolvedPanes.length}{' '}
-	              <span className="text-gray-400">
-	                （聚焦 {Math.max(1, resolvedPanes.findIndex((p) => p.id === resolvedFocusedPaneId) + 1)}）
-	              </span>
-	            </div>
-              </div>
-		            <div className="flex items-center gap-2">
-                {isStandaloneWorkstudioWindow && (
-                  <button
-                    type="button"
-                    className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-                    onClick={() => void returnToMainWindow()}
-                    title={`返回主窗口（${backToMainShortcutLabel}）`}
-                  >
-                    返回主窗口
-                  </button>
+                {!isTauri() && (
+                  <DragOverlay>
+                    {activeDragTabId ? (
+                      <div className="rounded-md border border-gray-200 bg-white px-3 py-2 text-sm text-gray-800 shadow-lg dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100">
+                        {openFiles.find((f) => f.id === activeDragTabId)?.title ?? basename(activeDragTabId)}
+                      </div>
+                    ) : null}
+                  </DragOverlay>
                 )}
-                <button
-                  ref={lspStatusButtonRef}
-                  type="button"
-                  className="inline-flex items-center gap-2 rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-                  onClick={() => {
-                    const btn = lspStatusButtonRef.current;
-                    if (!btn) return;
-                    if (lspMenu) {
-                      setLspMenu(null);
-                      return;
-                    }
-                    const rect = btn.getBoundingClientRect();
-                    const menuWidth = 480;
-                    const x = Math.max(8, Math.min(rect.left, window.innerWidth - menuWidth - 8));
-                    setLspMenu({ visible: true, x, y: rect.bottom + 4 });
-                  }}
-                  title={lspSummary.title}
-                >
-                  <span className={['h-2 w-2 rounded-full', lspSummary.dotClass].join(' ')} />
-                  <span className="whitespace-nowrap">{lspSummary.label}</span>
-                  <ChevronDown size={12} className="opacity-70" />
-                </button>
-                <button
-                  type="button"
-                  className={[
-                    'inline-flex items-center gap-2 rounded border px-2 py-1 text-xs',
-                    outlineOpen
-                      ? 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 dark:border-blue-700/60 dark:bg-blue-900/30 dark:text-blue-200 dark:hover:bg-blue-900/40'
-                      : 'border-gray-200 text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800',
-                  ].join(' ')}
-                  onClick={() => {
-                    setOutlineOpen((prev) => {
-                      const next = !prev;
-                      setLeftSidebarTab(next ? 'outline' : 'explorer');
-                      return next;
-                    });
-                  }}
-                  title={outlineOpen ? '隐藏 Outline' : '显示 Outline'}
-                >
-                  <ListTree size={12} />
-                  <span className="whitespace-nowrap">Outline{outlineItemCount > 0 ? `(${outlineItemCount})` : ''}</span>
-                </button>
-		              <button
-		                type="button"
-		                className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-		                onClick={() => setTerminalOpen((v) => !v)}
-	                title="终端"
-	              >
-	                {terminalOpen ? '关闭终端' : '终端'}
-	              </button>
-	            </div>
-	          </div>
-	          {saveError && (
-	            <div className="border-b border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-200">
-	              保存失败：{saveError}
-	            </div>
-	          )}
-	          {openFromLinkError && (
-	            <div className="border-b border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-200">
-	              打开链接文件失败：{openFromLinkError}
-	            </div>
-	          )}
 
-		          <div className="flex min-h-0 flex-1 overflow-hidden">
-		            <div className="min-w-0 flex-1 overflow-hidden">
-		          <DndContext
-		            sensors={sensors}
-		            collisionDetection={collisionDetection}
-		            onDragStart={handleDragStart}
-		            onDragMove={handleDragMove}
-		            onDragEnd={handleDragEnd}
-	            onDragCancel={handleDragCancel}
-	          >
-		            <div ref={paneRowRef} className="flex h-full min-h-0 w-full flex-row overflow-hidden">
-	              {resolvedPanes.map((pane, idx) => {
-	                const activeFileId =
-	                  pane.activeTabId && pane.tabIds.includes(pane.activeTabId)
-	                    ? pane.activeTabId
-	                    : pane.tabIds[0] ?? null;
-	                const activeFile = activeFileId ? openFiles.find((f) => f.id === activeFileId) ?? null : null;
-	                const isFocused = pane.id === resolvedFocusedPaneId;
-	                const leftPaneId = idx > 0 ? resolvedPanes[idx - 1]!.id : null;
-	                return (
-	                  <React.Fragment key={pane.id}>
-	                    {idx > 0 && leftPaneId && (
-	                      <div
-	                        className="w-1 cursor-col-resize bg-transparent hover:bg-blue-200/60 dark:hover:bg-blue-900/40"
-	                        onMouseDown={(e) => startResize(leftPaneId, pane.id, e.clientX)}
-	                        title="拖拽调整分屏比例"
-	                      />
-	                    )}
-	                    <div
-	                      ref={registerPaneRootRef(pane.id)}
-	                      className={[
-	                        'flex min-w-0 flex-col overflow-hidden',
-	                        isFocused ? 'bg-blue-50/30 dark:bg-blue-950/10' : '',
-	                      ].join(' ')}
-	                      style={{ flexGrow: pane.weight, flexBasis: 0 }}
-	                      onPointerDownCapture={() => setFocusedPane(pane.id)}
-	                    >
-	                      <PaneDropZone paneId={pane.id}>
-	                        <div
-	                          ref={registerPaneTabStripRef(pane.id)}
-	                          className="flex items-center gap-1 overflow-x-auto border-b border-gray-200 bg-white px-2 py-1 dark:border-gray-800 dark:bg-gray-950"
-	                        >
-	                          <SortableContext items={pane.tabIds} strategy={horizontalListSortingStrategy}>
-	                            {pane.tabIds.length === 0 ? (
-	                              <div className="px-2 py-1 text-xs text-gray-400">未打开文件</div>
-	                            ) : (
-	                              pane.tabIds.map((fileId) => {
-	                                const file = openFiles.find((f) => f.id === fileId);
-	                                if (!file) return null;
-	                                const active = file.id === activeFileId;
-	                                const title = `${file.title}${file.dirty ? ' *' : ''}`;
-	                                return (
-	                                  <SortableTab
-	                                    key={`${pane.id}:${file.id}`}
-	                                    id={file.id}
-	                                    active={active}
-	                                    title={title}
-	                                    pinnedWhileDragging={pinActiveTabWhileDragging && activeDragTabId === file.id}
-	                                    onClick={() => activateTabInPane(pane.id, file.id)}
-	                                    onClose={() => closeFileTab(file.id)}
-	                                    onContextMenu={(e) => {
-	                                      e.preventDefault();
-	                                      e.stopPropagation();
-	                                      setTabMenu({
-	                                        visible: true,
-	                                        x: e.clientX,
-	                                        y: e.clientY,
-	                                        paneId: pane.id,
-	                                        fileId: file.id,
-	                                        path: file.path,
-	                                      });
-	                                    }}
-	                                  />
-	                                );
-	                              })
-	                            )}
-	                          </SortableContext>
+                {splitPreview && (
+                  <div
+                    className="pointer-events-none fixed z-[240]"
+                    style={{
+                      left: `${splitPreview.rect.left}px`,
+                      top: `${splitPreview.rect.top}px`,
+                      width: `${splitPreview.rect.width}px`,
+                      height: `${splitPreview.rect.height}px`,
+                    }}
+                  >
+                    <div className="h-full w-full rounded bg-blue-500/10 outline outline-2 outline-blue-500/40" />
+                    <div className="absolute left-2 top-2 rounded bg-blue-600 px-2 py-1 text-xs text-white shadow">
+                      {splitPreview.direction === 'left' ? '分屏到左侧' : '分屏到右侧'}
+                    </div>
+                  </div>
+                )}
 
-	                          <div className="ml-auto flex items-center gap-2 px-1">
-	                            <button
-	                              type="button"
-	                              disabled={resolvedPanes.length <= 1}
-	                              className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 disabled:opacity-60 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-	                              onClick={() => closePaneAndMerge(pane.id)}
-	                              title="关闭窗格"
-	                            >
-	                              关闭窗格
-	                            </button>
-	                          </div>
-	                        </div>
+                {!splitPreview && remoteSplitPreview && (
+                  <div
+                    className="pointer-events-none fixed z-[235]"
+                    style={{
+                      left: `${remoteSplitPreview.rect.left}px`,
+                      top: `${remoteSplitPreview.rect.top}px`,
+                      width: `${remoteSplitPreview.rect.width}px`,
+                      height: `${remoteSplitPreview.rect.height}px`,
+                    }}
+                  >
+                    <div className="h-full w-full rounded bg-blue-500/10 outline outline-2 outline-blue-500/40" />
+                    <div className="absolute left-2 top-2 rounded bg-blue-600 px-2 py-1 text-xs text-white shadow">
+                      {remoteSplitPreview.direction === 'left' ? '分屏到左侧' : '分屏到右侧'}
+                    </div>
+                  </div>
+                )}
+              </DndContext>
+            </div>
 
-	                        <div ref={registerPaneBodyRef(pane.id)} className="min-h-0 flex-1 overflow-hidden">
-		                          {activeFile ? (
-		                            activeFile.kind === 'text' ? (
-		                              <div className="h-full min-h-0 w-full" onWheelCapture={onEditorWheelCapture}>
-		                                <Editor
-	                                  path={toMonacoModelPath(activeFile.path)}
-	                                  language={languageForPath(activeFile.path)}
-	                                  value={activeFile.content ?? ''}
-	                                  // Configure MonacoEnvironment workers before the editor initializes.
-	                                  // Otherwise Monaco may route TS/JS language-service requests to the simple editor worker,
-	                                  // leading to errors like: "Missing requestHandler or method: getQuickInfoAtPosition".
-	                                  beforeMount={setupMonaco}
-	                                  onMount={handleEditorMountForPane(pane.id)}
-	                                  onChange={(value) => {
-	                                    if (typeof value !== 'string') return;
-	                                    const nextValue = value;
-	                                    setOpenFiles((prev) =>
-	                                      prev.map((file) =>
-	                                        file.id === activeFile.id
-	                                          ? {
-	                                              ...file,
-	                                              content: nextValue,
-	                                              dirty: nextValue !== (file.originalContent ?? ''),
-	                                            }
-	                                          : file
-	                                      )
-	                                    );
-	                                  }}
-		                                  theme={editorTheme}
-		                                  options={{
-		                                    minimap: { enabled: false },
-		                                    codeLens: false,
-		                                    suggest: {
-		                                      showWords: codeIntelligenceConfig?.monacoWordSuggestionsEnabled !== false,
-		                                    },
-		                                    wordBasedSuggestions:
-		                                      codeIntelligenceConfig?.monacoWordSuggestionsEnabled === false
-		                                        ? 'off'
-		                                        : 'matchingDocuments',
-		                                    wordBasedSuggestionsOnlySameLanguage: true,
-		                                    inlineSuggest: { enabled: true },
-		                                    fontSize: editorFontSize,
-		                                    fontFamily:
-		                                      'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
-		                                    lineNumbers: 'on',
-		                                    wordWrap: 'on',
-		                                    renderWhitespace: 'selection',
-		                                    automaticLayout: true,
-		                                    scrollBeyondLastLine: false,
-		                                  }}
-		                                />
-		                              </div>
-	                            ) : (
-	                              <div className="flex h-full flex-col gap-3 p-4">
-	                                <div className="flex items-center justify-between">
-	                                  <div className="min-w-0">
-	                                    <div className="truncate text-sm font-medium text-gray-800 dark:text-gray-100">
-	                                      {activeFile.title}
-	                                    </div>
-	                                    <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-	                                      {activeFile.kind} · {activeFile.mime} · {activeFile.size} bytes
-	                                    </div>
-	                                  </div>
-	                                  <button
-	                                    type="button"
-	                                    className="rounded border border-gray-200 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
-	                                    onClick={() => void openPath(activeFile.path)}
-	                                    title="在系统默认应用中打开"
-	                                  >
-	                                    在系统中打开
-	                                  </button>
-	                                </div>
+          </div>
 
-	                                {activeFile.kind === 'image' && activeFile.dataUrl ? (
-	                                  <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-950">
-	                                    <img
-	                                      src={activeFile.dataUrl}
-	                                      alt={activeFile.title}
-	                                      className="max-h-[70vh] max-w-full rounded"
-	                                    />
-	                                  </div>
-	                                ) : activeFile.kind === 'pdf' && activeFile.base64 ? (
-	                                  <div className="min-h-0 flex-1 overflow-hidden rounded-lg border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-950">
-	                                    <iframe
-	                                      title={activeFile.title}
-	                                      className="h-full w-full"
-	                                      src={`data:application/pdf;base64,${activeFile.base64}#page=1&view=FitH`}
-	                                    />
-	                                  </div>
-	                                ) : (
-	                                  <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-gray-200 bg-white p-3 text-xs text-gray-700 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-200">
-	                                    <div className="font-medium">二进制预览（前 256 bytes）</div>
-	                                    <div className="mt-2 font-mono break-words">
-	                                      {activeFile.base64
-	                                        ? bytesToHexPreview(decodeBase64ToBytes(activeFile.base64), 256)
-	                                        : '(无数据)'}
-	                                    </div>
-	                                  </div>
-	                                )}
-	                              </div>
-	                            )
-	                          ) : (
-	                            <div className="flex h-full items-center justify-center text-sm text-gray-400">
-	                              在左侧 Explorer 里选择一个文件
-	                            </div>
-	                          )}
-	                        </div>
-	                      </PaneDropZone>
-	                    </div>
-	                  </React.Fragment>
-	                );
-	              })}
-	            </div>
+        </div>
+      </div>
 
-	            {!isTauri() && (
-	              <DragOverlay>
-	                {activeDragTabId ? (
-	                  <div className="rounded-md border border-gray-200 bg-white px-3 py-2 text-sm text-gray-800 shadow-lg dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100">
-	                    {openFiles.find((f) => f.id === activeDragTabId)?.title ?? basename(activeDragTabId)}
-	                  </div>
-	                ) : null}
-	              </DragOverlay>
-	            )}
-
-	            {splitPreview && (
-	              <div
-	                className="pointer-events-none fixed z-[240]"
-	                style={{
-	                  left: `${splitPreview.rect.left}px`,
-	                  top: `${splitPreview.rect.top}px`,
-	                  width: `${splitPreview.rect.width}px`,
-	                  height: `${splitPreview.rect.height}px`,
-	                }}
-	              >
-	                <div className="h-full w-full rounded bg-blue-500/10 outline outline-2 outline-blue-500/40" />
-	                <div className="absolute left-2 top-2 rounded bg-blue-600 px-2 py-1 text-xs text-white shadow">
-	                  {splitPreview.direction === 'left' ? '分屏到左侧' : '分屏到右侧'}
-	                </div>
-	              </div>
-	            )}
-
-	            {!splitPreview && remoteSplitPreview && (
-	              <div
-	                className="pointer-events-none fixed z-[235]"
-	                style={{
-	                  left: `${remoteSplitPreview.rect.left}px`,
-	                  top: `${remoteSplitPreview.rect.top}px`,
-	                  width: `${remoteSplitPreview.rect.width}px`,
-	                  height: `${remoteSplitPreview.rect.height}px`,
-	                }}
-	              >
-		                <div className="h-full w-full rounded bg-blue-500/10 outline outline-2 outline-blue-500/40" />
-		                <div className="absolute left-2 top-2 rounded bg-blue-600 px-2 py-1 text-xs text-white shadow">
-		                  {remoteSplitPreview.direction === 'left' ? '分屏到左侧' : '分屏到右侧'}
-		                </div>
-		              </div>
-		            )}
-		          </DndContext>
-		            </div>
-
-		          </div>
-
-		        </div>
-	      </div>
-
-	      {filePaletteOpen && (
-	        <div className="fixed inset-0 z-[210]">
-	          <div
-	            className="absolute inset-0 bg-black/25 backdrop-blur-[1px]"
-	            onClick={() => {
-	              setFilePaletteOpen(false);
-	              setFilePaletteQuery('');
-	              setFilePaletteResults([]);
-	              setFilePaletteIndex(0);
-	              setFilePaletteError(null);
-	            }}
-	          />
+      {filePaletteOpen && (
+        <div className="fixed inset-0 z-[210]">
+          <div
+            className="absolute inset-0 bg-black/25 backdrop-blur-[1px]"
+            onClick={() => {
+              setFilePaletteOpen(false);
+              setFilePaletteQuery('');
+              setFilePaletteResults([]);
+              setFilePaletteIndex(0);
+              setFilePaletteError(null);
+            }}
+          />
           <div className="absolute left-1/2 top-16 w-[720px] max-w-[92vw] -translate-x-1/2 rounded-2xl border border-gray-200 bg-white shadow-xl dark:border-gray-700 dark:bg-gray-900">
             <div className="border-b border-gray-200 px-4 py-3 dark:border-gray-700">
               <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">搜索文件</div>
@@ -6523,31 +6523,31 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                     e.preventDefault();
                     setFilePaletteIndex((i) => Math.max(0, i - 1));
                   }
-	                  if (e.key === 'Enter') {
-	                    e.preventDefault();
-	                    const picked = filePaletteResults[filePaletteIndex];
-	                    if (!picked) return;
-	                    setFilePaletteOpen(false);
-	                    setFilePaletteQuery('');
-	                    setFilePaletteResults([]);
-	                    setFilePaletteIndex(0);
-	                    setFilePaletteError(null);
-	                    void openFileAtPath(picked);
-	                  }
-	                }}
-	              />
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    const picked = filePaletteResults[filePaletteIndex];
+                    if (!picked) return;
+                    setFilePaletteOpen(false);
+                    setFilePaletteQuery('');
+                    setFilePaletteResults([]);
+                    setFilePaletteIndex(0);
+                    setFilePaletteError(null);
+                    void openFileAtPath(picked);
+                  }
+                }}
+              />
 
-	              <div className="mt-3 max-h-[55vh] overflow-auto rounded-xl border border-gray-200 dark:border-gray-700">
-	                {filePaletteError ? (
-	                  <div className="px-3 py-3 text-sm text-red-600 dark:text-red-300 whitespace-pre-wrap break-words">
-	                    {filePaletteError}
-	                  </div>
-	                ) : filePaletteResults.length === 0 ? (
-	                  <div className="px-3 py-3 text-sm text-gray-500 dark:text-gray-400">
-	                    {filePaletteQuery.trim() ? '未找到匹配文件' : '输入关键字开始搜索'}
-	                  </div>
-	                ) : (
-	                  filePaletteResults.map((p, idx) => (
+              <div className="mt-3 max-h-[55vh] overflow-auto rounded-xl border border-gray-200 dark:border-gray-700">
+                {filePaletteError ? (
+                  <div className="px-3 py-3 text-sm text-red-600 dark:text-red-300 whitespace-pre-wrap break-words">
+                    {filePaletteError}
+                  </div>
+                ) : filePaletteResults.length === 0 ? (
+                  <div className="px-3 py-3 text-sm text-gray-500 dark:text-gray-400">
+                    {filePaletteQuery.trim() ? '未找到匹配文件' : '输入关键字开始搜索'}
+                  </div>
+                ) : (
+                  filePaletteResults.map((p, idx) => (
                     <button
                       key={p}
                       type="button"
@@ -6558,16 +6558,16 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                           : 'text-gray-700 hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-gray-800',
                       ].join(' ')}
                       onMouseEnter={() => setFilePaletteIndex(idx)}
-	                      onClick={() => {
-	                        setFilePaletteOpen(false);
-	                        setFilePaletteQuery('');
-	                        setFilePaletteResults([]);
-	                        setFilePaletteIndex(0);
-	                        setFilePaletteError(null);
-	                        void openFileAtPath(p);
-	                      }}
-	                      title={p}
-	                    >
+                      onClick={() => {
+                        setFilePaletteOpen(false);
+                        setFilePaletteQuery('');
+                        setFilePaletteResults([]);
+                        setFilePaletteIndex(0);
+                        setFilePaletteError(null);
+                        void openFileAtPath(p);
+                      }}
+                      title={p}
+                    >
                       <div className="truncate font-mono text-[12px]">{basename(p)}</div>
                       <div className="mt-0.5 truncate text-[11px] text-gray-500 dark:text-gray-400">
                         {p}
@@ -6831,84 +6831,84 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
             )}
           </div>
         </div>
-	      )}
+      )}
 
-	      {outlineMenu && (
-	        <div
-	          className="fixed z-[205] min-w-[220px] rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900"
-	          style={{ left: outlineMenu.x, top: outlineMenu.y }}
-	          onMouseDown={(e) => e.stopPropagation()}
-	        >
-	          <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400 truncate" title={outlineMenu.item.name}>
-	            {outlineMenu.item.name}
-	            <span className="ml-2 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-gray-500 dark:bg-gray-800 dark:text-gray-400">
-	              {normalizeOutlineKind(outlineMenu.item.kind)}
-	            </span>
-	          </div>
-	          <div className="py-1 text-sm">
-		            <button
-		              type="button"
-		              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
-		              onClick={() => {
-		                const menu = outlineMenu;
-		                const hasExisting = Boolean(menu.analysis);
-		                if (hasExisting) {
-		                  const ok = confirm('已存在分析结果，确定重新分析并覆盖吗？');
-		                  if (!ok) return;
-		                }
-		                setOutlineMenu(null);
-		                void (async () => {
-		                  try {
-		                    await runOutlineSymbolAnalysis(menu.filePath, menu.languageId, menu.item);
-		                  } catch (err) {
-	                    const msg = err instanceof Error ? err.message : String(err);
-	                    showNavToast(msg);
-	                  }
-		                })();
-		              }}
-		            >
-		              {outlineMenu.analysis ? '重新分析' : outlineAnalysisActionLabel(outlineMenu.item.kind)}
-		            </button>
+      {outlineMenu && (
+        <div
+          className="fixed z-[205] min-w-[220px] rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900"
+          style={{ left: outlineMenu.x, top: outlineMenu.y }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400 truncate" title={outlineMenu.item.name}>
+            {outlineMenu.item.name}
+            <span className="ml-2 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-gray-500 dark:bg-gray-800 dark:text-gray-400">
+              {normalizeOutlineKind(outlineMenu.item.kind)}
+            </span>
+          </div>
+          <div className="py-1 text-sm">
+            <button
+              type="button"
+              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+              onClick={() => {
+                const menu = outlineMenu;
+                const hasExisting = Boolean(menu.analysis);
+                if (hasExisting) {
+                  const ok = confirm('已存在分析结果，确定重新分析并覆盖吗？');
+                  if (!ok) return;
+                }
+                setOutlineMenu(null);
+                void (async () => {
+                  try {
+                    await runOutlineSymbolAnalysis(menu.filePath, menu.languageId, menu.item);
+                  } catch (err) {
+                    const msg = err instanceof Error ? err.message : String(err);
+                    showNavToast(msg);
+                  }
+                })();
+              }}
+            >
+              {outlineMenu.analysis ? '重新分析' : outlineAnalysisActionLabel(outlineMenu.item.kind)}
+            </button>
 
-	            {outlineMenu.analysis === undefined ? (
-	              <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">加载分析状态中…</div>
-	            ) : outlineMenu.analysis ? (
-	              <>
-		                <button
-		                  type="button"
-		                  className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
-		                  onClick={() => {
-		                    const menu = outlineMenu;
-		                    setOutlineMenu(null);
-		                    void viewOutlineSymbolAnalysis(menu.filePath, menu.item);
-		                  }}
-		                >
-		                  查看分析
-		                </button>
-		                <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
-		                <button
-		                  type="button"
-		                  className="w-full px-3 py-2 text-left text-red-600 hover:bg-gray-100 dark:text-red-400 dark:hover:bg-gray-800"
-	                  onClick={() => {
-	                    const menu = outlineMenu;
-	                    setOutlineMenu(null);
-	                    void deleteOutlineSymbolAnalysis(menu.filePath, menu.item);
-	                  }}
-	                >
-	                  删除分析
-	                </button>
-	              </>
-	            ) : (
-	              <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">尚无分析结果</div>
-	            )}
-	          </div>
-	        </div>
-	      )}
+            {outlineMenu.analysis === undefined ? (
+              <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">加载分析状态中…</div>
+            ) : outlineMenu.analysis ? (
+              <>
+                <button
+                  type="button"
+                  className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+                  onClick={() => {
+                    const menu = outlineMenu;
+                    setOutlineMenu(null);
+                    void viewOutlineSymbolAnalysis(menu.filePath, menu.item);
+                  }}
+                >
+                  查看分析
+                </button>
+                <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
+                <button
+                  type="button"
+                  className="w-full px-3 py-2 text-left text-red-600 hover:bg-gray-100 dark:text-red-400 dark:hover:bg-gray-800"
+                  onClick={() => {
+                    const menu = outlineMenu;
+                    setOutlineMenu(null);
+                    void deleteOutlineSymbolAnalysis(menu.filePath, menu.item);
+                  }}
+                >
+                  删除分析
+                </button>
+              </>
+            ) : (
+              <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">尚无分析结果</div>
+            )}
+          </div>
+        </div>
+      )}
 
-	      {contextMenu && (
-	        <div
-	          className="fixed z-[200] min-w-[180px] rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900"
-	          style={{ left: contextMenu.x, top: contextMenu.y }}
+      {contextMenu && (
+        <div
+          className="fixed z-[200] min-w-[180px] rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
           onMouseDown={(e) => e.stopPropagation()}
         >
           {contextMenu.kind === 'blank' && (
@@ -7214,90 +7214,90 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         </div>
       )}
 
-	      {tabMenu && (
-	        <div
-	          className="fixed z-[220] min-w-[220px] rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900"
-	          style={{ left: tabMenu.x, top: tabMenu.y }}
-	          onMouseDown={(e) => e.stopPropagation()}
-	        >
-	          <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400 truncate" title={tabMenu.path}>
-	            {tabMenu.path}
-	          </div>
-	          <div className="py-1 text-sm">
-	            <button
-	              type="button"
-	              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
-	              onClick={() => {
-	                const menu = tabMenu;
-	                setTabMenu(null);
-	                const pane = paneById.get(menu.paneId);
-	                if (!pane) return;
-	                const toClose = pane.tabIds.filter((id) => id !== menu.fileId);
-	                for (const fid of toClose) closeFileTab(fid);
-	              }}
-	            >
-	              关闭其他
-	            </button>
-	            <button
-	              type="button"
-	              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
-	              onClick={() => {
-	                const menu = tabMenu;
-	                setTabMenu(null);
-	                const pane = paneById.get(menu.paneId);
-	                if (!pane) return;
-	                const idx = pane.tabIds.indexOf(menu.fileId);
-	                if (idx <= 0) return;
-	                const toClose = pane.tabIds.slice(0, idx);
-	                for (const fid of toClose) closeFileTab(fid);
-	              }}
-	            >
-	              关闭左侧
-	            </button>
-	            <button
-	              type="button"
-	              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
-	              onClick={() => {
-	                const menu = tabMenu;
-	                setTabMenu(null);
-	                const pane = paneById.get(menu.paneId);
-	                if (!pane) return;
-	                const idx = pane.tabIds.indexOf(menu.fileId);
-	                if (idx < 0 || idx >= pane.tabIds.length - 1) return;
-	                const toClose = pane.tabIds.slice(idx + 1);
-	                for (const fid of toClose) closeFileTab(fid);
-	              }}
-	            >
-	              关闭右侧
-	            </button>
-	            <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
-	            <button
-	              type="button"
-	              disabled={isUntitledPath(tabMenu.path)}
-	              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:text-gray-200 dark:hover:bg-gray-800"
-	              onClick={() => {
-	                const p = tabMenu.path;
-	                setTabMenu(null);
-	                if (isUntitledPath(p)) return;
-	                void revealItemInDir(p);
-	              }}
-	            >
-	              在系统中打开所在文件夹
-	            </button>
-	            <button
-	              type="button"
-	              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
-	              onClick={() => {
+      {tabMenu && (
+        <div
+          className="fixed z-[220] min-w-[220px] rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900"
+          style={{ left: tabMenu.x, top: tabMenu.y }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400 truncate" title={tabMenu.path}>
+            {tabMenu.path}
+          </div>
+          <div className="py-1 text-sm">
+            <button
+              type="button"
+              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+              onClick={() => {
+                const menu = tabMenu;
+                setTabMenu(null);
+                const pane = paneById.get(menu.paneId);
+                if (!pane) return;
+                const toClose = pane.tabIds.filter((id) => id !== menu.fileId);
+                for (const fid of toClose) closeFileTab(fid);
+              }}
+            >
+              关闭其他
+            </button>
+            <button
+              type="button"
+              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+              onClick={() => {
+                const menu = tabMenu;
+                setTabMenu(null);
+                const pane = paneById.get(menu.paneId);
+                if (!pane) return;
+                const idx = pane.tabIds.indexOf(menu.fileId);
+                if (idx <= 0) return;
+                const toClose = pane.tabIds.slice(0, idx);
+                for (const fid of toClose) closeFileTab(fid);
+              }}
+            >
+              关闭左侧
+            </button>
+            <button
+              type="button"
+              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+              onClick={() => {
+                const menu = tabMenu;
+                setTabMenu(null);
+                const pane = paneById.get(menu.paneId);
+                if (!pane) return;
+                const idx = pane.tabIds.indexOf(menu.fileId);
+                if (idx < 0 || idx >= pane.tabIds.length - 1) return;
+                const toClose = pane.tabIds.slice(idx + 1);
+                for (const fid of toClose) closeFileTab(fid);
+              }}
+            >
+              关闭右侧
+            </button>
+            <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
+            <button
+              type="button"
+              disabled={isUntitledPath(tabMenu.path)}
+              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:text-gray-200 dark:hover:bg-gray-800"
+              onClick={() => {
+                const p = tabMenu.path;
+                setTabMenu(null);
+                if (isUntitledPath(p)) return;
+                void revealItemInDir(p);
+              }}
+            >
+              在系统中打开所在文件夹
+            </button>
+            <button
+              type="button"
+              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+              onClick={() => {
                 const p = tabMenu.path;
                 setTabMenu(null);
                 void navigator.clipboard.writeText(p);
               }}
-	            >
-	              复制路径
-	            </button>
-	          </div>
-	        </div>
-	      )}
+            >
+              复制路径
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
