@@ -174,9 +174,19 @@ const splitRelPath = (relPath: string): string[] => {
 const buildWorkspaceTrees = (
   conversations: Conversation[],
   workstudioMainFolderById: Record<string, string>,
+  workstudioMainFolderHasRealContentById: Record<string, boolean>,
   searchQuery: string
 ): WorkspaceTree[] => {
   const q = searchQuery.trim().toLowerCase();
+  const rankScore = (latestUpdatedAtMs: number, count: number): number => {
+    // Prefer recency but give "many conversations" a moderate boost so frequently-used folders rank higher.
+    // Cap the boost to avoid old, huge folders dominating forever.
+    const safeLatest = Number.isFinite(latestUpdatedAtMs) ? latestUpdatedAtMs : 0;
+    const c = Math.max(0, Math.floor(count));
+    const boostDays = Math.min(8, Math.log2(c + 1)); // 0..8 days
+    return safeLatest + boostDays * 24 * 60 * 60 * 1000;
+  };
+
   const matchesQuery = (c: Conversation): boolean => {
     if (!q) return true;
     const title = (c.title ?? '').toLowerCase();
@@ -295,6 +305,12 @@ const buildWorkspaceTrees = (
   for (const c of conversations) {
     if (!matchesQuery(c)) continue;
     const wsId = (c.workstudioId ?? '').trim();
+    if (wsId) {
+      if (workstudioMainFolderHasRealContentById[wsId] === false) {
+        // 主文件夹只有 `.tauriai` 配置、没有其他内容：不在“文件夹视图”展示
+        continue;
+      }
+    }
     const rootPath = wsId ? (workstudioMainFolderById[wsId] ?? wsId) : '未关联工作区';
     const ws = upsertWorkspace(rootPath);
     attachConversation(ws, c);
@@ -366,11 +382,9 @@ const buildWorkspaceTrees = (
   roots.sort((a, b) => {
     if (a.rootPath === '未关联工作区') return 1;
     if (b.rootPath === '未关联工作区') return -1;
-    return (
-      b.latestUpdatedAtMs - a.latestUpdatedAtMs ||
-      b.totalCount - a.totalCount ||
-      a.displayName.localeCompare(b.displayName, 'zh-CN')
-    );
+    const scoreA = rankScore(a.latestUpdatedAtMs, a.totalCount);
+    const scoreB = rankScore(b.latestUpdatedAtMs, b.totalCount);
+    return scoreB - scoreA || b.latestUpdatedAtMs - a.latestUpdatedAtMs || b.totalCount - a.totalCount || a.displayName.localeCompare(b.displayName, 'zh-CN');
   });
 
   return roots;
@@ -814,21 +828,29 @@ const WorkspaceTreeBody: React.FC<{
   onDeleteConversation,
   onRenameConversation,
 }) => {
+  const rankScore = (latestUpdatedAtMs: number, count: number): number => {
+    const safeLatest = Number.isFinite(latestUpdatedAtMs) ? latestUpdatedAtMs : 0;
+    const c = Math.max(0, Math.floor(count));
+    const boostDays = Math.min(8, Math.log2(c + 1));
+    return safeLatest + boostDays * 24 * 60 * 60 * 1000;
+  };
+
   const sortedFolders = useMemo(
     () =>
       Array.from(ws.folders.values()).sort((a, b) => {
-        return (
-          b.latestUpdatedAtMs - a.latestUpdatedAtMs ||
-          b.totalCount - a.totalCount ||
-          a.name.localeCompare(b.name, 'zh-CN')
-        );
+        const scoreA = rankScore(a.latestUpdatedAtMs, a.totalCount);
+        const scoreB = rankScore(b.latestUpdatedAtMs, b.totalCount);
+        return scoreB - scoreA || b.latestUpdatedAtMs - a.latestUpdatedAtMs || b.totalCount - a.totalCount || a.name.localeCompare(b.name, 'zh-CN');
       }),
     [ws.folders]
   );
   const sortedFiles = useMemo(
     () =>
       Array.from(ws.files.values()).sort((a, b) => {
+        const scoreA = rankScore(a.latestUpdatedAtMs, a.conversations.length);
+        const scoreB = rankScore(b.latestUpdatedAtMs, b.conversations.length);
         return (
+          scoreB - scoreA ||
           b.latestUpdatedAtMs - a.latestUpdatedAtMs ||
           b.conversations.length - a.conversations.length ||
           a.name.localeCompare(b.name, 'zh-CN')
@@ -905,14 +927,15 @@ const WorkspaceTreeBody: React.FC<{
       const nodeId = `ws|${ws.rootPath}|d|${folder.relPath}`;
       const expanded = treeExpanded.has(nodeId);
       const childFolders = Array.from(folder.folders.values()).sort((a, b) => {
-        return (
-          b.latestUpdatedAtMs - a.latestUpdatedAtMs ||
-          b.totalCount - a.totalCount ||
-          a.name.localeCompare(b.name, 'zh-CN')
-        );
+        const scoreA = rankScore(a.latestUpdatedAtMs, a.totalCount);
+        const scoreB = rankScore(b.latestUpdatedAtMs, b.totalCount);
+        return scoreB - scoreA || b.latestUpdatedAtMs - a.latestUpdatedAtMs || b.totalCount - a.totalCount || a.name.localeCompare(b.name, 'zh-CN');
       });
       const childFiles = Array.from(folder.files.values()).sort((a, b) => {
+        const scoreA = rankScore(a.latestUpdatedAtMs, a.conversations.length);
+        const scoreB = rankScore(b.latestUpdatedAtMs, b.conversations.length);
         return (
+          scoreB - scoreA ||
           b.latestUpdatedAtMs - a.latestUpdatedAtMs ||
           b.conversations.length - a.conversations.length ||
           a.name.localeCompare(b.name, 'zh-CN')
@@ -1207,20 +1230,91 @@ export const HistoryPanel: React.FC = () => {
   const [showBatchDeleteConfirm, setShowBatchDeleteConfirm] = useState(false);
 
   const [workstudioMainFolderById, setWorkstudioMainFolderById] = useState<Record<string, string>>({});
-  useEffect(() => {
+  const [workstudioMainFolderHasRealContentById, setWorkstudioMainFolderHasRealContentById] = useState<
+    Record<string, boolean>
+  >({});
+  const [workstudioMainFolderFetchFailures, setWorkstudioMainFolderFetchFailures] = useState<
+    Record<string, { attempts: number; lastErrorAtMs: number }>
+  >({});
+  const [workstudioMainFolderRetryTick, setWorkstudioMainFolderRetryTick] = useState(0);
+
+  const workstudioIdsKey = useMemo(() => {
     const uniqueIds = new Set<string>();
     for (const c of conversations) {
       const id = (c.workstudioId ?? '').trim();
       if (id) uniqueIds.add(id);
     }
+    const ids = Array.from(uniqueIds).sort();
+    return ids.join('|');
+  }, [conversations]);
 
-    const missing = Array.from(uniqueIds).filter((id) => !(id in workstudioMainFolderById));
-    if (missing.length === 0) return;
+  const workstudioIdsSorted = useMemo(() => {
+    if (!workstudioIdsKey) return [];
+    return workstudioIdsKey.split('|').filter(Boolean);
+  }, [workstudioIdsKey]);
+
+  useEffect(() => {
+    const now = Date.now();
+
+    const backoffMsForAttempts = (attempts: number): number => {
+      // 1s, 2s, 4s ... up to 30s
+      const base = 1000 * Math.pow(2, Math.max(0, attempts - 1));
+      return Math.min(30_000, Math.max(1000, base));
+    };
+
+    const unresolved = workstudioIdsSorted.filter((id) => !(id in workstudioMainFolderById));
+    if (unresolved.length === 0) return;
+
+    const missing = unresolved.filter((id) => {
+      const failure = workstudioMainFolderFetchFailures[id];
+      if (!failure) return true;
+      const backoffMs = backoffMsForAttempts(failure.attempts);
+      return now - failure.lastErrorAtMs >= backoffMs;
+    });
 
     let cancelled = false;
+    let retryTimer: number | null = null;
+
+    const scheduleRetryIfNeeded = (nextFailures: Record<string, { attempts: number; lastErrorAtMs: number }>) => {
+      // If we still have unresolved workstudio ids, schedule the next retry at the earliest backoff expiry.
+      let nextAtMs: number | null = null;
+      for (const id of workstudioIdsSorted) {
+        if (id in workstudioMainFolderById) continue;
+        const failure = nextFailures[id];
+        if (!failure) continue;
+        const backoffMs = backoffMsForAttempts(failure.attempts);
+        const candidate = failure.lastErrorAtMs + backoffMs;
+        nextAtMs = nextAtMs === null ? candidate : Math.min(nextAtMs, candidate);
+      }
+      if (nextAtMs === null) return;
+      const delayMs = Math.max(250, nextAtMs - Date.now());
+      retryTimer = window.setTimeout(() => setWorkstudioMainFolderRetryTick((v) => v + 1), delayMs);
+    };
+
+    if (missing.length === 0) {
+      // All unresolved ids are in backoff cooldown. Schedule the next retry at the earliest expiry.
+      scheduleRetryIfNeeded(workstudioMainFolderFetchFailures);
+      return () => {
+        cancelled = true;
+        if (retryTimer !== null) window.clearTimeout(retryTimer);
+      };
+    }
+
+    const mapLimit = async <T,>(items: T[], limit: number, fn: (item: T) => Promise<void>) => {
+      const concurrency = Math.max(1, Math.floor(limit));
+      let idx = 0;
+      const runners = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+        while (idx < items.length) {
+          const cur = idx++;
+          await fn(items[cur]!);
+        }
+      });
+      await Promise.all(runners);
+    };
 
     (async () => {
       const updates: Record<string, string> = {};
+      const failureUpdates: Record<string, { attempts: number; lastErrorAtMs: number }> = {};
 
       if (!isTauriRuntime()) {
         for (const id of missing) updates[id] = id;
@@ -1230,28 +1324,125 @@ export const HistoryPanel: React.FC = () => {
 
       try {
         const { invoke } = await import('@tauri-apps/api/core');
-        await Promise.all(
-          missing.map(async (id) => {
-            try {
-              const ws = await invoke<Workstudio | null>('get_workstudio', { workstudioId: id });
-              const mainFolder = (ws?.mainFolder ?? '').trim();
-              updates[id] = mainFolder || id;
-            } catch {
+        await mapLimit(missing, 6, async (id) => {
+          try {
+            const ws = await invoke<Workstudio | null>('get_workstudio', { workstudioId: id });
+            const mainFolder =
+              (ws?.mainFolder ?? '').trim() || ((ws?.folders?.[0] ?? '') as string).trim() || '';
+            if (mainFolder) {
+              updates[id] = mainFolder;
+            } else {
+              // Workstudio not found or missing folder info: fall back to id (resolved) to avoid endless retries.
               updates[id] = id;
             }
-          })
-        );
+          } catch (error) {
+            const prev = workstudioMainFolderFetchFailures[id];
+            const attempts = (prev?.attempts ?? 0) + 1;
+            failureUpdates[id] = { attempts, lastErrorAtMs: Date.now() };
+            console.warn('Failed to resolve workstudio main folder:', id, error);
+          }
+        });
       } catch {
-        for (const id of missing) updates[id] = id;
+        // If the runtime import fails, avoid caching UUIDs as the final "main folder".
+        // Record failures so we can retry later.
+        for (const id of missing) {
+          const prev = workstudioMainFolderFetchFailures[id];
+          const attempts = (prev?.attempts ?? 0) + 1;
+          failureUpdates[id] = { attempts, lastErrorAtMs: Date.now() };
+        }
       }
 
-      if (!cancelled) setWorkstudioMainFolderById((prev) => ({ ...prev, ...updates }));
+      if (cancelled) return;
+
+      if (Object.keys(updates).length > 0) {
+        setWorkstudioMainFolderById((prev) => ({ ...prev, ...updates }));
+      }
+      if (Object.keys(failureUpdates).length > 0) {
+        const nextFailures = { ...workstudioMainFolderFetchFailures, ...failureUpdates };
+        setWorkstudioMainFolderFetchFailures(nextFailures);
+        scheduleRetryIfNeeded(nextFailures);
+      } else {
+        // Successful run: clear resolved ids from failure cache to prevent stale backoff scheduling.
+        if (Object.keys(workstudioMainFolderFetchFailures).length > 0) {
+          let changed = false;
+          const next: Record<string, { attempts: number; lastErrorAtMs: number }> = { ...workstudioMainFolderFetchFailures };
+          for (const id of missing) {
+            if (id in updates && id in next) {
+              delete next[id];
+              changed = true;
+            }
+          }
+          if (changed) setWorkstudioMainFolderFetchFailures(next);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+    };
+  }, [workstudioIdsKey, workstudioMainFolderById, workstudioMainFolderFetchFailures, workstudioMainFolderRetryTick]);
+
+  // Hide workstudio roots that only contain `.tauriai/` config (no real project content).
+  useEffect(() => {
+    if (!workstudioIdsKey) return;
+
+    const idsToCheck = workstudioIdsSorted.filter((id) => {
+      if (id in workstudioMainFolderHasRealContentById) return false;
+      const mainFolder = (workstudioMainFolderById[id] ?? '').trim();
+      if (!mainFolder) return false;
+      return true;
+    });
+    if (idsToCheck.length === 0) return;
+
+    let cancelled = false;
+
+    const mapLimit = async <T,>(items: T[], limit: number, fn: (item: T) => Promise<void>) => {
+      const concurrency = Math.max(1, Math.floor(limit));
+      let idx = 0;
+      const runners = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+        while (idx < items.length) {
+          const cur = idx++;
+          await fn(items[cur]!);
+        }
+      });
+      await Promise.all(runners);
+    };
+
+    (async () => {
+      const updates: Record<string, boolean> = {};
+
+      if (!isTauriRuntime()) {
+        for (const id of idsToCheck) updates[id] = true;
+        if (!cancelled) setWorkstudioMainFolderHasRealContentById((prev) => ({ ...prev, ...updates }));
+        return;
+      }
+
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        await mapLimit(idsToCheck, 6, async (id) => {
+          try {
+            const has = await invoke<boolean>('workstudio_main_folder_has_real_content', { workstudioId: id });
+            updates[id] = Boolean(has);
+          } catch (error) {
+            // Be conservative: if we can't check (permission / transient), keep it visible.
+            updates[id] = true;
+            console.warn('Failed to check workstudio main folder content:', id, error);
+          }
+        });
+      } catch (error) {
+        // If runtime import fails, keep visible and avoid filtering.
+        for (const id of idsToCheck) updates[id] = true;
+        console.warn('Failed to import tauri invoke for content check:', error);
+      }
+
+      if (!cancelled) setWorkstudioMainFolderHasRealContentById((prev) => ({ ...prev, ...updates }));
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [conversations, workstudioMainFolderById]);
+  }, [workstudioIdsKey, workstudioIdsSorted, workstudioMainFolderById, workstudioMainFolderHasRealContentById]);
 
   const timelineConversations = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -1268,8 +1459,13 @@ export const HistoryPanel: React.FC = () => {
   }, [conversations, searchQuery, workstudioMainFolderById]);
 
   const workspaceTrees = useMemo(() => {
-    return buildWorkspaceTrees(timelineConversations, workstudioMainFolderById, '');
-  }, [timelineConversations, workstudioMainFolderById]);
+    return buildWorkspaceTrees(
+      timelineConversations,
+      workstudioMainFolderById,
+      workstudioMainFolderHasRealContentById,
+      ''
+    );
+  }, [timelineConversations, workstudioMainFolderById, workstudioMainFolderHasRealContentById]);
 
   useEffect(() => {
     if (viewMode !== 'workspace') return;

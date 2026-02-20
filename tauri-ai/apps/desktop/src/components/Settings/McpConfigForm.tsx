@@ -4,7 +4,7 @@
  */
 
 import React, { useCallback, useMemo, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { tauriInvoke as invoke } from '../../utils/errorUtils';
 import { ChevronDown, Plus, Trash2, RefreshCw, Loader2 } from 'lucide-react';
 import { useConfigStore } from '../../stores/configStore';
 import type {

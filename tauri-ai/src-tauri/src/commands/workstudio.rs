@@ -1,5 +1,6 @@
 //! Workstudio (workspace) management commands.
 
+use std::io::ErrorKind;
 use std::sync::Arc;
 
 use tokio::fs;
@@ -63,6 +64,51 @@ pub async fn get_workstudio(
 ) -> Result<Option<Workstudio>, String> {
     let db = db.lock().await;
     db.get_workstudio(&workstudio_id).map_err(|e| e.to_string())
+}
+
+/// Returns whether the workstudio main folder contains any "real" content (excluding `.tauriai/`).
+///
+/// Used by the history "folder view" to hide auto-created default workstudios that only have config.
+#[tauri::command]
+pub async fn workstudio_main_folder_has_real_content(
+    workstudio_id: String,
+    db: tauri::State<'_, Arc<Mutex<Database>>>,
+) -> Result<bool, String> {
+    let ws = {
+        let db = db.lock().await;
+        db.get_workstudio(&workstudio_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "Workstudio not found".to_string())?
+    };
+
+    let main_folder = ws.main_folder.trim().to_string();
+    if main_folder.is_empty() {
+        return Ok(false);
+    }
+
+    let mut rd = match fs::read_dir(&main_folder).await {
+        Ok(v) => v,
+        Err(e) => {
+            return Ok(match e.kind() {
+                // Be conservative: if we can't read the directory (macOS privacy / permissions),
+                // keep it visible rather than filtering it out.
+                ErrorKind::PermissionDenied => true,
+                // If the folder does not exist anymore, treat it as empty.
+                ErrorKind::NotFound => false,
+                _ => true,
+            });
+        }
+    };
+
+    while let Ok(Some(entry)) = rd.next_entry().await {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name == ".tauriai" || name == ".DS_Store" {
+            continue;
+        }
+        return Ok(true);
+    }
+
+    Ok(false)
 }
 
 #[tauri::command]

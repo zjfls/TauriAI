@@ -6,7 +6,7 @@
  */
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { tauriInvoke as invoke } from '../../utils/errorUtils';
 import { listen } from '@tauri-apps/api/event';
 import { Plus, RefreshCw, FileText, Layers, X, Save } from 'lucide-react';
 import { useConfigStore } from '../../stores/configStore';

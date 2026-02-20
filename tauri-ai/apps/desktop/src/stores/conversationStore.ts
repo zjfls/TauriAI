@@ -9,7 +9,7 @@
  */
 
 import { create } from 'zustand';
-import { invoke } from '@tauri-apps/api/core';
+import { tauriInvoke as invoke } from '../utils/errorUtils';
 import type { Conversation } from '../types';
 
 const CONVERSATION_TITLE_BROADCAST_KEY = 'tauri-ai:broadcast:conversation_title_updated';

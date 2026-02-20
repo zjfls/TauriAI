@@ -2163,6 +2163,12 @@ impl SecuritySettings {
 pub struct AppConfig {
     pub appearance: AppearanceSettings,
     pub general: GeneralSettings,
+    /// 严格报错模式（开发者选项，默认 false）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strict_error_mode: Option<bool>,
+    /// 拦截控制台报错日志转弹窗（默认 true）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intercept_console_error: Option<bool>,
     /// Tooling settings (toolsets)
     #[serde(default)]
     pub tools: ToolsSettings,
@@ -2207,6 +2213,8 @@ impl Default for AppConfig {
         Self {
             appearance: AppearanceSettings::default(),
             general: GeneralSettings::default(),
+            strict_error_mode: None,
+            intercept_console_error: Some(true),
             tools: ToolsSettings::default(),
             code_intelligence: CodeIntelligenceSettings::default(),
             mcp: McpSettings::default(),
@@ -2240,9 +2248,11 @@ impl AppConfig {
             migrated.model_ref = self.code_intelligence.ai_completion.model_ref.clone();
             migrated.max_tokens = self.code_intelligence.ai_completion.max_tokens;
             migrated.temperature = self.code_intelligence.ai_completion.temperature;
-            migrated.include_project_context = self.code_intelligence.ai_completion.include_project_context;
+            migrated.include_project_context =
+                self.code_intelligence.ai_completion.include_project_context;
             // Keep analysis timeout reasonably large even if aiCompletion.timeoutMs was small.
-            migrated.timeout_ms = default_symbol_analysis_timeout_ms().max(self.code_intelligence.ai_completion.timeout_ms);
+            migrated.timeout_ms = default_symbol_analysis_timeout_ms()
+                .max(self.code_intelligence.ai_completion.timeout_ms);
             self.code_intelligence.symbol_analysis = Some(migrated);
             changed = true;
         }

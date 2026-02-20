@@ -6,7 +6,7 @@
 
 import { create } from 'zustand';
 import { arrayMove } from '@dnd-kit/sortable';
-import { invoke } from '@tauri-apps/api/core';
+import { tauriInvoke as invoke } from '../utils/errorUtils';
 import { listen } from '@tauri-apps/api/event';
 import type {
   AgentSession,

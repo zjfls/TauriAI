@@ -4,7 +4,7 @@
  * Requirements: 10.1, 10.2
  */
 
-import { invoke } from '@tauri-apps/api/core';
+import { tauriInvoke as invoke } from '../utils/errorUtils';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { RunEventPayload } from '../types';
 

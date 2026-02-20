@@ -4,7 +4,7 @@
  * Requirements: 10.3, 10.4, 10.5
  */
 
-import { invoke } from '@tauri-apps/api/core';
+import { tauriInvoke as invoke } from '../utils/errorUtils';
 import type { Conversation, ConversationActivePath, DebugInfo, Message } from '../types';
 import { hydrateMessagesFromBackend } from '../utils/hydrateMessages';
 

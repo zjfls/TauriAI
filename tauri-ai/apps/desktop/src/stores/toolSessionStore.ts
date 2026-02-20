@@ -4,7 +4,7 @@
  */
 
 import { create } from 'zustand';
-import { invoke } from '@tauri-apps/api/core';
+import { tauriInvoke as invoke } from '../utils/errorUtils';
 import type { PtySessionInfo } from '../types';
 
 interface ToolSessionState {

@@ -3,7 +3,7 @@
  * Wraps Tauri invoke calls for configuration commands
  */
 
-import { invoke } from '@tauri-apps/api/core';
+import { tauriInvoke as invoke } from '../utils/errorUtils';
 import type { AppConfig, ProviderType } from '../types';
 
 /**

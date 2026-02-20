@@ -66,12 +66,12 @@ export type SandboxPolicy =
   | { type: 'read-only' }
   | { type: 'external-sandbox'; networkAccess?: NetworkAccess }
   | {
-      type: 'workspace-write';
-      writableRoots?: string[];
-      networkAccess?: boolean;
-      excludeTmpdirEnvVar?: boolean;
-      excludeSlashTmp?: boolean;
-    };
+    type: 'workspace-write';
+    writableRoots?: string[];
+    networkAccess?: boolean;
+    excludeTmpdirEnvVar?: boolean;
+    excludeSlashTmp?: boolean;
+  };
 
 export interface TrustedCommandConfig {
   tool: string;
@@ -1229,31 +1229,31 @@ export interface AstSymbol {
 
 export type McpServerTransportConfig =
   | {
-      transport: 'stdio';
-      command: string;
-      args: string[];
-      env?: Record<string, string>;
-      envVars: string[];
-      cwd?: string;
-    }
+    transport: 'stdio';
+    command: string;
+    args: string[];
+    env?: Record<string, string>;
+    envVars: string[];
+    cwd?: string;
+  }
   | {
-      transport: 'streamable_http';
-      url: string;
-      bearerTokenEnvVar?: string;
-      httpHeaders?: Record<string, string>;
-      envHttpHeaders?: Record<string, string>;
-    }
+    transport: 'streamable_http';
+    url: string;
+    bearerTokenEnvVar?: string;
+    httpHeaders?: Record<string, string>;
+    envHttpHeaders?: Record<string, string>;
+  }
   | {
-      /**
-       * SSE transport: 连接 `url`（GET text/event-stream），等待 `event: endpoint` 下发 POST 地址，
-       * 然后通过 HTTP POST 发送 JSON-RPC；响应从 SSE stream 回来。
-       */
-      transport: 'sse';
-      url: string;
-      bearerTokenEnvVar?: string;
-      httpHeaders?: Record<string, string>;
-      envHttpHeaders?: Record<string, string>;
-    };
+    /**
+     * SSE transport: 连接 `url`（GET text/event-stream），等待 `event: endpoint` 下发 POST 地址，
+     * 然后通过 HTTP POST 发送 JSON-RPC；响应从 SSE stream 回来。
+     */
+    transport: 'sse';
+    url: string;
+    bearerTokenEnvVar?: string;
+    httpHeaders?: Record<string, string>;
+    envHttpHeaders?: Record<string, string>;
+  };
 
 export interface McpServerConfig {
   transport: McpServerTransportConfig;
@@ -1362,6 +1362,8 @@ export interface SkillRootsSnapshot {
 export interface AppConfig {
   appearance: AppearanceSettings;
   general: GeneralSettings;
+  strictErrorMode?: boolean; // 严格报错模式（开发者选项，默认 false）
+  interceptConsoleError?: boolean; // 拦截控制台报错日志转弹窗（默认 true）
   tools: ToolsSettings;
   codeIntelligence: CodeIntelligenceSettings;
   mcp: McpSettings;
