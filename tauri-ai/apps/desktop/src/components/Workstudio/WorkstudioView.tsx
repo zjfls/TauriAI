@@ -62,6 +62,7 @@ import { type WindowPane, useWindowLayoutStore } from '../../stores/windowLayout
 import { useRemoteDragSplitPreview } from '../../hooks/useRemoteDragSplitPreview';
 import { useDragGhostSession } from '../../hooks/useDragGhostSession';
 import { focusMainWindow, getViewWindowParams } from '../../utils/viewWindow';
+import { MarkdownRenderer } from '../Chat/MarkdownRenderer';
 import { setupMonaco } from '../../utils/monaco';
 import { attachMonacoLspBridge } from '../../utils/monacoLspBridge';
 import { attachMonacoAiCompletionBridge } from '../../utils/monacoAiCompletionBridge';
@@ -78,7 +79,7 @@ type OpenFile = {
   id: string;
   title: string;
   path: string;
-  kind: 'text' | 'image' | 'pdf' | 'binary';
+  kind: 'text' | 'image' | 'pdf' | 'binary' | 'markdown';
   mime: string;
   size: number;
   content?: string;
@@ -3028,28 +3029,29 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       }
 
       const id = crypto.randomUUID();
-      const createdAt = new Date().toISOString();
       const nameBase = `查看分析：${item.name}`;
       const name = nameBase.length > 32 ? `${nameBase.slice(0, 32)}…` : nameBase;
-      const subtitle = `${basename(filePath)}:${item.selectionLine}:${item.selectionColumn}`;
-      setAiBubbles((prev) => [
-        ...prev,
-        {
+      const virtualPath = `__analysis__/${id}.md`;
+      const tabTitle = name;
+
+      setOpenFiles((prev) => {
+        if (prev.some((f) => f.id === id)) return prev;
+        const newFile: OpenFile = {
           id,
-          kind: 'symbol_analysis',
-          name,
-          subtitle,
-          prompt: '已保存的分析结果（右键可刷新/删除）',
-          status: 'done',
-          answer: res.answerMd,
-          modelRef: res.modelRef,
-          latencyMs: res.latencyMs,
-          createdAt,
-        } satisfies WorkstudioAiBubble,
-      ]);
-      openAiViewer(id);
+          title: tabTitle,
+          path: virtualPath,
+          kind: 'markdown',
+          mime: 'text/markdown',
+          size: new TextEncoder().encode(res.answerMd).length,
+          content: res.answerMd,
+        };
+        return [...prev, newFile];
+      });
+
+      // Show in pane
+      useWindowLayoutStore.getState().openTabInFocusedPane(id);
     },
-    [ensureSymbolAnalysis, openAiViewer, showNavToast, workstudioId]
+    [ensureSymbolAnalysis, showNavToast, workstudioId]
   );
 
   const deleteOutlineSymbolAnalysis = useCallback(
@@ -6566,6 +6568,12 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                                         scrollBeyondLastLine: false,
                                       }}
                                     />
+                                  </div>
+                                ) : activeFile.kind === 'markdown' ? (
+                                  <div className="h-full min-h-0 w-full overflow-auto bg-white p-6 dark:bg-gray-950">
+                                    <div className="mx-auto max-w-4xl">
+                                      <MarkdownRenderer content={activeFile.content ?? ''} workstudioId={workstudioId ?? undefined} />
+                                    </div>
                                   </div>
                                 ) : (
                                   <div className="flex h-full flex-col gap-3 p-4">
