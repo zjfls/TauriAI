@@ -4,10 +4,16 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use tokio::fs;
 use tokio::sync::Mutex;
 
 use crate::models::WorkstudioUiState;
 use crate::storage::Database;
+
+fn state_io_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
 
 fn state_file_path(main_folder: &str) -> PathBuf {
     PathBuf::from(main_folder)
@@ -32,22 +38,26 @@ impl Default for WorkstudioStateFile {
     }
 }
 
-fn read_state_file(path: &PathBuf) -> Result<WorkstudioStateFile, String> {
-    if !path.exists() {
-        return Ok(WorkstudioStateFile::default());
+async fn read_state_file(path: &PathBuf) -> Result<WorkstudioStateFile, String> {
+    match fs::read(path).await {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|e| format!("parse workstudio_state.json failed: {e}")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(WorkstudioStateFile::default()),
+        Err(e) => Err(format!("read workstudio_state.json failed: {e}")),
     }
-    let bytes =
-        std::fs::read(path).map_err(|e| format!("read workstudio_state.json failed: {e}"))?;
-    serde_json::from_slice(&bytes).map_err(|e| format!("parse workstudio_state.json failed: {e}"))
 }
 
-fn write_state_file(path: &PathBuf, data: &WorkstudioStateFile) -> Result<(), String> {
+async fn write_state_file(path: &PathBuf, data: &WorkstudioStateFile) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("create .tauriai failed: {e}"))?;
+        fs::create_dir_all(parent)
+            .await
+            .map_err(|e| format!("create .tauriai failed: {e}"))?;
     }
     let json =
         serde_json::to_vec_pretty(data).map_err(|e| format!("serialize state failed: {e}"))?;
-    std::fs::write(path, json).map_err(|e| format!("write workstudio_state.json failed: {e}"))
+    fs::write(path, json)
+        .await
+        .map_err(|e| format!("write workstudio_state.json failed: {e}"))
 }
 
 #[tauri::command]
@@ -55,23 +65,37 @@ pub async fn get_workstudio_ui_state(
     workstudio_id: String,
     db: tauri::State<'_, Arc<Mutex<Database>>>,
 ) -> Result<Option<WorkstudioUiState>, String> {
-    let db = db.lock().await;
-    let ws = db
-        .get_workstudio(&workstudio_id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("Workstudio {workstudio_id} not found"))?;
+    let (main_folder, kind, legacy_state) = {
+        let db = db.lock().await;
+        let ws = db
+            .get_workstudio(&workstudio_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("Workstudio {workstudio_id} not found"))?;
+
+        // Migration fallback: read legacy DB state once, then write into folder.
+        let legacy_state = db
+            .get_workstudio_ui_state(&ws.main_folder, &ws.kind)
+            .ok()
+            .flatten();
+
+        (ws.main_folder, ws.kind, legacy_state)
+    };
 
     // Preferred: store state inside the main folder (.tauriai/workstudio_state.json).
-    let path = state_file_path(&ws.main_folder);
-    let mut file = read_state_file(&path)?;
-    if let Some(state) = file.states.get(&ws.kind).cloned() {
+    //
+    // Important: do NOT hold the DB mutex while doing filesystem I/O.
+    // Otherwise a slow/hanging FS operation can block unrelated DB calls (e.g. get_workstudio),
+    // making Workstudio appear “stuck loading” after certain UI actions.
+    let _io_guard = state_io_lock().lock().await;
+    let path = state_file_path(&main_folder);
+    let mut file = read_state_file(&path).await?;
+    if let Some(state) = file.states.get(&kind).cloned() {
         return Ok(Some(state));
     }
 
-    // Migration fallback: read legacy DB state once, then write into folder.
-    if let Ok(Some(legacy)) = db.get_workstudio_ui_state(&ws.main_folder, &ws.kind) {
-        file.states.insert(ws.kind.clone(), legacy.clone());
-        let _ = write_state_file(&path, &file);
+    if let Some(legacy) = legacy_state {
+        file.states.insert(kind, legacy.clone());
+        let _ = write_state_file(&path, &file).await;
         return Ok(Some(legacy));
     }
 
@@ -84,15 +108,19 @@ pub async fn set_workstudio_ui_state(
     state: WorkstudioUiState,
     db: tauri::State<'_, Arc<Mutex<Database>>>,
 ) -> Result<(), String> {
-    let db = db.lock().await;
-    let ws = db
-        .get_workstudio(&workstudio_id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("Workstudio {workstudio_id} not found"))?;
+    let (main_folder, kind) = {
+        let db = db.lock().await;
+        let ws = db
+            .get_workstudio(&workstudio_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("Workstudio {workstudio_id} not found"))?;
+        (ws.main_folder, ws.kind)
+    };
 
-    let path = state_file_path(&ws.main_folder);
-    let mut file = read_state_file(&path)?;
-    file.states.insert(ws.kind.clone(), state);
-    write_state_file(&path, &file)?;
+    let _io_guard = state_io_lock().lock().await;
+    let path = state_file_path(&main_folder);
+    let mut file = read_state_file(&path).await?;
+    file.states.insert(kind, state);
+    write_state_file(&path, &file).await?;
     Ok(())
 }

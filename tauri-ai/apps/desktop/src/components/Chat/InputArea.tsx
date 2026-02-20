@@ -1273,6 +1273,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   const [atQuery, setAtQuery] = useState<{ start: number; query: string } | null>(null);
   const [atResults, setAtResults] = useState<{ uri: string; absPath: string; label: string }[]>([]);
   const [atIndex, setAtIndex] = useState(0);
+  const [atError, setAtError] = useState<string | null>(null);
   const atTimerRef = useRef<number | null>(null);
   type DollarMentionResult =
     | { kind: 'skill'; name: string; description?: string; insertText: string }
@@ -2794,6 +2795,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
     if (!query) {
       setAtResults([]);
       setAtIndex(0);
+      setAtError(null);
       return;
     }
 
@@ -2812,10 +2814,12 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
             .filter((v): v is { uri: string; absPath: string; label: string } => Boolean(v));
           setAtResults(results);
           setAtIndex(0);
+          setAtError(null);
         })
-        .catch(() => {
+        .catch((error) => {
           setAtResults([]);
           setAtIndex(0);
+          setAtError(toErrorMessage(error));
         });
     }, 120);
 
@@ -3224,13 +3228,17 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
         <div className="relative flex-1">
           {workstudio?.id && atQuery && (
             <div className="absolute bottom-full mb-2 w-full rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-800">
-              <div className="max-h-56 overflow-auto py-1 text-sm">
-                {atResults.length === 0 ? (
-                  <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">
-                    {atQuery.query.trim()
-                      ? '未找到匹配文件'
-                      : '继续输入文件名以搜索（例如 @README 或 @src/app）'}
-                  </div>
+	              <div className="max-h-56 overflow-auto py-1 text-sm">
+	                {atError ? (
+	                  <div className="px-3 py-2 text-xs text-red-600 dark:text-red-300 whitespace-pre-wrap break-words">
+	                    {atError}
+	                  </div>
+	                ) : atResults.length === 0 ? (
+	                  <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">
+	                    {atQuery.query.trim()
+	                      ? '未找到匹配文件'
+	                      : '继续输入文件名以搜索（例如 @README 或 @src/app）'}
+	                  </div>
                 ) : (
                   atResults.map((r, idx) => (
                     <button

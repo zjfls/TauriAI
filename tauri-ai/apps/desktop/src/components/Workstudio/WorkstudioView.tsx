@@ -340,6 +340,36 @@ const decodeBase64ToUtf8 = (base64: string) => {
 
 const decodeBase64ToBytes = (base64: string) => Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
 
+const toErrorMessage = (err: unknown): string => {
+  if (typeof err === 'string') return err;
+  if (err && typeof err === 'object') {
+    const maybeError = (err as { error?: unknown }).error;
+    if (typeof maybeError === 'string' && maybeError.trim()) return maybeError.trim();
+    const maybe = (err as { message?: unknown }).message;
+    if (typeof maybe === 'string' && maybe.trim()) return maybe.trim();
+  }
+  try {
+    const s = JSON.stringify(err);
+    return typeof s === 'string' && s.trim() ? s : String(err);
+  } catch {
+    return String(err);
+  }
+};
+
+const withTimeout = async <T,>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> => {
+  let timer: number | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = window.setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== null) window.clearTimeout(timer);
+  }
+};
+
 const normalizeFsPath = (input: string) => {
   const trimmed = input.trim();
   if (!trimmed) return trimmed;
@@ -1068,6 +1098,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const [wsError, setWsError] = useState<string | null>(null);
   const [wsLoading, setWsLoading] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const loadWorkstudioSeqRef = useRef(0);
 
   const shouldShowOpenMainFolderAction = useMemo(() => {
     if (!ws) return false;
@@ -1081,6 +1112,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(() => new Set());
   const [entriesByDir, setEntriesByDir] = useState<Record<string, DirEntry[]>>({});
   const [loadingDirs, setLoadingDirs] = useState<Record<string, boolean>>({});
+  const [dirErrors, setDirErrors] = useState<Record<string, string>>({});
   const expandedDirsRef = useRef<Set<string>>(expandedDirs);
   useEffect(() => {
     expandedDirsRef.current = expandedDirs;
@@ -1276,6 +1308,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const [filePaletteQuery, setFilePaletteQuery] = useState('');
   const [filePaletteResults, setFilePaletteResults] = useState<string[]>([]);
   const [filePaletteIndex, setFilePaletteIndex] = useState(0);
+  const [filePaletteError, setFilePaletteError] = useState<string | null>(null);
 
   const saveStateTimerRef = useRef<number | null>(null);
   const paneRowRef = useRef<HTMLDivElement | null>(null);
@@ -1689,7 +1722,8 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     if (!ws) return [];
     const out: string[] = [];
     const seen = new Set<string>();
-    for (const f of ws.folders) {
+    const candidates = [ws.mainFolder, ...(ws.folders ?? [])].filter((p) => p && p.trim().length > 0);
+    for (const f of candidates) {
       const nf = normalizeFsPath(f);
       if (!nf || seen.has(nf)) continue;
       seen.add(nf);
@@ -1707,10 +1741,16 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   }, [rootFolders]);
 
   const loadWorkstudio = useCallback(async (id: string) => {
+    const seq = (loadWorkstudioSeqRef.current += 1);
     setWsError(null);
     setWsLoading(true);
     try {
-      const result = await invoke<Workstudio | null>('get_workstudio', { workstudioId: id });
+      const result = await withTimeout(
+        invoke<Workstudio | null>('get_workstudio', { workstudioId: id }),
+        10_000,
+        '加载 Workstudio 超时（后端可能被长时间阻塞）。请稍后重试或重启应用。'
+      );
+      if (seq !== loadWorkstudioSeqRef.current) return;
       if (!result) {
         setWs(null);
         setWsError('Workstudio 不存在或已损坏');
@@ -1718,19 +1758,30 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       }
       setWs(result);
     } catch (error) {
+      if (seq !== loadWorkstudioSeqRef.current) return;
       setWs(null);
-      setWsError(error instanceof Error ? error.message : String(error));
+      setWsError(toErrorMessage(error));
     } finally {
+      if (seq !== loadWorkstudioSeqRef.current) return;
       setWsLoading(false);
     }
   }, []);
 
   const listDir = useCallback(async (dirPath: string) => {
     setLoadingDirs((prev) => ({ ...prev, [dirPath]: true }));
+    setDirErrors((prev) => {
+      if (!prev[dirPath]) return prev;
+      const next = { ...prev };
+      delete next[dirPath];
+      return next;
+    });
     try {
       const entries = await invoke<DirEntry[]>('list_local_directory', { path: dirPath });
       setEntriesByDir((prev) => ({ ...prev, [dirPath]: entries }));
-    } catch {
+    } catch (error) {
+      const msg = toErrorMessage(error);
+      console.error('list_local_directory failed:', { dirPath, error });
+      setDirErrors((prev) => ({ ...prev, [dirPath]: msg }));
       setEntriesByDir((prev) => ({ ...prev, [dirPath]: [] }));
     } finally {
       setLoadingDirs((prev) => ({ ...prev, [dirPath]: false }));
@@ -1739,6 +1790,8 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
   const toggleDir = useCallback(
     async (dirPath: string) => {
+      const isExpanded = expandedDirsRef.current.has(dirPath);
+      const willExpand = !isExpanded;
       setExpandedDirs((prev) => {
         const next = new Set(prev);
         if (next.has(dirPath)) {
@@ -1749,11 +1802,11 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         return next;
       });
 
-      if (!entriesByDir[dirPath]) {
+      if (willExpand && (!entriesByDir[dirPath] || dirErrors[dirPath])) {
         await listDir(dirPath);
       }
     },
-    [entriesByDir, listDir]
+    [dirErrors, entriesByDir, listDir]
   );
 
   const getPaneNavHistory = useCallback((paneId: string): PaneNavHistory => {
@@ -4802,6 +4855,8 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       setFilePaletteOpen(false);
       setFilePaletteQuery('');
       setFilePaletteResults([]);
+      setFilePaletteIndex(0);
+      setFilePaletteError(null);
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
@@ -4825,6 +4880,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     const q = filePaletteQuery.trim();
     if (!q) {
       setFilePaletteResults([]);
+      setFilePaletteError(null);
       return;
     }
     const timer = window.setTimeout(() => {
@@ -4834,9 +4890,14 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         .then((res) => {
           setFilePaletteResults(res);
           setFilePaletteIndex(0);
+          setFilePaletteError(null);
         })
-        .catch(() => {
+        .catch((error) => {
+          const msg = toErrorMessage(error);
+          console.error('workstudio_find_files failed:', { workstudioId: ws.id, query: q, error });
           setFilePaletteResults([]);
+          setFilePaletteIndex(0);
+          setFilePaletteError(msg);
         });
     }, 120);
     return () => window.clearTimeout(timer);
@@ -5685,19 +5746,22 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           {isLoading && <span className="ml-auto text-[10px] text-gray-400">...</span>}
         </button>
 
-        {expanded && (
-          <div>
-            {entries.length === 0 && !isLoading ? (
-              <div
-                className="px-2 py-1 text-[11px] text-gray-400"
-                style={{ paddingLeft: 8 + (depth + 1) * 14 }}
-              >
-                (空)
-              </div>
-            ) : (
-              entries.map((entry) => {
-                if (entry.isDir) {
-                  return renderDirNode(entry.path, depth + 1);
+	        {expanded && (
+	          <div>
+	            {entries.length === 0 && !isLoading ? (
+	              <div
+	                className={[
+	                  'px-2 py-1 text-[11px]',
+	                  dirErrors[dirPath] ? 'text-red-600 dark:text-red-300' : 'text-gray-400',
+	                ].join(' ')}
+	                style={{ paddingLeft: 8 + (depth + 1) * 14 }}
+	              >
+	                {dirErrors[dirPath] ? dirErrors[dirPath] : '(空)'}
+	              </div>
+	            ) : (
+	              entries.map((entry) => {
+	                if (entry.isDir) {
+	                  return renderDirNode(entry.path, depth + 1);
                 }
                 const normalizedEntryPath = normalizeFsPath(entry.path);
                 const isActive =
@@ -6421,12 +6485,18 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 		        </div>
 	      </div>
 
-      {filePaletteOpen && (
-        <div className="fixed inset-0 z-[210]">
-          <div
-            className="absolute inset-0 bg-black/25 backdrop-blur-[1px]"
-            onClick={() => setFilePaletteOpen(false)}
-          />
+	      {filePaletteOpen && (
+	        <div className="fixed inset-0 z-[210]">
+	          <div
+	            className="absolute inset-0 bg-black/25 backdrop-blur-[1px]"
+	            onClick={() => {
+	              setFilePaletteOpen(false);
+	              setFilePaletteQuery('');
+	              setFilePaletteResults([]);
+	              setFilePaletteIndex(0);
+	              setFilePaletteError(null);
+	            }}
+	          />
           <div className="absolute left-1/2 top-16 w-[720px] max-w-[92vw] -translate-x-1/2 rounded-2xl border border-gray-200 bg-white shadow-xl dark:border-gray-700 dark:bg-gray-900">
             <div className="border-b border-gray-200 px-4 py-3 dark:border-gray-700">
               <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">搜索文件</div>
@@ -6453,25 +6523,31 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                     e.preventDefault();
                     setFilePaletteIndex((i) => Math.max(0, i - 1));
                   }
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    const picked = filePaletteResults[filePaletteIndex];
-                    if (!picked) return;
-                    setFilePaletteOpen(false);
-                    setFilePaletteQuery('');
-                    setFilePaletteResults([]);
-                    void openFileAtPath(picked);
-                  }
-                }}
-              />
+	                  if (e.key === 'Enter') {
+	                    e.preventDefault();
+	                    const picked = filePaletteResults[filePaletteIndex];
+	                    if (!picked) return;
+	                    setFilePaletteOpen(false);
+	                    setFilePaletteQuery('');
+	                    setFilePaletteResults([]);
+	                    setFilePaletteIndex(0);
+	                    setFilePaletteError(null);
+	                    void openFileAtPath(picked);
+	                  }
+	                }}
+	              />
 
-              <div className="mt-3 max-h-[55vh] overflow-auto rounded-xl border border-gray-200 dark:border-gray-700">
-                {filePaletteResults.length === 0 ? (
-                  <div className="px-3 py-3 text-sm text-gray-500 dark:text-gray-400">
-                    {filePaletteQuery.trim() ? '未找到匹配文件' : '输入关键字开始搜索'}
-                  </div>
-                ) : (
-                  filePaletteResults.map((p, idx) => (
+	              <div className="mt-3 max-h-[55vh] overflow-auto rounded-xl border border-gray-200 dark:border-gray-700">
+	                {filePaletteError ? (
+	                  <div className="px-3 py-3 text-sm text-red-600 dark:text-red-300 whitespace-pre-wrap break-words">
+	                    {filePaletteError}
+	                  </div>
+	                ) : filePaletteResults.length === 0 ? (
+	                  <div className="px-3 py-3 text-sm text-gray-500 dark:text-gray-400">
+	                    {filePaletteQuery.trim() ? '未找到匹配文件' : '输入关键字开始搜索'}
+	                  </div>
+	                ) : (
+	                  filePaletteResults.map((p, idx) => (
                     <button
                       key={p}
                       type="button"
@@ -6482,14 +6558,16 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                           : 'text-gray-700 hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-gray-800',
                       ].join(' ')}
                       onMouseEnter={() => setFilePaletteIndex(idx)}
-                      onClick={() => {
-                        setFilePaletteOpen(false);
-                        setFilePaletteQuery('');
-                        setFilePaletteResults([]);
-                        void openFileAtPath(p);
-                      }}
-                      title={p}
-                    >
+	                      onClick={() => {
+	                        setFilePaletteOpen(false);
+	                        setFilePaletteQuery('');
+	                        setFilePaletteResults([]);
+	                        setFilePaletteIndex(0);
+	                        setFilePaletteError(null);
+	                        void openFileAtPath(p);
+	                      }}
+	                      title={p}
+	                    >
                       <div className="truncate font-mono text-[12px]">{basename(p)}</div>
                       <div className="mt-0.5 truncate text-[11px] text-gray-500 dark:text-gray-400">
                         {p}

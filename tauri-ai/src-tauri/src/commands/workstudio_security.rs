@@ -12,13 +12,19 @@ pub async fn get_workstudio_security_config(
     workstudio_id: String,
     db: tauri::State<'_, Arc<Mutex<Database>>>,
 ) -> Result<WorkstudioSecurityConfig, String> {
-    let db = db.lock().await;
-    let ws = db
-        .get_workstudio(&workstudio_id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("Workstudio {workstudio_id} not found"))?;
+    let main_folder = {
+        let db = db.lock().await;
+        let ws = db
+            .get_workstudio(&workstudio_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("Workstudio {workstudio_id} not found"))?;
+        ws.main_folder
+    };
 
-    read_workstudio_security_config(&ws.main_folder)
+    // Avoid blocking the async runtime on filesystem I/O.
+    tokio::task::spawn_blocking(move || read_workstudio_security_config(&main_folder))
+        .await
+        .map_err(|e| format!("read security.json join failed: {e}"))?
 }
 
 #[tauri::command]
@@ -27,11 +33,16 @@ pub async fn set_workstudio_security_config(
     config: WorkstudioSecurityConfig,
     db: tauri::State<'_, Arc<Mutex<Database>>>,
 ) -> Result<(), String> {
-    let db = db.lock().await;
-    let ws = db
-        .get_workstudio(&workstudio_id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("Workstudio {workstudio_id} not found"))?;
+    let main_folder = {
+        let db = db.lock().await;
+        let ws = db
+            .get_workstudio(&workstudio_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("Workstudio {workstudio_id} not found"))?;
+        ws.main_folder
+    };
 
-    write_workstudio_security_config(&ws.main_folder, &config)
+    tokio::task::spawn_blocking(move || write_workstudio_security_config(&main_folder, &config))
+        .await
+        .map_err(|e| format!("write security.json join failed: {e}"))?
 }
