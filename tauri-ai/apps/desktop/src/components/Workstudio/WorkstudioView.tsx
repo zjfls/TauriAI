@@ -1039,6 +1039,20 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     return () => { unlisten?.(); };
   }, []);
 
+  // AI Agent Panel state — must be declared before submitInlineChat which references selectedAgentName
+  const allAgents = useConfigStore((s) => s.config?.agents ?? []);
+  const codingAgents = useMemo(
+    () => allAgents.filter((a) => a.type === 'coding' || (a as any).workstudioEnabled === true),
+    [allAgents]
+  );
+  const [selectedAgentName, setSelectedAgentName] = useState<string>('');
+  const [agentPanelInput, setAgentPanelInput] = useState('');
+  useEffect(() => {
+    if (codingAgents.length > 0 && !selectedAgentName) {
+      setSelectedAgentName(codingAgents[0]?.name ?? '');
+    }
+  }, [codingAgents, selectedAgentName]);
+
   const submitInlineChat = useCallback(async () => {
     const selection = inlineChatComposer.selection;
     const question = inlineChatComposer.question.trim();
@@ -1061,36 +1075,31 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
     try {
       if (!isTauri()) throw new Error('Not running in Tauri');
-      const res = await invoke<{ answer: string; modelRef: string; latencyMs: number }>('ai_chat_with_selection', {
+      // Use streaming agent command — events handled by the workstudio:agent:event listener.
+      // The 'InlineChat' agent is a default coding agent for inline Q&A.
+      const runId = await invoke<string>('workstudio_run_agent_stream', {
         args: {
           workstudioId: workstudioId ?? '',
+          agentName: selectedAgentName || 'InlineChat',
           languageId: selection.languageId,
           filePath: selection.filePath,
-          selection: selection.text,
-          question,
+          code: selection.text,
+          userInput: question,
         },
       });
-
+      // Rename bubble id to run_id so the listener can correlate events
       setAiBubbles((prev) =>
-        prev.map((b) =>
-          b.id === id
-            ? {
-              ...b,
-              status: 'done',
-              answer: res.answer,
-              modelRef: res.modelRef,
-              latencyMs: res.latencyMs,
-            }
-            : b
-        )
+        prev.map((b) => (b.id === id ? { ...b, id: runId } : b))
       );
+      setAiViewerId((prev) => (prev === id ? runId : prev));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setAiBubbles((prev) =>
         prev.map((b) => (b.id === id ? { ...b, status: 'error', error: message } : b))
       );
     }
-  }, [closeInlineChatComposer, inlineChatComposer.question, inlineChatComposer.selection, workstudioId]);
+  }, [closeInlineChatComposer, inlineChatComposer.question, inlineChatComposer.selection, selectedAgentName, workstudioId]);
+
   const terminalScope: TerminalScope | null = useMemo(() => {
     if (!workstudioId) return null;
     return { kind: 'workstudio', id: workstudioId };
@@ -1288,7 +1297,10 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   }, [ws?.id]);
   const lspStatusButtonRef = useRef<HTMLButtonElement | null>(null);
   const [outlineOpen, setOutlineOpen] = useState(true);
-  const [leftSidebarTab, setLeftSidebarTab] = useState<'explorer' | 'outline'>('explorer');
+  const [leftSidebarTab, setLeftSidebarTab] = useState<'explorer' | 'outline' | 'ai'>('explorer');
+
+
+
   const [outlineItems, setOutlineItems] = useState<OutlineItem[]>([]);
   const [outlineLoading, setOutlineLoading] = useState(false);
   const [outlineError, setOutlineError] = useState<string | null>(null);
@@ -1631,10 +1643,11 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
   useEffect(() => {
     if (outlineOpen) return;
-    if (leftSidebarTab !== 'explorer') {
+    if (leftSidebarTab !== 'explorer' && leftSidebarTab !== 'ai') {
       setLeftSidebarTab('explorer');
     }
   }, [leftSidebarTab, outlineOpen]);
+
 
   useEffect(() => {
     return () => {
@@ -6077,61 +6090,122 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
       {aiViewer && (
         <div className="fixed inset-0 z-[230] flex items-center justify-center bg-black/35 p-4">
-          <div className="w-full max-w-3xl rounded-xl border border-gray-200 bg-white p-4 shadow-xl dark:border-gray-800 dark:bg-gray-950">
-            <div className="flex items-start justify-between gap-3">
+          <div className="flex w-full max-w-3xl flex-col rounded-xl border border-gray-200 bg-white shadow-xl dark:border-gray-800 dark:bg-gray-950" style={{ maxHeight: '85vh' }}>
+            {/* Header */}
+            <div className="flex shrink-0 items-start justify-between gap-3 border-b border-gray-100 p-4 dark:border-gray-800">
               <div className="min-w-0">
                 <div className="truncate text-sm font-semibold text-gray-900 dark:text-gray-100">
                   {aiViewer.name}
                 </div>
-                <div className="mt-0.5 truncate text-[11px] text-gray-500 dark:text-gray-400">
-                  {aiViewer.subtitle}
+                <div className="mt-0.5 flex items-center gap-2 truncate text-[11px] text-gray-500 dark:text-gray-400">
+                  <span>{aiViewer.subtitle}</span>
+                  {aiViewer.agentName && <span className="rounded bg-blue-50 px-1 text-blue-600 dark:bg-blue-900/30 dark:text-blue-300">{aiViewer.agentName}</span>}
                 </div>
+              </div>
+              <div className="flex shrink-0 items-center gap-1">
+                {/* Abort button for active bubbles */}
+                {['queued', 'connecting', 'thinking', 'streaming', 'tool_calling'].includes(aiViewer.status) && (
+                  <button
+                    type="button"
+                    className="rounded px-2 py-1 text-[11px] font-semibold text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20"
+                    onClick={() => isTauri() && invoke('workstudio_abort_agent', { runId: aiViewer.id }).catch(() => { })}
+                  >
+                    中止
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="rounded p-1 text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+                  onClick={closeAiViewer}
+                  title="关闭并移除气泡"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+            </div>
+
+            {/* Scrollable body */}
+            <div className="min-h-0 flex-1 overflow-y-auto p-4 space-y-3">
+              {/* Prompt */}
+              <details open={false}>
+                <summary className="cursor-pointer select-none text-[11px] font-medium text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">
+                  {aiViewer.kind === 'symbol_analysis' ? '分析指令' : '问题'}
+                </summary>
+                <div className="mt-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-900 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-100">
+                  {aiViewer.prompt}
+                </div>
+              </details>
+
+              {/* Thinking (collapsible) */}
+              {aiViewer.thinking && (
+                <details open={false}>
+                  <summary className="flex cursor-pointer select-none items-center gap-1.5 text-[11px] font-medium text-purple-600 dark:text-purple-400 hover:text-purple-700">
+                    <Loader2 size={11} className={['animate-spin', aiViewer.status === 'thinking' ? '' : 'hidden'].join(' ')} />
+                    思考过程 ({aiViewer.thinking.length} 字符)
+                  </summary>
+                  <div className="mt-1 rounded-lg bg-purple-50/50 px-3 py-2 text-[12px] text-purple-900 dark:bg-purple-900/10 dark:text-purple-200 border border-purple-100 dark:border-purple-800/30 font-mono whitespace-pre-wrap break-words max-h-48 overflow-y-auto">
+                    {aiViewer.thinking}
+                  </div>
+                </details>
+              )}
+
+              {/* Tool calls */}
+              {aiViewer.toolCalls && aiViewer.toolCalls.length > 0 && (
+                <details open={aiViewer.status === 'tool_calling'}>
+                  <summary className="flex cursor-pointer select-none items-center gap-1.5 text-[11px] font-medium text-amber-600 dark:text-amber-400">
+                    <Loader2 size={11} className={['animate-spin', aiViewer.status === 'tool_calling' ? '' : 'hidden'].join(' ')} />
+                    工具调用 ({aiViewer.toolCalls.length})
+                  </summary>
+                  <div className="mt-1 space-y-1.5">
+                    {aiViewer.toolCalls.map((tc) => (
+                      <div key={tc.id} className="rounded-lg border border-amber-200 bg-amber-50/50 dark:border-amber-800/30 dark:bg-amber-900/10 px-3 py-2">
+                        <div className="text-[11px] font-semibold text-amber-700 dark:text-amber-300">{tc.name}</div>
+                        <pre className="mt-0.5 text-[11px] text-amber-900 dark:text-amber-200 whitespace-pre-wrap break-words opacity-80">{tc.arguments}</pre>
+                        {tc.result && (
+                          <pre className="mt-1 border-t border-amber-200 dark:border-amber-800/30 pt-1 text-[11px] text-green-800 dark:text-green-300 whitespace-pre-wrap break-words">{tc.result}</pre>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
+
+              {/* Main answer */}
+              <div>
+                <div className="mb-1 text-[11px] font-medium text-gray-600 dark:text-gray-300">
+                  {aiViewer.kind === 'symbol_analysis' ? '分析结果' : '回答'}
+                  {['queued', 'connecting', 'thinking', 'streaming', 'tool_calling'].includes(aiViewer.status) && (
+                    <span className="ml-1.5 inline-flex items-center gap-1 text-blue-500">
+                      <Loader2 size={10} className="animate-spin" />
+                      {aiViewer.status === 'thinking' ? '思考中…' : aiViewer.status === 'tool_calling' ? '调用工具…' : '生成中…'}
+                    </span>
+                  )}
+                </div>
+                <div className="rounded-lg border border-gray-200 bg-white px-3 py-2 dark:border-gray-800 dark:bg-gray-950">
+                  {aiViewer.status === 'error' ? (
+                    <pre className="whitespace-pre-wrap break-words text-xs text-red-700 dark:text-red-300">
+                      {aiViewer.error || '未知错误'}
+                    </pre>
+                  ) : (
+                    <DeferredMarkdown content={aiViewer.answer || ''} conversationId={null} minDelayMs={120} />
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="flex shrink-0 items-center justify-between border-t border-gray-100 px-4 py-2 dark:border-gray-800">
+              <div className="truncate text-[11px] text-gray-400 dark:text-gray-500">
+                {aiViewer.modelRef && <span>model: {aiViewer.modelRef}</span>}
+                {aiViewer.latencyMs && <span>  ·  {aiViewer.latencyMs}ms</span>}
               </div>
               <button
                 type="button"
-                className="rounded p-1 text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+                className="rounded px-2 py-1 text-[11px] font-semibold text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
                 onClick={closeAiViewer}
-                title="关闭并移除气泡"
               >
-                <X size={16} />
+                关闭
               </button>
-            </div>
-
-            <div className="mt-3">
-              <div className="mb-1 text-[11px] font-medium text-gray-600 dark:text-gray-300">
-                {aiViewer.kind === 'symbol_analysis' ? '分析指令' : '问题'}
-              </div>
-              <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-900 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-100">
-                {aiViewer.prompt}
-              </div>
-            </div>
-
-            <div className="mt-3">
-              <div className="mb-1 text-[11px] font-medium text-gray-600 dark:text-gray-300">
-                {aiViewer.kind === 'symbol_analysis' ? '分析结果' : '回答'}
-              </div>
-              <div className="max-h-[60vh] overflow-auto rounded-lg border border-gray-200 bg-white px-3 py-2 dark:border-gray-800 dark:bg-gray-950">
-                {aiViewer.status === 'error' ? (
-                  <pre className="whitespace-pre-wrap break-words text-xs text-red-700 dark:text-red-300">
-                    {aiViewer.error || '未知错误'}
-                  </pre>
-                ) : (
-                  <DeferredMarkdown content={aiViewer.answer || ''} conversationId={null} minDelayMs={120} />
-                )}
-              </div>
-              <div className="mt-2 flex items-center justify-between text-[11px] text-gray-500 dark:text-gray-400">
-                <div className="truncate">
-                  {aiViewer.modelRef ? `model: ${aiViewer.modelRef}` : ''}
-                  {aiViewer.latencyMs ? `  ·  ${aiViewer.latencyMs}ms` : ''}
-                </div>
-                <button
-                  type="button"
-                  className="rounded px-2 py-1 text-[11px] font-semibold text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
-                  onClick={closeAiViewer}
-                >
-                  关闭
-                </button>
-              </div>
             </div>
           </div>
         </div>
@@ -6178,7 +6252,155 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                   Outline{outlineItemCount > 0 ? `(${outlineItemCount})` : ''}
                 </button>
               )}
+              <button
+                type="button"
+                className={[
+                  'rounded px-2 py-1 text-[11px] font-semibold uppercase tracking-wide',
+                  leftSidebarTab === 'ai'
+                    ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
+                    : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800',
+                ].join(' ')}
+                onClick={() => setLeftSidebarTab('ai')}
+              >
+                AI
+              </button>
             </div>
+
+            {leftSidebarTab === 'ai' && (
+              <div className="flex min-h-0 flex-1 flex-col gap-0 bg-white dark:bg-gray-950">
+                {/* Agent selector */}
+                <div className="border-b border-gray-100 dark:border-gray-800 px-3 py-2">
+                  <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">Agent</div>
+                  {codingAgents.length === 0 ? (
+                    <div className="rounded-lg border border-dashed border-gray-200 dark:border-gray-700 px-3 py-3 text-center text-[11px] text-gray-400 dark:text-gray-500">
+                      尚无 coding 类型的 Agent。
+                      <br />
+                      请在设置页添加类型为 <span className="font-mono">coding</span> 的智能体。
+                    </div>
+                  ) : (
+                    <div className="flex flex-col gap-1">
+                      {codingAgents.map((ag) => (
+                        <button
+                          key={ag.name}
+                          type="button"
+                          onClick={() => setSelectedAgentName(ag.name)}
+                          className={[
+                            'flex items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-colors',
+                            selectedAgentName === ag.name
+                              ? 'bg-blue-50 text-blue-800 dark:bg-blue-900/30 dark:text-blue-200'
+                              : 'text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800',
+                          ].join(' ')}
+                        >
+                          <span className="min-w-0 flex-1 truncate font-medium">{ag.displayName || ag.name}</span>
+                          <span className="shrink-0 text-[10px] text-gray-400 dark:text-gray-500 font-mono">{ag.modelRef?.split('/').pop()}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Active bubbles quick list */}
+                {aiBubbles.length > 0 && (
+                  <div className="border-b border-gray-100 dark:border-gray-800 px-3 py-2">
+                    <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">运行中 / 已完成</div>
+                    <div className="flex flex-col gap-0.5">
+                      {aiBubbles.slice(-8).map((b) => {
+                        const isActive = ['queued', 'connecting', 'thinking', 'streaming', 'tool_calling'].includes(b.status);
+                        return (
+                          <button
+                            key={b.id}
+                            type="button"
+                            disabled={isActive}
+                            onClick={() => !isActive && openAiViewer(b.id)}
+                            className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-left text-[11px] hover:bg-gray-50 dark:hover:bg-gray-800"
+                          >
+                            {isActive ? (
+                              <Loader2 size={10} className="animate-spin shrink-0 text-blue-500" />
+                            ) : b.status === 'done' ? (
+                              <CheckCircle2 size={10} className="shrink-0 text-emerald-500" />
+                            ) : (
+                              <AlertTriangle size={10} className="shrink-0 text-red-500" />
+                            )}
+                            <span className="min-w-0 flex-1 truncate text-gray-700 dark:text-gray-300">{b.name}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Input area */}
+                <div className="flex flex-1 flex-col gap-2 p-3">
+                  <div className="text-[10px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">提问</div>
+                  <textarea
+                    rows={4}
+                    value={agentPanelInput}
+                    onChange={(e) => setAgentPanelInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                        e.preventDefault();
+                        if (agentPanelInput.trim() && selectedAgentName && workstudioId && isTauri()) {
+                          const id = crypto.randomUUID();
+                          const createdAt = new Date().toISOString();
+                          const bubble: WorkstudioAiBubble = {
+                            id, kind: 'agent_run',
+                            name: agentPanelInput.slice(0, 30) + (agentPanelInput.length > 30 ? '…' : ''),
+                            subtitle: selectedAgentName,
+                            prompt: agentPanelInput,
+                            status: 'connecting', agentName: selectedAgentName, createdAt,
+                          };
+                          setAiBubbles((prev) => [...prev, bubble]);
+                          const userInput = agentPanelInput;
+                          setAgentPanelInput('');
+                          invoke<string>('workstudio_run_agent_stream', {
+                            args: { workstudioId, agentName: selectedAgentName, userInput },
+                          }).then((runId) => {
+                            setAiBubbles((prev) => prev.map((b) => b.id === id ? { ...b, id: runId } : b));
+                          }).catch((err) => {
+                            const msg = err instanceof Error ? err.message : String(err);
+                            setAiBubbles((prev) => prev.map((b) => b.id === id ? { ...b, status: 'error', error: msg } : b));
+                          });
+                        }
+                      }
+                    }}
+                    placeholder={codingAgents.length === 0 ? '请先配置 Agent…' : '输入问题，Cmd/Ctrl+Enter 叱送'}
+                    disabled={codingAgents.length === 0 || !selectedAgentName}
+                    className="min-h-0 flex-1 resize-none rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-900 placeholder-gray-400 outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-200 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100 dark:placeholder-gray-500 dark:focus:border-blue-500"
+                  />
+                  <button
+                    type="button"
+                    disabled={!agentPanelInput.trim() || !selectedAgentName || !workstudioId}
+                    onClick={() => {
+                      if (!agentPanelInput.trim() || !selectedAgentName || !workstudioId || !isTauri()) return;
+                      const id = crypto.randomUUID();
+                      const createdAt = new Date().toISOString();
+                      const bubble: WorkstudioAiBubble = {
+                        id, kind: 'agent_run',
+                        name: agentPanelInput.slice(0, 30) + (agentPanelInput.length > 30 ? '…' : ''),
+                        subtitle: selectedAgentName,
+                        prompt: agentPanelInput,
+                        status: 'connecting', agentName: selectedAgentName, createdAt,
+                      };
+                      setAiBubbles((prev) => [...prev, bubble]);
+                      const userInput = agentPanelInput;
+                      setAgentPanelInput('');
+                      invoke<string>('workstudio_run_agent_stream', {
+                        args: { workstudioId, agentName: selectedAgentName, userInput },
+                      }).then((runId) => {
+                        setAiBubbles((prev) => prev.map((b) => b.id === id ? { ...b, id: runId } : b));
+                        openAiViewer(runId);
+                      }).catch((err) => {
+                        const msg = err instanceof Error ? err.message : String(err);
+                        setAiBubbles((prev) => prev.map((b) => b.id === id ? { ...b, status: 'error', error: msg } : b));
+                      });
+                    }}
+                    className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-400"
+                  >
+                    运行 ↩ Cmd+Enter
+                  </button>
+                </div>
+              </div>
+            )}
 
             {(!outlineOpen || leftSidebarTab === 'explorer') && (
               <div
@@ -6191,6 +6413,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                   setContextMenu({ visible: true, x: e.clientX, y: e.clientY, kind: 'blank' });
                 }}
               >
+
                 <div className="space-y-1">
                   {rootFolders.map((folder) =>
                     renderDirNode(folder, 0, { isRoot: true, isMainRoot: folder === ws.mainFolder })
