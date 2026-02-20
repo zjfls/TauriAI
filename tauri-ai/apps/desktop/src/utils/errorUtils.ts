@@ -1,6 +1,10 @@
 import { message } from '@tauri-apps/plugin-dialog';
 import { useConfigStore } from '../stores/configStore';
 
+// 记录当前处于激活状态的弹窗数量
+let activeDialogCount = 0;
+const MAX_ACTIVE_DIALOGS = 3;
+
 // 节流控制：记录上一次触发弹窗的时间戳
 let lastErrorTime = 0;
 // 节流间隔：在这个时间范围内的连续报错将被丢弃，避免系统级卡死 (毫秒)
@@ -8,12 +12,17 @@ const ERROR_THROTTLE_MS = 2000;
 
 /**
  * 全局通用报错弹窗工具
- * 带有防风暴(Throttle)节流机制，防止连续的抛错卡死操作系统原生弹窗。
+ * 带有防风暴(Throttle)节流机制，并且限制最大弹出数量，防止连续的抛错卡死操作系统原生弹窗。
  * 
  * @param title 弹窗标题
  * @param errorMessage 错误详细信息
  */
 export async function showGlobalError(title: string, errorMessage: string) {
+    if (activeDialogCount >= MAX_ACTIVE_DIALOGS) {
+        console.warn(`[GlobalError active limit reached] ${title}: ${errorMessage}`);
+        return;
+    }
+
     const now = Date.now();
     if (now - lastErrorTime < ERROR_THROTTLE_MS) {
         console.warn(`[GlobalError throttled] ${title}: ${errorMessage}`);
@@ -21,6 +30,7 @@ export async function showGlobalError(title: string, errorMessage: string) {
     }
 
     lastErrorTime = now;
+    activeDialogCount++;
 
     try {
         await message(errorMessage, {
@@ -30,6 +40,8 @@ export async function showGlobalError(title: string, errorMessage: string) {
     } catch (dialogErr) {
         // 降级处理：如果底层弹窗插件本身出错了，只能退回控制台
         console.error('Failed to show native error dialog:', dialogErr);
+    } finally {
+        activeDialogCount--;
     }
 }
 
