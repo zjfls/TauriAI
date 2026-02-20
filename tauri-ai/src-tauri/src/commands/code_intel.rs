@@ -569,7 +569,7 @@ pub async fn ai_chat_with_selection(
     // modelRef 优先级：
     // 1) agent config (name: "__system_chat_with")
     // 2) AppConfig.currentModelRef
-    let assigned_agent = settings.agent_ref.trim();
+    let assigned_agent = settings.chat_with_agent_ref.trim();
     let assigned_agent = if assigned_agent.is_empty() {
         "__system_chat_with"
     } else {

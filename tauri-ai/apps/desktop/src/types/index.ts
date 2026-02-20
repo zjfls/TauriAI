@@ -1165,6 +1165,8 @@ export interface AiCompletionSettings {
   enabled: boolean;
   /** 绑定的智能体名称（如：__system_code_completion） */
   agentRef?: string;
+  /** 绑定的代码对话 (Chat With) 智能体名称 */
+  chatWithAgentRef?: string;
   /** 幽灵补全（Inline) */
   inlineEnabled: boolean;
   /** Ctrl+Space 建议列表（Completion list） */

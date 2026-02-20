@@ -1575,6 +1575,9 @@ pub struct AiCompletionSettings {
     /// 绑定的智能体标识（Agent Name），为空则回退到系统默认智能体
     #[serde(default)]
     pub agent_ref: String,
+    /// 绑定的代码对话 (Chat With) 智能体标识
+    #[serde(default)]
+    pub chat_with_agent_ref: String,
     /// 幽灵补全（Inline）
     #[serde(default = "default_true")]
     pub inline_enabled: bool,
@@ -1646,6 +1649,7 @@ impl Default for AiCompletionSettings {
         Self {
             enabled: false,
             agent_ref: String::new(),
+            chat_with_agent_ref: String::new(),
             inline_enabled: true,
             list_enabled: true,
             trigger_mode: AiCompletionTriggerMode::Hybrid,

@@ -93,6 +93,7 @@ const defaultServer = (): LspServerConfig => ({
 const defaultAiCompletionSettings = (): AiCompletionSettings => ({
   enabled: false,
   agentRef: '',
+  chatWithAgentRef: '',
   inlineEnabled: true,
   listEnabled: true,
   triggerMode: 'hybrid',
@@ -608,7 +609,7 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
 
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <div className="space-y-2">
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">绑定智能体</label>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">代码补全：绑定智能体</label>
                 <select
                   value={aiCompletion.agentRef ?? ''}
                   onChange={(e) => updateAiCompletion((s) => ({ ...s, agentRef: e.target.value }))}
@@ -622,7 +623,26 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
                   ))}
                 </select>
                 <div className="text-xs text-gray-500 dark:text-gray-400">
-                  指定处理代码补全的大模型（支持在智能体设置页添加自定义 Tool 智能体）。
+                  用于幽灵补全和 Ctrl+Space 弹出的建议列表。
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">代码对话 (Chat With)：绑定智能体</label>
+                <select
+                  value={aiCompletion.chatWithAgentRef ?? ''}
+                  onChange={(e) => updateAiCompletion((s) => ({ ...s, chatWithAgentRef: e.target.value }))}
+                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                >
+                  <option value="">（默认：__system_chat_with）</option>
+                  {toolAgents.map((opt) => (
+                    <option key={opt.name} value={opt.name}>
+                      {opt.displayName || opt.name} {opt.isSystem ? '(系统)' : ''}
+                    </option>
+                  ))}
+                </select>
+                <div className="text-xs text-gray-500 dark:text-gray-400">
+                  用于编辑器内联对话（选中代码片段提问）。
                 </div>
               </div>
 
