@@ -439,7 +439,16 @@ pub async fn ai_code_completion(
     let prefix = tail_chars(&args.prefix, settings.max_prefix_chars);
     let suffix = head_chars(&args.suffix, settings.max_suffix_chars);
 
-    let system_prompt = ai_completion_system_prompt();
+    let system_prompt = {
+        let configured = config
+            .agents
+            .iter()
+            .find(|a| a.name == "__system_code_completion");
+        match configured {
+            Some(a) if !a.system_prompt.trim().is_empty() => a.system_prompt.clone(),
+            _ => ai_completion_system_prompt(),
+        }
+    };
     let user_prompt = ai_completion_user_prompt(
         lang,
         file_path,
@@ -592,7 +601,16 @@ pub async fn ai_chat_with_selection(
         .trim_start_matches(std::path::MAIN_SEPARATOR)
         .to_string();
 
-    let system_prompt = inline_chat_system_prompt();
+    let system_prompt = {
+        let configured = config
+            .agents
+            .iter()
+            .find(|a| a.name == "__system_chat_with");
+        match configured {
+            Some(a) if !a.system_prompt.trim().is_empty() => a.system_prompt.clone(),
+            _ => inline_chat_system_prompt(),
+        }
+    };
     let user_prompt = inline_chat_user_prompt(
         lang,
         &rel_path,
@@ -835,7 +853,16 @@ pub async fn ai_analyze_workstudio_symbol(
         .to_string();
 
     let symbol_kind = symbol_kind_raw.to_lowercase();
-    let system_prompt = symbol_analysis_system_prompt();
+    let system_prompt = {
+        let configured = config
+            .agents
+            .iter()
+            .find(|a| a.name == "__system_symbol_analysis");
+        match configured {
+            Some(a) if !a.system_prompt.trim().is_empty() => a.system_prompt.clone(),
+            _ => symbol_analysis_system_prompt(),
+        }
+    };
     let user_prompt = symbol_analysis_user_prompt(
         lang,
         &rel_path,
