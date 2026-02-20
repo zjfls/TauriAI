@@ -152,7 +152,7 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
 
   const getToolAgents = () => {
     const agents = config?.agents ?? [];
-    return agents.filter((a) => a.type === 'tool' || a.isSystem);
+    return agents.filter((a) => (a.type === 'tool' || a.isSystem) && a.workspaceSupport === true);
   };
   const toolAgents = getToolAgents();
 
@@ -615,7 +615,7 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
                   onChange={(e) => updateAiCompletion((s) => ({ ...s, agentRef: e.target.value }))}
                   className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
                 >
-                  <option value="">（默认：__system_code_completion）</option>
+                  <option value="">（系统默认：代码补全）</option>
                   {toolAgents.map((opt) => (
                     <option key={opt.name} value={opt.name}>
                       {opt.displayName || opt.name} {opt.isSystem ? '(系统)' : ''}
@@ -634,7 +634,7 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
                   onChange={(e) => updateAiCompletion((s) => ({ ...s, chatWithAgentRef: e.target.value }))}
                   className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
                 >
-                  <option value="">（默认：__system_chat_with）</option>
+                  <option value="">（系统默认：代码对话）</option>
                   {toolAgents.map((opt) => (
                     <option key={opt.name} value={opt.name}>
                       {opt.displayName || opt.name} {opt.isSystem ? '(系统)' : ''}
@@ -864,7 +864,7 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
                   onChange={(e) => updateSymbolAnalysis((s) => ({ ...s, agentRef: e.target.value }))}
                   className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
                 >
-                  <option value="">（默认：__system_symbol_analysis）</option>
+                  <option value="">（系统默认：符号分析）</option>
                   {toolAgents.map((opt) => (
                     <option key={opt.name} value={opt.name}>
                       {opt.displayName || opt.name} {opt.isSystem ? '(系统)' : ''}
