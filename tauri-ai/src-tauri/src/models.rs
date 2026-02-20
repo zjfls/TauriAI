@@ -1572,6 +1572,9 @@ pub struct AiCompletionSettings {
     /// 总开关：关闭后不请求模型
     #[serde(default)]
     pub enabled: bool,
+    /// 绑定的智能体标识（Agent Name），为空则回退到系统默认智能体
+    #[serde(default)]
+    pub agent_ref: String,
     /// 幽灵补全（Inline）
     #[serde(default = "default_true")]
     pub inline_enabled: bool,
@@ -1642,6 +1645,7 @@ impl Default for AiCompletionSettings {
     fn default() -> Self {
         Self {
             enabled: false,
+            agent_ref: String::new(),
             inline_enabled: true,
             list_enabled: true,
             trigger_mode: AiCompletionTriggerMode::Hybrid,
@@ -1664,6 +1668,9 @@ pub struct SymbolAnalysisSettings {
     /// 总开关：关闭后不请求模型
     #[serde(default)]
     pub enabled: bool,
+    /// 绑定的智能体标识（Agent Name），为空则回退到系统默认智能体
+    #[serde(default)]
+    pub agent_ref: String,
     /// 单次请求超时（毫秒）
     #[serde(default = "default_symbol_analysis_timeout_ms")]
     pub timeout_ms: u64,
@@ -1694,6 +1701,7 @@ impl Default for SymbolAnalysisSettings {
     fn default() -> Self {
         Self {
             enabled: false,
+            agent_ref: String::new(),
             timeout_ms: default_symbol_analysis_timeout_ms(),
             max_tokens: default_symbol_analysis_max_tokens(),
             temperature: default_symbol_analysis_temperature(),

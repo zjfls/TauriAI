@@ -92,7 +92,7 @@ const defaultServer = (): LspServerConfig => ({
 
 const defaultAiCompletionSettings = (): AiCompletionSettings => ({
   enabled: false,
-  modelRef: '',
+  agentRef: '',
   inlineEnabled: true,
   listEnabled: true,
   triggerMode: 'hybrid',
@@ -109,7 +109,7 @@ const defaultAiCompletionSettings = (): AiCompletionSettings => ({
 
 const defaultSymbolAnalysisSettings = (): SymbolAnalysisSettings => ({
   enabled: false,
-  modelRef: '',
+  agentRef: '',
   timeoutMs: 20000,
   maxTokens: 8192,
   temperature: 0.2,
@@ -148,6 +148,12 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
   const aiCompletion: AiCompletionSettings = config?.codeIntelligence?.aiCompletion ?? defaultAiCompletionSettings();
   const symbolAnalysis: SymbolAnalysisSettings =
     config?.codeIntelligence?.symbolAnalysis ?? defaultSymbolAnalysisSettings();
+
+  const getToolAgents = () => {
+    const agents = config?.agents ?? [];
+    return agents.filter((a) => a.type === 'tool' || a.isSystem);
+  };
+  const toolAgents = getToolAgents();
 
   const keyboardShortcuts = config?.general?.keyboardShortcuts;
   const shortcutPlatform = useMemo(() => detectShortcutPlatform(), []);
@@ -601,7 +607,24 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
             </div>
 
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              {/* 使用模型已迁移至“智能体”标签页中的内置 Agent */}
+              <div className="space-y-2">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">绑定智能体</label>
+                <select
+                  value={aiCompletion.agentRef ?? ''}
+                  onChange={(e) => updateAiCompletion((s) => ({ ...s, agentRef: e.target.value }))}
+                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                >
+                  <option value="">（默认：__system_code_completion）</option>
+                  {toolAgents.map((opt) => (
+                    <option key={opt.name} value={opt.name}>
+                      {opt.displayName || opt.name} {opt.isSystem ? '(系统)' : ''}
+                    </option>
+                  ))}
+                </select>
+                <div className="text-xs text-gray-500 dark:text-gray-400">
+                  指定处理代码补全的大模型（支持在智能体设置页添加自定义 Tool 智能体）。
+                </div>
+              </div>
 
               <div className="space-y-2">
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">触发模式</label>
@@ -813,7 +836,26 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
               />
             </div>
 
-            {/* 使用模型已迁移至“智能体”标签页中的内置 Agent */}
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">绑定智能体</label>
+                <select
+                  value={symbolAnalysis.agentRef ?? ''}
+                  onChange={(e) => updateSymbolAnalysis((s) => ({ ...s, agentRef: e.target.value }))}
+                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                >
+                  <option value="">（默认：__system_symbol_analysis）</option>
+                  {toolAgents.map((opt) => (
+                    <option key={opt.name} value={opt.name}>
+                      {opt.displayName || opt.name} {opt.isSystem ? '(系统)' : ''}
+                    </option>
+                  ))}
+                </select>
+                <div className="text-xs text-gray-500 dark:text-gray-400">
+                  指定处理符号分析的大模型（支持在智能体设置页添加自定义 Tool 智能体）。
+                </div>
+              </div>
+            </div>
 
             <details className="rounded-lg border border-gray-200 bg-white px-3 py-2 dark:border-gray-700 dark:bg-gray-900">
               <summary className="cursor-pointer text-sm font-medium text-gray-700 dark:text-gray-200">

@@ -381,10 +381,23 @@ pub async fn ai_code_completion(
     // modelRef 优先级：
     // 1) agent config (name: "__system_code_completion")
     // 2) AppConfig.currentModelRef
+    let assigned_agent = settings.agent_ref.trim();
+    let assigned_agent = if assigned_agent.is_empty() {
+        "__system_code_completion"
+    } else {
+        assigned_agent
+    };
+
     let agent = config
         .agents
         .iter()
-        .find(|a| a.name == "__system_code_completion");
+        .find(|a| a.name == assigned_agent)
+        .or_else(|| {
+            config
+                .agents
+                .iter()
+                .find(|a| a.name == "__system_code_completion")
+        });
     let effective_model_ref = agent.map(|a| a.model_ref.trim()).unwrap_or("");
     let effective_model_ref = if effective_model_ref.is_empty() {
         config
@@ -556,10 +569,23 @@ pub async fn ai_chat_with_selection(
     // modelRef 优先级：
     // 1) agent config (name: "__system_chat_with")
     // 2) AppConfig.currentModelRef
+    let assigned_agent = settings.agent_ref.trim();
+    let assigned_agent = if assigned_agent.is_empty() {
+        "__system_chat_with"
+    } else {
+        assigned_agent
+    };
+
     let agent = config
         .agents
         .iter()
-        .find(|a| a.name == "__system_chat_with");
+        .find(|a| a.name == assigned_agent)
+        .or_else(|| {
+            config
+                .agents
+                .iter()
+                .find(|a| a.name == "__system_chat_with")
+        });
     let effective_model_ref = agent.map(|a| a.model_ref.trim()).unwrap_or("");
     let effective_model_ref = if effective_model_ref.is_empty() {
         config
@@ -811,10 +837,23 @@ pub async fn ai_analyze_workstudio_symbol(
     // modelRef 优先级：
     // 1) agent config (name: "__system_symbol_analysis")
     // 2) AppConfig.currentModelRef
+    let assigned_agent = settings.agent_ref.trim();
+    let assigned_agent = if assigned_agent.is_empty() {
+        "__system_symbol_analysis"
+    } else {
+        assigned_agent
+    };
+
     let agent = config
         .agents
         .iter()
-        .find(|a| a.name == "__system_symbol_analysis");
+        .find(|a| a.name == assigned_agent)
+        .or_else(|| {
+            config
+                .agents
+                .iter()
+                .find(|a| a.name == "__system_symbol_analysis")
+        });
     let effective_model_ref = agent.map(|a| a.model_ref.trim()).unwrap_or("");
     let effective_model_ref = if effective_model_ref.is_empty() {
         config

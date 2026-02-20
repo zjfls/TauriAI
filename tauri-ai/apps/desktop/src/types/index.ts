@@ -1163,8 +1163,8 @@ export type AiCompletionTriggerMode = 'auto' | 'manual' | 'hybrid';
 
 export interface AiCompletionSettings {
   enabled: boolean;
-  /** 使用的模型，格式：provider_name/model_name */
-  modelRef: string;
+  /** 绑定的智能体名称（如：__system_code_completion） */
+  agentRef?: string;
   /** 幽灵补全（Inline) */
   inlineEnabled: boolean;
   /** Ctrl+Space 建议列表（Completion list） */
@@ -1187,8 +1187,8 @@ export interface AiCompletionSettings {
 
 export interface SymbolAnalysisSettings {
   enabled: boolean;
-  /** 使用的模型，格式：provider_name/model_name。为空则跟随 currentModelRef */
-  modelRef: string;
+  /** 绑定的智能体名称（如：__system_symbol_analysis） */
+  agentRef?: string;
   timeoutMs: number;
   maxTokens: number;
   temperature: number;
