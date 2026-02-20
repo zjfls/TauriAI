@@ -919,8 +919,6 @@ const countOutlineItems = (items: OutlineItem[]): number => {
   return total;
 };
 
-/** Stable empty array so that `?? EMPTY_AGENTS` doesn't create a new ref on every render */
-const EMPTY_AGENTS: import('../../types').Agent[] = [];
 
 export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ workstudioId: workstudioIdProp }) => {
   const { workstudioId: workstudioIdFromUrl, filePath, line, column, endLine, endColumn, standalone } = getViewWindowParams();
@@ -1042,26 +1040,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     return () => { unlisten?.(); };
   }, []);
 
-  // AI Agent Panel state — must be declared before submitInlineChat which references selectedAgentName
-  // Two-step stable pattern: raw selector reads the agents array reference (store-level stable),
-  // then useMemo filters — only re-runs when agents array itself changes, not on unrelated store updates.
-  const configAgents = useConfigStore((s) => s.config?.agents ?? EMPTY_AGENTS);
-  const codingAgents = useMemo(
-    () => configAgents.filter((a) => {
-      const isToolAgent = (a.type ?? 'chat') === 'tool';
-      const hasWorkspaceSupport = a.workspaceSupport !== false; // default true for tool agents
-      return isToolAgent && hasWorkspaceSupport;
-    }),
-    [configAgents]
-  );
-  const [selectedAgentName, setSelectedAgentName] = useState<string>('');
-  const [agentPanelInput, setAgentPanelInput] = useState('');
-  // Auto-select first available coding agent — use functional update to avoid selectedAgentName in deps
-  useEffect(() => {
-    if (codingAgents.length > 0) {
-      setSelectedAgentName((prev) => (prev ? prev : (codingAgents[0]?.name ?? '')));
-    }
-  }, [codingAgents]);
+  const chatWithAgentRef = useConfigStore((s) => s.config?.codeIntelligence?.aiCompletion?.chatWithAgentRef);
 
   const submitInlineChat = useCallback(async () => {
     const selection = inlineChatComposer.selection;
@@ -1090,7 +1069,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       const runId = await invoke<string>('workstudio_run_agent_stream', {
         args: {
           workstudioId: workstudioId ?? '',
-          agentName: selectedAgentName || 'InlineChat',
+          agentName: chatWithAgentRef || '__system_chat_with',
           languageId: selection.languageId,
           filePath: selection.filePath,
           code: selection.text,
@@ -1108,7 +1087,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         prev.map((b) => (b.id === id ? { ...b, status: 'error', error: message } : b))
       );
     }
-  }, [closeInlineChatComposer, inlineChatComposer.question, inlineChatComposer.selection, selectedAgentName, workstudioId]);
+  }, [closeInlineChatComposer, inlineChatComposer.question, inlineChatComposer.selection, chatWithAgentRef, workstudioId]);
 
   const terminalScope: TerminalScope | null = useMemo(() => {
     if (!workstudioId) return null;
@@ -1307,7 +1286,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   }, [ws?.id]);
   const lspStatusButtonRef = useRef<HTMLButtonElement | null>(null);
   const [outlineOpen, setOutlineOpen] = useState(true);
-  const [leftSidebarTab, setLeftSidebarTab] = useState<'explorer' | 'outline' | 'ai'>('explorer');
+  const [leftSidebarTab, setLeftSidebarTab] = useState<'explorer' | 'outline'>('explorer');
 
 
 
@@ -1653,7 +1632,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
   useEffect(() => {
     if (outlineOpen) return;
-    if (leftSidebarTab !== 'explorer' && leftSidebarTab !== 'ai') {
+    if (leftSidebarTab !== 'explorer') {
       setLeftSidebarTab('explorer');
     }
   }, [leftSidebarTab, outlineOpen]);
@@ -6262,155 +6241,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                   Outline{outlineItemCount > 0 ? `(${outlineItemCount})` : ''}
                 </button>
               )}
-              <button
-                type="button"
-                className={[
-                  'rounded px-2 py-1 text-[11px] font-semibold uppercase tracking-wide',
-                  leftSidebarTab === 'ai'
-                    ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
-                    : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800',
-                ].join(' ')}
-                onClick={() => setLeftSidebarTab('ai')}
-              >
-                AI
-              </button>
             </div>
-
-            {leftSidebarTab === 'ai' && (
-              <div className="flex min-h-0 flex-1 flex-col gap-0 bg-white dark:bg-gray-950">
-                {/* Agent selector */}
-                <div className="border-b border-gray-100 dark:border-gray-800 px-3 py-2">
-                  <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">Agent</div>
-                  {codingAgents.length === 0 ? (
-                    <div className="rounded-lg border border-dashed border-gray-200 dark:border-gray-700 px-3 py-3 text-center text-[11px] text-gray-400 dark:text-gray-500">
-                      暂无可用 Agent。
-                      <br />
-                      请在设置 → 智能体中开启 <span className="font-mono">WorkSpaceSupport</span> 的<br />工具类型智能体。
-                    </div>
-                  ) : (
-                    <div className="flex flex-col gap-1">
-                      {codingAgents.map((ag: import('../../types').Agent) => (
-                        <button
-                          key={ag.name}
-                          type="button"
-                          onClick={() => setSelectedAgentName(ag.name)}
-                          className={[
-                            'flex items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-colors',
-                            selectedAgentName === ag.name
-                              ? 'bg-blue-50 text-blue-800 dark:bg-blue-900/30 dark:text-blue-200'
-                              : 'text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800',
-                          ].join(' ')}
-                        >
-                          <span className="min-w-0 flex-1 truncate font-medium">{ag.displayName || ag.name}</span>
-                          <span className="shrink-0 text-[10px] text-gray-400 dark:text-gray-500 font-mono">{ag.modelRef?.split('/').pop()}</span>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                {/* Active bubbles quick list */}
-                {aiBubbles.length > 0 && (
-                  <div className="border-b border-gray-100 dark:border-gray-800 px-3 py-2">
-                    <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">运行中 / 已完成</div>
-                    <div className="flex flex-col gap-0.5">
-                      {aiBubbles.slice(-8).map((b) => {
-                        const isActive = ['queued', 'connecting', 'thinking', 'streaming', 'tool_calling'].includes(b.status);
-                        return (
-                          <button
-                            key={b.id}
-                            type="button"
-                            disabled={isActive}
-                            onClick={() => !isActive && openAiViewer(b.id)}
-                            className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-left text-[11px] hover:bg-gray-50 dark:hover:bg-gray-800"
-                          >
-                            {isActive ? (
-                              <Loader2 size={10} className="animate-spin shrink-0 text-blue-500" />
-                            ) : b.status === 'done' ? (
-                              <CheckCircle2 size={10} className="shrink-0 text-emerald-500" />
-                            ) : (
-                              <AlertTriangle size={10} className="shrink-0 text-red-500" />
-                            )}
-                            <span className="min-w-0 flex-1 truncate text-gray-700 dark:text-gray-300">{b.name}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-
-                {/* Input area */}
-                <div className="flex flex-1 flex-col gap-2 p-3">
-                  <div className="text-[10px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">提问</div>
-                  <textarea
-                    rows={4}
-                    value={agentPanelInput}
-                    onChange={(e) => setAgentPanelInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                        e.preventDefault();
-                        if (agentPanelInput.trim() && selectedAgentName && workstudioId && isTauri()) {
-                          const id = crypto.randomUUID();
-                          const createdAt = new Date().toISOString();
-                          const bubble: WorkstudioAiBubble = {
-                            id, kind: 'agent_run',
-                            name: agentPanelInput.slice(0, 30) + (agentPanelInput.length > 30 ? '…' : ''),
-                            subtitle: selectedAgentName,
-                            prompt: agentPanelInput,
-                            status: 'connecting', agentName: selectedAgentName, createdAt,
-                          };
-                          setAiBubbles((prev) => [...prev, bubble]);
-                          const userInput = agentPanelInput;
-                          setAgentPanelInput('');
-                          invoke<string>('workstudio_run_agent_stream', {
-                            args: { workstudioId, agentName: selectedAgentName, userInput },
-                          }).then((runId) => {
-                            setAiBubbles((prev) => prev.map((b) => b.id === id ? { ...b, id: runId } : b));
-                          }).catch((err) => {
-                            const msg = err instanceof Error ? err.message : String(err);
-                            setAiBubbles((prev) => prev.map((b) => b.id === id ? { ...b, status: 'error', error: msg } : b));
-                          });
-                        }
-                      }
-                    }}
-                    placeholder={codingAgents.length === 0 ? '请先配置 Agent…' : '输入问题，Cmd/Ctrl+Enter 叱送'}
-                    disabled={codingAgents.length === 0 || !selectedAgentName}
-                    className="min-h-0 flex-1 resize-none rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-900 placeholder-gray-400 outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-200 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100 dark:placeholder-gray-500 dark:focus:border-blue-500"
-                  />
-                  <button
-                    type="button"
-                    disabled={!agentPanelInput.trim() || !selectedAgentName || !workstudioId}
-                    onClick={() => {
-                      if (!agentPanelInput.trim() || !selectedAgentName || !workstudioId || !isTauri()) return;
-                      const id = crypto.randomUUID();
-                      const createdAt = new Date().toISOString();
-                      const bubble: WorkstudioAiBubble = {
-                        id, kind: 'agent_run',
-                        name: agentPanelInput.slice(0, 30) + (agentPanelInput.length > 30 ? '…' : ''),
-                        subtitle: selectedAgentName,
-                        prompt: agentPanelInput,
-                        status: 'connecting', agentName: selectedAgentName, createdAt,
-                      };
-                      setAiBubbles((prev) => [...prev, bubble]);
-                      const userInput = agentPanelInput;
-                      setAgentPanelInput('');
-                      invoke<string>('workstudio_run_agent_stream', {
-                        args: { workstudioId, agentName: selectedAgentName, userInput },
-                      }).then((runId) => {
-                        setAiBubbles((prev) => prev.map((b) => b.id === id ? { ...b, id: runId } : b));
-                        openAiViewer(runId);
-                      }).catch((err) => {
-                        const msg = err instanceof Error ? err.message : String(err);
-                        setAiBubbles((prev) => prev.map((b) => b.id === id ? { ...b, status: 'error', error: msg } : b));
-                      });
-                    }}
-                    className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-400"
-                  >
-                    运行 ↩ Cmd+Enter
-                  </button>
-                </div>
-              </div>
-            )}
 
             {(!outlineOpen || leftSidebarTab === 'explorer') && (
               <div
