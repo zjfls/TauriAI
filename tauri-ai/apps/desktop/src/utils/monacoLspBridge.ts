@@ -1,6 +1,6 @@
 import type * as Monaco from 'monaco-editor';
 
-import { isTauri } from '@tauri-apps/api/core';
+import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
 import { astDocumentSymbols, lspNotify, lspRequest, lspShutdownWorkstudio } from '../services';
@@ -43,6 +43,44 @@ const monacoUri = (monaco: typeof Monaco, uri: string) => {
   } catch {
     return monaco.Uri.parse('file:///');
   }
+};
+
+const decodeUtf8Base64 = (base64: string) => {
+  const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+  return new TextDecoder('utf-8').decode(bytes);
+};
+
+const languageForPath = (path: string) => {
+  const lower = String(path ?? '').toLowerCase();
+  if (lower.endsWith('.ts') || lower.endsWith('.tsx')) return 'typescript';
+  if (lower.endsWith('.js') || lower.endsWith('.jsx')) return 'javascript';
+  if (lower.endsWith('.json')) return 'json';
+  if (lower.endsWith('.css')) return 'css';
+  if (lower.endsWith('.html') || lower.endsWith('.htm')) return 'html';
+  if (lower.endsWith('.tauri.richtxt')) return 'markdown';
+  if (lower.endsWith('.md') || lower.endsWith('.markdown')) return 'markdown';
+  if (lower.endsWith('.py') || lower.endsWith('.pyi')) return 'python';
+  if (lower.endsWith('.rs')) return 'rust';
+  if (lower.endsWith('.c')) return 'c';
+  if (
+    lower.endsWith('.cc') ||
+    lower.endsWith('.cpp') ||
+    lower.endsWith('.cxx') ||
+    lower.endsWith('.h') ||
+    lower.endsWith('.hh') ||
+    lower.endsWith('.hpp') ||
+    lower.endsWith('.hxx') ||
+    lower.endsWith('.inl') ||
+    lower.endsWith('.ipp') ||
+    lower.endsWith('.ixx') ||
+    lower.endsWith('.cppm')
+  )
+    return 'cpp';
+  if (lower.endsWith('.lua')) return 'lua';
+  if (lower.endsWith('.toml')) return 'toml';
+  if (lower.endsWith('.yaml') || lower.endsWith('.yml')) return 'yaml';
+  if (lower.endsWith('.sh') || lower.endsWith('.bash') || lower.endsWith('.zsh')) return 'shell';
+  return 'plaintext';
 };
 
 const getEnabledServerLanguageIds = (cfg: CodeIntelligenceSettings | null | undefined) => {
@@ -94,6 +132,79 @@ export const attachMonacoLspBridge = (opts: {
   const disposables: Monaco.IDisposable[] = [];
   const openedUris = new Set<string>();
   const modelListeners = new Map<string, Monaco.IDisposable[]>();
+  const modelWarmupInflight = new Map<string, Promise<void>>();
+
+  const ensureModelReady = async (uri: Monaco.Uri) => {
+    if (!uri) return;
+    if (uri.scheme !== 'file') return;
+    const key = uri.toString();
+    if (monaco.editor.getModel(uri)) return;
+    const inflight = modelWarmupInflight.get(key);
+    if (inflight) return inflight;
+
+    const p = (async () => {
+      // Double-check after awaiting inflight.
+      if (monaco.editor.getModel(uri)) return;
+
+      const fsPath: string = (uri as any)?.fsPath ?? uri.path ?? '';
+      const targetPath = String(fsPath ?? '').trim();
+      if (!targetPath) {
+        try {
+          monaco.editor.createModel('无法打开文件：路径为空', 'plaintext', uri);
+        } catch {
+          // ignore
+        }
+        return;
+      }
+
+      try {
+        const file = await invoke<{
+          filename: string;
+          mime: string;
+          base64: string;
+          size: number;
+        }>('read_local_file_base64', { path: targetPath });
+
+        const isText = String(file?.mime ?? '').startsWith('text/');
+        const content = isText
+          ? decodeUtf8Base64(String(file?.base64 ?? ''))
+          : `无法以文本方式打开该文件：${targetPath}\n\nmime=${String(file?.mime ?? '')}`;
+
+        try {
+          if (monaco.editor.getModel(uri)) return;
+          monaco.editor.createModel(content, languageForPath(targetPath), uri);
+        } catch {
+          // 可能并发创建，忽略
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        try {
+          if (monaco.editor.getModel(uri)) return;
+          monaco.editor.createModel(`无法加载文件内容：${targetPath}\n原因：${msg}`, 'plaintext', uri);
+        } catch {
+          // ignore
+        }
+      }
+    })().finally(() => {
+      modelWarmupInflight.delete(key);
+    });
+
+    modelWarmupInflight.set(key, p);
+    return p;
+  };
+
+  const warmupDefinitionTargets = async (def: Monaco.languages.Definition | null) => {
+    if (!def) return;
+    const items = Array.isArray(def) ? def : [def as any];
+    const unique = new Map<string, Monaco.Uri>();
+    for (const it of items) {
+      const uri = (it as any)?.uri as Monaco.Uri | undefined;
+      if (!uri || uri.scheme !== 'file') continue;
+      unique.set(uri.toString(), uri);
+    }
+    if (unique.size === 0) return;
+    await Promise.all(Array.from(unique.values()).map((u) => ensureModelReady(u)));
+  };
 
   const ensureOpen = async (model: Monaco.editor.ITextModel) => {
     const uri = model.uri.toString();
@@ -325,7 +436,16 @@ export const attachMonacoLspBridge = (opts: {
               method: 'textDocument/definition',
               params: { textDocument: { uri }, position: lspPos(position) },
             });
-            return toMonacoDefinition(monaco, result);
+            const def = toMonacoDefinition(monaco, result);
+            // Monaco standalone 在跨文件跳转时会先 createModelReference(targetUri)，
+            // 如果目标文件的 model 不存在就会抛 "Model not found"（并导致未处理的 Promise rejection）。
+            // 这里先把目标文件的 model best-effort warmup 出来，避免跳转链路中断。
+            try {
+              await warmupDefinitionTargets(def);
+            } catch {
+              // ignore
+            }
+            return def;
           } catch {
             return null;
           }
@@ -351,7 +471,13 @@ export const attachMonacoLspBridge = (opts: {
               method: 'textDocument/typeDefinition',
               params: { textDocument: { uri }, position: lspPos(position) },
             });
-            return toMonacoDefinition(monaco, result);
+            const def = toMonacoDefinition(monaco, result);
+            try {
+              await warmupDefinitionTargets(def);
+            } catch {
+              // ignore
+            }
+            return def;
           } catch {
             return null;
           }

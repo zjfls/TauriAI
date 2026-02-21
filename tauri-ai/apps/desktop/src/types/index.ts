@@ -383,7 +383,7 @@ export const SUPPORTED_TEXT_EXTENSIONS = [
   '.txt', '.md', '.json', '.yaml', '.yml', '.xml', '.csv', '.log',
   '.ini', '.toml', '.html', '.css',
   '.js', '.ts', '.jsx', '.tsx', '.mjs', '.cjs', '.mts', '.cts',
-  '.py', '.rs', '.go', '.java', '.c', '.cpp', '.h', '.sh', '.bat', '.sql',
+  '.py', '.pyi', '.rs', '.go', '.java', '.c', '.cc', '.cxx', '.cpp', '.h', '.hh', '.hpp', '.hxx', '.inl', '.ipp', '.ixx', '.cppm', '.lua', '.sh', '.bat', '.sql',
   '.scss', '.sass', '.less',
   '.lock'
 ] as const;
@@ -1191,11 +1191,34 @@ export interface SymbolAnalysisSettings {
   enabled: boolean;
   /** 绑定的智能体名称（如：__system_symbol_analysis） */
   agentRef?: string;
+  /**
+   * 该智能体的最大并发数（同一时间允许发起多少个“符号分析”请求）。
+   * 说明：并发越大，分析越快，但可能更占用带宽/额度/模型资源。
+   */
+  concurrency?: number;
+  /**
+   * 附加智能体配置（用于多模型/多并发）。
+   * Workstudio 会在 “默认智能体 + 附加智能体” 之间做调度。
+   */
+  additionalAgents?: SymbolAnalysisAgentBinding[];
+  /**
+   * “全部解析”是否跳过变量/字段（这些数量可能很多）。
+   * 注意：不影响右键单个符号的分析。
+   * 默认为 true（跳过）。
+   */
+  bulkExcludeVariables?: boolean;
   timeoutMs: number;
   maxTokens: number;
   temperature: number;
   /** 是否允许发送项目上下文（路径、工作区信息等） */
   includeProjectContext: boolean;
+}
+
+export interface SymbolAnalysisAgentBinding {
+  /** 绑定的智能体名称（如：__system_symbol_analysis） */
+  agentRef: string;
+  /** 该智能体的最大并发数 */
+  concurrency: number;
 }
 
 export interface LspServerStatus {

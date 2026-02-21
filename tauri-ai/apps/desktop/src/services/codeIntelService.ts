@@ -219,6 +219,30 @@ export const deleteWorkstudioSymbolAnalysis = async (args: WorkstudioSymbolAnaly
   await invoke<void>('delete_workstudio_symbol_analysis', { args });
 };
 
+export type SaveWorkstudioSymbolAnalysisArgs = {
+  workstudioId: string;
+  languageId: string;
+  filePath: string;
+  symbolKey: string;
+  symbolName: string;
+  symbolKind: string;
+  selectionLine: number;
+  selectionColumn: number;
+  range: { startLine: number; startColumn: number; endLine: number; endColumn: number };
+  answerMd: string;
+  modelRef?: string;
+  latencyMs?: number;
+};
+
+export const saveWorkstudioSymbolAnalysis = async (
+  args: SaveWorkstudioSymbolAnalysisArgs
+): Promise<WorkstudioSymbolAnalysis> => {
+  if (!isTauri()) {
+    throw new Error('Not running in Tauri');
+  }
+  return invoke<WorkstudioSymbolAnalysis>('save_workstudio_symbol_analysis', { args });
+};
+
 export type AiAnalyzeWorkstudioSymbolArgs = {
   workstudioId: string;
   languageId: string;

@@ -29,6 +29,7 @@ const defaultAgent: Agent = {
   skillSet: undefined,
   reinjectThinking: false,
   workspaceSupport: undefined,
+  workstudioEnabled: undefined,
 };
 
 type AgentCategory = 'chat' | 'workspace';
@@ -46,6 +47,7 @@ const SYSTEM_WORKSPACE_AGENTS: Agent[] = [
     description: '为编辑器提供智能代码补全（InlineCompletion）服务',
     type: 'tool',
     workspaceSupport: true,
+    workstudioEnabled: true,
     modelRef: '',
     systemPrompt: `你是一个 IDE 里的代码补全引擎。
 
@@ -71,6 +73,7 @@ const SYSTEM_WORKSPACE_AGENTS: Agent[] = [
     description: '对选中代码片段进行问答的内联对话服务',
     type: 'tool',
     workspaceSupport: true,
+    workstudioEnabled: true,
     modelRef: '',
     systemPrompt: `你是 IDE 中的“内联代码问答助手”。
 
@@ -94,6 +97,7 @@ const SYSTEM_WORKSPACE_AGENTS: Agent[] = [
     description: '对代码符号（函数/类/变量）进行深度解析的服务',
     type: 'tool',
     workspaceSupport: true,
+    workstudioEnabled: true,
     modelRef: '',
     systemPrompt: `你是 IDE 中的“代码符号分析助手”。
 
@@ -112,13 +116,14 @@ const SYSTEM_WORKSPACE_AGENTS: Agent[] = [
   },
 ];
 
+const SYSTEM_WORKSPACE_AGENT_NAMES = new Set(SYSTEM_WORKSPACE_AGENTS.map((a) => a.name));
+
 export const AgentConfigForm: React.FC = () => {
   const { config, getModelOptions, saveConfigDebounced } = useConfigStore();
   const [agentCategory, setAgentCategory] = useState<AgentCategory>('chat');
   const [selectedAgentNameChat, setSelectedAgentNameChat] = useState<string | null>(null);
   const [selectedAgentNameWs, setSelectedAgentNameWs] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-
 
   const agents = config?.agents || [];
   const defaultAgentName = config?.defaultAgent || '';
@@ -127,18 +132,23 @@ export const AgentConfigForm: React.FC = () => {
   const mcpSetOptions = (config?.mcp?.sets ?? []).map((s) => ({ label: s.name, value: s.name }));
   const skillSetOptions = (config?.skills?.sets ?? []).map((s) => ({ label: s.name, value: s.name }));
 
-  // All user agents go to Chat Agents. Workspace AI is system-only.
-  const chatAgents = agents.filter((a) => !a.isSystem);
+  const isSystemWorkspaceAgentName = (name: string) => SYSTEM_WORKSPACE_AGENT_NAMES.has(name);
 
-  // Build workspace list: system agents first (merged with any saved user config)
-  const workspaceAgents = [...SYSTEM_WORKSPACE_AGENTS];
-  workspaceAgents.forEach((sys, idx) => {
-    const saved = agents.find(a => a.name === sys.name);
-    if (saved) {
-      workspaceAgents[idx] = { ...saved, isSystem: true, systemRole: sys.systemRole };
-    }
+  // Chat tab: exclude system Workspace AI agents; keep the rest (including tool agents).
+  const chatAgents = agents.filter((a) => !isSystemWorkspaceAgentName(a.name) && a.workstudioEnabled !== true);
+
+  // Workspace tab:
+  // - System agents first (merged with saved overrides)
+  // - Then user-created Workspace AI agents (workstudioEnabled=true)
+  const systemWorkspaceAgents = SYSTEM_WORKSPACE_AGENTS.map((sys) => {
+    const saved = agents.find((a) => a.name === sys.name);
+    if (!saved) return sys;
+    return { ...sys, ...saved, isSystem: true, systemRole: sys.systemRole };
   });
-  // (no extra user agents can exist in workspace tab)
+  const userWorkspaceAgents = agents.filter(
+    (a) => !isSystemWorkspaceAgentName(a.name) && a.workstudioEnabled === true
+  );
+  const workspaceAgents = [...systemWorkspaceAgents, ...userWorkspaceAgents];
 
   const activeList = agentCategory === 'chat' ? chatAgents : workspaceAgents;
 
@@ -188,11 +198,15 @@ export const AgentConfigForm: React.FC = () => {
       displayName: name,
       // Workspace AI agents default to tool type + workspaceSupport
       ...(agentCategory === 'workspace'
-        ? { type: 'tool' as AgentType, workspaceSupport: true }
+        ? { type: 'tool' as AgentType, workspaceSupport: true, workstudioEnabled: true }
         : {}),
     };
 
-    saveConfigDebounced({ ...config, agents: [...agents, created], defaultAgent: config.defaultAgent || name });
+    saveConfigDebounced({
+      ...config,
+      agents: [...agents, created],
+      defaultAgent: agentCategory === 'chat' ? (config.defaultAgent || name) : config.defaultAgent,
+    });
     setSelectedAgentName(created.name);
   };
 
@@ -204,13 +218,19 @@ export const AgentConfigForm: React.FC = () => {
       if (!config) return;
       const nextAgents = agents.filter((a) => a.name !== selectedAgentName);
       const nextDefault =
-        config.defaultAgent === selectedAgentName
-          ? nextAgents[0]?.name ?? ''
+        agentCategory === 'chat' && config.defaultAgent === selectedAgentName
+          ? nextAgents.find((a) => !isSystemWorkspaceAgentName(a.name) && a.workstudioEnabled !== true)?.name ?? ''
           : config.defaultAgent;
       saveConfigDebounced({ ...config, agents: nextAgents, defaultAgent: nextDefault });
-      // After delete, select the first in chat list (all deleteable agents are chat)
-      const nextChat = nextAgents.filter((a) => !a.isSystem);
-      setSelectedAgentName(nextChat[0]?.name ?? null);
+
+      // After delete, select the first in the same tab (workspace falls back to system agents).
+      if (agentCategory === 'workspace') {
+        const nextSystem = systemWorkspaceAgents[0]?.name ?? SYSTEM_WORKSPACE_AGENTS[0]?.name ?? null;
+        setSelectedAgentNameWs(nextSystem);
+      } else {
+        const nextChat = nextAgents.filter((a) => !isSystemWorkspaceAgentName(a.name) && a.workstudioEnabled !== true);
+        setSelectedAgentNameChat(nextChat[0]?.name ?? null);
+      }
     }
   };
 
@@ -227,14 +247,24 @@ export const AgentConfigForm: React.FC = () => {
   };
 
   const handleDuplicate = () => {
-    const agent = agents.find((a) => a.name === selectedAgentName);
+    const agent = currentAgent;
     if (!agent) return;
     if (!config) return;
 
+    const baseName = agent.name.startsWith('__system_')
+      ? `workspace_${agent.systemRole || 'agent'}`
+      : agent.name;
+
     const duplicated: Agent = {
       ...agent,
-      name: nextUniqueAgentName(agent.name),
+      name: nextUniqueAgentName(baseName),
       displayName: agent.displayName ? `${agent.displayName}（复制）` : `${agent.name}（复制）`,
+      // Duplicated agents are always user-editable.
+      isSystem: undefined,
+      systemRole: undefined,
+      ...(agentCategory === 'workspace'
+        ? { type: 'tool' as AgentType, workspaceSupport: true, workstudioEnabled: true }
+        : {}),
     };
 
     saveConfigDebounced({ ...config, agents: [...agents, duplicated] });
@@ -243,6 +273,7 @@ export const AgentConfigForm: React.FC = () => {
 
   const handleSetDefault = () => {
     if (selectedAgentName) {
+      if (agentCategory === 'workspace') return;
       if (!config) return;
       saveConfigDebounced({ ...config, defaultAgent: selectedAgentName });
     }
@@ -346,19 +377,16 @@ export const AgentConfigForm: React.FC = () => {
             ))}
           </div>
 
-          {/* Only show add button in chat tab; workspace tab is system-only */}
-          {agentCategory === 'chat' && (
-            <button
-              onClick={handleCreateNew}
-              className="mt-3 flex items-center justify-center gap-2 w-full py-2 rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 text-gray-500 hover:border-blue-500 hover:text-blue-500 transition-colors"
-            >
-              <Plus size={16} />
-              <span className="text-sm">添加智能体</span>
-            </button>
-          )}
+          <button
+            onClick={handleCreateNew}
+            className="mt-3 flex items-center justify-center gap-2 w-full py-2 rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 text-gray-500 hover:border-blue-500 hover:text-blue-500 transition-colors"
+          >
+            <Plus size={16} />
+            <span className="text-sm">{agentCategory === 'workspace' ? '添加 Workspace AI 智能体' : '添加智能体'}</span>
+          </button>
           {agentCategory === 'workspace' && (
-            <p className="mt-3 text-xs text-center text-gray-400 dark:text-gray-500 px-2">
-              Workspace AI 由系统内置，不可新增或删除
+            <p className="mt-2 text-[11px] leading-4 text-center text-gray-400 dark:text-gray-500 px-2">
+              系统内置的 3 个 Workspace AI 智能体不可删除，将作为 fallback；你可以新增/删除/修改其他 Workspace AI 智能体。
             </p>
           )}
 
@@ -599,7 +627,7 @@ const AgentForm: React.FC<AgentFormProps> = ({
           <h2 className="text-lg font-semibold text-gray-800 dark:text-white">
             {agent.displayName || '智能体配置'}
           </h2>
-          {isDefault && (
+          {isDefault && !isWorkspaceContext && (
             <span className="px-2 py-0.5 text-xs bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400 rounded">
               默认
             </span>
@@ -607,7 +635,7 @@ const AgentForm: React.FC<AgentFormProps> = ({
         </div>
         <div className="flex items-center gap-2">
           <span className="px-2 text-xs text-gray-500 dark:text-gray-400">自动保存</span>
-          {!isDefault && (
+          {!isDefault && !isWorkspaceContext && (
             <button
               onClick={onSetDefault}
               className="px-3 py-1.5 text-sm text-yellow-600 hover:bg-yellow-50 dark:hover:bg-yellow-900/30 rounded-lg"

@@ -218,6 +218,7 @@ mod tests {
                 max_turns: None,
                 reinject_thinking: false,
                 context_policy: None,
+                workstudio_enabled: None,
             }],
             default_agent: "test-agent".to_string(),
             ..Default::default()

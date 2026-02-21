@@ -38,7 +38,11 @@ import {
 } from 'lucide-react';
 import type {
   CodeSnippetContentPart,
+  Conversation,
   LspServerStatus,
+  MessageBlock,
+  MessageTurn,
+  RunEventPayload,
   TerminalScope,
   Workstudio,
   WorkstudioSymbolAnalysis,
@@ -52,6 +56,7 @@ import {
   codeIndexStartWorkspaceScan,
   deleteWorkstudioSymbolAnalysis,
   getWorkstudioSymbolAnalysis,
+  saveWorkstudioSymbolAnalysis,
   lspDetectServer,
   lspEnsureServer,
   lspNotify,
@@ -66,6 +71,7 @@ import { useRemoteDragSplitPreview } from '../../hooks/useRemoteDragSplitPreview
 import { useDragGhostSession } from '../../hooks/useDragGhostSession';
 import { focusMainWindow, getViewWindowParams } from '../../utils/viewWindow';
 import { MarkdownRenderer } from '../Chat/MarkdownRenderer';
+import { MessageBlocks } from '../Chat/MessageBlocks';
 import { setupMonaco } from '../../utils/monaco';
 import { attachMonacoLspBridge } from '../../utils/monacoLspBridge';
 import { attachMonacoAiCompletionBridge } from '../../utils/monacoAiCompletionBridge';
@@ -139,6 +145,18 @@ type WorkstudioToolCallEntry = {
   result?: string;
 };
 
+type WorkstudioSymbolAnalysisMeta = {
+  workstudioId: string;
+  languageId: string;
+  filePath: string;
+  symbolKey: string;
+  symbolName: string;
+  symbolKind: string;
+  selectionLine: number;
+  selectionColumn: number;
+  range: OutlineRange;
+};
+
 type WorkstudioAiBubble = {
   id: string;
   kind: WorkstudioAiBubbleKind;
@@ -153,11 +171,22 @@ type WorkstudioAiBubble = {
   thinking?: string;
   /** Tool calls made during the run */
   toolCalls?: WorkstudioToolCallEntry[];
+  /** When driven by `run_task`, this is the backing conversation id */
+  conversationId?: string;
+  assistantMessageId?: string;
+  /** Unified blocks (same schema as ChatView) */
+  blocks?: MessageBlock[];
+  turns?: MessageTurn[];
   /** Name of the agent that produced this bubble */
   agentName?: string;
+  /** Optional meta for persisting symbol analysis results */
+  analysisMeta?: WorkstudioSymbolAnalysisMeta;
+  /** Snapshot code snippet for symbol analysis (avoids relying on editor state later) */
+  analysisCode?: string;
   error?: string;
   modelRef?: string;
   latencyMs?: number;
+  startedAtMs?: number;
   createdAt: string;
 };
 
@@ -688,6 +717,28 @@ const flattenOutlineItems = (items: OutlineItem[]): OutlineItem[] => {
   return out;
 };
 
+const describeWorkstudioAiBubbleStatus = (status: WorkstudioAiBubbleStatus): string => {
+  switch (status) {
+    case 'queued':
+      return '排队中…';
+    case 'connecting':
+      return '连接中…';
+    case 'thinking':
+      return '正在思考…';
+    case 'tool_calling':
+      return '调用工具…';
+    case 'streaming':
+      return '生成中…';
+    case 'done':
+      return '完成，点击查看';
+    case 'error':
+      return '失败，点击查看';
+    case 'idle':
+    default:
+      return '请求中…';
+  }
+};
+
 const buildOutlineHierarchy = (flatItems: OutlineItem[]): OutlineItem[] => {
   const nodes = flatItems.map((node) => ({ ...node, children: [] as OutlineItem[] }));
   nodes.sort(compareOutlinePosition);
@@ -972,6 +1023,26 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     setInlineChatComposer((prev) => ({ ...prev, open: false }));
   }, []);
   const [aiBubbles, setAiBubbles] = useState<WorkstudioAiBubble[]>([]);
+  const aiBubblesRef = useRef<WorkstudioAiBubble[]>([]);
+  const activeSymbolAnalysisKeysRef = useRef<Set<string>>(new Set());
+  const symbolAnalysisKeyByConversationIdRef = useRef<Map<string, string>>(new Map());
+  const symbolAnalysisConversationIdByBubbleIdRef = useRef<Map<string, string>>(new Map());
+  const cancelledSymbolAnalysisBubbleIdsRef = useRef<Set<string>>(new Set());
+  const scheduleSymbolAnalysisRunsRef = useRef<(() => void) | null>(null);
+  const symbolAnalysisRoundRobinCursorRef = useRef<number>(0);
+  const startingSymbolAnalysisBubbleIdsRef = useRef<Set<string>>(new Set());
+  const trackedRunConversationsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    aiBubblesRef.current = aiBubbles;
+  }, [aiBubbles]);
+  const symbolAnalysisQueuedCount = useMemo(
+    () => aiBubbles.filter((b) => b.kind === 'symbol_analysis' && b.status === 'queued').length,
+    [aiBubbles]
+  );
+  const symbolAnalysisActiveCount = useMemo(() => {
+    const ACTIVE: WorkstudioAiBubbleStatus[] = ['connecting', 'thinking', 'streaming', 'tool_calling'];
+    return aiBubbles.filter((b) => b.kind === 'symbol_analysis' && ACTIVE.includes(b.status)).length;
+  }, [aiBubbles]);
   const [aiViewerId, setAiViewerId] = useState<string | null>(null);
   const aiViewer = useMemo(() => {
     if (!aiViewerId) return null;
@@ -980,6 +1051,24 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const openAiViewer = useCallback((id: string) => setAiViewerId(id), []);
   const closeAiViewer = useCallback(() => {
     if (!aiViewerId) return;
+    const bubble = aiBubblesRef.current.find((b) => b.id === aiViewerId) ?? null;
+    const ACTIVE_STATUSES: WorkstudioAiBubbleStatus[] = [
+      'queued',
+      'connecting',
+      'thinking',
+      'streaming',
+      'tool_calling',
+    ];
+    const isActive = bubble ? ACTIVE_STATUSES.includes(bubble.status) : false;
+    if (isActive) {
+      // 生成中：只关闭查看窗口，不移除气泡（避免丢失进度/落盘逻辑）。
+      setAiViewerId(null);
+      return;
+    }
+
+    if (bubble?.conversationId) {
+      trackedRunConversationsRef.current.delete(bubble.conversationId);
+    }
     setAiBubbles((prev) => prev.filter((b) => b.id !== aiViewerId));
     setAiViewerId(null);
   }, [aiViewerId]);
@@ -1221,6 +1310,12 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const [saveError, setSaveError] = useState<string | null>(null);
   const loadWorkstudioSeqRef = useRef(0);
 
+  useEffect(() => {
+    // Workstudio 切换时清理“符号分析的运行中映射/取消标记”，避免跨工作区误伤。
+    symbolAnalysisConversationIdByBubbleIdRef.current.clear();
+    cancelledSymbolAnalysisBubbleIdsRef.current.clear();
+  }, [ws?.id]);
+
   const shouldShowOpenMainFolderAction = useMemo(() => {
     if (!ws) return false;
     // 仅在“系统默认工作区”（~/.tauri-ai/workstudios/<id>）时显示“打开文件夹为主工作区”入口：
@@ -1304,6 +1399,566 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     // Workstudio 切换时清空缓存，避免跨工作区误命中。
     setSymbolAnalysisCache({});
   }, [ws?.id]);
+
+  // ── run:event listener（run_task）─────────────────────────────────
+  // 说明：
+  // - Workstudio 的“符号分析/分析类/分析函数/分析变量”等，应复用 ChatView 的统一事件流：
+  //   `run_task` → `run:event`（ReAct / 工具调用 / 审批 / 输出 blocks）
+  // - 这里做一个轻量的 blocks 聚合器（类似 sessionStore），用于驱动右下角气泡的实时进度展示。
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (!isTauri()) return;
+
+    const STREAM_UI_UPDATE_FPS = 20;
+    const STREAM_UI_UPDATE_INTERVAL_MS = Math.round(1000 / STREAM_UI_UPDATE_FPS);
+
+    type PendingStreamChunks = {
+      // key: uiBlockId（turnId:blockId）
+      blocks: Map<
+        string,
+        {
+          blockType: string;
+          format?: string;
+          turnId: string;
+          turnIndex?: number;
+          chunks: string[];
+        }
+      >;
+    };
+
+    const pendingByConversationId = new Map<string, PendingStreamChunks>();
+    const turnIndexByConversationId = new Map<string, Map<string, number>>();
+    const savedSymbolAnalysisByConversationId = new Set<string>();
+    let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const getOrCreateTurnIndexMap = (conversationId: string): Map<string, number> => {
+      const existing = turnIndexByConversationId.get(conversationId);
+      if (existing) return existing;
+      const created = new Map<string, number>();
+      turnIndexByConversationId.set(conversationId, created);
+      return created;
+    };
+
+    const setTurnIndex = (conversationId: string, turnId: string, turnIndex: number) => {
+      getOrCreateTurnIndexMap(conversationId).set(turnId, turnIndex);
+    };
+
+    const getTurnIndex = (conversationId: string, turnId: string): number | undefined => {
+      return turnIndexByConversationId.get(conversationId)?.get(turnId);
+    };
+
+    const getOrCreatePendingChunks = (conversationId: string): PendingStreamChunks => {
+      const existing = pendingByConversationId.get(conversationId);
+      if (existing) return existing;
+      const created: PendingStreamChunks = { blocks: new Map() };
+      pendingByConversationId.set(conversationId, created);
+      return created;
+    };
+
+    const parseJson = (text: string): any | null => {
+      try {
+        return JSON.parse(text);
+      } catch {
+        return null;
+      }
+    };
+
+    const extractSuffixId = (prefix: string, id: string): string => {
+      const idx = id.lastIndexOf(prefix);
+      return idx === -1 ? id : id.slice(idx + prefix.length);
+    };
+
+    // Some block types are emitted as full JSON snapshots; for these we should not concat deltas.
+    const isSnapshotBlockType = (blockType: string) => {
+      return blockType === 'web_search' || blockType === 'tool_call' || blockType === 'approval';
+    };
+
+    const upsertBlock = (
+      blocks: MessageBlock[],
+      blockId: string,
+      blockType: string,
+      format: string | undefined,
+      turnId: string,
+      turnIndex: number | undefined,
+      delta: string
+    ): MessageBlock[] => {
+      const idx = blocks.findIndex((b) => b.id === blockId);
+
+      const createBlock = (): MessageBlock => {
+        if (blockType === 'thinking') {
+          return { id: blockId, type: 'thinking', turnId, turnIndex, text: delta };
+        }
+        if (blockType === 'status') {
+          return { id: blockId, type: 'status', turnId, turnIndex, text: delta };
+        }
+        if (blockType === 'text') {
+          return { id: blockId, type: 'text', format: format || 'markdown', turnId, turnIndex, text: delta };
+        }
+        if (blockType === 'tool_result') {
+          return {
+            id: blockId,
+            type: 'tool_result',
+            callId: extractSuffixId('tool_result:', blockId),
+            turnId,
+            turnIndex,
+            text: delta,
+          };
+        }
+        if (blockType === 'error') {
+          return { id: blockId, type: 'error', turnId, turnIndex, text: delta };
+        }
+        if (blockType === 'tool_call') {
+          const v = parseJson(delta);
+          if (v && typeof v === 'object') {
+            const callId = typeof v.id === 'string' ? v.id : extractSuffixId('tool_call:', blockId);
+            const name = typeof v.name === 'string' ? v.name : '';
+            const args = typeof v.arguments === 'string' ? v.arguments : '';
+            const meta = (v as any).meta;
+            return { id: blockId, type: 'tool_call', callId, name, arguments: args, meta, turnId, turnIndex };
+          }
+        }
+        if (blockType === 'approval') {
+          const v = parseJson(delta);
+          if (v && typeof v === 'object') {
+            const requestId = typeof v.request_id === 'string' ? v.request_id : extractSuffixId('approval:', blockId);
+            const callId = typeof v.call_id === 'string' ? v.call_id : requestId;
+            const toolName = typeof v.tool_name === 'string' ? v.tool_name : '';
+            const args = typeof v.arguments === 'string' ? v.arguments : '';
+            const status = typeof v.status === 'string' ? v.status : 'unknown';
+            const securityPolicy =
+              typeof (v as any).security_policy === 'string' ? (v as any).security_policy : undefined;
+            const escalated = typeof v.escalated === 'boolean' ? v.escalated : undefined;
+            const reason = typeof v.reason === 'string' ? v.reason : undefined;
+            return {
+              id: blockId,
+              type: 'approval',
+              requestId,
+              callId,
+              toolName,
+              arguments: args,
+              status,
+              securityPolicy,
+              escalated,
+              reason,
+              turnId,
+              turnIndex,
+            };
+          }
+        }
+        if (blockType === 'web_search') {
+          const v = parseJson(delta);
+          if (v && typeof v === 'object') {
+            const callId = typeof v.id === 'string' ? v.id : extractSuffixId('web_search:', blockId);
+            const status = typeof v.status === 'string' ? v.status : 'unknown';
+            const action = v.action;
+            return { id: blockId, type: 'web_search', callId, status, action, turnId, turnIndex };
+          }
+        }
+        return { id: blockId, type: 'unknown', turnId, turnIndex, data: { blockType, format, text: delta } };
+      };
+
+      if (idx === -1) {
+        return [...blocks, createBlock()];
+      }
+
+      const current = blocks[idx];
+      const next: MessageBlock = (() => {
+        if (current.type === 'thinking' && blockType === 'thinking') {
+          return { ...current, turnIndex: current.turnIndex ?? turnIndex, text: current.text + delta };
+        }
+        if (current.type === 'status' && blockType === 'status') {
+          return { ...current, turnIndex: current.turnIndex ?? turnIndex, text: current.text + delta };
+        }
+        if (current.type === 'text' && blockType === 'text') {
+          return {
+            ...current,
+            turnIndex: current.turnIndex ?? turnIndex,
+            text: current.text + delta,
+            format: current.format || format || 'markdown',
+          };
+        }
+        if (current.type === 'tool_result' && blockType === 'tool_result') {
+          return { ...current, turnIndex: current.turnIndex ?? turnIndex, text: current.text + delta };
+        }
+        if (current.type === 'error' && blockType === 'error') {
+          return { ...current, turnIndex: current.turnIndex ?? turnIndex, text: current.text + delta };
+        }
+        if (current.type === 'tool_call' && blockType === 'tool_call') {
+          // Snapshot update: overwrite
+          return createBlock();
+        }
+        if (current.type === 'approval' && blockType === 'approval') {
+          // Snapshot update: overwrite
+          return createBlock();
+        }
+        if (current.type === 'web_search' && blockType === 'web_search') {
+          // Snapshot update: overwrite
+          return createBlock();
+        }
+        if (current.type === 'unknown') {
+          // If we now recognize the blockType, upgrade it to a typed block; otherwise append text.
+          if (
+            blockType === 'text' ||
+            blockType === 'thinking' ||
+            blockType === 'status' ||
+            blockType === 'tool_call' ||
+            blockType === 'tool_result' ||
+            blockType === 'web_search' ||
+            blockType === 'error' ||
+            blockType === 'approval'
+          ) {
+            return createBlock();
+          }
+
+          const data = current.data as any;
+          const prevText = typeof data?.text === 'string' ? data.text : '';
+          return {
+            ...current,
+            turnIndex: current.turnIndex ?? turnIndex,
+            data: {
+              ...(typeof data === 'object' && data ? data : {}),
+              blockType,
+              format,
+              text: prevText + delta,
+            },
+          };
+        }
+
+        // Type changed: replace block with the new type
+        return createBlock();
+      })();
+
+      if (next === current) return blocks;
+      const copy = blocks.slice();
+      copy[idx] = next;
+      return copy;
+    };
+
+    const flushPending = () => {
+      if (pendingByConversationId.size === 0) return;
+
+      const snapshot = Array.from(pendingByConversationId.entries());
+      const snapshotMap = new Map(snapshot);
+      const appliedConversationIds = new Set<string>();
+
+      setAiBubbles((prev) => {
+        let updated = false;
+        const next = prev.map((b) => {
+          const conversationId = (b.conversationId ?? '').trim();
+          if (!conversationId) return b;
+          const chunks = snapshotMap.get(conversationId);
+          if (!chunks || chunks.blocks.size === 0) return b;
+
+          // Streaming already ended/aborted: drop buffered tokens to avoid resurrecting UI
+          if (b.status === 'done' || b.status === 'error') {
+            appliedConversationIds.add(conversationId);
+            return b;
+          }
+
+          let nextBlocks = b.blocks ?? [];
+          for (const [uiBlockId, entry] of chunks.blocks.entries()) {
+            const mergedDelta =
+              entry.chunks.length > 0
+                ? isSnapshotBlockType(entry.blockType)
+                  ? entry.chunks[entry.chunks.length - 1]
+                  : entry.chunks.join('')
+                : '';
+            if (!mergedDelta) continue;
+            nextBlocks = upsertBlock(
+              nextBlocks,
+              uiBlockId,
+              entry.blockType,
+              entry.format,
+              entry.turnId,
+              entry.turnIndex,
+              mergedDelta
+            );
+          }
+
+          if (nextBlocks !== b.blocks) {
+            appliedConversationIds.add(conversationId);
+            updated = true;
+            return {
+              ...b,
+              blocks: nextBlocks,
+            };
+          }
+          appliedConversationIds.add(conversationId);
+          return b;
+        });
+
+        return updated ? next : prev;
+      });
+
+      // 仅清理已成功应用（或被丢弃）的 conversation；避免“conversation 还没绑定到 bubble”时丢 token。
+      for (const cid of appliedConversationIds) {
+        pendingByConversationId.delete(cid);
+      }
+    };
+
+    const scheduleFlush = () => {
+      if (flushTimer) return;
+      flushTimer = setTimeout(() => {
+        flushTimer = null;
+        flushPending();
+        if (pendingByConversationId.size > 0) scheduleFlush();
+      }, STREAM_UI_UPDATE_INTERVAL_MS);
+    };
+
+    const queueBlockDelta = (
+      conversationId: string,
+      turnId: string,
+      blockId: string,
+      blockType: string,
+      format: string | undefined,
+      delta: string
+    ) => {
+      const chunks = getOrCreatePendingChunks(conversationId);
+      const uiBlockId = `${turnId}:${blockId}`;
+      const entry = chunks.blocks.get(uiBlockId);
+      if (entry) {
+        entry.chunks.push(delta);
+        scheduleFlush();
+        return;
+      }
+
+      chunks.blocks.set(uiBlockId, {
+        blockType,
+        format,
+        turnId,
+        turnIndex: getTurnIndex(conversationId, turnId),
+        chunks: [delta],
+      });
+      scheduleFlush();
+    };
+
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      try {
+        unlisten = await listen<RunEventPayload>('run:event', (event) => {
+          const payload = event.payload;
+          const conversationId = (payload.conversationId ?? '').trim();
+          if (!conversationId) return;
+
+          // 只处理 Workstudio 主动发起的 run_task（避免被主窗口聊天流拖慢）。
+          if (!trackedRunConversationsRef.current.has(conversationId)) return;
+
+          if (payload.type === 'turn_started') {
+            setTurnIndex(conversationId, payload.turnId, payload.turnIndex);
+            setAiBubbles((prev) =>
+              prev.map((b) => {
+                if ((b.conversationId ?? '').trim() !== conversationId) return b;
+                const turns = b.turns ? b.turns.slice() : [];
+                const idx = turns.findIndex((t) => t.turnId === payload.turnId);
+                const nextTurn: MessageTurn = {
+                  turnId: payload.turnId,
+                  turnIndex: payload.turnIndex,
+                  status: turns[idx]?.status,
+                  debugInfo: turns[idx]?.debugInfo,
+                  usage: turns[idx]?.usage,
+                  model: turns[idx]?.model,
+                };
+                if (idx === -1) turns.push(nextTurn);
+                else turns[idx] = nextTurn;
+                return { ...b, turns };
+              })
+            );
+            return;
+          }
+
+          if (payload.type === 'turn_phase_started') {
+            const status =
+              payload.phase === 'think'
+                ? ('thinking' as WorkstudioAiBubbleStatus)
+                : payload.phase === 'act'
+                  ? ('tool_calling' as WorkstudioAiBubbleStatus)
+                  : ('streaming' as WorkstudioAiBubbleStatus);
+            setAiBubbles((prev) =>
+              prev.map((b) =>
+                (b.conversationId ?? '').trim() === conversationId ? { ...b, status } : b
+              )
+            );
+            return;
+          }
+
+          if (payload.type === 'turn_finished') {
+            if (typeof payload.turnIndex === 'number') {
+              setTurnIndex(conversationId, payload.turnId, payload.turnIndex);
+            }
+
+            setAiBubbles((prev) =>
+              prev.map((b) => {
+                if ((b.conversationId ?? '').trim() !== conversationId) return b;
+                const turns = b.turns ? b.turns.slice() : [];
+                const idx = turns.findIndex((t) => t.turnId === payload.turnId);
+                const nextTurn: MessageTurn = {
+                  turnId: payload.turnId,
+                  turnIndex: payload.turnIndex ?? turns[idx]?.turnIndex ?? 0,
+                  status: payload.status,
+                  debugInfo: payload.debugInfo ?? turns[idx]?.debugInfo,
+                  usage: payload.usage ?? turns[idx]?.usage,
+                  model: payload.model ?? turns[idx]?.model,
+                };
+                if (idx === -1) turns.push(nextTurn);
+                else turns[idx] = nextTurn;
+                return { ...b, turns };
+              })
+            );
+            return;
+          }
+
+          if (payload.type === 'block_delta') {
+            queueBlockDelta(
+              conversationId,
+              payload.turnId,
+              payload.blockId,
+              payload.blockType,
+              payload.format ?? undefined,
+              payload.delta
+            );
+            return;
+          }
+
+          if (payload.type === 'done') {
+            // 收尾前先 flush，避免最后一批 token 被节流队列丢弃
+            flushPending();
+
+            const doneAtMs = Date.now();
+            const bubbleForSave = aiBubblesRef.current.find((b) => (b.conversationId ?? '').trim() === conversationId);
+            const latencyMs = bubbleForSave?.startedAtMs ? Math.max(0, doneAtMs - bubbleForSave.startedAtMs) : undefined;
+
+            setAiBubbles((prev) => {
+              const next = prev.map((b) => {
+                if ((b.conversationId ?? '').trim() !== conversationId) return b;
+                const blocks = b.blocks ?? [];
+                const hasAnyTextBlock = blocks.some((blk) => blk.type === 'text');
+                const nextBlocks = hasAnyTextBlock
+                  ? blocks
+                  : [
+                    ...blocks,
+                    {
+                      id: `${payload.turnId}:assistant_text:final`,
+                      type: 'text',
+                      format: payload.format ?? 'markdown',
+                      text: payload.fullContent ?? '',
+                      turnId: payload.turnId,
+                      turnIndex: getTurnIndex(conversationId, payload.turnId),
+                    } as MessageBlock,
+                  ];
+
+                return {
+                  ...b,
+                  status: 'done' as WorkstudioAiBubbleStatus,
+                  assistantMessageId: payload.assistantMessageId ?? b.assistantMessageId,
+                  blocks: nextBlocks,
+                  latencyMs,
+                  modelRef: b.modelRef || payload.model || undefined,
+                };
+              });
+              aiBubblesRef.current = next;
+              return next;
+            });
+
+            // 符号分析：把最终结果落盘到 workstudio_symbol_analyses，并刷新右键菜单/缓存。
+            if (!savedSymbolAnalysisByConversationId.has(conversationId) && bubbleForSave?.analysisMeta) {
+              savedSymbolAnalysisByConversationId.add(conversationId);
+              void (async () => {
+                try {
+                  const meta = bubbleForSave.analysisMeta!;
+                  const res = await saveWorkstudioSymbolAnalysis({
+                    ...meta,
+                    answerMd: payload.fullContent ?? '',
+                    modelRef: bubbleForSave.modelRef,
+                    latencyMs,
+                  });
+
+                  const cacheKey = `${meta.workstudioId}::${normalizeFsPath(meta.filePath)}::${meta.symbolKey}`;
+                  setSymbolAnalysisCache((prev) => ({ ...prev, [cacheKey]: res }));
+
+                  setOutlineMenu((prev) => {
+                    if (!prev) return prev;
+                    if (prev.filePath !== meta.filePath) return prev;
+                    if (prev.item.key !== meta.symbolKey) return prev;
+                    return { ...prev, analysis: res };
+                  });
+                } catch (err) {
+                  console.warn('[Workstudio][Outline] saveWorkstudioSymbolAnalysis failed:', err);
+                }
+              })();
+            }
+
+            // 释放“该符号正在分析中/队列中”的锁，允许后续重新分析。
+            {
+              const analysisKey = symbolAnalysisKeyByConversationIdRef.current.get(conversationId);
+              if (analysisKey) {
+                activeSymbolAnalysisKeysRef.current.delete(analysisKey);
+                symbolAnalysisKeyByConversationIdRef.current.delete(conversationId);
+              } else if (bubbleForSave?.analysisMeta) {
+                const meta = bubbleForSave.analysisMeta;
+                const fallbackKey = `${meta.workstudioId}::${normalizeFsPath(meta.filePath)}::${meta.symbolKey}`;
+                activeSymbolAnalysisKeysRef.current.delete(fallbackKey);
+              }
+            }
+
+            // 结束后清理缓冲与追踪标记（避免残留定时 flush）。
+            pendingByConversationId.delete(conversationId);
+            turnIndexByConversationId.delete(conversationId);
+            trackedRunConversationsRef.current.delete(conversationId);
+            scheduleSymbolAnalysisRunsRef.current?.();
+            return;
+          }
+
+          if (payload.type === 'error') {
+            flushPending();
+            setAiBubbles((prev) => {
+              const next = prev.map((b) => {
+                if ((b.conversationId ?? '').trim() !== conversationId) return b;
+                return {
+                  ...b,
+                  status: 'error' as WorkstudioAiBubbleStatus,
+                  error: payload.error || 'Unknown error',
+                };
+              });
+              aiBubblesRef.current = next;
+              return next;
+            });
+            {
+              const analysisKey = symbolAnalysisKeyByConversationIdRef.current.get(conversationId);
+              if (analysisKey) {
+                activeSymbolAnalysisKeysRef.current.delete(analysisKey);
+                symbolAnalysisKeyByConversationIdRef.current.delete(conversationId);
+              } else {
+                const bubble = aiBubblesRef.current.find((b) => (b.conversationId ?? '').trim() === conversationId);
+                if (bubble?.analysisMeta) {
+                  const meta = bubble.analysisMeta;
+                  const fallbackKey = `${meta.workstudioId}::${normalizeFsPath(meta.filePath)}::${meta.symbolKey}`;
+                  activeSymbolAnalysisKeysRef.current.delete(fallbackKey);
+                }
+              }
+            }
+            pendingByConversationId.delete(conversationId);
+            turnIndexByConversationId.delete(conversationId);
+            trackedRunConversationsRef.current.delete(conversationId);
+            scheduleSymbolAnalysisRunsRef.current?.();
+          }
+        });
+      } catch {
+        // ignore
+      }
+    })();
+
+    return () => {
+      unlisten?.();
+      if (flushTimer) {
+        clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+      pendingByConversationId.clear();
+      turnIndexByConversationId.clear();
+      savedSymbolAnalysisByConversationId.clear();
+      symbolAnalysisKeyByConversationIdRef.current.clear();
+    };
+  }, []);
   const lspStatusButtonRef = useRef<HTMLButtonElement | null>(null);
   const [outlineOpen, setOutlineOpen] = useState(true);
   const [leftSidebarTab, setLeftSidebarTab] = useState<'explorer' | 'outline'>('explorer');
@@ -3040,6 +3695,29 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     return '请分析该符号在模块中的角色、用途与潜在问题。';
   }, []);
 
+  const getActiveSymbolAnalysisStatus = useCallback(
+    (filePathRaw: string, symbolKeyRaw: string): WorkstudioAiBubbleStatus | null => {
+      const wsId = String(workstudioId ?? '').trim();
+      const filePath = normalizeFsPath(String(filePathRaw ?? '').trim());
+      const symbolKey = String(symbolKeyRaw ?? '').trim();
+      if (!wsId || !filePath || !symbolKey) return null;
+
+      const ACTIVE_STATUSES: WorkstudioAiBubbleStatus[] = ['queued', 'connecting', 'thinking', 'streaming', 'tool_calling'];
+      for (const b of aiBubbles) {
+        if (b.kind !== 'symbol_analysis') continue;
+        if (!ACTIVE_STATUSES.includes(b.status)) continue;
+        const meta = b.analysisMeta;
+        if (!meta) continue;
+        if (String(meta.workstudioId ?? '').trim() !== wsId) continue;
+        if (normalizeFsPath(meta.filePath) !== filePath) continue;
+        if (String(meta.symbolKey ?? '').trim() !== symbolKey) continue;
+        return b.status;
+      }
+      return null;
+    },
+    [aiBubbles, workstudioId]
+  );
+
   const extractTextFromOutlineRange = useCallback((content: string, range: OutlineRange): string => {
     if (!content) return '';
     const lines = content.split(/\r?\n/);
@@ -3067,12 +3745,360 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     return slice.join('\n');
   }, []);
 
+  const buildSymbolAnalysisAgentPool = useCallback(() => {
+    const clampConcurrency = (v: unknown, fallback: number) => {
+      const n = Number(v);
+      if (!Number.isFinite(n)) return fallback;
+      return Math.max(1, Math.min(64, Math.floor(n)));
+    };
+
+    const cfgStore = useConfigStore.getState();
+    const settings = cfgStore.config?.codeIntelligence?.symbolAnalysis ?? null;
+
+    const defaultAgentName = String(settings?.agentRef ?? '').trim() || '__system_symbol_analysis';
+    const poolByAgentName = new Map<string, number>();
+    poolByAgentName.set(defaultAgentName, clampConcurrency(settings?.concurrency, 2));
+
+    for (const row of settings?.additionalAgents ?? []) {
+      const agentName = String(row?.agentRef ?? '').trim();
+      if (!agentName) continue;
+      const concurrency = clampConcurrency(row?.concurrency, 1);
+      poolByAgentName.set(agentName, (poolByAgentName.get(agentName) ?? 0) + concurrency);
+    }
+
+    return Array.from(poolByAgentName.entries()).map(([agentName, concurrency]) => ({
+      agentName,
+      concurrency,
+    }));
+  }, []);
+
+	  const startQueuedSymbolAnalysis = useCallback(
+	    async (bubbleId: string, agentNameRaw: string) => {
+	      if (!workstudioId) return;
+
+	      const bubble = aiBubblesRef.current.find((b) => b.id === bubbleId) ?? null;
+	      if (!bubble || bubble.kind !== 'symbol_analysis') return;
+	      if (bubble.status !== 'queued') return;
+
+	      // 用户可能在 queued 阶段就点击了“中止”，此时直接标记并释放锁。
+	      if (cancelledSymbolAnalysisBubbleIdsRef.current.has(bubbleId)) {
+	        cancelledSymbolAnalysisBubbleIdsRef.current.delete(bubbleId);
+	        const metaForKey = bubble.analysisMeta ?? null;
+	        if (metaForKey) {
+	          const analysisKey = makeSymbolAnalysisCacheKey(metaForKey.filePath, metaForKey.symbolKey);
+	          activeSymbolAnalysisKeysRef.current.delete(analysisKey);
+	        }
+	        setAiBubbles((prev) => {
+		          const next = prev.map((b) =>
+		            b.id === bubbleId ? { ...b, status: 'error' as WorkstudioAiBubbleStatus, error: '已中止' } : b
+		          );
+		          aiBubblesRef.current = next;
+		          return next;
+		        });
+	        return;
+	      }
+
+	      const meta = bubble.analysisMeta ?? null;
+	      const code = String(bubble.analysisCode ?? '').trim();
+	      if (!meta || !code) {
+	        if (meta) {
+          const analysisKey = makeSymbolAnalysisCacheKey(meta.filePath, meta.symbolKey);
+          activeSymbolAnalysisKeysRef.current.delete(analysisKey);
+        }
+        setAiBubbles((prev) => {
+	          const next = prev.map((b) =>
+	            b.id === bubbleId
+	              ? { ...b, status: 'error' as WorkstudioAiBubbleStatus, error: '缺少符号分析的必要信息，无法启动任务' }
+	              : b
+	          );
+	          aiBubblesRef.current = next;
+	          return next;
+	        });
+        return;
+      }
+
+      if (startingSymbolAnalysisBubbleIdsRef.current.has(bubbleId)) return;
+      startingSymbolAnalysisBubbleIdsRef.current.add(bubbleId);
+
+	      const cfgStore = useConfigStore.getState();
+	      const agentName = String(agentNameRaw ?? '').trim() || '__system_symbol_analysis';
+	      const agent = cfgStore.getAgent(agentName);
+	      const modelRef = agent?.modelRef || cfgStore.getCurrentModelRef?.() || '';
+	      const analysisKey = makeSymbolAnalysisCacheKey(meta.filePath, meta.symbolKey);
+
+	      // 先把 UI 状态切到“连接中”，避免 schedule 被重复触发导致重复启动。
+	      setAiBubbles((prev) => {
+	        const next = prev.map((b) =>
+	          b.id === bubbleId
+	            ? {
+	              ...b,
+	              status: 'connecting' as WorkstudioAiBubbleStatus,
+	              startedAtMs: Date.now(),
+	              agentName,
+	              modelRef: modelRef || b.modelRef,
+	              error: undefined,
+	            }
+	            : b
+	        );
+	        aiBubblesRef.current = next;
+	        return next;
+	      });
+
+	      if (cancelledSymbolAnalysisBubbleIdsRef.current.has(bubbleId)) {
+	        cancelledSymbolAnalysisBubbleIdsRef.current.delete(bubbleId);
+	        activeSymbolAnalysisKeysRef.current.delete(analysisKey);
+	        setAiBubbles((prev) => {
+	          const next = prev.map((b) =>
+	            b.id === bubbleId ? { ...b, status: 'error' as WorkstudioAiBubbleStatus, error: '已中止' } : b
+	          );
+	          aiBubblesRef.current = next;
+	          return next;
+	        });
+	        startingSymbolAnalysisBubbleIdsRef.current.delete(bubbleId);
+	        return;
+	      }
+
+	      let trackedConversationId: string | null = null;
+	      try {
+	        // 确保任何“刚改完的 agent/toolset”先落盘，否则后端读取到旧配置会导致工具缺失。
+	        await cfgStore.flushConfigSaves?.();
+
+        const actionLabel = outlineAnalysisActionLabel(meta.symbolKind);
+	        const convTitleRaw = `${actionLabel}:${meta.symbolName}`;
+	        const convTitle = convTitleRaw.length > 64 ? `${convTitleRaw.slice(0, 64)}…` : convTitleRaw;
+	        const conversation = await invoke<Conversation>('create_conversation', { title: convTitle });
+	        trackedRunConversationsRef.current.add(conversation.id);
+	        trackedConversationId = conversation.id;
+	        symbolAnalysisKeyByConversationIdRef.current.set(conversation.id, analysisKey);
+	        symbolAnalysisConversationIdByBubbleIdRef.current.set(bubbleId, conversation.id);
+
+	        // 若用户在创建会话期间点击了“中止”，则不再继续启动 run_task。
+		        if (cancelledSymbolAnalysisBubbleIdsRef.current.has(bubbleId)) {
+		          cancelledSymbolAnalysisBubbleIdsRef.current.delete(bubbleId);
+		          trackedRunConversationsRef.current.delete(conversation.id);
+		          symbolAnalysisKeyByConversationIdRef.current.delete(conversation.id);
+		          symbolAnalysisConversationIdByBubbleIdRef.current.delete(bubbleId);
+		          activeSymbolAnalysisKeysRef.current.delete(analysisKey);
+		          setAiBubbles((prev) => {
+		            const next = prev.map((b) =>
+		              b.id === bubbleId ? { ...b, status: 'error' as WorkstudioAiBubbleStatus, error: '已中止' } : b
+		            );
+		            aiBubblesRef.current = next;
+		            return next;
+		          });
+		          return;
+		        }
+
+	        // 绑定到当前 workstudio，确保工具默认 workdir/工作区提示词可用。
+	        await invoke('update_conversation_metadata', {
+	          conversationId: conversation.id,
+          agentName,
+          modelRef: modelRef || undefined,
+          runMode: 'chat',
+          thinkingMode: false,
+	          workstudioId,
+	        }).catch(() => { });
+
+		        // Attach conversation binding to this bubble (used by run:event listener + persistence).
+		        setAiBubbles((prev) => {
+		          const next = prev.map((b) =>
+		            b.id === bubbleId
+		              ? {
+		                ...b,
+		                conversationId: conversation.id,
+		                agentName,
+		                modelRef: modelRef || b.modelRef,
+		              }
+		              : b
+		          );
+		          aiBubblesRef.current = next;
+		          return next;
+		        });
+
+		        if (cancelledSymbolAnalysisBubbleIdsRef.current.has(bubbleId)) {
+		          cancelledSymbolAnalysisBubbleIdsRef.current.delete(bubbleId);
+		          trackedRunConversationsRef.current.delete(conversation.id);
+		          symbolAnalysisKeyByConversationIdRef.current.delete(conversation.id);
+		          symbolAnalysisConversationIdByBubbleIdRef.current.delete(bubbleId);
+		          activeSymbolAnalysisKeysRef.current.delete(analysisKey);
+		          setAiBubbles((prev) => {
+		            const next = prev.map((b) =>
+		              b.id === bubbleId ? { ...b, status: 'error' as WorkstudioAiBubbleStatus, error: '已中止' } : b
+		            );
+		            aiBubblesRef.current = next;
+		            return next;
+		          });
+		          return;
+		        }
+
+	        const userMessageId = crypto.randomUUID();
+	        const relPath = (() => {
+	          const main = normalizeFsPath(ws?.mainFolder ?? '');
+	          const fp = normalizeFsPath(meta.filePath);
+          if (main && fp.startsWith(main)) {
+            const trimmed = fp.slice(main.length).replace(/^\/+/, '');
+            return trimmed || basename(fp);
+          }
+          return fp;
+        })();
+
+        const userContent = [
+          `${bubble.prompt || outlineAnalysisPromptPreview(meta.symbolKind)}`,
+          '',
+          `languageId: ${meta.languageId}`,
+          `filePath: ${relPath}`,
+          `symbol: ${meta.symbolName} (${meta.symbolKind})`,
+          `location: ${meta.selectionLine}:${meta.selectionColumn}`,
+          '',
+          '你可以在需要时调用工具（read_file / list_dir / rg / web_search）来补齐上下文，但不要修改文件。',
+	          '',
+	          `\`\`\`${meta.languageId || 'text'}\n${code}\n\`\`\``,
+	        ].join('\n');
+
+	        await invoke('run_task', {
+          conversationId: conversation.id,
+          messageId: userMessageId,
+          content: userContent,
+          agentName,
+          modelRef: modelRef || undefined,
+          runMode: 'chat',
+          thinking: false,
+	          debugMode: cfgStore.config?.general?.debugMode ?? false,
+	        });
+	      } catch (err) {
+	        if (trackedConversationId) {
+	          trackedRunConversationsRef.current.delete(trackedConversationId);
+	          symbolAnalysisKeyByConversationIdRef.current.delete(trackedConversationId);
+	        }
+	        activeSymbolAnalysisKeysRef.current.delete(analysisKey);
+		        symbolAnalysisConversationIdByBubbleIdRef.current.delete(bubbleId);
+		        cancelledSymbolAnalysisBubbleIdsRef.current.delete(bubbleId);
+		        const message = err instanceof Error ? err.message : String(err);
+		        setAiBubbles((prev) => {
+		          const next = prev.map((b) =>
+		            b.id === bubbleId ? { ...b, status: 'error' as WorkstudioAiBubbleStatus, error: message } : b
+		          );
+		          aiBubblesRef.current = next;
+		          return next;
+		        });
+	      } finally {
+	        startingSymbolAnalysisBubbleIdsRef.current.delete(bubbleId);
+	      }
+    },
+    [
+      makeSymbolAnalysisCacheKey,
+      outlineAnalysisActionLabel,
+      outlineAnalysisPromptPreview,
+      workstudioId,
+      ws?.mainFolder,
+    ]
+  );
+
+  const scheduleSymbolAnalysisRuns = useCallback(() => {
+    if (!workstudioId) return;
+
+    const settings = useConfigStore.getState().config?.codeIntelligence?.symbolAnalysis;
+    const enabled = settings?.enabled !== false;
+    if (!enabled) {
+      const queued = aiBubblesRef.current.filter((b) => b.kind === 'symbol_analysis' && b.status === 'queued');
+      if (queued.length > 0) {
+        for (const b of queued) {
+          const meta = b.analysisMeta;
+          if (!meta) continue;
+          const analysisKey = makeSymbolAnalysisCacheKey(meta.filePath, meta.symbolKey);
+          activeSymbolAnalysisKeysRef.current.delete(analysisKey);
+        }
+        setAiBubbles((prev) =>
+          prev.map((b) =>
+            b.kind === 'symbol_analysis' && b.status === 'queued'
+              ? { ...b, status: 'error', error: '符号分析已关闭：请在设置中启用后再试' }
+              : b
+          )
+        );
+      }
+      return;
+    }
+
+    const pool = buildSymbolAnalysisAgentPool();
+    if (pool.length === 0) return;
+
+    const RUNNING_STATUSES: WorkstudioAiBubbleStatus[] = ['connecting', 'thinking', 'streaming', 'tool_calling'];
+    const activeCountByAgentName = new Map<string, number>();
+    for (const b of aiBubblesRef.current) {
+      if (b.kind !== 'symbol_analysis') continue;
+      if (!RUNNING_STATUSES.includes(b.status)) continue;
+      const agentName = String(b.agentName ?? '').trim();
+      if (!agentName) continue;
+      activeCountByAgentName.set(agentName, (activeCountByAgentName.get(agentName) ?? 0) + 1);
+    }
+
+    const queued = aiBubblesRef.current.filter((b) => b.kind === 'symbol_analysis' && b.status === 'queued');
+    if (queued.length === 0) return;
+
+    const freeSlots = pool.map((p) => p.concurrency - (activeCountByAgentName.get(p.agentName) ?? 0));
+    const hasAnyFreeSlot = freeSlots.some((v) => v > 0);
+    if (!hasAnyFreeSlot) return;
+
+    let cursor = symbolAnalysisRoundRobinCursorRef.current % pool.length;
+    let queueIdx = 0;
+
+    while (queueIdx < queued.length) {
+      let agentIdx = -1;
+      for (let i = 0; i < pool.length; i++) {
+        const idx = (cursor + i) % pool.length;
+        if ((freeSlots[idx] ?? 0) > 0) {
+          agentIdx = idx;
+          break;
+        }
+      }
+      if (agentIdx === -1) break;
+
+      const bubble = queued[queueIdx]!;
+      queueIdx += 1;
+
+      if (startingSymbolAnalysisBubbleIdsRef.current.has(bubble.id)) continue;
+      // 必要信息校验留给 startQueuedSymbolAnalysis 处理（它会标记 error 并释放锁）。
+
+      freeSlots[agentIdx] = (freeSlots[agentIdx] ?? 0) - 1;
+      cursor = (agentIdx + 1) % pool.length;
+      void startQueuedSymbolAnalysis(bubble.id, pool[agentIdx]!.agentName);
+    }
+
+    symbolAnalysisRoundRobinCursorRef.current = cursor;
+  }, [buildSymbolAnalysisAgentPool, makeSymbolAnalysisCacheKey, startQueuedSymbolAnalysis, workstudioId]);
+
+  useEffect(() => {
+    scheduleSymbolAnalysisRunsRef.current = scheduleSymbolAnalysisRuns;
+  }, [scheduleSymbolAnalysisRuns]);
+
+  useEffect(() => {
+    scheduleSymbolAnalysisRuns();
+  }, [codeIntelligenceConfig?.symbolAnalysis, scheduleSymbolAnalysisRuns]);
+
+  // 调度触发：当队列数量变化、或活跃任务数量变化时，尝试拉起新的 queued 任务。
+  // 依赖 queued/active 的“计数”，避免 streaming token 导致每次渲染都触发调度。
+  useEffect(() => {
+    if (!workstudioId) return;
+    if (symbolAnalysisQueuedCount <= 0) return;
+    scheduleSymbolAnalysisRuns();
+  }, [scheduleSymbolAnalysisRuns, symbolAnalysisActiveCount, symbolAnalysisQueuedCount, workstudioId]);
+
   const runOutlineSymbolAnalysis = useCallback(
     async (filePath: string, languageId: string, item: OutlineItem) => {
       if (!workstudioId) return;
+      const enabled = useConfigStore.getState().config?.codeIntelligence?.symbolAnalysis?.enabled !== false;
+      if (!enabled) {
+        throw new Error('符号分析已关闭：请在“设置 -> 代码智能 -> 符号分析”中启用');
+      }
+
       const file = activeTextFileInFocusedPane;
       if (!file || file.path !== filePath) {
         throw new Error('当前焦点文件已变化，请重新打开 Outline 并再试一次');
+      }
+
+      const analysisKey = makeSymbolAnalysisCacheKey(filePath, item.key);
+      if (activeSymbolAnalysisKeysRef.current.has(analysisKey)) {
+        throw new Error('该符号正在分析中（或已在队列中），请稍后再试');
       }
 
       const content = String(file.content ?? '');
@@ -3091,8 +4117,9 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         code = `${code.slice(0, maxChars)}\n…（已截断）`;
       }
 
-      const actionLabel = outlineAnalysisActionLabel(item.kind);
-      const promptPreview = outlineAnalysisPromptPreview(item.kind);
+      const symbolKind = normalizeOutlineKind(item.kind);
+      const actionLabel = outlineAnalysisActionLabel(symbolKind);
+      const promptPreview = outlineAnalysisPromptPreview(symbolKind);
       const id = crypto.randomUUID();
       const createdAt = new Date().toISOString();
       const displayName = `${actionLabel}：${item.name}`;
@@ -3105,52 +4132,181 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         name,
         subtitle,
         prompt: promptPreview,
-        status: 'connecting',
+        status: 'queued',
         createdAt,
+        analysisMeta: {
+          workstudioId,
+          languageId,
+          filePath,
+          symbolKey: item.key,
+          symbolName: item.name,
+          symbolKind,
+          selectionLine: item.selectionLine,
+          selectionColumn: item.selectionColumn,
+          range: item.range,
+        },
+        analysisCode: code,
       };
+      activeSymbolAnalysisKeysRef.current.add(analysisKey);
       setAiBubbles((prev) => [...prev, bubble]);
-
-      try {
-        const symbolKind = normalizeOutlineKind(item.kind);
-        // Use the new streaming command — the `workstudio:agent:event` listener
-        // (set up in the useEffect above) will update this bubble's state in real-time.
-        // We invoke with the configured symbolAnalysis agent or fallback to __system_symbol_analysis
-        const runId = await invoke<string>('workstudio_run_agent_stream', {
-          args: {
-            workstudioId,
-            agentName: codeIntelligenceConfig?.symbolAnalysis?.agentRef || '__system_symbol_analysis',
-            languageId,
-            filePath,
-            symbolKey: item.key,
-            symbolName: item.name,
-            symbolKind,
-            code,
-            userInput: `请分析这段 ${symbolKind} 代码的结构、参数、返回类型和核心逻辑。`,
-          },
-        });
-        // The run_id returned by the backend is used to correlate events.
-        // We rename the bubble id to match run_id so the listener can find it.
-        setAiBubbles((prev) =>
-          prev.map((b) => (b.id === id ? { ...b, id: runId } : b))
-        );
-        // If aiViewerId was pointing to this bubble, update that too
-        setAiViewerId((prev) => (prev === id ? runId : prev));
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        setAiBubbles((prev) =>
-          prev.map((b) => (b.id === id ? { ...b, status: 'error', error: message } : b))
-        );
-      }
     },
     [
       activeTextFileInFocusedPane,
       extractTextFromOutlineRange,
-      makeSymbolAnalysisCacheKey,
       outlineAnalysisActionLabel,
       outlineAnalysisPromptPreview,
+      makeSymbolAnalysisCacheKey,
       workstudioId,
     ]
   );
+
+  const runOutlineAnalyzeAll = useCallback(async () => {
+    if (!workstudioId) return;
+    const settings = useConfigStore.getState().config?.codeIntelligence?.symbolAnalysis ?? null;
+    if (settings?.enabled !== true) {
+      showNavToast('符号分析已关闭：请先在设置中启用');
+      return;
+    }
+
+    const file = activeTextFileInFocusedPane;
+    if (!file || file.kind !== 'text') {
+      showNavToast('当前无可解析的文本文件');
+      return;
+    }
+    if (outlineItems.length === 0) {
+      showNavToast('Outline 为空：没有可解析的符号');
+      return;
+    }
+
+    const bulkExcludeVariables = settings?.bulkExcludeVariables !== false;
+    const flat = flattenOutlineItems(outlineItems);
+    const targets = flat.filter((item) => {
+      const kind = normalizeOutlineKind(item.kind);
+      if (bulkExcludeVariables && OUTLINE_VALUE_KINDS.has(kind)) return false;
+      return true;
+    });
+
+    if (targets.length === 0) {
+      showNavToast(bulkExcludeVariables ? '没有可解析的符号（已跳过变量/字段）' : '没有可解析的符号');
+      return;
+    }
+
+    const prompt = [
+      `将对当前文件的 ${targets.length} 个符号执行“全部解析”${bulkExcludeVariables ? '（已跳过变量/字段）' : ''}。`,
+      '',
+      '这会发起大量模型请求，可能耗时较长并产生费用。',
+      '继续？',
+    ].join('\n');
+    if (!confirm(prompt)) return;
+
+    const filePath = file.path;
+    const languageId = activeTextLanguageId || languageForPath(filePath);
+    let enqueued = 0;
+
+    for (let i = 0; i < targets.length; i++) {
+      const item = targets[i]!;
+      try {
+        await runOutlineSymbolAnalysis(filePath, languageId, item);
+        enqueued += 1;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        // 文件切换时，避免继续批量入队。
+        if (message.includes('当前焦点文件已变化')) {
+          showNavToast('文件已切换：已停止批量解析');
+          break;
+        }
+        // 其它错误（例如已在队列中）跳过即可。
+      }
+
+      // 避免一次性入队过多导致 UI 卡顿
+      if (i > 0 && i % 24 === 0) {
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((r) => setTimeout(r, 0));
+      }
+    }
+
+    showNavToast(`已加入解析队列：${enqueued}/${targets.length}`);
+  }, [activeTextFileInFocusedPane, activeTextLanguageId, outlineItems, runOutlineSymbolAnalysis, showNavToast, workstudioId]);
+
+  const toWorkstudioRelativePath = useCallback(
+    (absFilePath: string) => {
+      const main = normalizeFsPath(ws?.mainFolder ?? '');
+      const fp = normalizeFsPath(absFilePath);
+      if (main && fp.startsWith(main)) {
+        const trimmed = fp.slice(main.length).replace(/^\/+/, '');
+        return trimmed || basename(fp);
+      }
+      return fp;
+    },
+    [ws?.mainFolder]
+  );
+
+  const buildWorkstudioSymbolAnalysisRichTextDoc = useCallback(
+    (
+      analysis: Pick<
+        WorkstudioSymbolAnalysis,
+        | 'id'
+        | 'filePath'
+        | 'selectionLine'
+        | 'selectionColumn'
+        | 'symbolName'
+        | 'languageId'
+        | 'symbolKind'
+        | 'modelRef'
+        | 'latencyMs'
+        | 'updatedAt'
+        | 'answerMd'
+      >
+    ): string => {
+      const generatedAt = new Date().toISOString();
+      const relPath = toWorkstudioRelativePath(analysis.filePath);
+      const fileRef = `${relPath}#L${analysis.selectionLine}C${analysis.selectionColumn}`;
+
+      const lines: string[] = [];
+      lines.push(
+        `<!-- tauri.richtxt v1 | kind=workstudio_symbol_analysis | generatedAt=${generatedAt} | analysisId=${analysis.id} -->`
+      );
+      lines.push('');
+      lines.push(`# 符号分析：${analysis.symbolName}`);
+      lines.push('');
+      lines.push(`- 生成时间：\`${generatedAt}\``);
+      lines.push(`- 位置：\`${fileRef}\``);
+      lines.push(`- 语言：\`${analysis.languageId}\``);
+      lines.push(`- 类型：\`${analysis.symbolKind}\``);
+      if (analysis.modelRef) lines.push(`- 模型：\`${analysis.modelRef}\``);
+      if (typeof analysis.latencyMs === 'number') lines.push(`- 延迟：\`${analysis.latencyMs}ms\``);
+      lines.push(`- 更新时间：\`${analysis.updatedAt}\``);
+      lines.push('');
+      lines.push('---');
+      lines.push('');
+      lines.push((analysis.answerMd ?? '').trim());
+      lines.push('');
+      return lines.join('\n').trim() + '\n';
+    },
+    [toWorkstudioRelativePath]
+  );
+
+  const openVirtualRichTextFile = useCallback((title: string, content: string) => {
+    const id = crypto.randomUUID();
+    const tabTitle = title.length > 48 ? `${title.slice(0, 48)}…` : title;
+    const virtualPath = `__analysis__/${id}.tauri.richtxt`;
+
+    setOpenFiles((prev) => {
+      if (prev.some((f) => f.id === id)) return prev;
+      const newFile: OpenFile = {
+        id,
+        title: tabTitle,
+        path: virtualPath,
+        kind: 'markdown',
+        mime: 'text/markdown',
+        size: new TextEncoder().encode(content).length,
+        content,
+      };
+      return [...prev, newFile];
+    });
+
+    useWindowLayoutStore.getState().openTabInFocusedPane(id);
+  }, []);
 
 
   const viewOutlineSymbolAnalysis = useCallback(
@@ -3162,30 +4318,18 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         return;
       }
 
-      const id = crypto.randomUUID();
       const nameBase = `查看分析：${item.name}`;
       const name = nameBase.length > 32 ? `${nameBase.slice(0, 32)}…` : nameBase;
-      const virtualPath = `__analysis__/${id}.md`;
-      const tabTitle = name;
-
-      setOpenFiles((prev) => {
-        if (prev.some((f) => f.id === id)) return prev;
-        const newFile: OpenFile = {
-          id,
-          title: tabTitle,
-          path: virtualPath,
-          kind: 'markdown',
-          mime: 'text/markdown',
-          size: new TextEncoder().encode(res.answerMd).length,
-          content: res.answerMd,
-        };
-        return [...prev, newFile];
-      });
-
-      // Show in pane
-      useWindowLayoutStore.getState().openTabInFocusedPane(id);
+      const content = buildWorkstudioSymbolAnalysisRichTextDoc(res);
+      openVirtualRichTextFile(name, content);
     },
-    [ensureSymbolAnalysis, showNavToast, workstudioId]
+    [
+      buildWorkstudioSymbolAnalysisRichTextDoc,
+      ensureSymbolAnalysis,
+      openVirtualRichTextFile,
+      showNavToast,
+      workstudioId,
+    ]
   );
 
   const deleteOutlineSymbolAnalysis = useCallback(
@@ -3247,6 +4391,11 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const renderOutlineNodes = (nodes: OutlineItem[], depth = 0): React.ReactNode =>
     nodes.map((item) => {
       const active = outlineActiveKey === item.key;
+      const filePath = activeTextFileInFocusedPane?.path ?? '';
+      const analysisCacheKey = filePath ? makeSymbolAnalysisCacheKey(filePath, item.key) : '';
+      const hasAnalysis = analysisCacheKey
+        ? Boolean(symbolAnalysisCache[analysisCacheKey])
+        : false;
       const hasChildren = item.children.length > 0;
       const collapsed = hasChildren && outlineCollapsedKeys.has(item.key);
       return (
@@ -3276,7 +4425,15 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
               onClick={() => jumpToOutlineItem(item)}
               onContextMenu={(e) => openOutlineItemMenu(e, item)}
             >
-              <span className="min-w-0 flex-1 truncate font-medium">{item.name}</span>
+              <span
+                className={[
+                  'min-w-0 flex-1 truncate font-medium',
+                  hasAnalysis && !active ? 'text-emerald-700 dark:text-emerald-300' : '',
+                ].join(' ')}
+                title={hasAnalysis ? '已保存分析结果' : undefined}
+              >
+                {item.name}
+              </span>
               <span className="shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-gray-500 dark:bg-gray-800 dark:text-gray-400">
                 {item.kind}
               </span>
@@ -6310,21 +7467,103 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       )}
       {aiBubbles.length > 0 && (
         <div className="fixed bottom-4 right-4 z-[210] flex max-w-[360px] flex-col items-end gap-2">
-          {aiBubbles.map((b) => {
-            const ACTIVE_STATUSES: WorkstudioAiBubbleStatus[] = ['queued', 'connecting', 'thinking', 'streaming', 'tool_calling'];
-            const isActive = ACTIVE_STATUSES.includes(b.status);
-            const isClickable = !isActive;
-            return (
-              <button
-                key={b.id}
-                type="button"
-                disabled={!isClickable}
-                onClick={() => isClickable && openAiViewer(b.id)}
-                className={[
-                  'flex w-full items-center gap-2 rounded-xl border px-3 py-2 text-left shadow-sm',
-                  'bg-white/95 hover:bg-white disabled:opacity-70 dark:bg-gray-950/90 dark:hover:bg-gray-950',
-                  'border-gray-200 dark:border-gray-800',
-                  isClickable ? 'cursor-pointer' : 'cursor-default',
+	          {aiBubbles.map((b) => {
+	            const ACTIVE_STATUSES: WorkstudioAiBubbleStatus[] = ['queued', 'connecting', 'thinking', 'streaming', 'tool_calling'];
+	            const isActive = ACTIVE_STATUSES.includes(b.status);
+	            return (
+	              <button
+	                key={b.id}
+	                type="button"
+	                onClick={() => {
+	                  const isTerminalState = b.status === 'done' || b.status === 'error';
+	                  if (b.kind === 'symbol_analysis' && isTerminalState) {
+	                    void (async () => {
+	                      try {
+	                        const meta = b.analysisMeta ?? null;
+	                        if (!meta) {
+	                          throw new Error('缺少符号分析元信息，无法打开结果');
+	                        }
+
+	                        let loaded: WorkstudioSymbolAnalysis | null = null;
+	                        try {
+	                          loaded = await ensureSymbolAnalysis(meta.filePath, meta.symbolKey);
+	                        } catch {
+	                          loaded = null;
+	                        }
+
+	                        const answerFromBlocks = (() => {
+	                          const blocks = b.blocks ?? [];
+	                          const textBlocks = blocks.filter((blk) => blk.type === 'text');
+	                          if (textBlocks.length === 0) return null;
+	                          const finalBlock =
+	                            textBlocks.find((blk) => String(blk.id ?? '').endsWith(':assistant_text:final')) ??
+	                            textBlocks[textBlocks.length - 1] ??
+	                            null;
+	                          return typeof finalBlock?.text === 'string' ? finalBlock.text : null;
+	                        })();
+
+	                        const answerMd =
+	                          loaded?.answerMd ??
+	                          answerFromBlocks ??
+	                          (b.status === 'error'
+	                            ? `**错误**\n\n\`\`\`text\n${b.error || '未知错误'}\n\`\`\`\n`
+	                            : '');
+
+	                        if (!answerMd.trim()) {
+	                          showNavToast('暂无可打开的分析内容');
+	                          openAiViewer(b.id);
+	                          return;
+	                        }
+
+	                        const docInput: Pick<
+	                          WorkstudioSymbolAnalysis,
+	                          | 'id'
+	                          | 'filePath'
+	                          | 'selectionLine'
+	                          | 'selectionColumn'
+	                          | 'symbolName'
+	                          | 'languageId'
+	                          | 'symbolKind'
+	                          | 'modelRef'
+	                          | 'latencyMs'
+	                          | 'updatedAt'
+	                          | 'answerMd'
+	                        > = loaded ?? {
+	                          id: crypto.randomUUID(),
+	                          filePath: meta.filePath,
+	                          languageId: meta.languageId,
+	                          symbolName: meta.symbolName,
+	                          symbolKind: meta.symbolKind,
+	                          selectionLine: meta.selectionLine,
+	                          selectionColumn: meta.selectionColumn,
+	                          answerMd,
+	                          modelRef: b.modelRef,
+	                          latencyMs: b.latencyMs,
+	                          updatedAt: new Date().toISOString(),
+	                        };
+
+	                        const content = buildWorkstudioSymbolAnalysisRichTextDoc(docInput);
+	                        openVirtualRichTextFile(`分析：${meta.symbolName}`, content);
+
+	                        // 打开后移除气泡，避免堆积（分析结果可随时通过 Outline -> 查看分析 再次打开）
+	                        if (aiViewerId === b.id) setAiViewerId(null);
+	                        setAiBubbles((prev) => prev.filter((x) => x.id !== b.id));
+	                      } catch (err) {
+	                        const message = err instanceof Error ? err.message : String(err);
+	                        showNavToast(message);
+	                        openAiViewer(b.id);
+	                      }
+	                    })();
+	                    return;
+	                  }
+
+	                  openAiViewer(b.id);
+	                }}
+	                className={[
+	                  'flex w-full items-center gap-2 rounded-xl border px-3 py-2 text-left shadow-sm',
+	                  'bg-white/95 hover:bg-white disabled:opacity-70 dark:bg-gray-950/90 dark:hover:bg-gray-950',
+	                  'border-gray-200 dark:border-gray-800',
+                  'cursor-pointer',
                 ].join(' ')}
                 title={b.subtitle}
               >
@@ -6337,17 +7576,13 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                   <div className="truncate text-xs font-semibold text-gray-800 dark:text-gray-100">
                     {b.name}
                   </div>
-                  <div className="truncate text-[11px] text-gray-500 dark:text-gray-400">
-                    {isActive
-                      ? b.status === 'thinking' ? '正在思考…'
-                        : b.status === 'tool_calling' ? '调用工具…'
-                          : '请求中…'
-                      : b.status === 'done' ? '完成，点击查看' : '失败，点击查看'}
-                  </div>
-                </div>
-                {b.kind === 'symbol_analysis' ? (
-                  <ListTree size={14} className="shrink-0 opacity-60" />
-                ) : (
+	                  <div className="truncate text-[11px] text-gray-500 dark:text-gray-400">
+	                    {describeWorkstudioAiBubbleStatus(b.status)}
+	                  </div>
+	                </div>
+	                {b.kind === 'symbol_analysis' ? (
+	                  <ListTree size={14} className="shrink-0 opacity-60" />
+	                ) : (
                   <MessageSquare size={14} className="shrink-0 opacity-60" />
                 )}
               </button>
@@ -6440,7 +7675,55 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                   <button
                     type="button"
                     className="rounded px-2 py-1 text-[11px] font-semibold text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20"
-                    onClick={() => isTauri() && invoke('workstudio_abort_agent', { runId: aiViewer.id }).catch(() => { })}
+                    onClick={() => {
+                      if (!isTauri()) return;
+                      const bubbleId = aiViewer.id;
+
+                      if (aiViewer.kind === 'symbol_analysis') {
+                        // 符号分析使用 run_task/run:event：优先用 conversationId 走 abort_run。
+                        cancelledSymbolAnalysisBubbleIdsRef.current.add(bubbleId);
+
+                        const convIdDirect = (aiViewer.conversationId ?? '').trim();
+                        const convIdFromMap = String(
+                          symbolAnalysisConversationIdByBubbleIdRef.current.get(bubbleId) ?? ''
+                        ).trim();
+                        const convId = convIdDirect || convIdFromMap;
+
+                        if (convId) {
+                          void invoke('abort_run', { conversationId: convId }).catch(() => {});
+                          return;
+                        }
+
+                        const bubble = aiBubblesRef.current.find((b) => b.id === bubbleId) ?? null;
+                        if (bubble?.status === 'queued') {
+                          // 还没创建会话：本地直接中止，避免队列里“卡住”。
+                          cancelledSymbolAnalysisBubbleIdsRef.current.delete(bubbleId);
+                          if (bubble.analysisMeta) {
+                            const analysisKey = makeSymbolAnalysisCacheKey(
+                              bubble.analysisMeta.filePath,
+                              bubble.analysisMeta.symbolKey
+                            );
+                            activeSymbolAnalysisKeysRef.current.delete(analysisKey);
+                          }
+                        }
+
+                        setAiBubbles((prev) => {
+	                          const next = prev.map((b) =>
+	                            b.id === bubbleId
+	                              ? { ...b, status: 'error' as WorkstudioAiBubbleStatus, error: '已中止' }
+	                              : b
+	                          );
+	                          aiBubblesRef.current = next;
+	                          return next;
+	                        });
+                        scheduleSymbolAnalysisRunsRef.current?.();
+                        return;
+                      }
+
+                      const convId = (aiViewer.conversationId ?? '').trim();
+                      if (convId) void invoke('abort_run', { conversationId: convId }).catch(() => {});
+                      else void invoke('workstudio_abort_agent', { runId: aiViewer.id }).catch(() => {});
+                    }}
                   >
                     中止
                   </button>
@@ -6468,61 +7751,97 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                 </div>
               </details>
 
-              {/* Thinking (collapsible) */}
-              {aiViewer.thinking && (
-                <details open={false}>
-                  <summary className="flex cursor-pointer select-none items-center gap-1.5 text-[11px] font-medium text-purple-600 dark:text-purple-400 hover:text-purple-700">
-                    <Loader2 size={11} className={['animate-spin', aiViewer.status === 'thinking' ? '' : 'hidden'].join(' ')} />
-                    思考过程 ({aiViewer.thinking.length} 字符)
-                  </summary>
-                  <div className="mt-1 rounded-lg bg-purple-50/50 px-3 py-2 text-[12px] text-purple-900 dark:bg-purple-900/10 dark:text-purple-200 border border-purple-100 dark:border-purple-800/30 font-mono whitespace-pre-wrap break-words max-h-48 overflow-y-auto">
-                    {aiViewer.thinking}
-                  </div>
-                </details>
-              )}
+              {/* run_task bubbles：复用 ChatView 的 blocks 渲染（含工具/审批/多 turn） */}
+              {aiViewer.conversationId ? (
+                <div>
+                  <div className="mb-1 text-[11px] font-medium text-gray-600 dark:text-gray-300">
+	                    {aiViewer.kind === 'symbol_analysis' ? '分析结果' : '回答'}
+	                    {['queued', 'connecting', 'thinking', 'streaming', 'tool_calling'].includes(aiViewer.status) && (
+	                      <span className="ml-1.5 inline-flex items-center gap-1 text-blue-500">
+	                        <Loader2 size={10} className="animate-spin" />
+	                        {describeWorkstudioAiBubbleStatus(aiViewer.status)}
+	                      </span>
+	                    )}
+	                  </div>
 
-              {/* Tool calls */}
-              {aiViewer.toolCalls && aiViewer.toolCalls.length > 0 && (
-                <details open={aiViewer.status === 'tool_calling'}>
-                  <summary className="flex cursor-pointer select-none items-center gap-1.5 text-[11px] font-medium text-amber-600 dark:text-amber-400">
-                    <Loader2 size={11} className={['animate-spin', aiViewer.status === 'tool_calling' ? '' : 'hidden'].join(' ')} />
-                    工具调用 ({aiViewer.toolCalls.length})
-                  </summary>
-                  <div className="mt-1 space-y-1.5">
-                    {aiViewer.toolCalls.map((tc) => (
-                      <div key={tc.id} className="rounded-lg border border-amber-200 bg-amber-50/50 dark:border-amber-800/30 dark:bg-amber-900/10 px-3 py-2">
-                        <div className="text-[11px] font-semibold text-amber-700 dark:text-amber-300">{tc.name}</div>
-                        <pre className="mt-0.5 text-[11px] text-amber-900 dark:text-amber-200 whitespace-pre-wrap break-words opacity-80">{tc.arguments}</pre>
-                        {tc.result && (
-                          <pre className="mt-1 border-t border-amber-200 dark:border-amber-800/30 pt-1 text-[11px] text-green-800 dark:text-green-300 whitespace-pre-wrap break-words">{tc.result}</pre>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </details>
-              )}
-
-              {/* Main answer */}
-              <div>
-                <div className="mb-1 text-[11px] font-medium text-gray-600 dark:text-gray-300">
-                  {aiViewer.kind === 'symbol_analysis' ? '分析结果' : '回答'}
-                  {['queued', 'connecting', 'thinking', 'streaming', 'tool_calling'].includes(aiViewer.status) && (
-                    <span className="ml-1.5 inline-flex items-center gap-1 text-blue-500">
-                      <Loader2 size={10} className="animate-spin" />
-                      {aiViewer.status === 'thinking' ? '思考中…' : aiViewer.status === 'tool_calling' ? '调用工具…' : '生成中…'}
-                    </span>
-                  )}
-                </div>
-                <div className="rounded-lg border border-gray-200 bg-white px-3 py-2 dark:border-gray-800 dark:bg-gray-950">
-                  {aiViewer.status === 'error' ? (
-                    <pre className="whitespace-pre-wrap break-words text-xs text-red-700 dark:text-red-300">
+                  {aiViewer.status === 'error' && (!aiViewer.blocks || aiViewer.blocks.length === 0) ? (
+                    <pre className="whitespace-pre-wrap break-words rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-red-700 dark:border-gray-800 dark:bg-gray-950 dark:text-red-300">
                       {aiViewer.error || '未知错误'}
                     </pre>
+                  ) : aiViewer.blocks && aiViewer.blocks.length > 0 ? (
+                    <MessageBlocks
+                      blocks={aiViewer.blocks}
+                      conversationId={aiViewer.conversationId}
+                      isStreaming={['queued', 'connecting', 'thinking', 'streaming', 'tool_calling'].includes(aiViewer.status)}
+                      messageSource="live"
+                      turns={aiViewer.turns}
+                      assistantMessageId={aiViewer.assistantMessageId}
+                    />
                   ) : (
-                    <DeferredMarkdown content={aiViewer.answer || ''} conversationId={null} minDelayMs={120} />
+                    <div className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-gray-500 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-400">
+                      暂无输出…
+                    </div>
                   )}
                 </div>
-              </div>
+              ) : (
+                <>
+                  {/* Thinking (collapsible) */}
+                  {aiViewer.thinking && (
+                    <details open={false}>
+                      <summary className="flex cursor-pointer select-none items-center gap-1.5 text-[11px] font-medium text-purple-600 dark:text-purple-400 hover:text-purple-700">
+                        <Loader2 size={11} className={['animate-spin', aiViewer.status === 'thinking' ? '' : 'hidden'].join(' ')} />
+                        思考过程 ({aiViewer.thinking.length} 字符)
+                      </summary>
+                      <div className="mt-1 rounded-lg bg-purple-50/50 px-3 py-2 text-[12px] text-purple-900 dark:bg-purple-900/10 dark:text-purple-200 border border-purple-100 dark:border-purple-800/30 font-mono whitespace-pre-wrap break-words max-h-48 overflow-y-auto">
+                        {aiViewer.thinking}
+                      </div>
+                    </details>
+                  )}
+
+                  {/* Tool calls */}
+                  {aiViewer.toolCalls && aiViewer.toolCalls.length > 0 && (
+                    <details open={aiViewer.status === 'tool_calling'}>
+                      <summary className="flex cursor-pointer select-none items-center gap-1.5 text-[11px] font-medium text-amber-600 dark:text-amber-400">
+                        <Loader2 size={11} className={['animate-spin', aiViewer.status === 'tool_calling' ? '' : 'hidden'].join(' ')} />
+                        工具调用 ({aiViewer.toolCalls.length})
+                      </summary>
+                      <div className="mt-1 space-y-1.5">
+                        {aiViewer.toolCalls.map((tc) => (
+                          <div key={tc.id} className="rounded-lg border border-amber-200 bg-amber-50/50 dark:border-amber-800/30 dark:bg-amber-900/10 px-3 py-2">
+                            <div className="text-[11px] font-semibold text-amber-700 dark:text-amber-300">{tc.name}</div>
+                            <pre className="mt-0.5 text-[11px] text-amber-900 dark:text-amber-200 whitespace-pre-wrap break-words opacity-80">{tc.arguments}</pre>
+                            {tc.result && (
+                              <pre className="mt-1 border-t border-amber-200 dark:border-amber-800/30 pt-1 text-[11px] text-green-800 dark:text-green-300 whitespace-pre-wrap break-words">{tc.result}</pre>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  )}
+
+                  {/* Main answer */}
+                  <div>
+                    <div className="mb-1 text-[11px] font-medium text-gray-600 dark:text-gray-300">
+	                      {aiViewer.kind === 'symbol_analysis' ? '分析结果' : '回答'}
+	                      {['queued', 'connecting', 'thinking', 'streaming', 'tool_calling'].includes(aiViewer.status) && (
+	                        <span className="ml-1.5 inline-flex items-center gap-1 text-blue-500">
+	                          <Loader2 size={10} className="animate-spin" />
+	                          {describeWorkstudioAiBubbleStatus(aiViewer.status)}
+	                        </span>
+	                      )}
+	                    </div>
+                    <div className="rounded-lg border border-gray-200 bg-white px-3 py-2 dark:border-gray-800 dark:bg-gray-950">
+                      {aiViewer.status === 'error' ? (
+                        <pre className="whitespace-pre-wrap break-words text-xs text-red-700 dark:text-red-300">
+                          {aiViewer.error || '未知错误'}
+                        </pre>
+                      ) : (
+                        <DeferredMarkdown content={aiViewer.answer || ''} conversationId={null} minDelayMs={120} />
+                      )}
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
 
             {/* Footer */}
@@ -6619,6 +7938,28 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                         : '当前无文本文件'}
                     </div>
                   </div>
+                  <button
+                    type="button"
+                    className="rounded border border-gray-200 px-2 py-1 text-[11px] font-semibold text-gray-600 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+                    disabled={
+                      !codeIntelligenceConfig?.symbolAnalysis?.enabled ||
+                      !activeTextFileInFocusedPane ||
+                      outlineItems.length === 0 ||
+                      outlineLoading
+                    }
+                    onClick={() => void runOutlineAnalyzeAll()}
+                    title={
+                      !codeIntelligenceConfig?.symbolAnalysis?.enabled
+                        ? '请先在“设置 -> 代码智能 -> 符号分析”中启用'
+                        : outlineItems.length === 0
+                          ? 'Outline 为空：没有可解析的符号'
+                          : `批量解析当前文件的全部符号（${
+                            codeIntelligenceConfig?.symbolAnalysis?.bulkExcludeVariables !== false ? '跳过变量/字段' : '包含变量/字段'
+                          }）`
+                    }
+                  >
+                    全部解析
+                  </button>
                   <button
                     type="button"
                     className="rounded border border-gray-200 p-1 text-gray-500 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
@@ -7492,8 +8833,31 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           style={{ left: outlineMenu.x, top: outlineMenu.y }}
           onMouseDown={(e) => e.stopPropagation()}
         >
-          <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400 truncate" title={outlineMenu.item.name}>
-            {outlineMenu.item.name}
+          {(() => {
+	            const busyStatus = getActiveSymbolAnalysisStatus(outlineMenu.filePath, outlineMenu.item.key);
+	            const isBusy = Boolean(busyStatus);
+	            const actionLabel = outlineMenu.analysis ? '重新分析' : outlineAnalysisActionLabel(outlineMenu.item.kind);
+	            const statusTag = (() => {
+	              switch (busyStatus) {
+	                case 'queued':
+	                  return '（排队中）';
+	                case 'connecting':
+	                  return '（连接中）';
+	                case 'thinking':
+	                  return '（思考中）';
+	                case 'tool_calling':
+	                  return '（调用工具）';
+	                case 'streaming':
+	                  return '（生成中）';
+	                default:
+	                  return '';
+	              }
+	            })();
+
+	            return (
+	              <>
+	          <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400 truncate" title={outlineMenu.item.name}>
+	            {outlineMenu.item.name}
             <span className="ml-2 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-gray-500 dark:bg-gray-800 dark:text-gray-400">
               {normalizeOutlineKind(outlineMenu.item.kind)}
             </span>
@@ -7501,7 +8865,14 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           <div className="py-1 text-sm">
             <button
               type="button"
-              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+              disabled={isBusy}
+              title={isBusy ? '该符号正在分析中（或在队列中），请等待完成后再试' : undefined}
+              className={[
+                'w-full px-3 py-2 text-left',
+                isBusy
+                  ? 'cursor-not-allowed text-gray-400 dark:text-gray-600'
+                  : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800',
+              ].join(' ')}
               onClick={() => {
                 const menu = outlineMenu;
                 const hasExisting = Boolean(menu.analysis);
@@ -7520,7 +8891,14 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                 })();
               }}
             >
-              {outlineMenu.analysis ? '重新分析' : outlineAnalysisActionLabel(outlineMenu.item.kind)}
+              <span>{actionLabel}</span>
+              <span className="text-gray-400">：</span>
+              <span
+                className={outlineMenu.analysis ? 'text-emerald-700 dark:text-emerald-300' : ''}
+              >
+                {outlineMenu.item.name}
+              </span>
+              {statusTag ? <span className="ml-2 text-xs text-gray-400 dark:text-gray-600">{statusTag}</span> : null}
             </button>
 
             {outlineMenu.analysis === undefined ? (
@@ -7555,6 +8933,9 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
               <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">尚无分析结果</div>
             )}
           </div>
+              </>
+            );
+          })()}
         </div>
       )}
 

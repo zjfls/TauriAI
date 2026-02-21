@@ -1010,6 +1010,14 @@ pub struct Agent {
     /// - Some(...)：启用对应策略（例如 NormalCompact）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_policy: Option<ContextPolicyConfig>,
+
+    /// 是否在 Workstudio / Workspace AI 相关界面中展示该智能体（纯前端用途）。
+    ///
+    /// 说明：
+    /// - 这个字段不影响后端运行时的 agent 解析/执行逻辑；
+    /// - 仅用于前端把“聊天智能体”与“Workspace AI 智能体”分组展示与管理。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workstudio_enabled: Option<bool>,
 }
 
 impl Default for Agent {
@@ -1034,6 +1042,7 @@ impl Default for Agent {
             max_turns: None,
             reinject_thinking: false,
             context_policy: None,
+            workstudio_enabled: None,
         }
     }
 }
@@ -1668,6 +1677,21 @@ impl Default for AiCompletionSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SymbolAnalysisAgentBinding {
+    /// 绑定的智能体标识（Agent Name）
+    #[serde(default)]
+    pub agent_ref: String,
+    /// 该智能体的最大并发数（同一时间允许跑多少个符号分析任务）
+    #[serde(default = "default_symbol_analysis_concurrency")]
+    pub concurrency: u32,
+}
+
+fn default_symbol_analysis_concurrency() -> u32 {
+    2
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SymbolAnalysisSettings {
     /// 总开关：关闭后不请求模型
     #[serde(default)]
@@ -1675,6 +1699,15 @@ pub struct SymbolAnalysisSettings {
     /// 绑定的智能体标识（Agent Name），为空则回退到系统默认智能体
     #[serde(default)]
     pub agent_ref: String,
+    /// 默认绑定智能体的最大并发数
+    #[serde(default = "default_symbol_analysis_concurrency")]
+    pub concurrency: u32,
+    /// 附加智能体（用于多模型/多并发）
+    #[serde(default)]
+    pub additional_agents: Vec<SymbolAnalysisAgentBinding>,
+    /// “全部解析”是否跳过变量/字段（这些数量可能很多）。不影响右键单个符号分析。
+    #[serde(default = "default_true")]
+    pub bulk_exclude_variables: bool,
     /// 单次请求超时（毫秒）
     #[serde(default = "default_symbol_analysis_timeout_ms")]
     pub timeout_ms: u64,
@@ -1706,6 +1739,9 @@ impl Default for SymbolAnalysisSettings {
         Self {
             enabled: false,
             agent_ref: String::new(),
+            concurrency: default_symbol_analysis_concurrency(),
+            additional_agents: Vec::new(),
+            bulk_exclude_variables: true,
             timeout_ms: default_symbol_analysis_timeout_ms(),
             max_tokens: default_symbol_analysis_max_tokens(),
             temperature: default_symbol_analysis_temperature(),
@@ -2273,6 +2309,13 @@ impl AppConfig {
             }
         }
 
+        // Ensure built-in Workspace AI defaults exist (system agents + readonly toolset),
+        // so Workstudio features (符号分析/Chat With/补全) can run even before the user manually
+        // adds these agents into config.json.
+        if ensure_system_workspace_defaults(self) {
+            changed = true;
+        }
+
         changed
     }
 
@@ -2362,6 +2405,7 @@ impl AppConfig {
                 max_turns: None,
                 reinject_thinking: false,
                 context_policy: None,
+                workstudio_enabled: None,
             });
 
             // Set default agent
@@ -2412,6 +2456,196 @@ impl AppConfig {
         let model = provider.models.iter().find(|m| m.name == model_name)?;
         Some((provider, model, agent))
     }
+}
+
+fn ensure_system_workspace_defaults(cfg: &mut AppConfig) -> bool {
+    const TOOLSET_NAME: &str = "__system_workspace_readonly";
+
+    const AGENT_CODE_COMPLETION: &str = "__system_code_completion";
+    const AGENT_CHAT_WITH: &str = "__system_chat_with";
+    const AGENT_SYMBOL_ANALYSIS: &str = "__system_symbol_analysis";
+
+    let mut changed = false;
+
+    // 1) Toolset: safe read-only tools for Workstudio AI (no apply_patch / no exec).
+    if !cfg.tools.toolsets.iter().any(|t| t.name == TOOLSET_NAME) {
+        cfg.tools.toolsets.push(ToolSetConfig {
+            name: TOOLSET_NAME.to_string(),
+            tools: vec![
+                "read_file".to_string(),
+                "list_dir".to_string(),
+                "rg".to_string(),
+                "view_image".to_string(),
+                // Optional: only injected when enabled + configured.
+                "web_search".to_string(),
+            ],
+            persistance_shell_enhance: false,
+        });
+        changed = true;
+    }
+
+    let current_model_ref = cfg
+        .current_model_ref
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
+    // Helper to insert or patch system agents in-place (best-effort; do not overwrite user fields unless missing).
+    let mut ensure_agent = |name: &str,
+                            display_name: &str,
+                            description: &str,
+                            system_prompt: &str,
+                            toolset: Option<&str>| {
+        match cfg.agents.iter_mut().find(|a| a.name == name) {
+            Some(a) => {
+                // These are system fallback agents; keep them enabled and workspace-capable.
+                if !a.enabled {
+                    a.enabled = true;
+                    changed = true;
+                }
+                if !matches!(a.agent_type, AgentType::Tool) {
+                    a.agent_type = AgentType::Tool;
+                    changed = true;
+                }
+                if a.display_name.trim().is_empty() {
+                    a.display_name = display_name.to_string();
+                    changed = true;
+                }
+                if a.description.as_deref().unwrap_or("").trim().is_empty() {
+                    a.description = Some(description.to_string());
+                    changed = true;
+                }
+                if a.system_prompt.trim().is_empty() {
+                    a.system_prompt = system_prompt.to_string();
+                    changed = true;
+                }
+                if a.format_type == FormatPromptType::None {
+                    a.format_type = FormatPromptType::Chat;
+                    changed = true;
+                }
+                // Default run mode: keep it conservative (chat permission + tools).
+                if a.default_run_mode.as_deref().unwrap_or("").trim().is_empty() {
+                    a.default_run_mode = Some("chat".to_string());
+                    changed = true;
+                }
+                if a.workspace_support.is_none() {
+                    a.workspace_support = Some(true);
+                    changed = true;
+                }
+                if a.workstudio_enabled.is_none() {
+                    a.workstudio_enabled = Some(true);
+                    changed = true;
+                }
+                if a.model_ref.trim().is_empty() && !current_model_ref.is_empty() {
+                    a.model_ref = current_model_ref.clone();
+                    changed = true;
+                }
+                if let Some(ts) = toolset {
+                    let needs = a
+                        .toolset
+                        .as_deref()
+                        .map(|s| s.trim().is_empty())
+                        .unwrap_or(true);
+                    if needs {
+                        a.toolset = Some(ts.to_string());
+                        changed = true;
+                    }
+                }
+            }
+            None => {
+                cfg.agents.push(Agent {
+                    name: name.to_string(),
+                    enabled: true,
+                    agent_type: AgentType::Tool,
+                    display_name: display_name.to_string(),
+                    description: Some(description.to_string()),
+                    model_ref: if current_model_ref.is_empty() {
+                        String::new()
+                    } else {
+                        current_model_ref.clone()
+                    },
+                    system_prompt: system_prompt.to_string(),
+                    format_type: FormatPromptType::Chat,
+                    default_run_mode: Some("chat".to_string()),
+                    toolset: toolset.map(|s| s.to_string()),
+                    mcp_set: None,
+                    skill_set: None,
+                    security_policy: None,
+                    sandbox_policy: None,
+                    approval_policy: None,
+                    workspace_support: Some(true),
+                    max_turns: None,
+                    reinject_thinking: false,
+                    context_policy: None,
+                    workstudio_enabled: Some(true),
+                });
+                changed = true;
+            }
+        }
+    };
+
+    ensure_agent(
+        AGENT_CODE_COMPLETION,
+        "代码补全",
+        "为编辑器提供智能代码补全（InlineCompletion）服务",
+        r#"你是一个 IDE 里的代码补全引擎。
+
+你必须只输出一个 JSON 对象，且只能包含这些字段：
+{
+  "items": [
+    { "label": "短描述", "insertText": "要插入的文本" }
+  ]
+}
+
+严格规则：
+- 只输出 JSON，不要输出任何解释、注释、Markdown、代码块围栏（```）。
+- insertText 只包含“需要在光标处插入的内容”，不要重复 prefix，也不要包含 suffix。
+- 使用 \n 表示换行；不要输出 JSON 之外的任何字符。
+"#,
+        None,
+    );
+
+    ensure_agent(
+        AGENT_CHAT_WITH,
+        "代码对话（Chat With）",
+        "对选中代码片段进行问答的内联对话服务",
+        r#"你是 IDE 中的“内联代码问答助手”。
+
+你会收到：
+- 用户的问题
+- 一个“选中代码片段”（可能只是一部分，需要你自行推断上下文）
+- 一些元信息（languageId、filePath、projectRoot）
+
+请按用户问题直接作答，并遵循：
+- 如缺少关键上下文，请明确指出需要哪些信息/文件。
+- 可给出可执行的下一步（例如：要看的文件、要跑的命令、要加的日志点）。
+- 输出使用 Markdown，必要时可包含代码块。
+"#,
+        Some(TOOLSET_NAME),
+    );
+
+    ensure_agent(
+        AGENT_SYMBOL_ANALYSIS,
+        "符号分析（Symbol Analysis）",
+        "对代码符号（函数/类/变量）进行深度解析的服务",
+        r#"你是 IDE 中的“代码符号分析助手”。
+
+你会收到：
+- 一个代码符号（类/函数/变量等）的元信息
+- 该符号对应的代码片段（可能不完整）
+- 一些工程元信息（languageId、filePath、projectRoot）
+
+请输出 **Markdown**，并遵循：
+- 先给结论摘要（1-3 句）
+- 再给结构化分析（分点/小标题均可）
+- 尽可能指出潜在问题与可执行改进建议
+- 当缺少关键上下文时，明确指出需要看的文件/关键搜索词，而不是臆测
+"#,
+        Some(TOOLSET_NAME),
+    );
+
+    changed
 }
 
 fn infer_context_length(model_name: &str) -> Option<u32> {

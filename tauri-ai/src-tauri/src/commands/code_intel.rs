@@ -807,6 +807,83 @@ pub async fn delete_workstudio_symbol_analysis(
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SaveWorkstudioSymbolAnalysisArgs {
+    pub workstudio_id: String,
+    pub language_id: String,
+    pub file_path: String,
+    pub symbol_key: String,
+    pub symbol_name: String,
+    pub symbol_kind: String,
+    pub selection_line: u32,
+    pub selection_column: u32,
+    pub range: CodeSnippetRange,
+    pub answer_md: String,
+    pub model_ref: Option<String>,
+    pub latency_ms: Option<u64>,
+}
+
+#[tauri::command]
+pub async fn save_workstudio_symbol_analysis(
+    args: SaveWorkstudioSymbolAnalysisArgs,
+    db: tauri::State<'_, Arc<Mutex<Database>>>,
+) -> Result<WorkstudioSymbolAnalysis, String> {
+    let ws_id = args.workstudio_id.trim();
+    let lang = args.language_id.trim();
+    let file_path = args.file_path.trim();
+    let symbol_key = args.symbol_key.trim();
+    let symbol_name = args.symbol_name.trim();
+    let symbol_kind_raw = args.symbol_kind.trim();
+    let answer_md = args.answer_md.trim();
+
+    if ws_id.is_empty() {
+        return Err("workstudioId 为空".to_string());
+    }
+    if lang.is_empty() {
+        return Err("languageId 为空".to_string());
+    }
+    if file_path.is_empty() {
+        return Err("filePath 为空".to_string());
+    }
+    if symbol_key.is_empty() {
+        return Err("symbolKey 为空".to_string());
+    }
+    if symbol_name.is_empty() {
+        return Err("symbolName 为空".to_string());
+    }
+    if symbol_kind_raw.is_empty() {
+        return Err("symbolKind 为空".to_string());
+    }
+    if answer_md.is_empty() {
+        return Err("answerMd 为空".to_string());
+    }
+
+    let symbol_kind = symbol_kind_raw.to_lowercase();
+    let model_ref = args
+        .model_ref
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+
+    let db = db.lock().await;
+    db.upsert_workstudio_symbol_analysis(
+        ws_id,
+        file_path,
+        lang,
+        symbol_key,
+        symbol_name,
+        &symbol_kind,
+        args.selection_line,
+        args.selection_column,
+        &args.range,
+        answer_md,
+        model_ref,
+        args.latency_ms,
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AiAnalyzeWorkstudioSymbolArgs {
     pub workstudio_id: String,
     pub language_id: String,
@@ -1365,12 +1442,6 @@ pub enum WorkstudioAgentEvent {
         name: String,
         arguments: String,
     },
-    /// A tool result was returned
-    ToolResult {
-        run_id: String,
-        id: String,
-        result: String,
-    },
     /// Streaming completed successfully
     Done {
         run_id: String,
@@ -1445,6 +1516,7 @@ pub async fn workstudio_run_agent_stream(
                     max_turns: None,
                     reinject_thinking: false,
                     context_policy: None,
+                    workstudio_enabled: None,
                 })
             } else {
                 None
@@ -1548,14 +1620,11 @@ pub async fn workstudio_run_agent_stream(
     agent_abort_map().insert(run_id.clone(), abort_tx);
 
     // --- Spawn streaming task ---
-    let run_id_clone = run_id.clone();
-    let app_handle_clone = app_handle.clone();
-    let file_path = args.file_path.clone();
-    let symbol_key = args.symbol_key.clone();
-    let symbol_name = args.symbol_name.clone();
-    let symbol_kind = args.symbol_kind.clone();
-    let lang_id = args.language_id.unwrap_or_else(|| "text".to_string());
-    let model_ref_clone = model_ref.clone();
+	    let run_id_clone = run_id.clone();
+	    let app_handle_clone = app_handle.clone();
+	    let file_path = args.file_path.clone();
+	    let symbol_key = args.symbol_key.clone();
+	    let model_ref_clone = model_ref.clone();
 
     tokio::spawn(async move {
         let (tx, mut rx) = mpsc::channel::<StreamEvent>(256);

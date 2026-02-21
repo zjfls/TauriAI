@@ -724,6 +724,7 @@ fn run_desktop() {
 	            ai_analyze_workstudio_symbol,
 	            get_workstudio_symbol_analysis,
 	            delete_workstudio_symbol_analysis,
+	            save_workstudio_symbol_analysis,
 	            workstudio_run_agent_stream,
 	            workstudio_abort_agent,
 	            // Workstudio terminal (UI)

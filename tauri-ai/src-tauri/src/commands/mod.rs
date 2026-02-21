@@ -50,7 +50,8 @@ pub use code_intel::{
     ai_analyze_workstudio_symbol, ai_chat_with_selection, ai_code_completion, ast_document_symbols,
     code_index_request_document_symbols, code_index_start_workspace_scan, code_index_status,
     code_index_summary,
-    delete_workstudio_symbol_analysis, get_workstudio_symbol_analysis, lsp_detect_server,
+    delete_workstudio_symbol_analysis, get_workstudio_symbol_analysis,
+    save_workstudio_symbol_analysis, lsp_detect_server,
     lsp_ensure_server, lsp_notify, lsp_request, lsp_shutdown_language, lsp_shutdown_workstudio,
     lsp_status, workstudio_abort_agent, workstudio_run_agent_stream,
 };

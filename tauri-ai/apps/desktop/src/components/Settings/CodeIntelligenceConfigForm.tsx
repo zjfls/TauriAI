@@ -111,6 +111,9 @@ const defaultAiCompletionSettings = (): AiCompletionSettings => ({
 const defaultSymbolAnalysisSettings = (): SymbolAnalysisSettings => ({
   enabled: false,
   agentRef: '',
+  concurrency: 2,
+  additionalAgents: [],
+  bulkExcludeVariables: true,
   timeoutMs: 20000,
   maxTokens: 8192,
   temperature: 0.2,
@@ -618,7 +621,7 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
                   <option value="">（系统默认：代码补全）</option>
                   {toolAgents.map((opt) => (
                     <option key={opt.name} value={opt.name}>
-                      {opt.displayName || opt.name} {opt.isSystem ? '(系统)' : ''}
+                      {opt.displayName || opt.name} {opt.name.startsWith('__system_') ? '(系统)' : ''}
                     </option>
                   ))}
                 </select>
@@ -637,7 +640,7 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
                   <option value="">（系统默认：代码对话）</option>
                   {toolAgents.map((opt) => (
                     <option key={opt.name} value={opt.name}>
-                      {opt.displayName || opt.name} {opt.isSystem ? '(系统)' : ''}
+                      {opt.displayName || opt.name} {opt.name.startsWith('__system_') ? '(系统)' : ''}
                     </option>
                   ))}
                 </select>
@@ -867,7 +870,7 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
                   <option value="">（系统默认：符号分析）</option>
                   {toolAgents.map((opt) => (
                     <option key={opt.name} value={opt.name}>
-                      {opt.displayName || opt.name} {opt.isSystem ? '(系统)' : ''}
+                      {opt.displayName || opt.name} {opt.name.startsWith('__system_') ? '(系统)' : ''}
                     </option>
                   ))}
                 </select>
@@ -875,6 +878,138 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
                   指定处理符号分析的大模型（支持在智能体设置页添加自定义 Tool 智能体）。
                 </div>
               </div>
+
+              <div className="space-y-2">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">并发上限</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={64}
+                  value={symbolAnalysis.concurrency ?? 2}
+                  onChange={(e) => {
+                    const n = Number(e.target.value);
+                    const next = Number.isFinite(n) ? Math.max(1, Math.min(64, Math.floor(n))) : 2;
+                    updateSymbolAnalysis((s) => ({ ...s, concurrency: next }));
+                  }}
+                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                />
+                <div className="text-xs text-gray-500 dark:text-gray-400">
+                  控制“默认绑定智能体”同时跑多少个符号分析任务；并发越大越快，但更占用模型/网络资源。
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-950">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-gray-800 dark:text-gray-100">附加智能体（多模型 / 多并发）</div>
+                  <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                    可添加多个 Tool 智能体并分别设置并发上限；Workstudio 会在这些智能体之间调度，提升批量分析速度。
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    updateSymbolAnalysis((s) => ({
+                      ...s,
+                      additionalAgents: [...(s.additionalAgents ?? []), { agentRef: '', concurrency: 1 }],
+                    }))
+                  }
+                  className="flex items-center gap-2 rounded-md border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
+                  title="新增一条附加智能体配置"
+                >
+                  <Plus size={14} />
+                  新增
+                </button>
+              </div>
+
+              <div className="mt-3 space-y-2">
+                {(symbolAnalysis.additionalAgents ?? []).length === 0 ? (
+                  <div className="text-xs text-gray-500 dark:text-gray-400">（未配置附加智能体）</div>
+                ) : (
+                  (symbolAnalysis.additionalAgents ?? []).map((row, idx) => (
+                    <div
+                      key={`symbolAnalysis.additionalAgents:${idx}`}
+                      className="grid grid-cols-1 gap-2 md:grid-cols-12 md:items-end"
+                    >
+                      <div className="md:col-span-7 space-y-1">
+                        <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">智能体</label>
+                        <select
+                          value={row.agentRef ?? ''}
+                          onChange={(e) => {
+                            const agentRef = e.target.value;
+                            updateSymbolAnalysis((s) => {
+                              const next = [...(s.additionalAgents ?? [])];
+                              next[idx] = { ...(next[idx] ?? { agentRef: '', concurrency: 1 }), agentRef };
+                              return { ...s, additionalAgents: next };
+                            });
+                          }}
+                          className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                        >
+                          <option value="">（请选择）</option>
+                          {toolAgents.map((opt) => (
+                            <option key={opt.name} value={opt.name}>
+                              {opt.displayName || opt.name} {opt.name.startsWith('__system_') ? '(系统)' : ''}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="md:col-span-3 space-y-1">
+                        <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">并发</label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={64}
+                          value={row.concurrency ?? 1}
+                          onChange={(e) => {
+                            const n = Number(e.target.value);
+                            const concurrency = Number.isFinite(n) ? Math.max(1, Math.min(64, Math.floor(n))) : 1;
+                            updateSymbolAnalysis((s) => {
+                              const next = [...(s.additionalAgents ?? [])];
+                              next[idx] = { ...(next[idx] ?? { agentRef: '', concurrency: 1 }), concurrency };
+                              return { ...s, additionalAgents: next };
+                            });
+                          }}
+                          className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                        />
+                      </div>
+
+                      <div className="md:col-span-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            updateSymbolAnalysis((s) => ({
+                              ...s,
+                              additionalAgents: (s.additionalAgents ?? []).filter((_, i) => i !== idx),
+                            }))
+                          }
+                          className="flex w-full items-center justify-center gap-2 rounded-md border border-red-200 bg-red-50 px-2 py-2 text-xs text-red-700 hover:bg-red-100 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-200 dark:hover:bg-red-900/30"
+                          title="移除该附加智能体配置"
+                        >
+                          <Trash2 size={14} />
+                          移除
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-950">
+              <div className="min-w-0">
+                <div className="text-xs text-gray-500 dark:text-gray-400">批量解析</div>
+                <div className="text-sm text-gray-800 dark:text-gray-100">全部解析时跳过变量/字段</div>
+                <div className="mt-0.5 text-[11px] text-gray-500 dark:text-gray-400">
+                  变量/字段数量可能很多；开启后“全部解析”只分析类/结构/函数等（不影响右键单个变量的分析）。
+                </div>
+              </div>
+              <Toggle
+                checked={symbolAnalysis.bulkExcludeVariables !== false}
+                onChange={(bulkExcludeVariables) => updateSymbolAnalysis((s) => ({ ...s, bulkExcludeVariables }))}
+                title="全部解析时跳过变量/字段"
+              />
             </div>
 
             <details className="rounded-lg border border-gray-200 bg-white px-3 py-2 dark:border-gray-700 dark:bg-gray-900">
