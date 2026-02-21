@@ -1281,6 +1281,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   const [dollarQuery, setDollarQuery] = useState<{ start: number; query: string } | null>(null);
   const [dollarResults, setDollarResults] = useState<DollarMentionResult[]>([]);
   const [dollarIndex, setDollarIndex] = useState(0);
+  const [isComposing, setIsComposing] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const textareaOverlayRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -2787,6 +2788,20 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
     overlay.scrollLeft = el.scrollLeft;
   }, []);
 
+  const handleCompositionStart = useCallback(() => {
+    // IME 组合输入期间（拼音/日文等），让 textarea 真实文本可见并暂时隐藏 overlay，
+    // 避免在内容较长/可滚动时出现“输入定位/候选框定位异常”的体验。
+    setIsComposing(true);
+  }, []);
+
+  const handleCompositionEnd = useCallback(() => {
+    setIsComposing(false);
+    // 组合输入结束后，确保高度/滚动与 overlay 再次对齐。
+    requestAnimationFrame(() => {
+      adjustTextareaHeight();
+    });
+  }, [adjustTextareaHeight]);
+
   useEffect(() => {
     if (!workstudio?.id) return;
     if (!atQuery) return;
@@ -3368,7 +3383,10 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
               <div
                 ref={textareaOverlayRef}
                 aria-hidden="true"
-                className="absolute inset-0 z-0 w-full resize-none overflow-auto bg-transparent px-2 py-0 text-gray-900 placeholder-gray-500 focus:outline-none dark:text-gray-100 dark:placeholder-gray-400 pointer-events-none whitespace-pre-wrap break-words"
+                className={[
+                  "absolute inset-0 z-0 w-full resize-none overflow-auto bg-transparent px-2 py-0 text-gray-900 placeholder-gray-500 focus:outline-none dark:text-gray-100 dark:placeholder-gray-400 pointer-events-none whitespace-pre-wrap break-words",
+                  isComposing ? "opacity-0" : "opacity-100",
+                ].join(" ")}
                 style={{ minHeight: `${MIN_TEXTAREA_HEIGHT}px` }}
               >
                 {textareaOverlayNodes}
@@ -3382,6 +3400,8 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
                 onClick={handleSelectionChange}
                 onSelect={handleSelectionChange}
                 onScroll={handleTextareaScroll}
+                onCompositionStart={handleCompositionStart}
+                onCompositionEnd={handleCompositionEnd}
                 onPaste={handlePaste}
                 autoCorrect="off"
                 autoCapitalize="off"
@@ -3391,7 +3411,10 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
                 disabled={disabled}
                 rows={1}
                 aria-label="消息输入框"
-                className="relative z-10 w-full resize-none bg-transparent px-2 py-0 text-transparent caret-gray-900 placeholder-gray-500 focus:outline-none dark:caret-gray-100 dark:placeholder-gray-400 disabled:cursor-not-allowed disabled:opacity-50"
+                className={[
+                  "relative z-10 w-full resize-none overflow-auto bg-transparent px-2 py-0 whitespace-pre-wrap break-words caret-gray-900 placeholder-gray-500 focus:outline-none dark:caret-gray-100 dark:placeholder-gray-400 disabled:cursor-not-allowed disabled:opacity-50",
+                  isComposing ? "text-gray-900 dark:text-gray-100" : "text-transparent",
+                ].join(" ")}
                 style={{ minHeight: `${MIN_TEXTAREA_HEIGHT}px` }}
               />
             </div>
