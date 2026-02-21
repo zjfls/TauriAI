@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use tokio::sync::mpsc;
 
 use super::content_converter::{content_part_to_blocks, ContentBlock};
-use super::format_reqwest_stream_error;
+use super::{format_reqwest_stream_error, StreamProtocolContext};
 use super::traits::{
     AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent,
     StreamTerminationInfo, StreamTerminationSource, TokenUsage, ToolCall, ToolDefinition,
@@ -919,6 +919,8 @@ impl OpenAiBaseClient {
         let mut tool_calls_sent = false;
         let mut stream = response.bytes_stream();
         let mut chunk_count: u32 = 0;
+        let mut event_count: u32 = 0;
+        let mut last_sse_data: Option<String> = None;
         // SSE 可能在任意字节边界切片；用行缓冲拼接，避免 JSON 被拆分后解析失败导致丢 token。
         let mut sse_buffer = String::new();
         let mut utf8 = Utf8StreamDecoder::default();
@@ -927,6 +929,16 @@ impl OpenAiBaseClient {
             let chunk = match chunk_result {
                 Ok(v) => v,
                 Err(e) => {
+                    let stream_ctx = StreamProtocolContext {
+                        expected_protocol: Some("sse_marker (data: JSON)".to_string()),
+                        expected_signal: Some("[DONE]".to_string()),
+                        observed_signal: None,
+                        last_event_type: None,
+                        last_data_snippet: last_sse_data.clone(),
+                        buffer_tail: Some(sse_buffer.clone()),
+                        chunks_received: Some(chunk_count),
+                        events_received: Some(event_count),
+                    };
                     let details = format_reqwest_stream_error(
                         &config.provider,
                         &config.model,
@@ -934,6 +946,7 @@ impl OpenAiBaseClient {
                         Some(response_status),
                         Some(&response_headers),
                         &e,
+                        Some(&stream_ctx),
                     );
                     let error_text = format!("Stream error: {details}");
 
@@ -1018,6 +1031,10 @@ impl OpenAiBaseClient {
                 }
 
                 if let Some(data) = strip_sse_data_prefix(line.as_str()) {
+                    event_count = event_count.saturating_add(1);
+                    if !data.trim().is_empty() {
+                        last_sse_data = Some(data.chars().take(1200).collect::<String>());
+                    }
                     if config.debug_sse {
                         eprintln!("[SSE][{}/{}] {}", config.provider, config.model, data);
                     }

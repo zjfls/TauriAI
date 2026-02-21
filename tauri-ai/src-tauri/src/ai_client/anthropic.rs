@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use tokio::sync::mpsc;
 
 use super::content_converter::{image_url_to_base64, ContentBlock};
-use super::format_reqwest_stream_error;
+use super::{format_reqwest_stream_error, StreamProtocolContext};
 use super::traits::{
     AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent,
     StreamTerminationInfo, StreamTerminationSource, TokenUsage, ToolCall, ToolDefinition,
@@ -758,6 +758,9 @@ impl AiClient for AnthropicClient {
         let mut sse_buffer = String::new();
         let mut utf8 = Utf8StreamDecoder::default();
         let mut chunk_count: u32 = 0;
+        let mut event_count: u32 = 0;
+        let mut last_sse_data: Option<String> = None;
+        let mut last_event_type: Option<String> = None;
 
         // Store debug parts for later assembly
         // We'll build the final debug_info with full_content at the end
@@ -766,6 +769,16 @@ impl AiClient for AnthropicClient {
             let chunk = match chunk_result {
                 Ok(v) => v,
                 Err(e) => {
+                    let stream_ctx = StreamProtocolContext {
+                        expected_protocol: Some("sse_event (JSON with `type`)".to_string()),
+                        expected_signal: Some("message_stop".to_string()),
+                        observed_signal: None,
+                        last_event_type: last_event_type.clone(),
+                        last_data_snippet: last_sse_data.clone(),
+                        buffer_tail: Some(sse_buffer.clone()),
+                        chunks_received: Some(chunk_count),
+                        events_received: Some(event_count),
+                    };
                     let details = format_reqwest_stream_error(
                         &config.provider,
                         &config.model,
@@ -773,6 +786,7 @@ impl AiClient for AnthropicClient {
                         Some(status_code),
                         Some(&response_headers),
                         &e,
+                        Some(&stream_ctx),
                     );
                     let error_text = format!("Stream error: {details}");
 
@@ -847,12 +861,17 @@ impl AiClient for AnthropicClient {
                 }
 
                 if let Some(data) = strip_sse_data_prefix(line.as_str()) {
+                    event_count = event_count.saturating_add(1);
+                    if !data.trim().is_empty() {
+                        last_sse_data = Some(data.chars().take(1200).collect::<String>());
+                    }
                     if config.debug_sse {
                         eprintln!("[SSE][{}/{}] {}", config.provider, config.model, data);
                     }
                     if let Ok(event) = serde_json::from_str::<StreamingEvent>(data) {
                         match event {
                             StreamingEvent::MessageStart { message } => {
+                                last_event_type = Some("message_start".to_string());
                                 // Capture initial usage from message_start
                                 if let Some(usage) = message.usage {
                                     token_usage = Some(TokenUsage {
@@ -868,6 +887,7 @@ impl AiClient for AnthropicClient {
                                 }
                             }
                             StreamingEvent::ContentBlockStart { content_block } => {
+                                last_event_type = Some("content_block_start".to_string());
                                 // Tool use blocks are delivered via content_block_start + input_json_delta deltas.
                                 if content_block.content_type == "tool_use" {
                                     if let (Some(id), Some(name)) =
@@ -883,6 +903,7 @@ impl AiClient for AnthropicClient {
                                 }
                             }
                             StreamingEvent::ContentBlockDelta { delta } => {
+                                last_event_type = Some("content_block_delta".to_string());
                                 match delta.delta_type.as_str() {
                                     "text_delta" => {
                                         if let Some(text) = delta.text {
@@ -910,6 +931,7 @@ impl AiClient for AnthropicClient {
                                 }
                             }
                             StreamingEvent::ContentBlockStop {} => {
+                                last_event_type = Some("content_block_stop".to_string());
                                 if let Some(in_progress) = current_tool_use.take() {
                                     let arguments = if !in_progress.input_json.trim().is_empty() {
                                         in_progress.input_json
@@ -927,6 +949,7 @@ impl AiClient for AnthropicClient {
                                 }
                             }
                             StreamingEvent::MessageDelta { delta: _, usage } => {
+                                last_event_type = Some("message_delta".to_string());
                                 let usage_entry = token_usage.get_or_insert_with(|| TokenUsage {
                                     prompt_tokens: usage.input_tokens.unwrap_or(0),
                                     completion_tokens: usage.output_tokens,
@@ -1095,7 +1118,9 @@ impl AiClient for AnthropicClient {
                                     .await;
                                 return Err(AiError::StreamError(error_msg));
                             }
-                            _ => {}
+                            StreamingEvent::Ping {} => {
+                                last_event_type = Some("ping".to_string());
+                            }
                         }
                     }
                 }

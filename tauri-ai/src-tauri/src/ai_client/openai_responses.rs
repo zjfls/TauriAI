@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use super::content_converter::ContentBlock;
-use super::format_reqwest_stream_error;
+use super::{format_reqwest_stream_error, StreamProtocolContext};
 use super::traits::{
     AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent,
     StreamTerminationInfo, StreamTerminationSource, TokenUsage, ToolCall, ToolDefinition,
@@ -1007,7 +1007,9 @@ impl AiClient for OpenAiResponsesClient {
         let mut tool_calls_for_debug: Option<Vec<ToolCall>> = None;
         let mut stream = response.bytes_stream();
         let mut chunk_count = 0;
+        let mut event_count: u32 = 0;
         let mut last_event_type: Option<String> = None;
+        let mut last_sse_data: Option<String> = None;
         // SSE 可能跨 chunk 切分；用行缓冲拼接，避免 JSON 被拆开导致事件丢失（text/thinking/web_search/usage）。
         let mut sse_buffer = String::new();
         let mut utf8 = Utf8StreamDecoder::default();
@@ -1016,6 +1018,16 @@ impl AiClient for OpenAiResponsesClient {
             let chunk = match chunk_result {
                 Ok(v) => v,
                 Err(e) => {
+                    let stream_ctx = StreamProtocolContext {
+                        expected_protocol: Some("sse_event (JSON with `type`)".to_string()),
+                        expected_signal: Some("response.completed|response.done|[DONE]".to_string()),
+                        observed_signal: None,
+                        last_event_type: last_event_type.clone(),
+                        last_data_snippet: last_sse_data.clone(),
+                        buffer_tail: Some(sse_buffer.clone()),
+                        chunks_received: Some(chunk_count),
+                        events_received: Some(event_count),
+                    };
                     let details = format_reqwest_stream_error(
                         &config.provider,
                         &config.model,
@@ -1023,6 +1035,7 @@ impl AiClient for OpenAiResponsesClient {
                         Some(response_status),
                         Some(&response_headers),
                         &e,
+                        Some(&stream_ctx),
                     );
                     let error_text = format!("Stream error: {details}");
 
@@ -1103,6 +1116,10 @@ impl AiClient for OpenAiResponsesClient {
                 }
 
                 if let Some(data) = strip_sse_data_prefix(line.as_str()) {
+                    event_count = event_count.saturating_add(1);
+                    if !data.trim().is_empty() {
+                        last_sse_data = Some(data.chars().take(1200).collect::<String>());
+                    }
                     if config.debug_sse {
                         eprintln!("[SSE][{}/{}] {}", config.provider, config.model, data);
                     }

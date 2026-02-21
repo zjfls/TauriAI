@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use tokio::sync::mpsc;
 
 use super::content_converter::{content_parts_to_blocks_with_limit, parse_data_url, ContentBlock};
-use super::format_reqwest_stream_error;
+use super::{format_reqwest_stream_error, StreamProtocolContext};
 use super::traits::{
     AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent,
     StreamTerminationInfo, StreamTerminationSource, TokenUsage, ToolCall, ToolDefinition,
@@ -787,6 +787,8 @@ impl AiClient for GoogleClient {
         let mut stream = response.bytes_stream();
         let mut token_usage: Option<TokenUsage> = None;
         let mut chunk_count: u32 = 0;
+        let mut event_count: u32 = 0;
+        let mut last_sse_data: Option<String> = None;
         // SSE 可能跨 chunk 切分；用行缓冲拼接，避免 JSON 被拆开后无法解析、导致 thinking/text 丢失。
         let mut tool_calls: Vec<ToolCall> = Vec::new();
         let mut tool_calls_to_emit: Option<Vec<ToolCall>> = None;
@@ -797,6 +799,16 @@ impl AiClient for GoogleClient {
             let chunk = match chunk_result {
                 Ok(v) => v,
                 Err(e) => {
+                    let stream_ctx = StreamProtocolContext {
+                        expected_protocol: Some("sse_json_chunk (data: JSON chunk)".to_string()),
+                        expected_signal: None,
+                        observed_signal: None,
+                        last_event_type: None,
+                        last_data_snippet: last_sse_data.clone(),
+                        buffer_tail: Some(sse_buffer.clone()),
+                        chunks_received: Some(chunk_count),
+                        events_received: Some(event_count),
+                    };
                     let details = format_reqwest_stream_error(
                         &config.provider,
                         &config.model,
@@ -804,6 +816,7 @@ impl AiClient for GoogleClient {
                         Some(status_code),
                         Some(&response_headers),
                         &e,
+                        Some(&stream_ctx),
                     );
                     let error_text = format!("Stream error: {details}");
 
@@ -886,6 +899,10 @@ impl AiClient for GoogleClient {
                 }
 
                 if let Some(data) = strip_sse_data_prefix(line.as_str()) {
+                    event_count = event_count.saturating_add(1);
+                    if !data.trim().is_empty() {
+                        last_sse_data = Some(data.chars().take(1200).collect::<String>());
+                    }
                     if config.debug_sse {
                         eprintln!("[SSE][{}/{}] {}", config.provider, config.model, data);
                     }

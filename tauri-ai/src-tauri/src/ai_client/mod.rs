@@ -23,4 +23,4 @@ pub use openai::{OpenAiClient, OpenAiCompatibleClient};
 pub use openai_responses::OpenAiResponsesClient;
 pub use traits::*;
 
-pub(crate) use error_utils::format_reqwest_stream_error;
+pub(crate) use error_utils::{format_reqwest_stream_error, StreamProtocolContext};

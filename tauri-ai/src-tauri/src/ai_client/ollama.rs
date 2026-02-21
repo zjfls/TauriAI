@@ -8,7 +8,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-use super::format_reqwest_stream_error;
+use super::{format_reqwest_stream_error, StreamProtocolContext};
 use super::traits::{
     AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent,
     StreamTerminationInfo, StreamTerminationSource, ToolDefinition,
@@ -283,11 +283,23 @@ impl AiClient for OllamaClient {
         let mut line_buffer = String::new();
         let mut utf8 = Utf8StreamDecoder::default();
         let mut chunk_count: u32 = 0;
+        let mut line_count: u32 = 0;
+        let mut last_line: Option<String> = None;
 
         while let Some(chunk_result) = stream.next().await {
             let chunk = match chunk_result {
                 Ok(v) => v,
                 Err(e) => {
+                    let stream_ctx = StreamProtocolContext {
+                        expected_protocol: Some("ndjson_field (JSON per line)".to_string()),
+                        expected_signal: Some("done=true".to_string()),
+                        observed_signal: None,
+                        last_event_type: None,
+                        last_data_snippet: last_line.clone(),
+                        buffer_tail: Some(line_buffer.clone()),
+                        chunks_received: Some(chunk_count),
+                        events_received: Some(line_count),
+                    };
                     let details = format_reqwest_stream_error(
                         &config.provider,
                         &config.model,
@@ -295,6 +307,7 @@ impl AiClient for OllamaClient {
                         Some(status_code),
                         Some(&response_headers),
                         &e,
+                        Some(&stream_ctx),
                     );
                     let error_text = format!("Stream error: {details}");
 
@@ -350,6 +363,9 @@ impl AiClient for OllamaClient {
                 if line.trim().is_empty() {
                     continue;
                 }
+
+                line_count = line_count.saturating_add(1);
+                last_line = Some(line.chars().take(1200).collect::<String>());
 
                 if let Ok(stream_response) = serde_json::from_str::<StreamResponse>(&line) {
                     if let Some(message) = stream_response.message {
