@@ -204,10 +204,11 @@ const extractToolSummary = (toolName: string, rawArgs: string, parsedArgs: unkno
       if (path) parts.push(`path=${path}`);
       return parts.length > 0 ? normalizeToolSummary(parts.join(' ')) : '';
     }
-    case 'apply_patch': {
+    case 'apply_patch':
+    case 'apply_patch_unified_diff': {
       const ops = extractApplyPatchOps(raw);
-      if (ops.length > 0) return normalizeToolSummary(`apply_patch: ${ops.join(', ')}`);
-      return 'apply_patch';
+      if (ops.length > 0) return normalizeToolSummary(`${tool}: ${ops.join(', ')}`);
+      return tool;
     }
     case 'view_image': {
       const path = getObjString('path') ?? getRawString('path');
@@ -316,7 +317,7 @@ const buildTaskPatchSummaryGroups = (blocks: MessageBlock[]): TaskPatchSummaryGr
   for (const b of blocks) {
     if (!b || (b as any).type !== 'tool_call') continue;
     const toolName = (b as any).name;
-    if (toolName !== 'apply_patch') continue;
+    if (toolName !== 'apply_patch' && toolName !== 'apply_patch_unified_diff') continue;
 
     const meta = ((b as any).meta ?? null) as ApplyPatchToolMeta | null;
     const git = meta?.applyPatch?.git;
@@ -552,7 +553,7 @@ const ApplyPatchToolRunBlock: React.FC<{
 
   const likelyHasInputField = useMemo(() => {
     if (!args) return false;
-    if (name === 'apply_patch') return true;
+    if (name === 'apply_patch' || name === 'apply_patch_unified_diff') return true;
     return args.includes('"input"');
   }, [args, name]);
 
@@ -680,7 +681,7 @@ const ApplyPatchToolRunBlock: React.FC<{
 	const doUndo = useCallback(async () => {
 	  if (!isTauri()) return;
 	  if (!repoRoot || !ghostBefore || affectedPaths.length === 0) return;
-	  const ok = window.confirm('确认撤销本次 apply_patch 的修改吗？这会覆盖这些文件的当前工作区内容。');
+	  const ok = window.confirm(`确认撤销本次 ${name || 'apply_patch'} 的修改吗？这会覆盖这些文件的当前工作区内容。`);
 	  if (!ok) return;
 	  setUndoBusy(true);
 	  setUndoMsg('');
@@ -799,7 +800,7 @@ const ApplyPatchToolRunBlock: React.FC<{
 	                  onClick={doUndo}
 	                  disabled={!canUndo || undoBusy}
 	                  className={`ml-auto rounded border px-2 py-1 text-xs font-medium ${!canUndo || undoBusy ? 'cursor-not-allowed border-gray-200 bg-gray-50 text-gray-400 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-600' : 'border-gray-200 bg-white text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-100 dark:hover:bg-gray-800'}`}
-	                  title="撤销本次 apply_patch（仅 affected）"
+	                  title={`撤销本次 ${name || 'apply_patch'}（仅 affected）`}
 	                >
                   {undoBusy ? '撤销中…' : 'Undo'}
                 </button>
@@ -1019,7 +1020,7 @@ const TaskPatchSummaryCard: React.FC<{
   const doUndo = useCallback(async () => {
     if (!canUseTauri) return;
     if (!group.repoRoot || !group.ghostBefore || group.affectedPaths.length === 0) return;
-    const ok = window.confirm('确认撤销本次任务内所有 apply_patch 修改吗？这会覆盖 affected 文件的当前工作区内容。');
+    const ok = window.confirm('确认撤销本次任务内所有补丁修改吗？这会覆盖 affected 文件的当前工作区内容。');
     if (!ok) return;
     setUndoBusy(true);
     setUndoMsg('');
@@ -2651,7 +2652,7 @@ export const MessageBlocks: React.FC<{
               if (block.type === 'tool_call') {
                 const next = g.blocks[blockIdx + 1];
                 if (next && next.type === 'tool_result' && next.callId === block.callId) {
-                  return block.name === 'apply_patch' ? (
+                  return block.name === 'apply_patch' || block.name === 'apply_patch_unified_diff' ? (
                     <ApplyPatchToolRunBlock
                       key={`${block.id}:${next.id}`}
                       name={block.name}

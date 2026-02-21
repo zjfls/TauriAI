@@ -930,7 +930,7 @@ const AgentForm: React.FC<AgentFormProps> = ({
             <option value="danger-full-access">Full Access（完全访问）</option>
           </select>
           <p className="text-xs text-gray-500">
-            生效策略：{sandboxSummary(effectiveSandboxPolicy)}。Read Only 会禁用 apply_patch 与 PTY 交互式终端。
+            生效策略：{sandboxSummary(effectiveSandboxPolicy)}。Read Only 会禁用 apply_patch/apply_patch_unified_diff 与 PTY 交互式终端。
           </p>
         </div>
 

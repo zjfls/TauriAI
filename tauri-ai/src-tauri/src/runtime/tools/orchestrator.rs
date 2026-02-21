@@ -49,6 +49,15 @@ enum ApplyPatchInterceptMode {
     ExecCommandJson,
 }
 
+fn apply_patch_tool_name_for_kind(kind: apply_patch::VerifiedApplyPatchKind) -> &'static str {
+    match kind {
+        apply_patch::VerifiedApplyPatchKind::Custom => apply_patch::APPLY_PATCH_TOOL_NAME,
+        apply_patch::VerifiedApplyPatchKind::UnifiedDiff => {
+            apply_patch::APPLY_PATCH_UNIFIED_DIFF_TOOL_NAME
+        }
+    }
+}
+
 fn is_persistent_tool(name: &str) -> bool {
     name.ends_with("_persistent")
 }
@@ -116,7 +125,7 @@ impl ToolOrchestrator {
 
     fn maybe_extract_apply_patch_from_call(
         call: &ToolCall,
-    ) -> Option<(String, ApplyPatchInterceptMode)> {
+    ) -> Option<(String, ApplyPatchInterceptMode, apply_patch::VerifiedApplyPatchKind)> {
         let (field, mode) = match call.name.as_str() {
             "shell_command" => ("command", ApplyPatchInterceptMode::PlainText),
             "exec_command" | "exec_command_persistent" => {
@@ -127,8 +136,8 @@ impl ToolOrchestrator {
 
         let v: Value = serde_json::from_str(&call.arguments).ok()?;
         let cmd = v.get(field)?.as_str()?;
-        let patch = apply_patch::extract_verified_apply_patch_from_text(cmd)?;
-        Some((patch, mode))
+        let (patch, kind) = apply_patch::extract_verified_apply_patch_from_text(cmd)?;
+        Some((patch, mode, kind))
     }
 
     /// 执行单个 tool call（带权限检查与 mutating gate）。
@@ -139,14 +148,15 @@ impl ToolOrchestrator {
     ) -> Result<ToolCallResult, ToolError> {
         // Codex-like interception: when a model mistakenly sends an apply_patch body
         // via shell/pty exec tools, redirect to the real `apply_patch` tool.
-        if let Some((patch_text, mode)) = Self::maybe_extract_apply_patch_from_call(call) {
+        if let Some((patch_text, mode, kind)) = Self::maybe_extract_apply_patch_from_call(call) {
+            let tool_name = apply_patch_tool_name_for_kind(kind);
             let rewritten = ToolCall {
                 id: call.id.clone(),
-                name: "apply_patch".to_string(),
+                name: tool_name.to_string(),
                 arguments: serde_json::json!({ "input": patch_text }).to_string(),
             };
 
-            let applier = self.resolve_handler("apply_patch")?;
+            let applier = self.resolve_handler(tool_name)?;
             let spec = applier.spec();
             match self
                 .permission_policy
@@ -157,8 +167,10 @@ impl ToolOrchestrator {
             }
 
             let notice = format!(
-                "[提示] 检测到 apply_patch 补丁文本被作为 `{}` 的命令提交，已自动按 apply_patch 处理。后续请直接调用 apply_patch 工具。\n\n",
-                call.name
+                "[提示] 检测到补丁文本被作为 `{}` 的命令提交，已自动按 `{}` 处理。后续请直接调用 `{}` 工具。\n\n",
+                call.name,
+                tool_name,
+                tool_name
             );
             ctx.emitter.emit(RunEvent::BlockDelta {
                 task_id: ctx.task_id.to_string(),
@@ -319,10 +331,11 @@ mod tests {
             name: "shell_command".to_string(),
             arguments: serde_json::json!({ "command": patch }).to_string(),
         };
-        let (extracted, mode) =
+        let (extracted, mode, kind) =
             ToolOrchestrator::maybe_extract_apply_patch_from_call(&call).expect("detect patch");
         assert_eq!(extracted, patch);
         assert_eq!(mode, ApplyPatchInterceptMode::PlainText);
+        assert_eq!(kind, apply_patch::VerifiedApplyPatchKind::Custom);
     }
 
     #[test]
@@ -336,9 +349,10 @@ mod tests {
             name: "exec_command".to_string(),
             arguments: serde_json::json!({ "cmd": patch }).to_string(),
         };
-        let (extracted, mode) =
+        let (extracted, mode, kind) =
             ToolOrchestrator::maybe_extract_apply_patch_from_call(&call).expect("detect patch");
         assert_eq!(extracted, patch);
         assert_eq!(mode, ApplyPatchInterceptMode::ExecCommandJson);
+        assert_eq!(kind, apply_patch::VerifiedApplyPatchKind::Custom);
     }
 }

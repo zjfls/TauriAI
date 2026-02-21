@@ -327,7 +327,7 @@ fn extract_paths_from_tool_call(name: &str, arguments: &str) -> Vec<(String, Str
                 out.push((p.to_string(), "dir".to_string(), 1));
             }
         }
-        "apply_patch" => {
+        "apply_patch" | "apply_patch_unified_diff" => {
             if let Some(input) = args.get("input").and_then(|v| v.as_str()) {
                 for p in extract_paths_from_apply_patch(input) {
                     out.push((p, "file".to_string(), 5));
