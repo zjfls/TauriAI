@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use tokio::sync::mpsc;
 
 use super::content_converter::{content_parts_to_blocks_with_limit, parse_data_url, ContentBlock};
+use super::format_reqwest_stream_error;
 use super::traits::{
     AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent,
     StreamTerminationInfo, StreamTerminationSource, TokenUsage, ToolCall, ToolDefinition,
@@ -793,7 +794,84 @@ impl AiClient for GoogleClient {
         let mut utf8 = Utf8StreamDecoder::default();
 
         'stream: while let Some(chunk_result) = stream.next().await {
-            let chunk = chunk_result.map_err(|e| AiError::StreamError(e.to_string()))?;
+            let chunk = match chunk_result {
+                Ok(v) => v,
+                Err(e) => {
+                    let details = format_reqwest_stream_error(
+                        &config.provider,
+                        &config.model,
+                        Some(&url),
+                        Some(status_code),
+                        Some(&response_headers),
+                        &e,
+                    );
+                    let error_text = format!("Stream error: {details}");
+
+                    let tool_calls_for_debug = if tool_calls.is_empty() {
+                        None
+                    } else {
+                        Some(tool_calls.clone())
+                    };
+                    let debug_info = DebugInfoData {
+                        request: Some(debug_request.clone()),
+                        response: Some(DebugResponseData {
+                            status: status_code,
+                            headers: response_headers.clone(),
+                            body: serde_json::json!({
+                                "_streamError": error_text,
+                                "candidates": [{
+                                    "content": {
+                                        "parts": [{
+                                            "text": full_content.clone()
+                                        }],
+                                        "role": "model"
+                                    },
+                                    "finishReason": "ERROR",
+                                    "groundingMetadata": full_grounding
+                                }],
+                                "thinking": if full_thinking.is_empty() {
+                                    serde_json::Value::Null
+                                } else {
+                                    serde_json::Value::String(full_thinking.clone())
+                                },
+                                "tool_calls": tool_calls_for_debug,
+                                "usageMetadata": token_usage.as_ref().map(|u| serde_json::json!({
+                                    "promptTokenCount": u.prompt_tokens,
+                                    "candidatesTokenCount": u.completion_tokens,
+                                    "totalTokenCount": u.total_tokens,
+                                    "cachedContentTokenCount": u.cached_tokens,
+                                    "thoughtsTokenCount": u.reasoning_tokens
+                                }))
+                            }),
+                        }),
+                        stream_termination: Some(StreamTerminationInfo {
+                            protocol_complete: Some(false),
+                            termination_source: Some(StreamTerminationSource::Unknown),
+                            protocol_kind: Some("sse_json_chunk".to_string()),
+                            expected_signal: None,
+                            observed_signal: None,
+                            last_event_type: Some("transport_error".to_string()),
+                            chunk_count: Some(chunk_count),
+                        }),
+                    };
+
+                    let _ = token_sender.send(StreamEvent::Error(error_text)).await;
+                    let _ = token_sender
+                        .send(StreamEvent::DoneWithDebug {
+                            content: full_content.clone(),
+                            thinking: if full_thinking.is_empty() {
+                                None
+                            } else {
+                                Some(full_thinking.clone())
+                            },
+                            debug_info: Some(debug_info),
+                            usage: token_usage.clone(),
+                        })
+                        .await;
+
+                    return Err(AiError::StreamError(details));
+                }
+            };
             let chunk_str = utf8.push(&chunk);
             chunk_count = chunk_count.saturating_add(1);
 

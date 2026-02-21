@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use tokio::sync::mpsc;
 
 use super::content_converter::{content_part_to_blocks, ContentBlock};
+use super::format_reqwest_stream_error;
 use super::traits::{
     AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent,
     StreamTerminationInfo, StreamTerminationSource, TokenUsage, ToolCall, ToolDefinition,
@@ -923,7 +924,86 @@ impl OpenAiBaseClient {
         let mut utf8 = Utf8StreamDecoder::default();
 
         while let Some(chunk_result) = stream.next().await {
-            let chunk = chunk_result.map_err(|e| AiError::StreamError(e.to_string()))?;
+            let chunk = match chunk_result {
+                Ok(v) => v,
+                Err(e) => {
+                    let details = format_reqwest_stream_error(
+                        &config.provider,
+                        &config.model,
+                        Some(&url),
+                        Some(response_status),
+                        Some(&response_headers),
+                        &e,
+                    );
+                    let error_text = format!("Stream error: {details}");
+
+                    // Keep a minimal-but-useful debug payload for stream failures.
+                    // (Only surfaced when debug_mode is enabled in TaskRunner.)
+                    let debug_response_body = serde_json::json!({
+                        "_streamError": error_text,
+                        "choices": [{
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": full_content,
+                                "reasoning_content": if full_thinking.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(full_thinking.clone()) }
+                            },
+                            "finish_reason": "error"
+                        }],
+                        "thinking": if full_thinking.is_empty() {
+                            serde_json::Value::Null
+                        } else {
+                            serde_json::Value::String(full_thinking.clone())
+                        },
+                        "usage": final_usage.as_ref().map(|u| serde_json::json!({
+                            "prompt_tokens": u.prompt_tokens,
+                            "completion_tokens": u.completion_tokens,
+                            "total_tokens": u.total_tokens,
+                            "prompt_tokens_details": {
+                                "cached_tokens": u.cached_tokens
+                            },
+                            "completion_tokens_details": {
+                                "reasoning_tokens": u.reasoning_tokens
+                            }
+                        }))
+                    });
+
+                    let debug_info = DebugInfoData {
+                        request: Some(debug_request.clone()),
+                        response: Some(DebugResponseData {
+                            status: response_status,
+                            headers: response_headers.clone(),
+                            body: debug_response_body,
+                        }),
+                        stream_termination: Some(StreamTerminationInfo {
+                            protocol_complete: Some(false),
+                            // Transport/body decode error during streaming; not a protocol-level completion.
+                            termination_source: Some(StreamTerminationSource::Unknown),
+                            protocol_kind: Some("sse_marker".to_string()),
+                            expected_signal: Some("[DONE]".to_string()),
+                            observed_signal: None,
+                            last_event_type: None,
+                            chunk_count: Some(chunk_count),
+                        }),
+                    };
+
+                    let _ = token_sender.send(StreamEvent::Error(error_text)).await;
+                    let _ = token_sender
+                        .send(StreamEvent::DoneWithDebug {
+                            content: full_content.clone(),
+                            thinking: if full_thinking.is_empty() {
+                                None
+                            } else {
+                                Some(full_thinking.clone())
+                            },
+                            debug_info: Some(debug_info),
+                            usage: final_usage.clone(),
+                        })
+                        .await;
+
+                    return Err(AiError::StreamError(details));
+                }
+            };
             let chunk_str = utf8.push(&chunk);
             chunk_count = chunk_count.saturating_add(1);
 

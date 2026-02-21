@@ -8,6 +8,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
+use super::format_reqwest_stream_error;
 use super::traits::{
     AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent,
     StreamTerminationInfo, StreamTerminationSource, ToolDefinition,
@@ -284,7 +285,56 @@ impl AiClient for OllamaClient {
         let mut chunk_count: u32 = 0;
 
         while let Some(chunk_result) = stream.next().await {
-            let chunk = chunk_result.map_err(|e| AiError::StreamError(e.to_string()))?;
+            let chunk = match chunk_result {
+                Ok(v) => v,
+                Err(e) => {
+                    let details = format_reqwest_stream_error(
+                        &config.provider,
+                        &config.model,
+                        Some(&url),
+                        Some(status_code),
+                        Some(&response_headers),
+                        &e,
+                    );
+                    let error_text = format!("Stream error: {details}");
+
+                    let debug_info = DebugInfoData {
+                        request: Some(debug_request.clone()),
+                        response: Some(DebugResponseData {
+                            status: status_code,
+                            headers: response_headers.clone(),
+                            body: serde_json::json!({
+                                "_streamError": error_text,
+                                "message": {
+                                    "role": "assistant",
+                                    "content": full_content.clone()
+                                },
+                                "done": false
+                            }),
+                        }),
+                        stream_termination: Some(StreamTerminationInfo {
+                            protocol_complete: Some(false),
+                            termination_source: Some(StreamTerminationSource::Unknown),
+                            protocol_kind: Some("ndjson_field".to_string()),
+                            expected_signal: Some("done=true".to_string()),
+                            observed_signal: None,
+                            last_event_type: Some("transport_error".to_string()),
+                            chunk_count: Some(chunk_count),
+                        }),
+                    };
+
+                    let _ = token_sender.send(StreamEvent::Error(error_text)).await;
+                    let _ = token_sender
+                        .send(StreamEvent::DoneWithDebug {
+                            content: full_content.clone(),
+                            thinking: None,
+                            debug_info: Some(debug_info),
+                            usage: None,
+                        })
+                        .await;
+                    return Err(AiError::StreamError(details));
+                }
+            };
             let chunk_str = utf8.push(&chunk);
             chunk_count = chunk_count.saturating_add(1);
             line_buffer.push_str(&chunk_str);
