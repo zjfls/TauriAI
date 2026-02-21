@@ -4816,7 +4816,9 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       if (!ok) return;
 
       try {
-        await invoke('delete_local_path', { path: absPath, allowedRoots: rootFoldersRef.current });
+        await invoke('delete_local_path', {
+          args: { path: absPath, allowedRoots: rootFoldersRef.current },
+        });
       } catch (error) {
         console.error('delete_local_path failed:', error);
         return;
