@@ -1522,43 +1522,46 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       }
     };
 
-    const extractSuffixId = (prefix: string, id: string): string => {
-      const idx = id.lastIndexOf(prefix);
-      return idx === -1 ? id : id.slice(idx + prefix.length);
-    };
-
-	    // Some block types are emitted as full JSON snapshots; for these we should not concat deltas.
-	    const isSnapshotBlockType = (blockType: string) => {
-	      return blockType === 'web_search' || blockType === 'tool_call' || blockType === 'approval';
+	    const extractSuffixId = (prefix: string, id: string): string => {
+	      const idx = id.lastIndexOf(prefix);
+	      return idx === -1 ? id : id.slice(idx + prefix.length);
 	    };
 
-	    // Some providers may emit "delta" as cumulative snapshots (or occasionally repeat the same chunk).
-	    // This merge strategy handles both incremental deltas and cumulative snapshots safely.
-	    const mergeChunksAdaptive = (chunks: string[]): string => {
-	      let merged = '';
-	      for (const chunk of chunks) {
-	        if (!chunk) continue;
-	        if (!merged) {
-	          merged = chunk;
-	          continue;
-	        }
-	        if (chunk === merged) {
-	          // exact duplicate (common with retries / replays)
-	          continue;
-	        }
-	        if (chunk.length > merged.length && chunk.startsWith(merged)) {
-	          // cumulative snapshot (replace)
-	          merged = chunk;
-	          continue;
-	        }
-	        if (merged.length > chunk.length && merged.startsWith(chunk)) {
-	          // stale snapshot / out-of-order repeat (ignore)
-	          continue;
-	        }
-	        merged += chunk;
+	    // Some providers/gateways incorrectly send "delta" as the full content-so-far.
+	    // If we blindly append, the Workstudio AI viewer will show duplicated intermediate snapshots.
+	    const mergeStreamingTextDelta = (prevText: string, nextDelta: string): string => {
+	      if (!nextDelta) return prevText;
+	      if (!prevText) return nextDelta;
+
+	      if (nextDelta.startsWith(prevText)) {
+	        return nextDelta;
 	      }
-	      return merged;
+	      if (prevText.endsWith(nextDelta)) {
+	        return prevText;
+	      }
+	      const maxOverlap = Math.min(prevText.length, nextDelta.length);
+	      for (let k = maxOverlap; k >= 1; k--) {
+	        if (prevText.slice(prevText.length - k) === nextDelta.slice(0, k)) {
+	          return prevText + nextDelta.slice(k);
+	        }
+	      }
+	      return prevText + nextDelta;
 	    };
+
+		    // Some block types are emitted as full JSON snapshots; for these we should not concat deltas.
+		    const isSnapshotBlockType = (blockType: string) => {
+		      return blockType === 'web_search' || blockType === 'tool_call' || blockType === 'approval';
+		    };
+
+		    // Some providers may emit "delta" as cumulative snapshots (or occasionally repeat the same chunk).
+		    // This merge strategy handles both incremental deltas and cumulative snapshots safely.
+		    const mergeChunksAdaptive = (chunks: string[]): string => {
+		      let merged = '';
+		      for (const chunk of chunks) {
+		        merged = mergeStreamingTextDelta(merged, chunk);
+		      }
+		      return merged;
+		    };
 
 	    const upsertBlock = (
 	      blocks: MessageBlock[],
@@ -1651,39 +1654,40 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	      const current = blocks[idx];
 	      const next: MessageBlock = (() => {
 	        if (current.type === 'thinking' && blockType === 'thinking') {
-	          const prevText = String(current.text ?? '');
-	          const nextText =
-	            delta.length > prevText.length && delta.startsWith(prevText) ? delta : prevText + delta;
-	          return { ...current, turnIndex: current.turnIndex ?? turnIndex, text: nextText };
-	        }
-	        if (current.type === 'status' && blockType === 'status') {
-	          const prevText = String(current.text ?? '');
-	          const nextText =
-	            delta.length > prevText.length && delta.startsWith(prevText) ? delta : prevText + delta;
-	          return { ...current, turnIndex: current.turnIndex ?? turnIndex, text: nextText };
-	        }
-	        if (current.type === 'text' && blockType === 'text') {
-	          const prevText = String(current.text ?? '');
-	          const nextText =
-	            delta.length > prevText.length && delta.startsWith(prevText) ? delta : prevText + delta;
 	          return {
 	            ...current,
 	            turnIndex: current.turnIndex ?? turnIndex,
-	            text: nextText,
+	            text: mergeStreamingTextDelta(String(current.text ?? ''), delta),
+	          };
+	        }
+	        if (current.type === 'status' && blockType === 'status') {
+	          return {
+	            ...current,
+	            turnIndex: current.turnIndex ?? turnIndex,
+	            text: mergeStreamingTextDelta(String(current.text ?? ''), delta),
+	          };
+	        }
+	        if (current.type === 'text' && blockType === 'text') {
+	          return {
+	            ...current,
+	            turnIndex: current.turnIndex ?? turnIndex,
+	            text: mergeStreamingTextDelta(String(current.text ?? ''), delta),
 	            format: current.format || format || 'markdown',
 	          };
 	        }
 	        if (current.type === 'tool_result' && blockType === 'tool_result') {
-	          const prevText = String(current.text ?? '');
-	          const nextText =
-	            delta.length > prevText.length && delta.startsWith(prevText) ? delta : prevText + delta;
-	          return { ...current, turnIndex: current.turnIndex ?? turnIndex, text: nextText };
+	          return {
+	            ...current,
+	            turnIndex: current.turnIndex ?? turnIndex,
+	            text: mergeStreamingTextDelta(String(current.text ?? ''), delta),
+	          };
 	        }
 	        if (current.type === 'error' && blockType === 'error') {
-	          const prevText = String(current.text ?? '');
-	          const nextText =
-	            delta.length > prevText.length && delta.startsWith(prevText) ? delta : prevText + delta;
-	          return { ...current, turnIndex: current.turnIndex ?? turnIndex, text: nextText };
+	          return {
+	            ...current,
+	            turnIndex: current.turnIndex ?? turnIndex,
+	            text: mergeStreamingTextDelta(String(current.text ?? ''), delta),
+	          };
 	        }
         if (current.type === 'tool_call' && blockType === 'tool_call') {
           // Snapshot update: overwrite

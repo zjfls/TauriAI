@@ -3014,6 +3014,33 @@ const flushPendingStreamChunks = () => {
         return idx === -1 ? id : id.slice(idx + prefix.length);
       };
 
+      // Some providers/gateways incorrectly send "delta" as the full content-so-far.
+      // If we blindly append, UI will show exponentially duplicated text.
+      const mergeStreamingTextDelta = (prevText: string, nextDelta: string): string => {
+        if (!nextDelta) return prevText;
+        if (!prevText) return nextDelta;
+
+        // If delta is actually the full snapshot (content-so-far), replace.
+        if (nextDelta.startsWith(prevText)) {
+          return nextDelta;
+        }
+
+        // If we've already appended it (replay/dup), ignore.
+        if (prevText.endsWith(nextDelta)) {
+          return prevText;
+        }
+
+        // Overlap merge: append only the non-overlapping tail of delta.
+        const maxOverlap = Math.min(prevText.length, nextDelta.length);
+        for (let k = maxOverlap; k >= 1; k--) {
+          if (prevText.slice(prevText.length - k) === nextDelta.slice(0, k)) {
+            return prevText + nextDelta.slice(k);
+          }
+        }
+
+        return prevText + nextDelta;
+      };
+
       // Some block types are emitted as full JSON snapshots; for these we should not concat deltas.
       const isSnapshotBlockType = (blockType: string) => {
         return blockType === 'web_search' || blockType === 'tool_call' || blockType === 'approval';
@@ -3106,22 +3133,22 @@ const flushPendingStreamChunks = () => {
           return [...blocks, createBlock()];
         }
 
-        const current = blocks[idx];
+          const current = blocks[idx];
           const next: MessageBlock = (() => {
             if (current.type === 'thinking' && blockType === 'thinking') {
-              return { ...current, turnIndex: current.turnIndex ?? turnIndex, text: current.text + delta };
+              return { ...current, turnIndex: current.turnIndex ?? turnIndex, text: mergeStreamingTextDelta(current.text, delta) };
             }
             if (current.type === 'status' && blockType === 'status') {
-              return { ...current, turnIndex: current.turnIndex ?? turnIndex, text: current.text + delta };
+              return { ...current, turnIndex: current.turnIndex ?? turnIndex, text: mergeStreamingTextDelta(current.text, delta) };
             }
             if (current.type === 'text' && blockType === 'text') {
-              return { ...current, turnIndex: current.turnIndex ?? turnIndex, text: current.text + delta, format: current.format || format || 'markdown' };
+              return { ...current, turnIndex: current.turnIndex ?? turnIndex, text: mergeStreamingTextDelta(current.text, delta), format: current.format || format || 'markdown' };
             }
           if (current.type === 'tool_result' && blockType === 'tool_result') {
-            return { ...current, turnIndex: current.turnIndex ?? turnIndex, text: current.text + delta };
+            return { ...current, turnIndex: current.turnIndex ?? turnIndex, text: mergeStreamingTextDelta(current.text, delta) };
           }
           if (current.type === 'error' && blockType === 'error') {
-            return { ...current, turnIndex: current.turnIndex ?? turnIndex, text: current.text + delta };
+            return { ...current, turnIndex: current.turnIndex ?? turnIndex, text: mergeStreamingTextDelta(current.text, delta) };
           }
           if (current.type === 'tool_call' && blockType === 'tool_call') {
             // Snapshot update: overwrite (arguments may arrive in multiple updates in future)

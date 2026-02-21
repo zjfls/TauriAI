@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use tokio::sync::mpsc;
 
 use super::content_converter::{content_parts_to_blocks_with_limit, parse_data_url, ContentBlock};
+use super::{format_reqwest_stream_error, StreamProtocolContext};
 use super::traits::{
     AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent,
     StreamTerminationInfo, StreamTerminationSource, TokenUsage, ToolCall, ToolDefinition,
@@ -786,6 +787,8 @@ impl AiClient for GoogleClient {
         let mut stream = response.bytes_stream();
         let mut token_usage: Option<TokenUsage> = None;
         let mut chunk_count: u32 = 0;
+        let mut event_count: u32 = 0;
+        let mut last_sse_data: Option<String> = None;
         // SSE 可能跨 chunk 切分；用行缓冲拼接，避免 JSON 被拆开后无法解析、导致 thinking/text 丢失。
         let mut tool_calls: Vec<ToolCall> = Vec::new();
         let mut tool_calls_to_emit: Option<Vec<ToolCall>> = None;
@@ -793,7 +796,95 @@ impl AiClient for GoogleClient {
         let mut utf8 = Utf8StreamDecoder::default();
 
         'stream: while let Some(chunk_result) = stream.next().await {
-            let chunk = chunk_result.map_err(|e| AiError::StreamError(e.to_string()))?;
+            let chunk = match chunk_result {
+                Ok(v) => v,
+                Err(e) => {
+                    let stream_ctx = StreamProtocolContext {
+                        expected_protocol: Some("sse_json_chunk (data: JSON chunk)".to_string()),
+                        expected_signal: None,
+                        observed_signal: None,
+                        last_event_type: None,
+                        last_data_snippet: last_sse_data.clone(),
+                        buffer_tail: Some(sse_buffer.clone()),
+                        chunks_received: Some(chunk_count),
+                        events_received: Some(event_count),
+                    };
+                    let details = format_reqwest_stream_error(
+                        &config.provider,
+                        &config.model,
+                        Some(&url),
+                        Some(status_code),
+                        Some(&response_headers),
+                        &e,
+                        Some(&stream_ctx),
+                    );
+                    let error_text = format!("Stream error: {details}");
+
+                    let tool_calls_for_debug = if tool_calls.is_empty() {
+                        None
+                    } else {
+                        Some(tool_calls.clone())
+                    };
+                    let debug_info = DebugInfoData {
+                        request: Some(debug_request.clone()),
+                        response: Some(DebugResponseData {
+                            status: status_code,
+                            headers: response_headers.clone(),
+                            body: serde_json::json!({
+                                "_streamError": error_text,
+                                "candidates": [{
+                                    "content": {
+                                        "parts": [{
+                                            "text": full_content.clone()
+                                        }],
+                                        "role": "model"
+                                    },
+                                    "finishReason": "ERROR",
+                                    "groundingMetadata": full_grounding
+                                }],
+                                "thinking": if full_thinking.is_empty() {
+                                    serde_json::Value::Null
+                                } else {
+                                    serde_json::Value::String(full_thinking.clone())
+                                },
+                                "tool_calls": tool_calls_for_debug,
+                                "usageMetadata": token_usage.as_ref().map(|u| serde_json::json!({
+                                    "promptTokenCount": u.prompt_tokens,
+                                    "candidatesTokenCount": u.completion_tokens,
+                                    "totalTokenCount": u.total_tokens,
+                                    "cachedContentTokenCount": u.cached_tokens,
+                                    "thoughtsTokenCount": u.reasoning_tokens
+                                }))
+                            }),
+                        }),
+                        stream_termination: Some(StreamTerminationInfo {
+                            protocol_complete: Some(false),
+                            termination_source: Some(StreamTerminationSource::Unknown),
+                            protocol_kind: Some("sse_json_chunk".to_string()),
+                            expected_signal: None,
+                            observed_signal: None,
+                            last_event_type: Some("transport_error".to_string()),
+                            chunk_count: Some(chunk_count),
+                        }),
+                    };
+
+                    let _ = token_sender.send(StreamEvent::Error(error_text)).await;
+                    let _ = token_sender
+                        .send(StreamEvent::DoneWithDebug {
+                            content: full_content.clone(),
+                            thinking: if full_thinking.is_empty() {
+                                None
+                            } else {
+                                Some(full_thinking.clone())
+                            },
+                            debug_info: Some(debug_info),
+                            usage: token_usage.clone(),
+                        })
+                        .await;
+
+                    return Err(AiError::StreamError(details));
+                }
+            };
             let chunk_str = utf8.push(&chunk);
             chunk_count = chunk_count.saturating_add(1);
 
@@ -808,6 +899,10 @@ impl AiClient for GoogleClient {
                 }
 
                 if let Some(data) = strip_sse_data_prefix(line.as_str()) {
+                    event_count = event_count.saturating_add(1);
+                    if !data.trim().is_empty() {
+                        last_sse_data = Some(data.chars().take(1200).collect::<String>());
+                    }
                     if config.debug_sse {
                         eprintln!("[SSE][{}/{}] {}", config.provider, config.model, data);
                     }

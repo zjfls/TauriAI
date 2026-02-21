@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use tokio::sync::mpsc;
 
 use super::content_converter::{image_url_to_base64, ContentBlock};
+use super::{format_reqwest_stream_error, StreamProtocolContext};
 use super::traits::{
     AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent,
     StreamTerminationInfo, StreamTerminationSource, TokenUsage, ToolCall, ToolDefinition,
@@ -757,12 +758,96 @@ impl AiClient for AnthropicClient {
         let mut sse_buffer = String::new();
         let mut utf8 = Utf8StreamDecoder::default();
         let mut chunk_count: u32 = 0;
+        let mut event_count: u32 = 0;
+        let mut last_sse_data: Option<String> = None;
+        let mut last_event_type: Option<String> = None;
 
         // Store debug parts for later assembly
         // We'll build the final debug_info with full_content at the end
 
         while let Some(chunk_result) = stream.next().await {
-            let chunk = chunk_result.map_err(|e| AiError::StreamError(e.to_string()))?;
+            let chunk = match chunk_result {
+                Ok(v) => v,
+                Err(e) => {
+                    let stream_ctx = StreamProtocolContext {
+                        expected_protocol: Some("sse_event (JSON with `type`)".to_string()),
+                        expected_signal: Some("message_stop".to_string()),
+                        observed_signal: None,
+                        last_event_type: last_event_type.clone(),
+                        last_data_snippet: last_sse_data.clone(),
+                        buffer_tail: Some(sse_buffer.clone()),
+                        chunks_received: Some(chunk_count),
+                        events_received: Some(event_count),
+                    };
+                    let details = format_reqwest_stream_error(
+                        &config.provider,
+                        &config.model,
+                        Some(&url),
+                        Some(status_code),
+                        Some(&response_headers),
+                        &e,
+                        Some(&stream_ctx),
+                    );
+                    let error_text = format!("Stream error: {details}");
+
+                    let tool_calls_for_debug = if tool_calls.is_empty() {
+                        None
+                    } else {
+                        Some(tool_calls.clone())
+                    };
+                    let debug_info = DebugInfoData {
+                        request: Some(debug_request.clone()),
+                        response: Some(DebugResponseData {
+                            status: status_code,
+                            headers: response_headers.clone(),
+                            body: serde_json::json!({
+                                "_streamError": error_text,
+                                "content": [{
+                                    "type": "text",
+                                    "text": full_content
+                                }],
+                                "thinking": if full_thinking.is_empty() {
+                                    serde_json::Value::Null
+                                } else {
+                                    serde_json::Value::String(full_thinking.clone())
+                                },
+                                "tool_calls": tool_calls_for_debug,
+                                "usage": token_usage.as_ref().map(|u| serde_json::json!({
+                                    "input_tokens": u.prompt_tokens,
+                                    "output_tokens": u.completion_tokens,
+                                    "cache_creation_input_tokens": u.cache_creation_input_tokens,
+                                    "cache_read_input_tokens": u.cache_read_input_tokens
+                                })),
+                            }),
+                        }),
+                        stream_termination: Some(StreamTerminationInfo {
+                            protocol_complete: Some(false),
+                            termination_source: Some(StreamTerminationSource::Unknown),
+                            protocol_kind: Some("sse_event".to_string()),
+                            expected_signal: Some("message_stop".to_string()),
+                            observed_signal: None,
+                            last_event_type: Some("transport_error".to_string()),
+                            chunk_count: Some(chunk_count),
+                        }),
+                    };
+
+                    let _ = token_sender.send(StreamEvent::Error(error_text)).await;
+                    let _ = token_sender
+                        .send(StreamEvent::DoneWithDebug {
+                            content: full_content.clone(),
+                            thinking: if full_thinking.is_empty() {
+                                None
+                            } else {
+                                Some(full_thinking.clone())
+                            },
+                            debug_info: Some(debug_info),
+                            usage: token_usage.clone(),
+                        })
+                        .await;
+
+                    return Err(AiError::StreamError(details));
+                }
+            };
             let chunk_str = utf8.push(&chunk);
             chunk_count = chunk_count.saturating_add(1);
             sse_buffer.push_str(&chunk_str);
@@ -776,12 +861,17 @@ impl AiClient for AnthropicClient {
                 }
 
                 if let Some(data) = strip_sse_data_prefix(line.as_str()) {
+                    event_count = event_count.saturating_add(1);
+                    if !data.trim().is_empty() {
+                        last_sse_data = Some(data.chars().take(1200).collect::<String>());
+                    }
                     if config.debug_sse {
                         eprintln!("[SSE][{}/{}] {}", config.provider, config.model, data);
                     }
                     if let Ok(event) = serde_json::from_str::<StreamingEvent>(data) {
                         match event {
                             StreamingEvent::MessageStart { message } => {
+                                last_event_type = Some("message_start".to_string());
                                 // Capture initial usage from message_start
                                 if let Some(usage) = message.usage {
                                     token_usage = Some(TokenUsage {
@@ -797,6 +887,7 @@ impl AiClient for AnthropicClient {
                                 }
                             }
                             StreamingEvent::ContentBlockStart { content_block } => {
+                                last_event_type = Some("content_block_start".to_string());
                                 // Tool use blocks are delivered via content_block_start + input_json_delta deltas.
                                 if content_block.content_type == "tool_use" {
                                     if let (Some(id), Some(name)) =
@@ -812,6 +903,7 @@ impl AiClient for AnthropicClient {
                                 }
                             }
                             StreamingEvent::ContentBlockDelta { delta } => {
+                                last_event_type = Some("content_block_delta".to_string());
                                 match delta.delta_type.as_str() {
                                     "text_delta" => {
                                         if let Some(text) = delta.text {
@@ -839,6 +931,7 @@ impl AiClient for AnthropicClient {
                                 }
                             }
                             StreamingEvent::ContentBlockStop {} => {
+                                last_event_type = Some("content_block_stop".to_string());
                                 if let Some(in_progress) = current_tool_use.take() {
                                     let arguments = if !in_progress.input_json.trim().is_empty() {
                                         in_progress.input_json
@@ -856,6 +949,7 @@ impl AiClient for AnthropicClient {
                                 }
                             }
                             StreamingEvent::MessageDelta { delta: _, usage } => {
+                                last_event_type = Some("message_delta".to_string());
                                 let usage_entry = token_usage.get_or_insert_with(|| TokenUsage {
                                     prompt_tokens: usage.input_tokens.unwrap_or(0),
                                     completion_tokens: usage.output_tokens,
@@ -965,12 +1059,68 @@ impl AiClient for AnthropicClient {
                                 return Ok(());
                             }
                             StreamingEvent::Error { error } => {
+                                let error_msg = error.message.clone();
+                                let error_text = format!("Stream error: {error_msg}");
+                                let tool_calls_for_debug = if tool_calls.is_empty() {
+                                    None
+                                } else {
+                                    Some(tool_calls.clone())
+                                };
+
+                                let debug_info = DebugInfoData {
+                                    request: Some(debug_request.clone()),
+                                    response: Some(DebugResponseData {
+                                        status: status_code,
+                                        headers: response_headers.clone(),
+                                        body: serde_json::json!({
+                                            "_streamError": error_text,
+                                            "content": [{
+                                                "type": "text",
+                                                "text": full_content.clone()
+                                            }],
+                                            "thinking": if full_thinking.is_empty() {
+                                                serde_json::Value::Null
+                                            } else {
+                                                serde_json::Value::String(full_thinking.clone())
+                                            },
+                                            "tool_calls": tool_calls_for_debug,
+                                            "usage": token_usage.as_ref().map(|u| serde_json::json!({
+                                                "input_tokens": u.prompt_tokens,
+                                                "output_tokens": u.completion_tokens,
+                                                "cache_creation_input_tokens": u.cache_creation_input_tokens,
+                                                "cache_read_input_tokens": u.cache_read_input_tokens
+                                            })),
+                                        }),
+                                    }),
+                                    stream_termination: Some(StreamTerminationInfo {
+                                        protocol_complete: Some(false),
+                                        termination_source: Some(StreamTerminationSource::Unknown),
+                                        protocol_kind: Some("sse_event".to_string()),
+                                        expected_signal: Some("message_stop".to_string()),
+                                        observed_signal: Some("error".to_string()),
+                                        last_event_type: Some("error".to_string()),
+                                        chunk_count: Some(chunk_count),
+                                    }),
+                                };
+
+                                let _ = token_sender.send(StreamEvent::Error(error_text)).await;
                                 let _ = token_sender
-                                    .send(StreamEvent::Error(error.message.clone()))
+                                    .send(StreamEvent::DoneWithDebug {
+                                        content: full_content.clone(),
+                                        thinking: if full_thinking.is_empty() {
+                                            None
+                                        } else {
+                                            Some(full_thinking.clone())
+                                        },
+                                        debug_info: Some(debug_info),
+                                        usage: token_usage.clone(),
+                                    })
                                     .await;
-                                return Err(AiError::StreamError(error.message));
+                                return Err(AiError::StreamError(error_msg));
                             }
-                            _ => {}
+                            StreamingEvent::Ping {} => {
+                                last_event_type = Some("ping".to_string());
+                            }
                         }
                     }
                 }
