@@ -1466,15 +1466,36 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       }
     };
 
-    const extractSuffixId = (prefix: string, id: string): string => {
-      const idx = id.lastIndexOf(prefix);
-      return idx === -1 ? id : id.slice(idx + prefix.length);
-    };
+	    const extractSuffixId = (prefix: string, id: string): string => {
+	      const idx = id.lastIndexOf(prefix);
+	      return idx === -1 ? id : id.slice(idx + prefix.length);
+	    };
 
-    // Some block types are emitted as full JSON snapshots; for these we should not concat deltas.
-    const isSnapshotBlockType = (blockType: string) => {
-      return blockType === 'web_search' || blockType === 'tool_call' || blockType === 'approval';
-    };
+	    // Some providers/gateways incorrectly send "delta" as the full content-so-far.
+	    // If we blindly append, the Workstudio AI viewer will show duplicated intermediate snapshots.
+	    const mergeStreamingTextDelta = (prevText: string, nextDelta: string): string => {
+	      if (!nextDelta) return prevText;
+	      if (!prevText) return nextDelta;
+
+	      if (nextDelta.startsWith(prevText)) {
+	        return nextDelta;
+	      }
+	      if (prevText.endsWith(nextDelta)) {
+	        return prevText;
+	      }
+	      const maxOverlap = Math.min(prevText.length, nextDelta.length);
+	      for (let k = maxOverlap; k >= 1; k--) {
+	        if (prevText.slice(prevText.length - k) === nextDelta.slice(0, k)) {
+	          return prevText + nextDelta.slice(k);
+	        }
+	      }
+	      return prevText + nextDelta;
+	    };
+
+	    // Some block types are emitted as full JSON snapshots; for these we should not concat deltas.
+	    const isSnapshotBlockType = (blockType: string) => {
+	      return blockType === 'web_search' || blockType === 'tool_call' || blockType === 'approval';
+	    };
 
     const upsertBlock = (
       blocks: MessageBlock[],
@@ -1564,28 +1585,28 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         return [...blocks, createBlock()];
       }
 
-      const current = blocks[idx];
-      const next: MessageBlock = (() => {
-        if (current.type === 'thinking' && blockType === 'thinking') {
-          return { ...current, turnIndex: current.turnIndex ?? turnIndex, text: current.text + delta };
-        }
-        if (current.type === 'status' && blockType === 'status') {
-          return { ...current, turnIndex: current.turnIndex ?? turnIndex, text: current.text + delta };
-        }
-        if (current.type === 'text' && blockType === 'text') {
-          return {
-            ...current,
-            turnIndex: current.turnIndex ?? turnIndex,
-            text: current.text + delta,
-            format: current.format || format || 'markdown',
-          };
-        }
-        if (current.type === 'tool_result' && blockType === 'tool_result') {
-          return { ...current, turnIndex: current.turnIndex ?? turnIndex, text: current.text + delta };
-        }
-        if (current.type === 'error' && blockType === 'error') {
-          return { ...current, turnIndex: current.turnIndex ?? turnIndex, text: current.text + delta };
-        }
+	      const current = blocks[idx];
+	      const next: MessageBlock = (() => {
+	        if (current.type === 'thinking' && blockType === 'thinking') {
+	          return { ...current, turnIndex: current.turnIndex ?? turnIndex, text: mergeStreamingTextDelta(current.text, delta) };
+	        }
+	        if (current.type === 'status' && blockType === 'status') {
+	          return { ...current, turnIndex: current.turnIndex ?? turnIndex, text: mergeStreamingTextDelta(current.text, delta) };
+	        }
+	        if (current.type === 'text' && blockType === 'text') {
+	          return {
+	            ...current,
+	            turnIndex: current.turnIndex ?? turnIndex,
+	            text: mergeStreamingTextDelta(current.text, delta),
+	            format: current.format || format || 'markdown',
+	          };
+	        }
+	        if (current.type === 'tool_result' && blockType === 'tool_result') {
+	          return { ...current, turnIndex: current.turnIndex ?? turnIndex, text: mergeStreamingTextDelta(current.text, delta) };
+	        }
+	        if (current.type === 'error' && blockType === 'error') {
+	          return { ...current, turnIndex: current.turnIndex ?? turnIndex, text: mergeStreamingTextDelta(current.text, delta) };
+	        }
         if (current.type === 'tool_call' && blockType === 'tool_call') {
           // Snapshot update: overwrite
           return createBlock();
