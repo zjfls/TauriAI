@@ -1171,12 +1171,13 @@ const ThinkingBlock: React.FC<ThinkingBlockProps> = ({ text, isStreaming, defaul
   );
 };
 
-const StatusBlock: React.FC<{ text: string; isStreaming?: boolean }> = ({ text, isStreaming }) => {
+const StatusBlock: React.FC<{ text: string; isStreaming?: boolean; isActive?: boolean }> = ({ text, isStreaming, isActive }) => {
   if (!text) return null;
+  const shouldSpin = Boolean(isStreaming && isActive);
 
   return (
     <div className="mb-2 flex items-start gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-200">
-      <RefreshCw size={14} className={`mt-0.5 shrink-0 ${isStreaming ? 'animate-spin' : ''}`} />
+      <RefreshCw size={14} className={`mt-0.5 shrink-0 ${shouldSpin ? 'animate-spin' : ''}`} />
       <div className="whitespace-pre-wrap">{text}</div>
     </div>
   );
@@ -2466,7 +2467,7 @@ export const MessageBlocks: React.FC<{
     return groups.filter((g) => !g.turnId || g.turnId === latestTurnId);
   }, [groups, isTaskCollapsed, latestTurnId, showTaskToggle]);
 
-  const renderBlock = (block: MessageBlock, opts?: { deferHeavy?: boolean }) => {
+  const renderBlock = (block: MessageBlock, opts?: { deferHeavy?: boolean; isActiveStatus?: boolean }) => {
     if (block.type === 'thinking') {
       return (
         <ThinkingBlock
@@ -2480,7 +2481,7 @@ export const MessageBlocks: React.FC<{
     }
 
     if (block.type === 'status') {
-      return <StatusBlock text={block.text} isStreaming={isStreaming} />;
+      return <StatusBlock text={block.text} isStreaming={isStreaming} isActive={opts?.isActiveStatus} />;
     }
 
     if (block.type === 'text') {
@@ -2695,11 +2696,21 @@ export const MessageBlocks: React.FC<{
               }
 
               return (
-                <React.Fragment key={block.id}>
-                  {renderBlock(block, { deferHeavy: deferHeavyForGroup })}
-                </React.Fragment>
-              );
-            })}
+	                <React.Fragment key={block.id}>
+	                  {renderBlock(block, {
+	                    deferHeavy: deferHeavyForGroup,
+	                    // 只有“最新一轮/最新组”的最后一个 status 才应该转圈；
+	                    // 否则很容易出现“已经进入后续输出了，但旧 status 仍在转”的错觉。
+	                    isActiveStatus: Boolean(
+	                      block.type === 'status' &&
+	                        isStreaming &&
+	                        (g.turnId ? g.turnId === latestTurnId : latestTurnId === null) &&
+	                        blockIdx === g.blocks.length - 1,
+	                    ),
+	                  })}
+	                </React.Fragment>
+	              );
+	            })}
           </div>
         );
       })}
