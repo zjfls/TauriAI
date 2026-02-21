@@ -1819,52 +1819,58 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
             return;
           }
 
-          if (payload.type === 'done') {
-            // 收尾前先 flush，避免最后一批 token 被节流队列丢弃
-            flushPending();
+	          if (payload.type === 'done') {
+	            // 收尾前先 flush，避免最后一批 token 被节流队列丢弃
+	            flushPending();
 
-            const doneAtMs = Date.now();
-            const bubbleForSave = aiBubblesRef.current.find((b) => (b.conversationId ?? '').trim() === conversationId);
-            const latencyMs = bubbleForSave?.startedAtMs ? Math.max(0, doneAtMs - bubbleForSave.startedAtMs) : undefined;
+	            const doneAtMs = Date.now();
+	            const bubbleForSave = aiBubblesRef.current.find((b) => (b.conversationId ?? '').trim() === conversationId);
+	            const latencyMs = bubbleForSave?.startedAtMs ? Math.max(0, doneAtMs - bubbleForSave.startedAtMs) : undefined;
+	            const isAbortedByUser = bubbleForSave?.status === 'error' && bubbleForSave.error === '已中止';
+	            if (isAbortedByUser && bubbleForSave?.kind === 'symbol_analysis') {
+	              cancelledSymbolAnalysisBubbleIdsRef.current.delete(bubbleForSave.id);
+	            }
 
-            setAiBubbles((prev) => {
-              const next = prev.map((b) => {
-                if ((b.conversationId ?? '').trim() !== conversationId) return b;
-                const blocks = b.blocks ?? [];
-                const hasAnyTextBlock = blocks.some((blk) => blk.type === 'text');
-                const nextBlocks = hasAnyTextBlock
-                  ? blocks
-                  : [
-                    ...blocks,
-                    {
-                      id: `${payload.turnId}:assistant_text:final`,
-                      type: 'text',
-                      format: payload.format ?? 'markdown',
-                      text: payload.fullContent ?? '',
-                      turnId: payload.turnId,
-                      turnIndex: getTurnIndex(conversationId, payload.turnId),
-                    } as MessageBlock,
-                  ];
+	            if (!isAbortedByUser) {
+	              setAiBubbles((prev) => {
+	                const next = prev.map((b) => {
+	                  if ((b.conversationId ?? '').trim() !== conversationId) return b;
+	                  const blocks = b.blocks ?? [];
+	                  const hasAnyTextBlock = blocks.some((blk) => blk.type === 'text');
+	                  const nextBlocks = hasAnyTextBlock
+	                    ? blocks
+	                    : [
+	                      ...blocks,
+	                      {
+	                        id: `${payload.turnId}:assistant_text:final`,
+	                        type: 'text',
+	                        format: payload.format ?? 'markdown',
+	                        text: payload.fullContent ?? '',
+	                        turnId: payload.turnId,
+	                        turnIndex: getTurnIndex(conversationId, payload.turnId),
+	                      } as MessageBlock,
+	                    ];
 
-                return {
-                  ...b,
-                  status: 'done' as WorkstudioAiBubbleStatus,
-                  assistantMessageId: payload.assistantMessageId ?? b.assistantMessageId,
-                  blocks: nextBlocks,
-                  latencyMs,
-                  modelRef: b.modelRef || payload.model || undefined,
-                };
-              });
-              aiBubblesRef.current = next;
-              return next;
-            });
+	                  return {
+	                    ...b,
+	                    status: 'done' as WorkstudioAiBubbleStatus,
+	                    assistantMessageId: payload.assistantMessageId ?? b.assistantMessageId,
+	                    blocks: nextBlocks,
+	                    latencyMs,
+	                    modelRef: b.modelRef || payload.model || undefined,
+	                  };
+	                });
+	                aiBubblesRef.current = next;
+	                return next;
+	              });
+	            }
 
-            // 符号分析：把最终结果落盘到 workstudio_symbol_analyses，并刷新右键菜单/缓存。
-            if (!savedSymbolAnalysisByConversationId.has(conversationId) && bubbleForSave?.analysisMeta) {
-              savedSymbolAnalysisByConversationId.add(conversationId);
-              void (async () => {
-                try {
-                  const meta = bubbleForSave.analysisMeta!;
+	            // 符号分析：把最终结果落盘到 workstudio_symbol_analyses，并刷新右键菜单/缓存。
+	            if (!isAbortedByUser && !savedSymbolAnalysisByConversationId.has(conversationId) && bubbleForSave?.analysisMeta) {
+	              savedSymbolAnalysisByConversationId.add(conversationId);
+	              void (async () => {
+	                try {
+	                  const meta = bubbleForSave.analysisMeta!;
                   const res = await saveWorkstudioSymbolAnalysis({
                     ...meta,
                     answerMd: payload.fullContent ?? '',
@@ -1908,20 +1914,26 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
             return;
           }
 
-          if (payload.type === 'error') {
-            flushPending();
-            setAiBubbles((prev) => {
-              const next = prev.map((b) => {
-                if ((b.conversationId ?? '').trim() !== conversationId) return b;
-                return {
-                  ...b,
-                  status: 'error' as WorkstudioAiBubbleStatus,
-                  error: payload.error || 'Unknown error',
-                };
-              });
-              aiBubblesRef.current = next;
-              return next;
-            });
+	          if (payload.type === 'error') {
+	            flushPending();
+	            const bubbleForCancel = aiBubblesRef.current.find((b) => (b.conversationId ?? '').trim() === conversationId) ?? null;
+	            const isAbortedByUser = bubbleForCancel?.status === 'error' && bubbleForCancel.error === '已中止';
+	            if (isAbortedByUser && bubbleForCancel?.kind === 'symbol_analysis') {
+	              cancelledSymbolAnalysisBubbleIdsRef.current.delete(bubbleForCancel.id);
+	            }
+	            const errorMessage = isAbortedByUser ? '已中止' : payload.error || 'Unknown error';
+	            setAiBubbles((prev) => {
+	              const next = prev.map((b) => {
+	                if ((b.conversationId ?? '').trim() !== conversationId) return b;
+	                return {
+	                  ...b,
+	                  status: 'error' as WorkstudioAiBubbleStatus,
+	                  error: errorMessage,
+	                };
+	              });
+	              aiBubblesRef.current = next;
+	              return next;
+	            });
             {
               const analysisKey = symbolAnalysisKeyByConversationIdRef.current.get(conversationId);
               if (analysisKey) {
@@ -7679,46 +7691,46 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                       if (!isTauri()) return;
                       const bubbleId = aiViewer.id;
 
-                      if (aiViewer.kind === 'symbol_analysis') {
-                        // 符号分析使用 run_task/run:event：优先用 conversationId 走 abort_run。
-                        cancelledSymbolAnalysisBubbleIdsRef.current.add(bubbleId);
+	                      if (aiViewer.kind === 'symbol_analysis') {
+	                        // 符号分析使用 run_task/run:event：优先用 conversationId 走 abort_run。
+	                        // 注意：queued/connecting 阶段可能还在 startQueuedSymbolAnalysis 里，这里用一个 cancel 标记让启动流程尽快退出。
+	                        if (aiViewer.status === 'queued' || aiViewer.status === 'connecting') {
+	                          cancelledSymbolAnalysisBubbleIdsRef.current.add(bubbleId);
+	                        }
 
-                        const convIdDirect = (aiViewer.conversationId ?? '').trim();
-                        const convIdFromMap = String(
-                          symbolAnalysisConversationIdByBubbleIdRef.current.get(bubbleId) ?? ''
-                        ).trim();
-                        const convId = convIdDirect || convIdFromMap;
+	                        const convIdDirect = (aiViewer.conversationId ?? '').trim();
+	                        const convIdFromMap = String(
+	                          symbolAnalysisConversationIdByBubbleIdRef.current.get(bubbleId) ?? ''
+	                        ).trim();
+	                        const convId = convIdDirect || convIdFromMap;
 
-                        if (convId) {
-                          void invoke('abort_run', { conversationId: convId }).catch(() => {});
-                          return;
-                        }
+	                        if (convId) {
+	                          void invoke('abort_run', { conversationId: convId }).catch(() => {});
+	                        }
 
-                        const bubble = aiBubblesRef.current.find((b) => b.id === bubbleId) ?? null;
-                        if (bubble?.status === 'queued') {
-                          // 还没创建会话：本地直接中止，避免队列里“卡住”。
-                          cancelledSymbolAnalysisBubbleIdsRef.current.delete(bubbleId);
-                          if (bubble.analysisMeta) {
-                            const analysisKey = makeSymbolAnalysisCacheKey(
-                              bubble.analysisMeta.filePath,
-                              bubble.analysisMeta.symbolKey
-                            );
-                            activeSymbolAnalysisKeysRef.current.delete(analysisKey);
-                          }
-                        }
+	                        const bubble = aiBubblesRef.current.find((b) => b.id === bubbleId) ?? null;
+	                        // 立即本地清理“该符号正在分析中/队列中”的锁与 UI 状态：
+	                        // - 不能依赖 run:event 的 done/error（取消时可能丢事件或被过滤），否则会出现“取消后无法再次分析”的卡死。
+	                        if (bubble?.analysisMeta) {
+	                          const analysisKey = makeSymbolAnalysisCacheKey(
+	                            bubble.analysisMeta.filePath,
+	                            bubble.analysisMeta.symbolKey
+	                          );
+	                          activeSymbolAnalysisKeysRef.current.delete(analysisKey);
+	                        }
 
-                        setAiBubbles((prev) => {
-	                          const next = prev.map((b) =>
-	                            b.id === bubbleId
-	                              ? { ...b, status: 'error' as WorkstudioAiBubbleStatus, error: '已中止' }
+	                        setAiBubbles((prev) => {
+		                          const next = prev.map((b) =>
+		                            b.id === bubbleId
+		                              ? { ...b, status: 'error' as WorkstudioAiBubbleStatus, error: '已中止' }
 	                              : b
 	                          );
 	                          aiBubblesRef.current = next;
 	                          return next;
 	                        });
-                        scheduleSymbolAnalysisRunsRef.current?.();
-                        return;
-                      }
+	                        scheduleSymbolAnalysisRunsRef.current?.();
+	                        return;
+	                      }
 
                       const convId = (aiViewer.conversationId ?? '').trim();
                       if (convId) void invoke('abort_run', { conversationId: convId }).catch(() => {});
