@@ -785,10 +785,10 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
 	                                      });
 	                                    }}
 	                                    disabled={!isEditing}
-	                                    placeholder="3"
+	                                    placeholder="8"
 	                                    className="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100"
 	                                  />
-	                                  <span className="text-xs text-gray-400">默认: 3</span>
+	                                  <span className="text-xs text-gray-400">默认: 8</span>
 	                                </div>
 
                                 <div className="col-span-3">
