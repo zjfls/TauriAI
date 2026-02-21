@@ -28,8 +28,9 @@ use crate::models::{
     MessageStatus, MessageTurn,
 };
 use crate::prompts::{
-    APPLY_PATCH_TOOL_PROMPT, MCP_RESOURCE_TOOL_PROMPT, PERSISTENT_PROCESS_PROMPT,
-    PYTHON3_FALLBACK_PROMPT, WEB_SEARCH_TOOL_PROMPT, WORKSTUDIO_PROMPT_GUIDE,
+    APPLY_PATCH_TOOL_PROMPT, APPLY_PATCH_UNIFIED_DIFF_TOOL_PROMPT, MCP_RESOURCE_TOOL_PROMPT,
+    PERSISTENT_PROCESS_PROMPT, PYTHON3_FALLBACK_PROMPT, WEB_SEARCH_TOOL_PROMPT,
+    WORKSTUDIO_PROMPT_GUIDE,
 };
 use crate::runtime::context_manager::{
     auto_compact_threshold_tokens, estimate_prompt_tokens, hard_limit_tokens, run_normal_compact,
@@ -485,6 +486,7 @@ fn compute_system_prompt_cache_key(
     workstudio: Option<&crate::models::Workstudio>,
     allow_persistent_pty: bool,
     enable_apply_patch_tool_prompt: bool,
+    enable_apply_patch_unified_diff_tool_prompt: bool,
     enable_local_web_search_tool: bool,
     enable_mcp_resource_tool_prompt: bool,
     enabled_skills: &[SkillEntry],
@@ -495,7 +497,7 @@ fn compute_system_prompt_cache_key(
     let mut h = Sha1::new();
     // NOTE: Cache key must include any prompt text that can affect the actual HTTP request.
     // Bump this version whenever the cache inputs change.
-    h.update(b"v5\n");
+    h.update(b"v6\n");
     h.update(agent.name.as_bytes());
     h.update(b"\n");
     h.update(agent.system_prompt.as_bytes());
@@ -523,6 +525,10 @@ fn compute_system_prompt_cache_key(
 
     h.update(format!("pty:{allow_persistent_pty}\n").as_bytes());
     h.update(format!("apply_patch_prompt:{enable_apply_patch_tool_prompt}\n").as_bytes());
+    h.update(
+        format!("apply_patch_unified_diff_prompt:{enable_apply_patch_unified_diff_tool_prompt}\n")
+            .as_bytes(),
+    );
     h.update(format!("py:{}/{}\n", py.has_python, py.has_python3).as_bytes());
     h.update(format!("local_web_search:{enable_local_web_search_tool}\n").as_bytes());
     h.update(format!("mcp_resource_prompt:{enable_mcp_resource_tool_prompt}\n").as_bytes());
@@ -650,6 +656,32 @@ fn inject_workstudio_prompt(
 
 fn inject_apply_patch_tool_prompt(messages: &mut Vec<Message>, conversation_id: &str) {
     let content = APPLY_PATCH_TOOL_PROMPT.trim().to_string();
+    if content.is_empty() {
+        return;
+    }
+    let insert_at = messages
+        .iter()
+        .take_while(|m| m.role == MessageRole::System)
+        .count();
+    messages.insert(
+        insert_at,
+        Message {
+            id: uuid::Uuid::new_v4().to_string(),
+            conversation_id: conversation_id.to_string(),
+            role: MessageRole::System,
+            content,
+            content_parts: Vec::new(),
+            thinking: None,
+            meta: None,
+            created_at: chrono::Utc::now(),
+            status: MessageStatus::Success,
+            error_message: None,
+        },
+    );
+}
+
+fn inject_apply_patch_unified_diff_tool_prompt(messages: &mut Vec<Message>, conversation_id: &str) {
+    let content = APPLY_PATCH_UNIFIED_DIFF_TOOL_PROMPT.trim().to_string();
     if content.is_empty() {
         return;
     }
@@ -987,7 +1019,7 @@ impl<'a> TurnLoop<'a> {
     }
 
     fn is_write_tool(tool_name: &str) -> bool {
-        matches!(tool_name, "apply_patch")
+        matches!(tool_name, "apply_patch" | "apply_patch_unified_diff")
     }
 
     fn is_network_tool(tool_name: &str) -> bool {
@@ -4031,6 +4063,9 @@ async fn run_task_inner(
     let enable_apply_patch_tool_prompt = allowed_tool_names
         .as_ref()
         .is_some_and(|names| names.contains("apply_patch"));
+    let enable_apply_patch_unified_diff_tool_prompt = allowed_tool_names
+        .as_ref()
+        .is_some_and(|names| names.contains("apply_patch_unified_diff"));
 
     // 4) TurnLoop：max_turns 统一以配置为准（agent.max_turns），未配置则使用全局默认值。
     let default_max_turns: u32 = 10_000;
@@ -4126,6 +4161,7 @@ async fn run_task_inner(
         workstudio.as_ref(),
         allow_persistent_pty,
         enable_apply_patch_tool_prompt,
+        enable_apply_patch_unified_diff_tool_prompt,
         enable_local_web_search_tool,
         enable_mcp_resource_tool_prompt,
         &enabled_skills_meta,
@@ -4191,6 +4227,9 @@ async fn run_task_inner(
         }
         if enable_apply_patch_tool_prompt {
             inject_apply_patch_tool_prompt(&mut messages, &input.conversation_id);
+        }
+        if enable_apply_patch_unified_diff_tool_prompt {
+            inject_apply_patch_unified_diff_tool_prompt(&mut messages, &input.conversation_id);
         }
         if enable_local_web_search_tool {
             inject_web_search_tool_prompt(&mut messages, &input.conversation_id);

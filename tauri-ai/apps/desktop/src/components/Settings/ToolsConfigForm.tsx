@@ -15,6 +15,7 @@ const AVAILABLE_TOOLS = [
   { name: 'list_dir', label: '列目录', description: '列出目录结构（带缩进）' },
   { name: 'rg', label: 'rg', description: '按 pattern 搜索文件（ripgrep）' },
   { name: 'apply_patch', label: 'Apply Patch', description: '按补丁格式修改/创建文件' },
+  { name: 'apply_patch_unified_diff', label: 'Apply Patch (Unified Diff)', description: '按 unified diff 块头应用补丁（仅 @@ -a,b +c,d @@）' },
   { name: 'shell_command', label: 'Shell 命令', description: '一次性执行命令' },
   { name: 'exec_command', label: 'PTY 启动命令', description: '创建交互式会话' },
   { name: 'write_stdin', label: 'PTY 写入输入', description: '向交互式会话写入 stdin' },

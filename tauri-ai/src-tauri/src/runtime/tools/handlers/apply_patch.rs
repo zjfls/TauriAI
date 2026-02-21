@@ -21,7 +21,11 @@ use crate::runtime::tools::sandbox::{
 };
 use crate::runtime::tools::spec::ToolSpec;
 
+pub const APPLY_PATCH_TOOL_NAME: &str = "apply_patch";
+pub const APPLY_PATCH_UNIFIED_DIFF_TOOL_NAME: &str = "apply_patch_unified_diff";
+
 pub struct ApplyPatchTool;
+pub struct ApplyPatchUnifiedDiffTool;
 
 #[derive(Debug, Deserialize)]
 struct ApplyPatchArgs {
@@ -79,16 +83,16 @@ impl LineEnding {
 impl ToolHandler for ApplyPatchTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "apply_patch".to_string(),
+            name: APPLY_PATCH_TOOL_NAME.to_string(),
             description: Some(
-                "使用补丁格式编辑工作区文件（Add/Delete/Update/Move）。文件路径支持相对路径（基于默认工作目录），也支持绝对路径（必须落在允许写入的根目录内）。".to_string(),
+                "使用 Codex 风格补丁格式编辑工作区文件（Add/Delete/Update/Move）。Update File 的块头仅支持自定义锚定（`@@ <原文行>`）；不支持 unified diff 头。".to_string(),
             ),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "input": {
                         "type": "string",
-                        "description": "补丁正文（自定义 apply_patch 格式，以 `*** Begin Patch` 开头、`*** End Patch` 结尾）。"
+                        "description": "补丁正文（Codex 风格 apply_patch 格式，以 `*** Begin Patch` 开头、`*** End Patch` 结尾）。"
                     }
                 },
                 "required": ["input"],
@@ -107,226 +111,274 @@ impl ToolHandler for ApplyPatchTool {
         ctx: &mut ToolExecutionContext<'_>,
         call: &ToolCall,
     ) -> Result<ToolCallResult, ToolError> {
-        let args: ApplyPatchArgs = serde_json::from_str(&call.arguments)
-            .map_err(|e| ToolError::invalid(format!("解析 apply_patch 参数失败: {e}")))?;
-        let patch_text = args.input.trim();
-        if patch_text.is_empty() {
-            return Err(ToolError::invalid("input 不能为空"));
+        call_apply_patch_tool(APPLY_PATCH_TOOL_NAME, ctx, call, parse_patch_custom).await
+    }
+}
+
+#[async_trait]
+impl ToolHandler for ApplyPatchUnifiedDiffTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: APPLY_PATCH_UNIFIED_DIFF_TOOL_NAME.to_string(),
+            description: Some(
+                "使用 Codex 风格补丁格式编辑工作区文件（Add/Delete/Update/Move）。Update File 的块头仅支持 unified diff 头（`@@ -a,b +c,d @@ heading`）；不支持自定义锚定头。".to_string(),
+            ),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "input": {
+                        "type": "string",
+                        "description": "补丁正文（Codex 风格补丁外壳 + unified diff 变更块头）。"
+                    }
+                },
+                "required": ["input"],
+                "additionalProperties": false
+            }),
+            required_permissions: vec![ToolPermission::FileWrite],
         }
+    }
 
-        if matches!(ctx.sandbox_policy, SandboxPolicy::ReadOnly) {
-            return Err(ToolError::denied(
-                "当前沙盒策略为 read-only：禁止使用 apply_patch 写入文件",
-            ));
+    async fn is_mutating(&self, _call: &ToolCall) -> bool {
+        true
+    }
+
+    async fn call(
+        &self,
+        ctx: &mut ToolExecutionContext<'_>,
+        call: &ToolCall,
+    ) -> Result<ToolCallResult, ToolError> {
+        call_apply_patch_tool(APPLY_PATCH_UNIFIED_DIFF_TOOL_NAME, ctx, call, parse_patch_unified_diff).await
+    }
+}
+
+type PatchParser = fn(&str) -> Result<Vec<Hunk>, ToolError>;
+
+async fn call_apply_patch_tool(
+    tool_name: &str,
+    ctx: &mut ToolExecutionContext<'_>,
+    call: &ToolCall,
+    parse: PatchParser,
+) -> Result<ToolCallResult, ToolError> {
+    let args: ApplyPatchArgs = serde_json::from_str(&call.arguments)
+        .map_err(|e| ToolError::invalid(format!("解析 {tool_name} 参数失败: {e}")))?;
+    let patch_text = args.input.trim();
+    if patch_text.is_empty() {
+        return Err(ToolError::invalid("input 不能为空"));
+    }
+
+    if matches!(ctx.sandbox_policy, SandboxPolicy::ReadOnly) {
+        return Err(ToolError::denied(format!(
+            "当前沙盒策略为 read-only：禁止使用 {tool_name} 写入文件"
+        )));
+    }
+
+    let base_dir = ctx
+        .default_workdir
+        .clone()
+        .or_else(|| std::env::current_dir().ok())
+        .ok_or_else(|| ToolError::internal("无法确定默认工作目录"))?;
+
+    let hunks = parse(patch_text)?;
+
+    // Collect patch pathspecs for git snapshot/diff/undo meta (best-effort).
+    // IMPORTANT: apply_patch is not transactional; meta helps UI show "what actually changed" and support Undo.
+    let (affected_abs_paths, created_abs_paths) = collect_patch_paths(&base_dir, &hunks)?;
+    let mut apply_patch_meta: serde_json::Value = json!({
+        "applyPatch": {
+            "baseDir": base_dir.display().to_string(),
         }
+    });
 
-        let base_dir = ctx
-            .default_workdir
-            .clone()
-            .or_else(|| std::env::current_dir().ok())
-            .ok_or_else(|| ToolError::internal("无法确定默认工作目录"))?;
+    // Best-effort git snapshots (ghost commits) for:
+    // - Undo: restore to "before"
+    // - Diff: compare before..after (includes untracked in affected scope)
+    let mut repo_root: Option<PathBuf> = None;
+    let mut work_tree: Option<PathBuf> = None;
+    let mut affected_rel: Vec<String> = Vec::new();
+    let mut created_rel: Vec<String> = Vec::new();
+    let mut ghost_before: Option<GhostCommit> = None;
+    let mut ghost_after: Option<GhostCommit> = None;
+    let mut snapshot_err_before: Option<String> = None;
+    let mut snapshot_err_after: Option<String> = None;
 
-        let hunks = parse_patch(patch_text)?;
-
-        // Collect patch pathspecs for git snapshot/diff/undo meta (best-effort).
-        // IMPORTANT: apply_patch is not transactional; meta helps UI show "what actually changed" and support Undo.
-        let (affected_abs_paths, created_abs_paths) = collect_patch_paths(&base_dir, &hunks)?;
-        let mut apply_patch_meta: serde_json::Value = json!({
-            "applyPatch": {
-                "baseDir": base_dir.display().to_string(),
-            }
-        });
-
-        // Best-effort git snapshots (ghost commits) for:
-        // - Undo: restore to "before"
-        // - Diff: compare before..after (includes untracked in affected scope)
-        let mut repo_root: Option<PathBuf> = None;
-        let mut work_tree: Option<PathBuf> = None;
-        let mut affected_rel: Vec<String> = Vec::new();
-        let mut created_rel: Vec<String> = Vec::new();
-        let mut ghost_before: Option<GhostCommit> = None;
-        let mut ghost_after: Option<GhostCommit> = None;
-        let mut snapshot_err_before: Option<String> = None;
-        let mut snapshot_err_after: Option<String> = None;
-
-        let abs_to_worktree_rel = |work_tree: &Path, abs: &Path| -> Option<String> {
-            let rel = abs.strip_prefix(work_tree).ok()?;
-            if rel.as_os_str().is_empty() {
-                return None;
-            }
-            let mut parts: Vec<String> = Vec::new();
-            for c in rel.components() {
-                let s = match c {
-                    Component::Normal(v) => v.to_string_lossy().to_string(),
-                    Component::CurDir => ".".to_string(),
-                    Component::ParentDir => "..".to_string(),
-                    _ => continue,
-                };
-                if s.is_empty() {
-                    continue;
-                }
-                parts.push(s);
-            }
-            Some(parts.join("/"))
-        };
-
-        match resolve_repo_root(&base_dir).await {
-            Ok(root) => {
-                let prefix = repo_prefix(&root, &base_dir).map(|p| p.to_string_lossy().to_string());
-                repo_root = Some(root.clone());
-                work_tree = Some(root.clone());
-
-                for abs in &affected_abs_paths {
-                    if let Some(rel) = abs_to_repo_rel(&root, abs) {
-                        affected_rel.push(rel);
-                    }
-                }
-                affected_rel.sort();
-                affected_rel.dedup();
-
-                for abs in &created_abs_paths {
-                    if let Some(rel) = abs_to_repo_rel(&root, abs) {
-                        created_rel.push(rel);
-                    }
-                }
-                created_rel.sort();
-                created_rel.dedup();
-
-                if !affected_rel.is_empty() {
-                    match create_ghost_commit_for_paths(
-                        &root,
-                        &affected_rel,
-                        "tauri-ai apply_patch snapshot (before)",
-                    )
-                    .await
-                    {
-                        Ok(c) => ghost_before = Some(c),
-                        Err(e) => snapshot_err_before = Some(e),
-                    }
-                }
-
-                apply_patch_meta["applyPatch"]["git"] = json!({
-                    "repoRoot": root.display().to_string(),
-                    "workTree": root.display().to_string(),
-                    "repoPrefix": prefix,
-                    "affectedPaths": affected_rel,
-                    "createdPaths": created_rel,
-                    "ghostBefore": ghost_before.as_ref().map(|c| c.id.clone()),
-                });
-                if let Some(e) = snapshot_err_before.as_ref() {
-                    apply_patch_meta["applyPatch"]["git"]["snapshotErrorBefore"] = json!(e);
-                }
-            }
-            Err(e) => {
-                // Fallback: base_dir not in a git repo. Create a small snapshot repo under `<base_dir>/.tauriai/`.
-                let snapshot_repo_root = base_dir.join(".tauriai").join("apply_patch_git");
-                match ensure_git_repo(&snapshot_repo_root).await {
-                    Ok(()) => {
-                        repo_root = Some(snapshot_repo_root.clone());
-                        work_tree = Some(base_dir.clone());
-
-                        for abs in &affected_abs_paths {
-                            if let Some(rel) = abs_to_worktree_rel(&base_dir, abs) {
-                                affected_rel.push(rel);
-                            }
-                        }
-                        affected_rel.sort();
-                        affected_rel.dedup();
-
-                        for abs in &created_abs_paths {
-                            if let Some(rel) = abs_to_worktree_rel(&base_dir, abs) {
-                                created_rel.push(rel);
-                            }
-                        }
-                        created_rel.sort();
-                        created_rel.dedup();
-
-                        if !affected_rel.is_empty() {
-                            match create_ghost_commit_for_paths_with_worktree(
-                                &snapshot_repo_root,
-                                &base_dir,
-                                &affected_rel,
-                                "tauri-ai apply_patch snapshot (before)",
-                            )
-                            .await
-                            {
-                                Ok(c) => ghost_before = Some(c),
-                                Err(err) => snapshot_err_before = Some(err),
-                            }
-                        }
-
-                        apply_patch_meta["applyPatch"]["git"] = json!({
-                            "repoRoot": snapshot_repo_root.display().to_string(),
-                            "workTree": base_dir.display().to_string(),
-                            "repoPrefix": null,
-                            "affectedPaths": affected_rel,
-                            "createdPaths": created_rel,
-                            "ghostBefore": ghost_before.as_ref().map(|c| c.id.clone()),
-                        });
-                        if let Some(err) = snapshot_err_before.as_ref() {
-                            apply_patch_meta["applyPatch"]["git"]["snapshotErrorBefore"] = json!(err);
-                        }
-                        apply_patch_meta["applyPatch"]["git"]["repoDetectError"] = json!(e);
-                    }
-                    Err(err) => {
-                        apply_patch_meta["applyPatch"]["git"] = json!({
-                            "error": format!("未检测到 git 仓库，且无法初始化快照仓库: {err}"),
-                            "repoDetectError": e,
-                        });
-                    }
-                }
-            }
+    let abs_to_worktree_rel = |work_tree: &Path, abs: &Path| -> Option<String> {
+        let rel = abs.strip_prefix(work_tree).ok()?;
+        if rel.as_os_str().is_empty() {
+            return None;
         }
-
-        let affected =
-            match apply_hunks(&base_dir, &ctx.sandbox_policy, &ctx.workspace_roots, &hunks).await {
-                Ok(v) => Ok(v),
-                Err(err) => Err(err),
+        let mut parts: Vec<String> = Vec::new();
+        for c in rel.components() {
+            let s = match c {
+                Component::Normal(v) => v.to_string_lossy().to_string(),
+                Component::CurDir => ".".to_string(),
+                Component::ParentDir => "..".to_string(),
+                _ => continue,
             };
+            if s.is_empty() {
+                continue;
+            }
+            parts.push(s);
+        }
+        Some(parts.join("/"))
+    };
 
-        // Snapshot "after" even if apply_hunks failed (best-effort), so UI can still render what was written.
-        if let (Some(root), Some(work_tree)) = (repo_root.as_ref(), work_tree.as_ref()) {
-            let affected_paths = apply_patch_meta["applyPatch"]["git"]["affectedPaths"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                .collect::<Vec<_>>();
-            if !affected_paths.is_empty() {
-                match create_ghost_commit_for_paths_with_worktree(
-                    root,
-                    work_tree,
-                    &affected_paths,
-                    "tauri-ai apply_patch snapshot (after)",
+    match resolve_repo_root(&base_dir).await {
+        Ok(root) => {
+            let prefix =
+                repo_prefix(&root, &base_dir).map(|p| p.to_string_lossy().to_string());
+            repo_root = Some(root.clone());
+            work_tree = Some(root.clone());
+
+            for abs in &affected_abs_paths {
+                if let Some(rel) = abs_to_repo_rel(&root, abs) {
+                    affected_rel.push(rel);
+                }
+            }
+            affected_rel.sort();
+            affected_rel.dedup();
+
+            for abs in &created_abs_paths {
+                if let Some(rel) = abs_to_repo_rel(&root, abs) {
+                    created_rel.push(rel);
+                }
+            }
+            created_rel.sort();
+            created_rel.dedup();
+
+            if !affected_rel.is_empty() {
+                match create_ghost_commit_for_paths(
+                    &root,
+                    &affected_rel,
+                    "tauri-ai apply_patch snapshot (before)",
                 )
                 .await
                 {
-                    Ok(c) => ghost_after = Some(c),
-                    Err(e) => snapshot_err_after = Some(e),
+                    Ok(c) => ghost_before = Some(c),
+                    Err(e) => snapshot_err_before = Some(e),
+                }
+            }
+
+            apply_patch_meta["applyPatch"]["git"] = json!({
+                "repoRoot": root.display().to_string(),
+                "workTree": root.display().to_string(),
+                "repoPrefix": prefix,
+                "affectedPaths": affected_rel,
+                "createdPaths": created_rel,
+                "ghostBefore": ghost_before.as_ref().map(|c| c.id.clone()),
+            });
+            if let Some(e) = snapshot_err_before.as_ref() {
+                apply_patch_meta["applyPatch"]["git"]["snapshotErrorBefore"] = json!(e);
+            }
+        }
+        Err(e) => {
+            // Fallback: base_dir not in a git repo. Create a small snapshot repo under `<base_dir>/.tauriai/`.
+            let snapshot_repo_root = base_dir.join(".tauriai").join("apply_patch_git");
+            match ensure_git_repo(&snapshot_repo_root).await {
+                Ok(()) => {
+                    repo_root = Some(snapshot_repo_root.clone());
+                    work_tree = Some(base_dir.clone());
+
+                    for abs in &affected_abs_paths {
+                        if let Some(rel) = abs_to_worktree_rel(&base_dir, abs) {
+                            affected_rel.push(rel);
+                        }
+                    }
+                    affected_rel.sort();
+                    affected_rel.dedup();
+
+                    for abs in &created_abs_paths {
+                        if let Some(rel) = abs_to_worktree_rel(&base_dir, abs) {
+                            created_rel.push(rel);
+                        }
+                    }
+                    created_rel.sort();
+                    created_rel.dedup();
+
+                    if !affected_rel.is_empty() {
+                        match create_ghost_commit_for_paths_with_worktree(
+                            &snapshot_repo_root,
+                            &base_dir,
+                            &affected_rel,
+                            "tauri-ai apply_patch snapshot (before)",
+                        )
+                        .await
+                        {
+                            Ok(c) => ghost_before = Some(c),
+                            Err(err) => snapshot_err_before = Some(err),
+                        }
+                    }
+
+                    apply_patch_meta["applyPatch"]["git"] = json!({
+                        "repoRoot": snapshot_repo_root.display().to_string(),
+                        "workTree": base_dir.display().to_string(),
+                        "repoPrefix": null,
+                        "affectedPaths": affected_rel,
+                        "createdPaths": created_rel,
+                        "ghostBefore": ghost_before.as_ref().map(|c| c.id.clone()),
+                    });
+                    if let Some(err) = snapshot_err_before.as_ref() {
+                        apply_patch_meta["applyPatch"]["git"]["snapshotErrorBefore"] = json!(err);
+                    }
+                    apply_patch_meta["applyPatch"]["git"]["repoDetectError"] = json!(e);
+                }
+                Err(err) => {
+                    apply_patch_meta["applyPatch"]["git"] = json!({
+                        "error": format!("未检测到 git 仓库，且无法初始化快照仓库: {err}"),
+                        "repoDetectError": e,
+                    });
                 }
             }
         }
+    }
 
-        if apply_patch_meta["applyPatch"].get("git").is_some() {
-            if let Some(c) = ghost_after.as_ref() {
-                apply_patch_meta["applyPatch"]["git"]["ghostAfter"] = json!(c.id.clone());
-            }
-            if let Some(e) = snapshot_err_after.as_ref() {
-                apply_patch_meta["applyPatch"]["git"]["snapshotErrorAfter"] = json!(e);
+    let affected =
+        match apply_hunks(&base_dir, &ctx.sandbox_policy, &ctx.workspace_roots, &hunks).await {
+            Ok(v) => Ok(v),
+            Err(err) => Err(err),
+        };
+
+    // Snapshot "after" even if apply_hunks failed (best-effort), so UI can still render what was written.
+    if let (Some(root), Some(work_tree)) = (repo_root.as_ref(), work_tree.as_ref()) {
+        let affected_paths = apply_patch_meta["applyPatch"]["git"]["affectedPaths"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect::<Vec<_>>();
+        if !affected_paths.is_empty() {
+            match create_ghost_commit_for_paths_with_worktree(
+                root,
+                work_tree,
+                &affected_paths,
+                "tauri-ai apply_patch snapshot (after)",
+            )
+            .await
+            {
+                Ok(c) => ghost_after = Some(c),
+                Err(e) => snapshot_err_after = Some(e),
             }
         }
-
-        let affected = affected.map_err(|e| e.with_meta(apply_patch_meta.clone()))?;
-
-        let summary = format_summary(&base_dir, &affected);
-        emit_tool_result(ctx, call.id.as_str(), &summary);
-
-        Ok(ToolCallResult {
-            content: summary,
-            meta: Some(apply_patch_meta),
-        })
     }
+
+    if apply_patch_meta["applyPatch"].get("git").is_some() {
+        if let Some(c) = ghost_after.as_ref() {
+            apply_patch_meta["applyPatch"]["git"]["ghostAfter"] = json!(c.id.clone());
+        }
+        if let Some(e) = snapshot_err_after.as_ref() {
+            apply_patch_meta["applyPatch"]["git"]["snapshotErrorAfter"] = json!(e);
+        }
+    }
+
+    let affected = affected.map_err(|e| e.with_meta(apply_patch_meta.clone()))?;
+
+    let summary = format_summary(&base_dir, &affected);
+    emit_tool_result(ctx, call.id.as_str(), &summary);
+
+    Ok(ToolCallResult {
+        content: summary,
+        meta: Some(apply_patch_meta),
+    })
 }
 
 #[derive(Debug, Default)]
@@ -661,7 +713,7 @@ fn ensure_writable(
     }
 }
 
-fn parse_patch(input: &str) -> Result<Vec<Hunk>, ToolError> {
+fn parse_patch_custom(input: &str) -> Result<Vec<Hunk>, ToolError> {
     let lines = input.lines().collect::<Vec<_>>();
     if lines.len() < 2 {
         return Err(ToolError::invalid("补丁格式错误：缺少 Begin/End 标记"));
@@ -744,7 +796,7 @@ fn parse_patch(input: &str) -> Result<Vec<Hunk>, ToolError> {
                 if let Some(header) = change_line.strip_prefix("@@") {
                     finish_chunk(&mut current, &mut chunks);
                     let header = header.strip_prefix(' ').unwrap_or(header);
-                    let parsed = parse_update_header(header.trim());
+                    let parsed = parse_update_header_custom(header.trim())?;
                     current = Some(UpdateChunk {
                         change_context: parsed.change_context,
                         change_context_soft: parsed.change_context_soft,
@@ -805,30 +857,184 @@ fn parse_patch(input: &str) -> Result<Vec<Hunk>, ToolError> {
     Ok(hunks)
 }
 
+fn parse_patch_unified_diff(input: &str) -> Result<Vec<Hunk>, ToolError> {
+    let lines = input.lines().collect::<Vec<_>>();
+    if lines.len() < 2 {
+        return Err(ToolError::invalid("补丁格式错误：缺少 Begin/End 标记"));
+    }
+    if lines.first().map(|l| l.trim_end()) != Some("*** Begin Patch") {
+        return Err(ToolError::invalid("补丁第一行必须是 '*** Begin Patch'"));
+    }
+    if lines.last().map(|l| l.trim_end()) != Some("*** End Patch") {
+        return Err(ToolError::invalid("补丁最后一行必须是 '*** End Patch'"));
+    }
+
+    let mut hunks: Vec<Hunk> = Vec::new();
+    let mut idx = 1usize;
+    let end_idx = lines.len() - 1;
+
+    while idx < end_idx {
+        let line = lines[idx];
+        if line.trim().is_empty() {
+            idx += 1;
+            continue;
+        }
+
+        if let Some(rest) = line.strip_prefix("*** Add File:") {
+            let path = parse_patch_path(rest)?;
+            idx += 1;
+            let mut contents_lines: Vec<String> = Vec::new();
+            while idx < end_idx && !is_hunk_start(lines[idx]) {
+                let content_line = lines[idx];
+                let Some(stripped) = content_line.strip_prefix('+') else {
+                    return Err(ToolError::invalid(
+                        "Add File 块内每行必须以 '+' 开头（空行用 '+' 表示）",
+                    ));
+                };
+                contents_lines.push(stripped.to_string());
+                idx += 1;
+            }
+            if contents_lines.is_empty() {
+                return Err(ToolError::invalid("Add File 必须至少包含一行内容"));
+            }
+            let contents = contents_lines.join("\n") + "\n";
+            hunks.push(Hunk::AddFile { path, contents });
+            continue;
+        }
+
+        if let Some(rest) = line.strip_prefix("*** Delete File:") {
+            let path = parse_patch_path(rest)?;
+            idx += 1;
+            hunks.push(Hunk::DeleteFile { path });
+            continue;
+        }
+
+        if let Some(rest) = line.strip_prefix("*** Update File:") {
+            let path = parse_patch_path(rest)?;
+            idx += 1;
+
+            let mut move_path: Option<PathBuf> = None;
+            if idx < end_idx {
+                if let Some(rest) = lines[idx].strip_prefix("*** Move to:") {
+                    move_path = Some(parse_patch_path(rest)?);
+                    idx += 1;
+                }
+            }
+
+            let mut chunks: Vec<UpdateChunk> = Vec::new();
+            let mut current: Option<UpdateChunk> = None;
+            while idx < end_idx && !is_hunk_start(lines[idx]) {
+                let change_line = lines[idx];
+                if change_line == "*** End of File" {
+                    if let Some(chunk) = current.as_mut() {
+                        chunk.is_end_of_file = true;
+                    } else {
+                        return Err(ToolError::invalid(
+                            "'*** End of File' 只能出现在 Update File 的变更块末尾",
+                        ));
+                    }
+                    idx += 1;
+                    continue;
+                }
+
+                if let Some(header) = change_line.strip_prefix("@@") {
+                    finish_chunk(&mut current, &mut chunks);
+                    let header = header.strip_prefix(' ').unwrap_or(header);
+                    let parsed = parse_update_header_unified_diff(header.trim())?;
+                    current = Some(UpdateChunk {
+                        change_context: parsed.change_context,
+                        change_context_soft: parsed.change_context_soft,
+                        line_hint: parsed.line_hint,
+                        old_lines: Vec::new(),
+                        new_lines: Vec::new(),
+                        is_end_of_file: false,
+                    });
+                    idx += 1;
+                    continue;
+                }
+
+                let first = change_line
+                    .chars()
+                    .next()
+                    .ok_or_else(|| ToolError::invalid("Update File 变更行不能为空"))?;
+                if !matches!(first, ' ' | '+' | '-') {
+                    return Err(ToolError::invalid(format!(
+                        "Update File 变更行必须以 ' ' / '+' / '-' / '@@' 开头：{change_line}"
+                    )));
+                }
+
+                // Unified diff patches must always start a chunk with an explicit unified header.
+                if current.is_none() {
+                    return Err(ToolError::invalid(
+                        "apply_patch_unified_diff 要求每个变更块都以 unified diff 头开始：`@@ -old_start,old_count +new_start,new_count @@ optional heading`",
+                    ));
+                }
+
+                let remainder = change_line[1..].to_string();
+                let chunk = current.as_mut().expect("chunk exists");
+                match first {
+                    ' ' => {
+                        chunk.old_lines.push(remainder.clone());
+                        chunk.new_lines.push(remainder);
+                    }
+                    '-' => chunk.old_lines.push(remainder),
+                    '+' => chunk.new_lines.push(remainder),
+                    _ => {}
+                }
+                idx += 1;
+            }
+            finish_chunk(&mut current, &mut chunks);
+            hunks.push(Hunk::UpdateFile {
+                path,
+                move_path,
+                chunks,
+            });
+            continue;
+        }
+
+        return Err(ToolError::invalid(format!("未知补丁段落: {line}")));
+    }
+
+    Ok(hunks)
+}
+
 /// Detect whether a freeform text is actually an `apply_patch` body.
 ///
 /// This is used to intercept common model mistakes where the patch text is
 /// sent to `shell_command` / `exec_command` instead of calling the `apply_patch`
 /// tool directly.
-pub(crate) fn extract_verified_apply_patch_from_text(text: &str) -> Option<String> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VerifiedApplyPatchKind {
+    Custom,
+    UnifiedDiff,
+}
+
+pub(crate) fn extract_verified_apply_patch_from_text(
+    text: &str,
+) -> Option<(String, VerifiedApplyPatchKind)> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return None;
     }
 
-    // Accept either a raw patch body, or a patch body prefixed by the literal
-    // `apply_patch` token (common when a model tries to "run" apply_patch).
+    // Accept either a raw patch body, or a patch body prefixed by the literal tool name
+    // (common when a model tries to "run" apply_patch).
     let candidate = if trimmed.starts_with("*** Begin Patch") {
         trimmed
-    } else if let Some(rest) = trimmed.strip_prefix("apply_patch") {
-        let rest = rest.trim_start();
+    } else {
+        let mut rest = None;
+        for prefix in [APPLY_PATCH_UNIFIED_DIFF_TOOL_NAME, APPLY_PATCH_TOOL_NAME] {
+            if let Some(r) = trimmed.strip_prefix(prefix) {
+                rest = Some(r.trim_start());
+                break;
+            }
+        }
+        let rest = rest?;
         if rest.starts_with("*** Begin Patch") {
             rest
         } else {
             return None;
         }
-    } else {
-        return None;
     };
 
     // Fast reject before invoking the full parser.
@@ -836,7 +1042,13 @@ pub(crate) fn extract_verified_apply_patch_from_text(text: &str) -> Option<Strin
         return None;
     }
 
-    parse_patch(candidate).ok().map(|_| candidate.to_string())
+    if parse_patch_custom(candidate).is_ok() {
+        return Some((candidate.to_string(), VerifiedApplyPatchKind::Custom));
+    }
+    if parse_patch_unified_diff(candidate).is_ok() {
+        return Some((candidate.to_string(), VerifiedApplyPatchKind::UnifiedDiff));
+    }
+    None
 }
 
 fn is_hunk_start(line: &str) -> bool {
@@ -861,14 +1073,37 @@ struct ParsedUpdateHeader {
     line_hint: Option<usize>,
 }
 
-fn parse_update_header(header: &str) -> ParsedUpdateHeader {
+fn parse_update_header_custom(header: &str) -> Result<ParsedUpdateHeader, ToolError> {
     let trimmed = header.trim();
     if trimmed.is_empty() {
-        return ParsedUpdateHeader {
+        return Ok(ParsedUpdateHeader {
             change_context: None,
             change_context_soft: false,
             line_hint: None,
-        };
+        });
+    }
+
+    if try_parse_unified_diff_header(trimmed).is_some() {
+        // Keep standards isolated: unified diff patches must use the dedicated tool.
+        return Err(ToolError::invalid(format!(
+            "{APPLY_PATCH_TOOL_NAME} 不支持 unified diff 变更块头（检测到: '@@ {trimmed}'）。请改用 {APPLY_PATCH_UNIFIED_DIFF_TOOL_NAME}。",
+        )));
+    }
+
+    // Custom apply_patch header: `@@ some exact line`
+    Ok(ParsedUpdateHeader {
+        change_context: Some(trimmed.to_string()),
+        change_context_soft: false,
+        line_hint: None,
+    })
+}
+
+fn parse_update_header_unified_diff(header: &str) -> Result<ParsedUpdateHeader, ToolError> {
+    let trimmed = header.trim();
+    if trimmed.is_empty() {
+        return Err(ToolError::invalid(format!(
+            "{APPLY_PATCH_UNIFIED_DIFF_TOOL_NAME} 的变更块头不能为空；需要 unified diff 头：`@@ -old_start,old_count +new_start,new_count @@ optional heading`",
+        )));
     }
 
     // Support unified diff hunk headers:
@@ -876,15 +1111,12 @@ fn parse_update_header(header: &str) -> ParsedUpdateHeader {
     // We ignore the counts, use `old_start` as a 0-based hint, and treat the optional heading
     // as a *soft* anchor (best-effort), because it may not exist verbatim in the file.
     if let Some(parsed) = try_parse_unified_diff_header(trimmed) {
-        return parsed;
+        return Ok(parsed);
     }
 
-    // Custom apply_patch header: `@@ some exact line`
-    ParsedUpdateHeader {
-        change_context: Some(trimmed.to_string()),
-        change_context_soft: false,
-        line_hint: None,
-    }
+    Err(ToolError::invalid(format!(
+        "{APPLY_PATCH_UNIFIED_DIFF_TOOL_NAME} 仅支持 unified diff 变更块头：`@@ -old_start,old_count +new_start,new_count @@ optional heading`（收到: '@@ {trimmed}'）",
+    )))
 }
 
 fn try_parse_unified_diff_header(header: &str) -> Option<ParsedUpdateHeader> {
@@ -1024,9 +1256,9 @@ fn compute_replacements(
     let mut line_index: usize = 0;
 
     for chunk in chunks {
-        if let Some(ctx_line) = chunk.change_context.as_ref() {
-            let ctx_pattern = vec![ctx_line.to_string()];
-            let found = seek_sequence(
+	        if let Some(ctx_line) = chunk.change_context.as_ref() {
+	            let ctx_pattern = vec![ctx_line.to_string()];
+	            let found = seek_sequence(
                 original_lines,
                 &ctx_pattern,
                 line_index,
@@ -1046,16 +1278,24 @@ fn compute_replacements(
                     ctx_line,
                     path.display()
                 )));
-            }
-        }
+	            }
+	        }
 
-        if chunk.old_lines.is_empty() {
-            let insert_at = chunk.line_hint.unwrap_or(original_lines.len());
-            let insert_at = insert_at.min(original_lines.len());
-            replacements.push((insert_at, 0, chunk.new_lines.clone()));
-            line_index = line_index.max(insert_at);
-            continue;
-        }
+	        // Anchor-only chunk (no changes). This enables multi-line anchoring by repeating
+	        // `@@ <exact line>` headers (Codex-like) without triggering any insertion.
+	        if chunk.old_lines.is_empty() && chunk.new_lines.is_empty() {
+	            continue;
+	        }
+
+	        if chunk.old_lines.is_empty() {
+	            // Insertion chunk: prefer unified diff line hints; otherwise insert at the current
+	            // cursor (advanced by previous anchors).
+	            let insert_at = chunk.line_hint.unwrap_or(line_index);
+	            let insert_at = insert_at.min(original_lines.len());
+	            replacements.push((insert_at, 0, chunk.new_lines.clone()));
+	            line_index = line_index.max(insert_at);
+	            continue;
+	        }
 
         let mut pattern: &[String] = &chunk.old_lines;
         let mut new_slice: &[String] = &chunk.new_lines;
@@ -1282,6 +1522,7 @@ fn seek_sequence(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::tools::registry::ToolErrorKind;
 
     use tempfile::tempdir;
 
@@ -1301,7 +1542,7 @@ mod tests {
 *** Delete File: a.txt
 *** End Patch"#;
 
-        let hunks = parse_patch(patch).expect("parse");
+        let hunks = parse_patch_custom(patch).expect("parse");
         let affected = apply_hunks(base, &SandboxPolicy::DangerFullAccess, &[], &hunks)
             .await
             .expect("apply");
@@ -1325,7 +1566,7 @@ mod tests {
 -b
 +B
 *** End Patch"#;
-        let hunks = parse_patch(patch).expect("parse");
+        let hunks = parse_patch_custom(patch).expect("parse");
         let _ = apply_hunks(base, &SandboxPolicy::DangerFullAccess, &[], &hunks)
             .await
             .expect("apply");
@@ -1335,7 +1576,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_patch_update_accepts_unified_diff_hunk_headers() {
+    async fn apply_patch_unified_diff_update_accepts_unified_diff_hunk_headers() {
         let dir = tempdir().expect("tmp");
         let base = dir.path();
         let file_path = base.join("c.txt");
@@ -1349,7 +1590,7 @@ mod tests {
 -hello
 +HELLO
 *** End Patch"#;
-        let hunks = parse_patch(patch).expect("parse");
+        let hunks = parse_patch_unified_diff(patch).expect("parse");
         let _ = apply_hunks(base, &SandboxPolicy::DangerFullAccess, &[], &hunks)
             .await
             .expect("apply");
@@ -1374,7 +1615,7 @@ mod tests {
 -hello
 +HELLO
 *** End Patch"#;
-        let hunks = parse_patch(patch).expect("parse");
+        let hunks = parse_patch_unified_diff(patch).expect("parse");
         let _ = apply_hunks(base, &SandboxPolicy::DangerFullAccess, &[], &hunks)
             .await
             .expect("apply");
@@ -1398,23 +1639,117 @@ mod tests {
 -alpha
 +ALPHA
 *** End Patch"#;
-        let hunks = parse_patch(patch).expect("parse");
+        let hunks = parse_patch_custom(patch).expect("parse");
         let err = apply_hunks(base, &SandboxPolicy::DangerFullAccess, &[], &hunks)
             .await
             .expect_err("should fail");
         assert!(err.message.contains("补丁匹配不唯一"));
     }
 
+    #[tokio::test]
+    async fn apply_patch_custom_allows_multi_line_anchor_via_repeated_headers() {
+        let dir = tempdir().expect("tmp");
+        let base = dir.path();
+        let file_path = base.join("multi.txt");
+        fs::write(&file_path, "alpha\nbeta\nalpha\nbeta\n")
+            .await
+            .expect("write");
+
+        // Replace the *second* "alpha" by anchoring on the first "alpha" then the next "beta".
+        let patch = r#"*** Begin Patch
+*** Update File: multi.txt
+@@ alpha
+@@ beta
+-alpha
++ALPHA
+*** End Patch"#;
+        let hunks = parse_patch_custom(patch).expect("parse");
+        let _ = apply_hunks(base, &SandboxPolicy::DangerFullAccess, &[], &hunks)
+            .await
+            .expect("apply");
+
+        let updated = fs::read_to_string(&file_path).await.expect("read");
+        assert_eq!(updated, "alpha\nbeta\nALPHA\nbeta\n");
+    }
+
+    #[tokio::test]
+    async fn apply_patch_custom_inserts_after_anchor_with_plus_only() {
+        let dir = tempdir().expect("tmp");
+        let base = dir.path();
+        let file_path = base.join("insert.txt");
+        fs::write(&file_path, "a\nb\n").await.expect("write");
+
+        // Insert "X" after the anchored line "a", without repeating context lines.
+        let patch = r#"*** Begin Patch
+*** Update File: insert.txt
+@@ a
++X
+*** End Patch"#;
+        let hunks = parse_patch_custom(patch).expect("parse");
+        let _ = apply_hunks(base, &SandboxPolicy::DangerFullAccess, &[], &hunks)
+            .await
+            .expect("apply");
+
+        let updated = fs::read_to_string(&file_path).await.expect("read");
+        assert_eq!(updated, "a\nX\nb\n");
+    }
+
+    #[test]
+    fn custom_parser_rejects_unified_diff_headers() {
+        let patch = r#"*** Begin Patch
+*** Update File: a.txt
+@@ -1,2 +1,2 @@
+-hello
++HELLO
+*** End Patch"#;
+        let err = parse_patch_custom(patch).expect_err("should reject");
+        assert_eq!(err.kind, ToolErrorKind::InvalidArguments);
+        assert!(err.message.contains(APPLY_PATCH_UNIFIED_DIFF_TOOL_NAME));
+    }
+
+    #[test]
+    fn unified_diff_parser_rejects_custom_headers() {
+        let patch = r#"*** Begin Patch
+*** Update File: a.txt
+@@ def example():
+-pass
++return 1
+*** End Patch"#;
+        let err = parse_patch_unified_diff(patch).expect_err("should reject");
+        assert_eq!(err.kind, ToolErrorKind::InvalidArguments);
+        assert!(err.message.contains("unified diff"));
+    }
+
     #[test]
     fn extract_verified_apply_patch_from_text_detects_patch_bodies() {
-        let patch = r#"*** Begin Patch
+        let custom_patch = r#"*** Begin Patch
 *** Add File: a.txt
 +hello
 *** End Patch"#;
-        assert!(extract_verified_apply_patch_from_text(patch).is_some());
+        let (body, kind) =
+            extract_verified_apply_patch_from_text(custom_patch).expect("detect custom");
+        assert!(body.contains("*** Add File: a.txt"));
+        assert_eq!(kind, VerifiedApplyPatchKind::Custom);
 
-        let prefixed = format!("apply_patch\n{patch}");
-        assert!(extract_verified_apply_patch_from_text(&prefixed).is_some());
+        let prefixed = format!("{APPLY_PATCH_TOOL_NAME}\n{custom_patch}");
+        let (_, kind) =
+            extract_verified_apply_patch_from_text(&prefixed).expect("detect custom prefixed");
+        assert_eq!(kind, VerifiedApplyPatchKind::Custom);
+
+        let unified_patch = r#"*** Begin Patch
+*** Update File: a.txt
+@@ -1,1 +1,1 @@
+-a
++b
+*** End Patch"#;
+        let (_, kind) =
+            extract_verified_apply_patch_from_text(unified_patch).expect("detect unified");
+        assert_eq!(kind, VerifiedApplyPatchKind::UnifiedDiff);
+
+        let prefixed = format!("{APPLY_PATCH_UNIFIED_DIFF_TOOL_NAME}\n{unified_patch}");
+        let (_, kind) =
+            extract_verified_apply_patch_from_text(&prefixed).expect("detect unified prefixed");
+        assert_eq!(kind, VerifiedApplyPatchKind::UnifiedDiff);
 
         assert!(extract_verified_apply_patch_from_text("not a patch").is_none());
         assert!(extract_verified_apply_patch_from_text("").is_none());

@@ -180,8 +180,9 @@ pub const APPLY_PATCH_TOOL_PROMPT: &str = r#"
   - `*** Delete File: <path>` 删除文件
   - 可选：在 `*** Update File` 后用 `*** Move to: <new_path>` 实现重命名/移动
 - 变更块头 `@@ ...`：
-  - 推荐：`@@ <必须精确匹配的原文行>`（更稳定）
-  - 兼容：统一 diff 头 `@@ -a,b +c,d @@ heading`（heading 可能是“软提示”，不保证逐字匹配）
+  - 使用自定义锚定：`@@ <必须精确匹配的原文行>`（严格匹配，更稳定）
+  - 支持多行锚定：可以连续写多行 `@@ <原文行>`，系统会按顺序依次定位（更稳定）
+  - 注意：`apply_patch` **不支持** unified diff 头（`@@ -a,b +c,d @@ heading`）；如需 unified diff，请使用 `apply_patch_unified_diff`
 - 变更行前缀（`*** Update File` 内）：
   - `+` 新增行
   - `-` 删除行
@@ -190,6 +191,42 @@ pub const APPLY_PATCH_TOOL_PROMPT: &str = r#"
 
 ### 例子
 { "input": "*** Begin Patch\\n*** Update File: path/to/file.py\\n@@ def example():\\n- pass\\n+ return 123\\n*** End Patch" }
+
+### 路径与安全
+- 优先使用相对路径（相对当前工作区/默认工作目录）。
+- 绝对路径只有在确有必要时才使用，并且必须落在允许写入的目录范围内，否则会被拒绝。
+"#;
+
+/// Tool usage hint for `apply_patch_unified_diff` when file write is enabled.
+pub const APPLY_PATCH_UNIFIED_DIFF_TOOL_PROMPT: &str = r#"
+
+## 文件编辑（apply_patch_unified_diff）
+
+当你希望使用 unified diff 风格的变更块头时，使用 `apply_patch_unified_diff`。
+
+### 调用方式（重要）
+`apply_patch_unified_diff` 的参数是一个 JSON 对象，并且必须包含 `input` 字段：`{ "input": "…补丁正文…" }`。
+
+### 补丁格式（必须严格遵守）
+`input` 中放入一段纯文本补丁，规则如下：
+- 必须以 `*** Begin Patch` 开头，以 `*** End Patch` 结尾
+- 文件操作头（只能用以下几种）：
+  - `*** Add File: <path>` 新建文件（后续每一行都必须以 `+` 开头）
+  - `*** Update File: <path>` 修改文件（用 `+/-/ ` 表示新增/删除/保持不变）
+  - `*** Delete File: <path>` 删除文件
+  - 可选：在 `*** Update File` 后用 `*** Move to: <new_path>` 实现重命名/移动
+- 变更块头 `@@ ...`（只支持 unified diff 头）：
+  - 必须是：`@@ -old_start,old_count +new_start,new_count @@ optional heading`
+  - heading 是“软提示”，可能不在文件中逐字出现；主要依赖行号 hint + 变更块内容定位
+  - 注意：该工具 **不支持** 自定义锚定头 `@@ <原文行>`；如需严格锚定，请使用 `apply_patch`
+- 变更行前缀（`*** Update File` 内）：
+  - `+` 新增行
+  - `-` 删除行
+  - 空格开头（` `）原样保留行
+  - 可选的 `*** End of File` 只能出现在某个 Update 变更块末尾
+
+### 例子
+{ "input": "*** Begin Patch\\n*** Update File: path/to/file.py\\n@@ -1,2 +1,2 @@\\n- pass\\n+ return 123\\n*** End Patch" }
 
 ### 路径与安全
 - 优先使用相对路径（相对当前工作区/默认工作目录）。
