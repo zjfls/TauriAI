@@ -15,6 +15,12 @@ use super::traits::{
 use super::utf8_stream::Utf8StreamDecoder;
 use crate::models::{Message, MessageRole, ModelConfig};
 
+fn strip_sse_data_prefix(line: &str) -> Option<&str> {
+    // SSE spec allows both `data: ...` and `data:...` (optional single space after `:`).
+    line.strip_prefix("data:")
+        .map(|rest| rest.strip_prefix(' ').unwrap_or(rest))
+}
+
 /// Google Gemini API client
 pub struct GoogleClient {
     client: Client,
@@ -801,7 +807,7 @@ impl AiClient for GoogleClient {
                     line.pop();
                 }
 
-                if let Some(data) = line.strip_prefix("data: ") {
+                if let Some(data) = strip_sse_data_prefix(line.as_str()) {
                     if config.debug_sse {
                         eprintln!("[SSE][{}/{}] {}", config.provider, config.model, data);
                     }

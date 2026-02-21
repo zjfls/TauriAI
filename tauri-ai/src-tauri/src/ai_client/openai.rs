@@ -443,6 +443,13 @@ fn should_include_reasoning_content(config: &ModelConfig) -> bool {
     matches!(config.thinking_level.as_deref(), Some(level) if level != "disabled")
 }
 
+fn strip_sse_data_prefix(line: &str) -> Option<&str> {
+    // SSE spec allows both `data: ...` and `data:...` (optional single space after `:`).
+    // Some proxies omit the space; be tolerant to avoid missing termination signals like `[DONE]`.
+    line.strip_prefix("data:")
+        .map(|rest| rest.strip_prefix(' ').unwrap_or(rest))
+}
+
 fn parse_chat_completions_sse_to_text(body: &str) -> Result<String, AiError> {
     let trimmed = body.trim_start();
     if !trimmed.starts_with("data:") {
@@ -456,7 +463,7 @@ fn parse_chat_completions_sse_to_text(body: &str) -> Result<String, AiError> {
 
     for raw_line in body.lines() {
         let line = raw_line.trim_end_matches('\r');
-        let Some(data) = line.strip_prefix("data: ") else {
+        let Some(data) = strip_sse_data_prefix(line) else {
             continue;
         };
         let data = data.trim();
@@ -697,14 +704,17 @@ impl OpenAiBaseClient {
         //
         // Safety: avoid leaking chain-of-thought when thinking is enabled (then reasoning_content
         // is more likely to contain internal reasoning tokens rather than the final answer).
-        let thinking_enabled = matches!(config.thinking_level.as_deref(), Some(level) if level != "disabled");
+        let thinking_enabled =
+            matches!(config.thinking_level.as_deref(), Some(level) if level != "disabled");
         if !thinking_enabled {
             if let Some(reasoning) = msg.reasoning_content.clone() {
                 return Ok(reasoning);
             }
         }
 
-        Err(AiError::InvalidResponse("No content in response".to_string()))
+        Err(AiError::InvalidResponse(
+            "No content in response".to_string(),
+        ))
     }
 
     async fn chat_stream_impl(
@@ -927,7 +937,7 @@ impl OpenAiBaseClient {
                     line.pop();
                 }
 
-                if let Some(data) = line.strip_prefix("data: ") {
+                if let Some(data) = strip_sse_data_prefix(line.as_str()) {
                     if config.debug_sse {
                         eprintln!("[SSE][{}/{}] {}", config.provider, config.model, data);
                     }

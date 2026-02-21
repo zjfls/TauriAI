@@ -37,6 +37,13 @@ use super::utf8_stream::Utf8StreamDecoder;
 use crate::models::{ImageDetail, Message, MessageRole, ModelConfig};
 use std::collections::{HashMap, HashSet};
 
+fn strip_sse_data_prefix(line: &str) -> Option<&str> {
+    // SSE spec allows both `data: ...` and `data:...` (optional single space after `:`).
+    // Some proxies omit the space; be tolerant to avoid missing termination events.
+    line.strip_prefix("data:")
+        .map(|rest| rest.strip_prefix(' ').unwrap_or(rest))
+}
+
 // ============================================================================
 // Request types
 // ============================================================================
@@ -535,7 +542,7 @@ fn parse_responses_sse_to_text(body: &str) -> Result<String, AiError> {
 
     for raw_line in body.lines() {
         let line = raw_line.trim_end_matches('\r');
-        let Some(data) = line.strip_prefix("data: ") else {
+        let Some(data) = strip_sse_data_prefix(line) else {
             continue;
         };
         let data = data.trim();
@@ -1019,7 +1026,7 @@ impl AiClient for OpenAiResponsesClient {
                     line.pop();
                 }
 
-                if let Some(data) = line.strip_prefix("data: ") {
+                if let Some(data) = strip_sse_data_prefix(line.as_str()) {
                     if config.debug_sse {
                         eprintln!("[SSE][{}/{}] {}", config.provider, config.model, data);
                     }
@@ -1307,10 +1314,13 @@ impl AiClient for OpenAiResponsesClient {
                                 if full_content.trim().is_empty() {
                                     if let Some(resp) = v.get("response") {
                                         if let Ok(parsed) =
-                                            serde_json::from_value::<ResponsesResponse>(resp.clone())
+                                            serde_json::from_value::<ResponsesResponse>(
+                                                resp.clone(),
+                                            )
                                         {
-                                            let text =
-                                                extract_message_text_from_responses_response(&parsed);
+                                            let text = extract_message_text_from_responses_response(
+                                                &parsed,
+                                            );
                                             if !text.trim().is_empty() {
                                                 full_content = text;
                                             }
