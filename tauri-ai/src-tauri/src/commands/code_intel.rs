@@ -23,6 +23,7 @@ use crate::models::{
     AppConfig, CodeSnippetRange, Message, MessageRole, MessageStatus, Workstudio,
     WorkstudioSymbolAnalysis,
 };
+use crate::storage::async_db;
 use crate::storage::Database;
 
 #[derive(Debug, serde::Deserialize)]
@@ -40,10 +41,12 @@ pub async fn lsp_ensure_server(
     config_manager: tauri::State<'_, Arc<ConfigManager>>,
 ) -> Result<(), String> {
     let ws: Workstudio = {
-        let db = db.lock().await;
-        db.get_workstudio(&args.workstudio_id)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "Workstudio not found".to_string())?
+        async_db::with_db(db.inner(), "lsp_ensure_server:get_workstudio", |db| {
+            db.get_workstudio(&args.workstudio_id)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Workstudio not found".to_string())?
     };
 
     let launch = resolve_launch_config(&*config_manager, &args.language_id)?;
@@ -69,10 +72,12 @@ pub async fn lsp_notify(
     config_manager: tauri::State<'_, Arc<ConfigManager>>,
 ) -> Result<(), String> {
     let ws: Workstudio = {
-        let db = db.lock().await;
-        db.get_workstudio(&args.workstudio_id)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "Workstudio not found".to_string())?
+        async_db::with_db(db.inner(), "lsp_notify:get_workstudio", |db| {
+            db.get_workstudio(&args.workstudio_id)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Workstudio not found".to_string())?
     };
 
     let launch = resolve_launch_config(&*config_manager, &args.language_id)?;
@@ -100,10 +105,12 @@ pub async fn lsp_request(
     config_manager: tauri::State<'_, Arc<ConfigManager>>,
 ) -> Result<serde_json::Value, String> {
     let ws: Workstudio = {
-        let db = db.lock().await;
-        db.get_workstudio(&args.workstudio_id)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "Workstudio not found".to_string())?
+        async_db::with_db(db.inner(), "lsp_request:get_workstudio", |db| {
+            db.get_workstudio(&args.workstudio_id)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Workstudio not found".to_string())?
     };
 
     let launch = resolve_launch_config(&*config_manager, &args.language_id)?;
@@ -406,10 +413,12 @@ pub async fn ai_code_completion(
     }
 
     let ws: Workstudio = {
-        let db = db.lock().await;
-        db.get_workstudio(ws_id)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "Workstudio not found".to_string())?
+        async_db::with_db(db.inner(), "ai_code_completion:get_workstudio", |db| {
+            db.get_workstudio(ws_id)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Workstudio not found".to_string())?
     };
 
     let config = config_manager.ensure_default().map_err(|e| e.to_string())?;
@@ -594,10 +603,12 @@ pub async fn ai_chat_with_selection(
     }
 
     let ws: Workstudio = {
-        let db = db.lock().await;
-        db.get_workstudio(ws_id)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "Workstudio not found".to_string())?
+        async_db::with_db(db.inner(), "ai_chat_with_selection:get_workstudio", |db| {
+            db.get_workstudio(ws_id)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Workstudio not found".to_string())?
     };
 
     let config = config_manager.ensure_default().map_err(|e| e.to_string())?;
@@ -768,9 +779,11 @@ pub async fn get_workstudio_symbol_analysis(
         return Err("symbolKey 为空".to_string());
     }
 
-    let db = db.lock().await;
-    db.get_workstudio_symbol_analysis(ws_id, file_path, symbol_key)
-        .map_err(|e| e.to_string())
+    async_db::with_db(db.inner(), "get_workstudio_symbol_analysis", |db| {
+        db.get_workstudio_symbol_analysis(ws_id, file_path, symbol_key)
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -800,9 +813,11 @@ pub async fn delete_workstudio_symbol_analysis(
         return Err("symbolKey 为空".to_string());
     }
 
-    let db = db.lock().await;
-    db.delete_workstudio_symbol_analysis(ws_id, file_path, symbol_key)
-        .map_err(|e| e.to_string())
+    async_db::with_db(db.inner(), "delete_workstudio_symbol_analysis", |db| {
+        db.delete_workstudio_symbol_analysis(ws_id, file_path, symbol_key)
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -864,21 +879,23 @@ pub async fn save_workstudio_symbol_analysis(
         .map(|s| s.trim())
         .filter(|s| !s.is_empty());
 
-    let db = db.lock().await;
-    db.upsert_workstudio_symbol_analysis(
-        ws_id,
-        file_path,
-        lang,
-        symbol_key,
-        symbol_name,
-        &symbol_kind,
-        args.selection_line,
-        args.selection_column,
-        &args.range,
-        answer_md,
-        model_ref,
-        args.latency_ms,
-    )
+    async_db::with_db(db.inner(), "save_workstudio_symbol_analysis", |db| {
+        db.upsert_workstudio_symbol_analysis(
+            ws_id,
+            file_path,
+            lang,
+            symbol_key,
+            symbol_name,
+            &symbol_kind,
+            args.selection_line,
+            args.selection_column,
+            &args.range,
+            answer_md,
+            model_ref,
+            args.latency_ms,
+        )
+    })
+    .await
     .map_err(|e| e.to_string())
 }
 
@@ -934,10 +951,14 @@ pub async fn ai_analyze_workstudio_symbol(
     }
 
     let ws: Workstudio = {
-        let db = db.lock().await;
-        db.get_workstudio(ws_id)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "Workstudio not found".to_string())?
+        async_db::with_db(
+            db.inner(),
+            "ai_analyze_workstudio_symbol:get_workstudio",
+            |db| db.get_workstudio(ws_id),
+        )
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Workstudio not found".to_string())?
     };
 
     let config = config_manager.ensure_default().map_err(|e| e.to_string())?;
@@ -1087,8 +1108,7 @@ pub async fn ai_analyze_workstudio_symbol(
 
     let latency_ms = started.elapsed().as_millis() as u64;
 
-    let analysis = {
-        let db = db.lock().await;
+    let analysis = async_db::with_db(db.inner(), "ai_analyze_workstudio_symbol:upsert", |db| {
         db.upsert_workstudio_symbol_analysis(
             ws_id,
             file_path,
@@ -1103,8 +1123,9 @@ pub async fn ai_analyze_workstudio_symbol(
             Some(model_ref),
             Some(latency_ms),
         )
-        .map_err(|e| e.to_string())?
-    };
+    })
+    .await
+    .map_err(|e| e.to_string())?;
 
     Ok(analysis)
 }
@@ -1480,10 +1501,14 @@ pub async fn workstudio_run_agent_stream(
 
     // --- Fetch workstudio ---
     let ws: Workstudio = {
-        let db = db.lock().await;
-        db.get_workstudio(&ws_id)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "Workstudio not found".to_string())?
+        async_db::with_db(
+            db.inner(),
+            "workstudio_run_agent_stream:get_workstudio",
+            |db| db.get_workstudio(&ws_id),
+        )
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Workstudio not found".to_string())?
     };
 
     // --- Fetch config & agent ---
@@ -1620,11 +1645,11 @@ pub async fn workstudio_run_agent_stream(
     agent_abort_map().insert(run_id.clone(), abort_tx);
 
     // --- Spawn streaming task ---
-	    let run_id_clone = run_id.clone();
-	    let app_handle_clone = app_handle.clone();
-	    let file_path = args.file_path.clone();
-	    let symbol_key = args.symbol_key.clone();
-	    let model_ref_clone = model_ref.clone();
+    let run_id_clone = run_id.clone();
+    let app_handle_clone = app_handle.clone();
+    let file_path = args.file_path.clone();
+    let symbol_key = args.symbol_key.clone();
+    let model_ref_clone = model_ref.clone();
 
     tokio::spawn(async move {
         let (tx, mut rx) = mpsc::channel::<StreamEvent>(256);

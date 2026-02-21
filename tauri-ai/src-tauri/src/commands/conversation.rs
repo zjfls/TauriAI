@@ -5,6 +5,7 @@ use crate::models::{
     ModelParameters,
 };
 use crate::runtime::RunState;
+use crate::storage::async_db;
 use crate::storage::Database;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -498,8 +499,9 @@ async fn collect_streamed_chat(
 pub async fn get_conversations(
     db: tauri::State<'_, Arc<Mutex<Database>>>,
 ) -> Result<Vec<Conversation>, String> {
-    let db = db.lock().await;
-    db.get_conversations().map_err(|e| e.to_string())
+    async_db::with_db(db.inner(), "get_conversations", |db| db.get_conversations())
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -510,10 +512,15 @@ pub async fn get_messages(
     include_debug_info: Option<bool>,
     db: tauri::State<'_, Arc<Mutex<Database>>>,
 ) -> Result<Vec<Message>, String> {
-    let db = db.lock().await;
-    let mut messages = db
-        .get_messages(&conversation_id, limit.unwrap_or(50), before_id.as_deref())
-        .map_err(|e| e.to_string())?;
+    let mut messages = async_db::read_messages(
+        db.inner(),
+        "get_messages",
+        &conversation_id,
+        limit.unwrap_or(50),
+        before_id.as_deref(),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
 
     // Default: do NOT inline persisted DebugInfo in message list responses.
     // It can be large and slows down session initialization; fetch it lazily on demand.
@@ -548,10 +555,14 @@ pub async fn get_turn_debug_info(
     turn_id: String,
     db: tauri::State<'_, Arc<Mutex<Database>>>,
 ) -> Result<Option<crate::ai_client::DebugInfoData>, String> {
-    let db = db.lock().await;
-    let msg = db
-        .get_message(&conversation_id, &message_id)
-        .map_err(|e| e.to_string())?;
+    let msg = async_db::read_message(
+        db.inner(),
+        "get_turn_debug_info",
+        &conversation_id,
+        &message_id,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
 
     let Some(meta) = msg.meta else {
         return Ok(None);
@@ -571,9 +582,12 @@ pub async fn create_conversation(
     title: Option<String>,
     db: tauri::State<'_, Arc<Mutex<Database>>>,
 ) -> Result<Conversation, String> {
-    let db = db.lock().await;
-    db.create_conversation(&title.unwrap_or_else(|| "New Conversation".to_string()))
-        .map_err(|e| e.to_string())
+    let title = title.unwrap_or_else(|| "New Conversation".to_string());
+    async_db::with_db(db.inner(), "create_conversation", |db| {
+        db.create_conversation(&title)
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -581,9 +595,11 @@ pub async fn delete_conversation(
     conversation_id: String,
     db: tauri::State<'_, Arc<Mutex<Database>>>,
 ) -> Result<(), String> {
-    let db = db.lock().await;
-    db.delete_conversation(&conversation_id)
-        .map_err(|e| e.to_string())
+    async_db::with_db(db.inner(), "delete_conversation", |db| {
+        db.delete_conversation(&conversation_id)
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -596,9 +612,11 @@ pub async fn delete_messages_from(
     // 撤回/删除可能发生在流式生成中：先终止并等待退出，避免“删完又被写回”导致重启后消息错乱。
     run_state.abort_and_wait(&conversation_id, 5_000).await;
 
-    let db = db.lock().await;
-    db.delete_messages_after(&conversation_id, &message_id)
-        .map_err(|e| e.to_string())
+    async_db::with_db(db.inner(), "delete_messages_from", |db| {
+        db.delete_messages_after(&conversation_id, &message_id)
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -607,9 +625,11 @@ pub async fn update_conversation_title(
     title: String,
     db: tauri::State<'_, Arc<Mutex<Database>>>,
 ) -> Result<(), String> {
-    let db = db.lock().await;
-    db.update_conversation_title(&conversation_id, &title)
-        .map_err(|e| e.to_string())
+    async_db::with_db(db.inner(), "update_conversation_title", |db| {
+        db.update_conversation_title(&conversation_id, &title)
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -617,9 +637,11 @@ pub async fn clone_conversation(
     conversation_id: String,
     db: tauri::State<'_, Arc<Mutex<Database>>>,
 ) -> Result<Conversation, String> {
-    let db = db.lock().await;
-    db.clone_conversation(&conversation_id)
-        .map_err(|e| e.to_string())
+    async_db::with_db(db.inner(), "clone_conversation", |db| {
+        db.clone_conversation(&conversation_id)
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -632,15 +654,17 @@ pub async fn update_conversation_metadata(
     workstudio_id: Option<String>,
     db: tauri::State<'_, Arc<Mutex<Database>>>,
 ) -> Result<(), String> {
-    let db = db.lock().await;
-    db.update_conversation_metadata(
-        &conversation_id,
-        agent_name.as_deref(),
-        model_ref.as_deref(),
-        thinking_mode.as_ref(),
-        run_mode.as_deref(),
-        workstudio_id.as_deref(),
-    )
+    async_db::with_db(db.inner(), "update_conversation_metadata", |db| {
+        db.update_conversation_metadata(
+            &conversation_id,
+            agent_name.as_deref(),
+            model_ref.as_deref(),
+            thinking_mode.as_ref(),
+            run_mode.as_deref(),
+            workstudio_id.as_deref(),
+        )
+    })
+    .await
     .map_err(|e| e.to_string())
 }
 
@@ -656,18 +680,28 @@ pub async fn ensure_conversation_file_indexes(
     let max_messages = max_messages.unwrap_or(200).clamp(20, 2000);
     let force = force.unwrap_or(false);
 
-    let db = db.lock().await;
     let mut out: Vec<ConversationFileIndexUpdate> = Vec::new();
 
     for id in conversation_ids {
-        let conv = match db.get_conversation(&id).map_err(|e| e.to_string())? {
+        let conv = match async_db::with_db(
+            db.inner(),
+            "ensure_conversation_file_indexes:get_conversation",
+            |db| db.get_conversation(&id),
+        )
+        .await
+        .map_err(|e| e.to_string())?
+        {
             Some(c) => c,
             None => continue,
         };
 
-        let latest_msg_at = db
-            .get_conversation_latest_message_at(&conv.id)
-            .map_err(|e| e.to_string())?;
+        let latest_msg_at = async_db::with_db(
+            db.inner(),
+            "ensure_conversation_file_indexes:get_latest_message_at",
+            |db| db.get_conversation_latest_message_at(&conv.id),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
         let fallback_index_at = latest_msg_at.unwrap_or(conv.updated_at);
 
         let workstudio_id = (conv.workstudio_id.clone().unwrap_or_default())
@@ -685,9 +719,13 @@ pub async fn ensure_conversation_file_indexes(
             continue;
         }
 
-        let ws = db
-            .get_workstudio(&workstudio_id)
-            .map_err(|e| e.to_string())?;
+        let ws = async_db::with_db(
+            db.inner(),
+            "ensure_conversation_file_indexes:get_workstudio",
+            |db| db.get_workstudio(&workstudio_id),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
         let Some(ws) = ws else {
             let active_index_at = Some(fallback_index_at);
 
@@ -713,14 +751,21 @@ pub async fn ensure_conversation_file_indexes(
 
             // workstudio 缺失时无法重新计算相对路径；但为了避免前端自动索引循环，
             // 仍然记录 active_files_updated_at（用于“已索引”的判断）。
-            db.update_conversation_file_index(
-                &conv.id,
-                primary_path.as_deref(),
-                Some(primary_kind.as_str()),
-                Some(preference.as_str()),
-                active_files_json.as_deref(),
-                active_index_at,
+            async_db::with_db(
+                db.inner(),
+                "ensure_conversation_file_indexes:update_missing_workstudio",
+                |db| {
+                    db.update_conversation_file_index(
+                        &conv.id,
+                        primary_path.as_deref(),
+                        Some(primary_kind.as_str()),
+                        Some(preference.as_str()),
+                        active_files_json.as_deref(),
+                        active_index_at,
+                    )
+                },
             )
+            .await
             .map_err(|e| e.to_string())?;
 
             out.push(ConversationFileIndexUpdate {
@@ -755,9 +800,15 @@ pub async fn ensure_conversation_file_indexes(
         let mut active_index_at: Option<DateTime<Utc>> = latest_msg_at;
 
         if need_recompute_active {
-            let messages = db
-                .get_messages(&conv.id, max_messages, None)
-                .map_err(|e| e.to_string())?;
+            let messages = async_db::read_messages(
+                db.inner(),
+                "ensure_conversation_file_indexes:get_messages",
+                &conv.id,
+                max_messages,
+                None,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
 
             let mut map: HashMap<(String, String), (u32, Option<DateTime<Utc>>)> = HashMap::new();
 
@@ -839,14 +890,21 @@ pub async fn ensure_conversation_file_indexes(
                 serde_json::to_string(&active_paths).ok()
             };
 
-            db.update_conversation_file_index(
-                &conv.id,
-                primary_path.as_deref(),
-                Some(primary_kind.as_str()),
-                Some(preference.as_str()),
-                active_files_json.as_deref(),
-                active_index_at,
+            async_db::with_db(
+                db.inner(),
+                "ensure_conversation_file_indexes:update",
+                |db| {
+                    db.update_conversation_file_index(
+                        &conv.id,
+                        primary_path.as_deref(),
+                        Some(primary_kind.as_str()),
+                        Some(preference.as_str()),
+                        active_files_json.as_deref(),
+                        active_index_at,
+                    )
+                },
             )
+            .await
             .map_err(|e| e.to_string())?;
         }
 
@@ -942,7 +1000,9 @@ pub async fn generate_title(
         collect_streamed_chat(client, vec![prompt_message], model_config).await?;
     let title = raw_title.trim().trim_matches('"').to_string();
     {
-        let db = db.lock().await;
+        let db = async_db::lock_db(db.inner(), "generate_title:update_conversation_title")
+            .await
+            .map_err(|e| e.to_string())?;
         db.update_conversation_title(&conversation_id, &title)
             .map_err(|e| e.to_string())?;
     }

@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
+use crate::storage::async_db;
 use crate::storage::Database;
 use crate::workstudio_security::{
     read_workstudio_security_config, write_workstudio_security_config, WorkstudioSecurityConfig,
@@ -13,7 +14,9 @@ pub async fn get_workstudio_security_config(
     db: tauri::State<'_, Arc<Mutex<Database>>>,
 ) -> Result<WorkstudioSecurityConfig, String> {
     let main_folder = {
-        let db = db.lock().await;
+        let db = async_db::lock_db(db.inner(), "get_workstudio_security_config")
+            .await
+            .map_err(|e| e.to_string())?;
         let ws = db
             .get_workstudio(&workstudio_id)
             .map_err(|e| e.to_string())?
@@ -34,7 +37,9 @@ pub async fn set_workstudio_security_config(
     db: tauri::State<'_, Arc<Mutex<Database>>>,
 ) -> Result<(), String> {
     let main_folder = {
-        let db = db.lock().await;
+        let db = async_db::lock_db(db.inner(), "set_workstudio_security_config")
+            .await
+            .map_err(|e| e.to_string())?;
         let ws = db
             .get_workstudio(&workstudio_id)
             .map_err(|e| e.to_string())?

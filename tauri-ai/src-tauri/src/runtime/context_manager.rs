@@ -16,6 +16,7 @@ use crate::models::{
     ContextCompactionMeta, ContextPolicyConfig, Message, MessageMeta, MessageRole, MessageStatus,
     ModelConfig, NormalCompactPolicyConfig,
 };
+use crate::storage::async_db;
 use crate::storage::Database;
 
 const NORMAL_COMPACT_MARKER: &str = "<!-- tauri-ai:context:normal_compact -->";
@@ -137,12 +138,15 @@ impl ContextManager {
             return messages;
         }
 
-        let summary = {
-            let db = db.lock().await;
-            db.get_latest_message_containing(conversation_id, NORMAL_COMPACT_MARKER)
-                .ok()
-                .flatten()
-        };
+        let summary = async_db::read_latest_message_containing(
+            &db,
+            "context_manager:get_latest_message_containing",
+            conversation_id,
+            NORMAL_COMPACT_MARKER,
+        )
+        .await
+        .ok()
+        .flatten();
         let Some(summary) = summary else {
             return messages;
         };
@@ -407,11 +411,13 @@ pub async fn run_normal_compact(
     }
 
     // Load full history for compaction (chronological).
-    let all_messages = {
-        let db = db.lock().await;
-        db.get_all_messages(conversation_id)
-            .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?
-    };
+    let all_messages = async_db::read_all_messages(
+        &db,
+        "context_compaction:get_all_messages",
+        conversation_id,
+    )
+    .await
+    .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
 
     let eligible: Vec<Message> = all_messages
         .into_iter()
@@ -594,11 +600,11 @@ pub async fn run_normal_compact(
         error_message: None,
     };
 
-    {
-        let db = db.lock().await;
+    async_db::with_db(&db, "context_compaction:add_message", |db| {
         db.add_message(conversation_id, &summary_message)
-            .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
-    }
+    })
+    .await
+    .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
 
     Ok(ContextCompactionResult {
         compacted: true,

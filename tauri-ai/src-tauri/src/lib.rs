@@ -749,6 +749,7 @@ fn run_desktop() {
             get_conversations,
             get_messages,
             get_turn_debug_info,
+            get_db_lock_snapshot,
             create_conversation,
             clone_conversation,
             delete_conversation,

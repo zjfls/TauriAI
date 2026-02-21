@@ -7,6 +7,7 @@ use tokio::fs;
 use tokio::sync::Mutex;
 
 use crate::models::Workstudio;
+use crate::storage::async_db;
 use crate::storage::Database;
 
 fn is_extension_query(query: &str) -> bool {
@@ -52,8 +53,8 @@ pub async fn ensure_workstudio_for_conversation(
     conversation_id: String,
     db: tauri::State<'_, Arc<Mutex<Database>>>,
 ) -> Result<Workstudio, String> {
-    let db = db.lock().await;
-    db.ensure_workstudio_for_conversation(&conversation_id)
+    async_db::ensure_workstudio_for_conversation(db.inner(), &conversation_id)
+        .await
         .map_err(|e| e.to_string())
 }
 
@@ -62,8 +63,11 @@ pub async fn get_workstudio(
     workstudio_id: String,
     db: tauri::State<'_, Arc<Mutex<Database>>>,
 ) -> Result<Option<Workstudio>, String> {
-    let db = db.lock().await;
-    db.get_workstudio(&workstudio_id).map_err(|e| e.to_string())
+    async_db::with_db(db.inner(), "get_workstudio", |db| {
+        db.get_workstudio(&workstudio_id)
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// Returns whether the workstudio main folder contains any "real" content (excluding `.tauriai/`).
@@ -75,10 +79,14 @@ pub async fn workstudio_main_folder_has_real_content(
     db: tauri::State<'_, Arc<Mutex<Database>>>,
 ) -> Result<bool, String> {
     let ws = {
-        let db = db.lock().await;
-        db.get_workstudio(&workstudio_id)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "Workstudio not found".to_string())?
+        async_db::with_db(
+            db.inner(),
+            "workstudio_main_folder_has_real_content:get_workstudio",
+            |db| db.get_workstudio(&workstudio_id),
+        )
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Workstudio not found".to_string())?
     };
 
     let main_folder = ws.main_folder.trim().to_string();
@@ -118,17 +126,21 @@ pub async fn add_workstudio_folder(
     set_as_main: Option<bool>,
     db: tauri::State<'_, Arc<Mutex<Database>>>,
 ) -> Result<Workstudio, String> {
-    let db = db.lock().await;
-    db.add_workstudio_folder(&workstudio_id, &folder, set_as_main.unwrap_or(false))
-        .map_err(|e| e.to_string())
+    let set_as_main = set_as_main.unwrap_or(false);
+    async_db::with_db(db.inner(), "add_workstudio_folder", |db| {
+        db.add_workstudio_folder(&workstudio_id, &folder, set_as_main)
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn create_workstudio(
     db: tauri::State<'_, Arc<Mutex<Database>>>,
 ) -> Result<Workstudio, String> {
-    let db = db.lock().await;
-    db.create_workstudio().map_err(|e| e.to_string())
+    async_db::with_db(db.inner(), "create_workstudio", |db| db.create_workstudio())
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -137,9 +149,11 @@ pub async fn set_workstudio_main_folder(
     folder: String,
     db: tauri::State<'_, Arc<Mutex<Database>>>,
 ) -> Result<Workstudio, String> {
-    let db = db.lock().await;
-    db.set_workstudio_main_folder(&workstudio_id, &folder)
-        .map_err(|e| e.to_string())
+    async_db::with_db(db.inner(), "set_workstudio_main_folder", |db| {
+        db.set_workstudio_main_folder(&workstudio_id, &folder)
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -148,9 +162,11 @@ pub async fn remove_workstudio_folder(
     folder: String,
     db: tauri::State<'_, Arc<Mutex<Database>>>,
 ) -> Result<Workstudio, String> {
-    let db = db.lock().await;
-    db.remove_workstudio_folder(&workstudio_id, &folder)
-        .map_err(|e| e.to_string())
+    async_db::with_db(db.inner(), "remove_workstudio_folder", |db| {
+        db.remove_workstudio_folder(&workstudio_id, &folder)
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -175,10 +191,12 @@ pub async fn workstudio_find_files(
     let match_by_extension = is_extension_query(&query);
 
     let ws = {
-        let db = db.lock().await;
-        db.get_workstudio(&args.workstudio_id)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "Workstudio not found".to_string())?
+        async_db::with_db(db.inner(), "workstudio_find_files:get_workstudio", |db| {
+            db.get_workstudio(&args.workstudio_id)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Workstudio not found".to_string())?
     };
 
     let mut roots: Vec<String> = Vec::new();
@@ -222,7 +240,11 @@ pub async fn workstudio_find_files(
                     // 提示：这里不返回 Err，是为了让“部分可读的工作区”仍能返回匹配结果。
                     // 但如果整个 workstudio 根目录不可读，下面会返回一个更明确的错误信息。
                     if let Some(path) = err.path() {
-                        eprintln!("[workstudio_find_files] walk error: {}: {}", path.display(), err);
+                        eprintln!(
+                            "[workstudio_find_files] walk error: {}: {}",
+                            path.display(),
+                            err
+                        );
                     } else {
                         eprintln!("[workstudio_find_files] walk error: {err}");
                     }

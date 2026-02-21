@@ -10,6 +10,7 @@ use tauri::Emitter;
 
 use crate::code_intel::ast::{self, AstDocumentSymbolsArgs};
 use crate::models::Workstudio;
+use crate::storage::async_db;
 use crate::storage::Database;
 
 use super::index_db::{CodeIndexDb, FileMeta};
@@ -233,7 +234,10 @@ impl CodeIndexManager {
         Ok(CodeIndexRequestDocumentSymbolsResult { cached, queued })
     }
 
-    pub async fn start_workspace_scan(&self, args: CodeIndexStartWorkspaceScanArgs) -> Result<(), String> {
+    pub async fn start_workspace_scan(
+        &self,
+        args: CodeIndexStartWorkspaceScanArgs,
+    ) -> Result<(), String> {
         let ws_id = args.workstudio_id.trim();
         if ws_id.is_empty() {
             return Err("workstudioId 为空".to_string());
@@ -245,12 +249,13 @@ impl CodeIndexManager {
         // - 仍会在打开文件/保存文件时按需触发单文件索引（高优先级）
         let force = priority >= PRIORITY_USER;
 
-        let ws: Workstudio = {
-            let db = self.db.lock().await;
-            db.get_workstudio(ws_id)
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| "Workstudio not found".to_string())?
-        };
+        let ws: Workstudio =
+            async_db::with_db(&self.db, "code_index:start_scan:get_workstudio", |db| {
+                db.get_workstudio(ws_id)
+            })
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "Workstudio not found".to_string())?;
 
         let roots = workstudio_roots(&ws);
         if roots.is_empty() {
@@ -315,12 +320,13 @@ impl CodeIndexManager {
         }
         let ws_id_owned = ws_id.to_string();
 
-        let ws: Workstudio = {
-            let db = self.db.lock().await;
-            db.get_workstudio(ws_id)
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| "Workstudio not found".to_string())?
-        };
+        let ws: Workstudio =
+            async_db::with_db(&self.db, "code_index:summary:get_workstudio", |db| {
+                db.get_workstudio(ws_id)
+            })
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "Workstudio not found".to_string())?;
 
         let roots = workstudio_roots(&ws);
         let roots_key = roots
@@ -398,7 +404,12 @@ impl CodeIndexManager {
                         st.running_job = Some(label.clone());
                     }
                     let _ = self
-                        .process_index_document_symbols(&workstudio_id, &file_path, &language_id, force)
+                        .process_index_document_symbols(
+                            &workstudio_id,
+                            &file_path,
+                            &language_id,
+                            force,
+                        )
                         .await;
                     {
                         let mut st = self.queue.lock().await;
@@ -648,8 +659,8 @@ impl CodeIndexManager {
             }
         };
 
-        let symbols_json = serde_json::to_value(symbols)
-            .map_err(|e| format!("symbols 序列化失败: {e}"))?;
+        let symbols_json =
+            serde_json::to_value(symbols).map_err(|e| format!("symbols 序列化失败: {e}"))?;
 
         let updated_at_ms = now_ms();
         let dbh = self.get_db_handle(workstudio_id).await?;
@@ -660,7 +671,14 @@ impl CodeIndexManager {
 
         tokio::task::spawn_blocking(move || {
             let guard = dbh.lock().map_err(|e| format!("索引 DB 锁失败: {e}"))?;
-            guard.upsert_document_symbols(&fp, &lang, "ast", &symbols_clone, updated_at_ms, meta.as_ref())
+            guard.upsert_document_symbols(
+                &fp,
+                &lang,
+                "ast",
+                &symbols_clone,
+                updated_at_ms,
+                meta.as_ref(),
+            )
         })
         .await
         .map_err(|e| format!("写入索引 DB 线程失败: {e}"))??;
@@ -693,12 +711,13 @@ impl CodeIndexManager {
     }
 
     async fn process_scan_workspace(&self, workstudio_id: &str) -> Result<(), String> {
-        let ws: Workstudio = {
-            let db = self.db.lock().await;
-            db.get_workstudio(workstudio_id)
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| "Workstudio not found".to_string())?
-        };
+        let ws: Workstudio =
+            async_db::with_db(&self.db, "code_index:process_scan:get_workstudio", |db| {
+                db.get_workstudio(workstudio_id)
+            })
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "Workstudio not found".to_string())?;
 
         let roots = workstudio_roots(&ws);
         if roots.is_empty() {
@@ -1087,7 +1106,10 @@ async fn read_file_meta(path: &str) -> Option<FileMeta> {
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map(|d| d.as_millis() as i64);
-    Some(FileMeta { mtime_ms, size_bytes })
+    Some(FileMeta {
+        mtime_ms,
+        size_bytes,
+    })
 }
 
 fn now_ms() -> i64 {

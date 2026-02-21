@@ -8,6 +8,7 @@ use tokio::fs;
 use tokio::sync::Mutex;
 
 use crate::models::WorkstudioUiState;
+use crate::storage::async_db;
 use crate::storage::Database;
 
 fn state_io_lock() -> &'static tokio::sync::Mutex<()> {
@@ -66,7 +67,9 @@ pub async fn get_workstudio_ui_state(
     db: tauri::State<'_, Arc<Mutex<Database>>>,
 ) -> Result<Option<WorkstudioUiState>, String> {
     let (main_folder, kind, legacy_state) = {
-        let db = db.lock().await;
+        let db = async_db::lock_db(db.inner(), "get_workstudio_ui_state")
+            .await
+            .map_err(|e| e.to_string())?;
         let ws = db
             .get_workstudio(&workstudio_id)
             .map_err(|e| e.to_string())?
@@ -109,7 +112,9 @@ pub async fn set_workstudio_ui_state(
     db: tauri::State<'_, Arc<Mutex<Database>>>,
 ) -> Result<(), String> {
     let (main_folder, kind) = {
-        let db = db.lock().await;
+        let db = async_db::lock_db(db.inner(), "set_workstudio_ui_state")
+            .await
+            .map_err(|e| e.to_string())?;
         let ws = db
             .get_workstudio(&workstudio_id)
             .map_err(|e| e.to_string())?

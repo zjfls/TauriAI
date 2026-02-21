@@ -43,6 +43,7 @@ use crate::skills::loader::{
     index_by_name as index_skills_by_name, load_skills as load_skill_files,
 };
 use crate::skills::SkillEntry;
+use crate::storage::async_db;
 use crate::storage::Database;
 use crate::workstudio_security::read_workstudio_security_config;
 
@@ -294,7 +295,8 @@ fn replay_messages_from_blocks(
             content.push_str(&parts.errors.join("\n"));
         }
 
-        let content_for_context = build_assistant_context_content(content, &thinking, reinject_thinking);
+        let content_for_context =
+            build_assistant_context_content(content, &thinking, reinject_thinking);
         let assistant_meta = if parts.tool_calls.is_empty() {
             None
         } else {
@@ -305,7 +307,9 @@ fn replay_messages_from_blocks(
         };
         if !content_for_context.trim().is_empty()
             || !thinking.trim().is_empty()
-            || assistant_meta.as_ref().is_some_and(|m| m.tool_calls.as_ref().is_some_and(|t| !t.is_empty()))
+            || assistant_meta
+                .as_ref()
+                .is_some_and(|m| m.tool_calls.as_ref().is_some_and(|t| !t.is_empty()))
         {
             out.push(Message {
                 id: uuid::Uuid::new_v4().to_string(),
@@ -782,16 +786,24 @@ fn render_skills_section(skills: &[SkillEntry]) -> Option<String> {
     lines.push("- 触发规则（Trigger rules）：当用户点名某个 skill（用 `$SkillName` 或纯文本提到）或任务明显匹配某个 skill 的描述时，你必须在该轮使用对应 skill。一次消息提到多个 skill 时，要全部使用；除非用户再次提到，否则不要把 skill 规则跨轮“默认携带”。".to_string());
     lines.push("- 缺失/不可用（Missing/blocked）：如果用户提到的 skill 不在列表里，或路径无法读取，需要简要说明并采用最佳兜底方案继续。".to_string());
     lines.push("- 使用方法（渐进披露 / progressive disclosure）：".to_string());
-    lines.push("  1) 决定要使用某个 skill 后，打开它的 `SKILL.md`，只读到足够执行工作流为止。".to_string());
+    lines.push(
+        "  1) 决定要使用某个 skill 后，打开它的 `SKILL.md`，只读到足够执行工作流为止。".to_string(),
+    );
     lines.push("  2) 如果 `SKILL.md` 指向额外目录（如 `references/`），只加载本次请求需要的文件，不要批量加载全部内容。".to_string());
-    lines.push("  3) 如果存在 `scripts/`，优先运行或修改脚本，而不是手打/复述大段代码。".to_string());
+    lines.push(
+        "  3) 如果存在 `scripts/`，优先运行或修改脚本，而不是手打/复述大段代码。".to_string(),
+    );
     lines.push("  4) 如果存在 `assets/` 或模板，优先复用，而不是从零重建。".to_string());
     lines.push("- 协调与编排（Coordination and sequencing）：".to_string());
-    lines.push("  - 多个 skills 同时适用时，选择覆盖任务所需的最小集合，并说明使用顺序。".to_string());
+    lines.push(
+        "  - 多个 skills 同时适用时，选择覆盖任务所需的最小集合，并说明使用顺序。".to_string(),
+    );
     lines.push("  - 简短说明你在用哪些 skill 以及原因；如果跳过了一个看起来明显相关的 skill，也要说明原因。".to_string());
     lines.push("- 上下文卫生（Context hygiene）：".to_string());
     lines.push("  - 保持上下文精简：能总结就不要整段粘贴，只在必要时加载额外文件。".to_string());
-    lines.push("  - 避免过度追链：除非被阻塞，否则优先只打开 `SKILL.md` 直接链接/提到的文件。".to_string());
+    lines.push(
+        "  - 避免过度追链：除非被阻塞，否则优先只打开 `SKILL.md` 直接链接/提到的文件。".to_string(),
+    );
     lines.push("  - 存在多种变体（框架/提供商/领域）时，只选择与当前任务最相关的参考文件，并说明你的选择依据。".to_string());
     lines.push("- 安全与兜底（Safety and fallback）：如果某个 skill 无法干净应用（缺文件、指令不清、环境阻塞等），说明问题并切换到次优但可执行的方案继续。".to_string());
 
@@ -1548,15 +1560,15 @@ impl<'a> TurnLoop<'a> {
                             .to_string(),
                         });
 
-	                        blocks.push(MessageBlock::ToolCall {
-	                            id: format!("{turn_id}:tool_call:{id}"),
-	                            turn_id: Some(turn_id.clone()),
-	                            turn_index: Some(turn_index),
-	                            call_id: id.clone(),
-	                            name: call.name.clone(),
-	                            arguments: call.arguments.clone(),
-	                            meta: None,
-	                        });
+                        blocks.push(MessageBlock::ToolCall {
+                            id: format!("{turn_id}:tool_call:{id}"),
+                            turn_id: Some(turn_id.clone()),
+                            turn_index: Some(turn_index),
+                            call_id: id.clone(),
+                            name: call.name.clone(),
+                            arguments: call.arguments.clone(),
+                            meta: None,
+                        });
 
                         normalized_calls.push(call);
                     }
@@ -2087,7 +2099,10 @@ impl<'a> TurnLoop<'a> {
                                     // Best-effort: persist tool meta into the corresponding tool_call block.
                                     if let Some(meta) = tool_meta.as_ref() {
                                         for b in blocks.iter_mut().rev() {
-                                            if let MessageBlock::ToolCall { call_id, meta: m, .. } = b {
+                                            if let MessageBlock::ToolCall {
+                                                call_id, meta: m, ..
+                                            } = b
+                                            {
                                                 if call_id == &call.id {
                                                     *m = Some(meta.clone());
                                                     break;
@@ -2097,7 +2112,9 @@ impl<'a> TurnLoop<'a> {
                                         self.emitter.emit(RunEvent::BlockDelta {
                                             task_id: self.task_id.clone(),
                                             turn_id: turn_id.clone(),
-                                            assistant_message_id: Some(self.assistant_message_id.clone()),
+                                            assistant_message_id: Some(
+                                                self.assistant_message_id.clone(),
+                                            ),
                                             block_id: format!("tool_call:{}", call.id),
                                             block_type: "tool_call".to_string(),
                                             format: Some("json".to_string()),
@@ -2153,7 +2170,10 @@ impl<'a> TurnLoop<'a> {
                         // Best-effort: persist tool meta into the corresponding tool_call block.
                         if let Some(meta) = tool_meta.as_ref() {
                             for b in blocks.iter_mut().rev() {
-                                if let MessageBlock::ToolCall { call_id, meta: m, .. } = b {
+                                if let MessageBlock::ToolCall {
+                                    call_id, meta: m, ..
+                                } = b
+                                {
                                     if call_id == &call.id {
                                         *m = Some(meta.clone());
                                         break;
@@ -3018,18 +3038,25 @@ pub async fn retry_turn(
     let config = config_manager
         .ensure_default()
         .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
-    let resolved = resolve_chat_model(
-        &config,
-        agent_name.as_deref(),
-        model_ref.as_deref(),
-    )?;
+    let resolved = resolve_chat_model(&config, agent_name.as_deref(), model_ref.as_deref())?;
     let reinject_thinking = resolved.agent.reinject_thinking;
 
-    let (content, base_messages_override, start_turn_index, placeholder_assistant, removed_messages) = {
-        let db = db.lock().await;
-        let messages = db
-            .get_messages(&conversation_id, 2_000, None)
-            .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
+    let (
+        content,
+        base_messages_override,
+        start_turn_index,
+        placeholder_assistant,
+        removed_messages,
+    ) = {
+        let messages = async_db::read_messages(
+            &db,
+            "retry_turn:get_messages",
+            &conversation_id,
+            2_000,
+            None,
+        )
+        .await
+        .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
 
         let assistant_pos = messages
             .iter()
@@ -3268,16 +3295,20 @@ pub async fn retry_turn(
     // Rewind persisted history: drop the original assistant message (including turns >= target)
     // and all subsequent messages/tasks, then (optionally) re-insert a placeholder containing
     // only the prefix turns so the UI can keep showing them.
-    {
-        let db = db.lock().await;
-        db.delete_messages_after(&cleanup_conversation_id, &assistant_message_id)
-            .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
-
-        if let Some(msg) = placeholder_assistant.as_ref() {
-            db.add_message(&cleanup_conversation_id, msg)
-                .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
+    let placeholder_fields = placeholder_assistant
+        .as_ref()
+        .map(crate::storage::MessageDbFields::from_message)
+        .transpose()
+        .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
+    async_db::with_db(&db, "retry_turn:rewind_history", |db| {
+        db.delete_messages_after(&cleanup_conversation_id, &assistant_message_id)?;
+        if let (Some(msg), Some(fields)) = (placeholder_assistant.as_ref(), placeholder_fields.as_ref()) {
+            db.add_message_with_fields(&cleanup_conversation_id, msg, fields)?;
         }
-    }
+        Ok::<(), crate::storage::StorageError>(())
+    })
+    .await
+    .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
 
     // Notify UI to reload persisted history (important for other windows/tabs).
     {
@@ -3419,47 +3450,58 @@ async fn run_task_inner(
                 status: MessageStatus::Pending,
                 error_message: None,
             };
-            {
-                let db = db.lock().await;
-                db.add_message(&input.conversation_id, &user_message)
-                    .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
-            }
+            let user_message_fields = crate::storage::MessageDbFields::from_message(&user_message)
+                .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
+            async_db::with_db(&db, "run_task:add_user_message", |db| {
+                db.add_message_with_fields(&input.conversation_id, &user_message, &user_message_fields)
+            })
+            .await
+            .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
 
             // 历史消息作为“基础上下文”（只取 Success + 本次 Pending 用户消息）
-            let base_messages = {
-                let db = db.lock().await;
-                db.get_messages(&input.conversation_id, 100, None)
-                    .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?
-                    .into_iter()
-                    .filter(|m| m.status == MessageStatus::Success || m.id == user_message.id)
-                    .collect::<Vec<_>>()
-            };
+            let base_messages = async_db::read_messages(
+                &db,
+                "run_task:get_base_messages",
+                &input.conversation_id,
+                100,
+                None,
+            )
+            .await
+            .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?
+            .into_iter()
+            .filter(|m| m.status == MessageStatus::Success || m.id == user_message.id)
+            .collect::<Vec<_>>();
 
             (Some(user_message.id), base_messages)
         };
     let cached_system_prompt: Option<(String, String)> = {
-        let db = db.lock().await;
-        db.get_conversation(&input.conversation_id)
-            .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?
-            .and_then(|c| {
-                let prompt = c.system_prompt.and_then(|s| {
-                    let trimmed = s.trim();
-                    if trimmed.is_empty() {
-                        None
-                    } else {
-                        Some(s)
-                    }
-                })?;
-                let key = c.system_prompt_cache_key.and_then(|s| {
-                    let trimmed = s.trim();
-                    if trimmed.is_empty() {
-                        None
-                    } else {
-                        Some(s)
-                    }
-                })?;
-                Some((prompt, key))
-            })
+        let conv = async_db::with_db(
+            &db,
+            "run_task:get_conversation_for_cached_system_prompt",
+            |db| db.get_conversation(&input.conversation_id),
+        )
+        .await
+        .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
+
+        conv.and_then(|c| {
+            let prompt = c.system_prompt.and_then(|s| {
+                let trimmed = s.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(s)
+                }
+            })?;
+            let key = c.system_prompt_cache_key.and_then(|s| {
+                let trimmed = s.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(s)
+                }
+            })?;
+            Some((prompt, key))
+        })
     };
     // 默认：新任务开始时不传历史 reasoning_content（thinking），避免跨任务污染与上下文爆炸（DeepSeek 等）。
     // 但 Moonshot Kimi thinking 模型在启用 thinking 时要求把 `reasoning_content` 保留在上下文中。
@@ -3532,11 +3574,12 @@ async fn run_task_inner(
     // tie this solely to AgentType::Tool.
     let workspace_enabled = tools_enabled && agent.workspace_support.unwrap_or(true);
     let (workstudio, default_workdir) = if workspace_enabled {
-        let ws = {
-            let db = db.lock().await;
-            db.ensure_workstudio_for_conversation(&input.conversation_id)
-                .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?
-        };
+        let ws = crate::storage::async_db::ensure_workstudio_for_conversation(
+            &db,
+            &input.conversation_id,
+        )
+        .await
+        .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
         let dir = std::path::PathBuf::from(ws.main_folder.clone());
         (Some(ws), Some(dir))
     } else {
@@ -3708,7 +3751,7 @@ async fn run_task_inner(
                     enforce_single_apply_patch_tool_in_allow_list(&mut tools);
                     super::tools::spec::ToolSet::allow_list(name, tools)
                 }
-                    .with_persistance_shell_enhance(ts.persistance_shell_enhance),
+                .with_persistance_shell_enhance(ts.persistance_shell_enhance),
                 // 安全优先：引用了不存在的 toolset 时，默认 deny_all，避免“悄悄变成 allow_all”
                 None => super::tools::spec::ToolSet::deny_all(name),
             },
@@ -4275,12 +4318,14 @@ async fn run_task_inner(
         if let Some(merged_prompt) =
             merge_system_messages_into_single_in_place(&mut messages, &input.conversation_id)
         {
-            let db = db.lock().await;
-            db.update_conversation_system_prompt(
-                &input.conversation_id,
-                &merged_prompt,
-                Some(computed_cache_key.as_str()),
-            )
+            async_db::with_db(&db, "run_task:update_system_prompt_cache", |db| {
+                db.update_conversation_system_prompt(
+                    &input.conversation_id,
+                    &merged_prompt,
+                    Some(computed_cache_key.as_str()),
+                )
+            })
+            .await
             .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
         }
 
@@ -4361,19 +4406,23 @@ async fn run_task_inner(
                         });
 
                         // Reload base messages for this request (keep system prompt as-is).
-                        let refreshed_base_messages = {
-                            let db = db.lock().await;
-                            db.get_messages(&input.conversation_id, 100, None)
-                                .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?
-                                .into_iter()
-                                .filter(|m| {
-                                    m.status == MessageStatus::Success
-                                        || user_message_id_for_status_update
-                                            .as_ref()
-                                            .is_some_and(|id| m.id == *id)
-                                })
-                                .collect::<Vec<_>>()
-                        };
+                        let refreshed_base_messages = async_db::read_messages(
+                            &db,
+                            "run_task:reload_messages_after_compact",
+                            &input.conversation_id,
+                            100,
+                            None,
+                        )
+                        .await
+                        .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?
+                        .into_iter()
+                        .filter(|m| {
+                            m.status == MessageStatus::Success
+                                || user_message_id_for_status_update
+                                    .as_ref()
+                                    .is_some_and(|id| m.id == *id)
+                        })
+                        .collect::<Vec<_>>();
 
                         let refreshed_base_messages = refreshed_base_messages
                             .into_iter()
@@ -4490,12 +4539,12 @@ async fn run_task_inner(
             blocks,
             turns,
         } => {
-            {
-                let db = db.lock().await;
-                if let Some(id) = user_message_id_for_status_update.as_deref() {
-                    let _ =
-                        db.update_message_status(id, MessageStatus::Failed, Some(error.clone()));
-                }
+            if let Some(id) = user_message_id_for_status_update.as_deref() {
+                let err = error.clone();
+                let _ = async_db::with_db(&db, "run_task:failed:update_user_status", |db| {
+                    db.update_message_status(id, MessageStatus::Failed, Some(err.clone()))
+                })
+                .await;
             }
 
             let should_persist = reuse_assistant_message_id
@@ -4507,13 +4556,19 @@ async fn run_task_inner(
             if should_persist {
                 let usage_for_meta = turns.iter().rev().find_map(|t| t.usage.clone());
 
-                let db = db.lock().await;
-                let existing = if reuse_assistant_message_id {
-                    db.get_message(&input.conversation_id, &assistant_message_id)
-                        .ok()
+                let existing: Option<Message> = if reuse_assistant_message_id {
+                    async_db::read_message(
+                        &db,
+                        "run_task:failed:get_existing_assistant",
+                        &input.conversation_id,
+                        &assistant_message_id,
+                    )
+                    .await
+                    .ok()
                 } else {
                     None
                 };
+                let has_existing = existing.is_some();
 
                 let (merged_blocks, merged_turns) = if let Some(existing) = existing.as_ref() {
                     let prefix_meta = existing.meta.as_ref();
@@ -4558,11 +4613,24 @@ async fn run_task_inner(
                     error_message: Some(error.clone()),
                 };
 
-                if reuse_assistant_message_id && existing.is_some() {
-                    let _ = db.update_message(&assistant_message);
-                } else {
-                    let _ = db.add_message(&input.conversation_id, &assistant_message);
-                }
+                let assistant_fields =
+                    crate::storage::MessageDbFields::from_message(&assistant_message).unwrap_or_else(|_| {
+                        crate::storage::MessageDbFields {
+                            role: "assistant",
+                            status: "failed",
+                            created_at: assistant_message.created_at.to_rfc3339(),
+                            content_parts_json: None,
+                            meta_json: None,
+                        }
+                    });
+                let _ = async_db::with_db(&db, "run_task:failed:persist_assistant", |db| {
+                    if reuse_assistant_message_id && has_existing {
+                        db.update_message_with_fields(&assistant_message, &assistant_fields)
+                    } else {
+                        db.add_message_with_fields(&input.conversation_id, &assistant_message, &assistant_fields)
+                    }
+                })
+                .await;
             }
 
             emitter.emit(RunEvent::Error {
@@ -4583,11 +4651,11 @@ async fn run_task_inner(
             blocks,
             turns,
         } => {
-            {
-                let db = db.lock().await;
-                if let Some(id) = user_message_id_for_status_update.as_deref() {
-                    let _ = db.update_message_status(id, MessageStatus::Success, None);
-                }
+            if let Some(id) = user_message_id_for_status_update.as_deref() {
+                let _ = async_db::with_db(&db, "run_task:success:update_user_status", |db| {
+                    db.update_message_status(id, MessageStatus::Success, None)
+                })
+                .await;
             }
 
             if !content.is_empty()
@@ -4595,16 +4663,23 @@ async fn run_task_inner(
                 || !blocks.is_empty()
                 || !turns.is_empty()
             {
-                let usage_for_meta =
-                    usage.clone().or_else(|| turns.iter().rev().find_map(|t| t.usage.clone()));
+                let usage_for_meta = usage
+                    .clone()
+                    .or_else(|| turns.iter().rev().find_map(|t| t.usage.clone()));
 
-                let db = db.lock().await;
-                let existing = if reuse_assistant_message_id {
-                    db.get_message(&input.conversation_id, &assistant_message_id)
-                        .ok()
+                let existing: Option<Message> = if reuse_assistant_message_id {
+                    async_db::read_message(
+                        &db,
+                        "run_task:success:get_existing_assistant",
+                        &input.conversation_id,
+                        &assistant_message_id,
+                    )
+                    .await
+                    .ok()
                 } else {
                     None
                 };
+                let has_existing = existing.is_some();
 
                 let (merged_blocks, merged_turns) = if let Some(existing) = existing.as_ref() {
                     let prefix_meta = existing.meta.as_ref();
@@ -4649,13 +4724,17 @@ async fn run_task_inner(
                     error_message: None,
                 };
 
-                if reuse_assistant_message_id && existing.is_some() {
-                    db.update_message(&assistant_message)
-                        .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
-                } else {
-                    db.add_message(&input.conversation_id, &assistant_message)
-                        .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
-                }
+                let assistant_fields = crate::storage::MessageDbFields::from_message(&assistant_message)
+                    .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
+                async_db::with_db(&db, "run_task:success:persist_assistant", |db| {
+                    if reuse_assistant_message_id && has_existing {
+                        db.update_message_with_fields(&assistant_message, &assistant_fields)
+                    } else {
+                        db.add_message_with_fields(&input.conversation_id, &assistant_message, &assistant_fields)
+                    }
+                })
+                .await
+                .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
             }
 
             emitter.emit(RunEvent::Done {
@@ -4682,11 +4761,11 @@ async fn run_task_inner(
             blocks,
             turns,
         } => {
-            {
-                let db = db.lock().await;
-                if let Some(id) = user_message_id_for_status_update.as_deref() {
-                    let _ = db.update_message_status(id, MessageStatus::Success, None);
-                }
+            if let Some(id) = user_message_id_for_status_update.as_deref() {
+                let _ = async_db::with_db(&db, "run_task:aborted:update_user_status", |db| {
+                    db.update_message_status(id, MessageStatus::Success, None)
+                })
+                .await;
             }
 
             if !content.is_empty()
@@ -4696,13 +4775,19 @@ async fn run_task_inner(
             {
                 let usage_for_meta = turns.iter().rev().find_map(|t| t.usage.clone());
 
-                let db = db.lock().await;
-                let existing = if reuse_assistant_message_id {
-                    db.get_message(&input.conversation_id, &assistant_message_id)
-                        .ok()
+                let existing: Option<Message> = if reuse_assistant_message_id {
+                    async_db::read_message(
+                        &db,
+                        "run_task:aborted:get_existing_assistant",
+                        &input.conversation_id,
+                        &assistant_message_id,
+                    )
+                    .await
+                    .ok()
                 } else {
                     None
                 };
+                let has_existing = existing.is_some();
 
                 let (merged_blocks, merged_turns) = if let Some(existing) = existing.as_ref() {
                     let prefix_meta = existing.meta.as_ref();
@@ -4747,13 +4832,17 @@ async fn run_task_inner(
                     error_message: None,
                 };
 
-                if reuse_assistant_message_id && existing.is_some() {
-                    db.update_message(&assistant_message)
-                        .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
-                } else {
-                    db.add_message(&input.conversation_id, &assistant_message)
-                        .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
-                }
+                let assistant_fields = crate::storage::MessageDbFields::from_message(&assistant_message)
+                    .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
+                async_db::with_db(&db, "run_task:aborted:persist_assistant", |db| {
+                    if reuse_assistant_message_id && has_existing {
+                        db.update_message_with_fields(&assistant_message, &assistant_fields)
+                    } else {
+                        db.add_message_with_fields(&input.conversation_id, &assistant_message, &assistant_fields)
+                    }
+                })
+                .await
+                .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
             }
 
             emitter.emit(RunEvent::Done {
@@ -4794,7 +4883,10 @@ fn message_block_id(block: &MessageBlock) -> &str {
     }
 }
 
-fn merge_message_blocks(prefix: Option<Vec<MessageBlock>>, next: Vec<MessageBlock>) -> Vec<MessageBlock> {
+fn merge_message_blocks(
+    prefix: Option<Vec<MessageBlock>>,
+    next: Vec<MessageBlock>,
+) -> Vec<MessageBlock> {
     let mut out: Vec<MessageBlock> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
@@ -4813,7 +4905,10 @@ fn merge_message_blocks(prefix: Option<Vec<MessageBlock>>, next: Vec<MessageBloc
     out
 }
 
-fn merge_message_turns(prefix: Option<Vec<MessageTurn>>, next: Vec<MessageTurn>) -> Vec<MessageTurn> {
+fn merge_message_turns(
+    prefix: Option<Vec<MessageTurn>>,
+    next: Vec<MessageTurn>,
+) -> Vec<MessageTurn> {
     let mut out: Vec<MessageTurn> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
@@ -5525,15 +5620,15 @@ mod tests {
             content_parts: vec![],
             thinking: None,
             meta: Some(crate::models::MessageMeta {
-	                blocks: Some(vec![crate::models::MessageBlock::ToolCall {
-	                    id: "t1:tool_call:call_1".to_string(),
-	                    turn_id: Some("t1".to_string()),
-	                    turn_index: Some(1),
-	                    call_id: "call_1".to_string(),
-	                    name: "read_file".to_string(),
-	                    arguments: "{\"file_path\":\"requirements.txt\"}".to_string(),
-	                    meta: None,
-	                }]),
+                blocks: Some(vec![crate::models::MessageBlock::ToolCall {
+                    id: "t1:tool_call:call_1".to_string(),
+                    turn_id: Some("t1".to_string()),
+                    turn_index: Some(1),
+                    call_id: "call_1".to_string(),
+                    name: "read_file".to_string(),
+                    arguments: "{\"file_path\":\"requirements.txt\"}".to_string(),
+                    meta: None,
+                }]),
                 ..Default::default()
             }),
             created_at: chrono::Utc::now(),
@@ -5574,25 +5669,25 @@ mod tests {
             content_parts: vec![],
             thinking: None,
             meta: Some(crate::models::MessageMeta {
-	                blocks: Some(vec![
-	                    crate::models::MessageBlock::ToolCall {
-	                        id: "t1:tool_call:call_1".to_string(),
-	                        turn_id: Some("t1".to_string()),
-	                        turn_index: Some(1),
-	                        call_id: "call_1".to_string(),
-	                        name: "read_file".to_string(),
-	                        arguments: "{}".to_string(),
-	                        meta: None,
-	                    },
-	                    crate::models::MessageBlock::ToolCall {
-	                        id: "t1:tool_call:call_2".to_string(),
-	                        turn_id: Some("t1".to_string()),
-	                        turn_index: Some(1),
-	                        call_id: "call_2".to_string(),
-	                        name: "shell_command".to_string(),
-	                        arguments: "{}".to_string(),
-	                        meta: None,
-	                    },
+                blocks: Some(vec![
+                    crate::models::MessageBlock::ToolCall {
+                        id: "t1:tool_call:call_1".to_string(),
+                        turn_id: Some("t1".to_string()),
+                        turn_index: Some(1),
+                        call_id: "call_1".to_string(),
+                        name: "read_file".to_string(),
+                        arguments: "{}".to_string(),
+                        meta: None,
+                    },
+                    crate::models::MessageBlock::ToolCall {
+                        id: "t1:tool_call:call_2".to_string(),
+                        turn_id: Some("t1".to_string()),
+                        turn_index: Some(1),
+                        call_id: "call_2".to_string(),
+                        name: "shell_command".to_string(),
+                        arguments: "{}".to_string(),
+                        meta: None,
+                    },
                     crate::models::MessageBlock::ToolResult {
                         id: "t1:tool_result:call_2".to_string(),
                         turn_id: Some("t1".to_string()),

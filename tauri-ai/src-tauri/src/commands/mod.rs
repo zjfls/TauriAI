@@ -11,6 +11,8 @@ mod config;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod conversation;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
+mod db_debug;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod devtools;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod drag_ghost;
@@ -62,6 +64,8 @@ pub use conversation::{
     ensure_conversation_file_indexes, generate_title, get_conversations, get_messages,
     get_turn_debug_info, update_conversation_metadata, update_conversation_title,
 };
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub use db_debug::get_db_lock_snapshot;
 pub use devtools::open_devtools_current_window;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use drag_ghost::{

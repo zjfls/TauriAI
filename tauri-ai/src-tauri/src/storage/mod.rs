@@ -15,7 +15,12 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate::models::WorkstudioUiState;
-use crate::models::{CodeSnippetRange, ContentPart, Conversation, Message, MessageRole, Workstudio, WorkstudioSymbolAnalysis};
+use crate::models::{
+    CodeSnippetRange, ContentPart, Conversation, Message, MessageRole, Workstudio,
+    WorkstudioSymbolAnalysis,
+};
+
+pub mod async_db;
 
 /// Errors that can occur during storage operations
 #[derive(Debug, Error)]
@@ -57,6 +62,83 @@ impl From<std::io::Error> for StorageError {
 /// Database wrapper providing thread-safe access to SQLite
 pub struct Database {
     conn: Mutex<Connection>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RawMessageRow {
+    pub(crate) id: String,
+    pub(crate) conversation_id: String,
+    pub(crate) role: String,
+    pub(crate) content: String,
+    pub(crate) thinking: Option<String>,
+    pub(crate) content_parts_json: Option<String>,
+    pub(crate) meta_json: Option<String>,
+    pub(crate) created_at: String,
+    pub(crate) status: String,
+    pub(crate) error_message: Option<String>,
+}
+
+impl RawMessageRow {
+    fn from_row(row: &rusqlite::Row) -> Result<Self, rusqlite::Error> {
+        Ok(Self {
+            id: row.get(0)?,
+            conversation_id: row.get(1)?,
+            role: row.get(2)?,
+            content: row.get(3)?,
+            thinking: row.get(4)?,
+            content_parts_json: row.get(5)?,
+            meta_json: row.get(6)?,
+            created_at: row.get(7)?,
+            status: row.get(8).unwrap_or_else(|_| "success".to_string()),
+            error_message: row.get(9).ok(),
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct MessageDbFields {
+    pub(crate) role: &'static str,
+    pub(crate) status: &'static str,
+    pub(crate) created_at: String,
+    pub(crate) content_parts_json: Option<String>,
+    pub(crate) meta_json: Option<String>,
+}
+
+impl MessageDbFields {
+    pub(crate) fn from_message(message: &Message) -> Result<Self, StorageError> {
+        let role = match message.role {
+            MessageRole::User => "user",
+            MessageRole::Assistant => "assistant",
+            MessageRole::System => "system",
+            MessageRole::Tool => "tool",
+        };
+
+        let status = match message.status {
+            crate::models::MessageStatus::Pending => "pending",
+            crate::models::MessageStatus::Success => "success",
+            crate::models::MessageStatus::Failed => "failed",
+        };
+
+        let meta_json = message
+            .meta
+            .as_ref()
+            .map(|m| serde_json::to_string(m))
+            .transpose()?;
+
+        let content_parts_json = if message.content_parts.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(&message.content_parts)?)
+        };
+
+        Ok(Self {
+            role,
+            status,
+            created_at: message.created_at.to_rfc3339(),
+            content_parts_json,
+            meta_json,
+        })
+    }
 }
 
 impl Database {
@@ -138,10 +220,19 @@ impl Database {
             [],
         );
         let _ = conn.execute("ALTER TABLE conversations ADD COLUMN primary_path TEXT", []);
-        let _ = conn.execute("ALTER TABLE conversations ADD COLUMN primary_path_kind TEXT", []);
-        let _ = conn.execute("ALTER TABLE conversations ADD COLUMN primary_path_pref TEXT", []);
+        let _ = conn.execute(
+            "ALTER TABLE conversations ADD COLUMN primary_path_kind TEXT",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE conversations ADD COLUMN primary_path_pref TEXT",
+            [],
+        );
         let _ = conn.execute("ALTER TABLE conversations ADD COLUMN active_files TEXT", []);
-        let _ = conn.execute("ALTER TABLE conversations ADD COLUMN active_files_updated_at TEXT", []);
+        let _ = conn.execute(
+            "ALTER TABLE conversations ADD COLUMN active_files_updated_at TEXT",
+            [],
+        );
 
         // Create workstudios table
         conn.execute(
@@ -162,7 +253,10 @@ impl Database {
             [],
         );
         // Migration: Add main_folder_key column if it doesn't exist
-        let _ = conn.execute("ALTER TABLE workstudios ADD COLUMN main_folder_key TEXT", []);
+        let _ = conn.execute(
+            "ALTER TABLE workstudios ADD COLUMN main_folder_key TEXT",
+            [],
+        );
 
         // Keep a single workstudio per main_folder_key (matches frontend window identity).
         // Backfill keys first, then merge duplicates, then enforce a unique index.
@@ -554,7 +648,8 @@ impl Database {
                         updated_at: now,
                     };
 
-                    let _ = Self::write_workstudio_marker(&PathBuf::from(&new_ws.main_folder), &new_ws);
+                    let _ =
+                        Self::write_workstudio_marker(&PathBuf::from(&new_ws.main_folder), &new_ws);
 
                     cloned_workstudio_id = Some(new_ws_id);
                     workstudio_insert = Some((new_ws, folders_json));
@@ -1099,7 +1194,8 @@ impl Database {
         let mut updates: Vec<(String, String)> = Vec::new();
 
         {
-            let mut stmt = conn.prepare("SELECT id, main_folder, main_folder_key FROM workstudios")?;
+            let mut stmt =
+                conn.prepare("SELECT id, main_folder, main_folder_key FROM workstudios")?;
             let rows = stmt.query_map([], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -1239,7 +1335,8 @@ impl Database {
             push_unique(&best_main_folder);
 
             for r in list.iter() {
-                let folders: Vec<String> = serde_json::from_str(&r.folders_json).unwrap_or_default();
+                let folders: Vec<String> =
+                    serde_json::from_str(&r.folders_json).unwrap_or_default();
                 for f in folders {
                     push_unique(&f);
                 }
@@ -1609,7 +1706,9 @@ impl Database {
                 };
 
                 push_unique(&target_main_folder);
-                for f in serde_json::from_str::<Vec<String>>(&target_folders_json).unwrap_or_default() {
+                for f in
+                    serde_json::from_str::<Vec<String>>(&target_folders_json).unwrap_or_default()
+                {
                     push_unique(&f);
                 }
                 for f in ws.folders.iter() {
@@ -1628,7 +1727,10 @@ impl Database {
                     "UPDATE conversations SET workstudio_id = ?1 WHERE workstudio_id = ?2",
                     params![&target_id, workstudio_id],
                 )?;
-                tx.execute("DELETE FROM workstudios WHERE id = ?1", params![workstudio_id])?;
+                tx.execute(
+                    "DELETE FROM workstudios WHERE id = ?1",
+                    params![workstudio_id],
+                )?;
 
                 tx.commit()?;
 
@@ -1657,7 +1759,13 @@ impl Database {
                  folders_json = ?3,
                  updated_at = ?4
              WHERE id = ?5",
-            params![&ws.main_folder, &main_folder_key, &folders_json, &now_str, workstudio_id],
+            params![
+                &ws.main_folder,
+                &main_folder_key,
+                &folders_json,
+                &now_str,
+                workstudio_id
+            ],
         )?;
 
         tx.commit()?;
@@ -1746,7 +1854,9 @@ impl Database {
                 };
 
                 push_unique(&target_main_folder);
-                for f in serde_json::from_str::<Vec<String>>(&target_folders_json).unwrap_or_default() {
+                for f in
+                    serde_json::from_str::<Vec<String>>(&target_folders_json).unwrap_or_default()
+                {
                     push_unique(&f);
                 }
                 for f in ws.folders.iter() {
@@ -1765,7 +1875,10 @@ impl Database {
                     "UPDATE conversations SET workstudio_id = ?1 WHERE workstudio_id = ?2",
                     params![&target_id, workstudio_id],
                 )?;
-                tx.execute("DELETE FROM workstudios WHERE id = ?1", params![workstudio_id])?;
+                tx.execute(
+                    "DELETE FROM workstudios WHERE id = ?1",
+                    params![workstudio_id],
+                )?;
 
                 tx.commit()?;
 
@@ -1793,7 +1906,13 @@ impl Database {
                  folders_json = ?3,
                  updated_at = ?4
              WHERE id = ?5",
-            params![&ws.main_folder, &main_folder_key, &folders_json, &now_str, workstudio_id],
+            params![
+                &ws.main_folder,
+                &main_folder_key,
+                &folders_json,
+                &now_str,
+                workstudio_id
+            ],
         )?;
 
         tx.commit()?;
@@ -1894,7 +2013,9 @@ impl Database {
                 };
 
                 push_unique(&target_main_folder);
-                for f in serde_json::from_str::<Vec<String>>(&target_folders_json).unwrap_or_default() {
+                for f in
+                    serde_json::from_str::<Vec<String>>(&target_folders_json).unwrap_or_default()
+                {
                     push_unique(&f);
                 }
                 for f in ws.folders.iter() {
@@ -1913,7 +2034,10 @@ impl Database {
                     "UPDATE conversations SET workstudio_id = ?1 WHERE workstudio_id = ?2",
                     params![&target_id, workstudio_id],
                 )?;
-                tx.execute("DELETE FROM workstudios WHERE id = ?1", params![workstudio_id])?;
+                tx.execute(
+                    "DELETE FROM workstudios WHERE id = ?1",
+                    params![workstudio_id],
+                )?;
 
                 tx.commit()?;
 
@@ -1941,7 +2065,13 @@ impl Database {
                  folders_json = ?3,
                  updated_at = ?4
              WHERE id = ?5",
-            params![&ws.main_folder, &main_folder_key, &folders_json, &now_str, workstudio_id],
+            params![
+                &ws.main_folder,
+                &main_folder_key,
+                &folders_json,
+                &now_str,
+                workstudio_id
+            ],
         )?;
 
         tx.commit()?;
@@ -2104,76 +2234,84 @@ impl Database {
         model_ref: Option<&str>,
         latency_ms: Option<u64>,
     ) -> Result<WorkstudioSymbolAnalysis, StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Lock(e.to_string()))?;
-
         let now = Utc::now();
         let now_str = now.to_rfc3339();
         let id = uuid::Uuid::new_v4().to_string();
 
-        conn.execute(
-            "INSERT INTO workstudio_symbol_analyses (
-                id,
-                workstudio_id,
-                file_path,
-                language_id,
-                symbol_key,
-                symbol_name,
-                symbol_kind,
-                selection_line,
-                selection_column,
-                range_start_line,
-                range_start_column,
-                range_end_line,
-                range_end_column,
-                answer_md,
-                model_ref,
-                latency_ms,
-                created_at,
-                updated_at
-            ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18
-            )
-            ON CONFLICT(workstudio_id, file_path, symbol_key) DO UPDATE
-              SET language_id = excluded.language_id,
-                  symbol_name = excluded.symbol_name,
-                  symbol_kind = excluded.symbol_kind,
-                  selection_line = excluded.selection_line,
-                  selection_column = excluded.selection_column,
-                  range_start_line = excluded.range_start_line,
-                  range_start_column = excluded.range_start_column,
-                  range_end_line = excluded.range_end_line,
-                  range_end_column = excluded.range_end_column,
-                  answer_md = excluded.answer_md,
-                  model_ref = excluded.model_ref,
-                  latency_ms = excluded.latency_ms,
-                  updated_at = excluded.updated_at",
-            params![
-                id,
-                workstudio_id,
-                file_path,
-                language_id,
-                symbol_key,
-                symbol_name,
-                symbol_kind,
-                selection_line as i64,
-                selection_column as i64,
-                range.start_line as i64,
-                range.start_column as i64,
-                range.end_line as i64,
-                range.end_column as i64,
-                answer_md,
-                model_ref,
-                latency_ms.map(|v| v as i64),
-                now_str,
-                now_str,
-            ],
-        )?;
+        // IMPORTANT: do not call any other `self.*` methods while holding `conn` mutex.
+        // Otherwise it can deadlock (std::sync::Mutex is not re-entrant).
+        {
+            let conn = self
+                .conn
+                .lock()
+                .map_err(|e| StorageError::Lock(e.to_string()))?;
+
+            conn.execute(
+                "INSERT INTO workstudio_symbol_analyses (
+                    id,
+                    workstudio_id,
+                    file_path,
+                    language_id,
+                    symbol_key,
+                    symbol_name,
+                    symbol_kind,
+                    selection_line,
+                    selection_column,
+                    range_start_line,
+                    range_start_column,
+                    range_end_line,
+                    range_end_column,
+                    answer_md,
+                    model_ref,
+                    latency_ms,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18
+                )
+                ON CONFLICT(workstudio_id, file_path, symbol_key) DO UPDATE
+                  SET language_id = excluded.language_id,
+                      symbol_name = excluded.symbol_name,
+                      symbol_kind = excluded.symbol_kind,
+                      selection_line = excluded.selection_line,
+                      selection_column = excluded.selection_column,
+                      range_start_line = excluded.range_start_line,
+                      range_start_column = excluded.range_start_column,
+                      range_end_line = excluded.range_end_line,
+                      range_end_column = excluded.range_end_column,
+                      answer_md = excluded.answer_md,
+                      model_ref = excluded.model_ref,
+                      latency_ms = excluded.latency_ms,
+                      updated_at = excluded.updated_at",
+                params![
+                    id,
+                    workstudio_id,
+                    file_path,
+                    language_id,
+                    symbol_key,
+                    symbol_name,
+                    symbol_kind,
+                    selection_line as i64,
+                    selection_column as i64,
+                    range.start_line as i64,
+                    range.start_column as i64,
+                    range.end_line as i64,
+                    range.end_column as i64,
+                    answer_md,
+                    model_ref,
+                    latency_ms.map(|v| v as i64),
+                    now_str,
+                    now_str,
+                ],
+            )?;
+        }
 
         self.get_workstudio_symbol_analysis(workstudio_id, file_path, symbol_key)?
-            .ok_or_else(|| StorageError::NotFound("workstudio_symbol_analysis missing after upsert".to_string()))
+            .ok_or_else(|| {
+                StorageError::NotFound(
+                    "workstudio_symbol_analysis missing after upsert".to_string(),
+                )
+            })
     }
 
     pub fn delete_workstudio_symbol_analysis(
@@ -2203,53 +2341,35 @@ impl Database {
         conversation_id: &str,
         message: &Message,
     ) -> Result<(), StorageError> {
+        let fields = MessageDbFields::from_message(message)?;
+        self.add_message_with_fields(conversation_id, message, &fields)
+    }
+
+    pub(crate) fn add_message_with_fields(
+        &self,
+        conversation_id: &str,
+        message: &Message,
+        fields: &MessageDbFields,
+    ) -> Result<(), StorageError> {
         let conn = self
             .conn
             .lock()
             .map_err(|e| StorageError::Lock(e.to_string()))?;
 
-        let role_str = match message.role {
-            MessageRole::User => "user",
-            MessageRole::Assistant => "assistant",
-            MessageRole::System => "system",
-            MessageRole::Tool => "tool",
-        };
-
-        let meta_json = message
-            .meta
-            .as_ref()
-            .map(|m| serde_json::to_string(m))
-            .transpose()?;
-
-        // Serialize content_parts if not empty
-        let content_parts_json = if message.content_parts.is_empty() {
-            None
-        } else {
-            Some(serde_json::to_string(&message.content_parts)?)
-        };
-
-        let created_at_str = message.created_at.to_rfc3339();
-
-        let status_str = match message.status {
-            crate::models::MessageStatus::Pending => "pending",
-            crate::models::MessageStatus::Success => "success",
-            crate::models::MessageStatus::Failed => "failed",
-        };
-
         conn.execute(
             "INSERT INTO messages (id, conversation_id, role, content, thinking, content_parts, meta, status, error_message, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
-                message.id,
+                message.id.as_str(),
                 conversation_id,
-                role_str,
-                message.content,
-                message.thinking,
-                content_parts_json,
-                meta_json,
-                status_str,
-                message.error_message,
-                created_at_str
+                fields.role,
+                message.content.as_str(),
+                message.thinking.as_deref(),
+                fields.content_parts_json.as_deref(),
+                fields.meta_json.as_deref(),
+                fields.status,
+                message.error_message.as_deref(),
+                fields.created_at.as_str()
             ],
         )?;
 
@@ -2264,32 +2384,29 @@ impl Database {
     }
 
     pub fn update_message(&self, message: &Message) -> Result<(), StorageError> {
+        let fields = MessageDbFields::from_message(message)?;
+        self.update_message_with_fields(message, &fields)
+    }
+
+    pub(crate) fn update_message_with_fields(
+        &self,
+        message: &Message,
+        fields: &MessageDbFields,
+    ) -> Result<(), StorageError> {
         let conn = self
             .conn
             .lock()
             .map_err(|e| StorageError::Lock(e.to_string()))?;
 
-        let status_str = match message.status {
-            crate::models::MessageStatus::Pending => "pending",
-            crate::models::MessageStatus::Success => "success",
-            crate::models::MessageStatus::Failed => "failed",
-        };
-
-        let meta_json = message
-            .meta
-            .as_ref()
-            .map(|m| serde_json::to_string(m))
-            .transpose()?;
-
         conn.execute(
             "UPDATE messages SET content = ?1, thinking = ?2, meta = ?3, status = ?4, error_message = ?5 WHERE id = ?6",
             params![
-                message.content,
-                message.thinking,
-                meta_json,
-                status_str,
-                message.error_message,
-                message.id
+                message.content.as_str(),
+                message.thinking.as_deref(),
+                fields.meta_json.as_deref(),
+                fields.status,
+                message.error_message.as_deref(),
+                message.id.as_str()
             ],
         )?;
 
@@ -2297,7 +2414,7 @@ impl Database {
         let now = Utc::now().to_rfc3339();
         conn.execute(
             "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
-            params![now, message.conversation_id],
+            params![now, message.conversation_id.as_str()],
         )?;
 
         Ok(())
@@ -2436,12 +2553,25 @@ impl Database {
         limit: usize,
         before_id: Option<&str>,
     ) -> Result<Vec<Message>, StorageError> {
+        let raw = self.get_messages_raw(conversation_id, limit, before_id)?;
+        Ok(raw
+            .into_iter()
+            .map(Self::raw_message_row_to_message)
+            .collect())
+    }
+
+    pub(crate) fn get_messages_raw(
+        &self,
+        conversation_id: &str,
+        limit: usize,
+        before_id: Option<&str>,
+    ) -> Result<Vec<RawMessageRow>, StorageError> {
         let conn = self
             .conn
             .lock()
             .map_err(|e| StorageError::Lock(e.to_string()))?;
 
-        let messages = if let Some(before) = before_id {
+        let rows = if let Some(before) = before_id {
             // Get the created_at of the before_id message
             let mut before_stmt = conn.prepare("SELECT created_at FROM messages WHERE id = ?1")?;
             let before_created_at: Option<String> = before_stmt
@@ -2457,9 +2587,9 @@ impl Database {
                      LIMIT ?3",
                 )?;
 
-                let msgs: Vec<Message> = stmt
+                let msgs: Vec<RawMessageRow> = stmt
                     .query_map(params![conversation_id, before_time, limit as i64], |row| {
-                        self.row_to_message(row)
+                        RawMessageRow::from_row(row)
                     })?
                     .collect::<Result<Vec<_>, _>>()?;
 
@@ -2478,9 +2608,9 @@ impl Database {
                  LIMIT ?2",
             )?;
 
-            let msgs: Vec<Message> = stmt
+            let msgs: Vec<RawMessageRow> = stmt
                 .query_map(params![conversation_id, limit as i64], |row| {
-                    self.row_to_message(row)
+                    RawMessageRow::from_row(row)
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
 
@@ -2488,13 +2618,24 @@ impl Database {
             msgs.into_iter().rev().collect()
         };
 
-        Ok(messages)
+        Ok(rows)
     }
 
     /// Get all messages for a conversation in chronological order.
     ///
     /// NOTE: This can be large. Prefer `get_messages` for normal UI pagination.
     pub fn get_all_messages(&self, conversation_id: &str) -> Result<Vec<Message>, StorageError> {
+        let raw = self.get_all_messages_raw(conversation_id)?;
+        Ok(raw
+            .into_iter()
+            .map(Self::raw_message_row_to_message)
+            .collect())
+    }
+
+    pub(crate) fn get_all_messages_raw(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Vec<RawMessageRow>, StorageError> {
         let conn = self
             .conn
             .lock()
@@ -2507,8 +2648,8 @@ impl Database {
              ORDER BY created_at ASC",
         )?;
 
-        let msgs: Vec<Message> = stmt
-            .query_map(params![conversation_id], |row| self.row_to_message(row))?
+        let msgs: Vec<RawMessageRow> = stmt
+            .query_map(params![conversation_id], |row| RawMessageRow::from_row(row))?
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(msgs)
@@ -2522,6 +2663,15 @@ impl Database {
         conversation_id: &str,
         marker: &str,
     ) -> Result<Option<Message>, StorageError> {
+        let raw = self.get_latest_message_containing_raw(conversation_id, marker)?;
+        Ok(raw.map(Self::raw_message_row_to_message))
+    }
+
+    pub(crate) fn get_latest_message_containing_raw(
+        &self,
+        conversation_id: &str,
+        marker: &str,
+    ) -> Result<Option<RawMessageRow>, StorageError> {
         if marker.trim().is_empty() {
             return Ok(None);
         }
@@ -2541,9 +2691,7 @@ impl Database {
         )?;
 
         let row = stmt
-            .query_row(params![conversation_id, like], |row| {
-                self.row_to_message(row)
-            })
+            .query_row(params![conversation_id, like], |row| RawMessageRow::from_row(row))
             .optional()?;
 
         Ok(row)
@@ -2555,6 +2703,15 @@ impl Database {
         conversation_id: &str,
         message_id: &str,
     ) -> Result<Message, StorageError> {
+        let raw = self.get_message_raw(conversation_id, message_id)?;
+        Ok(Self::raw_message_row_to_message(raw))
+    }
+
+    pub(crate) fn get_message_raw(
+        &self,
+        conversation_id: &str,
+        message_id: &str,
+    ) -> Result<RawMessageRow, StorageError> {
         let conn = self
             .conn
             .lock()
@@ -2568,9 +2725,7 @@ impl Database {
         )?;
 
         let msg = stmt
-            .query_row(params![conversation_id, message_id], |row| {
-                self.row_to_message(row)
-            })
+            .query_row(params![conversation_id, message_id], |row| RawMessageRow::from_row(row))
             .optional()?;
 
         msg.ok_or_else(|| {
@@ -2581,17 +2736,8 @@ impl Database {
         })
     }
 
-    /// Helper function to convert a database row to a Message
-    fn row_to_message(&self, row: &rusqlite::Row) -> Result<Message, rusqlite::Error> {
-        let role_str: String = row.get(2)?;
-        let thinking: Option<String> = row.get(4)?;
-        let content_parts_json: Option<String> = row.get(5)?;
-        let meta_json: Option<String> = row.get(6)?;
-        let created_at_str: String = row.get(7)?;
-        let status_str: String = row.get(8).unwrap_or_else(|_| "success".to_string());
-        let error_message: Option<String> = row.get(9).ok();
-
-        let role = match role_str.as_str() {
+    pub(crate) fn raw_message_row_to_message(raw: RawMessageRow) -> Message {
+        let role = match raw.role.as_str() {
             "user" => MessageRole::User,
             "assistant" => MessageRole::Assistant,
             "system" => MessageRole::System,
@@ -2599,35 +2745,40 @@ impl Database {
             _ => MessageRole::User,
         };
 
-        let status = match status_str.as_str() {
+        let status = match raw.status.as_str() {
             "pending" => crate::models::MessageStatus::Pending,
             "failed" => crate::models::MessageStatus::Failed,
             _ => crate::models::MessageStatus::Success,
         };
 
-        let meta = meta_json.and_then(|json| serde_json::from_str(&json).ok());
+        let meta = raw
+            .meta_json
+            .as_deref()
+            .and_then(|json| serde_json::from_str(json).ok());
 
         // Parse content_parts if present
-        let content_parts: Vec<ContentPart> = content_parts_json
-            .and_then(|json| serde_json::from_str(&json).ok())
+        let content_parts: Vec<ContentPart> = raw
+            .content_parts_json
+            .as_deref()
+            .and_then(|json| serde_json::from_str(json).ok())
             .unwrap_or_default();
 
-        let created_at = DateTime::parse_from_rfc3339(&created_at_str)
+        let created_at = DateTime::parse_from_rfc3339(&raw.created_at)
             .map(|dt| dt.with_timezone(&Utc))
             .unwrap_or_else(|_| Utc::now());
 
-        Ok(Message {
-            id: row.get(0)?,
-            conversation_id: row.get(1)?,
+        Message {
+            id: raw.id,
+            conversation_id: raw.conversation_id,
             role,
-            content: row.get(3)?,
+            content: raw.content,
             content_parts,
-            thinking,
+            thinking: raw.thinking,
             meta,
             created_at,
             status,
-            error_message,
-        })
+            error_message: raw.error_message,
+        }
     }
 }
 
