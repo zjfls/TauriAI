@@ -319,7 +319,16 @@ export const ToolsConfigForm: React.FC = () => {
                           type="checkbox"
                           checked={checked}
                           onChange={() => {
-                            const nextTools = toggleInList(currentToolset.tools, tool.name);
+                            let nextTools = toggleInList(currentToolset.tools, tool.name);
+                            // apply_patch 工具互斥：一个 toolset 最多只能启用一个。
+                            // - apply_patch：自定义锚定头（@@ <原文>）
+                            // - apply_patch_unified_diff：unified diff 头（@@ -a,b +c,d @@）
+                            if (nextTools.includes('apply_patch') && nextTools.includes('apply_patch_unified_diff')) {
+                              const customIdx = nextTools.indexOf('apply_patch');
+                              const unifiedIdx = nextTools.indexOf('apply_patch_unified_diff');
+                              const drop = customIdx < unifiedIdx ? 'apply_patch_unified_diff' : 'apply_patch';
+                              nextTools = nextTools.filter((t) => t !== drop);
+                            }
                             updateToolset(currentToolset.name, (t) => ({
                               ...t,
                               tools: Array.from(new Set(nextTools)),

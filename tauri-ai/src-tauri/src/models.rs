@@ -2279,6 +2279,11 @@ impl AppConfig {
             changed = true;
         }
 
+        // Toolsets: apply_patch 系工具互斥（一个 toolset 最多只能启用一个 apply_patch 相关工具）。
+        if ensure_toolset_apply_patch_exclusive(self) {
+            changed = true;
+        }
+
         // Backward compatibility: symbol analysis used to reuse aiCompletion settings.
         // If existing config doesn't have symbolAnalysis, initialize it based on aiCompletion so
         // upgrading won't silently break Workstudio 的“分析类/函数/变量”等功能。
@@ -2644,6 +2649,49 @@ fn ensure_system_workspace_defaults(cfg: &mut AppConfig) -> bool {
 "#,
         Some(TOOLSET_NAME),
     );
+
+    changed
+}
+
+fn ensure_toolset_apply_patch_exclusive(cfg: &mut AppConfig) -> bool {
+    const CUSTOM: &str = "apply_patch";
+    const UNIFIED: &str = "apply_patch_unified_diff";
+
+    let mut changed = false;
+    for ts in &mut cfg.tools.toolsets {
+        if ts.tools.is_empty() {
+            continue;
+        }
+
+        // Trim + stable dedupe (preserve order).
+        let mut cleaned: Vec<String> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for raw in ts.tools.iter() {
+            let name = raw.trim();
+            if name.is_empty() {
+                changed = true;
+                continue;
+            }
+            if seen.insert(name.to_string()) {
+                cleaned.push(name.to_string());
+            } else {
+                changed = true;
+            }
+        }
+
+        let custom_idx = cleaned.iter().position(|t| t == CUSTOM);
+        let unified_idx = cleaned.iter().position(|t| t == UNIFIED);
+        if let (Some(ci), Some(ui)) = (custom_idx, unified_idx) {
+            // 同一 toolset 不允许同时启用两种 apply_patch；保留“先出现”的那一个。
+            let drop = if ci < ui { UNIFIED } else { CUSTOM };
+            cleaned.retain(|t| t != drop);
+            changed = true;
+        }
+
+        if cleaned != ts.tools {
+            ts.tools = cleaned;
+        }
+    }
 
     changed
 }

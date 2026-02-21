@@ -3674,6 +3674,24 @@ async fn run_task_inner(
     let (tool_orchestrator, tools, allowed_tool_names) = if !tools_enabled {
         (None, None, None)
     } else {
+        // Toolset 约束：同一 toolset 最多只能启用一个 apply_patch 工具。
+        // - apply_patch：自定义锚定头（@@ <原文>）
+        // - apply_patch_unified_diff：unified diff 头（@@ -a,b +c,d @@）
+        // 若二者同时存在，保留“先出现”的那一个，避免：
+        // - 模型侧同时收到两套互斥提示词
+        // - UI/后端对 apply_patch 行为产生歧义
+        fn enforce_single_apply_patch_tool_in_allow_list(tool_names: &mut Vec<String>) {
+            const CUSTOM: &str = "apply_patch";
+            const UNIFIED: &str = "apply_patch_unified_diff";
+            let custom_idx = tool_names.iter().position(|t| t == CUSTOM);
+            let unified_idx = tool_names.iter().position(|t| t == UNIFIED);
+            let (Some(ci), Some(ui)) = (custom_idx, unified_idx) else {
+                return;
+            };
+            let drop = if ci < ui { UNIFIED } else { CUSTOM };
+            tool_names.retain(|t| t != drop);
+        }
+
         // ToolSet：Agent 可以绑定不同工具集合。
         // - 若未绑定 toolset：默认只暴露 `web_search`（若本次 run 启用了 web_search），避免把本地工具“默认”下发给模型。
         //   真实执行层仍会再按 sandbox_policy 做权限校验（防止前端/模型绕过）。
@@ -3685,13 +3703,21 @@ async fn run_task_inner(
 
         let mut toolset = match agent.toolset.as_deref().filter(|s| !s.trim().is_empty()) {
             Some(name) => match config.tools.toolsets.iter().find(|t| t.name == name) {
-                Some(ts) => super::tools::spec::ToolSet::allow_list(name, ts.tools.clone())
+                Some(ts) => {
+                    let mut tools = ts.tools.clone();
+                    enforce_single_apply_patch_tool_in_allow_list(&mut tools);
+                    super::tools::spec::ToolSet::allow_list(name, tools)
+                }
                     .with_persistance_shell_enhance(ts.persistance_shell_enhance),
                 // 安全优先：引用了不存在的 toolset 时，默认 deny_all，避免“悄悄变成 allow_all”
                 None => super::tools::spec::ToolSet::deny_all(name),
             },
             None => super::tools::spec::ToolSet::allow_list("__unbound__", Vec::new()),
         };
+
+        if matches!(toolset.mode, super::tools::spec::ToolSetMode::AllowList) {
+            enforce_single_apply_patch_tool_in_allow_list(&mut toolset.tools);
+        }
 
         // 权限策略：不再使用全局开关；改为由安全策略（sandbox_policy）决定是否暴露高危工具。
         // 实际执行时仍会在工具层再次按 sandbox_policy 做强校验（例如 read-only 拒绝写入/PTY 等）。
@@ -4066,6 +4092,14 @@ async fn run_task_inner(
     let enable_apply_patch_unified_diff_tool_prompt = allowed_tool_names
         .as_ref()
         .is_some_and(|names| names.contains("apply_patch_unified_diff"));
+    // 防御性兜底：理论上在 toolset 约束后不会同时为 true；若出现，优先保留自定义锚定版 apply_patch。
+    let (enable_apply_patch_tool_prompt, enable_apply_patch_unified_diff_tool_prompt) = match (
+        enable_apply_patch_tool_prompt,
+        enable_apply_patch_unified_diff_tool_prompt,
+    ) {
+        (true, true) => (true, false),
+        other => other,
+    };
 
     // 4) TurnLoop：max_turns 统一以配置为准（agent.max_turns），未配置则使用全局默认值。
     let default_max_turns: u32 = 10_000;
