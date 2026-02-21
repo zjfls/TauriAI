@@ -1619,8 +1619,8 @@ Guidelines:
         </div>
       )}
       {queuedMessages.length > 0 && (
-        <div className="border-t border-amber-200 bg-amber-50/70 px-4 py-2 dark:border-amber-900/50 dark:bg-amber-900/10">
-          <div className="mb-2 flex items-center justify-between">
+        <div className="border-t border-amber-200 bg-amber-50/70 px-3 py-1.5 dark:border-amber-900/50 dark:bg-amber-900/10">
+          <div className="mb-1 flex items-center justify-between gap-3">
             <div className="text-xs font-medium text-amber-700 dark:text-amber-300">
               排队消息（{queuedMessages.length}）
             </div>
@@ -1628,7 +1628,7 @@ Guidelines:
               当前回复完成后将按顺序自动发送
             </div>
           </div>
-          <div className="max-h-44 space-y-2 overflow-auto pr-1">
+          <div className="max-h-32 space-y-1 overflow-auto pr-1">
             {queuedMessages.map((item, index) => {
               const isEditing = editingQueueMessageId === item.id;
               const attachmentCount = item.images?.length ?? 0;
@@ -1637,10 +1637,10 @@ Guidelines:
               return (
                 <div
                   key={item.id}
-                  className="rounded border border-amber-200 bg-white/90 px-2 py-2 dark:border-amber-900/60 dark:bg-gray-900/80"
+                  className="rounded border border-amber-200 bg-white/90 px-2 py-1.5 dark:border-amber-900/60 dark:bg-gray-900/80"
                 >
-                  <div className="mb-1 flex items-start gap-2">
-                    <div className="mt-0.5 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-900/50 dark:text-amber-200">
+                  <div className="flex items-start gap-2">
+                    <div className="mt-0.5 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-amber-700 dark:bg-amber-900/50 dark:text-amber-200">
                       #{index + 1}
                     </div>
                     <div className="min-w-0 flex-1">
@@ -1652,77 +1652,92 @@ Guidelines:
                           className="w-full resize-y rounded border border-amber-200 bg-white px-2 py-1 text-xs text-gray-800 focus:outline-none focus:ring-2 focus:ring-amber-400 dark:border-amber-900/60 dark:bg-gray-950 dark:text-gray-100"
                         />
                       ) : (
-                        <div className="whitespace-pre-wrap break-words text-xs text-gray-700 dark:text-gray-200">
-                          {displayText}
+                        <div className="flex items-center gap-2">
+                          <div
+                            className="min-w-0 flex-1 truncate text-xs text-gray-700 dark:text-gray-200"
+                            title={displayText}
+                          >
+                            {displayText}
+                          </div>
+                          {(item.thinking !== undefined || attachmentCount > 0) && (
+                            <div className="flex shrink-0 items-center gap-1 text-[10px] text-gray-500 dark:text-gray-400">
+                              {item.thinking !== undefined && (
+                                <span className="rounded bg-amber-100/60 px-1 py-0.5 leading-none text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">
+                                  thinking:{String(item.thinking)}
+                                </span>
+                              )}
+                              {attachmentCount > 0 && (
+                                <span className="rounded bg-gray-100/70 px-1 py-0.5 leading-none text-gray-700 dark:bg-gray-800/70 dark:text-gray-200">
+                                  附件:{attachmentCount}
+                                </span>
+                              )}
+                            </div>
+                          )}
                         </div>
                       )}
-                      <div className="mt-1 flex flex-wrap items-center gap-1 text-[10px] text-gray-500 dark:text-gray-400">
-                        {item.thinking !== undefined && <span>thinking: {String(item.thinking)}</span>}
-                        {attachmentCount > 0 && <span>附件: {attachmentCount}</span>}
-                      </div>
                     </div>
-                  </div>
-                  <div className="flex items-center justify-end gap-1">
-                    <button
-                      type="button"
-                      className="rounded border border-gray-200 p-1 text-gray-600 hover:bg-gray-100 disabled:opacity-40 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-                      disabled={index === 0}
-                      title="上移"
-                      onClick={() => sessionId && moveQueuedMessage(sessionId, item.id, 'up')}
-                    >
-                      <ArrowUp size={12} />
-                    </button>
-                    <button
-                      type="button"
-                      className="rounded border border-gray-200 p-1 text-gray-600 hover:bg-gray-100 disabled:opacity-40 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-                      disabled={index === queuedMessages.length - 1}
-                      title="下移"
-                      onClick={() => sessionId && moveQueuedMessage(sessionId, item.id, 'down')}
-                    >
-                      <ArrowDown size={12} />
-                    </button>
-                    {isEditing ? (
-                      <>
-                        <button
-                          type="button"
-                          className="rounded border border-emerald-200 p-1 text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 dark:border-emerald-900/60 dark:text-emerald-300 dark:hover:bg-emerald-900/30"
-                          title="保存"
-                          disabled={!canSave}
-                          onClick={() => saveEditQueuedMessage(item.id)}
-                        >
-                          <Check size={12} />
-                        </button>
-                        <button
-                          type="button"
-                          className="rounded border border-gray-200 p-1 text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-                          title="取消编辑"
-                          onClick={cancelEditQueuedMessage}
-                        >
-                          <X size={12} />
-                        </button>
-                      </>
-                    ) : (
+                    <div className="flex shrink-0 items-center gap-0.5 pt-0.5">
                       <button
                         type="button"
-                        className="rounded border border-gray-200 p-1 text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-                        title="编辑"
-                        onClick={() => beginEditQueuedMessage(item.id, item.content)}
+                        className="rounded p-1 text-gray-600 hover:bg-gray-100 disabled:opacity-40 dark:text-gray-300 dark:hover:bg-gray-800"
+                        disabled={index === 0}
+                        title="上移"
+                        onClick={() => sessionId && moveQueuedMessage(sessionId, item.id, 'up')}
                       >
-                        <Pencil size={12} />
+                        <ArrowUp size={12} />
                       </button>
-                    )}
-                    <button
-                      type="button"
-                      className="rounded border border-red-200 p-1 text-red-600 hover:bg-red-50 dark:border-red-900/60 dark:text-red-300 dark:hover:bg-red-900/20"
-                      title="移除"
-                      onClick={() => {
-                        if (!sessionId) return;
-                        if (editingQueueMessageId === item.id) cancelEditQueuedMessage();
-                        removeQueuedMessage(sessionId, item.id);
-                      }}
-                    >
-                      <Trash2 size={12} />
-                    </button>
+                      <button
+                        type="button"
+                        className="rounded p-1 text-gray-600 hover:bg-gray-100 disabled:opacity-40 dark:text-gray-300 dark:hover:bg-gray-800"
+                        disabled={index === queuedMessages.length - 1}
+                        title="下移"
+                        onClick={() => sessionId && moveQueuedMessage(sessionId, item.id, 'down')}
+                      >
+                        <ArrowDown size={12} />
+                      </button>
+                      {isEditing ? (
+                        <>
+                          <button
+                            type="button"
+                            className="rounded p-1 text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 dark:text-emerald-300 dark:hover:bg-emerald-900/30"
+                            title="保存"
+                            disabled={!canSave}
+                            onClick={() => saveEditQueuedMessage(item.id)}
+                          >
+                            <Check size={12} />
+                          </button>
+                          <button
+                            type="button"
+                            className="rounded p-1 text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
+                            title="取消编辑"
+                            onClick={cancelEditQueuedMessage}
+                          >
+                            <X size={12} />
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          type="button"
+                          className="rounded p-1 text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
+                          title="编辑"
+                          onClick={() => beginEditQueuedMessage(item.id, item.content)}
+                        >
+                          <Pencil size={12} />
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="rounded p-1 text-red-600 hover:bg-red-50 dark:text-red-300 dark:hover:bg-red-900/20"
+                        title="移除"
+                        onClick={() => {
+                          if (!sessionId) return;
+                          if (editingQueueMessageId === item.id) cancelEditQueuedMessage();
+                          removeQueuedMessage(sessionId, item.id);
+                        }}
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
                   </div>
                 </div>
               );

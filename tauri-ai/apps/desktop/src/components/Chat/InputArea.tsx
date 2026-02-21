@@ -321,9 +321,9 @@ function findActiveAtQuery(text: string, cursor: number): { start: number; query
   const lastAt = before.lastIndexOf('@');
   if (lastAt < 0) return null;
   const prev = lastAt === 0 ? '' : before[lastAt - 1];
-  // 允许在任意“分隔符”后触发，例如：空白、中文标点、括号等；
-  // 但避免 email/标识符场景（如 a@b）触发。
-  if (prev && /[A-Za-z0-9_]/.test(prev)) return null;
+  // Codex-like behavior: only trigger `@` completion at token boundaries.
+  // i.e. allow start-of-text or whitespace on the left; disallow `@@`, `a@b`, `(@foo)` etc.
+  if (prev && !/\s/.test(prev)) return null;
   const query = before.slice(lastAt + 1);
   // Ignore our internal workspace mention tokens: "@{ref:<uuid>}"
   if (query.startsWith('{ref:') || query.startsWith('{snippet:')) return null;
