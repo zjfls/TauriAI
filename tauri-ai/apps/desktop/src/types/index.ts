@@ -977,6 +977,8 @@ export interface WorkstudioOutlineFileUiState {
 
 export interface WorkstudioOutlineUiState {
   open?: boolean;
+  /** 是否优先使用 LSP 生成 Outline（默认 true）。 */
+  preferLsp?: boolean;
   files?: Record<string, WorkstudioOutlineFileUiState>;
 }
 

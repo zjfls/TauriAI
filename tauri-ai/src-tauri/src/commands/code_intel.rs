@@ -788,6 +788,42 @@ pub async fn get_workstudio_symbol_analysis(
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ListWorkstudioSymbolAnalysisKeysForFileArgs {
+    pub workstudio_id: String,
+    pub file_path: String,
+}
+
+/// List analyzed symbol keys for a file (status prefetch).
+///
+/// NOTE:
+/// - This only returns symbol keys (no markdown) to keep the payload small.
+/// - Used by Workstudio Outline to proactively refresh "has analysis" indicators on page open.
+#[tauri::command]
+pub async fn list_workstudio_symbol_analysis_keys_for_file(
+    args: ListWorkstudioSymbolAnalysisKeysForFileArgs,
+    db: tauri::State<'_, Arc<Mutex<Database>>>,
+) -> Result<Vec<String>, String> {
+    let ws_id = args.workstudio_id.trim();
+    let file_path = args.file_path.trim();
+
+    if ws_id.is_empty() {
+        return Err("workstudioId 为空".to_string());
+    }
+    if file_path.is_empty() {
+        return Err("filePath 为空".to_string());
+    }
+
+    async_db::with_db(
+        db.inner(),
+        "list_workstudio_symbol_analysis_keys_for_file",
+        |db| db.list_workstudio_symbol_analysis_keys_for_file(ws_id, file_path),
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DeleteWorkstudioSymbolAnalysisArgs {
     pub workstudio_id: String,
     pub file_path: String,
@@ -1237,18 +1273,30 @@ fn classify_symbol_analysis_kind(symbol_kind: &str) -> SymbolAnalysisKind {
 }
 
 fn symbol_analysis_system_prompt() -> String {
-    r#"你是 IDE 中的“代码符号分析助手”。
+    r#"你是 IDE 中的“代码符号分析助手”（Symbol Analysis）。
+
+你的目标：在不臆测的前提下，基于符号的代码片段 + 工程上下文，给出“可执行、可验证”的分析结论。
 
 你会收到：
-- 一个代码符号（类/函数/变量等）的元信息
+- 一个代码符号的元信息（symbolName、symbolKind、filePath、location 等）
 - 该符号对应的代码片段（可能不完整）
-- 一些工程元信息（languageId、filePath、projectRoot）
+- 一些工程元信息（languageId、projectRoot）
 
-请输出 **Markdown**，并遵循：
-- 先给结论摘要（1-3 句）
-- 再给结构化分析（分点/小标题均可）
-- 尽可能指出潜在问题与可执行改进建议
-- 当缺少关键上下文时，明确指出需要看的文件/关键搜索词，而不是臆测
+输出要求（必须）：
+- 使用 Markdown。
+- 先给结论摘要（1-3 句），再给结构化分析（分点/小标题均可），最后给风险点 + 可执行改进建议 + 验证清单。
+- 当缺少关键上下文时：明确列出需要看的文件/需要搜索的关键字/需要补充的信息，不要猜。
+
+### 文件引用（必须严格遵守）
+当你在讨论代码定位、调用链、实现细节或引用关系时，所有关键结论必须附带**可点击文件引用**，格式只允许：
+- `相对路径:行` 或 `相对路径:行:列`
+- `相对路径#L行` 或 `相对路径#L行C列`
+禁止使用 Markdown 链接语法引用文件（例如 `[label](path)`）；不要编造行号。
+
+### 分析策略（按符号类型自适应）
+1) 若符号是大型类型/容器（class/struct/trait/enum/module…）：优先宏观（职责边界、对外 API、关键成员分组、依赖/生命周期/并发/错误处理/扩展点），避免逐行复述。
+2) 若符号是函数/方法：先解释业务意图，再给可能的业务调用路径（上游入口/调用者/下游依赖），并分析失败路径与可观测性。
+3) 若符号是变量/字段/常量：做引用分析（写入/读取/传递路径）并解释其在系统中的作用与不变量。
 "#
     .to_string()
 }
@@ -1268,13 +1316,13 @@ fn symbol_analysis_user_prompt(
     let kind = classify_symbol_analysis_kind(symbol_kind);
     let request = match kind {
         SymbolAnalysisKind::Class => {
-            "请分析该类型/容器符号的职责、关键字段/方法、对外接口、可能的设计模式与风险点。"
+            "请分析该类型/容器符号。若代码片段较大，请优先做偏宏观的分析（职责边界、对外 API、关键成员分组、依赖/生命周期/并发/错误处理/扩展点），避免逐行复述。"
         }
         SymbolAnalysisKind::Function => {
-            "请分析该函数/方法的输入输出、关键流程、依赖与副作用，并尽可能推测潜在调用链（它可能调用谁、又可能被谁调用）。"
+            "请分析该函数/方法，并尽可能调查其可能的业务调用路径：它可能被哪些入口/上游调用，又会调用哪些关键下游依赖；结合代码解释其业务意图、关键流程、依赖与副作用，并给出风险点与验证建议。"
         }
         SymbolAnalysisKind::Variable => {
-            "请分析该变量/字段的含义、作用域与生命周期、可能的约束/不变量、以及易错用法。"
+            "请分析该变量/字段/常量，并尽可能做引用分析（写入点/读取点/传递路径），解释它在整个系统中的作用、约束/不变量与易错用法。"
         }
         SymbolAnalysisKind::Symbol => "请分析该符号的含义、用途与在模块中的角色，并指出可能的风险点。",
     };

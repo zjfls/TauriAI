@@ -2219,6 +2219,34 @@ impl Database {
         Ok(row)
     }
 
+    /// List all symbol keys that have persisted analyses for a given workstudio+file.
+    ///
+    /// This is a lightweight query used by the Workstudio Outline to pre-warm analysis status
+    /// without loading full markdown contents.
+    pub fn list_workstudio_symbol_analysis_keys_for_file(
+        &self,
+        workstudio_id: &str,
+        file_path: &str,
+    ) -> Result<Vec<String>, StorageError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Lock(e.to_string()))?;
+
+        let mut stmt = conn.prepare(
+            "SELECT symbol_key
+             FROM workstudio_symbol_analyses
+             WHERE workstudio_id = ?1 AND file_path = ?2
+             ORDER BY updated_at DESC",
+        )?;
+
+        let rows = stmt
+            .query_map(params![workstudio_id, file_path], |r| r.get(0))?
+            .collect::<Result<Vec<String>, _>>()?;
+
+        Ok(rows)
+    }
+
     pub fn upsert_workstudio_symbol_analysis(
         &self,
         workstudio_id: &str,

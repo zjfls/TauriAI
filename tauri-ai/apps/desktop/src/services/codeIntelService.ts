@@ -203,6 +203,11 @@ export type WorkstudioSymbolAnalysisKey = {
   symbolKey: string;
 };
 
+export type WorkstudioSymbolAnalysisFileKey = {
+  workstudioId: string;
+  filePath: string;
+};
+
 export const getWorkstudioSymbolAnalysis = async (
   args: WorkstudioSymbolAnalysisKey
 ): Promise<WorkstudioSymbolAnalysis | null> => {
@@ -210,6 +215,15 @@ export const getWorkstudioSymbolAnalysis = async (
     throw new Error('Not running in Tauri');
   }
   return invoke<WorkstudioSymbolAnalysis | null>('get_workstudio_symbol_analysis', { args });
+};
+
+export const listWorkstudioSymbolAnalysisKeysForFile = async (
+  args: WorkstudioSymbolAnalysisFileKey
+): Promise<string[]> => {
+  if (!isTauri()) {
+    throw new Error('Not running in Tauri');
+  }
+  return invoke<string[]>('list_workstudio_symbol_analysis_keys_for_file', { args });
 };
 
 export const deleteWorkstudioSymbolAnalysis = async (args: WorkstudioSymbolAnalysisKey): Promise<void> => {

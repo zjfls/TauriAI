@@ -48,6 +48,7 @@ export {
   aiCodeCompletion,
   aiAnalyzeWorkstudioSymbol,
   getWorkstudioSymbolAnalysis,
+  listWorkstudioSymbolAnalysisKeysForFile,
   deleteWorkstudioSymbolAnalysis,
   saveWorkstudioSymbolAnalysis,
   type LspEnsureServerArgs,
@@ -65,6 +66,7 @@ export {
   type AiCodeCompletionItem,
   type AiCodeCompletionResult,
   type WorkstudioSymbolAnalysisKey,
+  type WorkstudioSymbolAnalysisFileKey,
   type SaveWorkstudioSymbolAnalysisArgs,
   type AiAnalyzeWorkstudioSymbolArgs,
 } from './codeIntelService';

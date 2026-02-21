@@ -24,6 +24,7 @@ import {
   ArrowLeft,
   ArrowRight,
   AlertTriangle,
+  Bug,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -54,13 +55,14 @@ import {
   codeIndexRequestDocumentSymbols,
   codeIndexSummary,
   codeIndexStartWorkspaceScan,
-  deleteWorkstudioSymbolAnalysis,
-  getMessages,
-  getWorkstudioSymbolAnalysis,
-  saveWorkstudioSymbolAnalysis,
-  lspDetectServer,
-  lspEnsureServer,
-  lspNotify,
+	  deleteWorkstudioSymbolAnalysis,
+	  getMessages,
+	  getWorkstudioSymbolAnalysis,
+	  listWorkstudioSymbolAnalysisKeysForFile,
+	  saveWorkstudioSymbolAnalysis,
+	  lspDetectServer,
+	  lspEnsureServer,
+	  lspNotify,
   lspRequest,
   lspShutdownLanguage,
   lspStatus,
@@ -73,6 +75,7 @@ import { useDragGhostSession } from '../../hooks/useDragGhostSession';
 import { focusMainWindow, getViewWindowParams } from '../../utils/viewWindow';
 import { MarkdownRenderer } from '../Chat/MarkdownRenderer';
 import { MessageBlocks } from '../Chat/MessageBlocks';
+import { DebugModal } from '../Chat/DebugModal';
 import { setupMonaco } from '../../utils/monaco';
 import { attachMonacoLspBridge } from '../../utils/monacoLspBridge';
 import { attachMonacoAiCompletionBridge } from '../../utils/monacoAiCompletionBridge';
@@ -266,6 +269,7 @@ const MAX_EDITOR_FONT_SIZE = 28;
 const OUTLINE_RECENT_KEY_LIMIT = 64;
 const OUTLINE_FILE_STATE_LIMIT = 120;
 const OUTLINE_COLLAPSED_KEY_LIMIT = 512;
+const DEFAULT_OUTLINE_PREFER_LSP = true;
 
 // Code Index（落盘缓存）优先级：数值越大越优先。
 // 与后端约定保持一致（index_manager.rs），但前端不强依赖具体实现细节。
@@ -1099,6 +1103,8 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   }, [aiBubbles]);
   const [aiViewerId, setAiViewerId] = useState<string | null>(null);
   const [aiViewerMode, setAiViewerMode] = useState<'result' | 'details'>('result');
+  const [aiViewerDebugOpen, setAiViewerDebugOpen] = useState(false);
+  const [aiViewerDebugInitialTurnId, setAiViewerDebugInitialTurnId] = useState<string | null>(null);
   const aiViewer = useMemo(() => {
     if (!aiViewerId) return null;
     return aiBubbles.find((b) => b.id === aiViewerId) ?? null;
@@ -1106,9 +1112,13 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const openAiViewer = useCallback((id: string) => {
     setAiViewerId(id);
     setAiViewerMode('result');
+    setAiViewerDebugOpen(false);
+    setAiViewerDebugInitialTurnId(null);
   }, []);
   const closeAiViewer = useCallback(() => {
     if (!aiViewerId) return;
+    setAiViewerDebugOpen(false);
+    setAiViewerDebugInitialTurnId(null);
     const bubble = aiBubblesRef.current.find((b) => b.id === aiViewerId) ?? null;
     const ACTIVE_STATUSES: WorkstudioAiBubbleStatus[] = [
       'queued',
@@ -1437,27 +1447,36 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     | { visible: true; x: number; y: number; paneId: string; fileId: string; path: string }
     | null
   >(null);
-  const [outlineMenu, setOutlineMenu] = useState<
-    | {
-      visible: true;
-      x: number;
-      y: number;
-      filePath: string;
-      languageId: string;
-      item: OutlineItem;
-      analysis: WorkstudioSymbolAnalysis | null | undefined;
-    }
-    | null
-  >(null);
-  const [symbolAnalysisCache, setSymbolAnalysisCache] = useState<Record<string, WorkstudioSymbolAnalysis | null>>({});
-  const symbolAnalysisCacheRef = useRef<Record<string, WorkstudioSymbolAnalysis | null>>({});
-  useEffect(() => {
-    symbolAnalysisCacheRef.current = symbolAnalysisCache;
-  }, [symbolAnalysisCache]);
-  useEffect(() => {
-    // Workstudio 切换时清空缓存，避免跨工作区误命中。
-    setSymbolAnalysisCache({});
-  }, [ws?.id]);
+	  const [outlineMenu, setOutlineMenu] = useState<
+	    | {
+	      visible: true;
+	      x: number;
+	      y: number;
+	      filePath: string;
+	      languageId: string;
+	      item: OutlineItem;
+	      analysis: WorkstudioSymbolAnalysis | null | undefined;
+	      analysisExists: boolean | undefined;
+	    }
+	    | null
+	  >(null);
+	  const [symbolAnalysisCache, setSymbolAnalysisCache] = useState<Record<string, WorkstudioSymbolAnalysis | null>>({});
+	  const symbolAnalysisCacheRef = useRef<Record<string, WorkstudioSymbolAnalysis | null>>({});
+	  useEffect(() => {
+	    symbolAnalysisCacheRef.current = symbolAnalysisCache;
+	  }, [symbolAnalysisCache]);
+	  const [symbolAnalysisExistsCache, setSymbolAnalysisExistsCache] = useState<Record<string, boolean>>({});
+	  const symbolAnalysisExistsCacheRef = useRef<Record<string, boolean>>(symbolAnalysisExistsCache);
+	  useEffect(() => {
+	    symbolAnalysisExistsCacheRef.current = symbolAnalysisExistsCache;
+	  }, [symbolAnalysisExistsCache]);
+	  const prefetchedSymbolAnalysisStatusByFileRef = useRef<Map<string, string>>(new Map());
+	  useEffect(() => {
+	    // Workstudio 切换时清空缓存，避免跨工作区误命中。
+	    setSymbolAnalysisCache({});
+	    setSymbolAnalysisExistsCache({});
+	    prefetchedSymbolAnalysisStatusByFileRef.current.clear();
+	  }, [ws?.id]);
 
   // ── run:event listener（run_task）─────────────────────────────────
   // 说明：
@@ -2024,16 +2043,17 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 		                    }),
 		                    timeoutMs,
 		                    `阶段超时：save_workstudio_symbol_analysis (${attempt})`
-		                  );
-		                  const cacheKey = `${meta.workstudioId}::${normalizeFsPath(meta.filePath)}::${meta.symbolKey}`;
-		                  setSymbolAnalysisCache((prev) => ({ ...prev, [cacheKey]: res }));
-		                  setOutlineMenu((prev) => {
-		                    if (!prev) return prev;
-		                    if (prev.filePath !== meta.filePath) return prev;
-		                    if (prev.item.key !== meta.symbolKey) return prev;
-		                    return { ...prev, analysis: res };
-		                  });
-		                };
+			                  );
+			                  const cacheKey = `${meta.workstudioId}::${normalizeFsPath(meta.filePath)}::${meta.symbolKey}`;
+			                  setSymbolAnalysisCache((prev) => ({ ...prev, [cacheKey]: res }));
+			                  setSymbolAnalysisExistsCache((prev) => ({ ...prev, [cacheKey]: true }));
+			                  setOutlineMenu((prev) => {
+			                    if (!prev) return prev;
+			                    if (prev.filePath !== meta.filePath) return prev;
+			                    if (prev.item.key !== meta.symbolKey) return prev;
+			                    return { ...prev, analysis: res, analysisExists: true };
+			                  });
+			                };
 
 		                try {
 		                  await doSave('first');
@@ -2218,10 +2238,11 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	      symbolAnalysisFirstRunEventWaitersRef.current.clear();
 	      symbolAnalysisLastRunEventAtMsByConversationIdRef.current.clear();
 	    };
-	  }, []);
+  }, []);
   const lspStatusButtonRef = useRef<HTMLButtonElement | null>(null);
   const [outlineOpen, setOutlineOpen] = useState(true);
   const [leftSidebarTab, setLeftSidebarTab] = useState<'explorer' | 'outline'>('explorer');
+  const [outlinePreferLsp, setOutlinePreferLsp] = useState(DEFAULT_OUTLINE_PREFER_LSP);
 
 
 
@@ -2606,6 +2627,13 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         });
         if (cancelled) return;
 
+        // 当开启“优先使用 LSP”时，CodeIndex 的 AST 缓存仅用于后台索引，不用于驱动 Outline UI，
+        // 否则会出现“AST(少) ↔ LSP(多)”的符号数跳变，进而影响分析稳定性。
+        if (outlinePreferLsp) {
+          setOutlineLoading(Boolean(res?.queued));
+          return;
+        }
+
         // 仅作为“快速恢复”的缓存：如果当前已经使用 LSP 且有内容，就不要用缓存覆盖。
         if (outlineSourceRef.current === 'lsp' && outlineItemsRef.current.length > 0) return;
 
@@ -2644,7 +2672,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     return () => {
       cancelled = true;
     };
-  }, [ws?.id, activeTextFileInFocusedPane?.id, activeTextLanguageId]);
+  }, [ws?.id, activeTextFileInFocusedPane?.id, activeTextLanguageId, outlinePreferLsp]);
 
   useEffect(() => {
     setOutlineActiveKey(null);
@@ -2747,6 +2775,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           isLspLanguageEnabledForBridge(languageId) &&
           uri.startsWith('file://')
         );
+        const forceLsp = outlinePreferLsp && canTryLsp;
 
         let nextItems: OutlineItem[] = [];
         let nextSource: 'lsp' | 'ast' | 'none' = 'none';
@@ -2761,7 +2790,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
               params: {
                 textDocument: { uri },
               },
-              timeoutMs: 8000,
+              timeoutMs: outlinePreferLsp ? 20000 : 8000,
             });
             const fromLsp = lspDocumentSymbolsToOutline(result);
             if (fromLsp.length > 0) {
@@ -2773,7 +2802,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           }
         }
 
-        if (nextItems.length === 0) {
+        if (nextItems.length === 0 && !forceLsp) {
           try {
             const fromAst = astSymbolsToOutline(
               await astDocumentSymbols({
@@ -2833,6 +2862,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     codeIntelligenceConfig?.enabled,
     isLspLanguageEnabledForBridge,
     outlineRefreshSeq,
+    outlinePreferLsp,
   ]);
 
   // Monaco 编辑器在 flex 布局变化（拆分/关闭 Pane/拖拽/分屏比例调整）时偶发不会自动重算尺寸，
@@ -3916,44 +3946,160 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     [workstudioId]
   );
 
-  const ensureSymbolAnalysis = useCallback(
-    async (filePath: string, symbolKey: string): Promise<WorkstudioSymbolAnalysis | null> => {
-      if (!workstudioId) return null;
-      const cacheKey = makeSymbolAnalysisCacheKey(filePath, symbolKey);
-      const cache = symbolAnalysisCacheRef.current;
-      if (Object.prototype.hasOwnProperty.call(cache, cacheKey)) {
-        return cache[cacheKey] ?? null;
-      }
+	  const ensureSymbolAnalysis = useCallback(
+	    async (filePath: string, symbolKey: string): Promise<WorkstudioSymbolAnalysis | null> => {
+	      if (!workstudioId) return null;
+	      const cacheKey = makeSymbolAnalysisCacheKey(filePath, symbolKey);
+	      const cache = symbolAnalysisCacheRef.current;
+	      if (Object.prototype.hasOwnProperty.call(cache, cacheKey)) {
+	        return cache[cacheKey] ?? null;
+	      }
 
-      try {
-        const res = await getWorkstudioSymbolAnalysis({ workstudioId, filePath, symbolKey });
-        setSymbolAnalysisCache((prev) => ({ ...prev, [cacheKey]: res }));
-        return res;
-      } catch (err) {
-        console.warn('[Workstudio][Outline] getWorkstudioSymbolAnalysis failed:', err);
-        setSymbolAnalysisCache((prev) => ({ ...prev, [cacheKey]: null }));
-        return null;
-      }
-    },
-    [makeSymbolAnalysisCacheKey, workstudioId]
-  );
+	      try {
+	        const res = await getWorkstudioSymbolAnalysis({ workstudioId, filePath, symbolKey });
+	        setSymbolAnalysisCache((prev) => ({ ...prev, [cacheKey]: res }));
+	        setSymbolAnalysisExistsCache((prev) => ({ ...prev, [cacheKey]: Boolean(res) }));
+	        return res;
+	      } catch (err) {
+	        console.warn('[Workstudio][Outline] getWorkstudioSymbolAnalysis failed:', err);
+	        setSymbolAnalysisCache((prev) => ({ ...prev, [cacheKey]: null }));
+	        setSymbolAnalysisExistsCache((prev) => ({ ...prev, [cacheKey]: false }));
+	        return null;
+	      }
+	    },
+	    [makeSymbolAnalysisCacheKey, workstudioId]
+	  );
 
-  const outlineAnalysisActionLabel = useCallback((kindRaw: string): string => {
-    const kind = normalizeOutlineKind(kindRaw);
-    if (OUTLINE_CALLABLE_KINDS.has(kind)) return '分析函数';
-    if (OUTLINE_VALUE_KINDS.has(kind)) return '分析变量';
+		  // Outline: proactively refresh analysis status for the active file on page open / file switch.
+		  // This avoids "right click to refresh" UX.
+		  useEffect(() => {
+		    if (!outlineOpen) return;
+		    if (outlineLoading) return;
+		    if (!workstudioId) return;
+		    const filePath = activeOutlineFilePath;
+		    if (!filePath) return;
+		    if (outlineItems.length === 0) return;
+
+		    const key = `${workstudioId}::${normalizeFsPath(filePath)}`;
+		    const outlineKeys = Array.from(collectOutlineKeys(outlineItemsRef.current));
+		    if (outlineKeys.length === 0) return;
+		    outlineKeys.sort((a, b) => a.localeCompare(b));
+		    const fingerprint = outlineKeys.join('\n');
+		    const prevFingerprint = prefetchedSymbolAnalysisStatusByFileRef.current.get(key) ?? null;
+		    if (prevFingerprint === fingerprint) return;
+		    prefetchedSymbolAnalysisStatusByFileRef.current.set(key, fingerprint);
+
+		    let cancelled = false;
+		    const timer = window.setTimeout(() => {
+		      void (async () => {
+		        try {
+		          const analyzedKeysRaw = await listWorkstudioSymbolAnalysisKeysForFile({
+		            workstudioId,
+		            filePath,
+		          });
+		          if (cancelled) return;
+		          // Outline 已刷新：丢弃旧请求，避免错误覆盖新状态。
+		          if (prefetchedSymbolAnalysisStatusByFileRef.current.get(key) !== fingerprint) return;
+
+		          const analyzedSet = new Set(
+		            (analyzedKeysRaw ?? [])
+		              .map((k) => String(k ?? '').trim())
+		              .filter((k) => Boolean(k))
+		          );
+
+		          setSymbolAnalysisExistsCache((prev) => {
+		            let changed = false;
+		            const next: Record<string, boolean> = { ...prev };
+	            for (const symbolKey of outlineKeys) {
+	              const cacheKey = makeSymbolAnalysisCacheKey(filePath, symbolKey);
+	              const exists = analyzedSet.has(symbolKey);
+	              if (next[cacheKey] !== exists) {
+	                next[cacheKey] = exists;
+	                changed = true;
+	              }
+	            }
+	            return changed ? next : prev;
+	          });
+
+	          // Warm negative cache (null) so the menu can render immediately without extra DB round-trips.
+	          // If DB says it exists, ensure we don't keep a stale `null` that would block `ensureSymbolAnalysis`.
+	          setSymbolAnalysisCache((prev) => {
+	            let changed = false;
+	            const next: Record<string, WorkstudioSymbolAnalysis | null> = { ...prev };
+	            for (const symbolKey of outlineKeys) {
+	              const cacheKey = makeSymbolAnalysisCacheKey(filePath, symbolKey);
+	              const exists = analyzedSet.has(symbolKey);
+	              if (exists) {
+	                if (Object.prototype.hasOwnProperty.call(next, cacheKey) && next[cacheKey] === null) {
+	                  delete next[cacheKey];
+	                  changed = true;
+	                }
+	                continue;
+	              }
+	              if (!Object.prototype.hasOwnProperty.call(next, cacheKey) || next[cacheKey] !== null) {
+	                next[cacheKey] = null;
+	                changed = true;
+	              }
+	            }
+	            return changed ? next : prev;
+	          });
+
+	          setOutlineMenu((prev) => {
+	            if (!prev) return prev;
+	            if (normalizeFsPath(prev.filePath) !== normalizeFsPath(filePath)) return prev;
+	            const exists = analyzedSet.has(prev.item.key);
+	            if (prev.analysisExists === exists && (!prev.analysis || exists)) return prev;
+	            return {
+	              ...prev,
+	              analysisExists: exists,
+	              analysis: exists ? prev.analysis : null,
+	            };
+	          });
+		        } catch (err) {
+		          // Allow retry later.
+		          if (prefetchedSymbolAnalysisStatusByFileRef.current.get(key) === fingerprint) {
+		            prefetchedSymbolAnalysisStatusByFileRef.current.delete(key);
+		          }
+		          console.warn('[Workstudio][Outline] prefetch analysis status failed:', err);
+		        }
+		      })();
+		    }, 180);
+
+		    return () => {
+		      cancelled = true;
+		      window.clearTimeout(timer);
+		    };
+		  }, [
+		    activeOutlineFilePath,
+		    outlineItems,
+		    outlineLoading,
+		    outlineOpen,
+		    workstudioId,
+		    makeSymbolAnalysisCacheKey,
+		  ]);
+
+	  const outlineAnalysisActionLabel = useCallback((kindRaw: string): string => {
+	    const kind = normalizeOutlineKind(kindRaw);
+	    if (OUTLINE_CALLABLE_KINDS.has(kind)) return '分析函数';
+	    if (OUTLINE_VALUE_KINDS.has(kind)) return '分析变量';
     if (kind === 'class') return '分析类';
     if (OUTLINE_CONTAINER_KINDS.has(kind)) return '分析结构';
     return '分析符号';
   }, []);
 
-  const outlineAnalysisPromptPreview = useCallback((kindRaw: string): string => {
-    const kind = normalizeOutlineKind(kindRaw);
-    if (OUTLINE_CALLABLE_KINDS.has(kind)) return '请分析该函数/方法，并尽可能给出潜在调用链与风险点。';
-    if (OUTLINE_VALUE_KINDS.has(kind)) return '请分析该变量/字段的含义、生命周期与常见误用。';
-    if (OUTLINE_CONTAINER_KINDS.has(kind)) return '请分析该类型/容器符号的职责、关键成员与设计风险。';
-    return '请分析该符号在模块中的角色、用途与潜在问题。';
-  }, []);
+	  const outlineAnalysisPromptPreview = useCallback((kindRaw: string): string => {
+	    const kind = normalizeOutlineKind(kindRaw);
+	    if (OUTLINE_CALLABLE_KINDS.has(kind)) {
+	      return '请分析该函数/方法，并调查其可能的业务调用路径（入口/上游调用者/下游依赖）；结合代码给出业务层分析、风险点与验证建议（关键结论请带文件引用）。';
+	    }
+	    if (OUTLINE_VALUE_KINDS.has(kind)) {
+	      return '请对该变量/字段做引用分析（写入点/读取点/传递路径），解释其在系统中的作用与不变量，并给出常见误用与风险点（关键结论请带文件引用）。';
+	    }
+	    if (OUTLINE_CONTAINER_KINDS.has(kind)) {
+	      return '请分析该类型/容器符号。若代码片段较大，请优先做偏宏观的分析（职责边界、对外 API、关键成员分组、依赖/生命周期/并发/错误处理/扩展点），避免逐行复述（关键结论请带文件引用）。';
+	    }
+	    return '请分析该符号在模块中的角色、用途与潜在问题，并用文件引用支撑关键结论。';
+	  }, []);
 
   const getActiveSymbolAnalysisStatus = useCallback(
     (filePathRaw: string, symbolKeyRaw: string): WorkstudioAiBubbleStatus | null => {
@@ -4397,22 +4543,23 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	              });
 
 			              if (answerMd && meta) {
-			                const res = await awaitStage('recover_save_analysis', () => saveWorkstudioSymbolAnalysis({
-			                  ...meta,
-			                  answerMd,
-			                  modelRef: bubbleAfterRun?.modelRef,
-			                  latencyMs,
-		                }), stageTimeoutMs);
-			                const cacheKey = `${meta.workstudioId}::${normalizeFsPath(meta.filePath)}::${meta.symbolKey}`;
-			                setSymbolAnalysisCache((prev) => ({ ...prev, [cacheKey]: res }));
-			                setOutlineMenu((prev) => {
-	                  if (!prev) return prev;
-	                  if (prev.filePath !== meta.filePath) return prev;
-	                  if (prev.item.key !== meta.symbolKey) return prev;
-	                  return { ...prev, analysis: res };
-	                });
-	              }
-	            }
+				                const res = await awaitStage('recover_save_analysis', () => saveWorkstudioSymbolAnalysis({
+				                  ...meta,
+				                  answerMd,
+				                  modelRef: bubbleAfterRun?.modelRef,
+				                  latencyMs,
+			                }), stageTimeoutMs);
+				                const cacheKey = `${meta.workstudioId}::${normalizeFsPath(meta.filePath)}::${meta.symbolKey}`;
+				                setSymbolAnalysisCache((prev) => ({ ...prev, [cacheKey]: res }));
+				                setSymbolAnalysisExistsCache((prev) => ({ ...prev, [cacheKey]: true }));
+				                setOutlineMenu((prev) => {
+		                  if (!prev) return prev;
+		                  if (prev.filePath !== meta.filePath) return prev;
+		                  if (prev.item.key !== meta.symbolKey) return prev;
+		                  return { ...prev, analysis: res, analysisExists: true };
+		                });
+		              }
+		            }
 
 	            // 资源回收（幂等）：即便 run:event 未触发 done/error，也确保不会占用 pool 或残留锁。
 		            trackedRunConversationsRef.current.delete(conversation.id);
@@ -4712,13 +4859,14 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       return;
     }
 
-    const prompt = [
-      `将对当前文件的 ${targets.length} 个符号执行“全部解析”${bulkExcludeVariables ? '（已跳过变量/字段）' : ''}。`,
-      '',
-      '这会发起大量模型请求，可能耗时较长并产生费用。',
-      '继续？',
-    ].join('\n');
-    if (!confirm(prompt)) return;
+	    const prompt = [
+	      `将对当前文件的 ${targets.length} 个符号执行“全部解析”${bulkExcludeVariables ? '（已跳过变量/字段）' : ''}。`,
+	      '',
+	      '这会发起大量模型请求，可能耗时较长并产生费用。',
+	      '继续？',
+	    ].join('\n');
+	    const ok = await Promise.resolve(window.confirm(prompt));
+	    if (!ok) return;
 
     const filePath = file.path;
     const languageId = activeTextLanguageId || languageForPath(filePath);
@@ -4853,73 +5001,88 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     ]
   );
 
-  const deleteOutlineSymbolAnalysis = useCallback(
-    async (filePath: string, item: OutlineItem) => {
-      if (!workstudioId) return;
-      const ok = window.confirm(`确定删除该符号的分析结果吗？\n\n${basename(filePath)} · ${item.name}`);
-      if (!ok) return;
+		  const deleteOutlineSymbolAnalysis = useCallback(
+		    async (filePath: string, item: OutlineItem) => {
+		      if (!workstudioId) return;
+		      const ok = await Promise.resolve(
+		        window.confirm(`确定删除该符号的分析结果吗？\n\n${basename(filePath)} · ${item.name}`)
+		      );
+		      if (!ok) return;
 
-      await deleteWorkstudioSymbolAnalysis({ workstudioId, filePath, symbolKey: item.key });
-      const cacheKey = makeSymbolAnalysisCacheKey(filePath, item.key);
-      setSymbolAnalysisCache((prev) => ({ ...prev, [cacheKey]: null }));
-      setOutlineMenu((prev) => {
-        if (!prev) return prev;
-        if (prev.filePath !== filePath) return prev;
-        if (prev.item.key !== item.key) return prev;
-        return { ...prev, analysis: null };
-      });
-      showNavToast('已删除分析结果');
-    },
-    [deleteWorkstudioSymbolAnalysis, makeSymbolAnalysisCacheKey, showNavToast, workstudioId]
-  );
+	      await deleteWorkstudioSymbolAnalysis({ workstudioId, filePath, symbolKey: item.key });
+	      const cacheKey = makeSymbolAnalysisCacheKey(filePath, item.key);
+	      setSymbolAnalysisCache((prev) => ({ ...prev, [cacheKey]: null }));
+	      setSymbolAnalysisExistsCache((prev) => ({ ...prev, [cacheKey]: false }));
+	      setOutlineMenu((prev) => {
+	        if (!prev) return prev;
+	        if (prev.filePath !== filePath) return prev;
+	        if (prev.item.key !== item.key) return prev;
+	        return { ...prev, analysis: null, analysisExists: false };
+	      });
+	      showNavToast('已删除分析结果');
+	    },
+	    [deleteWorkstudioSymbolAnalysis, makeSymbolAnalysisCacheKey, showNavToast, workstudioId]
+	  );
 
-  const openOutlineItemMenu = useCallback(
-    (e: React.MouseEvent, item: OutlineItem) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const filePath = activeTextFileInFocusedPane?.path ?? '';
-      if (!filePath) return;
-      const languageId = languageForPath(filePath);
+	  const openOutlineItemMenu = useCallback(
+	    (e: React.MouseEvent, item: OutlineItem) => {
+	      e.preventDefault();
+	      e.stopPropagation();
+	      const filePath = activeTextFileInFocusedPane?.path ?? '';
+	      if (!filePath) return;
+	      const languageId = languageForPath(filePath);
 
-      const cacheKey = makeSymbolAnalysisCacheKey(filePath, item.key);
-      const cache = symbolAnalysisCacheRef.current;
-      const analysis = Object.prototype.hasOwnProperty.call(cache, cacheKey) ? cache[cacheKey] : undefined;
+	      const cacheKey = makeSymbolAnalysisCacheKey(filePath, item.key);
+	      const cache = symbolAnalysisCacheRef.current;
+	      const analysis = Object.prototype.hasOwnProperty.call(cache, cacheKey) ? cache[cacheKey] : undefined;
+	      const existsCache = symbolAnalysisExistsCacheRef.current;
+	      const analysisExists = Object.prototype.hasOwnProperty.call(existsCache, cacheKey)
+	        ? Boolean(existsCache[cacheKey])
+	        : analysis
+	          ? true
+	          : analysis === null
+	            ? false
+	            : undefined;
 
-      setOutlineMenu({
-        visible: true,
-        x: e.clientX,
-        y: e.clientY,
-        filePath,
-        languageId,
-        item,
-        analysis,
-      });
+	      setOutlineMenu({
+	        visible: true,
+	        x: e.clientX,
+	        y: e.clientY,
+	        filePath,
+	        languageId,
+	        item,
+	        analysis,
+	        analysisExists,
+	      });
 
-      if (analysis === undefined) {
-        void ensureSymbolAnalysis(filePath, item.key).then((res) => {
-          setOutlineMenu((prev) => {
-            if (!prev) return prev;
-            if (prev.filePath !== filePath) return prev;
-            if (prev.item.key !== item.key) return prev;
-            return { ...prev, analysis: res };
-          });
-        });
-      }
-    },
-    [activeTextFileInFocusedPane?.path, ensureSymbolAnalysis, makeSymbolAnalysisCacheKey]
-  );
+	      if (analysisExists === undefined) {
+	        void ensureSymbolAnalysis(filePath, item.key).then((res) => {
+	          setOutlineMenu((prev) => {
+	            if (!prev) return prev;
+	            if (prev.filePath !== filePath) return prev;
+	            if (prev.item.key !== item.key) return prev;
+	            return { ...prev, analysis: res, analysisExists: Boolean(res) };
+	          });
+	        });
+	      }
+	    },
+	    [activeTextFileInFocusedPane?.path, ensureSymbolAnalysis, makeSymbolAnalysisCacheKey]
+	  );
 
-  const renderOutlineNodes = (nodes: OutlineItem[], depth = 0): React.ReactNode =>
-    nodes.map((item) => {
-      const active = outlineActiveKey === item.key;
-      const filePath = activeTextFileInFocusedPane?.path ?? '';
-      const analysisCacheKey = filePath ? makeSymbolAnalysisCacheKey(filePath, item.key) : '';
-      const hasAnalysis = analysisCacheKey
-        ? Boolean(symbolAnalysisCache[analysisCacheKey])
-        : false;
-      const hasChildren = item.children.length > 0;
-      const collapsed = hasChildren && outlineCollapsedKeys.has(item.key);
-      return (
+	  const renderOutlineNodes = (nodes: OutlineItem[], depth = 0): React.ReactNode =>
+	    nodes.map((item) => {
+	      const active = outlineActiveKey === item.key;
+	      const filePath = activeTextFileInFocusedPane?.path ?? '';
+	      const analysisCacheKey = filePath ? makeSymbolAnalysisCacheKey(filePath, item.key) : '';
+	      const exists = analysisCacheKey ? symbolAnalysisExistsCache[analysisCacheKey] : undefined;
+	      const hasAnalysis = analysisCacheKey
+	        ? typeof exists === 'boolean'
+	          ? exists
+	          : Boolean(symbolAnalysisCache[analysisCacheKey])
+	        : false;
+	      const hasChildren = item.children.length > 0;
+	      const collapsed = hasChildren && outlineCollapsedKeys.has(item.key);
+	      return (
         <React.Fragment key={item.id}>
           <div className="flex items-center gap-1" style={{ paddingLeft: 6 + depth * 14 }}>
             {hasChildren ? (
@@ -5166,14 +5329,14 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     [focusMainWindow]
   );
 
-  const deleteExplorerFile = useCallback(
-    async (absPathRaw: string) => {
-      const absPath = normalizeFsPath(String(absPathRaw ?? '').trim());
-      if (!absPath) return;
-      if (!ws) return;
+	  const deleteExplorerFile = useCallback(
+	    async (absPathRaw: string) => {
+	      const absPath = normalizeFsPath(String(absPathRaw ?? '').trim());
+	      if (!absPath) return;
+	      if (!ws) return;
 
-      const ok = window.confirm(`确定要删除该文件吗？\n\n${absPath}`);
-      if (!ok) return;
+	      const ok = await Promise.resolve(window.confirm(`确定要删除该文件吗？\n\n${absPath}`));
+	      if (!ok) return;
 
       try {
         await invoke('delete_local_path', {
@@ -6903,6 +7066,34 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     zoomOutEditorFont,
   ]);
 
+  // 文件搜索框打开后：立即聚焦输入框（避免 Cmd+P 打开后还需要手动点一下）。
+  useEffect(() => {
+    if (!filePaletteOpen) return;
+    let disposed = false;
+    let attempts = 0;
+    const tryFocus = () => {
+      if (disposed) return;
+      attempts += 1;
+      const el = filePaletteInputRef.current;
+      if (el) {
+        try {
+          el.focus();
+          el.select();
+        } catch {
+          // ignore
+        }
+        return;
+      }
+      if (attempts < 10) {
+        window.requestAnimationFrame(tryFocus);
+      }
+    };
+    window.requestAnimationFrame(tryFocus);
+    return () => {
+      disposed = true;
+    };
+  }, [filePaletteOpen]);
+
   // Esc: close palette (local behavior)
   useEffect(() => {
     if (!filePaletteOpen) return;
@@ -6973,6 +7164,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     setEditorFontSize(DEFAULT_EDITOR_FONT_SIZE);
     setOutlineOpen(true);
     setLeftSidebarTab('explorer');
+    setOutlinePreferLsp(DEFAULT_OUTLINE_PREFER_LSP);
     setOutlineCollapsedKeys(new Set());
     setOutlineActiveKey(null);
     setOutlineFileStateByPath({});
@@ -7013,6 +7205,9 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
         if (typeof state.outline?.open === 'boolean') {
           setOutlineOpen(state.outline.open);
+        }
+        if (typeof state.outline?.preferLsp === 'boolean') {
+          setOutlinePreferLsp(state.outline.preferLsp);
         }
         setOutlineFileStateByPath(normalizeOutlineFileStateMap(state.outline?.files));
 
@@ -7209,6 +7404,8 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       const persistedOpenFiles = openFiles.filter((f) => !isUntitledPath(f.path));
       const outlineFiles = normalizeOutlineFileStateMap(outlineFileStateByPath);
       const hasOutlineFiles = Object.keys(outlineFiles).length > 0;
+      const shouldPersistOutline =
+        !outlineOpen || hasOutlineFiles || outlinePreferLsp !== DEFAULT_OUTLINE_PREFER_LSP;
       const state: WorkstudioUiState = {
         openFiles: Array.from(new Set(persistedOpenFiles.map((f) => f.path))),
         panes: resolvedPanes
@@ -7222,10 +7419,13 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         focusedPaneId: resolvedFocusedPaneId ?? undefined,
         expandedDirs: Array.from(expandedDirs),
         ...(editorFontSize === DEFAULT_EDITOR_FONT_SIZE ? {} : { editorFontSize }),
-        ...(!outlineOpen || hasOutlineFiles
+        ...(shouldPersistOutline
           ? {
             outline: {
               ...(outlineOpen ? {} : { open: false }),
+              ...(outlinePreferLsp === DEFAULT_OUTLINE_PREFER_LSP
+                ? {}
+                : { preferLsp: outlinePreferLsp }),
               ...(hasOutlineFiles ? { files: outlineFiles } : {}),
             },
           }
@@ -7253,6 +7453,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     expandedDirs,
     editorFontSize,
     outlineOpen,
+    outlinePreferLsp,
     outlineFileStateByPath,
     wsEnabledLspLanguageIds,
   ]);
@@ -8179,13 +8380,16 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       )}
 
       {aiViewer && (
-        <div className="fixed inset-0 z-[230] flex items-center justify-center bg-black/35 p-4">
-          <div className="flex w-full max-w-3xl flex-col rounded-xl border border-gray-200 bg-white shadow-xl dark:border-gray-800 dark:bg-gray-950" style={{ maxHeight: '85vh' }}>
-            {/* Header */}
-            <div className="flex shrink-0 items-start justify-between gap-3 border-b border-gray-100 p-4 dark:border-gray-800">
-              <div className="min-w-0">
-                <div className="truncate text-sm font-semibold text-gray-900 dark:text-gray-100">
-                  {aiViewer.name}
+	        <div className="fixed inset-0 z-[230] flex items-center justify-center bg-black/35 p-4">
+	          <div
+	            className="flex w-full max-w-3xl flex-col rounded-xl border border-gray-200 bg-white shadow-xl dark:border-gray-800 dark:bg-gray-950"
+	            style={{ height: '85vh' }}
+	          >
+	            {/* Header */}
+	            <div className="flex shrink-0 items-start justify-between gap-3 border-b border-gray-100 p-4 dark:border-gray-800">
+	              <div className="min-w-0">
+	                <div className="truncate text-sm font-semibold text-gray-900 dark:text-gray-100">
+	                  {aiViewer.name}
                 </div>
                 <div className="mt-0.5 flex items-center gap-2 truncate text-[11px] text-gray-500 dark:text-gray-400">
                   <span>{aiViewer.subtitle}</span>
@@ -8312,6 +8516,53 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	                      >
 	                        过程详情
 	                      </button>
+	                      {(() => {
+	                        const turns = aiViewer.turns ?? [];
+	                        const hasInlineDebug = turns.some((t) => Boolean(t.debugInfo));
+	                        const hasPersistedDebug = turns.some((t) => Boolean(t.debugInfo) || Boolean(t.hasDebugInfo));
+	                        const canOpenDebug =
+	                          hasPersistedDebug &&
+	                          (hasInlineDebug ||
+	                            (Boolean((aiViewer.conversationId ?? '').trim()) &&
+	                              Boolean((aiViewer.assistantMessageId ?? '').trim())));
+	                        const debugTitle = !hasPersistedDebug
+	                          ? '该任务暂无调试数据（需要开启调试模式）'
+	                          : hasInlineDebug
+	                            ? '查看请求/响应（已在内存中）'
+	                            : !aiViewer.assistantMessageId
+	                              ? '调试数据已存在，但 assistantMessageId 尚未就绪'
+	                              : '点击加载该轮请求/响应';
+
+	                        return (
+	                          <button
+	                            type="button"
+	                            className={[
+	                              'rounded-md px-2 py-1 text-[11px] font-semibold border flex items-center gap-1',
+	                              aiViewerDebugOpen
+	                                ? 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-800/40 dark:bg-blue-900/20 dark:text-blue-200'
+	                                : canOpenDebug
+	                                  ? 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-300 dark:hover:bg-gray-900/40'
+	                                  : 'cursor-not-allowed border-gray-200 bg-gray-50 text-gray-300 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-700',
+	                            ].join(' ')}
+	                            disabled={!canOpenDebug}
+	                            title={debugTitle}
+	                            onClick={() => {
+	                              if (!canOpenDebug) return;
+	                              const turnsWithDebug = (aiViewer.turns ?? [])
+	                                .filter((t) => Boolean(t.debugInfo) || Boolean(t.hasDebugInfo))
+	                                .slice()
+	                                .sort((a, b) => a.turnIndex - b.turnIndex);
+	                              const latestTurnWithDebug =
+	                                turnsWithDebug.length > 0 ? turnsWithDebug[turnsWithDebug.length - 1] : null;
+	                              setAiViewerDebugInitialTurnId(latestTurnWithDebug?.turnId ?? null);
+	                              setAiViewerDebugOpen(true);
+	                            }}
+	                          >
+	                            <Bug size={12} />
+	                            Debug
+	                          </button>
+	                        );
+	                      })()}
 	                    </div>
 	                  </div>
 
@@ -8448,6 +8699,19 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
               </button>
             </div>
           </div>
+          <DebugModal
+            isOpen={aiViewerDebugOpen}
+            onClose={() => setAiViewerDebugOpen(false)}
+            isStreaming={['queued', 'connecting', 'thinking', 'streaming', 'tool_calling'].includes(aiViewer.status)}
+            debugInfo={null}
+            turns={aiViewer.turns ?? null}
+            blocks={aiViewer.blocks ?? null}
+            initialTurnId={aiViewerDebugInitialTurnId}
+            errorMessage={aiViewer.error || null}
+            messageRole={aiViewer.status === 'error' ? 'error' : 'assistant'}
+            conversationId={aiViewer.conversationId}
+            messageId={aiViewer.assistantMessageId}
+          />
         </div>
       )}
 
@@ -8548,6 +8812,35 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                     }
                   >
                     全部解析
+                  </button>
+                  <button
+                    type="button"
+                    className={[
+                      'rounded border px-2 py-1 text-[11px] font-semibold',
+                      outlinePreferLsp
+                        ? 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 dark:border-blue-800/40 dark:bg-blue-900/20 dark:text-blue-200 dark:hover:bg-blue-900/30'
+                        : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-200 dark:hover:bg-gray-800',
+                    ].join(' ')}
+                    onClick={() => {
+                      const next = !outlinePreferLsp;
+                      setOutlinePreferLsp(next);
+                      // 切换策略后立刻刷新一次，确保 Outline 源与 UI 一致。
+                      setOutlineRefreshSeq((v) => v + 1);
+                      if (next) {
+                        // 进入“优先 LSP”后不再使用 AST/缓存兜底：清空旧结果，避免符号集不一致影响分析稳定性。
+                        setOutlineItems([]);
+                        setOutlineSource('none');
+                        setOutlineError(null);
+                        setOutlineLoading(true);
+                      }
+                    }}
+                    title={
+                      outlinePreferLsp
+                        ? '已开启：优先使用 LSP 生成 Outline（更全更稳定）。点击可切换为“自动（允许 AST/缓存兜底）”。'
+                        : '当前：自动（LSP 不可用/超时时回退 AST/缓存）。点击可切换为“优先 LSP”。'
+                    }
+                  >
+                    LSP优先
                   </button>
                   <button
                     type="button"
@@ -8996,10 +9289,10 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       </div>
 
       {filePaletteOpen && (
-        <div className="fixed inset-0 z-[210]">
-          <div
-            className="absolute inset-0 bg-black/25 backdrop-blur-[1px]"
-            onClick={() => {
+      <div className="fixed inset-0 z-[210]">
+        <div
+          className="absolute inset-0 bg-black/25 backdrop-blur-[1px]"
+          onClick={() => {
               setFilePaletteOpen(false);
               setFilePaletteQuery('');
               setFilePaletteResults([]);
@@ -9014,6 +9307,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
             </div>
             <div className="p-4">
               <input
+                autoFocus
                 ref={filePaletteInputRef}
                 value={filePaletteQuery}
                 onChange={(e) => setFilePaletteQuery(e.target.value)}
@@ -9422,14 +9716,22 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           style={{ left: outlineMenu.x, top: outlineMenu.y }}
           onMouseDown={(e) => e.stopPropagation()}
         >
-          {(() => {
-	            const busyStatus = getActiveSymbolAnalysisStatus(outlineMenu.filePath, outlineMenu.item.key);
-	            const isBusy = Boolean(busyStatus);
-	            const actionLabel = outlineMenu.analysis ? '重新分析' : outlineAnalysisActionLabel(outlineMenu.item.kind);
-	            const statusTag = (() => {
-	              switch (busyStatus) {
-	                case 'queued':
-	                  return '（排队中）';
+	          {(() => {
+		            const busyStatus = getActiveSymbolAnalysisStatus(outlineMenu.filePath, outlineMenu.item.key);
+		            const isBusy = Boolean(busyStatus);
+		            const analysisExists =
+		              typeof outlineMenu.analysisExists === 'boolean'
+		                ? outlineMenu.analysisExists
+		                : outlineMenu.analysis
+		                  ? true
+		                  : outlineMenu.analysis === null
+		                    ? false
+		                    : undefined;
+		            const actionLabel = analysisExists ? '重新分析' : outlineAnalysisActionLabel(outlineMenu.item.kind);
+		            const statusTag = (() => {
+		              switch (busyStatus) {
+		                case 'queued':
+		                  return '（排队中）';
 	                case 'connecting':
 	                  return '（连接中）';
 	                case 'thinking':
@@ -9461,42 +9763,43 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                 isBusy
                   ? 'cursor-not-allowed text-gray-400 dark:text-gray-600'
                   : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800',
-              ].join(' ')}
-              onClick={() => {
-                const menu = outlineMenu;
-                const hasExisting = Boolean(menu.analysis);
-                if (hasExisting) {
-                  const ok = confirm('已存在分析结果，确定重新分析并覆盖吗？');
-                  if (!ok) return;
-                }
-                setOutlineMenu(null);
-                void (async () => {
-                  try {
-                    await runOutlineSymbolAnalysis(menu.filePath, menu.languageId, menu.item);
-                  } catch (err) {
-                    const msg = err instanceof Error ? err.message : String(err);
-                    showNavToast(msg);
-                  }
-                })();
-              }}
-            >
+	              ].join(' ')}
+		              onClick={() => {
+		                const menu = outlineMenu;
+		                void (async () => {
+		                  const hasExisting =
+		                    typeof menu.analysisExists === 'boolean' ? menu.analysisExists : Boolean(menu.analysis);
+		                  if (hasExisting) {
+		                    const ok = await Promise.resolve(window.confirm('已存在分析结果，确定重新分析并覆盖吗？'));
+		                    if (!ok) return;
+		                  }
+		                  setOutlineMenu(null);
+		                  try {
+		                    await runOutlineSymbolAnalysis(menu.filePath, menu.languageId, menu.item);
+		                  } catch (err) {
+		                    const msg = err instanceof Error ? err.message : String(err);
+		                    showNavToast(msg);
+		                  }
+		                })();
+		              }}
+	            >
               <span>{actionLabel}</span>
               <span className="text-gray-400">：</span>
-              <span
-                className={outlineMenu.analysis ? 'text-emerald-700 dark:text-emerald-300' : ''}
-              >
-                {outlineMenu.item.name}
-              </span>
-              {statusTag ? <span className="ml-2 text-xs text-gray-400 dark:text-gray-600">{statusTag}</span> : null}
-            </button>
+	              <span
+	                className={analysisExists ? 'text-emerald-700 dark:text-emerald-300' : ''}
+	              >
+	                {outlineMenu.item.name}
+	              </span>
+	              {statusTag ? <span className="ml-2 text-xs text-gray-400 dark:text-gray-600">{statusTag}</span> : null}
+	            </button>
 
-            {outlineMenu.analysis === undefined ? (
-              <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">加载分析状态中…</div>
-            ) : outlineMenu.analysis ? (
-              <>
-                <button
-                  type="button"
-                  className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+	            {analysisExists === undefined ? (
+	              <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">加载分析状态中…</div>
+	            ) : analysisExists ? (
+	              <>
+	                <button
+	                  type="button"
+	                  className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
                   onClick={() => {
                     const menu = outlineMenu;
                     setOutlineMenu(null);

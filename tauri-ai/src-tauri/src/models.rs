@@ -614,6 +614,9 @@ pub struct WorkstudioCodeIntelligenceState {
 pub struct WorkstudioOutlineState {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub open: Option<bool>,
+    /// 是否优先使用 LSP 生成 Outline（可选；未设置时由前端使用默认值）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefer_lsp: Option<bool>,
     #[serde(default)]
     pub files: HashMap<String, WorkstudioOutlineFileState>,
 }
@@ -2472,6 +2475,56 @@ fn ensure_system_workspace_defaults(cfg: &mut AppConfig) -> bool {
 
     let mut changed = false;
 
+    const LEGACY_SYMBOL_ANALYSIS_PROMPT: &str = r#"你是 IDE 中的“代码符号分析助手”。
+
+你会收到：
+- 一个代码符号（类/函数/变量等）的元信息
+- 该符号对应的代码片段（可能不完整）
+- 一些工程元信息（languageId、filePath、projectRoot）
+
+请输出 **Markdown**，并遵循：
+- 先给结论摘要（1-3 句）
+- 再给结构化分析（分点/小标题均可）
+- 尽可能指出潜在问题与可执行改进建议
+- 当缺少关键上下文时，明确指出需要看的文件/关键搜索词，而不是臆测
+"#;
+
+    const SYMBOL_ANALYSIS_PROMPT_V2: &str = r#"你是 IDE 中的“代码符号分析助手”（Symbol Analysis）。
+
+你的目标：在不臆测的前提下，基于符号的代码片段 + 工程上下文，给出“可执行、可验证”的分析结论。
+
+你会收到：
+- 一个代码符号的元信息（symbolName、symbolKind、filePath、location 等）
+- 该符号对应的代码片段（可能不完整）
+- 一些工程元信息（languageId、projectRoot）
+- 你可以在需要时使用工具（read_file / rg / list_dir / web_search）来补齐上下文，但不要修改文件。
+
+输出要求（必须）：
+- 使用 Markdown。
+- 先给结论摘要（1-3 句），再给结构化分析（分点/小标题均可），最后给风险点 + 可执行改进建议 + 验证清单。
+- 当缺少关键上下文时：明确列出需要看的文件/需要搜索的关键字/需要补充的信息，不要猜。
+
+### 文件引用（必须严格遵守）
+当你在讨论代码定位、调用链、实现细节或引用关系时，所有关键结论必须附带**可点击文件引用**，格式只允许：
+- `相对路径:行` 或 `相对路径:行:列`
+- `相对路径#L行` 或 `相对路径#L行C列`
+禁止使用 Markdown 链接语法引用文件（例如 `[label](path)`）；不要编造行号：拿不到行号时请先用 `rg`/打开文件定位，再输出引用。
+
+### 分析策略（按符号类型自适应）
+1) 若符号是大型类型/容器（class/struct/trait/enum/module…）：
+- 优先做偏宏观的分析：职责边界、对外 API、关键字段/方法分组、依赖关系、生命周期、并发/线程安全、错误处理、扩展点。
+- 避免逐行复述；选择最关键的 3-8 个点展开，并用文件引用指向定义与关键成员。
+
+2) 若符号是函数/方法：
+- 先解释“业务意图”：它在业务流程中解决什么问题，输入/输出代表什么，关键分支与副作用是什么。
+- 再调查“可能的业务调用路径”：尽量找到调用者（入口/上游）与被调用的下游依赖，给出 2-5 条可能调用链，并为链路节点提供文件引用。
+- 同时分析失败路径与可观测性（日志/错误返回/指标）。
+
+3) 若符号是变量/字段/常量：
+- 做引用分析：解释语义与不变量（单位/范围/默认值/可变性），并尽量找出写入点/读取点/传递路径。
+- 说明它如何影响系统行为（配置、状态机、缓存、并发共享状态等），列出代表性的引用位置（带文件引用）；引用过多时按模块聚类，避免穷举。
+"#;
+
     // 1) Toolset: safe read-only tools for Workstudio AI (no apply_patch / no exec).
     if !cfg.tools.toolsets.iter().any(|t| t.name == TOOLSET_NAME) {
         cfg.tools.toolsets.push(ToolSetConfig {
@@ -2501,6 +2554,7 @@ fn ensure_system_workspace_defaults(cfg: &mut AppConfig) -> bool {
                             display_name: &str,
                             description: &str,
                             system_prompt: &str,
+                            legacy_system_prompt: Option<&str>,
                             toolset: Option<&str>| {
         match cfg.agents.iter_mut().find(|a| a.name == name) {
             Some(a) => {
@@ -2521,7 +2575,11 @@ fn ensure_system_workspace_defaults(cfg: &mut AppConfig) -> bool {
                     a.description = Some(description.to_string());
                     changed = true;
                 }
-                if a.system_prompt.trim().is_empty() {
+                let normalize_prompt = |s: &str| s.replace("\r\n", "\n").trim().to_string();
+                let legacy = legacy_system_prompt.unwrap_or("");
+                let legacy_norm = normalize_prompt(legacy);
+                let cur_norm = normalize_prompt(&a.system_prompt);
+                if cur_norm.is_empty() || (!legacy_norm.is_empty() && cur_norm == legacy_norm) {
                     a.system_prompt = system_prompt.to_string();
                     changed = true;
                 }
@@ -2609,6 +2667,7 @@ fn ensure_system_workspace_defaults(cfg: &mut AppConfig) -> bool {
 - 使用 \n 表示换行；不要输出 JSON 之外的任何字符。
 "#,
         None,
+        None,
     );
 
     ensure_agent(
@@ -2627,6 +2686,7 @@ fn ensure_system_workspace_defaults(cfg: &mut AppConfig) -> bool {
 - 可给出可执行的下一步（例如：要看的文件、要跑的命令、要加的日志点）。
 - 输出使用 Markdown，必要时可包含代码块。
 "#,
+        None,
         Some(TOOLSET_NAME),
     );
 
@@ -2634,19 +2694,8 @@ fn ensure_system_workspace_defaults(cfg: &mut AppConfig) -> bool {
         AGENT_SYMBOL_ANALYSIS,
         "符号分析（Symbol Analysis）",
         "对代码符号（函数/类/变量）进行深度解析的服务",
-        r#"你是 IDE 中的“代码符号分析助手”。
-
-你会收到：
-- 一个代码符号（类/函数/变量等）的元信息
-- 该符号对应的代码片段（可能不完整）
-- 一些工程元信息（languageId、filePath、projectRoot）
-
-请输出 **Markdown**，并遵循：
-- 先给结论摘要（1-3 句）
-- 再给结构化分析（分点/小标题均可）
-- 尽可能指出潜在问题与可执行改进建议
-- 当缺少关键上下文时，明确指出需要看的文件/关键搜索词，而不是臆测
-"#,
+        SYMBOL_ANALYSIS_PROMPT_V2,
+        Some(LEGACY_SYMBOL_ANALYSIS_PROMPT),
         Some(TOOLSET_NAME),
     );
 

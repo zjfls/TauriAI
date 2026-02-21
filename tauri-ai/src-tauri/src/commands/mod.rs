@@ -53,6 +53,7 @@ pub use code_intel::{
     code_index_request_document_symbols, code_index_start_workspace_scan, code_index_status,
     code_index_summary,
     delete_workstudio_symbol_analysis, get_workstudio_symbol_analysis,
+    list_workstudio_symbol_analysis_keys_for_file,
     save_workstudio_symbol_analysis, lsp_detect_server,
     lsp_ensure_server, lsp_notify, lsp_request, lsp_shutdown_language, lsp_shutdown_workstudio,
     lsp_status, workstudio_abort_agent, workstudio_run_agent_stream,
