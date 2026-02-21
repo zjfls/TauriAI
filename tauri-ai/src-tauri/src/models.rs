@@ -799,7 +799,7 @@ pub struct Model {
     #[serde(default)]
     pub capabilities: ModelCapabilities,
     /// Turn-level automatic retry attempts.
-    /// - When unset: default to 3 (runtime default).
+    /// - When unset: default to 8 (runtime default).
     /// - When `general.manualTurnRetry=true`: automatic retries are disabled regardless of this value.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_attempts: Option<u32>,
@@ -1263,7 +1263,7 @@ pub struct ModelConfig {
     /// Whether to use reasoning_effort parameter (for OpenAI GPT-5 series)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub use_reasoning_effort: Option<bool>,
-    /// Turn-level automatic retry attempts (default: 3 when unset).
+    /// Turn-level automatic retry attempts (default: 8 when unset).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_attempts: Option<u32>,
     /// Whether to allow reconnecting and resuming when a stream breaks after partial output.

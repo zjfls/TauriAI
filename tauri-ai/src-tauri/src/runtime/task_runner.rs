@@ -4392,7 +4392,7 @@ async fn run_task_inner(
         reinject_thinking: agent.reinject_thinking,
         debug_mode,
         turn_retry_attempts: {
-            let configured = model_config.retry_attempts.unwrap_or(3).clamp(1, 10);
+            let configured = model_config.retry_attempts.unwrap_or(8).clamp(1, 10);
             if config.general.manual_turn_retry {
                 1
             } else {

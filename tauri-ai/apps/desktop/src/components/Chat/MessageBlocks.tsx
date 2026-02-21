@@ -9,7 +9,7 @@
  */
 
  import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
- import { AlertTriangle, Brain, Bug, ChevronDown, ChevronRight, RefreshCw, Search, Wrench } from 'lucide-react';
+ import { AlertTriangle, Brain, Bug, Check, ChevronDown, ChevronRight, Copy, RefreshCw, Search, Wrench } from 'lucide-react';
  import { invoke, isTauri } from '@tauri-apps/api/core';
  import type {
    AnsiColorMode,
@@ -29,6 +29,30 @@ import { DebugModal } from './DebugModal';
 const TOOL_SUMMARY_MAX_CHARS = 220;
 const TOOL_SUMMARY_SCAN_MAX_CHARS = 30_000;
 const TOOL_SUMMARY_EXTRACT_VALUE_MAX_CHARS = 2_000;
+
+const copyTextToClipboard = async (text: string): Promise<boolean> => {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    // Fallback for environments where Clipboard API is unavailable.
+    try {
+      const el = document.createElement('textarea');
+      el.value = text;
+      el.style.position = 'fixed';
+      el.style.left = '-9999px';
+      el.style.top = '0';
+      document.body.appendChild(el);
+      el.focus();
+      el.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(el);
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+};
 
 const normalizeToolSummary = (value: string): string => {
   const oneLine = value.replace(/\r\n/g, '\n').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
@@ -524,6 +548,38 @@ const ApplyPatchToolRunBlock: React.FC<{
     }
   }, [args, isExpanded, parsedArgs]);
 
+  const [copiedKey, setCopiedKey] = useState<null | 'args' | 'input'>(null);
+
+  const likelyHasInputField = useMemo(() => {
+    if (!args) return false;
+    if (name === 'apply_patch') return true;
+    return args.includes('"input"');
+  }, [args, name]);
+
+  const handleCopyArgs = useCallback(async () => {
+    if (!args) return;
+    const ok = await copyTextToClipboard(args);
+    if (!ok) return;
+    setCopiedKey('args');
+    window.setTimeout(() => setCopiedKey(null), 2000);
+  }, [args]);
+
+  const handleCopyInput = useCallback(async () => {
+    if (!args) return;
+    const parsed = (() => {
+      try {
+        return JSON.parse(args) as any;
+      } catch {
+        return null;
+      }
+    })();
+    const input = typeof parsed?.input === 'string' ? (parsed.input as string) : '';
+    const ok = await copyTextToClipboard(input || args);
+    if (!ok) return;
+    setCopiedKey('input');
+    window.setTimeout(() => setCopiedKey(null), 2000);
+  }, [args]);
+
   const summary = useMemo(() => extractToolSummary(name, args, parsedArgs), [name, args, parsedArgs]);
 
 	const meta = toolMeta as ApplyPatchToolMeta | null;
@@ -846,7 +902,31 @@ const ApplyPatchToolRunBlock: React.FC<{
             <>
               {prettyArgs ? (
                 <>
-                  <div className={`mb-1 text-xs font-medium ${tone.detailLabel}`}>参数</div>
+                  <div className="mb-1 flex items-center justify-between gap-2">
+                    <div className={`text-xs font-medium ${tone.detailLabel}`}>参数</div>
+                    <div className="flex items-center gap-2">
+                      {likelyHasInputField ? (
+                        <button
+                          type="button"
+                          onClick={handleCopyInput}
+                          className="inline-flex items-center gap-1 rounded border border-gray-200 bg-white px-2 py-0.5 text-[11px] font-medium text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-100 dark:hover:bg-gray-800"
+                          title="复制参数中的 input 字段（如 apply_patch 的 patch 文本）"
+                        >
+                          {copiedKey === 'input' ? <Check size={12} /> : <Copy size={12} />}
+                          复制 input
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        onClick={handleCopyArgs}
+                        className="inline-flex items-center gap-1 rounded border border-gray-200 bg-white px-2 py-0.5 text-[11px] font-medium text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-100 dark:hover:bg-gray-800"
+                        title="复制完整参数 JSON"
+                      >
+                        {copiedKey === 'args' ? <Check size={12} /> : <Copy size={12} />}
+                        复制参数
+                      </button>
+                    </div>
+                  </div>
                   <pre className="mb-3 max-h-48 overflow-y-auto whitespace-pre-wrap break-words pr-2 text-sm text-gray-800 dark:text-gray-100">
                     {prettyArgs}
                   </pre>
@@ -1653,6 +1733,14 @@ const ToolRunBlock: React.FC<{
   }, [args, isExpanded, parsedArgs]);
 
   const summary = useMemo(() => extractToolSummary(name, args, parsedArgs), [name, args, parsedArgs]);
+  const [copiedArgs, setCopiedArgs] = useState(false);
+  const handleCopyArgs = useCallback(async () => {
+    if (!args) return;
+    const ok = await copyTextToClipboard(args);
+    if (!ok) return;
+    setCopiedArgs(true);
+    window.setTimeout(() => setCopiedArgs(false), 2000);
+  }, [args]);
 
   return (
     <div className={`mb-2 rounded-lg border ${tone.container}`}>
@@ -1698,7 +1786,18 @@ const ToolRunBlock: React.FC<{
         <div className={`border-t px-3 py-2 ${tone.detailBorder}`}>
           {prettyArgs ? (
             <>
-              <div className={`mb-1 text-xs font-medium ${tone.detailLabel}`}>参数</div>
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <div className={`text-xs font-medium ${tone.detailLabel}`}>参数</div>
+                <button
+                  type="button"
+                  onClick={handleCopyArgs}
+                  className="inline-flex items-center gap-1 rounded border border-gray-200 bg-white px-2 py-0.5 text-[11px] font-medium text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-100 dark:hover:bg-gray-800"
+                  title="复制工具参数 JSON"
+                >
+                  {copiedArgs ? <Check size={12} /> : <Copy size={12} />}
+                  复制参数
+                </button>
+              </div>
               <pre className="mb-3 max-h-48 overflow-y-auto whitespace-pre-wrap break-words pr-2 text-sm text-gray-800 dark:text-gray-100">
                 {prettyArgs}
               </pre>

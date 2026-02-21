@@ -154,7 +154,7 @@ export interface Model {
   contextLength?: number; // Maximum context length in tokens (e.g., 128000 for GPT-4o)
   capabilities: ModelCapabilities;
   // Advanced settings
-  retryAttempts?: number; // Turn-level automatic retry attempts (default: 3)
+  retryAttempts?: number; // Turn-level automatic retry attempts (default: 8)
   resumePartialOutput?: boolean; // Allow reconnecting after partial output (default: false)
   maxImages?: number;     // Maximum number of images allowed (default: 10, only for vision models)
   thinkingBudgetTokens?: number; // Anthropic extended thinking budget (>=1024 and < maxTokens)
