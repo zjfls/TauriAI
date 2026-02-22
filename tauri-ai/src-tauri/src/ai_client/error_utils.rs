@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::error::Error as StdError;
+use std::io;
 
 const MAX_ERROR_TEXT_LEN: usize = 12_000;
 const MAX_SNIPPET_CHARS: usize = 1200;
@@ -59,6 +60,58 @@ fn format_error_chain(err: &dyn StdError) -> Vec<String> {
     out
 }
 
+fn find_timeout_message(err: &reqwest::Error) -> Option<String> {
+    if err.is_timeout() {
+        return Some("timeout".to_string());
+    }
+
+    let mut cur: Option<&(dyn StdError + 'static)> = Some(err);
+    let mut depth: usize = 0;
+    while let Some(e) = cur {
+        if let Some(ioe) = e.downcast_ref::<io::Error>() {
+            if ioe.kind() == io::ErrorKind::TimedOut {
+                let msg = ioe.to_string();
+                return Some(if msg.trim().is_empty() {
+                    "Operation timed out".to_string()
+                } else {
+                    msg
+                });
+            }
+        }
+
+        // Some intermediate error types don't expose the io::Error directly; fall back to message heuristics.
+        let msg = e.to_string();
+        let lower = msg.to_ascii_lowercase();
+        if lower.contains("timed out") || lower.contains("timeout") {
+            return Some(msg);
+        }
+
+        cur = e.source();
+        depth = depth.saturating_add(1);
+        if depth >= 12 {
+            break;
+        }
+    }
+
+    None
+}
+
+pub fn summarize_reqwest_stream_error(err: &reqwest::Error) -> String {
+    if let Some(msg) = find_timeout_message(err) {
+        return format!("读取流超时（{msg}）");
+    }
+
+    if err.is_connect() {
+        return format!("连接失败（{err}）");
+    }
+
+    if err.is_request() {
+        return format!("请求失败（{err}）");
+    }
+
+    err.to_string()
+}
+
 fn head_chars(s: &str, max_chars: usize) -> String {
     if max_chars == 0 {
         return String::new();
@@ -105,7 +158,12 @@ pub fn format_reqwest_stream_error(
     let mut lines: Vec<String> = Vec::new();
 
     // Summary first (kept intentionally short; details follow).
-    lines.push(err.to_string());
+    let summary = summarize_reqwest_stream_error(err);
+    lines.push(summary.clone());
+    let raw = err.to_string();
+    if raw != summary {
+        lines.push(format!("raw_error: {raw}"));
+    }
 
     // Context
     lines.push(String::new());
@@ -142,16 +200,28 @@ pub fn format_reqwest_stream_error(
         lines.push("stream:".to_string());
 
         if let Some(v) = ctx.expected_protocol.as_deref() {
-            lines.push(format!("- expected_protocol: {}", head_chars(v, MAX_SNIPPET_CHARS)));
+            lines.push(format!(
+                "- expected_protocol: {}",
+                head_chars(v, MAX_SNIPPET_CHARS)
+            ));
         }
         if let Some(v) = ctx.expected_signal.as_deref() {
-            lines.push(format!("- expected_signal: {}", head_chars(v, MAX_SNIPPET_CHARS)));
+            lines.push(format!(
+                "- expected_signal: {}",
+                head_chars(v, MAX_SNIPPET_CHARS)
+            ));
         }
         if let Some(v) = ctx.observed_signal.as_deref() {
-            lines.push(format!("- observed_signal: {}", head_chars(v, MAX_SNIPPET_CHARS)));
+            lines.push(format!(
+                "- observed_signal: {}",
+                head_chars(v, MAX_SNIPPET_CHARS)
+            ));
         }
         if let Some(v) = ctx.last_event_type.as_deref() {
-            lines.push(format!("- last_event_type: {}", head_chars(v, MAX_SNIPPET_CHARS)));
+            lines.push(format!(
+                "- last_event_type: {}",
+                head_chars(v, MAX_SNIPPET_CHARS)
+            ));
         }
         if let Some(v) = ctx.chunks_received {
             lines.push(format!("- chunks_received: {v}"));

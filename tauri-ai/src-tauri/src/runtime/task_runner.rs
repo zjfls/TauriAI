@@ -3302,7 +3302,9 @@ pub async fn retry_turn(
         .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
     async_db::with_db(&db, "retry_turn:rewind_history", |db| {
         db.delete_messages_after(&cleanup_conversation_id, &assistant_message_id)?;
-        if let (Some(msg), Some(fields)) = (placeholder_assistant.as_ref(), placeholder_fields.as_ref()) {
+        if let (Some(msg), Some(fields)) =
+            (placeholder_assistant.as_ref(), placeholder_fields.as_ref())
+        {
             db.add_message_with_fields(&cleanup_conversation_id, msg, fields)?;
         }
         Ok::<(), crate::storage::StorageError>(())
@@ -3431,49 +3433,50 @@ async fn run_task_inner(
     // 1) 生成用户消息 + 构建基础上下文
     // - 正常 run_task：落库用户消息（Pending），并取 Success + 本次用户消息作为 base_messages
     // - retry_turn：直接使用预构建 base_messages（不新增用户消息）
-    let (user_message_id_for_status_update, base_messages) =
-        if let Some(prebuilt) = input.base_messages_override.take() {
-            (None, prebuilt)
-        } else {
-            // 落库用户消息（Pending）
-            let user_message = Message {
-                id: input
-                    .message_id
-                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
-                conversation_id: input.conversation_id.clone(),
-                role: MessageRole::User,
-                content: input.content.clone(),
-                content_parts: input.content_parts.take().unwrap_or_default(),
-                thinking: None,
-                meta: None,
-                created_at: chrono::Utc::now(),
-                status: MessageStatus::Pending,
-                error_message: None,
-            };
-            let user_message_fields = crate::storage::MessageDbFields::from_message(&user_message)
-                .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
-            async_db::with_db(&db, "run_task:add_user_message", |db| {
-                db.add_message_with_fields(&input.conversation_id, &user_message, &user_message_fields)
-            })
-            .await
-            .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
-
-            // 历史消息作为“基础上下文”（只取 Success + 本次 Pending 用户消息）
-            let base_messages = async_db::read_messages(
-                &db,
-                "run_task:get_base_messages",
-                &input.conversation_id,
-                100,
-                None,
-            )
-            .await
-            .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?
-            .into_iter()
-            .filter(|m| m.status == MessageStatus::Success || m.id == user_message.id)
-            .collect::<Vec<_>>();
-
-            (Some(user_message.id), base_messages)
+    let (user_message_id_for_status_update, base_messages) = if let Some(prebuilt) =
+        input.base_messages_override.take()
+    {
+        (None, prebuilt)
+    } else {
+        // 落库用户消息（Pending）
+        let user_message = Message {
+            id: input
+                .message_id
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+            conversation_id: input.conversation_id.clone(),
+            role: MessageRole::User,
+            content: input.content.clone(),
+            content_parts: input.content_parts.take().unwrap_or_default(),
+            thinking: None,
+            meta: None,
+            created_at: chrono::Utc::now(),
+            status: MessageStatus::Pending,
+            error_message: None,
         };
+        let user_message_fields = crate::storage::MessageDbFields::from_message(&user_message)
+            .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
+        async_db::with_db(&db, "run_task:add_user_message", |db| {
+            db.add_message_with_fields(&input.conversation_id, &user_message, &user_message_fields)
+        })
+        .await
+        .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
+
+        // 历史消息作为“基础上下文”（只取 Success + 本次 Pending 用户消息）
+        let base_messages = async_db::read_messages(
+            &db,
+            "run_task:get_base_messages",
+            &input.conversation_id,
+            100,
+            None,
+        )
+        .await
+        .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?
+        .into_iter()
+        .filter(|m| m.status == MessageStatus::Success || m.id == user_message.id)
+        .collect::<Vec<_>>();
+
+        (Some(user_message.id), base_messages)
+    };
     let cached_system_prompt: Option<(String, String)> = {
         let conv = async_db::with_db(
             &db,
@@ -4614,20 +4617,23 @@ async fn run_task_inner(
                 };
 
                 let assistant_fields =
-                    crate::storage::MessageDbFields::from_message(&assistant_message).unwrap_or_else(|_| {
-                        crate::storage::MessageDbFields {
+                    crate::storage::MessageDbFields::from_message(&assistant_message)
+                        .unwrap_or_else(|_| crate::storage::MessageDbFields {
                             role: "assistant",
                             status: "failed",
                             created_at: assistant_message.created_at.to_rfc3339(),
                             content_parts_json: None,
                             meta_json: None,
-                        }
-                    });
+                        });
                 let _ = async_db::with_db(&db, "run_task:failed:persist_assistant", |db| {
                     if reuse_assistant_message_id && has_existing {
                         db.update_message_with_fields(&assistant_message, &assistant_fields)
                     } else {
-                        db.add_message_with_fields(&input.conversation_id, &assistant_message, &assistant_fields)
+                        db.add_message_with_fields(
+                            &input.conversation_id,
+                            &assistant_message,
+                            &assistant_fields,
+                        )
                     }
                 })
                 .await;
@@ -4724,13 +4730,18 @@ async fn run_task_inner(
                     error_message: None,
                 };
 
-                let assistant_fields = crate::storage::MessageDbFields::from_message(&assistant_message)
-                    .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
+                let assistant_fields =
+                    crate::storage::MessageDbFields::from_message(&assistant_message)
+                        .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
                 async_db::with_db(&db, "run_task:success:persist_assistant", |db| {
                     if reuse_assistant_message_id && has_existing {
                         db.update_message_with_fields(&assistant_message, &assistant_fields)
                     } else {
-                        db.add_message_with_fields(&input.conversation_id, &assistant_message, &assistant_fields)
+                        db.add_message_with_fields(
+                            &input.conversation_id,
+                            &assistant_message,
+                            &assistant_fields,
+                        )
                     }
                 })
                 .await
@@ -4832,13 +4843,18 @@ async fn run_task_inner(
                     error_message: None,
                 };
 
-                let assistant_fields = crate::storage::MessageDbFields::from_message(&assistant_message)
-                    .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
+                let assistant_fields =
+                    crate::storage::MessageDbFields::from_message(&assistant_message)
+                        .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
                 async_db::with_db(&db, "run_task:aborted:persist_assistant", |db| {
                     if reuse_assistant_message_id && has_existing {
                         db.update_message_with_fields(&assistant_message, &assistant_fields)
                     } else {
-                        db.add_message_with_fields(&input.conversation_id, &assistant_message, &assistant_fields)
+                        db.add_message_with_fields(
+                            &input.conversation_id,
+                            &assistant_message,
+                            &assistant_fields,
+                        )
                     }
                 })
                 .await
@@ -5056,7 +5072,20 @@ async fn stream_one_turn(
 
     let messages = sanitize_messages_for_model_input(messages);
 
+    // Stream resume:
+    // - If user explicitly enabled `resume_partial_output`, always try to resume on reconnect.
+    // - If upstream provides a Codex-style `x-codex-turn-state`, we can *optionally* resume after
+    //   partial output for certain retryable errors (e.g. timeouts), even when the toggle is off.
+    //   This avoids duplicating output on providers that don't support resume, while still
+    //   recovering from mid-stream stalls on those that do.
     let resume_enabled = model_config.resume_partial_output;
+    let mut force_resume_state_on_retry = false;
+
+    fn is_timeout_like_error(err: &crate::ai_client::AiError) -> bool {
+        let msg = err.to_string();
+        let lower = msg.to_ascii_lowercase();
+        msg.contains("超时") || lower.contains("timed out") || lower.contains("timeout")
+    }
     let mut full_content = String::new();
     let mut full_thinking = String::new();
     let mut debug_info: Option<DebugInfoData> = None;
@@ -5094,7 +5123,7 @@ async fn stream_one_turn(
         let attempt_messages = messages.clone();
 
         let options = crate::ai_client::StreamOptions {
-            resume_state: if resume_enabled {
+            resume_state: if resume_enabled || force_resume_state_on_retry {
                 turn_state.clone()
             } else {
                 None
@@ -5243,11 +5272,20 @@ async fn stream_one_turn(
             }
 
             let reconnecting = emitted_any_delta;
+            let resume_possible = turn_state.is_some()
+                && (resume_enabled || (!resume_enabled && is_timeout_like_error(&stream_err)));
             let can_retry = attempt < max_attempts
                 && is_retryable_error(&stream_err, debug_info.as_ref())
-                && (!emitted_any_delta || (resume_enabled && turn_state.is_some()));
+                && (!emitted_any_delta || resume_possible);
 
             if can_retry {
+                if !resume_enabled
+                    && emitted_any_delta
+                    && turn_state.is_some()
+                    && is_timeout_like_error(&stream_err)
+                {
+                    force_resume_state_on_retry = true;
+                }
                 let shift = attempt.saturating_sub(1).min(30);
                 let exp = 1u64 << shift;
                 let mut delay_ms = BASE_DELAY_MS.saturating_mul(exp);
