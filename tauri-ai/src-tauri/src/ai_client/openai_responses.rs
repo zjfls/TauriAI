@@ -34,7 +34,10 @@ use super::traits::{
     StreamTerminationInfo, StreamTerminationSource, TokenUsage, ToolCall, ToolDefinition,
 };
 use super::utf8_stream::Utf8StreamDecoder;
-use super::{format_reqwest_stream_error, summarize_reqwest_stream_error, StreamProtocolContext};
+use super::{
+    format_reqwest_stream_error, summarize_reqwest_error, summarize_reqwest_stream_error,
+    StreamProtocolContext,
+};
 use crate::models::{ImageDetail, Message, MessageRole, ModelConfig};
 use std::collections::{HashMap, HashSet};
 
@@ -43,6 +46,32 @@ fn strip_sse_data_prefix(line: &str) -> Option<&str> {
     // Some proxies omit the space; be tolerant to avoid missing termination events.
     line.strip_prefix("data:")
         .map(|rest| rest.strip_prefix(' ').unwrap_or(rest))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum OpenaiResponsesResumeState {
+    /// OpenAI Responses 官方 cursor 续流：使用 response_id + sequence_number(=starting_after)
+    OpenaiResponsesCursor {
+        response_id: String,
+        starting_after: u64,
+    },
+}
+
+fn parse_openai_responses_resume_state(s: &str) -> Option<OpenaiResponsesResumeState> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    serde_json::from_str::<OpenaiResponsesResumeState>(trimmed).ok()
+}
+
+fn build_openai_responses_cursor_state(response_id: &str, starting_after: u64) -> String {
+    serde_json::to_string(&OpenaiResponsesResumeState::OpenaiResponsesCursor {
+        response_id: response_id.to_string(),
+        starting_after,
+    })
+    .unwrap_or_default()
 }
 
 // ============================================================================
@@ -165,6 +194,9 @@ struct ResponsesRequest {
     /// Include extra fields in response payload (e.g. web search sources)
     #[serde(skip_serializing_if = "Option::is_none")]
     include: Option<Vec<String>>,
+    /// Background mode: allow the response to continue even if the client disconnects (enables reliable resume).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    background: Option<bool>,
     stream: bool,
 }
 
@@ -761,6 +793,7 @@ impl AiClient for OpenAiResponsesClient {
             tools,
             tool_choice,
             include,
+            background: None,
             stream: false,
         };
 
@@ -878,50 +911,108 @@ impl AiClient for OpenAiResponsesClient {
             None
         };
 
-        let request = ResponsesRequest {
-            model: config.model.clone(),
-            input: inputs,
-            instructions,
-            temperature: config.parameters.temperature,
-            max_output_tokens: config.parameters.max_tokens,
-            top_p: config.parameters.top_p,
-            reasoning,
-            tools,
-            tool_choice,
-            include,
-            stream: true,
-        };
+        let resume_state = options
+            .resume_state
+            .as_deref()
+            .and_then(parse_openai_responses_resume_state);
 
-        let url = format!("{api_base}/responses");
+        // (debug) Remember whether this attempt is a cursor-resume, so we can:
+        // - skip already-seen events by `sequence_number`
+        // - attach resume info into DebugInfoData for diagnosis
+        let mut resume_cursor: Option<(String, u64)> = None;
 
-        // Capture request info for debug
-        let debug_request = DebugRequestData {
-            url: url.clone(),
-            method: "POST".to_string(),
-            headers: {
-                let mut h = HashMap::new();
-                h.insert("Authorization".to_string(), format!("Bearer {api_key}"));
-                h.insert("Content-Type".to_string(), "application/json".to_string());
-                h
-            },
-            body: serde_json::to_value(&request).unwrap_or(serde_json::Value::Null),
-        };
+        // Decide request mode:
+        // 1) If resume_state is OpenAI official cursor, do GET /responses/{id}?stream=true&starting_after=...
+        // 2) Otherwise, do POST /responses (and optionally attach x-codex-turn-state).
+        let (url, debug_request, response) =
+            if let Some(OpenaiResponsesResumeState::OpenaiResponsesCursor {
+                response_id,
+                starting_after,
+            }) = resume_state
+            {
+                let url = format!(
+                "{api_base}/responses/{response_id}?stream=true&starting_after={starting_after}"
+            );
+                resume_cursor = Some((response_id.clone(), starting_after));
 
-        let mut req = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {api_key}"))
-            .header("Content-Type", "application/json")
-            .json(&request);
-        if let Some(state) = options.resume_state.as_deref() {
-            // Codex-style stream resume (only effective if upstream supports it).
-            req = req.header("x-codex-turn-state", state);
-        }
+                let debug_request = DebugRequestData {
+                    url: url.clone(),
+                    method: "GET".to_string(),
+                    headers: {
+                        let mut h = HashMap::new();
+                        h.insert("Authorization".to_string(), format!("Bearer {api_key}"));
+                        h
+                    },
+                    body: serde_json::json!({
+                        "stream": true,
+                        "starting_after": starting_after
+                    }),
+                };
 
-        let response = req
-            .send()
-            .await
-            .map_err(|e| AiError::ConnectionError(e.to_string()))?;
+                let response = self
+                    .client
+                    .get(&url)
+                    .header("Authorization", format!("Bearer {api_key}"))
+                    .send()
+                    .await
+                    .map_err(|e| AiError::ConnectionError(e.to_string()))?;
+
+                (url, debug_request, response)
+            } else {
+                let request = ResponsesRequest {
+                    model: config.model.clone(),
+                    input: inputs,
+                    instructions,
+                    temperature: config.parameters.temperature,
+                    max_output_tokens: config.parameters.max_tokens,
+                    top_p: config.parameters.top_p,
+                    reasoning,
+                    tools,
+                    tool_choice,
+                    include,
+                    // 为了不引入行为变化：只有在用户显式打开 resume_partial_output 时才启用 background 模式。
+                    // 这样可以最大程度保持对 OpenAI-compatible 代理/网关的兼容性（避免未知字段导致 400）。
+                    background: if config.resume_partial_output {
+                        Some(true)
+                    } else {
+                        None
+                    },
+                    stream: true,
+                };
+
+                let url = format!("{api_base}/responses");
+
+                // Capture request info for debug
+                let debug_request = DebugRequestData {
+                    url: url.clone(),
+                    method: "POST".to_string(),
+                    headers: {
+                        let mut h = HashMap::new();
+                        h.insert("Authorization".to_string(), format!("Bearer {api_key}"));
+                        h.insert("Content-Type".to_string(), "application/json".to_string());
+                        h
+                    },
+                    body: serde_json::to_value(&request).unwrap_or(serde_json::Value::Null),
+                };
+
+                let mut req = self
+                    .client
+                    .post(&url)
+                    .header("Authorization", format!("Bearer {api_key}"))
+                    .header("Content-Type", "application/json")
+                    .json(&request);
+                if let Some(state) = options.resume_state.as_deref() {
+                    // Codex-style stream resume (only effective if upstream supports it).
+                    req = req.header("x-codex-turn-state", state);
+                }
+
+                let response = req
+                    .send()
+                    .await
+                    .map_err(|e| AiError::ConnectionError(e.to_string()))?;
+
+                (url, debug_request, response)
+            };
 
         // Capture response status and headers
         let response_status = response.status().as_u16();
@@ -931,6 +1022,7 @@ impl AiClient for OpenAiResponsesClient {
             .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
             .collect();
 
+        let mut has_codex_turn_state: bool = false;
         if let Some(state) = response_headers
             .iter()
             .find(|(k, _)| k.to_ascii_lowercase() == "x-codex-turn-state")
@@ -943,6 +1035,7 @@ impl AiClient for OpenAiResponsesClient {
                 }
             })
         {
+            has_codex_turn_state = true;
             let _ = token_sender.send(StreamEvent::TurnState(state)).await;
         }
 
@@ -981,7 +1074,13 @@ impl AiClient for OpenAiResponsesClient {
                         usage: None,
                     })
                     .await;
-                return Err(AiError::RequestFailed(error_response.error.message));
+                let msg = error_response.error.message;
+                let err = match response_status {
+                    401 | 403 => AiError::AuthenticationFailed(msg),
+                    429 => AiError::RateLimited(msg),
+                    _ => AiError::RequestFailed(msg),
+                };
+                return Err(err);
             }
             let _ = token_sender
                 .send(StreamEvent::Error(error_text.clone()))
@@ -994,7 +1093,12 @@ impl AiClient for OpenAiResponsesClient {
                     usage: None,
                 })
                 .await;
-            return Err(AiError::RequestFailed(error_text));
+            let err = match response_status {
+                401 | 403 => AiError::AuthenticationFailed(error_text),
+                429 => AiError::RateLimited(error_text),
+                _ => AiError::RequestFailed(error_text),
+            };
+            return Err(err);
         }
 
         let mut full_content = String::new();
@@ -1005,6 +1109,12 @@ impl AiClient for OpenAiResponsesClient {
         // Tool-call turns must still yield a DoneWithDebug so the UI can show per-turn Debug.
         // We keep a snapshot for debug response body enrichment.
         let mut tool_calls_for_debug: Option<Vec<ToolCall>> = None;
+        // OpenAI Responses official resume info (best-effort)
+        let mut response_id: Option<String> = resume_cursor.as_ref().map(|(id, _)| id.clone());
+        let mut last_sequence_number: Option<u64> = resume_cursor.as_ref().map(|(_, sa)| *sa);
+        // When resuming via cursor, some gateways may still resend earlier events; skip them defensively.
+        let skip_sequence_number_le: Option<u64> = resume_cursor.as_ref().map(|(_, sa)| *sa);
+        let mut last_sent_cursor_seq: Option<u64> = last_sequence_number;
         let mut stream = response.bytes_stream();
         let mut chunk_count = 0;
         let mut event_count: u32 = 0;
@@ -1042,6 +1152,17 @@ impl AiClient for OpenAiResponsesClient {
                     // Frontend-facing error should be short and actionable; keep the verbose `details`
                     // inside DebugInfoData for diagnosis.
                     let error_text = summarize_reqwest_stream_error(&e);
+                    let facts = summarize_reqwest_error(&e);
+
+                    let cursor_turn_state: Option<String> = if has_codex_turn_state {
+                        None
+                    } else if let (Some(id), Some(seq)) =
+                        (response_id.as_deref(), last_sequence_number)
+                    {
+                        Some(build_openai_responses_cursor_state(id, seq))
+                    } else {
+                        None
+                    };
 
                     let debug_usage = final_usage.as_ref().map(|u| {
                         serde_json::json!({
@@ -1056,6 +1177,13 @@ impl AiClient for OpenAiResponsesClient {
                     let debug_response_body = serde_json::json!({
                         "_streamError": error_text,
                         "_streamErrorDetails": details,
+                        "_streamErrorSummary": serde_json::to_value(&facts).unwrap_or(serde_json::Value::Null),
+                        "_streamCursor": {
+                            "responseId": response_id,
+                            "lastSequenceNumber": last_sequence_number,
+                            "skipSequenceNumberLE": skip_sequence_number_le,
+                            "resumeState": cursor_turn_state
+                        },
                         "output": [{
                             "type": "message",
                             "role": "assistant",
@@ -1072,6 +1200,13 @@ impl AiClient for OpenAiResponsesClient {
                         "tool_calls": tool_calls_for_debug.clone(),
                         "usage": debug_usage
                     });
+
+                    // Ensure runtime sees the latest resume cursor for turn retry.
+                    if let Some(state) = cursor_turn_state.as_deref() {
+                        let _ = token_sender
+                            .send(StreamEvent::TurnState(state.to_string()))
+                            .await;
+                    }
 
                     let debug_info = DebugInfoData {
                         request: Some(debug_request.clone()),
@@ -1093,7 +1228,9 @@ impl AiClient for OpenAiResponsesClient {
                         }),
                     };
 
-                    let _ = token_sender.send(StreamEvent::Error(error_text)).await;
+                    let _ = token_sender
+                        .send(StreamEvent::Error(error_text.clone()))
+                        .await;
                     let _ = token_sender
                         .send(StreamEvent::DoneWithDebug {
                             content: full_content.clone(),
@@ -1106,7 +1243,7 @@ impl AiClient for OpenAiResponsesClient {
                             usage: final_usage.clone(),
                         })
                         .await;
-                    return Err(AiError::StreamError(details));
+                    return Err(AiError::StreamError(error_text));
                 }
             };
             let chunk_str = utf8.push(&chunk);
@@ -1170,6 +1307,10 @@ impl AiClient for OpenAiResponsesClient {
                                 "chunkCount": chunk_count,
                                 "note": "SSE stream response (Responses API)"
                             },
+                            "_streamCursor": {
+                                "responseId": response_id,
+                                "lastSequenceNumber": last_sequence_number
+                            },
                             "content": full_content,
                             "thinking": if full_thinking.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(full_thinking.clone()) },
                             "tool_calls": tool_calls_for_debug.clone(),
@@ -1213,6 +1354,44 @@ impl AiClient for OpenAiResponsesClient {
                         let event_type = v.get("type").and_then(|t| t.as_str()).unwrap_or_default();
                         if !event_type.is_empty() {
                             last_event_type = Some(event_type.to_string());
+                        }
+
+                        if response_id.is_none() {
+                            response_id = v
+                                .get("response_id")
+                                .and_then(|x| x.as_str())
+                                .map(|s| s.to_string())
+                                .or_else(|| {
+                                    v.get("response")
+                                        .and_then(|r| r.get("id"))
+                                        .and_then(|x| x.as_str())
+                                        .map(|s| s.to_string())
+                                });
+                        }
+
+                        // Cursor resume:
+                        // - Each event may carry `sequence_number` (OpenAI Responses).
+                        // - When resuming via cursor, skip <= starting_after to avoid duplicated deltas.
+                        // - Also emit TurnState updates so runtime can reconnect idempotently.
+                        let seq = v.get("sequence_number").and_then(|x| x.as_u64());
+                        if let Some(seq) = seq {
+                            if let Some(skip_le) = skip_sequence_number_le {
+                                if seq <= skip_le {
+                                    continue;
+                                }
+                            }
+
+                            last_sequence_number = Some(seq);
+                            if !has_codex_turn_state {
+                                if last_sent_cursor_seq.map(|s| seq > s).unwrap_or(true) {
+                                    if let Some(id) = response_id.as_deref() {
+                                        let state = build_openai_responses_cursor_state(id, seq);
+                                        last_sent_cursor_seq = Some(seq);
+                                        let _ =
+                                            token_sender.send(StreamEvent::TurnState(state)).await;
+                                    }
+                                }
+                            }
                         }
 
                         match event_type {
@@ -1383,12 +1562,44 @@ impl AiClient for OpenAiResponsesClient {
                                 }
                             }
                             "error" => {
+                                let code = v.get("code").and_then(|c| c.as_str());
+                                let param = v.get("param").and_then(|p| p.as_str());
+                                let seq = v.get("sequence_number").and_then(|s| s.as_u64());
+
                                 let error_msg = v
                                     .get("message")
                                     .and_then(|m| m.as_str())
                                     .map(|s| s.to_string())
                                     .unwrap_or_else(|| "Unknown error".to_string());
-                                let error_text = format!("Stream error: {error_msg}");
+                                let error_text = if let Some(code) = code {
+                                    format!("{error_msg}（code={code}）")
+                                } else {
+                                    error_msg.clone()
+                                };
+
+                                let (ai_error, retryable) = match code {
+                                    Some(c)
+                                        if c.contains("rate_limit")
+                                            || c.contains("rate_limit_exceeded") =>
+                                    {
+                                        (AiError::RateLimited(error_msg.clone()), true)
+                                    }
+                                    Some(c)
+                                        if c.contains("invalid_api_key")
+                                            || c.contains("invalid_api")
+                                            || c.contains("unauthorized") =>
+                                    {
+                                        (AiError::AuthenticationFailed(error_msg.clone()), false)
+                                    }
+                                    Some(c)
+                                        if c.contains("server_error")
+                                            || c.contains("internal_error")
+                                            || c.contains("temporarily_unavailable") =>
+                                    {
+                                        (AiError::StreamError(error_msg.clone()), true)
+                                    }
+                                    _ => (AiError::StreamError(error_msg.clone()), false),
+                                };
 
                                 let debug_usage = final_usage.as_ref().map(|u| {
                                     serde_json::json!({
@@ -1402,6 +1613,24 @@ impl AiClient for OpenAiResponsesClient {
 
                                 let debug_response_body = serde_json::json!({
                                     "_streamError": error_text,
+                                    "_streamErrorSummary": {
+                                        "class": "provider_error",
+                                        "code": code,
+                                        "param": param,
+                                        "sequenceNumber": seq,
+                                        "retryable": retryable
+                                    },
+                                    "_streamCursor": {
+                                        "responseId": response_id,
+                                        "lastSequenceNumber": last_sequence_number
+                                    },
+                                    "_streamErrorEvent": {
+                                        "type": "error",
+                                        "code": code,
+                                        "message": error_msg,
+                                        "param": param,
+                                        "sequence_number": seq
+                                    },
                                     "output": [{
                                         "type": "message",
                                         "role": "assistant",
@@ -1427,8 +1656,10 @@ impl AiClient for OpenAiResponsesClient {
                                         body: debug_response_body,
                                     }),
                                     stream_termination: Some(StreamTerminationInfo {
-                                        protocol_complete: Some(false),
-                                        termination_source: Some(StreamTerminationSource::Unknown),
+                                        protocol_complete: Some(true),
+                                        termination_source: Some(
+                                            StreamTerminationSource::ProtocolSignal,
+                                        ),
                                         protocol_kind: Some("sse_event".to_string()),
                                         expected_signal: Some(
                                             "response.completed|response.done|[DONE]".to_string(),
@@ -1439,7 +1670,9 @@ impl AiClient for OpenAiResponsesClient {
                                     }),
                                 };
 
-                                let _ = token_sender.send(StreamEvent::Error(error_text)).await;
+                                let _ = token_sender
+                                    .send(StreamEvent::Error(error_text.clone()))
+                                    .await;
                                 let _ = token_sender
                                     .send(StreamEvent::DoneWithDebug {
                                         content: full_content.clone(),
@@ -1453,17 +1686,50 @@ impl AiClient for OpenAiResponsesClient {
                                     })
                                     .await;
 
-                                return Err(AiError::StreamError(error_msg));
+                                return Err(ai_error);
                             }
                             "response.failed" | "response.incomplete" => {
-                                let error_msg = v
+                                let error_obj = v
                                     .get("response")
                                     .and_then(|r| r.get("error"))
+                                    .and_then(|e| e.as_object());
+                                let error_code = error_obj
+                                    .and_then(|e| e.get("code"))
+                                    .and_then(|c| c.as_str());
+                                let error_msg = error_obj
                                     .and_then(|e| e.get("message"))
                                     .and_then(|m| m.as_str())
                                     .map(|s| s.to_string())
                                     .unwrap_or_else(|| "Response failed".to_string());
-                                let error_text = format!("Stream error: {error_msg}");
+                                let error_text = if let Some(code) = error_code {
+                                    format!("{error_msg}（code={code}）")
+                                } else {
+                                    error_msg.clone()
+                                };
+
+                                let (ai_error, retryable) = match error_code {
+                                    Some(c)
+                                        if c.contains("rate_limit")
+                                            || c.contains("rate_limit_exceeded") =>
+                                    {
+                                        (AiError::RateLimited(error_msg.clone()), true)
+                                    }
+                                    Some(c)
+                                        if c.contains("invalid_api_key")
+                                            || c.contains("invalid_api")
+                                            || c.contains("unauthorized") =>
+                                    {
+                                        (AiError::AuthenticationFailed(error_msg.clone()), false)
+                                    }
+                                    Some(c)
+                                        if c.contains("server_error")
+                                            || c.contains("internal_error")
+                                            || c.contains("temporarily_unavailable") =>
+                                    {
+                                        (AiError::StreamError(error_msg.clone()), true)
+                                    }
+                                    _ => (AiError::StreamError(error_msg.clone()), false),
+                                };
 
                                 let debug_usage = final_usage.as_ref().map(|u| {
                                     serde_json::json!({
@@ -1477,6 +1743,15 @@ impl AiClient for OpenAiResponsesClient {
 
                                 let debug_response_body = serde_json::json!({
                                     "_streamError": error_text,
+                                    "_streamErrorSummary": {
+                                        "class": "provider_error",
+                                        "code": error_code,
+                                        "retryable": retryable
+                                    },
+                                    "_streamCursor": {
+                                        "responseId": response_id,
+                                        "lastSequenceNumber": last_sequence_number
+                                    },
                                     "output": [{
                                         "type": "message",
                                         "role": "assistant",
@@ -1502,8 +1777,10 @@ impl AiClient for OpenAiResponsesClient {
                                         body: debug_response_body,
                                     }),
                                     stream_termination: Some(StreamTerminationInfo {
-                                        protocol_complete: Some(false),
-                                        termination_source: Some(StreamTerminationSource::Unknown),
+                                        protocol_complete: Some(true),
+                                        termination_source: Some(
+                                            StreamTerminationSource::ProtocolSignal,
+                                        ),
                                         protocol_kind: Some("sse_event".to_string()),
                                         expected_signal: Some(
                                             "response.completed|response.done|[DONE]".to_string(),
@@ -1514,7 +1791,9 @@ impl AiClient for OpenAiResponsesClient {
                                     }),
                                 };
 
-                                let _ = token_sender.send(StreamEvent::Error(error_text)).await;
+                                let _ = token_sender
+                                    .send(StreamEvent::Error(error_text.clone()))
+                                    .await;
                                 let _ = token_sender
                                     .send(StreamEvent::DoneWithDebug {
                                         content: full_content.clone(),
@@ -1528,7 +1807,7 @@ impl AiClient for OpenAiResponsesClient {
                                     })
                                     .await;
 
-                                return Err(AiError::StreamError(error_msg));
+                                return Err(ai_error);
                             }
                             "response.completed" | "response.done" => {
                                 // Some gateways/providers only include the final text in the `response`
@@ -1642,6 +1921,10 @@ impl AiClient for OpenAiResponsesClient {
 
                                 // Build debug info - using OpenAI Responses API format
                                 let debug_response_body = serde_json::json!({
+                                    "_streamCursor": {
+                                        "responseId": response_id,
+                                        "lastSequenceNumber": last_sequence_number
+                                    },
                                     "output": [{
                                         "type": "message",
                                         "role": "assistant",

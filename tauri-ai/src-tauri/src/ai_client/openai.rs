@@ -12,12 +12,15 @@ use std::collections::HashMap;
 use tokio::sync::mpsc;
 
 use super::content_converter::{content_part_to_blocks, ContentBlock};
-use super::{format_reqwest_stream_error, StreamProtocolContext};
 use super::traits::{
     AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent,
     StreamTerminationInfo, StreamTerminationSource, TokenUsage, ToolCall, ToolDefinition,
 };
 use super::utf8_stream::Utf8StreamDecoder;
+use super::{
+    format_reqwest_stream_error, summarize_reqwest_error, summarize_reqwest_stream_error,
+    StreamProtocolContext,
+};
 use crate::models::{ImageDetail, Message, MessageRole, ModelConfig};
 
 // ============================================================================
@@ -948,12 +951,15 @@ impl OpenAiBaseClient {
                         &e,
                         Some(&stream_ctx),
                     );
-                    let error_text = format!("Stream error: {details}");
+                    let error_text = summarize_reqwest_stream_error(&e);
+                    let facts = summarize_reqwest_error(&e);
 
                     // Keep a minimal-but-useful debug payload for stream failures.
                     // (Only surfaced when debug_mode is enabled in TaskRunner.)
                     let debug_response_body = serde_json::json!({
                         "_streamError": error_text,
+                        "_streamErrorDetails": details,
+                        "_streamErrorSummary": serde_json::to_value(&facts).unwrap_or(serde_json::Value::Null),
                         "choices": [{
                             "index": 0,
                             "message": {
@@ -1000,7 +1006,9 @@ impl OpenAiBaseClient {
                         }),
                     };
 
-                    let _ = token_sender.send(StreamEvent::Error(error_text)).await;
+                    let _ = token_sender
+                        .send(StreamEvent::Error(error_text.clone()))
+                        .await;
                     let _ = token_sender
                         .send(StreamEvent::DoneWithDebug {
                             content: full_content.clone(),
@@ -1014,7 +1022,7 @@ impl OpenAiBaseClient {
                         })
                         .await;
 
-                    return Err(AiError::StreamError(details));
+                    return Err(AiError::StreamError(error_text));
                 }
             };
             let chunk_str = utf8.push(&chunk);

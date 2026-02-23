@@ -8,12 +8,15 @@ use std::collections::HashMap;
 use tokio::sync::mpsc;
 
 use super::content_converter::{content_parts_to_blocks_with_limit, parse_data_url, ContentBlock};
-use super::{format_reqwest_stream_error, StreamProtocolContext};
 use super::traits::{
     AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent,
     StreamTerminationInfo, StreamTerminationSource, TokenUsage, ToolCall, ToolDefinition,
 };
 use super::utf8_stream::Utf8StreamDecoder;
+use super::{
+    format_reqwest_stream_error, summarize_reqwest_error, summarize_reqwest_stream_error,
+    StreamProtocolContext,
+};
 use crate::models::{Message, MessageRole, ModelConfig};
 
 fn strip_sse_data_prefix(line: &str) -> Option<&str> {
@@ -818,7 +821,8 @@ impl AiClient for GoogleClient {
                         &e,
                         Some(&stream_ctx),
                     );
-                    let error_text = format!("Stream error: {details}");
+                    let error_text = summarize_reqwest_stream_error(&e);
+                    let facts = summarize_reqwest_error(&e);
 
                     let tool_calls_for_debug = if tool_calls.is_empty() {
                         None
@@ -832,6 +836,8 @@ impl AiClient for GoogleClient {
                             headers: response_headers.clone(),
                             body: serde_json::json!({
                                 "_streamError": error_text,
+                                "_streamErrorDetails": details,
+                                "_streamErrorSummary": serde_json::to_value(&facts).unwrap_or(serde_json::Value::Null),
                                 "candidates": [{
                                     "content": {
                                         "parts": [{
@@ -868,7 +874,9 @@ impl AiClient for GoogleClient {
                         }),
                     };
 
-                    let _ = token_sender.send(StreamEvent::Error(error_text)).await;
+                    let _ = token_sender
+                        .send(StreamEvent::Error(error_text.clone()))
+                        .await;
                     let _ = token_sender
                         .send(StreamEvent::DoneWithDebug {
                             content: full_content.clone(),
@@ -882,7 +890,7 @@ impl AiClient for GoogleClient {
                         })
                         .await;
 
-                    return Err(AiError::StreamError(details));
+                    return Err(AiError::StreamError(error_text));
                 }
             };
             let chunk_str = utf8.push(&chunk);

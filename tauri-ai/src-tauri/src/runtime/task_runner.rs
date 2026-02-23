@@ -5062,9 +5062,21 @@ async fn stream_one_turn(
     }
 
     fn is_retryable_error(err: &crate::ai_client::AiError, di: Option<&DebugInfoData>) -> bool {
+        fn stream_retryable_hint(di: Option<&DebugInfoData>) -> Option<bool> {
+            let body = di
+                .and_then(|d| d.response.as_ref())
+                .map(|r| &r.body)
+                .and_then(|v| v.as_object())?;
+            let summary = body.get("_streamErrorSummary")?.as_object()?;
+            summary.get("retryable")?.as_bool()
+        }
+
         use crate::ai_client::AiError;
         match err {
-            AiError::ConnectionError(_) | AiError::StreamError(_) | AiError::RateLimited(_) => true,
+            AiError::ConnectionError(_) | AiError::StreamError(_) => {
+                stream_retryable_hint(di).unwrap_or(true)
+            }
+            AiError::RateLimited(_) => true,
             AiError::RequestFailed(_) => status_from_debug(di).is_some_and(is_retryable_status),
             AiError::AuthenticationFailed(_) | AiError::InvalidResponse(_) => false,
         }
@@ -5072,20 +5084,6 @@ async fn stream_one_turn(
 
     let messages = sanitize_messages_for_model_input(messages);
 
-    // Stream resume:
-    // - If user explicitly enabled `resume_partial_output`, always try to resume on reconnect.
-    // - If upstream provides a Codex-style `x-codex-turn-state`, we can *optionally* resume after
-    //   partial output for certain retryable errors (e.g. timeouts), even when the toggle is off.
-    //   This avoids duplicating output on providers that don't support resume, while still
-    //   recovering from mid-stream stalls on those that do.
-    let resume_enabled = model_config.resume_partial_output;
-    let mut force_resume_state_on_retry = false;
-
-    fn is_timeout_like_error(err: &crate::ai_client::AiError) -> bool {
-        let msg = err.to_string();
-        let lower = msg.to_ascii_lowercase();
-        msg.contains("超时") || lower.contains("timed out") || lower.contains("timeout")
-    }
     let mut full_content = String::new();
     let mut full_thinking = String::new();
     let mut debug_info: Option<DebugInfoData> = None;
@@ -5108,7 +5106,8 @@ async fn stream_one_turn(
                 usage = None;
                 last_error = None;
                 tool_calls = None;
-                turn_state = None;
+                // 注意：即使本轮还没吐任何 token，也可能已经拿到了 provider 的 TurnState（可用于幂等续流）。
+                // 不清理 turn_state，避免下一次 attempt 不必要地重新创建请求。
             } else {
                 debug_info = None;
                 usage = None;
@@ -5123,11 +5122,9 @@ async fn stream_one_turn(
         let attempt_messages = messages.clone();
 
         let options = crate::ai_client::StreamOptions {
-            resume_state: if resume_enabled || force_resume_state_on_retry {
-                turn_state.clone()
-            } else {
-                None
-            },
+            // If the provider supports resume, it should stream a TurnState token (cursor/header).
+            // Runtime will reuse it on reconnect to avoid duplicated output.
+            resume_state: turn_state.clone(),
         };
 
         let stream_handle = tokio::spawn(async move {
@@ -5272,20 +5269,12 @@ async fn stream_one_turn(
             }
 
             let reconnecting = emitted_any_delta;
-            let resume_possible = turn_state.is_some()
-                && (resume_enabled || (!resume_enabled && is_timeout_like_error(&stream_err)));
+            let resume_possible = turn_state.is_some();
             let can_retry = attempt < max_attempts
                 && is_retryable_error(&stream_err, debug_info.as_ref())
                 && (!emitted_any_delta || resume_possible);
 
             if can_retry {
-                if !resume_enabled
-                    && emitted_any_delta
-                    && turn_state.is_some()
-                    && is_timeout_like_error(&stream_err)
-                {
-                    force_resume_state_on_retry = true;
-                }
                 let shift = attempt.saturating_sub(1).min(30);
                 let exp = 1u64 << shift;
                 let mut delay_ms = BASE_DELAY_MS.saturating_mul(exp);

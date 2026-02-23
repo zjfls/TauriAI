@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::error::Error as StdError;
 use std::io;
 
+use serde::{Deserialize, Serialize};
+
 const MAX_ERROR_TEXT_LEN: usize = 12_000;
 const MAX_SNIPPET_CHARS: usize = 1200;
 
@@ -23,6 +25,51 @@ pub struct StreamProtocolContext {
     pub chunks_received: Option<u32>,
     /// Received protocol payload count (e.g. SSE `data:` lines / NDJSON lines).
     pub events_received: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReqwestErrorClass {
+    Timeout,
+    ConnectionReset,
+    BrokenPipe,
+    Dns,
+    Tls,
+    Connect,
+    Request,
+    Status,
+    Body,
+    Decode,
+    Unknown,
+}
+
+impl Default for ReqwestErrorClass {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ReqwestErrorSummary {
+    pub class: ReqwestErrorClass,
+    /// Best-effort stage hint: connect|send|read_body|decode|unknown
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
+    pub is_timeout: bool,
+    pub is_connect: bool,
+    pub is_request: bool,
+    pub is_status: bool,
+    pub is_body: bool,
+    pub is_decode: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub io_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub os_code: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub os_code_name: Option<String>,
+    /// Retryable *in general* (caller still needs to decide if resume is available when partial output already exists).
+    pub retryable: bool,
 }
 
 fn truncate(mut s: String) -> String {
@@ -60,16 +107,64 @@ fn format_error_chain(err: &dyn StdError) -> Vec<String> {
     out
 }
 
+fn find_first_io_error(err: &reqwest::Error) -> Option<&io::Error> {
+    let mut cur: Option<&(dyn StdError + 'static)> = Some(err);
+    let mut depth: usize = 0;
+    while let Some(e) = cur {
+        if let Some(ioe) = e.downcast_ref::<io::Error>() {
+            return Some(ioe);
+        }
+        cur = e.source();
+        depth = depth.saturating_add(1);
+        if depth >= 12 {
+            break;
+        }
+    }
+    None
+}
+
+fn os_code_name(code: i32) -> Option<&'static str> {
+    // NOTE: across platforms the numeric codes differ (macOS vs Linux).
+    // We map the most common ones for diagnostics and retry policy.
+    match code {
+        // timeout
+        60 | 110 => Some("ETIMEDOUT"),
+        // connection reset
+        54 | 104 => Some("ECONNRESET"),
+        // broken pipe
+        32 => Some("EPIPE"),
+        // connection refused
+        61 | 111 => Some("ECONNREFUSED"),
+        // host/network unreachable
+        65 | 113 => Some("EHOSTUNREACH"),
+        51 | 101 => Some("ENETUNREACH"),
+        // not connected
+        57 | 107 => Some("ENOTCONN"),
+        _ => None,
+    }
+}
+
+fn contains_any(haystack: &str, needles: &[&str]) -> bool {
+    let lower = haystack.to_ascii_lowercase();
+    needles.iter().any(|n| lower.contains(n))
+}
+
 fn find_timeout_message(err: &reqwest::Error) -> Option<String> {
     if err.is_timeout() {
         return Some("timeout".to_string());
     }
 
-    let mut cur: Option<&(dyn StdError + 'static)> = Some(err);
-    let mut depth: usize = 0;
-    while let Some(e) = cur {
-        if let Some(ioe) = e.downcast_ref::<io::Error>() {
-            if ioe.kind() == io::ErrorKind::TimedOut {
+    if let Some(ioe) = find_first_io_error(err) {
+        if ioe.kind() == io::ErrorKind::TimedOut {
+            let msg = ioe.to_string();
+            return Some(if msg.trim().is_empty() {
+                "Operation timed out".to_string()
+            } else {
+                msg
+            });
+        }
+        if let Some(code) = ioe.raw_os_error() {
+            if matches!(os_code_name(code), Some("ETIMEDOUT")) {
                 let msg = ioe.to_string();
                 return Some(if msg.trim().is_empty() {
                     "Operation timed out".to_string()
@@ -78,38 +173,154 @@ fn find_timeout_message(err: &reqwest::Error) -> Option<String> {
                 });
             }
         }
+    }
 
-        // Some intermediate error types don't expose the io::Error directly; fall back to message heuristics.
-        let msg = e.to_string();
-        let lower = msg.to_ascii_lowercase();
-        if lower.contains("timed out") || lower.contains("timeout") {
-            return Some(msg);
-        }
-
-        cur = e.source();
-        depth = depth.saturating_add(1);
-        if depth >= 12 {
-            break;
-        }
+    // Some intermediate error types don't expose the io::Error directly; fall back to message heuristics.
+    let msg = err.to_string();
+    let lower = msg.to_ascii_lowercase();
+    if lower.contains("timed out") || lower.contains("timeout") {
+        return Some(msg);
     }
 
     None
 }
 
+pub fn summarize_reqwest_error(err: &reqwest::Error) -> ReqwestErrorSummary {
+    let raw = err.to_string();
+    let is_timeout = err.is_timeout() || find_timeout_message(err).is_some();
+    let is_connect = err.is_connect();
+    let is_request = err.is_request();
+    let is_status = err.is_status();
+    let is_body = err.is_body();
+    let is_decode = err.is_decode();
+
+    let (io_kind, os_code, os_code_name_str) = if let Some(ioe) = find_first_io_error(err) {
+        let kind = format!("{:?}", ioe.kind());
+        let code = ioe.raw_os_error();
+        let code_name = code.and_then(os_code_name).map(|s| s.to_string());
+        (Some(kind), code, code_name)
+    } else {
+        (None, None, None)
+    };
+
+    let looks_tls = contains_any(
+        &raw,
+        &[
+            "tls",
+            "ssl",
+            "certificate",
+            "cert",
+            "x509",
+            "invalid certificate",
+            "unknown issuer",
+        ],
+    );
+    let looks_dns = contains_any(
+        &raw,
+        &[
+            "dns",
+            "failed to lookup",
+            "failed to resolve",
+            "name or service not known",
+            "nodename nor servname provided",
+            "no such host",
+        ],
+    );
+
+    let class = if is_timeout {
+        ReqwestErrorClass::Timeout
+    } else if matches!(os_code_name_str.as_deref(), Some("ECONNRESET")) {
+        ReqwestErrorClass::ConnectionReset
+    } else if matches!(os_code_name_str.as_deref(), Some("EPIPE")) {
+        ReqwestErrorClass::BrokenPipe
+    } else if looks_tls {
+        ReqwestErrorClass::Tls
+    } else if looks_dns {
+        ReqwestErrorClass::Dns
+    } else if is_connect {
+        ReqwestErrorClass::Connect
+    } else if is_status {
+        ReqwestErrorClass::Status
+    } else if is_request {
+        ReqwestErrorClass::Request
+    } else if is_decode {
+        ReqwestErrorClass::Decode
+    } else if is_body {
+        ReqwestErrorClass::Body
+    } else {
+        ReqwestErrorClass::Unknown
+    };
+
+    let stage = if is_connect {
+        Some("connect".to_string())
+    } else if is_request {
+        Some("send".to_string())
+    } else if is_decode {
+        Some("decode".to_string())
+    } else if is_body {
+        Some("read_body".to_string())
+    } else {
+        None
+    };
+
+    let retryable = !matches!(
+        class,
+        ReqwestErrorClass::Tls | ReqwestErrorClass::Request | ReqwestErrorClass::Status
+    ) || matches!(class, ReqwestErrorClass::Status);
+
+    ReqwestErrorSummary {
+        class,
+        stage,
+        is_timeout,
+        is_connect,
+        is_request,
+        is_status,
+        is_body,
+        is_decode,
+        io_kind,
+        os_code,
+        os_code_name: os_code_name_str,
+        retryable,
+    }
+}
+
 pub fn summarize_reqwest_stream_error(err: &reqwest::Error) -> String {
-    if let Some(msg) = find_timeout_message(err) {
-        return format!("读取流超时（{msg}）");
-    }
+    let facts = summarize_reqwest_error(err);
+    let raw = err.to_string();
 
-    if err.is_connect() {
-        return format!("连接失败（{err}）");
+    match facts.class {
+        ReqwestErrorClass::Timeout => {
+            if let Some(msg) = find_timeout_message(err) {
+                format!("读取流超时（{msg}）")
+            } else {
+                "读取流超时".to_string()
+            }
+        }
+        ReqwestErrorClass::ConnectionReset => {
+            if let Some(code) = facts.os_code {
+                let name = facts.os_code_name.as_deref().unwrap_or("ECONNRESET");
+                format!("连接被对端重置（{name}/{code}）")
+            } else {
+                "连接被对端重置".to_string()
+            }
+        }
+        ReqwestErrorClass::BrokenPipe => {
+            if let Some(code) = facts.os_code {
+                let name = facts.os_code_name.as_deref().unwrap_or("EPIPE");
+                format!("连接已断开（{name}/{code}）")
+            } else {
+                "连接已断开（BrokenPipe）".to_string()
+            }
+        }
+        ReqwestErrorClass::Dns => format!("DNS 解析失败（{raw}）"),
+        ReqwestErrorClass::Tls => format!("TLS/证书错误（{raw}）"),
+        ReqwestErrorClass::Connect => format!("连接失败（{raw}）"),
+        ReqwestErrorClass::Request => format!("请求失败（{raw}）"),
+        ReqwestErrorClass::Decode => format!("读取流失败（解码错误：{raw}）"),
+        ReqwestErrorClass::Body => format!("读取流失败（Body 错误：{raw}）"),
+        ReqwestErrorClass::Status => format!("HTTP 状态错误（{raw}）"),
+        ReqwestErrorClass::Unknown => raw,
     }
-
-    if err.is_request() {
-        return format!("请求失败（{err}）");
-    }
-
-    err.to_string()
 }
 
 fn head_chars(s: &str, max_chars: usize) -> String {
@@ -159,11 +370,30 @@ pub fn format_reqwest_stream_error(
 
     // Summary first (kept intentionally short; details follow).
     let summary = summarize_reqwest_stream_error(err);
+    let facts = summarize_reqwest_error(err);
     lines.push(summary.clone());
     let raw = err.to_string();
     if raw != summary {
         lines.push(format!("raw_error: {raw}"));
     }
+
+    lines.push(String::new());
+    lines.push("error_facts:".to_string());
+    lines.push(format!("- class: {:?}", facts.class));
+    if let Some(stage) = facts.stage.as_deref() {
+        lines.push(format!("- stage: {stage}"));
+    }
+    if let Some(io_kind) = facts.io_kind.as_deref() {
+        lines.push(format!("- io_kind: {io_kind}"));
+    }
+    if let Some(code) = facts.os_code {
+        if let Some(name) = facts.os_code_name.as_deref() {
+            lines.push(format!("- os_code: {code} ({name})"));
+        } else {
+            lines.push(format!("- os_code: {code}"));
+        }
+    }
+    lines.push(format!("- retryable: {}", facts.retryable));
 
     // Context
     lines.push(String::new());
