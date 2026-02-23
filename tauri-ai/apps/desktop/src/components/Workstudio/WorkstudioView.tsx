@@ -3689,7 +3689,9 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
             visibility: typeof document !== 'undefined' ? document.visibilityState : null,
           });
           if (typeof target.line === 'number' && target.line > 0) {
-            setOpenFromLinkError(`定位到行超时（${timeoutMs}ms）：${target.filePath}:${target.line}`);
+            const msg = `定位到行超时（${timeoutMs}ms）：${target.filePath}:${target.line}`;
+            setOpenFromLinkError(msg);
+            void showGlobalError('打开链接文件失败', msg);
           }
           return;
         }
@@ -3751,11 +3753,12 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       } catch (fallbackError) {
         console.error('open file from link failed:', fallbackError);
         dbg('openLinkTarget:failed', { seq, error: String(fallbackError) });
-        setOpenFromLinkError(
+        const msg =
           typeof fallbackError === 'string'
             ? fallbackError
-            : (fallbackError as any)?.message ?? '打开文件失败'
-        );
+            : (fallbackError as any)?.message ?? '打开文件失败';
+        setOpenFromLinkError(msg);
+        void showGlobalError('打开链接文件失败', msg, fallbackError);
       }
     }
   }, [dbg, openFileAtPath, revealFileInExplorer, uiStateRestored, workstudioId, ws]);
