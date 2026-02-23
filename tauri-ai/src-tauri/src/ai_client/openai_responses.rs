@@ -29,12 +29,12 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use super::content_converter::ContentBlock;
-use super::{format_reqwest_stream_error, StreamProtocolContext};
 use super::traits::{
     AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent,
     StreamTerminationInfo, StreamTerminationSource, TokenUsage, ToolCall, ToolDefinition,
 };
 use super::utf8_stream::Utf8StreamDecoder;
+use super::{format_reqwest_stream_error, summarize_reqwest_stream_error, StreamProtocolContext};
 use crate::models::{ImageDetail, Message, MessageRole, ModelConfig};
 use std::collections::{HashMap, HashSet};
 
@@ -1020,7 +1020,9 @@ impl AiClient for OpenAiResponsesClient {
                 Err(e) => {
                     let stream_ctx = StreamProtocolContext {
                         expected_protocol: Some("sse_event (JSON with `type`)".to_string()),
-                        expected_signal: Some("response.completed|response.done|[DONE]".to_string()),
+                        expected_signal: Some(
+                            "response.completed|response.done|[DONE]".to_string(),
+                        ),
                         observed_signal: None,
                         last_event_type: last_event_type.clone(),
                         last_data_snippet: last_sse_data.clone(),
@@ -1037,7 +1039,9 @@ impl AiClient for OpenAiResponsesClient {
                         &e,
                         Some(&stream_ctx),
                     );
-                    let error_text = format!("Stream error: {details}");
+                    // Frontend-facing error should be short and actionable; keep the verbose `details`
+                    // inside DebugInfoData for diagnosis.
+                    let error_text = summarize_reqwest_stream_error(&e);
 
                     let debug_usage = final_usage.as_ref().map(|u| {
                         serde_json::json!({
@@ -1051,6 +1055,7 @@ impl AiClient for OpenAiResponsesClient {
 
                     let debug_response_body = serde_json::json!({
                         "_streamError": error_text,
+                        "_streamErrorDetails": details,
                         "output": [{
                             "type": "message",
                             "role": "assistant",
@@ -1079,7 +1084,9 @@ impl AiClient for OpenAiResponsesClient {
                             protocol_complete: Some(false),
                             termination_source: Some(StreamTerminationSource::Unknown),
                             protocol_kind: Some("sse_event".to_string()),
-                            expected_signal: Some("response.completed|response.done|[DONE]".to_string()),
+                            expected_signal: Some(
+                                "response.completed|response.done|[DONE]".to_string(),
+                            ),
                             observed_signal: None,
                             last_event_type: last_event_type.clone(),
                             chunk_count: Some(chunk_count),
@@ -1423,7 +1430,9 @@ impl AiClient for OpenAiResponsesClient {
                                         protocol_complete: Some(false),
                                         termination_source: Some(StreamTerminationSource::Unknown),
                                         protocol_kind: Some("sse_event".to_string()),
-                                        expected_signal: Some("response.completed|response.done|[DONE]".to_string()),
+                                        expected_signal: Some(
+                                            "response.completed|response.done|[DONE]".to_string(),
+                                        ),
                                         observed_signal: Some("error".to_string()),
                                         last_event_type: last_event_type.clone(),
                                         chunk_count: Some(chunk_count),
@@ -1496,7 +1505,9 @@ impl AiClient for OpenAiResponsesClient {
                                         protocol_complete: Some(false),
                                         termination_source: Some(StreamTerminationSource::Unknown),
                                         protocol_kind: Some("sse_event".to_string()),
-                                        expected_signal: Some("response.completed|response.done|[DONE]".to_string()),
+                                        expected_signal: Some(
+                                            "response.completed|response.done|[DONE]".to_string(),
+                                        ),
                                         observed_signal: Some(event_type.to_string()),
                                         last_event_type: last_event_type.clone(),
                                         chunk_count: Some(chunk_count),
