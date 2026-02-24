@@ -115,6 +115,60 @@ type StreamTerminationSummary = {
   tone: 'success' | 'warn' | 'error' | 'neutral';
 };
 
+type DebugModalPage = 'overview' | 'http_json';
+
+const maskSensitiveHeaders = (headers: Record<string, string>): Record<string, string> => {
+  const masked: Record<string, string> = {};
+
+  const maskShort = (value: string): string => {
+    const t = String(value ?? '');
+    if (!t) return t;
+    if (t.length <= 12) return '***';
+    return `${t.slice(0, 8)}...`;
+  };
+
+  const maskBearer = (auth: string): string => {
+    const prefix = 'Bearer ';
+    if (!auth.startsWith(prefix)) return maskShort(auth);
+    const rest = auth.slice(prefix.length).trim();
+    return rest ? `${prefix}${rest.slice(0, 8)}...` : `${prefix}***`;
+  };
+
+  for (const [key, value] of Object.entries(headers ?? {})) {
+    const lower = key.toLowerCase();
+    if (lower === 'authorization' || lower === 'proxy-authorization') {
+      masked[key] = maskBearer(String(value ?? ''));
+      continue;
+    }
+    if (lower === 'cookie' || lower === 'set-cookie') {
+      masked[key] = maskShort(String(value ?? ''));
+      continue;
+    }
+    if (
+      lower === 'x-api-key' ||
+      lower === 'api-key' ||
+      lower === 'apikey' ||
+      lower === 'x-auth-token' ||
+      lower.endsWith('token')
+    ) {
+      masked[key] = maskShort(String(value ?? ''));
+      continue;
+    }
+    masked[key] = value;
+  }
+
+  return masked;
+};
+
+const sortRecordKeys = (record: Record<string, string>): Record<string, string> => {
+  const entries = Object.entries(record ?? {}).sort(([a], [b]) => a.localeCompare(b));
+  return Object.fromEntries(entries);
+};
+
+const prepareHeadersForJson = (headers: Record<string, string>): Record<string, string> => {
+  return sortRecordKeys(maskSensitiveHeaders(headers));
+};
+
 // Check if response body contains SSE info
 interface SseResponseBody {
   _sseInfo?: {
@@ -542,18 +596,12 @@ interface HeadersViewerProps {
 }
 
 const HeadersViewer: React.FC<HeadersViewerProps> = ({ headers }) => {
-  // Mask sensitive headers
-  const maskedHeaders = { ...headers };
-  if (maskedHeaders['Authorization']) {
-    const auth = maskedHeaders['Authorization'];
-    if (auth.startsWith('Bearer ')) {
-      maskedHeaders['Authorization'] = `Bearer ${auth.slice(7, 15)}...`;
-    }
-  }
+  const maskedHeaders = maskSensitiveHeaders(headers);
+  const entries = Object.entries(maskedHeaders).sort(([a], [b]) => a.localeCompare(b));
 
   return (
     <div className="space-y-1">
-      {Object.entries(maskedHeaders).map(([key, value]) => (
+      {entries.map(([key, value]) => (
         <div key={key} className="flex text-xs">
           <span className="font-medium text-gray-600 dark:text-gray-400 w-40 shrink-0">
             {key}:
@@ -615,6 +663,12 @@ export const DebugModal: React.FC<DebugModalProps> = ({
       : (initialTurnId ?? null)
   );
   const [turnPage, setTurnPage] = useState(0);
+  const [activePage, setActivePage] = useState<DebugModalPage>('overview');
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setActivePage('overview');
+  }, [isOpen]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -914,12 +968,42 @@ export const DebugModal: React.FC<DebugModalProps> = ({
           <h2 className="text-lg font-semibold text-gray-800 dark:text-white">
             调试信息 - {messageRole === 'user' ? '请求' : messageRole === 'error' ? '错误' : '响应'}
           </h2>
-          <button
-            onClick={onClose}
-            className="p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500"
-          >
-            <X size={20} />
-          </button>
+          <div className="flex items-center gap-2">
+            <div
+              className="inline-flex rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden"
+              title="切换调试信息视图"
+            >
+              <button
+                type="button"
+                onClick={() => setActivePage('overview')}
+                className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+                  activePage === 'overview'
+                    ? 'bg-gray-200 text-gray-900 dark:bg-gray-800 dark:text-gray-100'
+                    : 'bg-white text-gray-600 hover:bg-gray-50 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800'
+                }`}
+              >
+                概览
+              </button>
+              <button
+                type="button"
+                onClick={() => setActivePage('http_json')}
+                className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+                  activePage === 'http_json'
+                    ? 'bg-gray-200 text-gray-900 dark:bg-gray-800 dark:text-gray-100'
+                    : 'bg-white text-gray-600 hover:bg-gray-50 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800'
+                }`}
+              >
+                HTTP JSON
+              </button>
+            </div>
+
+            <button
+              onClick={onClose}
+              className="p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500"
+            >
+              <X size={20} />
+            </button>
+          </div>
         </div>
 
         {/* Content */}
@@ -1064,213 +1148,296 @@ export const DebugModal: React.FC<DebugModalProps> = ({
             </div>
           )}
 
-            <div className="overflow-auto max-h-[calc(80vh-80px-72px)] space-y-4 pr-1">
-            {thinkingText && (
-              <CollapsibleSection title="思考过程" defaultExpanded={defaultExpandedForStreaming}>
-                <TextViewer
-                  text={thinkingText}
-                  containerClassName="bg-purple-50 dark:bg-purple-900/30 text-purple-800 dark:text-purple-200"
-                  maxHeightClassName="max-h-64"
-                />
-              </CollapsibleSection>
-            )}
+          <div className="overflow-auto max-h-[calc(80vh-80px-72px)] space-y-4 pr-1">
+            {activePage === 'overview' ? (
+              <>
+                {thinkingText && (
+                  <CollapsibleSection title="思考过程" defaultExpanded={defaultExpandedForStreaming}>
+                    <TextViewer
+                      text={thinkingText}
+                      containerClassName="bg-purple-50 dark:bg-purple-900/30 text-purple-800 dark:text-purple-200"
+                      maxHeightClassName="max-h-64"
+                    />
+                  </CollapsibleSection>
+                )}
 
-          {(toolCalls.length > 0 || toolResults.length > 0 || webSearchBlocks.length > 0) && (
-            <CollapsibleSection title="工具执行" defaultExpanded={defaultExpandedForStreaming}>
-              <div className="space-y-3">
-                {pairedToolRuns.runs.map(({ call, result }) => {
-                  let prettyArgs: string = call.arguments;
-                  try {
-                    prettyArgs = JSON.stringify(JSON.parse(call.arguments), null, 2);
-                  } catch {
-                    // keep raw
-                  }
-
-                  return (
-                    <div
-                      key={call.id}
-                      className="rounded-lg border border-green-200 bg-green-50 p-3 dark:border-green-800 dark:bg-green-900/30"
-                    >
-                      <div className="mb-2 text-xs font-medium text-green-800 dark:text-green-200">
-                        {call.name} <span className="opacity-70">({call.callId})</span>
-                      </div>
-
-                      <div className="space-y-2">
-                        <TextViewer
-                          label="参数"
-                          text={prettyArgs}
-                          maxHeightClassName="max-h-48"
-                          containerClassName="bg-white/60 dark:bg-black/20 text-green-900 dark:text-green-100"
-                        />
-
-                        <TextViewer
-                          label="结果"
-                          text={result?.text ?? '(暂无工具结果)'}
-                          maxHeightClassName="max-h-64"
-                          containerClassName="bg-white/60 dark:bg-black/20 text-gray-900 dark:text-gray-100"
-                          renderAnsi={Boolean(result?.text)}
-                          ansiRenderMode={ansiRenderMode}
-                          ansiColorMode={ansiColorMode}
-                        />
-                      </div>
-                    </div>
-                  );
-                })}
-
-                {pairedToolRuns.orphanResults.length > 0 && (
-                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-800/40">
-                    <div className="mb-2 text-xs font-medium text-gray-700 dark:text-gray-300">
-                      未配对的工具结果
-                    </div>
+                {(toolCalls.length > 0 || toolResults.length > 0 || webSearchBlocks.length > 0) && (
+                  <CollapsibleSection title="工具执行" defaultExpanded={defaultExpandedForStreaming}>
                     <div className="space-y-3">
-                      {pairedToolRuns.orphanResults.map((r) => (
-                        <div
-                          key={r.id}
-                          className="rounded border border-gray-200 bg-white/60 p-2 dark:border-gray-700 dark:bg-black/20"
-                        >
-                          <div className="mb-2 text-xs font-medium text-gray-700 dark:text-gray-300">
-                            call_id: <span className="font-mono">{r.callId}</span>
+                      {pairedToolRuns.runs.map(({ call, result }) => {
+                        let prettyArgs: string = call.arguments;
+                        try {
+                          prettyArgs = JSON.stringify(JSON.parse(call.arguments), null, 2);
+                        } catch {
+                          // keep raw
+                        }
+
+                        return (
+                          <div
+                            key={call.id}
+                            className="rounded-lg border border-green-200 bg-green-50 p-3 dark:border-green-800 dark:bg-green-900/30"
+                          >
+                            <div className="mb-2 text-xs font-medium text-green-800 dark:text-green-200">
+                              {call.name} <span className="opacity-70">({call.callId})</span>
+                            </div>
+
+                            <div className="space-y-2">
+                              <TextViewer
+                                label="参数"
+                                text={prettyArgs}
+                                maxHeightClassName="max-h-48"
+                                containerClassName="bg-white/60 dark:bg-black/20 text-green-900 dark:text-green-100"
+                              />
+
+                              <TextViewer
+                                label="结果"
+                                text={result?.text ?? '(暂无工具结果)'}
+                                maxHeightClassName="max-h-64"
+                                containerClassName="bg-white/60 dark:bg-black/20 text-gray-900 dark:text-gray-100"
+                                renderAnsi={Boolean(result?.text)}
+                                ansiRenderMode={ansiRenderMode}
+                                ansiColorMode={ansiColorMode}
+                              />
+                            </div>
                           </div>
-                          <TextViewer
-                            text={r.text}
-                            maxHeightClassName="max-h-64"
-                            renderAnsi
-                            ansiRenderMode={ansiRenderMode}
-                            ansiColorMode={ansiColorMode}
+                        );
+                      })}
+
+                      {pairedToolRuns.orphanResults.length > 0 && (
+                        <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-800/40">
+                          <div className="mb-2 text-xs font-medium text-gray-700 dark:text-gray-300">
+                            未配对的工具结果
+                          </div>
+                          <div className="space-y-3">
+                            {pairedToolRuns.orphanResults.map((r) => (
+                              <div
+                                key={r.id}
+                                className="rounded border border-gray-200 bg-white/60 p-2 dark:border-gray-700 dark:bg-black/20"
+                              >
+                                <div className="mb-2 text-xs font-medium text-gray-700 dark:text-gray-300">
+                                  call_id: <span className="font-mono">{r.callId}</span>
+                                </div>
+                                <TextViewer
+                                  text={r.text}
+                                  maxHeightClassName="max-h-64"
+                                  renderAnsi
+                                  ansiRenderMode={ansiRenderMode}
+                                  ansiColorMode={ansiColorMode}
+                                />
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {webSearchBlocks.map((b) => (
+                        <div
+                          key={b.id}
+                          className="rounded-lg border border-blue-200 bg-blue-50 p-3 dark:border-blue-800 dark:bg-blue-900/30"
+                        >
+                          <div className="mb-2 text-xs font-medium text-blue-800 dark:text-blue-200">
+                            web_search <span className="opacity-70">({b.callId})</span>
+                          </div>
+                          <JsonViewer
+                            data={{
+                              status: b.status,
+                              action: b.action,
+                            }}
                           />
                         </div>
                       ))}
                     </div>
-                  </div>
+                  </CollapsibleSection>
                 )}
 
-                {webSearchBlocks.map((b) => (
-                  <div
-                    key={b.id}
-                    className="rounded-lg border border-blue-200 bg-blue-50 p-3 dark:border-blue-800 dark:bg-blue-900/30"
-                  >
-                    <div className="mb-2 text-xs font-medium text-blue-800 dark:text-blue-200">
-                      web_search <span className="opacity-70">({b.callId})</span>
-                    </div>
-                    <JsonViewer
-                      data={{
-                        status: b.status,
-                        action: b.action,
-                      }}
-                    />
+                {!effectiveDebugInfo ? (
+                  <div className="text-center py-8 text-gray-500 dark:text-gray-400">
+                    <p>暂无调试信息</p>
+                    <p className="text-sm mt-2">
+                      {isLoadingDebug
+                        ? '请稍候…'
+                        : activeTurn?.hasDebugInfo
+                          ? '该轮已标记存在调试信息，但当前未能加载。'
+                          : '请确保在发送消息前开启调试模式。'}
+                    </p>
                   </div>
-                ))}
-              </div>
-            </CollapsibleSection>
-          )}
+                ) : (
+                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                    {/* Response first: avoid being pushed down by long request bodies */}
+                    {effectiveDebugInfo.response && (
+                      <CollapsibleSection title="HTTP 响应">
+                        <div className="space-y-4">
+                          <div className="flex items-center gap-2 text-sm">
+                            <span
+                              className={`px-2 py-1 rounded font-medium ${
+                                effectiveDebugInfo.response.status >= 200 &&
+                                effectiveDebugInfo.response.status < 300
+                                  ? 'bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300'
+                                  : 'bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300'
+                              }`}
+                            >
+                              {effectiveDebugInfo.response.status}
+                            </span>
+                          </div>
+                          <div className={`rounded-lg border px-3 py-2 text-xs ${streamTerminationPanelClass}`}>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-medium text-gray-700 dark:text-gray-200">协议终止</span>
+                              <span className={`inline-flex items-center rounded px-2 py-0.5 font-medium ${streamTerminationClass}`}>
+                                {streamTerminationSummary.label}
+                              </span>
+                              {streamTerminationInfo?.protocolKind && (
+                                <span className="text-gray-500 dark:text-gray-400">
+                                  protocol: {streamTerminationInfo.protocolKind}
+                                </span>
+                              )}
+                              {streamTerminationInfo?.expectedSignal && (
+                                <span className="text-gray-500 dark:text-gray-400">
+                                  expected: {streamTerminationInfo.expectedSignal}
+                                </span>
+                              )}
+                              {streamTerminationInfo?.observedSignal && (
+                                <span className="text-gray-500 dark:text-gray-400">
+                                  observed: {streamTerminationInfo.observedSignal}
+                                </span>
+                              )}
+                              {streamTerminationInfo?.lastEventType && (
+                                <span className="text-gray-500 dark:text-gray-400">
+                                  last_event: {streamTerminationInfo.lastEventType}
+                                </span>
+                              )}
+                              {typeof streamTerminationInfo?.chunkCount === 'number' && (
+                                <span className="text-gray-500 dark:text-gray-400">
+                                  chunks: {streamTerminationInfo.chunkCount}
+                                </span>
+                              )}
+                            </div>
+                            <div className="mt-1 text-[11px] text-gray-600 dark:text-gray-300">
+                              {streamTerminationSummary.detail}
+                            </div>
+                          </div>
 
-          {!effectiveDebugInfo ? (
-            <div className="text-center py-8 text-gray-500 dark:text-gray-400">
-              <p>暂无调试信息</p>
-              <p className="text-sm mt-2">
-                {isLoadingDebug
-                  ? '请稍候…'
-                  : activeTurn?.hasDebugInfo
-                    ? '该轮已标记存在调试信息，但当前未能加载。'
-                    : '请确保在发送消息前开启调试模式。'}
-              </p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-              {/* Response first: avoid being pushed down by long request bodies */}
-              {effectiveDebugInfo.response && (
-                <CollapsibleSection title="HTTP 响应">
-                  <div className="space-y-4">
-                    <div className="flex items-center gap-2 text-sm">
-                      <span
-                        className={`px-2 py-1 rounded font-medium ${
-                          effectiveDebugInfo.response.status >= 200 &&
-                          effectiveDebugInfo.response.status < 300
-                            ? 'bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300'
-                            : 'bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300'
-                        }`}
-                      >
-                        {effectiveDebugInfo.response.status}
-                      </span>
-                    </div>
-                    <div className={`rounded-lg border px-3 py-2 text-xs ${streamTerminationPanelClass}`}>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="font-medium text-gray-700 dark:text-gray-200">协议终止</span>
-                        <span className={`inline-flex items-center rounded px-2 py-0.5 font-medium ${streamTerminationClass}`}>
-                          {streamTerminationSummary.label}
-                        </span>
-                        {streamTerminationInfo?.protocolKind && (
-                          <span className="text-gray-500 dark:text-gray-400">
-                            protocol: {streamTerminationInfo.protocolKind}
-                          </span>
-                        )}
-                        {streamTerminationInfo?.expectedSignal && (
-                          <span className="text-gray-500 dark:text-gray-400">
-                            expected: {streamTerminationInfo.expectedSignal}
-                          </span>
-                        )}
-                        {streamTerminationInfo?.observedSignal && (
-                          <span className="text-gray-500 dark:text-gray-400">
-                            observed: {streamTerminationInfo.observedSignal}
-                          </span>
-                        )}
-                        {streamTerminationInfo?.lastEventType && (
-                          <span className="text-gray-500 dark:text-gray-400">
-                            last_event: {streamTerminationInfo.lastEventType}
-                          </span>
-                        )}
-                        {typeof streamTerminationInfo?.chunkCount === 'number' && (
-                          <span className="text-gray-500 dark:text-gray-400">
-                            chunks: {streamTerminationInfo.chunkCount}
-                          </span>
-                        )}
-                      </div>
-                      <div className="mt-1 text-[11px] text-gray-600 dark:text-gray-300">
-                        {streamTerminationSummary.detail}
-                      </div>
-                    </div>
+                          {Object.keys(effectiveDebugInfo.response.headers).length > 0 && (
+                            <CollapsibleSection title="响应头" defaultExpanded={false}>
+                              <HeadersViewer headers={effectiveDebugInfo.response.headers} />
+                            </CollapsibleSection>
+                          )}
 
-                    {Object.keys(effectiveDebugInfo.response.headers).length > 0 && (
-                      <CollapsibleSection title="响应头" defaultExpanded={false}>
-                        <HeadersViewer headers={effectiveDebugInfo.response.headers} />
+                          <CollapsibleSection title="响应体">
+                            {isSseResponseBody(responseBodyForDisplay) ? (
+                              <SseResponseViewer data={responseBodyForDisplay} />
+                            ) : (
+                              <JsonViewer data={responseBodyForDisplay} />
+                            )}
+                          </CollapsibleSection>
+                        </div>
                       </CollapsibleSection>
                     )}
 
-                    <CollapsibleSection title="响应体">
-                      {isSseResponseBody(responseBodyForDisplay) ? (
-                        <SseResponseViewer data={responseBodyForDisplay} />
-                      ) : (
-                        <JsonViewer data={responseBodyForDisplay} />
-                      )}
-                    </CollapsibleSection>
+                    {effectiveDebugInfo.request && (
+                      <CollapsibleSection title="HTTP 请求">
+                        <div className="space-y-4">
+                          <div className="flex items-center gap-2 text-sm">
+                            <span className="px-2 py-1 bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded font-medium">
+                              {effectiveDebugInfo.request.method}
+                            </span>
+                            <span className="text-gray-800 dark:text-gray-200 break-all">
+                              {effectiveDebugInfo.request.url}
+                            </span>
+                          </div>
+
+                          <CollapsibleSection title="请求头" defaultExpanded={false}>
+                            <HeadersViewer headers={effectiveDebugInfo.request.headers} />
+                          </CollapsibleSection>
+
+                          <CollapsibleSection title="请求体">
+                            <JsonViewer data={effectiveDebugInfo.request.body} />
+                          </CollapsibleSection>
+                        </div>
+                      </CollapsibleSection>
+                    )}
                   </div>
-                </CollapsibleSection>
-              )}
+                )}
+              </>
+            ) : (
+              <>
+                <div className="text-xs text-gray-500 dark:text-gray-400">
+                  这里展示 turn.debugInfo 里的 HTTP 请求/响应头与响应体的原始 JSON（文本），便于复制与排障。
+                </div>
 
-              {effectiveDebugInfo.request && (
-                <CollapsibleSection title="HTTP 请求">
-                  <div className="space-y-4">
-                    <div className="flex items-center gap-2 text-sm">
-                      <span className="px-2 py-1 bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded font-medium">
-                        {effectiveDebugInfo.request.method}
-                      </span>
-                      <span className="text-gray-800 dark:text-gray-200 break-all">
-                        {effectiveDebugInfo.request.url}
-                      </span>
-                    </div>
-
-                    <CollapsibleSection title="请求头" defaultExpanded={false}>
-                      <HeadersViewer headers={effectiveDebugInfo.request.headers} />
-                    </CollapsibleSection>
-
-                    <CollapsibleSection title="请求体">
-                      <JsonViewer data={effectiveDebugInfo.request.body} />
-                    </CollapsibleSection>
+                {!effectiveDebugInfo ? (
+                  <div className="text-center py-8 text-gray-500 dark:text-gray-400">
+                    <p>暂无调试信息</p>
+                    <p className="text-sm mt-2">
+                      {isLoadingDebug
+                        ? '请稍候…'
+                        : activeTurn?.hasDebugInfo
+                          ? '该轮已标记存在调试信息，但当前未能加载。'
+                          : '请确保在发送消息前开启调试模式。'}
+                    </p>
                   </div>
-                </CollapsibleSection>
-              )}
-            </div>
-          )}
+                ) : (
+                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                    {effectiveDebugInfo.response ? (
+                      <CollapsibleSection title="HTTP 响应（JSON）" defaultExpanded>
+                        <div className="space-y-4">
+                          <div className="flex items-center gap-2 text-sm">
+                            <span
+                              className={`px-2 py-1 rounded font-medium ${
+                                effectiveDebugInfo.response.status >= 200 &&
+                                effectiveDebugInfo.response.status < 300
+                                  ? 'bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300'
+                                  : 'bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300'
+                              }`}
+                            >
+                              {effectiveDebugInfo.response.status}
+                            </span>
+                          </div>
+
+                          <CollapsibleSection title="响应头（JSON）" defaultExpanded>
+                            <JsonViewer data={prepareHeadersForJson(effectiveDebugInfo.response.headers)} />
+                          </CollapsibleSection>
+
+                          <CollapsibleSection title="响应体（JSON）" defaultExpanded>
+                            <JsonViewer data={effectiveDebugInfo.response.body} />
+                          </CollapsibleSection>
+                        </div>
+                      </CollapsibleSection>
+                    ) : (
+                      <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-300">
+                        暂无 HTTP 响应调试信息
+                      </div>
+                    )}
+
+                    {effectiveDebugInfo.request ? (
+                      <CollapsibleSection title="HTTP 请求（JSON）" defaultExpanded={false}>
+                        <div className="space-y-4">
+                          <div className="flex items-center gap-2 text-sm">
+                            <span className="px-2 py-1 bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded font-medium">
+                              {effectiveDebugInfo.request.method}
+                            </span>
+                            <span className="text-gray-800 dark:text-gray-200 break-all">
+                              {effectiveDebugInfo.request.url}
+                            </span>
+                          </div>
+
+                          <CollapsibleSection title="请求头（JSON）" defaultExpanded>
+                            <JsonViewer data={prepareHeadersForJson(effectiveDebugInfo.request.headers)} />
+                          </CollapsibleSection>
+
+                          <CollapsibleSection title="请求体（JSON）" defaultExpanded>
+                            <JsonViewer data={effectiveDebugInfo.request.body} />
+                          </CollapsibleSection>
+                        </div>
+                      </CollapsibleSection>
+                    ) : (
+                      <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-300">
+                        暂无 HTTP 请求调试信息
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
           </div>
         </div>
       </div>
