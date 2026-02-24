@@ -141,6 +141,12 @@ export interface ModelCapabilities {
   webSearch: boolean;     // Supports provider-native server-side web search
 }
 
+/** 文本编辑工具实现类型（由模型决定） */
+export type TextEditImplementation =
+  | 'apply_patch'
+  | 'apply_patch_unified_diff'
+  | 'write_file_replace_string';
+
 /**
  * Model configuration (pure model parameters, no system prompt)
  */
@@ -160,6 +166,8 @@ export interface Model {
   thinkingBudgetTokens?: number; // Anthropic extended thinking budget (>=1024 and < maxTokens)
   useReasoningEffort?: boolean; // Use reasoning_effort parameter for Chat Completions API (OpenAI GPT-5 series)
   reinjectReasoningContent?: boolean; // Kimi thinking: include historical reasoning_content in request (default: false)
+  /** 文本编辑工具实现偏好（默认 apply_patch） */
+  textEditImplementation?: TextEditImplementation;
 }
 
 /**

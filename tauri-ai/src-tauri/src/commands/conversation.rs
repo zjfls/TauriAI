@@ -335,6 +335,11 @@ fn extract_paths_from_tool_call(name: &str, arguments: &str) -> Vec<(String, Str
                 }
             }
         }
+        "write_file" | "replace_string" => {
+            if let Some(p) = args.get("file_path").and_then(|v| v.as_str()) {
+                out.push((p.to_string(), "file".to_string(), 5));
+            }
+        }
         _ => {}
     }
 

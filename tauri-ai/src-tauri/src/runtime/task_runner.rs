@@ -30,7 +30,7 @@ use crate::models::{
 use crate::prompts::{
     APPLY_PATCH_TOOL_PROMPT, APPLY_PATCH_UNIFIED_DIFF_TOOL_PROMPT, MCP_RESOURCE_TOOL_PROMPT,
     PERSISTENT_PROCESS_PROMPT, PYTHON3_FALLBACK_PROMPT, WEB_SEARCH_TOOL_PROMPT,
-    WORKSTUDIO_PROMPT_GUIDE,
+    WORKSTUDIO_PROMPT_GUIDE, WRITE_FILE_REPLACE_STRING_TOOL_PROMPT,
 };
 use crate::runtime::context_manager::{
     auto_compact_threshold_tokens, estimate_prompt_tokens, hard_limit_tokens, run_normal_compact,
@@ -491,6 +491,7 @@ fn compute_system_prompt_cache_key(
     allow_persistent_pty: bool,
     enable_apply_patch_tool_prompt: bool,
     enable_apply_patch_unified_diff_tool_prompt: bool,
+    enable_write_file_replace_string_tool_prompt: bool,
     enable_local_web_search_tool: bool,
     enable_mcp_resource_tool_prompt: bool,
     enabled_skills: &[SkillEntry],
@@ -501,7 +502,7 @@ fn compute_system_prompt_cache_key(
     let mut h = Sha1::new();
     // NOTE: Cache key must include any prompt text that can affect the actual HTTP request.
     // Bump this version whenever the cache inputs change.
-    h.update(b"v6\n");
+    h.update(b"v7\n");
     h.update(agent.name.as_bytes());
     h.update(b"\n");
     h.update(agent.system_prompt.as_bytes());
@@ -532,6 +533,12 @@ fn compute_system_prompt_cache_key(
     h.update(
         format!("apply_patch_unified_diff_prompt:{enable_apply_patch_unified_diff_tool_prompt}\n")
             .as_bytes(),
+    );
+    h.update(
+        format!(
+            "write_file_replace_string_prompt:{enable_write_file_replace_string_tool_prompt}\n"
+        )
+        .as_bytes(),
     );
     h.update(format!("py:{}/{}\n", py.has_python, py.has_python3).as_bytes());
     h.update(format!("local_web_search:{enable_local_web_search_tool}\n").as_bytes());
@@ -686,6 +693,35 @@ fn inject_apply_patch_tool_prompt(messages: &mut Vec<Message>, conversation_id: 
 
 fn inject_apply_patch_unified_diff_tool_prompt(messages: &mut Vec<Message>, conversation_id: &str) {
     let content = APPLY_PATCH_UNIFIED_DIFF_TOOL_PROMPT.trim().to_string();
+    if content.is_empty() {
+        return;
+    }
+    let insert_at = messages
+        .iter()
+        .take_while(|m| m.role == MessageRole::System)
+        .count();
+    messages.insert(
+        insert_at,
+        Message {
+            id: uuid::Uuid::new_v4().to_string(),
+            conversation_id: conversation_id.to_string(),
+            role: MessageRole::System,
+            content,
+            content_parts: Vec::new(),
+            thinking: None,
+            meta: None,
+            created_at: chrono::Utc::now(),
+            status: MessageStatus::Success,
+            error_message: None,
+        },
+    );
+}
+
+fn inject_write_file_replace_string_tool_prompt(
+    messages: &mut Vec<Message>,
+    conversation_id: &str,
+) {
+    let content = WRITE_FILE_REPLACE_STRING_TOOL_PROMPT.trim().to_string();
     if content.is_empty() {
         return;
     }
@@ -1031,7 +1067,10 @@ impl<'a> TurnLoop<'a> {
     }
 
     fn is_write_tool(tool_name: &str) -> bool {
-        matches!(tool_name, "apply_patch" | "apply_patch_unified_diff")
+        matches!(
+            tool_name,
+            "apply_patch" | "apply_patch_unified_diff" | "write_file" | "replace_string"
+        )
     }
 
     fn is_network_tool(tool_name: &str) -> bool {
@@ -3720,23 +3759,107 @@ async fn run_task_inner(
     let (tool_orchestrator, tools, allowed_tool_names) = if !tools_enabled {
         (None, None, None)
     } else {
-        // Toolset 约束：同一 toolset 最多只能启用一个 apply_patch 工具。
-        // - apply_patch：自定义锚定头（@@ <原文>）
-        // - apply_patch_unified_diff：unified diff 头（@@ -a,b +c,d @@）
-        // 若二者同时存在，保留“先出现”的那一个，避免：
-        // - 模型侧同时收到两套互斥提示词
-        // - UI/后端对 apply_patch 行为产生歧义
-        fn enforce_single_apply_patch_tool_in_allow_list(tool_names: &mut Vec<String>) {
-            const CUSTOM: &str = "apply_patch";
+        // 文本编辑工具选择（Toolset + Model）：
+        //
+        // - UI/toolset 里可以开启一个抽象的 `text_edit` 能力；
+        // - 具体采用哪种实现由“模型配置”决定（默认 apply_patch）：
+        //   1) apply_patch
+        //   2) apply_patch_unified_diff
+        //   3) write_file + replace_string
+        //
+        // 选择逻辑（严格按用户定义）：
+        // 1) 先看 toolset 是否开启了文本编辑工具（`text_edit` 或显式包含相关工具）
+        // 2) 再按模型的实现类型挑选，并只暴露“最终选择的那一种实现”给模型，避免混用导致不稳定
+        fn resolve_text_edit_tools_in_allow_list(
+            tool_names: &mut Vec<String>,
+            preferred: crate::models::TextEditImplementation,
+        ) {
+            use crate::models::TextEditImplementation;
+
+            const TEXT_EDIT: &str = "text_edit";
+            const APPLY_PATCH: &str = "apply_patch";
             const UNIFIED: &str = "apply_patch_unified_diff";
-            let custom_idx = tool_names.iter().position(|t| t == CUSTOM);
-            let unified_idx = tool_names.iter().position(|t| t == UNIFIED);
-            let (Some(ci), Some(ui)) = (custom_idx, unified_idx) else {
+            const WRITE_FILE: &str = "write_file";
+            const REPLACE_STRING: &str = "replace_string";
+            const EDIT_TOKENS: [&str; 5] =
+                [TEXT_EDIT, APPLY_PATCH, UNIFIED, WRITE_FILE, REPLACE_STRING];
+
+            let first_idx = tool_names
+                .iter()
+                .position(|t| EDIT_TOKENS.contains(&t.as_str()));
+            let has_marker = tool_names.iter().any(|t| t == TEXT_EDIT);
+
+            let has_apply_patch = tool_names.iter().any(|t| t == APPLY_PATCH);
+            let has_unified = tool_names.iter().any(|t| t == UNIFIED);
+            let has_write_file = tool_names.iter().any(|t| t == WRITE_FILE);
+            let has_replace_string = tool_names.iter().any(|t| t == REPLACE_STRING);
+            let has_write_replace = has_write_file && has_replace_string;
+
+            let mut allow_apply_patch = has_apply_patch;
+            let mut allow_unified = has_unified;
+            let mut allow_write_replace = has_write_replace;
+
+            // 抽象开关：认为三种实现都“可用”（由模型偏好决定具体落到哪一个）。
+            if has_marker {
+                allow_apply_patch = true;
+                allow_unified = true;
+                allow_write_replace = true;
+            }
+
+            // 没有任何“完整实现”可选时，保持原样（例如只启用了 write_file，但没有 replace_string）。
+            if !allow_apply_patch && !allow_unified && !allow_write_replace {
+                return;
+            }
+
+            let chosen = match preferred {
+                TextEditImplementation::ApplyPatch if allow_apply_patch => {
+                    Some(TextEditImplementation::ApplyPatch)
+                }
+                TextEditImplementation::ApplyPatchUnifiedDiff if allow_unified => {
+                    Some(TextEditImplementation::ApplyPatchUnifiedDiff)
+                }
+                TextEditImplementation::WriteFileReplaceString if allow_write_replace => {
+                    Some(TextEditImplementation::WriteFileReplaceString)
+                }
+                _ => {
+                    // Fallback order: apply_patch > unified > write_file+replace_string
+                    if allow_apply_patch {
+                        Some(TextEditImplementation::ApplyPatch)
+                    } else if allow_unified {
+                        Some(TextEditImplementation::ApplyPatchUnifiedDiff)
+                    } else if allow_write_replace {
+                        Some(TextEditImplementation::WriteFileReplaceString)
+                    } else {
+                        None
+                    }
+                }
+            };
+
+            let Some(chosen) = chosen else {
                 return;
             };
-            let drop = if ci < ui { UNIFIED } else { CUSTOM };
-            tool_names.retain(|t| t != drop);
+
+            // 只暴露最终选择的那一套文本编辑工具，避免模型混用。
+            tool_names.retain(|t| !EDIT_TOKENS.contains(&t.as_str()));
+            let insert_at = first_idx
+                .unwrap_or_else(|| tool_names.len())
+                .min(tool_names.len());
+
+            match chosen {
+                TextEditImplementation::ApplyPatch => {
+                    tool_names.insert(insert_at, APPLY_PATCH.to_string());
+                }
+                TextEditImplementation::ApplyPatchUnifiedDiff => {
+                    tool_names.insert(insert_at, UNIFIED.to_string());
+                }
+                TextEditImplementation::WriteFileReplaceString => {
+                    tool_names.insert(insert_at, WRITE_FILE.to_string());
+                    tool_names.insert(insert_at + 1, REPLACE_STRING.to_string());
+                }
+            }
         }
+
+        let preferred_text_edit = model.text_edit_implementation.clone().unwrap_or_default();
 
         // ToolSet：Agent 可以绑定不同工具集合。
         // - 若未绑定 toolset：默认只暴露 `web_search`（若本次 run 启用了 web_search），避免把本地工具“默认”下发给模型。
@@ -3751,7 +3874,7 @@ async fn run_task_inner(
             Some(name) => match config.tools.toolsets.iter().find(|t| t.name == name) {
                 Some(ts) => {
                     let mut tools = ts.tools.clone();
-                    enforce_single_apply_patch_tool_in_allow_list(&mut tools);
+                    resolve_text_edit_tools_in_allow_list(&mut tools, preferred_text_edit.clone());
                     super::tools::spec::ToolSet::allow_list(name, tools)
                 }
                 .with_persistance_shell_enhance(ts.persistance_shell_enhance),
@@ -3760,10 +3883,6 @@ async fn run_task_inner(
             },
             None => super::tools::spec::ToolSet::allow_list("__unbound__", Vec::new()),
         };
-
-        if matches!(toolset.mode, super::tools::spec::ToolSetMode::AllowList) {
-            enforce_single_apply_patch_tool_in_allow_list(&mut toolset.tools);
-        }
 
         // 权限策略：不再使用全局开关；改为由安全策略（sandbox_policy）决定是否暴露高危工具。
         // 实际执行时仍会在工具层再次按 sandbox_policy 做强校验（例如 read-only 拒绝写入/PTY 等）。
@@ -4138,6 +4257,9 @@ async fn run_task_inner(
     let enable_apply_patch_unified_diff_tool_prompt = allowed_tool_names
         .as_ref()
         .is_some_and(|names| names.contains("apply_patch_unified_diff"));
+    let enable_write_file_replace_string_tool_prompt = allowed_tool_names.as_ref().is_some_and(
+        |names| names.contains("write_file") || names.contains("replace_string"),
+    );
     // 防御性兜底：理论上在 toolset 约束后不会同时为 true；若出现，优先保留自定义锚定版 apply_patch。
     let (enable_apply_patch_tool_prompt, enable_apply_patch_unified_diff_tool_prompt) = match (
         enable_apply_patch_tool_prompt,
@@ -4146,6 +4268,11 @@ async fn run_task_inner(
         (true, true) => (true, false),
         other => other,
     };
+    // 防御性兜底：文本编辑工具实现应该互斥；若出现，优先保留 apply_patch 系提示词。
+    let enable_write_file_replace_string_tool_prompt =
+        enable_write_file_replace_string_tool_prompt
+            && !enable_apply_patch_tool_prompt
+            && !enable_apply_patch_unified_diff_tool_prompt;
 
     // 4) TurnLoop：max_turns 统一以配置为准（agent.max_turns），未配置则使用全局默认值。
     let default_max_turns: u32 = 10_000;
@@ -4242,6 +4369,7 @@ async fn run_task_inner(
         allow_persistent_pty,
         enable_apply_patch_tool_prompt,
         enable_apply_patch_unified_diff_tool_prompt,
+        enable_write_file_replace_string_tool_prompt,
         enable_local_web_search_tool,
         enable_mcp_resource_tool_prompt,
         &enabled_skills_meta,
@@ -4310,6 +4438,9 @@ async fn run_task_inner(
         }
         if enable_apply_patch_unified_diff_tool_prompt {
             inject_apply_patch_unified_diff_tool_prompt(&mut messages, &input.conversation_id);
+        }
+        if enable_write_file_replace_string_tool_prompt {
+            inject_write_file_replace_string_tool_prompt(&mut messages, &input.conversation_id);
         }
         if enable_local_web_search_tool {
             inject_web_search_tool_prompt(&mut messages, &input.conversation_id);

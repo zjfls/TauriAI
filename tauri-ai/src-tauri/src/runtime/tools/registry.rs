@@ -15,6 +15,7 @@ use super::handlers::pty::{
     ExecCommandPersistentTool, ExecCommandTool, WriteStdinPersistentTool, WriteStdinTool,
 };
 use super::handlers::shell::ShellCommandTool;
+use super::handlers::text_edit::{ReplaceStringTool, WriteFileTool};
 use super::services::ToolServices;
 use super::spec::ToolSpec;
 
@@ -191,6 +192,8 @@ pub fn register_builtin_handlers(registry: &mut ToolRegistry) {
     registry.register(Arc::new(RgTool));
     registry.register(Arc::new(ApplyPatchTool));
     registry.register(Arc::new(ApplyPatchUnifiedDiffTool));
+    registry.register(Arc::new(WriteFileTool));
+    registry.register(Arc::new(ReplaceStringTool));
     // 终端能力（当前阶段先落地 shell/pty 两类工具；权限默认拒绝，需要显式开启）
     registry.register(Arc::new(ShellCommandTool));
     registry.register(Arc::new(ExecCommandTool));

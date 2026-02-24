@@ -14,8 +14,11 @@ const AVAILABLE_TOOLS = [
   { name: 'read_file', label: '读文件', description: '读取本地文件（带行号）' },
   { name: 'list_dir', label: '列目录', description: '列出目录结构（带缩进）' },
   { name: 'rg', label: 'rg', description: '按 pattern 搜索文件（ripgrep）' },
+  { name: 'text_edit', label: '文本编辑（抽象）', description: '抽象文本编辑能力：由模型的 textEditImplementation 选择实现（默认 apply_patch）' },
   { name: 'apply_patch', label: 'Apply Patch', description: '按补丁格式修改/创建文件' },
   { name: 'apply_patch_unified_diff', label: 'Apply Patch (Unified Diff)', description: '按 unified diff 块头应用补丁（仅 @@ -a,b +c,d @@）' },
+  { name: 'write_file', label: 'Write File', description: '写入/覆写一个文本文件（提供完整内容）' },
+  { name: 'replace_string', label: 'Replace String', description: '在文件中做一次精确字符串替换（old_string 必须唯一命中 1 次）' },
   { name: 'shell_command', label: 'Shell 命令', description: '一次性执行命令' },
   { name: 'exec_command', label: 'PTY 启动命令', description: '创建交互式会话' },
   { name: 'write_stdin', label: 'PTY 写入输入', description: '向交互式会话写入 stdin' },
@@ -320,6 +323,24 @@ export const ToolsConfigForm: React.FC = () => {
                           checked={checked}
                           onChange={() => {
                             let nextTools = toggleInList(currentToolset.tools, tool.name);
+
+                            // 抽象文本编辑：toolset 里只保留 `text_edit`，具体实现由“模型配置”决定。
+                            const TEXT_EDIT = 'text_edit';
+                            const concreteEditTools = new Set([
+                              'apply_patch',
+                              'apply_patch_unified_diff',
+                              'write_file',
+                              'replace_string',
+                            ]);
+
+                            if (nextTools.includes(TEXT_EDIT)) {
+                              // 当开启抽象文本编辑时，移除底层具体实现开关，避免用户误解“同时开启多个”。
+                              nextTools = nextTools.filter((t) => t === TEXT_EDIT || !concreteEditTools.has(t));
+                            } else if (concreteEditTools.has(tool.name) && nextTools.includes(tool.name)) {
+                              // 用户显式开启具体实现时，关闭抽象开关（更直觉：显式优先）。
+                              nextTools = nextTools.filter((t) => t !== TEXT_EDIT);
+                            }
+
                             // apply_patch 工具互斥：一个 toolset 最多只能启用一个。
                             // - apply_patch：自定义锚定头（@@ <原文>）
                             // - apply_patch_unified_diff：unified diff 头（@@ -a,b +c,d @@）

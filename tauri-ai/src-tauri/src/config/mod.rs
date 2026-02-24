@@ -204,6 +204,7 @@ mod tests {
                     thinking_budget_tokens: None,
                     use_reasoning_effort: None,
                     reinject_reasoning_content: false,
+                    text_edit_implementation: None,
                 }],
             }],
             agents: vec![Agent {

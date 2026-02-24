@@ -357,6 +357,29 @@ pub const APPLY_PATCH_UNIFIED_DIFF_TOOL_PROMPT: &str = r#"
 - 不要使用绝对路径；绝对路径在某些运行模式下会被直接拒绝，且容易造成误修改。
 "#;
 
+/// Tool usage hint for `write_file` + `replace_string` when file write is enabled.
+pub const WRITE_FILE_REPLACE_STRING_TOOL_PROMPT: &str = r#"
+
+## 文件编辑（write_file / replace_string）
+
+当 tools 中提供 `write_file` 与/或 `replace_string` 时，你可以用它们来编辑工作区文件（这是 `apply_patch` 的替代实现之一）。
+
+### write_file（整文件写入）
+- 适用：新建文件、小文件整文件重写、或当 patch 定位困难时。
+- 参数：`{ "file_path": "path/to/file.txt", "content": "完整文件内容" }`
+- 注意：`content` 必须是**完整文件内容**；会覆盖原文件。
+
+### replace_string（唯一替换）
+- 适用：小范围精确改动（例如替换一段“唯一出现”的文本）。
+- 参数：`{ "file_path": "path/to/file.txt", "old_string": "要替换的原字符串", "new_string": "替换后的字符串" }`
+- 规则：`old_string` 必须在文件中**唯一命中 1 次**（命中 0 次或 >1 次都会报错）。
+- 注意：`old_string/new_string` 是原样匹配/写入，包含所有空格与换行；不要为了好看额外加空格或改缩进。
+
+### 路径与安全
+- 优先使用相对路径（相对当前工作区/默认 workdir）。
+- 不要使用绝对路径；绝对路径在某些运行模式下会被直接拒绝，且容易造成误修改。
+"#;
+
 /// Prompt guide for the hidden local web search tool (`web_search`).
 pub const WEB_SEARCH_TOOL_PROMPT: &str = r#"
 

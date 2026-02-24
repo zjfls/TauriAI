@@ -1,6 +1,7 @@
 pub mod apply_patch;
 pub mod builtin;
 pub mod file_tools;
+pub mod text_edit;
 pub mod mcp;
 pub mod mcp_resource;
 pub mod pty;

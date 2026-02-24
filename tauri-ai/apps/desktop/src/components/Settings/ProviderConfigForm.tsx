@@ -9,7 +9,7 @@ import { useConfigStore } from '../../stores/configStore';
 import { testConnection } from '../../services/configService';
 import { ModelPickerModal } from './ModelPickerModal';
 import { SecretInput } from './SecretInput';
-import type { Provider, Model, ProviderType, ModelCapabilities } from '../../types';
+import type { Provider, Model, ProviderType, ModelCapabilities, TextEditImplementation } from '../../types';
 
 // Helper to infer capabilities from model name (mirrors backend logic)
 const inferCapabilities = (modelName: string): ModelCapabilities => {
@@ -806,6 +806,29 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
                                   </label>
                                   <p className="mt-1 text-[11px] text-gray-500">
                                     默认关闭：仅当服务端支持并提供 TurnState 时才能重连续传；开启后允许在已输出部分内容后自动重连继续。
+                                  </p>
+                                </div>
+
+                                <div className="col-span-4">
+                                  <label className="block text-xs text-gray-500">文本编辑实现</label>
+                                  <select
+                                    value={model.textEditImplementation ?? 'apply_patch'}
+                                    onChange={(e) => {
+                                      const next = e.target.value as TextEditImplementation;
+                                      onUpdateModel(index, {
+                                        ...model,
+                                        textEditImplementation: next === 'apply_patch' ? undefined : next,
+                                      });
+                                    }}
+                                    disabled={!isEditing}
+                                    className="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100"
+                                  >
+                                    <option value="apply_patch">apply_patch（默认）</option>
+                                    <option value="apply_patch_unified_diff">apply_patch_unified_diff（unified diff）</option>
+                                    <option value="write_file_replace_string">write_file + replace_string</option>
+                                  </select>
+                                  <p className="mt-1 text-[11px] text-gray-500">
+                                    仅当 toolset 开启 <code className="font-mono">text_edit</code>（抽象文本编辑）时生效。
                                   </p>
                                 </div>
 

@@ -778,6 +778,25 @@ pub struct ModelCapabilities {
     pub web_search: bool,
 }
 
+/// 文本编辑工具实现类型（由“模型”决定具体用哪一种编辑工具）。
+///
+/// - `apply_patch`：Codex 风格 patch（自定义 `@@ <锚定行>`）
+/// - `apply_patch_unified_diff`：unified diff 头（`@@ -a,b +c,d @@`）
+/// - `write_file_replace_string`：用 `write_file`（整文件写入）+ `replace_string`（唯一替换）实现编辑
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TextEditImplementation {
+    ApplyPatch,
+    ApplyPatchUnifiedDiff,
+    WriteFileReplaceString,
+}
+
+impl Default for TextEditImplementation {
+    fn default() -> Self {
+        Self::ApplyPatch
+    }
+}
+
 /// Model configuration (pure model parameters, no system prompt)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -826,6 +845,9 @@ pub struct Model {
     /// Default false: do not send historical thinking content (but may still include empty placeholder for strict providers).
     #[serde(default)]
     pub reinject_reasoning_content: bool,
+    /// Text edit tool implementation preference for this model (default: apply_patch).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text_edit_implementation: Option<TextEditImplementation>,
 }
 
 impl Default for Model {
@@ -845,6 +867,7 @@ impl Default for Model {
             thinking_budget_tokens: None,
             use_reasoning_effort: None,
             reinject_reasoning_content: false,
+            text_edit_implementation: None,
         }
     }
 }
@@ -2416,6 +2439,7 @@ impl AppConfig {
                 thinking_budget_tokens: None,
                 use_reasoning_effort: None,
                 reinject_reasoning_content: false,
+                text_edit_implementation: None,
             });
 
             // Create agent from model's system prompt

@@ -950,11 +950,11 @@ const AgentForm: React.FC<AgentFormProps> = ({
             <option value="read-only">Read Only（只读）</option>
             <option value="workspace-write">Workspace Write（工作区可写）</option>
             <option value="danger-full-access">Full Access（完全访问）</option>
-          </select>
-          <p className="text-xs text-gray-500">
-            生效策略：{sandboxSummary(effectiveSandboxPolicy)}。Read Only 会禁用 apply_patch/apply_patch_unified_diff 与 PTY 交互式终端。
-          </p>
-        </div>
+	          </select>
+	          <p className="text-xs text-gray-500">
+	            生效策略：{sandboxSummary(effectiveSandboxPolicy)}。Read Only 会禁用文本编辑（text_edit/apply_patch/apply_patch_unified_diff/write_file/replace_string）与 PTY 交互式终端。
+	          </p>
+	        </div>
 
         <div className="space-y-1">
           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">最大 Turn 数</label>
