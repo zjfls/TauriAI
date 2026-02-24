@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import ReactMarkdown, { type Components, defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkGemoji from "remark-gemoji";
@@ -121,6 +121,32 @@ export type CommonMarkdownProps = {
   components?: Components;
 };
 
+// 缓存：避免长对话滚动/窗口化渲染时，重复对同一段文本做 DOMPurify + 预处理。
+// - 只缓存“中等长度”文本，避免把超长内容长期留在内存里
+// - LRU（Map 的迭代顺序即插入顺序）：命中时移动到末尾
+const PREPROCESS_CACHE_MAX_ENTRIES = 200;
+const PREPROCESS_CACHE_MAX_INPUT_CHARS = 120_000;
+const preprocessCache = new Map<string, string>();
+
+function getPreprocessCache(input: string): string | null {
+  const hit = preprocessCache.get(input);
+  if (hit === undefined) return null;
+  preprocessCache.delete(input);
+  preprocessCache.set(input, hit);
+  return hit;
+}
+
+function setPreprocessCache(input: string, processed: string): void {
+  if (input.length > PREPROCESS_CACHE_MAX_INPUT_CHARS) return;
+  if (preprocessCache.has(input)) preprocessCache.delete(input);
+  preprocessCache.set(input, processed);
+  while (preprocessCache.size > PREPROCESS_CACHE_MAX_ENTRIES) {
+    const oldest = preprocessCache.keys().next().value as string | undefined;
+    if (!oldest) break;
+    preprocessCache.delete(oldest);
+  }
+}
+
 const urlTransform = (value: string): string => {
   const url = (value ?? "").trim();
   if (!url) return url;
@@ -137,8 +163,16 @@ const urlTransform = (value: string): string => {
   return defaultUrlTransform(url);
 };
 
-export function CommonMarkdown({ content, components }: CommonMarkdownProps) {
-  const processed = useMemo(() => preprocessMarkdown(content), [content]);
+export const CommonMarkdown = memo(function CommonMarkdown({ content, components }: CommonMarkdownProps) {
+  const processed = useMemo(() => {
+    const raw = content ?? "";
+    if (!raw) return "";
+    const cached = getPreprocessCache(raw);
+    if (cached !== null) return cached;
+    const next = preprocessMarkdown(raw);
+    setPreprocessCache(raw, next);
+    return next;
+  }, [content]);
 
   const katexOptions = useMemo(
     () => ({
@@ -158,4 +192,4 @@ export function CommonMarkdown({ content, components }: CommonMarkdownProps) {
       {processed}
     </ReactMarkdown>
   );
-}
+});

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import React, { useDeferredValue, useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import jsx from 'react-syntax-highlighter/dist/esm/languages/prism/jsx';
@@ -49,10 +49,30 @@ try {
 // Mermaid SVG Cache - prevents re-rendering identical diagrams
 // ============================================================================
 const mermaidCache = new Map<string, string>();
+const MERMAID_CACHE_MAX_ENTRIES = 120;
 let mermaidIdCounter = 0;
 
 function generateMermaidId(): string {
   return `mermaid-${++mermaidIdCounter}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function getMermaidCache(key: string): string | null {
+  const hit = mermaidCache.get(key);
+  if (hit === undefined) return null;
+  mermaidCache.delete(key);
+  mermaidCache.set(key, hit);
+  return hit;
+}
+
+function setMermaidCache(key: string, svg: string): void {
+  if (!key) return;
+  if (mermaidCache.has(key)) mermaidCache.delete(key);
+  mermaidCache.set(key, svg);
+  while (mermaidCache.size > MERMAID_CACHE_MAX_ENTRIES) {
+    const oldest = mermaidCache.keys().next().value as string | undefined;
+    if (!oldest) break;
+    mermaidCache.delete(oldest);
+  }
 }
 
 // Simple hash function for cache keys
@@ -238,6 +258,9 @@ interface CodeBlockProps {
 
 const CodeBlock = React.memo(function CodeBlock({ language, code }: CodeBlockProps) {
   const [copied, setCopied] = useState(false);
+  const [forceHighlight, setForceHighlight] = useState(false);
+  const isLarge = code.length > 20_000;
+  const useHighlight = forceHighlight || !isLarge;
 
   const handleCopy = async () => {
     await navigator.clipboard.writeText(code);
@@ -249,34 +272,49 @@ const CodeBlock = React.memo(function CodeBlock({ language, code }: CodeBlockPro
     <div className="group relative my-2 overflow-hidden rounded-lg max-w-full">
       <div className="flex items-center justify-between bg-gray-800 px-4 py-2 text-xs text-gray-400">
         <span className="font-mono">{language || 'text'}</span>
-        <button
-          onClick={handleCopy}
-          className="flex items-center gap-1.5 rounded px-2.5 py-1 hover:bg-gray-700 hover:text-gray-200 transition-colors"
-          title={copied ? "已复制!" : "复制代码"}
-        >
-          {copied ? (
-            <>
-              <Check size={14} />
-              <span className="text-xs">已复制</span>
-            </>
-          ) : (
-            <>
-              <Copy size={14} />
-              <span className="text-xs">复制</span>
-            </>
-          )}
-        </button>
+        <div className="flex items-center gap-1.5">
+          {isLarge ? (
+            <button
+              onClick={() => setForceHighlight((v) => !v)}
+              className="rounded px-2.5 py-1 hover:bg-gray-700 hover:text-gray-200 transition-colors"
+              title={useHighlight ? '关闭语法高亮（更省资源）' : '启用语法高亮（可能更耗时）'}
+            >
+              <span className="text-xs">{useHighlight ? '纯文本' : '高亮'}</span>
+            </button>
+          ) : null}
+          <button
+            onClick={handleCopy}
+            className="flex items-center gap-1.5 rounded px-2.5 py-1 hover:bg-gray-700 hover:text-gray-200 transition-colors"
+            title={copied ? "已复制!" : "复制代码"}
+          >
+            {copied ? (
+              <>
+                <Check size={14} />
+                <span className="text-xs">已复制</span>
+              </>
+            ) : (
+              <>
+                <Copy size={14} />
+                <span className="text-xs">复制</span>
+              </>
+            )}
+          </button>
+        </div>
       </div>
       <div className="overflow-x-auto scrollbar-visible">
-        <SyntaxHighlighter
-          language={language || 'text'}
-          style={oneDark}
-          customStyle={{ margin: 0, borderRadius: '0 0 0.5rem 0.5rem', fontSize: '0.875rem' }}
-          wrapLines={false}
-          wrapLongLines={false}
-        >
-          {code}
-        </SyntaxHighlighter>
+        {useHighlight ? (
+          <SyntaxHighlighter
+            language={language || 'text'}
+            style={oneDark}
+            customStyle={{ margin: 0, borderRadius: '0 0 0.5rem 0.5rem', fontSize: '0.875rem' }}
+            wrapLines={false}
+            wrapLongLines={false}
+          >
+            {code}
+          </SyntaxHighlighter>
+        ) : (
+          <pre className="m-0 whitespace-pre bg-[#282c34] p-4 font-mono text-sm text-gray-100">{code}</pre>
+        )}
       </div>
     </div>
   );
@@ -522,7 +560,7 @@ const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferen
       return;
     }
 
-    const cached = mermaidCache.get(cacheKey);
+    const cached = getMermaidCache(cacheKey);
     if (cached) {
       setSvg(cached);
       setError('');
@@ -537,7 +575,7 @@ const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferen
 
         if (diskSvg) {
           const cleaned = sanitizeMermaidSvg(diskSvg);
-          mermaidCache.set(cacheKey, cleaned);
+          setMermaidCache(cacheKey, cleaned);
           setSvg(cleaned);
           setError('');
           return;
@@ -553,7 +591,7 @@ const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferen
         if (cancelled) return;
 
         const cleaned = sanitizeMermaidSvg(renderedSvg);
-        mermaidCache.set(cacheKey, cleaned);
+        setMermaidCache(cacheKey, cleaned);
         setSvg(cleaned);
         setError('');
 
@@ -889,6 +927,11 @@ const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferen
 // ============================================================================
 
 export const MarkdownRenderer = React.memo(function MarkdownRendererImpl({ content, conversationId, workstudioId }: MarkdownRendererProps) {
+  // 高频更新（例如 streaming）时，markdown 解析/高亮很容易成为主线程热点。
+  // 用 deferred value 把昂贵的渲染降为低优先级，减少“每次增量都重解析”的抖动。
+  const deferredContent = useDeferredValue(content);
+  const renderContent = content.length > 800 ? deferredContent : content;
+
   const openFileReference = useCallback(async (ref: ParsedFileReference) => {
     if (!isTauriRuntime()) return;
 
@@ -1271,7 +1314,7 @@ export const MarkdownRenderer = React.memo(function MarkdownRendererImpl({ conte
 
   return (
     <div className="prose prose-sm max-w-none dark:prose-invert prose-pre:bg-transparent prose-pre:p-0">
-      <CommonMarkdown content={content} components={components} />
+      <CommonMarkdown content={renderContent} components={components} />
     </div>
   );
 });
