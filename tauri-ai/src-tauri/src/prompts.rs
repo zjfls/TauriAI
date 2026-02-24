@@ -218,11 +218,17 @@ pub const APPLY_PATCH_TOOL_PROMPT: &str = r#"
 在一个变更块里，**你写的行顺序就是替换/插入后的相对顺序**，工具不会帮你重排。
 
 工具会把变更块拆成两段“连续片段”：
-- `old_lines`：由所有 context 行（` <text>`）与删除行（`-<text>`）按出现顺序拼接而成（用于在原文件中定位，必须能作为一段连续片段匹配到）
-- `new_lines`：由所有 context 行（` <text>`）与新增行（`+<text>`）按出现顺序拼接而成（用于写回文件，整体替换掉 `old_lines`）
+- `old code block`：由所有 context 行（` <text>`）与删除行（`-<text>`）按出现顺序拼接而成（用于在原文件中定位，必须能作为一段连续片段匹配到）
+- `new code block`：由所有 context 行（` <text>`）与新增行（`+<text>`）按出现顺序拼接而成（用于写回文件，整体替换掉 `old code block`）
 因此：
 - context 行可以放在 `-`/`+` 的前面或后面（前置/后置上下文都行）
 - `+` 行放在两条 context 行之间，就表示“插入到这两行之间”；放在块末尾就表示“插入到最后”
+
+### 多步锚定（连续多个 @@）
+你可以连续写多行 `@@ <锚定行>`（中间不夹任何 ` ` / `-` / `+` 行），用于把“搜索光标”一段段向下推进：
+- 每个 `@@ <锚定行>` 都会从当前光标向下找第一处匹配，并把光标移动到该行的下一行
+- 随后的 `old code block` 会从最新光标开始搜索
+这可用于在同一文件内多次出现相同锚点文本时，精确跳到更靠后的那一处。
 
 ### context_before / context_after（推荐写法，用于更稳的定位）
 - 默认建议：每个变更附近提供“上方约 3 行上下文行 + 下方约 3 行上下文行”。
@@ -241,7 +247,7 @@ pub const APPLY_PATCH_TOOL_PROMPT: &str = r#"
 
 
 示例：在两行之间插入（`+` 行夹在两条 context 行中间)
-等价于用{context_before,Line B1,Line B2,context_after}去替换{context_before,context:
+等价于用{context_before,Line B1,Line B2,context_after}去替换{context_before,context_after}:
 @@
  context_before
 +Line B1
@@ -253,8 +259,8 @@ pub const APPLY_PATCH_TOOL_PROMPT: &str = r#"
 会直接报错找不到{context_before, old,context_after}
 @@ anchorline
  context_before
-- old
-+ new
+- oldline
++ newline
  context_after
 
 
