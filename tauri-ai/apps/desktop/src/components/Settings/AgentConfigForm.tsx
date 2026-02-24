@@ -952,7 +952,7 @@ const AgentForm: React.FC<AgentFormProps> = ({
             <option value="danger-full-access">Full Access（完全访问）</option>
 	          </select>
 	          <p className="text-xs text-gray-500">
-	            生效策略：{sandboxSummary(effectiveSandboxPolicy)}。Read Only 会禁用文本编辑（text_edit/apply_patch/apply_patch_unified_diff/write_file/replace_string）与 PTY 交互式终端。
+	            生效策略：{sandboxSummary(effectiveSandboxPolicy)}。Read Only 会禁用文本编辑（text_edit）与 PTY 交互式终端。
 	          </p>
 	        </div>
 

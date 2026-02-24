@@ -2337,8 +2337,8 @@ impl AppConfig {
             changed = true;
         }
 
-        // Toolsets: apply_patch 系工具互斥（一个 toolset 最多只能启用一个 apply_patch 相关工具）。
-        if ensure_toolset_apply_patch_exclusive(self) {
+        // Toolsets: 文本编辑工具统一收敛为抽象开关 `text_edit`（避免同时暴露多种实现，造成配置与提示词混乱）。
+        if ensure_toolset_text_edit_normalized(self) {
             changed = true;
         }
 
@@ -2763,9 +2763,12 @@ fn ensure_system_workspace_defaults(cfg: &mut AppConfig) -> bool {
     changed
 }
 
-fn ensure_toolset_apply_patch_exclusive(cfg: &mut AppConfig) -> bool {
-    const CUSTOM: &str = "apply_patch";
-    const UNIFIED: &str = "apply_patch_unified_diff";
+fn ensure_toolset_text_edit_normalized(cfg: &mut AppConfig) -> bool {
+    const MARKER: &str = "text_edit";
+    const APPLY_PATCH: &str = "apply_patch";
+    const APPLY_PATCH_UNIFIED: &str = "apply_patch_unified_diff";
+    const WRITE_FILE: &str = "write_file";
+    const REPLACE_STRING: &str = "replace_string";
 
     let mut changed = false;
     for ts in &mut cfg.tools.toolsets {
@@ -2789,17 +2792,29 @@ fn ensure_toolset_apply_patch_exclusive(cfg: &mut AppConfig) -> bool {
             }
         }
 
-        let custom_idx = cleaned.iter().position(|t| t == CUSTOM);
-        let unified_idx = cleaned.iter().position(|t| t == UNIFIED);
-        if let (Some(ci), Some(ui)) = (custom_idx, unified_idx) {
-            // 同一 toolset 不允许同时启用两种 apply_patch；保留“先出现”的那一个。
-            let drop = if ci < ui { UNIFIED } else { CUSTOM };
-            cleaned.retain(|t| t != drop);
-            changed = true;
+        // 文本编辑工具统一收敛为抽象开关 `text_edit`：
+        // - 旧配置可能直接包含 apply_patch / apply_patch_unified_diff / write_file / replace_string
+        // - 新配置只保留 `text_edit`，具体实现由“模型的 textEditImplementation”选择
+        let edit_tools = [MARKER, APPLY_PATCH, APPLY_PATCH_UNIFIED, WRITE_FILE, REPLACE_STRING];
+        let first_edit_idx = cleaned
+            .iter()
+            .position(|t| edit_tools.contains(&t.as_str()));
+        let has_any_edit = first_edit_idx.is_some();
+        if has_any_edit {
+            let before = cleaned.clone();
+            cleaned.retain(|t| !edit_tools.contains(&t.as_str()));
+            let insert_at = first_edit_idx
+                .unwrap_or_else(|| cleaned.len())
+                .min(cleaned.len());
+            cleaned.insert(insert_at, MARKER.to_string());
+            if cleaned != before {
+                changed = true;
+            }
         }
 
         if cleaned != ts.tools {
             ts.tools = cleaned;
+            changed = true;
         }
     }
 
