@@ -263,6 +263,25 @@ pub const APPLY_PATCH_TOOL_PROMPT: &str = r#"
 + newline
  context_after
 
+错误示例（不要这样写：锚定行就是你要修改的那一行 / 或者 `-` 行不是“整行原文”）
+下面这段补丁看起来像“锚定第 2 行然后替换它”，但会失败：
+*** Begin Patch
+*** Update File: test_update_2.txt
+@@ Line 2: Second line to change
+-Second line to change
++Second line CHANGED with anchor
+*** End Patch
+
+原因：
+- `@@ <锚定行>` 会把搜索起点移动到“锚定行之后（下一行）”，因此这块无法再替换“锚定行本身”
+- `-<old>` 必须和文件中的“整行原文”一致，不能只写其中一部分（例如原文是 `Line 2: Second line to change`，就必须写 `-Line 2: Second line to change`）
+
+正确写法（示例：锚定到上一行 / 或者不用锚定，改用上下文行定位）：
+@@ Line 1: First line
+-Line 2: Second line to change
++Line 2: Second line CHANGED with anchor
+ Line 3: Third line
+
 
 ### 完整语法（BNF）
 下面是“补丁外壳 + hunks”的形式化语法，便于严格生成：
