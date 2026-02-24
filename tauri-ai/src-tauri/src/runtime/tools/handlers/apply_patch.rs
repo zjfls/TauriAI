@@ -85,7 +85,7 @@ impl ToolHandler for ApplyPatchTool {
         ToolSpec {
             name: APPLY_PATCH_TOOL_NAME.to_string(),
             description: Some(
-                "使用 Codex 风格的 `apply_patch` 编辑工作区文件（Add/Delete/Update/Move）。补丁必须以 `*** Begin Patch` 开头、`*** End Patch` 结尾；`*** Update File` 内用 `@@` 开启变更块，可选 `@@ <单行锚定原文>` 用于推进定位（锚定行只用于定位，不会被替换）。变更块行必须以 ` ` / `-` / `+`（或新的 `@@`）开头；前导空格需精确匹配，且 `+`/`-` 后不要额外加空格。路径使用相对路径；不支持 unified diff 块头（需要行号块头请用 `apply_patch_unified_diff`）。".to_string(),
+                "编辑工作区文件（Add/Delete/Update/Move）。补丁必须以 `*** Begin Patch` 开头、`*** End Patch` 结尾；`*** Update File` 内用 `@@` 开启变更块，可选 `@@ <单行锚定原文>` 用于推进定位（锚定行只用于定位，不会被替换）。变更块行必须以 ` ` / `-` / `+`（或新的 `@@`）开头；前导空格需精确匹配，且 `+`/`-` 后不要额外加空格。路径使用相对路径。".to_string(),
             ),
             parameters: serde_json::json!({
                 "type": "object",
@@ -821,7 +821,7 @@ fn parse_patch_custom(input: &str) -> Result<Vec<Hunk>, ToolError> {
                     .ok_or_else(|| ToolError::invalid("Update File 变更行不能为空"))?;
                 if !matches!(first, ' ' | '+' | '-') {
                     return Err(ToolError::invalid(format!(
-                        "Update File 变更行必须以 ' ' / '+' / '-' / '@@' 开头：{change_line}"
+                        "Update File 的变更块内每一行都必须以 ` ` / `-` / `+` / `@@` 开头（语义前缀）。检测到裸行：{change_line}\n如果这是上下文行，请写成：` {change_line}`（行首加 1 个空格）"
                     )));
                 }
                 if current.is_none() {
@@ -965,7 +965,7 @@ fn parse_patch_unified_diff(input: &str) -> Result<Vec<Hunk>, ToolError> {
                     .ok_or_else(|| ToolError::invalid("Update File 变更行不能为空"))?;
                 if !matches!(first, ' ' | '+' | '-') {
                     return Err(ToolError::invalid(format!(
-                        "Update File 变更行必须以 ' ' / '+' / '-' / '@@' 开头：{change_line}"
+                        "Update File 的变更块内每一行都必须以 ` ` / `-` / `+` / `@@` 开头（语义前缀）。检测到裸行：{change_line}\n如果这是上下文行，请写成：` {change_line}`（行首加 1 个空格）"
                     )));
                 }
 
@@ -1080,7 +1080,9 @@ struct ParsedUpdateHeader {
 }
 
 fn parse_update_header_custom(header: &str) -> Result<ParsedUpdateHeader, ToolError> {
-    let trimmed = header.trim();
+    // Custom anchors treat the header as an exact line match (leading whitespace is significant).
+    // Only trim line-ending whitespace; `seek_sequence` already tolerates `trim_end` when matching.
+    let trimmed = header.trim_end();
     if trimmed.is_empty() {
         return Ok(ParsedUpdateHeader {
             change_context: None,
@@ -1276,8 +1278,7 @@ fn compute_replacements(
                     line_index = idx + 1;
                 } else if !chunk.change_context_soft {
                     return Err(ToolError::new(format!(
-                        "无法找到上下文 '{}'（{}）",
-                        ctx_line,
+                        "无法找到锚定行（@@）: '{ctx_line}'（文件: {}）。\n锚定行必须与文件中的整行原文精确匹配（前导空格也要一致；允许忽略行尾空白）。\n提示：如果你想修改这行本身，不要把它当作锚定行；请改锚定到它的上一行，或用上下文行（以空格开头）+ `-`/`+` 做替换。",
                         path.display()
                     )));
                 }
@@ -1340,8 +1341,25 @@ fn compute_replacements(
             replacements.push((start_idx, pattern.len(), new_slice.to_vec()));
             line_index = start_idx + pattern.len();
         } else {
+            let anchor = chunk
+                .change_context
+                .as_ref()
+                .map(|s| format!("'{}'", s))
+                .unwrap_or_else(|| "<无>".to_string());
+            let start_line_1based = line_index.saturating_add(1);
+            let mut extra_hint = String::new();
+            if let Some(ctx) = chunk.change_context.as_ref() {
+                if chunk
+                    .old_lines
+                    .first()
+                    .is_some_and(|l| l.trim_end() == ctx.trim_end())
+                {
+                    extra_hint.push_str("\n提示：检测到待替换片段的第一行与锚定行相同。`@@ <锚定行>` 会把搜索起点移动到锚定行之后（下一行），因此同一块里通常无法再替换锚定行本身；请改锚定到上一行或改用上下文行定位。\n");
+                }
+            }
+
             return Err(ToolError::new(format!(
-                "无法在 {} 中定位待替换的内容:\n{}",
+                "无法在 {} 中定位待替换片段（old code block；由上下文行 ` ` + 删除行 `-` 组成，必须连续匹配）：\n{}\n\n定位信息：\n- 搜索起点（1-based 行号）：{start_line_1based}\n- 锚定行（@@）：{anchor}\n{extra_hint}\n常见原因：\n- 前导空格/缩进不一致（只忽略行尾空白）\n- `-` 行不是整行原文，或文件已变更/补丁已应用\n- `-`/`+` 后多了空格（会把空格当作内容的一部分）\n建议：补充 1–3 行上下文行（以空格开头）来缩小范围，或把锚定行改成目标行的上一行。",
                 path.display(),
                 chunk.old_lines.join("\n")
             )));
