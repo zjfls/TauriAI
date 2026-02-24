@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
@@ -254,6 +254,8 @@ type OutlineItem = {
   selectionColumn: number;
   children: OutlineItem[];
 };
+
+type OutlineSortMode = 'position' | 'kind' | 'name' | 'size';
 
 type OutlineFileViewState = {
   collapsedKeys: string[];
@@ -729,6 +731,61 @@ const compareOutlinePosition = (a: OutlineItem, b: OutlineItem): number => {
   const nameDiff = a.name.localeCompare(b.name);
   if (nameDiff !== 0) return nameDiff;
   return a.detail.localeCompare(b.detail);
+};
+
+const outlineItemLineCount = (item: OutlineItem): number => {
+  const startLine = clampOutlineLine(item.range.startLine);
+  const endLine = clampOutlineLine(item.range.endLine);
+  const lo = Math.min(startLine, endLine);
+  const hi = Math.max(startLine, endLine);
+  return Math.max(1, hi - lo + 1);
+};
+
+const compareOutlineKind = (a: OutlineItem, b: OutlineItem): number => {
+  const kindDiff = outlineKindRank(a.kind) - outlineKindRank(b.kind);
+  if (kindDiff !== 0) return kindDiff;
+  return compareOutlinePosition(a, b);
+};
+
+const compareOutlineName = (a: OutlineItem, b: OutlineItem): number => {
+  const nameDiff = a.name.localeCompare(b.name);
+  if (nameDiff !== 0) return nameDiff;
+  return compareOutlinePosition(a, b);
+};
+
+const compareOutlineSizeDesc = (a: OutlineItem, b: OutlineItem): number => {
+  const sizeDiff = outlineItemLineCount(b) - outlineItemLineCount(a);
+  if (sizeDiff !== 0) return sizeDiff;
+  return compareOutlinePosition(a, b);
+};
+
+const sortOutlineTreeForDisplay = (items: OutlineItem[], sortMode: OutlineSortMode): OutlineItem[] => {
+  if (items.length === 0) return items;
+  if (sortMode === 'position') return items;
+
+  const compare = (() => {
+    switch (sortMode) {
+      case 'kind':
+        return compareOutlineKind;
+      case 'name':
+        return compareOutlineName;
+      case 'size':
+        return compareOutlineSizeDesc;
+      default:
+        return compareOutlinePosition;
+    }
+  })();
+
+  const walk = (nodes: OutlineItem[]): OutlineItem[] => {
+    const next = nodes.map((node) => ({
+      ...node,
+      children: node.children.length > 0 ? walk(node.children) : [],
+    }));
+    next.sort(compare);
+    return next;
+  };
+
+  return walk(items);
 };
 
 const outlineRangeContains = (parent: OutlineItem, child: OutlineItem): boolean => {
@@ -1450,6 +1507,8 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	  const [outlineMenu, setOutlineMenu] = useState<
 	    | {
 	      visible: true;
+	      anchorX: number;
+	      anchorY: number;
 	      x: number;
 	      y: number;
 	      filePath: string;
@@ -1460,6 +1519,37 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	    }
 	    | null
 	  >(null);
+	  const outlineMenuRef = useRef<HTMLDivElement | null>(null);
+
+	  useLayoutEffect(() => {
+	    if (!outlineMenu?.visible) return;
+	    const el = outlineMenuRef.current;
+	    if (!el) return;
+
+	    const rect = el.getBoundingClientRect();
+	    const vw = window.innerWidth;
+	    const vh = window.innerHeight;
+	    const margin = 8;
+
+	    const anchorX = Number.isFinite(outlineMenu.anchorX) ? outlineMenu.anchorX : outlineMenu.x;
+	    const anchorY = Number.isFinite(outlineMenu.anchorY) ? outlineMenu.anchorY : outlineMenu.y;
+
+	    const maxX = Math.max(margin, vw - rect.width - margin);
+	    const maxY = Math.max(margin, vh - rect.height - margin);
+
+	    let nextX = Math.min(Math.max(margin, anchorX), maxX);
+
+	    const canPlaceDown = anchorY + rect.height + margin <= vh;
+	    const canPlaceUp = anchorY - rect.height - margin >= margin;
+	    let nextY = anchorY;
+	    if (!canPlaceDown && canPlaceUp) {
+	      nextY = anchorY - rect.height;
+	    }
+	    nextY = Math.min(Math.max(margin, nextY), maxY);
+
+	    if (nextX === outlineMenu.x && nextY === outlineMenu.y) return;
+	    setOutlineMenu((prev) => (prev ? { ...prev, x: nextX, y: nextY } : prev));
+	  }, [outlineMenu]);
 	  const [symbolAnalysisCache, setSymbolAnalysisCache] = useState<Record<string, WorkstudioSymbolAnalysis | null>>({});
 	  const symbolAnalysisCacheRef = useRef<Record<string, WorkstudioSymbolAnalysis | null>>({});
 	  useEffect(() => {
@@ -2243,6 +2333,8 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const [outlineOpen, setOutlineOpen] = useState(true);
   const [leftSidebarTab, setLeftSidebarTab] = useState<'explorer' | 'outline'>('explorer');
   const [outlinePreferLsp, setOutlinePreferLsp] = useState(DEFAULT_OUTLINE_PREFER_LSP);
+  const [outlineSortMode, setOutlineSortMode] = useState<OutlineSortMode>('position');
+  const outlineSortButtonRef = useRef<HTMLButtonElement | null>(null);
 
 
 
@@ -2268,6 +2360,10 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const [outlineRefreshSeq, setOutlineRefreshSeq] = useState(0);
   const outlineRequestSeqRef = useRef(0);
   const codeIndexScanStartedRef = useRef<Set<string>>(new Set());
+  const [outlineSortMenu, setOutlineSortMenu] = useState<
+    | { visible: true; x: number; y: number }
+    | null
+  >(null);
   const [lspMenu, setLspMenu] = useState<
     | { visible: true; x: number; y: number }
     | null
@@ -2518,6 +2614,23 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   );
 
   const outlineItemCount = useMemo(() => countOutlineItems(outlineItems), [outlineItems]);
+  const outlineItemsForRender = useMemo(
+    () => sortOutlineTreeForDisplay(outlineItems, outlineSortMode),
+    [outlineItems, outlineSortMode]
+  );
+  const outlineSortModeLabel = useMemo(() => {
+    switch (outlineSortMode) {
+      case 'kind':
+        return '类型';
+      case 'name':
+        return '名称';
+      case 'size':
+        return '大小';
+      case 'position':
+      default:
+        return '位置';
+    }
+  }, [outlineSortMode]);
   const outlineSourceLabel = outlineSource === 'lsp' ? 'LSP' : outlineSource === 'ast' ? 'AST' : '';
   const activeOutlineFilePath = useMemo(
     () => (activeTextFileInFocusedPane ? normalizeFsPath(activeTextFileInFocusedPane.path) : null),
@@ -3576,7 +3689,9 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
             visibility: typeof document !== 'undefined' ? document.visibilityState : null,
           });
           if (typeof target.line === 'number' && target.line > 0) {
-            setOpenFromLinkError(`定位到行超时（${timeoutMs}ms）：${target.filePath}:${target.line}`);
+            const msg = `定位到行超时（${timeoutMs}ms）：${target.filePath}:${target.line}`;
+            setOpenFromLinkError(msg);
+            void showGlobalError('打开链接文件失败', msg);
           }
           return;
         }
@@ -3638,11 +3753,12 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       } catch (fallbackError) {
         console.error('open file from link failed:', fallbackError);
         dbg('openLinkTarget:failed', { seq, error: String(fallbackError) });
-        setOpenFromLinkError(
+        const msg =
           typeof fallbackError === 'string'
             ? fallbackError
-            : (fallbackError as any)?.message ?? '打开文件失败'
-        );
+            : (fallbackError as any)?.message ?? '打开文件失败';
+        setOpenFromLinkError(msg);
+        void showGlobalError('打开链接文件失败', msg, fallbackError);
       }
     }
   }, [dbg, openFileAtPath, revealFileInExplorer, uiStateRestored, workstudioId, ws]);
@@ -5046,6 +5162,8 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
 	      setOutlineMenu({
 	        visible: true,
+	        anchorX: e.clientX,
+	        anchorY: e.clientY,
 	        x: e.clientX,
 	        y: e.clientY,
 	        filePath,
@@ -7998,16 +8116,17 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   }, [lspMenu, refreshCodeIndexBrief]);
 
   useEffect(() => {
-    if (!contextMenu && !tabMenu && !lspMenu && !outlineMenu) return;
+    if (!contextMenu && !tabMenu && !lspMenu && !outlineMenu && !outlineSortMenu) return;
     const onDown = () => {
       setContextMenu(null);
       setTabMenu(null);
       setLspMenu(null);
       setOutlineMenu(null);
+      setOutlineSortMenu(null);
     };
     window.addEventListener('mousedown', onDown);
     return () => window.removeEventListener('mousedown', onDown);
-  }, [contextMenu, lspMenu, outlineMenu, tabMenu]);
+  }, [contextMenu, lspMenu, outlineMenu, outlineSortMenu, tabMenu]);
 
   useEffect(() => {
     let disposed = false;
@@ -8843,6 +8962,27 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                     LSP优先
                   </button>
                   <button
+                    ref={outlineSortButtonRef}
+                    type="button"
+                    className="inline-flex items-center gap-1 rounded border border-gray-200 px-2 py-1 text-[11px] font-semibold text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+                    onClick={() => {
+                      const btn = outlineSortButtonRef.current;
+                      if (!btn) return;
+                      if (outlineSortMenu) {
+                        setOutlineSortMenu(null);
+                        return;
+                      }
+                      const rect = btn.getBoundingClientRect();
+                      const menuWidth = 240;
+                      const x = Math.max(8, Math.min(rect.left, window.innerWidth - menuWidth - 8));
+                      setOutlineSortMenu({ visible: true, x, y: rect.bottom + 4 });
+                    }}
+                    title="Outline 排序"
+                  >
+                    <span className="whitespace-nowrap">排序:{outlineSortModeLabel}</span>
+                    <ChevronDown size={12} className="opacity-70" />
+                  </button>
+                  <button
                     type="button"
                     className="rounded border border-gray-200 p-1 text-gray-500 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
                     onClick={() => {
@@ -8895,7 +9035,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                             </div>
                           )}
                           <div className="space-y-0.5">
-                            {renderOutlineNodes(outlineItems)}
+                            {renderOutlineNodes(outlineItemsForRender)}
                           </div>
                         </div>
                       ) : outlineLoading ? (
@@ -9710,8 +9850,45 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         </div>
       )}
 
+      {outlineSortMenu && (
+        <div
+          className="fixed z-[205] min-w-[240px] rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900"
+          style={{ left: outlineSortMenu.x, top: outlineSortMenu.y }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">Outline 排序</div>
+          <div className="py-1 text-sm">
+            {(
+              [
+                { mode: 'position' as OutlineSortMode, label: '按位置（代码顺序）' },
+                { mode: 'kind' as OutlineSortMode, label: '按类型（类/函数/变量）' },
+                { mode: 'name' as OutlineSortMode, label: '按名称（A→Z）' },
+                { mode: 'size' as OutlineSortMode, label: '按大小（行数大→小）' },
+              ] as Array<{ mode: OutlineSortMode; label: string }>
+            ).map((opt) => {
+              const active = outlineSortMode === opt.mode;
+              return (
+                <button
+                  key={`outline-sort:${opt.mode}`}
+                  type="button"
+                  className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+                  onClick={() => {
+                    setOutlineSortMode(opt.mode);
+                    setOutlineSortMenu(null);
+                  }}
+                >
+                  <span>{opt.label}</span>
+                  {active ? <CheckCircle2 size={14} className="text-blue-600 dark:text-blue-300" /> : null}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {outlineMenu && (
         <div
+          ref={outlineMenuRef}
           className="fixed z-[205] min-w-[220px] rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900"
           style={{ left: outlineMenu.x, top: outlineMenu.y }}
           onMouseDown={(e) => e.stopPropagation()}
