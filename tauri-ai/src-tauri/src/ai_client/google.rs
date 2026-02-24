@@ -15,7 +15,7 @@ use super::traits::{
 use super::utf8_stream::Utf8StreamDecoder;
 use super::{
     format_reqwest_stream_error, summarize_reqwest_error, summarize_reqwest_stream_error,
-    StreamProtocolContext,
+    push_raw_event_tail, StreamProtocolContext,
 };
 use crate::models::{Message, MessageRole, ModelConfig};
 
@@ -792,6 +792,7 @@ impl AiClient for GoogleClient {
         let mut chunk_count: u32 = 0;
         let mut event_count: u32 = 0;
         let mut last_sse_data: Option<String> = None;
+        let mut raw_event_tail: Vec<String> = Vec::new();
         // SSE 可能跨 chunk 切分；用行缓冲拼接，避免 JSON 被拆开后无法解析、导致 thinking/text 丢失。
         let mut tool_calls: Vec<ToolCall> = Vec::new();
         let mut tool_calls_to_emit: Option<Vec<ToolCall>> = None;
@@ -871,6 +872,11 @@ impl AiClient for GoogleClient {
                             observed_signal: None,
                             last_event_type: Some("transport_error".to_string()),
                             chunk_count: Some(chunk_count),
+                            raw_event_tail: if raw_event_tail.is_empty() {
+                                None
+                            } else {
+                                Some(raw_event_tail.clone())
+                            },
                         }),
                     };
 
@@ -914,6 +920,7 @@ impl AiClient for GoogleClient {
                     if config.debug_sse {
                         eprintln!("[SSE][{}/{}] {}", config.provider, config.model, data);
                     }
+                    push_raw_event_tail(&mut raw_event_tail, data);
                     if data.trim().is_empty() {
                         continue;
                     }
@@ -1069,6 +1076,11 @@ impl AiClient for GoogleClient {
                 observed_signal: None,
                 last_event_type: None,
                 chunk_count: Some(chunk_count),
+                raw_event_tail: if raw_event_tail.is_empty() {
+                    None
+                } else {
+                    Some(raw_event_tail)
+                },
             }),
         };
 

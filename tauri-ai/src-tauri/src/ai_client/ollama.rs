@@ -15,7 +15,7 @@ use super::traits::{
 use super::utf8_stream::Utf8StreamDecoder;
 use super::{
     format_reqwest_stream_error, summarize_reqwest_error, summarize_reqwest_stream_error,
-    StreamProtocolContext,
+    push_raw_event_tail, StreamProtocolContext,
 };
 use crate::models::{Message, MessageRole, ModelConfig};
 
@@ -249,6 +249,7 @@ impl AiClient for OllamaClient {
                     observed_signal: None,
                     last_event_type: None,
                     chunk_count: Some(0),
+                    raw_event_tail: None,
                 }),
             };
 
@@ -288,6 +289,7 @@ impl AiClient for OllamaClient {
         let mut chunk_count: u32 = 0;
         let mut line_count: u32 = 0;
         let mut last_line: Option<String> = None;
+        let mut raw_event_tail: Vec<String> = Vec::new();
 
         while let Some(chunk_result) = stream.next().await {
             let chunk = match chunk_result {
@@ -339,6 +341,11 @@ impl AiClient for OllamaClient {
                             observed_signal: None,
                             last_event_type: Some("transport_error".to_string()),
                             chunk_count: Some(chunk_count),
+                            raw_event_tail: if raw_event_tail.is_empty() {
+                                None
+                            } else {
+                                Some(raw_event_tail.clone())
+                            },
                         }),
                     };
 
@@ -374,6 +381,7 @@ impl AiClient for OllamaClient {
 
                 line_count = line_count.saturating_add(1);
                 last_line = Some(line.chars().take(1200).collect::<String>());
+                push_raw_event_tail(&mut raw_event_tail, &line);
 
                 if let Ok(stream_response) = serde_json::from_str::<StreamResponse>(&line) {
                     if let Some(message) = stream_response.message {
@@ -406,6 +414,11 @@ impl AiClient for OllamaClient {
                                 observed_signal: Some("done=true".to_string()),
                                 last_event_type: Some("done".to_string()),
                                 chunk_count: Some(chunk_count),
+                                raw_event_tail: if raw_event_tail.is_empty() {
+                                    None
+                                } else {
+                                    Some(raw_event_tail.clone())
+                                },
                             }),
                         };
 
@@ -461,6 +474,11 @@ impl AiClient for OllamaClient {
                 observed_signal: None,
                 last_event_type: Some("stream_eof".to_string()),
                 chunk_count: Some(chunk_count),
+                raw_event_tail: if raw_event_tail.is_empty() {
+                    None
+                } else {
+                    Some(raw_event_tail)
+                },
             }),
         };
 

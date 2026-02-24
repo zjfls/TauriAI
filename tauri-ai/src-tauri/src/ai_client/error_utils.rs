@@ -6,6 +6,32 @@ use serde::{Deserialize, Serialize};
 
 const MAX_ERROR_TEXT_LEN: usize = 12_000;
 const MAX_SNIPPET_CHARS: usize = 1200;
+const DEFAULT_RAW_EVENT_TAIL_MAX_ITEMS: usize = 24;
+const DEFAULT_RAW_EVENT_TAIL_MAX_CHARS: usize = 1600;
+
+pub(crate) fn push_raw_event_tail(tail: &mut Vec<String>, raw: &str) {
+    if raw.is_empty() {
+        return;
+    }
+
+    let mut out = String::new();
+    let mut it = raw.chars();
+    for _ in 0..DEFAULT_RAW_EVENT_TAIL_MAX_CHARS {
+        match it.next() {
+            Some(ch) => out.push(ch),
+            None => break,
+        }
+    }
+    if it.next().is_some() {
+        out.push('…');
+    }
+
+    tail.push(out);
+    if tail.len() > DEFAULT_RAW_EVENT_TAIL_MAX_ITEMS {
+        let excess = tail.len() - DEFAULT_RAW_EVENT_TAIL_MAX_ITEMS;
+        tail.drain(0..excess);
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct StreamProtocolContext {

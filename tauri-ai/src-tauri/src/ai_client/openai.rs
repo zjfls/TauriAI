@@ -19,7 +19,7 @@ use super::traits::{
 use super::utf8_stream::Utf8StreamDecoder;
 use super::{
     format_reqwest_stream_error, summarize_reqwest_error, summarize_reqwest_stream_error,
-    StreamProtocolContext,
+    push_raw_event_tail, StreamProtocolContext,
 };
 use crate::models::{ImageDetail, Message, MessageRole, ModelConfig};
 
@@ -874,6 +874,7 @@ impl OpenAiBaseClient {
                     observed_signal: None,
                     last_event_type: None,
                     chunk_count: Some(0),
+                    raw_event_tail: None,
                 }),
             };
 
@@ -924,6 +925,7 @@ impl OpenAiBaseClient {
         let mut chunk_count: u32 = 0;
         let mut event_count: u32 = 0;
         let mut last_sse_data: Option<String> = None;
+        let mut raw_event_tail: Vec<String> = Vec::new();
         // SSE 可能在任意字节边界切片；用行缓冲拼接，避免 JSON 被拆分后解析失败导致丢 token。
         let mut sse_buffer = String::new();
         let mut utf8 = Utf8StreamDecoder::default();
@@ -1003,6 +1005,11 @@ impl OpenAiBaseClient {
                             observed_signal: None,
                             last_event_type: None,
                             chunk_count: Some(chunk_count),
+                            raw_event_tail: if raw_event_tail.is_empty() {
+                                None
+                            } else {
+                                Some(raw_event_tail.clone())
+                            },
                         }),
                     };
 
@@ -1046,6 +1053,7 @@ impl OpenAiBaseClient {
                     if config.debug_sse {
                         eprintln!("[SSE][{}/{}] {}", config.provider, config.model, data);
                     }
+                    push_raw_event_tail(&mut raw_event_tail, data);
                     if data.trim() == "[DONE]" {
                         if !tool_calls_sent {
                             let mut calls: Vec<ToolCall> = Vec::new();
@@ -1120,6 +1128,11 @@ impl OpenAiBaseClient {
                                 observed_signal: Some("[DONE]".to_string()),
                                 last_event_type: None,
                                 chunk_count: Some(chunk_count),
+                                raw_event_tail: if raw_event_tail.is_empty() {
+                                    None
+                                } else {
+                                    Some(raw_event_tail.clone())
+                                },
                             }),
                         };
 
@@ -1315,6 +1328,11 @@ impl OpenAiBaseClient {
                 observed_signal: None,
                 last_event_type: None,
                 chunk_count: Some(chunk_count),
+                raw_event_tail: if raw_event_tail.is_empty() {
+                    None
+                } else {
+                    Some(raw_event_tail)
+                },
             }),
         };
 

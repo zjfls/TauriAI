@@ -156,6 +156,10 @@ pub struct StreamTerminationInfo {
     /// Number of received stream chunks (for diagnostics).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chunk_count: Option<u32>,
+    /// Tail of raw provider stream payloads (for diagnostics).
+    /// For SSE providers, this is the `data:` payload after stripping the `data:` prefix.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_event_tail: Option<Vec<String>>,
 }
 
 /// Debug information for HTTP request/response

@@ -36,7 +36,7 @@ use super::traits::{
 use super::utf8_stream::Utf8StreamDecoder;
 use super::{
     format_reqwest_stream_error, summarize_reqwest_error, summarize_reqwest_stream_error,
-    StreamProtocolContext,
+    push_raw_event_tail, StreamProtocolContext,
 };
 use crate::models::{ImageDetail, Message, MessageRole, ModelConfig};
 use std::collections::{HashMap, HashSet};
@@ -1059,6 +1059,7 @@ impl AiClient for OpenAiResponsesClient {
                     observed_signal: None,
                     last_event_type: None,
                     chunk_count: Some(0),
+                    raw_event_tail: None,
                 }),
             };
 
@@ -1120,6 +1121,7 @@ impl AiClient for OpenAiResponsesClient {
         let mut event_count: u32 = 0;
         let mut last_event_type: Option<String> = None;
         let mut last_sse_data: Option<String> = None;
+        let mut raw_event_tail: Vec<String> = Vec::new();
         // SSE 可能跨 chunk 切分；用行缓冲拼接，避免 JSON 被拆开导致事件丢失（text/thinking/web_search/usage）。
         let mut sse_buffer = String::new();
         let mut utf8 = Utf8StreamDecoder::default();
@@ -1225,6 +1227,11 @@ impl AiClient for OpenAiResponsesClient {
                             observed_signal: None,
                             last_event_type: last_event_type.clone(),
                             chunk_count: Some(chunk_count),
+                            raw_event_tail: if raw_event_tail.is_empty() {
+                                None
+                            } else {
+                                Some(raw_event_tail.clone())
+                            },
                         }),
                     };
 
@@ -1267,6 +1274,7 @@ impl AiClient for OpenAiResponsesClient {
                     if config.debug_sse {
                         eprintln!("[SSE][{}/{}] {}", config.provider, config.model, data);
                     }
+                    push_raw_event_tail(&mut raw_event_tail, data);
                     if data.trim() == "[DONE]" {
                         // 兜底：如果没有收到 response.completed，但已经收集到 function tool calls，则按工具调用回传
                         if !function_calls_by_item_id.is_empty() {
@@ -1332,6 +1340,11 @@ impl AiClient for OpenAiResponsesClient {
                                 observed_signal: Some("[DONE]".to_string()),
                                 last_event_type: last_event_type.clone(),
                                 chunk_count: Some(chunk_count),
+                                raw_event_tail: if raw_event_tail.is_empty() {
+                                    None
+                                } else {
+                                    Some(raw_event_tail.clone())
+                                },
                             }),
                         };
 
@@ -1667,6 +1680,11 @@ impl AiClient for OpenAiResponsesClient {
                                         observed_signal: Some("error".to_string()),
                                         last_event_type: last_event_type.clone(),
                                         chunk_count: Some(chunk_count),
+                                        raw_event_tail: if raw_event_tail.is_empty() {
+                                            None
+                                        } else {
+                                            Some(raw_event_tail.clone())
+                                        },
                                     }),
                                 };
 
@@ -1788,6 +1806,11 @@ impl AiClient for OpenAiResponsesClient {
                                         observed_signal: Some(event_type.to_string()),
                                         last_event_type: last_event_type.clone(),
                                         chunk_count: Some(chunk_count),
+                                        raw_event_tail: if raw_event_tail.is_empty() {
+                                            None
+                                        } else {
+                                            Some(raw_event_tail.clone())
+                                        },
                                     }),
                                 };
 
@@ -1961,6 +1984,11 @@ impl AiClient for OpenAiResponsesClient {
                                         observed_signal: Some(event_type.to_string()),
                                         last_event_type: Some(event_type.to_string()),
                                         chunk_count: Some(chunk_count),
+                                        raw_event_tail: if raw_event_tail.is_empty() {
+                                            None
+                                        } else {
+                                            Some(raw_event_tail.clone())
+                                        },
                                     }),
                                 };
 
@@ -2053,6 +2081,11 @@ impl AiClient for OpenAiResponsesClient {
                 observed_signal: None,
                 last_event_type,
                 chunk_count: Some(chunk_count),
+                raw_event_tail: if raw_event_tail.is_empty() {
+                    None
+                } else {
+                    Some(raw_event_tail)
+                },
             }),
         };
 

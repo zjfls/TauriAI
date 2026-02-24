@@ -842,6 +842,7 @@ export interface StreamTerminationInfo {
   observedSignal?: string;
   lastEventType?: string;
   chunkCount?: number;
+  rawEventTail?: string[];
 }
 
 export interface DebugInfo {

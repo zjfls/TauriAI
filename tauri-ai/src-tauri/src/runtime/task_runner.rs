@@ -5082,6 +5082,33 @@ async fn stream_one_turn(
         }
     }
 
+    fn push_delta_tail(tail: &mut Vec<String>, delta: &str) {
+        const MAX_ITEMS: usize = 16;
+        const MAX_CHARS: usize = 240;
+
+        if delta.is_empty() {
+            return;
+        }
+
+        let mut out = String::new();
+        let mut it = delta.chars();
+        for _ in 0..MAX_CHARS {
+            match it.next() {
+                Some(ch) => out.push(ch),
+                None => break,
+            }
+        }
+        if it.next().is_some() {
+            out.push('…');
+        }
+
+        tail.push(out);
+        if tail.len() > MAX_ITEMS {
+            let excess = tail.len() - MAX_ITEMS;
+            tail.drain(0..excess);
+        }
+    }
+
     let messages = sanitize_messages_for_model_input(messages);
 
     let mut full_content = String::new();
@@ -5102,6 +5129,8 @@ async fn stream_one_turn(
         let mut web_search_event_count: u32 = 0;
         let mut tool_call_event_count: u32 = 0;
         let mut error_event_count: u32 = 0;
+        let mut token_delta_tail: Vec<String> = Vec::new();
+        let mut thinking_delta_tail: Vec<String> = Vec::new();
 
         // 请求级重试：本轮尚未产生任何增量输出，可以安全清空本地缓冲。
         // 流式重连：保留已输出内容，只清理本轮临时信息。
@@ -5152,6 +5181,7 @@ async fn stream_one_turn(
                         Some(StreamEvent::Token(token)) => {
                             emitted_any_delta = true;
                             token_chunk_count = token_chunk_count.saturating_add(1);
+                            push_delta_tail(&mut token_delta_tail, &token);
                             full_content.push_str(&token);
                             emitter.emit(RunEvent::BlockDelta {
                                 task_id: task_id.to_string(),
@@ -5166,6 +5196,7 @@ async fn stream_one_turn(
                         Some(StreamEvent::Thinking(token)) => {
                             emitted_any_delta = true;
                             thinking_chunk_count = thinking_chunk_count.saturating_add(1);
+                            push_delta_tail(&mut thinking_delta_tail, &token);
                             full_thinking.push_str(&token);
                             emitter.emit(RunEvent::BlockDelta {
                                 task_id: task_id.to_string(),
@@ -5323,6 +5354,42 @@ async fn stream_one_turn(
                 if !term_lines.is_empty() {
                     lines.push("".to_string());
                     lines.push(format!("- stream_termination: {}", term_lines.join(", ")));
+                }
+
+                if let Some(raw_tail) = term.raw_event_tail.as_ref().filter(|t| !t.is_empty()) {
+                    let sample: Vec<String> = raw_tail
+                        .iter()
+                        .rev()
+                        .take(6)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect();
+                    lines.push(format!("- raw_event_tail_count: {}", raw_tail.len()));
+                    lines.push(format!(
+                        "- raw_event_tail_last: {}",
+                        serde_json::to_string(&sample).unwrap_or_else(|_| "[]".to_string())
+                    ));
+                }
+            }
+
+            if !token_delta_tail.is_empty() || !thinking_delta_tail.is_empty() {
+                lines.push("".to_string());
+                lines.push("收到的增量（尾部，已截断）：".to_string());
+                if !token_delta_tail.is_empty() {
+                    lines.push(format!(
+                        "- token_delta_tail: {}",
+                        serde_json::to_string(&token_delta_tail)
+                            .unwrap_or_else(|_| "[]".to_string())
+                    ));
+                }
+                if !thinking_delta_tail.is_empty() {
+                    lines.push(format!(
+                        "- thinking_delta_tail: {}",
+                        serde_json::to_string(&thinking_delta_tail)
+                            .unwrap_or_else(|_| "[]".to_string())
+                    ));
                 }
             }
 

@@ -248,6 +248,12 @@ const normalizeStreamTerminationInfo = (debugInfo: DebugInfo | null | undefined)
     return t.length > 0 ? t : undefined;
   };
 
+  const pickStringArray = (v: unknown): string[] | undefined => {
+    if (!Array.isArray(v)) return undefined;
+    const out = v.filter((x): x is string => typeof x === 'string');
+    return out.length > 0 ? out : undefined;
+  };
+
   const protocolComplete =
     typeof (raw as any).protocolComplete === 'boolean'
       ? (raw as any).protocolComplete
@@ -270,6 +276,7 @@ const normalizeStreamTerminationInfo = (debugInfo: DebugInfo | null | undefined)
     observedSignal: pickString((raw as any).observedSignal) ?? pickString((raw as any).observed_signal),
     lastEventType: pickString((raw as any).lastEventType) ?? pickString((raw as any).last_event_type),
     chunkCount,
+    rawEventTail: pickStringArray((raw as any).rawEventTail) ?? pickStringArray((raw as any).raw_event_tail),
   };
 };
 
@@ -1228,6 +1235,18 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                       <div className="mt-1 text-[11px] text-gray-600 dark:text-gray-300">
                         {streamTerminationSummary.detail}
                       </div>
+                      {streamTerminationInfo?.rawEventTail && streamTerminationInfo.rawEventTail.length > 0 && (
+                        <div className="mt-2">
+                          <TextViewer
+                            label={`raw msg（尾部 ${streamTerminationInfo.rawEventTail.length} 条）`}
+                            text={streamTerminationInfo.rawEventTail
+                              .map((line, idx) => `${idx + 1}. ${line}`)
+                              .join('\n')}
+                            maxHeightClassName="max-h-56"
+                            containerClassName="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200"
+                          />
+                        </div>
+                      )}
                     </div>
 
                     {Object.keys(effectiveDebugInfo.response.headers).length > 0 && (
