@@ -85,14 +85,14 @@ impl ToolHandler for ApplyPatchTool {
         ToolSpec {
             name: APPLY_PATCH_TOOL_NAME.to_string(),
             description: Some(
-                "使用 Codex 风格补丁格式编辑工作区文件（Add/Delete/Update/Move）。Update File 的块头仅支持自定义锚定（`@@ <原文行>`）；不支持 unified diff 头。".to_string(),
+                "使用 `apply_patch` 补丁格式编辑工作区文件（Add/Delete/Update/Move）。`*** Update File` 内的变更块以 `@@` 开头，可选写成 `@@ <锚定行>`（锚定行是一整行原文，只用于推进后续搜索起点）。定位匹配时：不忽略前导空格（leading whitespace），仅允许忽略行尾空白（trim_end）；因此缩进必须写对。context 行（以空格开头）可出现在 `-`/`+` 前后，工具按你写的顺序保持相对位置。纯 `+`（无 context/`-`）时：有锚定则插入到锚定行之后；无锚定则默认插入到文件开头。锚定行若在文件中出现多次，将从当前搜索起点向下选择第一处命中；但若“待替换片段”（context lines + `-` lines 组成的连续旧内容）在文件中出现多次，会报错拒绝执行（避免误修改）。变更块内每行必须以 ` ` / `+` / `-` / `@@` 开头；`+`/`-` 后不要为美观额外加空格。".to_string(),
             ),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "input": {
                         "type": "string",
-                        "description": "补丁正文（Codex 风格 apply_patch 格式，以 `*** Begin Patch` 开头、`*** End Patch` 结尾）。"
+                        "description": "补丁正文（apply_patch 格式文本，以 `*** Begin Patch` 开头、`*** End Patch` 结尾）。"
                     }
                 },
                 "required": ["input"],
@@ -121,14 +121,14 @@ impl ToolHandler for ApplyPatchUnifiedDiffTool {
         ToolSpec {
             name: APPLY_PATCH_UNIFIED_DIFF_TOOL_NAME.to_string(),
             description: Some(
-                "使用 Codex 风格补丁格式编辑工作区文件（Add/Delete/Update/Move）。Update File 的块头仅支持 unified diff 头（`@@ -a,b +c,d @@ heading`）；不支持自定义锚定头。".to_string(),
+                "使用 `apply_patch_unified_diff` 补丁格式编辑工作区文件（Add/Delete/Update/Move）。Update File 的块头必须为 unified diff 头：`@@ -old_start,old_count +new_start,new_count @@ optional heading`。变更块内每行必须以 ` ` / `+` / `-` 开头（不允许裸行）。".to_string(),
             ),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "input": {
                         "type": "string",
-                        "description": "补丁正文（Codex 风格补丁外壳 + unified diff 变更块头）。"
+                        "description": "补丁正文（补丁外壳 + unified diff 变更块头）。"
                     }
                 },
                 "required": ["input"],
@@ -147,7 +147,13 @@ impl ToolHandler for ApplyPatchUnifiedDiffTool {
         ctx: &mut ToolExecutionContext<'_>,
         call: &ToolCall,
     ) -> Result<ToolCallResult, ToolError> {
-        call_apply_patch_tool(APPLY_PATCH_UNIFIED_DIFF_TOOL_NAME, ctx, call, parse_patch_unified_diff).await
+        call_apply_patch_tool(
+            APPLY_PATCH_UNIFIED_DIFF_TOOL_NAME,
+            ctx,
+            call,
+            parse_patch_unified_diff,
+        )
+        .await
     }
 }
 
@@ -224,8 +230,7 @@ async fn call_apply_patch_tool(
 
     match resolve_repo_root(&base_dir).await {
         Ok(root) => {
-            let prefix =
-                repo_prefix(&root, &base_dir).map(|p| p.to_string_lossy().to_string());
+            let prefix = repo_prefix(&root, &base_dir).map(|p| p.to_string_lossy().to_string());
             repo_root = Some(root.clone());
             work_tree = Some(root.clone());
 
@@ -388,7 +393,10 @@ struct AffectedPaths {
     deleted: Vec<PathBuf>,
 }
 
-fn collect_patch_paths(base_dir: &Path, hunks: &[Hunk]) -> Result<(Vec<PathBuf>, Vec<PathBuf>), ToolError> {
+fn collect_patch_paths(
+    base_dir: &Path,
+    hunks: &[Hunk],
+) -> Result<(Vec<PathBuf>, Vec<PathBuf>), ToolError> {
     let mut affected: Vec<PathBuf> = Vec::new();
     let mut created: Vec<PathBuf> = Vec::new();
 
@@ -404,9 +412,7 @@ fn collect_patch_paths(base_dir: &Path, hunks: &[Hunk]) -> Result<(Vec<PathBuf>,
                 affected.push(abs);
             }
             Hunk::UpdateFile {
-                path,
-                move_path,
-                ..
+                path, move_path, ..
             } => {
                 let src_abs = resolve_patch_path(base_dir, path)?;
                 affected.push(src_abs.clone());
@@ -1256,72 +1262,79 @@ fn compute_replacements(
     let mut line_index: usize = 0;
 
     for chunk in chunks {
-	        if let Some(ctx_line) = chunk.change_context.as_ref() {
-	            let ctx_pattern = vec![ctx_line.to_string()];
-	            let found = seek_sequence(
-                original_lines,
-                &ctx_pattern,
-                line_index,
-                false,
-                chunk.line_hint,
-                if chunk.change_context_soft {
-                    SeekAmbiguityPolicy::Ignore
-                } else {
-                    SeekAmbiguityPolicy::Error
-                },
-            )?;
-            if let Some(idx) = found {
-                line_index = idx + 1;
-            } else if !chunk.change_context_soft {
-                return Err(ToolError::new(format!(
-                    "无法找到上下文 '{}'（{}）",
-                    ctx_line,
-                    path.display()
-                )));
-	            }
-	        }
+            if let Some(ctx_line) = chunk.change_context.as_ref() {
+                let ctx_pattern = vec![ctx_line.to_string()];
+                let found = seek_sequence(
+                    original_lines,
+                    &ctx_pattern,
+                    line_index,
+                    false,
+                    chunk.line_hint,
+                    SeekAmbiguityPolicy::FirstMatch,
+                )?;
+                if let Some(idx) = found {
+                    line_index = idx + 1;
+                } else if !chunk.change_context_soft {
+                    return Err(ToolError::new(format!(
+                        "无法找到上下文 '{}'（{}）",
+                        ctx_line,
+                        path.display()
+                    )));
+                }
+            }
 
-	        // Anchor-only chunk (no changes). This enables multi-line anchoring by repeating
-	        // `@@ <exact line>` headers (Codex-like) without triggering any insertion.
-	        if chunk.old_lines.is_empty() && chunk.new_lines.is_empty() {
-	            continue;
-	        }
+        // Anchor-only chunk (no changes). This enables multi-line anchoring by repeating
+        // `@@ <exact line>` headers (Codex-like) without triggering any insertion.
+        if chunk.old_lines.is_empty() && chunk.new_lines.is_empty() {
+            continue;
+        }
 
-	        if chunk.old_lines.is_empty() {
-	            // Insertion chunk: prefer unified diff line hints; otherwise insert at the current
-	            // cursor (advanced by previous anchors).
-	            let insert_at = chunk.line_hint.unwrap_or(line_index);
-	            let insert_at = insert_at.min(original_lines.len());
-	            replacements.push((insert_at, 0, chunk.new_lines.clone()));
-	            line_index = line_index.max(insert_at);
-	            continue;
-	        }
+        if chunk.old_lines.is_empty() {
+            // Insertion chunk (only '+' lines, no '-'/' ' context).
+            //
+            // Policy:
+            // - If an explicit anchor was provided (`@@ <anchorline>`), insert right after the
+            //   anchored location (i.e., at the current cursor).
+            // - Otherwise, default to inserting at the beginning of the file.
+            //
+            // Note: unified diff may provide a line hint; if present, use it.
+            let insert_at = if let Some(h) = chunk.line_hint {
+                h
+            } else if chunk.change_context.is_some() {
+                line_index
+            } else {
+                0
+            };
+            let insert_at = insert_at.min(original_lines.len());
+            replacements.push((insert_at, 0, chunk.new_lines.clone()));
+            continue;
+        }
 
         let mut pattern: &[String] = &chunk.old_lines;
         let mut new_slice: &[String] = &chunk.new_lines;
-        let mut found = seek_sequence(
-            original_lines,
-            pattern,
-            line_index,
-            chunk.is_end_of_file,
-            chunk.line_hint,
-            SeekAmbiguityPolicy::Error,
-        )?;
+            let mut found = seek_sequence(
+                original_lines,
+                pattern,
+                line_index,
+                chunk.is_end_of_file,
+                chunk.line_hint,
+                SeekAmbiguityPolicy::RequireUniqueIfNoHint,
+            )?;
 
         if found.is_none() && pattern.last().is_some_and(String::is_empty) {
             pattern = &pattern[..pattern.len() - 1];
             if new_slice.last().is_some_and(String::is_empty) {
                 new_slice = &new_slice[..new_slice.len() - 1];
             }
-            found = seek_sequence(
-                original_lines,
-                pattern,
-                line_index,
-                chunk.is_end_of_file,
-                chunk.line_hint,
-                SeekAmbiguityPolicy::Error,
-            )?;
-        }
+                found = seek_sequence(
+                    original_lines,
+                    pattern,
+                    line_index,
+                    chunk.is_end_of_file,
+                    chunk.line_hint,
+                    SeekAmbiguityPolicy::RequireUniqueIfNoHint,
+                )?;
+            }
 
         if let Some(start_idx) = found {
             replacements.push((start_idx, pattern.len(), new_slice.to_vec()));
@@ -1339,10 +1352,10 @@ fn compute_replacements(
     Ok(replacements)
 }
 
-fn apply_replacements(
-    mut lines: Vec<String>,
-    replacements: &[(usize, usize, Vec<String>)],
-) -> Vec<String> {
+    fn apply_replacements(
+        mut lines: Vec<String>,
+        replacements: &[(usize, usize, Vec<String>)],
+    ) -> Vec<String> {
     for (start_idx, old_len, new_segment) in replacements.iter().rev() {
         let start_idx = *start_idx;
         let old_len = *old_len;
@@ -1357,23 +1370,30 @@ fn apply_replacements(
             lines.insert(start_idx + offset, new_line.clone());
         }
     }
-    lines
+        lines
 }
 
-#[derive(Debug, Clone, Copy)]
-enum SeekAmbiguityPolicy {
-    Error,
-    Ignore,
+    #[derive(Debug, Clone, Copy)]
+    enum SeekAmbiguityPolicy {
+        /// 多处命中时选择第一处（若提供了 line_hint，则选择最接近 hint 的那一处）。
+        ///
+        /// 用途：`@@ <锚定行>` 只负责推进搜索起点，允许锚定行在文件中出现多次。
+        FirstMatch,
+        /// 多处命中时要求唯一；但如果提供了 line_hint，则用 hint 消歧并选择最接近的一处。
+        ///
+        /// 用途：`old_lines`（context lines + `-` lines 组成的连续片段）一旦多处命中就有较大概率“改错地方”，
+        /// 因此默认拒绝并提示补充更多上下文行或更具体锚点。
+        RequireUniqueIfNoHint,
 }
 
-fn seek_sequence(
-    lines: &[String],
-    pattern: &[String],
-    start: usize,
-    eof: bool,
-    hint: Option<usize>,
-    ambiguity_policy: SeekAmbiguityPolicy,
-) -> Result<Option<usize>, ToolError> {
+    fn seek_sequence(
+        lines: &[String],
+        pattern: &[String],
+        start: usize,
+        eof: bool,
+        hint: Option<usize>,
+        ambiguity_policy: SeekAmbiguityPolicy,
+    ) -> Result<Option<usize>, ToolError> {
     if pattern.is_empty() {
         return Ok(Some(start));
     }
@@ -1391,9 +1411,8 @@ fn seek_sequence(
         return Ok(None);
     }
 
-    fn normalise(s: &str) -> String {
-        s.trim()
-            .chars()
+    fn normalise_no_trim(s: &str) -> String {
+        s.chars()
             .map(|c| match c {
                 '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}' | '\u{2014}' | '\u{2015}'
                 | '\u{2212}' => '-',
@@ -1452,25 +1471,14 @@ fn seek_sequence(
         );
     }
     if candidates.is_empty() {
-        // 3) trim (ignore leading whitespace too)
+        // 3) normalize unicode punctuation/whitespace (do NOT trim; keep leading whitespace strict)
         scan(
             &mut candidates,
             lines,
             pattern,
             search_start,
             max_start,
-            |a, b| a.trim() == b.trim(),
-        );
-    }
-    if candidates.is_empty() {
-        // 4) normalize unicode punctuation/whitespace
-        scan(
-            &mut candidates,
-            lines,
-            pattern,
-            search_start,
-            max_start,
-            |a, b| normalise(a) == normalise(b),
+            |a, b| normalise_no_trim(a) == normalise_no_trim(b),
         );
     }
 
@@ -1495,14 +1503,14 @@ fn seek_sequence(
     }
 
     match ambiguity_policy {
-        SeekAmbiguityPolicy::Ignore => Ok(None),
-        SeekAmbiguityPolicy::Error => {
+        SeekAmbiguityPolicy::FirstMatch => Ok(Some(candidates[0])),
+        SeekAmbiguityPolicy::RequireUniqueIfNoHint => {
             let preview = pattern
                 .iter()
                 .take(3)
                 .map(|s| s.as_str())
                 .collect::<Vec<_>>()
-                .join("\\n");
+                .join("\n");
             let locs = candidates
                 .iter()
                 .take(8)
@@ -1510,7 +1518,7 @@ fn seek_sequence(
                 .collect::<Vec<_>>()
                 .join(", ");
             Err(ToolError::new(format!(
-                "补丁匹配不唯一：目标内容在文件中出现多处（{} 处，起始行示例：{}）。\n请在补丁中添加更多上下文行（以空格开头的行），或使用 `@@ <唯一定位行>` 来锚定位置。\n匹配片段预览（前 3 行）：\n{}",
+                "补丁定位不唯一：待替换片段在文件中出现多处（{} 处，起始行示例：{}）。\n为避免误修改，已拒绝执行。请在补丁中添加更多上下文行（以空格开头），或使用更具体的 `@@ <锚定行>` 来缩小搜索范围。\n匹配片段预览（前 3 行）：\n{}",
                 candidates.len(),
                 locs,
                 preview
@@ -1625,7 +1633,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_patch_update_errors_on_ambiguous_match_without_hint() {
+    async fn apply_patch_update_errors_on_ambiguous_old_lines_without_hint() {
         let dir = tempdir().expect("tmp");
         let base = dir.path();
         let file_path = base.join("e.txt");
@@ -1643,7 +1651,33 @@ mod tests {
         let err = apply_hunks(base, &SandboxPolicy::DangerFullAccess, &[], &hunks)
             .await
             .expect_err("should fail");
-        assert!(err.message.contains("补丁匹配不唯一"));
+        assert!(err.message.contains("补丁定位不唯一"));
+    }
+
+    #[tokio::test]
+    async fn apply_patch_custom_allows_ambiguous_anchor_but_requires_unique_old_lines() {
+        let dir = tempdir().expect("tmp");
+        let base = dir.path();
+        let file_path = base.join("anchor.txt");
+        fs::write(&file_path, "alpha\nbeta1\nalpha\nbeta2\n")
+            .await
+            .expect("write");
+
+        // `@@ alpha` 在文件中出现两次，属于“锚定行不唯一”；应当选择从文件头开始的第一处命中。
+        // 随后的 old_lines（beta1）在锚定之后只有一处命中，因此替换应当稳定且成功。
+        let patch = r#"*** Begin Patch
+*** Update File: anchor.txt
+@@ alpha
+-beta1
++BETA1
+*** End Patch"#;
+        let hunks = parse_patch_custom(patch).expect("parse");
+        let _ = apply_hunks(base, &SandboxPolicy::DangerFullAccess, &[], &hunks)
+            .await
+            .expect("apply");
+
+        let updated = fs::read_to_string(&file_path).await.expect("read");
+        assert_eq!(updated, "alpha\nBETA1\nalpha\nbeta2\n");
     }
 
     #[tokio::test]
@@ -1692,6 +1726,56 @@ mod tests {
 
         let updated = fs::read_to_string(&file_path).await.expect("read");
         assert_eq!(updated, "a\nX\nb\n");
+    }
+
+    #[tokio::test]
+    async fn apply_patch_custom_plus_only_inserts_at_bof_without_anchor() {
+        let dir = tempdir().expect("tmp");
+        let base = dir.path();
+        let file_path = base.join("append.txt");
+        fs::write(&file_path, "Line 1\nLine 2\nLine 3\n")
+            .await
+            .expect("write");
+
+        // Without any anchor and without any old/context lines, a pure "+..." chunk defaults to
+        // inserting at beginning-of-file.
+        let patch = r#"*** Begin Patch
+*** Update File: append.txt
+@@
++Line 4
++Line 5
+*** End Patch"#;
+        let hunks = parse_patch_custom(patch).expect("parse");
+        let _ = apply_hunks(base, &SandboxPolicy::DangerFullAccess, &[], &hunks)
+            .await
+            .expect("apply");
+
+        let updated = fs::read_to_string(&file_path).await.expect("read");
+        assert_eq!(updated, "Line 4\nLine 5\nLine 1\nLine 2\nLine 3\n");
+    }
+
+    #[tokio::test]
+    async fn apply_patch_custom_does_not_ignore_leading_whitespace() {
+        let dir = tempdir().expect("tmp");
+        let base = dir.path();
+        let file_path = base.join("indent.txt");
+        fs::write(&file_path, "NO_INDENT\nUNIQUE_NO_SPACE\nNO_INDENT2\n")
+            .await
+            .expect("write");
+
+        // The file line has no leading whitespace. A patch that adds leading whitespace in the
+        // `-...` line must fail to match.
+        let patch = r#"*** Begin Patch
+*** Update File: indent.txt
+@@
+-    UNIQUE_NO_SPACE
++CHANGED
+*** End Patch"#;
+        let hunks = parse_patch_custom(patch).expect("parse");
+        let err = apply_hunks(base, &SandboxPolicy::DangerFullAccess, &[], &hunks)
+            .await
+            .expect_err("should fail");
+        assert!(err.message.contains("无法在"));
     }
 
     #[test]

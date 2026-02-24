@@ -166,35 +166,118 @@ pub const APPLY_PATCH_TOOL_PROMPT: &str = r#"
 
 ## 文件编辑（apply_patch）
 
-当需要创建/修改/删除项目文件时，优先使用 `apply_patch` 工具（不要写 `applypatch` 或 `apply-patch`）。
-
 ### 调用方式（重要）
 `apply_patch` 的参数是一个 JSON 对象，并且必须包含 `input` 字段：`{ "input": "…补丁正文…" }`。
 
-### 补丁格式（必须严格遵守）
-`input` 中放入一段纯文本补丁，规则如下：
-- 必须以 `*** Begin Patch` 开头，以 `*** End Patch` 结尾
-- 文件操作头（只能用以下几种）：
-  - `*** Add File: <path>` 新建文件（后续每一行都必须以 `+` 开头）
-  - `*** Update File: <path>` 修改文件（用 `+/-/ ` 表示新增/删除/保持不变）
-  - `*** Delete File: <path>` 删除文件
-  - 可选：在 `*** Update File` 后用 `*** Move to: <new_path>` 实现重命名/移动
-- 变更块头 `@@ ...`：
-  - 使用自定义锚定：`@@ <必须精确匹配的原文行>`（严格匹配，更稳定）
-  - 支持多行锚定：可以连续写多行 `@@ <原文行>`，系统会按顺序依次定位（更稳定）
-  - 注意：`apply_patch` **不支持** unified diff 头（`@@ -a,b +c,d @@ heading`）；如需 unified diff，请使用 `apply_patch_unified_diff`
-- 变更行前缀（`*** Update File` 内）：
-  - `+` 新增行
-  - `-` 删除行
-  - 空格开头（` `）原样保留行
-  - 可选的 `*** End of File` 只能出现在某个 Update 变更块末尾
+### 补丁外壳（必须严格遵守）
+`input` 中放入一段纯文本补丁，整体结构如下（这是“文件级补丁外壳”）：
+
+*** Begin Patch
+[ 一个或多个文件操作段落 ]
+*** End Patch
+
+### 文件操作段落（必须）
+在 `*** Begin Patch` 与 `*** End Patch` 之间，你可以按顺序放入多个文件操作段落；每个段落必须以以下三种之一开头：
+- `*** Add File: <path>`：新建文件（后续每一行都必须以 `+` 开头，表示文件内容）
+- `*** Delete File: <path>`：删除文件
+- `*** Update File: <path>`：就地修改文件（可选重命名/移动）
+
+`*** Update File: <path>` 后可以紧跟一行：
+- `*** Move to: <new_path>`：重命名/移动该文件（可选）
+
+### Update 的变更块（hunk）
+在 `*** Update File: <path>` 段落里，需要跟随 1 个或多个变更块；每个变更块以 `@@` 开头：
+- `@@`：开始一个新的变更块（无锚定行）
+- `@@ <锚定行>`：开始一个新的变更块，并用锚定行推进后续搜索起点（从锚定行的下一行开始找）
+
+纯新增（插入）规则（只有 `+` 行、没有任何 ` ` / `-` 行）：
+- 若写了 `@@ <锚定行>`：在锚定行之后插入这些 `+` 行
+- 若没有锚定行：默认插入到文件开头（第一行之前）
+
+锚定行规则：
+- `@@ <锚定行>` 中的 `<锚定行>` 应该能在文件中找到
+- 重要：每个 `@@` 只能锚定“一整行”原文（单行精确匹配）
+- 重要：锚定命中后，后续匹配/替换的搜索起点会推进到“锚定行之后”（下一行）
+- 重要：通常不要把“锚定行本身”再写成紧随其后的 context line / old line（因为搜索起点已经在锚定行之后，重复该行往往会导致匹配失败）；只有当文件后面确实还有另一处相同文本时才可能成立
+- 重要：如果锚定行在文件中出现多次，工具会从当前搜索起点向下选择第一处命中（锚定行只负责推进搜索起点）
+- 重要：如果待替换片段（context lines + `-` lines 组成的连续旧内容）在文件中出现多次，工具会报错拒绝执行，请添加更多上下文行来缩小范围
+
+### 变更行前缀
+在某个变更块里，每一行都必须以 ` ` / `-` / `+` 之一开头（这是补丁语义前缀，不是文件原文的一部分）：
+- ` <text>`：上下文行（context line）。用于定位，不要和删除行，新增行混淆
+- `-<text>`：删除行（原文件中必须存在该行）
+- `+<text>`：新增行
+- 不要在 `-` / `+` 后面为了好看额外加空格（例如 `- foo` 表示要删除的是“以空格开头的 foo”）
+
+重要：
+- 定位匹配时：不忽略 `<text>` 的前导空格（leading whitespace），仅允许忽略行尾空白（trim_end）；因此代码缩进必须写对
+- 对于缩进代码（例如 Python），上下文行在补丁里会表现为：`[补丁前缀空格] + [代码缩进空格] + [代码内容]`，看起来会比真实代码多 1 个空格，这是正常的。
+- 可选的 `*** End of File` 只能出现在某个 Update 变更块末尾。
+
+### 相对位置与顺序（非常重要）
+在一个变更块里，**你写的行顺序就是替换/插入后的相对顺序**，工具不会帮你重排。
+
+工具会把变更块拆成两段“连续片段”：
+- `old_lines`：由所有 context 行（` <text>`）与删除行（`-<text>`）按出现顺序拼接而成（用于在原文件中定位，必须能作为一段连续片段匹配到）
+- `new_lines`：由所有 context 行（` <text>`）与新增行（`+<text>`）按出现顺序拼接而成（用于写回文件，整体替换掉 `old_lines`）
+因此：
+- context 行可以放在 `-`/`+` 的前面或后面（前置/后置上下文都行）
+- `+` 行放在两条 context 行之间，就表示“插入到这两行之间”；放在块末尾就表示“插入到最后”
+
+### context_before / context_after（推荐写法，用于更稳的定位）
+- 默认建议：每个变更附近提供“上方约 3 行上下文行 + 下方约 3 行上下文行”。
+- 如果两个变更距离很近（例如 ≤ 3 行），不要在第二个变更的上方重复前一个变更已经提供的下文上下文（避免补丁冗余/易错）。
+- 如果 3 行上下文仍不足以唯一定位：在变更块开头加 `@@ <锚定行>` 指明所属的类/函数/段落；必要时使用多行 `@@ <锚定行>` 多步推进到更具体的位置（每个 `@@` 只锚定一行）。
+
+
+示例（推荐：用上下文行稳定定位）
+等价于用{context_before,new,context_after}去替换{context_before,old,context_after}:
+@@ anchorline
+ context_before
+-old
++new
+ context_after
+
+
+
+示例：在两行之间插入（`+` 行夹在两条 context 行中间)
+等价于用{context_before,Line B1,Line B2,context_after}去替换{context_before,context:
+@@
+ context_before
++Line B1
++Line B2
+ context_after
+
+
+错误示例（不要这样写：`-` / `+` 后面多了一个空格，会把空格当作内容的一部分）
+会直接报错找不到{context_before, old,context_after}
+@@ anchorline
+ context_before
+- old
++ new
+ context_after
+
+
+### 完整语法（BNF）
+下面是“补丁外壳 + hunks”的形式化语法，便于严格生成：
+
+Patch := Begin { FileOp } End
+Begin := "*** Begin Patch" NEWLINE
+End := "*** End Patch" NEWLINE
+FileOp := AddFile | DeleteFile | UpdateFile
+AddFile := "*** Add File: " path NEWLINE { "+" line NEWLINE }
+DeleteFile := "*** Delete File: " path NEWLINE
+UpdateFile := "*** Update File: " path NEWLINE [ MoveTo ] { Hunk }
+MoveTo := "*** Move to: " newPath NEWLINE
+Hunk := "@@" [ header ] NEWLINE { HunkLine } [ "*** End of File" NEWLINE ]
+HunkLine := (" " | "-" | "+") text NEWLINE
 
 ### 例子
 { "input": "*** Begin Patch\\n*** Update File: path/to/file.py\\n@@ def example():\\n- pass\\n+ return 123\\n*** End Patch" }
 
 ### 路径与安全
 - 优先使用相对路径（相对当前工作区/默认工作目录）。
-- 绝对路径只有在确有必要时才使用，并且必须落在允许写入的目录范围内，否则会被拒绝。
+- 不要使用绝对路径；绝对路径在某些运行模式下会被直接拒绝，且容易造成误修改。
 "#;
 
 /// Tool usage hint for `apply_patch_unified_diff` when file write is enabled.
@@ -230,7 +313,7 @@ pub const APPLY_PATCH_UNIFIED_DIFF_TOOL_PROMPT: &str = r#"
 
 ### 路径与安全
 - 优先使用相对路径（相对当前工作区/默认工作目录）。
-- 绝对路径只有在确有必要时才使用，并且必须落在允许写入的目录范围内，否则会被拒绝。
+- 不要使用绝对路径；绝对路径在某些运行模式下会被直接拒绝，且容易造成误修改。
 "#;
 
 /// Prompt guide for the hidden local web search tool (`web_search`).
