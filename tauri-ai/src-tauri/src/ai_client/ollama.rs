@@ -157,12 +157,21 @@ impl AiClient for OllamaClient {
             .await
             .map_err(|e| AiError::ConnectionError(e.to_string()))?;
 
+        let status_code = response.status().as_u16();
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            if let Ok(error_response) = serde_json::from_str::<OllamaErrorResponse>(&error_text) {
-                return Err(AiError::RequestFailed(error_response.error));
-            }
-            return Err(AiError::RequestFailed(error_text));
+            let error_msg = if let Ok(error_response) =
+                serde_json::from_str::<OllamaErrorResponse>(&error_text)
+            {
+                error_response.error
+            } else {
+                error_text
+            };
+            return Err(match status_code {
+                401 | 403 => AiError::AuthenticationFailed(error_msg),
+                429 => AiError::RateLimited(error_msg),
+                _ => AiError::RequestFailed(error_msg),
+            });
         }
 
         let completion: ChatResponse = response
@@ -252,23 +261,13 @@ impl AiClient for OllamaClient {
                 }),
             };
 
-            if let Ok(error_response) = serde_json::from_str::<OllamaErrorResponse>(&error_text) {
-                let _ = token_sender
-                    .send(StreamEvent::Error(error_response.error.clone()))
-                    .await;
-                let _ = token_sender
-                    .send(StreamEvent::DoneWithDebug {
-                        content: String::new(),
-                        thinking: None,
-                        debug_info: Some(debug_info),
-                        usage: None,
-                    })
-                    .await;
-                return Err(AiError::RequestFailed(error_response.error));
-            }
-            let _ = token_sender
-                .send(StreamEvent::Error(error_text.clone()))
-                .await;
+            let error_msg = serde_json::from_str::<OllamaErrorResponse>(&error_text)
+                .ok()
+                .map(|e| e.error)
+                .unwrap_or_else(|| error_text.clone());
+
+            // Send Error FIRST, then DoneWithDebug so the UI always has the debug context.
+            let _ = token_sender.send(StreamEvent::Error(error_msg.clone())).await;
             let _ = token_sender
                 .send(StreamEvent::DoneWithDebug {
                     content: String::new(),
@@ -277,7 +276,11 @@ impl AiClient for OllamaClient {
                     usage: None,
                 })
                 .await;
-            return Err(AiError::RequestFailed(error_text));
+            return Err(match status_code {
+                401 | 403 => AiError::AuthenticationFailed(error_msg),
+                429 => AiError::RateLimited(error_msg),
+                _ => AiError::RequestFailed(error_msg),
+            });
         }
 
         let mut full_content = String::new();

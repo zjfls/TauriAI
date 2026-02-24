@@ -662,12 +662,21 @@ impl OpenAiBaseClient {
             .await
             .map_err(|e| AiError::ConnectionError(e.to_string()))?;
 
+        let status_code = response.status().as_u16();
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            if let Ok(error_response) = serde_json::from_str::<OpenAiErrorResponse>(&error_text) {
-                return Err(AiError::RequestFailed(error_response.error.message));
-            }
-            return Err(AiError::RequestFailed(error_text));
+            let error_msg = if let Ok(error_response) =
+                serde_json::from_str::<OpenAiErrorResponse>(&error_text)
+            {
+                error_response.error.message
+            } else {
+                error_text
+            };
+            return Err(match status_code {
+                401 | 403 => AiError::AuthenticationFailed(error_msg),
+                429 => AiError::RateLimited(error_msg),
+                _ => AiError::RequestFailed(error_msg),
+            });
         }
 
         let bytes = response
@@ -879,23 +888,12 @@ impl OpenAiBaseClient {
 
             // Send Error event FIRST, then DoneWithDebug for debug/usage
             // (runtime/task_runner will pick up the error but still keep debug info if available).
-            if let Ok(error_response) = serde_json::from_str::<OpenAiErrorResponse>(&error_text) {
-                let _ = token_sender
-                    .send(StreamEvent::Error(error_response.error.message.clone()))
-                    .await;
-                let _ = token_sender
-                    .send(StreamEvent::DoneWithDebug {
-                        content: String::new(),
-                        thinking: None,
-                        debug_info: Some(debug_info),
-                        usage: None,
-                    })
-                    .await;
-                return Err(AiError::RequestFailed(error_response.error.message));
-            }
-            let _ = token_sender
-                .send(StreamEvent::Error(error_text.clone()))
-                .await;
+            let error_msg = serde_json::from_str::<OpenAiErrorResponse>(&error_text)
+                .ok()
+                .map(|e| e.error.message)
+                .unwrap_or_else(|| error_text.clone());
+
+            let _ = token_sender.send(StreamEvent::Error(error_msg.clone())).await;
             let _ = token_sender
                 .send(StreamEvent::DoneWithDebug {
                     content: String::new(),
@@ -904,7 +902,11 @@ impl OpenAiBaseClient {
                     usage: None,
                 })
                 .await;
-            return Err(AiError::RequestFailed(error_text));
+            return Err(match response_status {
+                401 | 403 => AiError::AuthenticationFailed(error_msg),
+                429 => AiError::RateLimited(error_msg),
+                _ => AiError::RequestFailed(error_msg),
+            });
         }
 
         struct ToolCallAccum {
