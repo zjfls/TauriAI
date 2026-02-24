@@ -85,7 +85,7 @@ impl ToolHandler for ApplyPatchTool {
         ToolSpec {
             name: APPLY_PATCH_TOOL_NAME.to_string(),
             description: Some(
-                "使用 `apply_patch` 补丁格式编辑工作区文件（Add/Delete/Update/Move）。`*** Update File` 内的变更块以 `@@` 开头，可选写成 `@@ <锚定行>`（锚定行是一整行原文，只用于推进后续搜索起点）。定位匹配时：不忽略前导空格（leading whitespace），仅允许忽略行尾空白（trim_end）；因此缩进必须写对。context 行（以空格开头）可出现在 `-`/`+` 前后，工具按你写的顺序保持相对位置。纯 `+`（无 context/`-`）时：有锚定则插入到锚定行之后；无锚定则默认插入到文件开头。锚定行若在文件中出现多次，将从当前搜索起点向下选择第一处命中；但若“待替换片段”（context lines + `-` lines 组成的连续旧内容）在文件中出现多次，会报错拒绝执行（避免误修改）。变更块内每行必须以 ` ` / `+` / `-` / `@@` 开头；`+`/`-` 后不要为美观额外加空格。".to_string(),
+                "使用 Codex 风格的 `apply_patch` 编辑工作区文件（Add/Delete/Update/Move）。补丁必须以 `*** Begin Patch` 开头、`*** End Patch` 结尾；`*** Update File` 内用 `@@` 开启变更块，可选 `@@ <单行锚定原文>` 用于推进定位（锚定行只用于定位，不会被替换）。变更块行必须以 ` ` / `-` / `+`（或新的 `@@`）开头；前导空格需精确匹配，且 `+`/`-` 后不要额外加空格。路径使用相对路径；不支持 unified diff 块头（需要行号块头请用 `apply_patch_unified_diff`）。".to_string(),
             ),
             parameters: serde_json::json!({
                 "type": "object",
@@ -121,7 +121,7 @@ impl ToolHandler for ApplyPatchUnifiedDiffTool {
         ToolSpec {
             name: APPLY_PATCH_UNIFIED_DIFF_TOOL_NAME.to_string(),
             description: Some(
-                "使用 `apply_patch_unified_diff` 补丁格式编辑工作区文件（Add/Delete/Update/Move）。Update File 的块头必须为 unified diff 头：`@@ -old_start,old_count +new_start,new_count @@ optional heading`。变更块内每行必须以 ` ` / `+` / `-` 开头（不允许裸行）。".to_string(),
+                "使用 `apply_patch_unified_diff` 编辑工作区文件（Add/Delete/Update/Move）。`*** Update File` 内的每个变更块必须使用 unified diff 块头：`@@ -old_start,old_count +new_start,new_count @@ ...`；块内行必须以 ` ` / `-` / `+` 开头。".to_string(),
             ),
             parameters: serde_json::json!({
                 "type": "object",
