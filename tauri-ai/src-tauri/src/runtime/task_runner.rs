@@ -5524,7 +5524,7 @@ async fn stream_one_turn(
             lines.push(format!("- turn_id: {turn_id}"));
             lines.push(format!("- assistant_message_id: {assistant_message_id}"));
             lines.push(format!("- attempt: {attempt}/{max_attempts}"));
-            lines.push(format!("- end_event: {end_event}"));
+            lines.push(format!("- runtime_end_event: {end_event}（本地）"));
             lines.push(format!("- emitted_any_delta: {emitted_any_delta}"));
             lines.push(format!("- turn_state_present: {}", turn_state.is_some()));
             lines.push(format!(
@@ -5545,12 +5545,14 @@ async fn stream_one_turn(
                 if let Some(v) = term.protocol_kind.as_deref() {
                     term_lines.push(format!("protocol_kind={v}"));
                 }
-                if let Some(v) = term.expected_signal.as_deref() {
-                    term_lines.push(format!("expected_signal={v}"));
-                }
-                if let Some(v) = term.observed_signal.as_deref() {
-                    term_lines.push(format!("observed_signal={v}"));
-                }
+                term_lines.push(format!(
+                    "expected_signal={}",
+                    term.expected_signal.as_deref().unwrap_or("<none>")
+                ));
+                term_lines.push(format!(
+                    "observed_signal={}",
+                    term.observed_signal.as_deref().unwrap_or("<none>")
+                ));
                 if let Some(v) = term.last_event_type.as_deref() {
                     term_lines.push(format!("last_event_type={v}"));
                 }
@@ -5560,6 +5562,20 @@ async fn stream_one_turn(
                 if !term_lines.is_empty() {
                     lines.push("".to_string());
                     lines.push(format!("- stream_termination: {}", term_lines.join(", ")));
+                }
+
+                if let (Some(true), Some(obs)) = (term.protocol_complete, term.observed_signal.as_deref()) {
+                    if let Some(raw_tail) = term.raw_event_tail.as_ref().filter(|t| !t.is_empty()) {
+                        let observed_raw: Option<String> = if obs.trim() == "[DONE]" {
+                            raw_tail.iter().rev().find(|l| l.trim() == "[DONE]").cloned()
+                        } else {
+                            let needle = format!("\"type\":\"{obs}\"");
+                            raw_tail.iter().rev().find(|l| l.contains(&needle)).cloned()
+                        };
+                        if let Some(line) = observed_raw {
+                            lines.push(format!("- observed_signal_raw: {}", line));
+                        }
+                    }
                 }
 
                 if let Some(raw_tail) = term.raw_event_tail.as_ref().filter(|t| !t.is_empty()) {
@@ -5577,6 +5593,16 @@ async fn stream_one_turn(
                         "- raw_event_tail_last: {}",
                         serde_json::to_string(&sample).unwrap_or_else(|_| "[]".to_string())
                     ));
+                }
+
+                if term.protocol_complete == Some(false)
+                    && term.observed_signal.as_deref().unwrap_or("").is_empty()
+                    && matches!(end_event, "done" | "done_with_thinking" | "done_with_debug")
+                {
+                    lines.push("".to_string());
+                    lines.push(
+                        "说明：runtime_end_event 是本地结束事件；协议层是否发送了 response.completed/response.done/[DONE] 请以 stream_termination.protocol_complete/observed_signal 为准。".to_string()
+                    );
                 }
             }
 
