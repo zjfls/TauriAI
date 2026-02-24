@@ -1582,15 +1582,7 @@ Guidelines:
           </div>
         </div>
       )}
-      <div className="flex flex-1 min-h-0 overflow-hidden">
-        <ChatOutlinePanel
-          items={outlineItems}
-          selectedMessageId={selectedRequestMessageId}
-          selectedFullText={selectedOutlineFullText}
-          isOpen={outlineOpen}
-          onToggle={() => setOutlineOpen((v) => !v)}
-          onSelect={handleSelectOutline}
-        />
+      <div className="relative flex flex-1 min-h-0 overflow-hidden">
         <div className="flex min-w-0 flex-1 flex-col">
           <React.Profiler id="MessageList" onRender={handleMessageListProfiler}>
             <MessageList
@@ -1607,6 +1599,16 @@ Guidelines:
               onDropText={handleDropTextToInput}
             />
           </React.Profiler>
+        </div>
+        <div className="absolute inset-y-0 left-0 z-30">
+          <ChatOutlinePanel
+            items={outlineItems}
+            selectedMessageId={selectedRequestMessageId}
+            selectedFullText={selectedOutlineFullText}
+            isOpen={outlineOpen}
+            onToggle={() => setOutlineOpen((v) => !v)}
+            onSelect={handleSelectOutline}
+          />
         </div>
       </div>
       {/* Conversation total token usage */}

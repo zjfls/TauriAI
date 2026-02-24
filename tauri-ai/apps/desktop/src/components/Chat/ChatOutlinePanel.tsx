@@ -24,10 +24,11 @@ export const ChatOutlinePanel: React.FC<{
     <div
       className={[
         isOpen ? 'w-64' : 'w-0',
-        'flex-shrink-0 overflow-hidden',
+        'flex-shrink-0 overflow-hidden h-full',
         'transition-[width] duration-200 ease-out',
         isOpen ? 'border-r border-gray-200 dark:border-gray-800' : 'border-r-0',
         isOpen ? 'bg-white/70 dark:bg-gray-900/55 backdrop-blur' : 'bg-transparent',
+        isOpen ? 'pointer-events-auto' : 'pointer-events-none',
         'flex min-h-0 flex-col',
       ].join(' ')}
       aria-label="消息目录"
