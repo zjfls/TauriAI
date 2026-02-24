@@ -5095,6 +5095,13 @@ async fn stream_one_turn(
 
     for attempt in 1..=max_attempts {
         let (token_tx, mut token_rx) = mpsc::channel::<StreamEvent>(100);
+        // 默认按 “Done” 结束；DoneWithThinking/DoneWithDebug/EOF 会覆盖此值。
+        let mut end_event: &'static str = "done";
+        let mut token_chunk_count: u32 = 0;
+        let mut thinking_chunk_count: u32 = 0;
+        let mut web_search_event_count: u32 = 0;
+        let mut tool_call_event_count: u32 = 0;
+        let mut error_event_count: u32 = 0;
 
         // 请求级重试：本轮尚未产生任何增量输出，可以安全清空本地缓冲。
         // 流式重连：保留已输出内容，只清理本轮临时信息。
@@ -5117,8 +5124,8 @@ async fn stream_one_turn(
         }
 
         let client = client.clone();
-        let model_config = model_config.clone();
-        let resume_partial_output_enabled = model_config.resume_partial_output;
+        let model_config_for_stream = model_config.clone();
+        let resume_partial_output_enabled = model_config_for_stream.resume_partial_output;
         let tools = tools.clone();
         let attempt_messages = messages.clone();
 
@@ -5130,7 +5137,7 @@ async fn stream_one_turn(
 
         let stream_handle = tokio::spawn(async move {
             client
-                .chat_stream(attempt_messages, &model_config, tools, token_tx, options)
+                .chat_stream(attempt_messages, &model_config_for_stream, tools, token_tx, options)
                 .await
         });
 
@@ -5144,6 +5151,7 @@ async fn stream_one_turn(
                     match event {
                         Some(StreamEvent::Token(token)) => {
                             emitted_any_delta = true;
+                            token_chunk_count = token_chunk_count.saturating_add(1);
                             full_content.push_str(&token);
                             emitter.emit(RunEvent::BlockDelta {
                                 task_id: task_id.to_string(),
@@ -5157,6 +5165,7 @@ async fn stream_one_turn(
                         }
                         Some(StreamEvent::Thinking(token)) => {
                             emitted_any_delta = true;
+                            thinking_chunk_count = thinking_chunk_count.saturating_add(1);
                             full_thinking.push_str(&token);
                             emitter.emit(RunEvent::BlockDelta {
                                 task_id: task_id.to_string(),
@@ -5170,6 +5179,7 @@ async fn stream_one_turn(
                         }
                         Some(StreamEvent::WebSearch { id, status, action }) => {
                             emitted_any_delta = true;
+                            web_search_event_count = web_search_event_count.saturating_add(1);
                             emitter.emit(RunEvent::BlockDelta {
                                 task_id: task_id.to_string(),
                                 turn_id: turn_id.to_string(),
@@ -5193,6 +5203,7 @@ async fn stream_one_turn(
                         }
                         Some(StreamEvent::ToolCalls(calls)) => {
                             emitted_any_delta = true;
+                            tool_call_event_count = tool_call_event_count.saturating_add(1);
                             tool_calls = Some(calls);
                             // Tool call turn：不要立刻 break，继续等 DoneWithDebug（如果有的话）以便拿到 debug/usage
                         }
@@ -5203,6 +5214,7 @@ async fn stream_one_turn(
                             break;
                         }
                         Some(StreamEvent::DoneWithThinking { content, thinking }) => {
+                            end_event = "done_with_thinking";
                             if !emitted_any_delta && !content.is_empty() {
                                 full_content = content;
                             }
@@ -5212,6 +5224,7 @@ async fn stream_one_turn(
                             break;
                         }
                         Some(StreamEvent::DoneWithDebug { content, thinking, debug_info: di, usage: u }) => {
+                            end_event = "done_with_debug";
                             if !emitted_any_delta && !content.is_empty() {
                                 full_content = content;
                             }
@@ -5227,10 +5240,14 @@ async fn stream_one_turn(
                             break;
                         }
                         Some(StreamEvent::Error(error)) => {
+                            error_event_count = error_event_count.saturating_add(1);
                             last_error = Some(error);
                             // 不立刻 break：等待可能带 debug/usage 的 DoneWithDebug
                         }
-                        None => break,
+                        None => {
+                            end_event = "channel_closed";
+                            break;
+                        }
                     }
                 }
             }
@@ -5259,9 +5276,57 @@ async fn stream_one_turn(
         // - 旧逻辑会返回 TurnStreamResult::Final(content="")，进而被上层当作 TaskOutcome::Success，
         //   导致前端“无消息、无错误”。
         if stream_result.is_ok() && last_error.is_none() && full_content.trim().is_empty() {
-            stream_result = Err(crate::ai_client::AiError::StreamError(
-                "模型流结束但未返回任何内容".to_string(),
+            let mut lines: Vec<String> = Vec::new();
+            lines.push("模型流结束但未返回任何内容".to_string());
+            lines.push("".to_string());
+            lines.push("上下文：".to_string());
+            lines.push(format!("- provider: {}", model_config.provider));
+            lines.push(format!("- model: {}", model_config.model));
+            lines.push(format!("- output_format: {}", output_format.as_deref().unwrap_or("markdown")));
+            lines.push(format!("- task_id: {task_id}"));
+            lines.push(format!("- turn_id: {turn_id}"));
+            lines.push(format!("- assistant_message_id: {assistant_message_id}"));
+            lines.push(format!("- attempt: {attempt}/{max_attempts}"));
+            lines.push(format!("- end_event: {end_event}"));
+            lines.push(format!("- emitted_any_delta: {emitted_any_delta}"));
+            lines.push(format!("- turn_state_present: {}", turn_state.is_some()));
+            lines.push(format!(
+                "- chunks: token={token_chunk_count}, thinking={thinking_chunk_count}, web_search={web_search_event_count}, tool_calls={tool_call_event_count}, errors={error_event_count}"
             ));
+
+            if let Some(term) = debug_info
+                .as_ref()
+                .and_then(|d| d.stream_termination.as_ref())
+            {
+                let mut term_lines: Vec<String> = Vec::new();
+                if let Some(v) = term.protocol_complete {
+                    term_lines.push(format!("protocol_complete={v}"));
+                }
+                if let Some(v) = term.termination_source.as_ref() {
+                    term_lines.push(format!("termination_source={v:?}"));
+                }
+                if let Some(v) = term.protocol_kind.as_deref() {
+                    term_lines.push(format!("protocol_kind={v}"));
+                }
+                if let Some(v) = term.expected_signal.as_deref() {
+                    term_lines.push(format!("expected_signal={v}"));
+                }
+                if let Some(v) = term.observed_signal.as_deref() {
+                    term_lines.push(format!("observed_signal={v}"));
+                }
+                if let Some(v) = term.last_event_type.as_deref() {
+                    term_lines.push(format!("last_event_type={v}"));
+                }
+                if let Some(v) = term.chunk_count {
+                    term_lines.push(format!("chunk_count={v}"));
+                }
+                if !term_lines.is_empty() {
+                    lines.push("".to_string());
+                    lines.push(format!("- stream_termination: {}", term_lines.join(", ")));
+                }
+            }
+
+            stream_result = Err(crate::ai_client::AiError::StreamError(lines.join("\n")));
         }
 
         if let Err(stream_err) = stream_result {
@@ -5488,6 +5553,69 @@ mod tests {
                     error.contains("Connection error"),
                     "unexpected error: {error}"
                 );
+            }
+            other => panic!("expected TurnStreamResult::Error, got: {other:?}"),
+        }
+    }
+
+    struct EmptyOkClient;
+
+    #[async_trait]
+    impl crate::ai_client::AiClient for EmptyOkClient {
+        async fn chat(
+            &self,
+            _messages: Vec<crate::models::Message>,
+            _config: &crate::models::ModelConfig,
+            _tools: Option<Vec<crate::ai_client::ToolDefinition>>,
+        ) -> Result<String, crate::ai_client::AiError> {
+            Ok("ok".to_string())
+        }
+
+        async fn chat_stream(
+            &self,
+            _messages: Vec<crate::models::Message>,
+            _config: &crate::models::ModelConfig,
+            _tools: Option<Vec<crate::ai_client::ToolDefinition>>,
+            _token_sender: mpsc::Sender<crate::ai_client::StreamEvent>,
+            _options: crate::ai_client::StreamOptions,
+        ) -> Result<(), crate::ai_client::AiError> {
+            // 故意不发送任何事件，直接返回 Ok()，模拟“流结束但无内容”的异常兜底场景。
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_one_turn_should_include_context_for_empty_stream() {
+        let client: Arc<dyn crate::ai_client::AiClient> = Arc::new(EmptyOkClient);
+        let mut emitter = NoopEmitter;
+        let (abort_tx, mut abort_rx) = mpsc::channel(1);
+        let _keep_abort = abort_tx;
+
+        let result = stream_one_turn(
+            client,
+            test_model_config(),
+            None,
+            vec![test_user_message()],
+            &mut emitter,
+            "task",
+            "turn",
+            "assistant",
+            None,
+            &mut abort_rx,
+            1,
+        )
+        .await;
+
+        match result {
+            TurnStreamResult::Error { error, .. } => {
+                assert!(
+                    error.contains("模型流结束但未返回任何内容"),
+                    "unexpected error: {error}"
+                );
+                assert!(error.contains("上下文"), "missing context: {error}");
+                assert!(error.contains("provider"), "missing provider: {error}");
+                assert!(error.contains("model"), "missing model: {error}");
+                assert!(error.contains("end_event: channel_closed"), "missing end_event: {error}");
             }
             other => panic!("expected TurnStreamResult::Error, got: {other:?}"),
         }
