@@ -486,36 +486,16 @@ async function renderMermaidSvgForExport(code: string): Promise<string> {
 }
 
 const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferenceToken }: MermaidBlockProps) {
-  const [svg, setSvg] = useState<string>('');
-  const [error, setError] = useState<string>('');
-  const [isFullscreen, setIsFullscreen] = useState(false);
-  const [scale, setScale] = useState(1.5);
-  const [isPanningFullscreen, setIsPanningFullscreen] = useState(false);
+	const [svg, setSvg] = useState<string>('');
+	const [error, setError] = useState<string>('');
+	const [isFullscreen, setIsFullscreen] = useState(false);
+	const [scale, setScale] = useState(1.5);
 
-  const [copiedText, setCopiedText] = useState(false);
-  const [copiedImage, setCopiedImage] = useState(false);
-  const [isCopyingImage, setIsCopyingImage] = useState(false);
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const fullscreenScrollRef = useRef<HTMLDivElement | null>(null);
-  const fullscreenPanRef = useRef<{
-    active: boolean;
-    pointerId: number | null;
-    startX: number;
-    startY: number;
-    startScrollLeft: number;
-    startScrollTop: number;
-    moved: boolean;
-    blockNextClick: boolean;
-  }>({
-    active: false,
-    pointerId: null,
-    startX: 0,
-    startY: 0,
-    startScrollLeft: 0,
-    startScrollTop: 0,
-    moved: false,
-    blockNextClick: false,
-  });
+	const [copiedText, setCopiedText] = useState(false);
+	const [copiedImage, setCopiedImage] = useState(false);
+	const [isCopyingImage, setIsCopyingImage] = useState(false);
+	const containerRef = useRef<HTMLDivElement | null>(null);
+	const fullscreenScrollRef = useRef<HTMLDivElement | null>(null);
 
   const cleanCode = useMemo(() => code.trim().replace(/\r\n/g, '\n'), [code]);
   const cacheKey = useMemo(() => hashCode(cleanCode), [cleanCode]);
@@ -732,84 +712,11 @@ const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferen
     [svg, cleanCode]
   );
 
-  // Fullscreen pan handlers (must be defined before any early-return to keep hooks order stable).
-  const handleFullscreenPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0) return;
-    if (!e.isPrimary) return;
-    const scroller = fullscreenScrollRef.current;
-    if (!scroller) return;
-
-    fullscreenPanRef.current.active = true;
-    fullscreenPanRef.current.pointerId = e.pointerId;
-    fullscreenPanRef.current.startX = e.clientX;
-    fullscreenPanRef.current.startY = e.clientY;
-    fullscreenPanRef.current.startScrollLeft = scroller.scrollLeft;
-    fullscreenPanRef.current.startScrollTop = scroller.scrollTop;
-    fullscreenPanRef.current.moved = false;
-    fullscreenPanRef.current.blockNextClick = false;
-    setIsPanningFullscreen(true);
-
-    try {
-      scroller.setPointerCapture(e.pointerId);
-    } catch {
-      // ignore
-    }
-  }, []);
-
-  const handleFullscreenPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    const st = fullscreenPanRef.current;
-    if (!st.active) return;
-    if (st.pointerId !== e.pointerId) return;
-
-    const scroller = fullscreenScrollRef.current;
-    if (!scroller) return;
-
-    const dx = e.clientX - st.startX;
-    const dy = e.clientY - st.startY;
-
-    if (!st.moved && (Math.abs(dx) >= 3 || Math.abs(dy) >= 3)) {
-      st.moved = true;
-    }
-
-    if (!st.moved) return;
-
-    scroller.scrollLeft = st.startScrollLeft - dx;
-    scroller.scrollTop = st.startScrollTop - dy;
-    st.blockNextClick = true;
-
-    // Prevent text selection / click-through when panning.
-    e.preventDefault();
-  }, []);
-
-  const handleFullscreenPointerUpOrCancel = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    const st = fullscreenPanRef.current;
-    if (st.pointerId !== e.pointerId) return;
-
-    st.active = false;
-    st.pointerId = null;
-    setIsPanningFullscreen(false);
-
-    const scroller = fullscreenScrollRef.current;
-    if (!scroller) return;
-    try {
-      scroller.releasePointerCapture(e.pointerId);
-    } catch {
-      // ignore
-    }
-  }, []);
-
-  const handleFullscreenClickCapture = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    if (!fullscreenPanRef.current.blockNextClick) return;
-    e.preventDefault();
-    e.stopPropagation();
-    fullscreenPanRef.current.blockNextClick = false;
-  }, []);
-
-  if (error) {
-    return (
-      <div className="my-2 rounded-lg bg-red-900/20 p-4 text-red-400">
-        <p className="text-sm font-medium">Mermaid 渲染失败</p>
-        <p className="mt-1 text-xs opacity-70">{error}</p>
+	if (error) {
+		return (
+			<div className="my-2 rounded-lg bg-red-900/20 p-4 text-red-400">
+				<p className="text-sm font-medium">Mermaid 渲染失败</p>
+				<p className="mt-1 text-xs opacity-70">{error}</p>
         <pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs opacity-70 bg-red-900/10 p-2 rounded">{code}</pre>
       </div>
     );
@@ -933,21 +840,13 @@ const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferen
             <span className="ml-2 text-xs text-gray-500">Ctrl+滚轮缩放</span>
           </div>
 
-          <div
-            ref={fullscreenScrollRef}
-            className={[
-              'w-[90vw] h-[85vh] mt-12 overflow-auto bg-white dark:bg-gray-800 rounded-lg p-6 select-none',
-              isPanningFullscreen ? 'cursor-grabbing' : 'cursor-grab',
-            ].join(' ')}
-            onPointerDown={handleFullscreenPointerDown}
-            onPointerMove={handleFullscreenPointerMove}
-            onPointerUp={handleFullscreenPointerUpOrCancel}
-            onPointerCancel={handleFullscreenPointerUpOrCancel}
-            onClickCapture={handleFullscreenClickCapture}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div
-              style={{ transform: `scale(${scale})`, transformOrigin: 'top left', marginBottom: `${(scale - 1) * 100}%` }}
+					<div
+						ref={fullscreenScrollRef}
+						className="w-[90vw] h-[85vh] mt-12 overflow-auto bg-white dark:bg-gray-800 rounded-lg p-6 select-none"
+						onClick={(e) => e.stopPropagation()}
+					>
+						<div
+							style={{ transform: `scale(${scale})`, transformOrigin: 'top left', marginBottom: `${(scale - 1) * 100}%` }}
               onClickCapture={handleSvgClickCapture}
               dangerouslySetInnerHTML={{ __html: svg }}
             />
