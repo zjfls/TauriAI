@@ -802,7 +802,7 @@ fn parse_patch_custom(input: &str) -> Result<Vec<Hunk>, ToolError> {
                 if let Some(header) = change_line.strip_prefix("@@") {
                     finish_chunk(&mut current, &mut chunks);
                     let header = header.strip_prefix(' ').unwrap_or(header);
-                    let parsed = parse_update_header_custom(header.trim())?;
+                    let parsed = parse_update_header_custom(header)?;
                     current = Some(UpdateChunk {
                         change_context: parsed.change_context,
                         change_context_soft: parsed.change_context_soft,
