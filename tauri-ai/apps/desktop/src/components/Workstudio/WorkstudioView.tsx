@@ -1167,8 +1167,11 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     return aiBubbles.find((b) => b.id === aiViewerId) ?? null;
   }, [aiBubbles, aiViewerId]);
   const openAiViewer = useCallback((id: string) => {
+    const bubble = aiBubblesRef.current.find((b) => b.id === id) ?? null;
+    // 符号分析默认展示 ReAct 过程（思考/工具/多 turn），便于调试与跟踪进度。
+    const preferDetails = Boolean(bubble?.kind === 'symbol_analysis');
     setAiViewerId(id);
-    setAiViewerMode('result');
+    setAiViewerMode(preferDetails ? 'details' : 'result');
     setAiViewerDebugOpen(false);
     setAiViewerDebugInitialTurnId(null);
   }, []);
