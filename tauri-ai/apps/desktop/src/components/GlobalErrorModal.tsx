@@ -69,6 +69,17 @@ export const GlobalErrorModal = () => {
     const [dbLockSnapshots, setDbLockSnapshots] = useState<Record<string, DbLockSnapshot | null>>({});
 
     useEffect(() => {
+        try {
+            document.body.dataset.tauriaiGlobalErrorModalMounted = '1';
+            return () => {
+                delete document.body.dataset.tauriaiGlobalErrorModalMounted;
+            };
+        } catch {
+            return () => { };
+        }
+    }, []);
+
+    useEffect(() => {
         const handleGlobalError = (e: Event) => {
             const customEvent = e as CustomEvent<GlobalErrorEventDetail>;
             setErrors(prev => {

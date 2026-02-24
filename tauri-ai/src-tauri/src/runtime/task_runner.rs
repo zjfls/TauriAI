@@ -2336,14 +2336,17 @@ impl<'a> TurnLoop<'a> {
                     });
 
                     let persisted_usage = usage.clone();
+                    // 失败时即使未开启 debug_mode，也应提供“已脱敏”的调试上下文，避免黑盒报错。
+                    // - 前端全局弹窗/DebugModal 依赖 RunEvent::Error/TurnFinished 携带 debugInfo
+                    // - 仅对失败兜底，避免常规成功路径产生过大/过敏感的调试负担
+                    let persisted_debug_info =
+                        debug_info.as_ref().map(redact_debug_info_for_store);
                     let turn_debug_info = if self.debug_mode {
                         debug_info.clone()
                     } else {
-                        None
+                        persisted_debug_info.clone()
                     };
                     let turn_usage = if self.debug_mode { usage } else { None };
-                    let persisted_debug_info =
-                        turn_debug_info.as_ref().map(redact_debug_info_for_store);
 
                     if !thinking.trim().is_empty() {
                         blocks.push(MessageBlock::Thinking {

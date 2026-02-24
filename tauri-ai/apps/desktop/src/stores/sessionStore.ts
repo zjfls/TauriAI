@@ -6,7 +6,7 @@
 
 import { create } from 'zustand';
 import { arrayMove } from '@dnd-kit/sortable';
-import { tauriInvoke as invoke } from '../utils/errorUtils';
+import { tauriInvoke as invoke, showGlobalError } from '../utils/errorUtils';
 import { listen } from '@tauri-apps/api/event';
 import type {
   AgentSession,
@@ -1946,13 +1946,64 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         return map ? Array.from(map.values()).sort((a, b) => a.turnIndex - b.turnIndex) : turnsSorted;
       })();
 
-      const lastModel = mergedTurns?.[mergedTurns.length - 1]?.model;
+    const lastModel = mergedTurns?.[mergedTurns.length - 1]?.model;
 
-      const resolvedAssistantMessageId = assistantMessageId || crypto.randomUUID();
-      const assistantMessage: Message = {
-        id: resolvedAssistantMessageId,
-        conversationId: currentSession.conversationId || '',
-        role: 'assistant',
+    // ---------------------------------------------------------------------
+    // Global error exposure (avoid "black-box" failures like `openai_error`)
+    // ---------------------------------------------------------------------
+    try {
+      const cfg = useConfigStore.getState().config;
+      const strict = cfg?.strictErrorMode === true;
+
+      const trimmed = (error ?? '').trim();
+      const looksLikeCodeToken = /^[a-z0-9][a-z0-9_\-]*$/i.test(trimmed) && !/\s/.test(trimmed);
+      const looksLikeBareErrorCode =
+        looksLikeCodeToken &&
+        trimmed.length > 0 &&
+        trimmed.length <= 64 &&
+        (trimmed.toLowerCase().endsWith('_error') || trimmed.toLowerCase().endsWith('_failed'));
+
+      const shouldPopup = strict || looksLikeBareErrorCode;
+      if (shouldPopup) {
+        const di =
+          debugInfo ??
+          (resolvedTurnId
+            ? turnsSorted?.find((t) => t.turnId === resolvedTurnId)?.debugInfo
+            : undefined);
+
+        const requestLine = di?.request?.url
+          ? `${di?.request?.method ? `${di.request.method} ` : ''}${di.request.url}`.trim()
+          : null;
+        const httpLine = typeof di?.response?.status === 'number' ? `HTTP ${di.response.status}` : null;
+
+        const lines: string[] = [];
+        lines.push(`- conversationId: ${session.conversationId}`);
+        if (resolvedTurnId) lines.push(`- turnId: ${resolvedTurnId}`);
+        if (typeof resolvedTurnIndex === 'number') lines.push(`- turnIndex: ${resolvedTurnIndex}`);
+        if (lastModel) lines.push(`- model: ${lastModel}`);
+        if (requestLine) lines.push(`- request: ${requestLine}`);
+        if (httpLine) lines.push(`- ${httpLine}`);
+
+        const modalMessage = [
+          trimmed || error,
+          '',
+          '上下文：',
+          ...(lines.length > 0 ? lines : ['- （无）']),
+          '',
+          '提示：点击消息右侧 Debug 可查看更完整的请求/响应与工具过程。',
+        ].join('\n');
+
+        void showGlobalError('任务失败', modalMessage);
+      }
+    } catch {
+      // ignore
+    }
+
+    const resolvedAssistantMessageId = assistantMessageId || crypto.randomUUID();
+    const assistantMessage: Message = {
+      id: resolvedAssistantMessageId,
+      conversationId: currentSession.conversationId || '',
+      role: 'assistant',
         content: '',
         source: 'live',
         blocks: blocks.length > 0 ? blocks : undefined,
@@ -2950,6 +3001,11 @@ let streamFlushTimeout: ReturnType<typeof setTimeout> | null = null;
 type StreamingTurnsById = Map<string, MessageTurn>;
 const streamingTurnIndexBySessionId = new Map<string, Map<string, number>>();
 
+// Global error exposure for tool failures.
+// - Avoid "silent" TOOL_ERROR blocks hidden behind collapsed tool details.
+// - De-dupe by (conversationId + callId) to prevent repeated popups during streaming flush.
+const shownGlobalToolErrorPopupKeys = new Set<string>();
+
 const setTurnIndexForSession = (sessionId: string, turnId: string, turnIndex: number) => {
   let byTurn = streamingTurnIndexBySessionId.get(sessionId);
   if (!byTurn) {
@@ -3198,6 +3254,66 @@ const flushPendingStreamChunks = () => {
           : '';
         if (!delta) continue;
         nextBlocks = upsertBlock(nextBlocks, blockId, b.blockType, b.format, b.turnId, b.turnIndex, delta);
+      }
+
+      // -------------------------------------------------------------------
+      // Tool failure global popup (dev/build; strict mode + critical tools)
+      // -------------------------------------------------------------------
+      try {
+        const cfg = useConfigStore.getState().config;
+        const strict = cfg?.strictErrorMode === true;
+
+        const toolCallById = new Map<string, { name: string; arguments?: string }>();
+        for (const b of nextBlocks) {
+          if (b.type !== 'tool_call') continue;
+          toolCallById.set(b.callId, { name: b.name, arguments: b.arguments });
+        }
+
+        const clip = (text: string, limit: number): string => {
+          if (!text) return '';
+          if (text.length <= limit) return text;
+          return `${text.slice(0, limit - 1)}…`;
+        };
+
+        for (const b of nextBlocks) {
+          if (b.type !== 'tool_result') continue;
+          const trimmed = (b.text || '').trimStart();
+          const isToolError =
+            trimmed.startsWith('TOOL_ERROR:') || trimmed.startsWith('TOOL_RESULT_MISSING:');
+          if (!isToolError) continue;
+
+          const convId = session.conversationId ?? 'null';
+          const key = `${convId}:${b.callId}`;
+          if (shownGlobalToolErrorPopupKeys.has(key)) continue;
+
+          const toolCall = toolCallById.get(b.callId);
+          const toolName = toolCall?.name || 'unknown';
+          const isCriticalTool = toolName === 'apply_patch' || toolName === 'apply_patch_unified_diff';
+          const shouldPopup = strict || isCriticalTool;
+          if (!shouldPopup) continue;
+
+          shownGlobalToolErrorPopupKeys.add(key);
+
+          const ctxLines: string[] = [];
+          ctxLines.push(`- conversationId: ${convId}`);
+          if (b.turnId) ctxLines.push(`- turnId: ${b.turnId}`);
+          if (typeof b.turnIndex === 'number') ctxLines.push(`- turnIndex: ${b.turnIndex}`);
+          ctxLines.push(`- tool: ${toolName}`);
+          ctxLines.push(`- callId: ${b.callId}`);
+
+          const modalMessage = [
+            clip(trimmed, 50_000),
+            '',
+            '上下文：',
+            ...ctxLines,
+            '',
+            '提示：点击对应工具块可查看完整参数与 meta（含 patch 诊断、ghost commits 等）。',
+          ].join('\n');
+
+          void showGlobalError(`工具失败: ${toolName}`, modalMessage);
+        }
+      } catch {
+        // ignore
       }
 
       if (nextBlocks !== session.streamingBlocks) {

@@ -375,7 +375,17 @@ async fn call_apply_patch_tool(
         }
     }
 
-    let affected = affected.map_err(|e| e.with_meta(apply_patch_meta.clone()))?;
+    let affected = match affected {
+        Ok(v) => v,
+        Err(mut e) => {
+            // Preserve detailed patch diagnostics (if any) inside the tool meta for UI.
+            if let Some(diag) = e.meta.take() {
+                apply_patch_meta["applyPatch"]["errorDiagnostic"] = diag;
+            }
+            apply_patch_meta["applyPatch"]["errorMessage"] = json!(e.message);
+            return Err(e.with_meta(apply_patch_meta.clone()));
+        }
+    };
 
     let summary = format_summary(&base_dir, &affected);
     emit_tool_result(ctx, call.id.as_str(), &summary);
@@ -1258,30 +1268,120 @@ fn compute_replacements(
     chunks: &[UpdateChunk],
     path: &Path,
 ) -> Result<Vec<(usize, usize, Vec<String>)>, ToolError> {
+    fn render_excerpt(lines: &[String], start: usize, end: usize, max_lines: usize) -> String {
+        if lines.is_empty() {
+            return String::new();
+        }
+        let end = end.min(lines.len());
+        let start = start.min(end);
+        let mut rows: Vec<(usize, &str)> = Vec::new();
+        for (i, line) in lines.iter().enumerate().take(end).skip(start) {
+            rows.push((i + 1, line.as_str()));
+            if rows.len() >= max_lines {
+                break;
+            }
+        }
+        let width = rows
+            .last()
+            .map(|(n, _)| n.to_string().len())
+            .unwrap_or(1);
+        let mut out = String::new();
+        for (idx, (n, line)) in rows.iter().enumerate() {
+            if idx > 0 {
+                out.push('\n');
+            }
+            out.push_str(&format!("{n:>width$}: {line}"));
+        }
+        out
+    }
+
+    fn render_patch_preview(old_lines: &[String], new_lines: &[String], max_lines: usize) -> String {
+        let old_len = old_lines.len();
+        let new_len = new_lines.len();
+        let mut prefix = 0usize;
+        while prefix < old_len && prefix < new_len && old_lines[prefix] == new_lines[prefix] {
+            prefix += 1;
+        }
+        let mut suffix = 0usize;
+        while suffix < (old_len.saturating_sub(prefix))
+            && suffix < (new_len.saturating_sub(prefix))
+            && old_lines[old_len - 1 - suffix] == new_lines[new_len - 1 - suffix]
+        {
+            suffix += 1;
+        }
+
+        let mut out: Vec<String> = Vec::new();
+        for i in 0..prefix {
+            out.push(format!(" {}", old_lines[i]));
+        }
+        for i in prefix..old_len.saturating_sub(suffix) {
+            out.push(format!("-{}", old_lines[i]));
+        }
+        for i in prefix..new_len.saturating_sub(suffix) {
+            out.push(format!("+{}", new_lines[i]));
+        }
+        for i in old_len.saturating_sub(suffix)..old_len {
+            out.push(format!(" {}", old_lines[i]));
+        }
+
+        if out.len() > max_lines {
+            let total = out.len();
+            out.truncate(max_lines);
+            out.push(format!("…（共 {total} 行，已截断）"));
+        }
+        out.join("\n")
+    }
+
     let mut replacements: Vec<(usize, usize, Vec<String>)> = Vec::new();
     let mut line_index: usize = 0;
 
     for chunk in chunks {
-            if let Some(ctx_line) = chunk.change_context.as_ref() {
-                let ctx_pattern = vec![ctx_line.to_string()];
-                let found = seek_sequence(
+        if let Some(ctx_line) = chunk.change_context.as_ref() {
+            let ctx_pattern = vec![ctx_line.to_string()];
+            let found = seek_sequence(
+                original_lines,
+                &ctx_pattern,
+                line_index,
+                false,
+                chunk.line_hint,
+                SeekAmbiguityPolicy::FirstMatch,
+            )?;
+            if let Some(idx) = found {
+                line_index = idx + 1;
+            } else if !chunk.change_context_soft {
+                let search_start = line_index.min(original_lines.len());
+                let focus = chunk.line_hint.unwrap_or(search_start);
+                let excerpt = render_excerpt(
                     original_lines,
-                    &ctx_pattern,
-                    line_index,
-                    false,
-                    chunk.line_hint,
-                    SeekAmbiguityPolicy::FirstMatch,
-                )?;
-                if let Some(idx) = found {
-                    line_index = idx + 1;
-                } else if !chunk.change_context_soft {
-                    return Err(ToolError::new(format!(
-                        "无法找到上下文 '{}'（{}）",
-                        ctx_line,
-                        path.display()
-                    )));
+                    focus.saturating_sub(4),
+                    focus.saturating_add(6),
+                    12,
+                );
+                let meta = json!({
+                    "kind": "apply_patch_anchor_not_found",
+                    "path": path.display().to_string(),
+                    "anchor": ctx_line,
+                    "searchStartLine": search_start + 1,
+                    "lineHint": chunk.line_hint.map(|h| h + 1),
+                    "excerpt": excerpt,
+                });
+                let mut msg = String::new();
+                msg.push_str(&format!(
+                    "无法找到上下文 '{}'（{}）\n- 搜索起点: 第 {} 行",
+                    ctx_line,
+                    path.display(),
+                    search_start + 1
+                ));
+                if let Some(h) = chunk.line_hint {
+                    msg.push_str(&format!("\n- line_hint: 第 {} 行", h + 1));
                 }
+                if !excerpt.trim().is_empty() {
+                    msg.push_str("\n\n文件片段（附近）：\n");
+                    msg.push_str(&excerpt);
+                }
+                return Err(ToolError::new(msg).with_meta(meta));
             }
+        }
 
         // Anchor-only chunk (no changes). This enables multi-line anchoring by repeating
         // `@@ <exact line>` headers (Codex-like) without triggering any insertion.
@@ -1312,6 +1412,23 @@ fn compute_replacements(
 
         let mut pattern: &[String] = &chunk.old_lines;
         let mut new_slice: &[String] = &chunk.new_lines;
+
+        // 3) normalize unicode punctuation/whitespace (do NOT trim; keep leading whitespace strict)
+        fn normalise_no_trim(s: &str) -> String {
+            s.chars()
+                .map(|c| match c {
+                    '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}' | '\u{2014}'
+                    | '\u{2015}' | '\u{2212}' => '-',
+                    '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' => '\'',
+                    '\u{201C}' | '\u{201D}' | '\u{201E}' | '\u{201F}' => '"',
+                    '\u{00A0}' | '\u{2002}' | '\u{2003}' | '\u{2004}' | '\u{2005}'
+                    | '\u{2006}' | '\u{2007}' | '\u{2008}' | '\u{2009}' | '\u{200A}'
+                    | '\u{202F}' | '\u{205F}' | '\u{3000}' => ' ',
+                    other => other,
+                })
+                .collect::<String>()
+        }
+
         let matches_at = |idx: usize, pat: &[String]| -> bool {
             if pat.is_empty() {
                 return true;
@@ -1333,22 +1450,6 @@ fn compute_replacements(
                 .all(|(i, p)| original_lines[idx + i].trim_end() == p.trim_end());
             if trim_end {
                 return true;
-            }
-
-            // 3) normalize unicode punctuation/whitespace (do NOT trim; keep leading whitespace strict)
-            fn normalise_no_trim(s: &str) -> String {
-                s.chars()
-                    .map(|c| match c {
-                        '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}' | '\u{2014}'
-                        | '\u{2015}' | '\u{2212}' => '-',
-                        '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' => '\'',
-                        '\u{201C}' | '\u{201D}' | '\u{201E}' | '\u{201F}' => '"',
-                        '\u{00A0}' | '\u{2002}' | '\u{2003}' | '\u{2004}' | '\u{2005}'
-                        | '\u{2006}' | '\u{2007}' | '\u{2008}' | '\u{2009}' | '\u{200A}'
-                        | '\u{202F}' | '\u{205F}' | '\u{3000}' => ' ',
-                        other => other,
-                    })
-                    .collect::<String>()
             }
 
             pat.iter().enumerate().all(|(i, p)| {
@@ -1397,11 +1498,133 @@ fn compute_replacements(
             replacements.push((start_idx, pattern.len(), new_slice.to_vec()));
             line_index = start_idx + pattern.len();
         } else {
-            return Err(ToolError::new(format!(
-                "无法在 {} 中定位待替换的内容:\n{}",
+            let max_start = original_lines.len().saturating_sub(pattern.len());
+            let search_start = if chunk.is_end_of_file && original_lines.len() >= pattern.len() {
+                max_start
+            } else {
+                line_index.min(original_lines.len())
+            };
+
+            let line_eq = |a: &str, b: &str| -> bool {
+                a == b
+                    || a.trim_end() == b.trim_end()
+                    || normalise_no_trim(a) == normalise_no_trim(b)
+            };
+
+            // Best-effort: find the closest partial match near search_start / hint to explain *why* it failed.
+            let (needle_pos, needle_line) = pattern
+                .iter()
+                .enumerate()
+                .find(|(_, l)| !l.is_empty())
+                .unwrap_or((0, &pattern[0]));
+
+            let mut best_start: Option<usize> = None;
+            let mut best_prefix: usize = 0;
+            let mut best_dist: usize = usize::MAX;
+            for start_idx in search_start..=max_start {
+                let probe_idx = start_idx.saturating_add(needle_pos);
+                if probe_idx >= original_lines.len() {
+                    break;
+                }
+                if !line_eq(&original_lines[probe_idx], needle_line) {
+                    continue;
+                }
+
+                let mut prefix = 0usize;
+                let max_prefix = pattern.len().min(original_lines.len().saturating_sub(start_idx));
+                while prefix < max_prefix
+                    && line_eq(&original_lines[start_idx + prefix], &pattern[prefix])
+                {
+                    prefix += 1;
+                }
+
+                let dist = chunk
+                    .line_hint
+                    .map(|h| start_idx.abs_diff(h))
+                    .unwrap_or(0);
+
+                if prefix > best_prefix
+                    || (prefix == best_prefix && dist < best_dist)
+                    || (prefix == best_prefix
+                        && dist == best_dist
+                        && best_start.is_some_and(|b| start_idx < b))
+                {
+                    best_start = Some(start_idx);
+                    best_prefix = prefix;
+                    best_dist = dist;
+                }
+            }
+
+            let patch_preview = render_patch_preview(pattern, new_slice, 24);
+
+            let mut meta = json!({
+                "kind": "apply_patch_match_not_found",
+                "path": path.display().to_string(),
+                "searchStartLine": search_start + 1,
+                "lineHint": chunk.line_hint.map(|h| h + 1),
+                "anchor": chunk.change_context.clone(),
+                "anchorSoft": chunk.change_context_soft,
+                "patternLen": pattern.len(),
+                "newLen": new_slice.len(),
+                "patchPreview": patch_preview,
+            });
+
+            let mut msg = String::new();
+            msg.push_str(&format!(
+                "无法在 {} 中定位待替换片段（从第 {} 行开始搜索）\n\n补丁片段预览（旧/新对齐）：\n{}",
                 path.display(),
-                chunk.old_lines.join("\n")
-            )));
+                search_start + 1,
+                patch_preview
+            ));
+            if let Some(ctx) = chunk.change_context.as_ref() {
+                msg.push_str(&format!("\n\n锚定：{}", ctx));
+                if chunk.change_context_soft {
+                    msg.push_str("（soft）");
+                }
+            }
+            if let Some(h) = chunk.line_hint {
+                msg.push_str(&format!("\nline_hint: 第 {} 行", h + 1));
+            }
+
+            if let Some(start_idx) = best_start {
+                let mismatch_at = best_prefix.min(pattern.len());
+                let expected = pattern.get(mismatch_at).cloned().unwrap_or_default();
+                let actual = if start_idx + mismatch_at < original_lines.len() {
+                    original_lines[start_idx + mismatch_at].clone()
+                } else {
+                    "<EOF>".to_string()
+                };
+
+                let focus = start_idx.saturating_add(mismatch_at);
+                let excerpt = render_excerpt(
+                    original_lines,
+                    focus.saturating_sub(4),
+                    focus.saturating_add(8),
+                    16,
+                );
+
+                meta["closestMatch"] = json!({
+                    "startLine": start_idx + 1,
+                    "matchedPrefix": best_prefix,
+                    "patternLen": pattern.len(),
+                    "firstMismatchLine": focus + 1,
+                    "expected": expected,
+                    "actual": actual,
+                    "excerpt": excerpt,
+                });
+
+                msg.push_str(&format!(
+                    "\n\n最接近匹配候选：第 {} 行（已匹配 {}/{} 行）\n第一处不一致：\n- expected: {}\n- actual: {}\n\n文件片段：\n{}",
+                    start_idx + 1,
+                    best_prefix,
+                    pattern.len(),
+                    expected,
+                    actual,
+                    excerpt
+                ));
+            }
+
+            return Err(ToolError::new(msg).with_meta(meta));
         }
     }
 
@@ -1865,6 +2088,9 @@ mod tests {
             .await
             .expect_err("should fail");
         assert!(err.message.contains("无法在"));
+        assert!(err.message.contains("补丁片段预览"));
+        assert!(err.message.contains("-    UNIQUE_NO_SPACE"));
+        assert!(err.message.contains("+CHANGED"));
     }
 
     #[test]
