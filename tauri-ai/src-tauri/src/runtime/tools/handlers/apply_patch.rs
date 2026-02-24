@@ -1312,28 +1312,85 @@ fn compute_replacements(
 
         let mut pattern: &[String] = &chunk.old_lines;
         let mut new_slice: &[String] = &chunk.new_lines;
-            let mut found = seek_sequence(
+        let matches_at = |idx: usize, pat: &[String]| -> bool {
+            if pat.is_empty() {
+                return true;
+            }
+            if idx + pat.len() > original_lines.len() {
+                return false;
+            }
+
+            // 1) Exact
+            let exact = pat.iter().enumerate().all(|(i, p)| original_lines[idx + i] == *p);
+            if exact {
+                return true;
+            }
+
+            // 2) trim_end
+            let trim_end = pat
+                .iter()
+                .enumerate()
+                .all(|(i, p)| original_lines[idx + i].trim_end() == p.trim_end());
+            if trim_end {
+                return true;
+            }
+
+            // 3) normalize unicode punctuation/whitespace (do NOT trim; keep leading whitespace strict)
+            fn normalise_no_trim(s: &str) -> String {
+                s.chars()
+                    .map(|c| match c {
+                        '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}' | '\u{2014}'
+                        | '\u{2015}' | '\u{2212}' => '-',
+                        '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' => '\'',
+                        '\u{201C}' | '\u{201D}' | '\u{201E}' | '\u{201F}' => '"',
+                        '\u{00A0}' | '\u{2002}' | '\u{2003}' | '\u{2004}' | '\u{2005}'
+                        | '\u{2006}' | '\u{2007}' | '\u{2008}' | '\u{2009}' | '\u{200A}'
+                        | '\u{202F}' | '\u{205F}' | '\u{3000}' => ' ',
+                        other => other,
+                    })
+                    .collect::<String>()
+            }
+
+            pat.iter().enumerate().all(|(i, p)| {
+                normalise_no_trim(&original_lines[idx + i]) == normalise_no_trim(p)
+            })
+        };
+
+        // 当提供了严格锚定行（`@@ <exact line>`）时，优先尝试在“锚定后的当前游标位置”直接匹配。
+        //
+        // 这能避免一种常见误报：`old_lines` 在锚定之后出现多次，但补丁实际上是“紧跟锚定处”的插入/替换。
+        // 例如：`@@ Line 3` + 插入一行 + ` Line 4 ...`（context）这种写法，应当命中锚定后紧邻的那一处。
+        let anchored_strict = chunk.change_context.is_some() && !chunk.change_context_soft;
+        let mut found = if anchored_strict && matches_at(line_index, pattern) {
+            Some(line_index)
+        } else {
+            seek_sequence(
                 original_lines,
                 pattern,
                 line_index,
                 chunk.is_end_of_file,
                 chunk.line_hint,
                 SeekAmbiguityPolicy::RequireUniqueIfNoHint,
-            )?;
+            )?
+        };
 
         if found.is_none() && pattern.last().is_some_and(String::is_empty) {
             pattern = &pattern[..pattern.len() - 1];
             if new_slice.last().is_some_and(String::is_empty) {
                 new_slice = &new_slice[..new_slice.len() - 1];
             }
-                found = seek_sequence(
+            found = if anchored_strict && matches_at(line_index, pattern) {
+                Some(line_index)
+            } else {
+                seek_sequence(
                     original_lines,
                     pattern,
                     line_index,
                     chunk.is_end_of_file,
                     chunk.line_hint,
                     SeekAmbiguityPolicy::RequireUniqueIfNoHint,
-                )?;
+                )?
+            };
             }
 
         if let Some(start_idx) = found {
@@ -1678,6 +1735,38 @@ mod tests {
 
         let updated = fs::read_to_string(&file_path).await.expect("read");
         assert_eq!(updated, "alpha\nBETA1\nalpha\nbeta2\n");
+    }
+
+    #[tokio::test]
+    async fn apply_patch_custom_anchor_prefers_cursor_match_when_old_lines_repeats_later() {
+        let dir = tempdir().expect("tmp");
+        let base = dir.path();
+        let file_path = base.join("repeat.txt");
+        fs::write(
+            &file_path,
+            "Line 1: First line\nLine 2: Second line\nLine 3: Third line\nLine 4: Fourth line with anchor test\nLine 5: Fifth line\nLine 6: Sixth line\nLine 7: Seventh line\nLine 8: Eighth line\nLine 4: Fourth line with anchor test\n",
+        )
+        .await
+        .expect("write");
+
+        // `Line 4 ...` 在锚定之后出现多次，但补丁的 context 行紧跟锚定游标，应该命中第一处而不是报错“多处匹配”。
+        let patch = r#"*** Begin Patch
+*** Update File: repeat.txt
+@@ Line 3: Third line
++Line 3.5: Inserted line after anchor
+ Line 4: Fourth line with anchor test
+*** End Patch"#;
+
+        let hunks = parse_patch_custom(patch).expect("parse");
+        let _ = apply_hunks(base, &SandboxPolicy::DangerFullAccess, &[], &hunks)
+            .await
+            .expect("apply");
+
+        let updated = fs::read_to_string(&file_path).await.expect("read");
+        assert_eq!(
+            updated,
+            "Line 1: First line\nLine 2: Second line\nLine 3: Third line\nLine 3.5: Inserted line after anchor\nLine 4: Fourth line with anchor test\nLine 5: Fifth line\nLine 6: Sixth line\nLine 7: Seventh line\nLine 8: Eighth line\nLine 4: Fourth line with anchor test\n"
+        );
     }
 
     #[tokio::test]
