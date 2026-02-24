@@ -246,7 +246,8 @@ pub async fn lsp_detect_server(args: LspDetectServerArgs) -> Result<LspDetectSer
                 ("basedpyright-langserver", &["--stdio"]),
             ],
         ),
-        "go" => detect_lsp_by_candidates(lang, &[("gopls", &[])]),
+        // gopls 在新版本中无参会默认 serve，但这里显式传 serve 以兼容旧版本。
+        "go" => detect_lsp_by_candidates(lang, &[("gopls", &["serve"])]),
         "cpp" | "c" => detect_lsp_by_candidates(lang, &[("clangd", &[])]),
         "lua" => detect_lsp_by_candidates(lang, &[("lua-language-server", &[])]),
         _ => Err(format!("暂不支持自动探测该语言的 LSP：{lang}")),

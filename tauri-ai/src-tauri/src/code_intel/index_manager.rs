@@ -1035,6 +1035,7 @@ fn best_language_id_for_path(path: &str, hint_language_id: &str) -> Option<&'sta
             "javascript" => return Some("javascript"),
             "tsx" => return Some("tsx"),
             "python" => return Some("python"),
+            "go" => return Some("go"),
             "c" => return Some("c"),
             "cpp" => return Some("cpp"),
             "lua" => return Some("lua"),
@@ -1053,6 +1054,9 @@ fn best_language_id_for_path(path: &str, hint_language_id: &str) -> Option<&'sta
     }
     if p.ends_with(".py") {
         return Some("python");
+    }
+    if p.ends_with(".go") {
+        return Some("go");
     }
     if p.ends_with(".lua") {
         return Some("lua");

@@ -97,6 +97,7 @@ tree-sitter-python = "0.23"
 tree-sitter-c = "0.23"
 tree-sitter-cpp = "0.23"
 tree-sitter-lua = "0.4.1"
+tree-sitter-go = "0.23"
 
 # Desktop-only OS integrations
 notify = "6"

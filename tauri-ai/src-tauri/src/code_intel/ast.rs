@@ -47,6 +47,7 @@ pub fn document_symbols(args: AstDocumentSymbolsArgs) -> Result<Vec<AstSymbol>, 
         "javascript" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
         "tsx" => tree_sitter_typescript::LANGUAGE_TSX.into(),
         "python" => tree_sitter_python::LANGUAGE.into(),
+        "go" => tree_sitter_go::LANGUAGE.into(),
         "c" => tree_sitter_c::LANGUAGE.into(),
         "cpp" => tree_sitter_cpp::LANGUAGE.into(),
         "lua" => tree_sitter_lua::LANGUAGE.into(),
@@ -87,6 +88,7 @@ fn symbol_from_node(node: tree_sitter::Node, src: &str, language_id: &str) -> Op
         "rust" => rust_symbol_from_node(node, src),
         "typescript" | "javascript" | "tsx" => ts_symbol_from_node(node, src),
         "python" => python_symbol_from_node(node, src),
+        "go" => go_symbol_from_node(node, src),
         "c" | "cpp" => c_like_symbol_from_node(node, src, language_id),
         "lua" => lua_symbol_from_node(node, src),
         _ => None,
@@ -157,6 +159,53 @@ fn python_symbol_from_node(node: tree_sitter::Node, src: &str) -> Option<AstSymb
     let (sym_kind, name_node) = match kind {
         "function_definition" => ("function", node.child_by_field_name("name")),
         "class_definition" => ("class", node.child_by_field_name("name")),
+        _ => return None,
+    };
+
+    let name_node = name_node?;
+    let name = node_text(src, name_node).trim().to_string();
+    if name.is_empty() {
+        return None;
+    }
+
+    Some(AstSymbol {
+        name,
+        kind: sym_kind.to_string(),
+        range: to_range(node),
+        selection_range: to_range(name_node),
+        children: Vec::new(),
+    })
+}
+
+fn go_symbol_from_node(node: tree_sitter::Node, src: &str) -> Option<AstSymbol> {
+    let kind = node.kind();
+    let (sym_kind, name_node) = match kind {
+        "function_declaration" => ("function", node.child_by_field_name("name")),
+        "method_declaration" => ("method", node.child_by_field_name("name")),
+        "type_spec" => {
+            let type_node_kind = node
+                .child_by_field_name("type")
+                .map(|t| t.kind().to_string())
+                .unwrap_or_default();
+            let sym_kind = match type_node_kind.as_str() {
+                "struct_type" => "struct",
+                "interface_type" => "interface",
+                _ => "type",
+            };
+            (sym_kind, node.child_by_field_name("name"))
+        }
+        // Struct fields / interface methods (best-effort, keep outline useful).
+        "field_declaration" => (
+            "field",
+            node.child_by_field_name("name")
+                .and_then(find_first_go_identifier_like)
+                .or_else(|| find_first_go_identifier_like(node)),
+        ),
+        "method_spec" => (
+            "method",
+            node.child_by_field_name("name")
+                .or_else(|| find_first_go_identifier_like(node)),
+        ),
         _ => return None,
     };
 
@@ -255,6 +304,22 @@ fn lua_symbol_from_node(node: tree_sitter::Node, src: &str) -> Option<AstSymbol>
         selection_range: to_range(name_node),
         children: Vec::new(),
     })
+}
+
+fn find_first_go_identifier_like<'a>(
+    node: tree_sitter::Node<'a>,
+) -> Option<tree_sitter::Node<'a>> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "identifier" | "field_identifier" | "type_identifier" => return Some(child),
+            _ => {}
+        }
+        if let Some(found) = find_first_go_identifier_like(child) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 fn find_first_type_identifier<'a>(node: tree_sitter::Node<'a>) -> Option<tree_sitter::Node<'a>> {

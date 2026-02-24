@@ -1777,23 +1777,51 @@ pub struct CodeIntelligenceSettings {
 
 impl Default for CodeIntelligenceSettings {
     fn default() -> Self {
-        // 默认开启 Rust（若本机未安装 rust-analyzer，会在 UI 层提示；不会影响其它功能）
+        // 默认开启 Rust/Go（若本机未安装对应语言服务器，会在 UI 层提示；不会影响其它功能）
         Self {
             enabled: true,
             lsp_completion_enabled: true,
             monaco_word_suggestions_enabled: true,
-            lsp_servers: vec![LspServerConfig {
-                language_id: "rust".to_string(),
-                enabled: true,
-                command: "rust-analyzer".to_string(),
-                // rust-analyzer 默认使用 stdio 通信；无需传 `--stdio`（部分版本会报 unknown flag）。
-                args: vec![],
-                ..Default::default()
-            }],
+            lsp_servers: vec![
+                LspServerConfig {
+                    language_id: "rust".to_string(),
+                    enabled: true,
+                    command: "rust-analyzer".to_string(),
+                    // rust-analyzer 默认使用 stdio 通信；无需传 `--stdio`（部分版本会报 unknown flag）。
+                    args: vec![],
+                    ..Default::default()
+                },
+                LspServerConfig {
+                    language_id: "go".to_string(),
+                    enabled: true,
+                    command: "gopls".to_string(),
+                    // 显式使用 `serve`（兼容旧版本 gopls；新版本无参也会默认 serve）。
+                    args: vec!["serve".to_string()],
+                    ..Default::default()
+                },
+            ],
             ai_completion: AiCompletionSettings::default(),
             symbol_analysis: Some(SymbolAnalysisSettings::default()),
         }
     }
+}
+
+fn ensure_default_lsp_server_configs(cfg: &mut CodeIntelligenceSettings) -> bool {
+    let mut changed = false;
+
+    // vNext defaults: ensure Go LSP is present for existing configs.
+    if !cfg.lsp_servers.iter().any(|s| s.language_id == "go") {
+        cfg.lsp_servers.push(LspServerConfig {
+            language_id: "go".to_string(),
+            enabled: true,
+            command: "gopls".to_string(),
+            args: vec!["serve".to_string()],
+            ..Default::default()
+        });
+        changed = true;
+    }
+
+    changed
 }
 
 // ============================================================================
@@ -2279,6 +2307,10 @@ impl AppConfig {
     pub fn normalize(&mut self) -> bool {
         let mut changed = false;
         if self.security.normalize() {
+            changed = true;
+        }
+
+        if ensure_default_lsp_server_configs(&mut self.code_intelligence) {
             changed = true;
         }
 

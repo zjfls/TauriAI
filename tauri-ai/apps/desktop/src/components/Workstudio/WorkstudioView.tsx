@@ -2718,6 +2718,23 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     setExplorerSelectedFilePath(activeFilePathInFocusedPane);
   }, [activeFilePathInFocusedPane]);
 
+  const activeLanguageLspStateForOutline = useMemo(() => {
+    const languageId = String(activeTextLanguageId ?? '').trim();
+    if (!languageId) return 'not_started' as const;
+    const st =
+      lspStatuses.find((s) => String(s?.languageId ?? '').trim() === languageId) ?? null;
+    const started = Boolean(st?.started);
+    const initialized = Boolean(st?.initialized);
+    const ensureError = lspEnsureErrors[languageId] ?? null;
+    const lastError = ensureError || st?.lastError || null;
+    const hasProgress = Object.keys(lspProgress[languageId] ?? {}).length > 0;
+    if (lastError) return 'error' as const;
+    if (!started) return 'not_started' as const;
+    if (!initialized) return 'starting' as const;
+    if (hasProgress) return 'indexing' as const;
+    return 'ready' as const;
+  }, [activeTextLanguageId, lspEnsureErrors, lspProgress, lspStatuses]);
+
   // Code Index（落盘缓存）：
   // - 用户切换到某个文件时，把该文件的索引任务提到高优先级
   // - 目的是：大项目后台扫描很慢时，用户正在看的文件永远最优先
@@ -2729,7 +2746,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
     const normalizedPath = normalizeFsPath(file.path);
     if (!normalizedPath || isUntitledPath(normalizedPath)) return;
-    const indexable = ['rust', 'typescript', 'javascript', 'python', 'c', 'cpp', 'lua'].includes(activeTextLanguageId);
+    const indexable = ['rust', 'typescript', 'javascript', 'python', 'go', 'c', 'cpp', 'lua'].includes(activeTextLanguageId);
     if (!indexable) return;
 
     let cancelled = false;
@@ -2744,9 +2761,12 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         });
         if (cancelled) return;
 
-        // 当开启“优先使用 LSP”时，CodeIndex 的 AST 缓存仅用于后台索引，不用于驱动 Outline UI，
-        // 否则会出现“AST(少) ↔ LSP(多)”的符号数跳变，进而影响分析稳定性。
-        if (outlinePreferLsp) {
+        // 当开启“优先使用 LSP”且 LSP 已就绪时：
+        // - CodeIndex 的 AST 缓存仅用于后台索引，不用于驱动 Outline UI
+        // - 否则会出现“AST(少) ↔ LSP(多)”的符号数跳变，进而影响分析稳定性。
+        //
+        // 但如果 LSP 仍在启动/索引（或出错），则允许用 AST 缓存兜底，避免 Outline 空白。
+        if (outlinePreferLsp && activeLanguageLspStateForOutline === 'ready') {
           setOutlineLoading(Boolean(res?.queued));
           return;
         }
@@ -2789,7 +2809,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     return () => {
       cancelled = true;
     };
-  }, [ws?.id, activeTextFileInFocusedPane?.id, activeTextLanguageId, outlinePreferLsp]);
+  }, [ws?.id, activeTextFileInFocusedPane?.id, activeTextLanguageId, outlinePreferLsp, activeLanguageLspStateForOutline]);
 
   useEffect(() => {
     setOutlineActiveKey(null);
@@ -2892,13 +2912,17 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           isLspLanguageEnabledForBridge(languageId) &&
           uri.startsWith('file://')
         );
-        const forceLsp = outlinePreferLsp && canTryLsp;
+        const lspState = canTryLsp ? activeLanguageLspStateForOutline : 'not_started';
+        const lspReady = lspState === 'ready';
+        const lspNotReady = lspState === 'not_started' || lspState === 'starting' || lspState === 'indexing';
+        const shouldTryLsp = canTryLsp && lspState !== 'error' && (!outlinePreferLsp || lspReady);
+        const forceLsp = outlinePreferLsp && canTryLsp && lspReady;
 
         let nextItems: OutlineItem[] = [];
         let nextSource: 'lsp' | 'ast' | 'none' = 'none';
         let lspError: string | null = null;
 
-        if (canTryLsp) {
+        if (shouldTryLsp) {
           try {
             const result = await lspRequest<any>({
               workstudioId: wsId,
@@ -2907,7 +2931,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
               params: {
                 textDocument: { uri },
               },
-              timeoutMs: outlinePreferLsp ? 20000 : 8000,
+              timeoutMs: lspNotReady ? 2500 : outlinePreferLsp ? 20000 : 8000,
             });
             const fromLsp = lspDocumentSymbolsToOutline(result);
             if (fromLsp.length > 0) {
@@ -2919,7 +2943,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           }
         }
 
-        if (nextItems.length === 0 && !forceLsp) {
+        if (nextItems.length === 0 && (!forceLsp || Boolean(lspError))) {
           try {
             const fromAst = astSymbolsToOutline(
               await astDocumentSymbols({
@@ -2980,6 +3004,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     isLspLanguageEnabledForBridge,
     outlineRefreshSeq,
     outlinePreferLsp,
+    activeLanguageLspStateForOutline,
   ]);
 
   // Monaco 编辑器在 flex 布局变化（拆分/关闭 Pane/拖拽/分屏比例调整）时偶发不会自动重算尺寸，
@@ -5577,7 +5602,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           try {
             const wsId = ws?.id ?? null;
             const languageId = languageForPath(normalizedPath);
-            const indexable = ['rust', 'typescript', 'javascript', 'python', 'c', 'cpp', 'lua'].includes(languageId);
+            const indexable = ['rust', 'typescript', 'javascript', 'python', 'go', 'c', 'cpp', 'lua'].includes(languageId);
             if (wsId && indexable && !isUntitledPath(normalizedPath)) {
               void codeIndexRequestDocumentSymbols({
                 workstudioId: wsId,
@@ -5684,7 +5709,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           const wsId = ws?.id ?? null;
           const normalizedPath = normalizeFsPath(file.path);
           const languageId = languageForPath(normalizedPath);
-          const indexable = ['rust', 'typescript', 'javascript', 'python', 'c', 'cpp', 'lua'].includes(languageId);
+          const indexable = ['rust', 'typescript', 'javascript', 'python', 'go', 'c', 'cpp', 'lua'].includes(languageId);
           if (wsId && indexable && normalizedPath && !isUntitledPath(normalizedPath)) {
             void codeIndexRequestDocumentSymbols({
               workstudioId: wsId,
@@ -8997,7 +9022,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                       if (!wsId || !file) return;
                       const normalizedPath = normalizeFsPath(file.path);
                       if (!normalizedPath || isUntitledPath(normalizedPath)) return;
-                      const indexable = ['rust', 'typescript', 'javascript', 'python', 'c', 'cpp', 'lua'].includes(
+                      const indexable = ['rust', 'typescript', 'javascript', 'python', 'go', 'c', 'cpp', 'lua'].includes(
                         activeTextLanguageId
                       );
                       if (!indexable) return;
