@@ -120,11 +120,12 @@ const defaultSymbolAnalysisSettings = (): SymbolAnalysisSettings => ({
   includeProjectContext: true,
 });
 
-const AUTO_DETECT_LANGUAGE_ORDER = ['rust', 'python', 'cpp', 'c', 'lua'] as const;
+const AUTO_DETECT_LANGUAGE_ORDER = ['rust', 'python', 'go', 'cpp', 'c', 'lua'] as const;
 const AUTO_DETECT_LANGUAGE_SET = new Set<string>(AUTO_DETECT_LANGUAGE_ORDER);
 const AUTO_DETECT_LANGUAGE_LABEL: Record<string, string> = {
   rust: 'rust-analyzer',
   python: 'pylsp',
+  go: 'gopls',
   cpp: 'clangd',
   c: 'clangd',
   lua: 'lua-language-server',
@@ -494,7 +495,7 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
         <div className="flex-1 space-y-1 overflow-auto">
           {serverLabels.length === 0 ? (
             <div className="rounded-lg border border-dashed border-gray-300 px-3 py-3 text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400">
-              <div>暂无 LSP 配置，点击右上角“新增”添加，或直接一键配置推荐语言（Rust/Python/C++/Lua）。</div>
+              <div>暂无 LSP 配置，点击右上角“新增”添加，或直接一键配置推荐语言（Rust/Python/Go/C++/Lua）。</div>
               <div className="mt-2 flex items-center gap-2">
                 <button
                   type="button"
@@ -1128,7 +1129,7 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
                       updateServer(selectedIndex, (s) => ({ ...s, languageId: e.target.value }));
                     }}
                     className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
-                    placeholder="rust / python / cpp / c / lua ..."
+                    placeholder="rust / python / go / cpp / c / lua ..."
                   />
                 </div>
               </div>

@@ -227,7 +227,7 @@ pub struct LspDetectServerResult {
 ///
 /// 说明：
 /// - 主要用于“一键配置”（自动把语言服务器的绝对路径写入配置）。
-/// - 当前支持 rust/python/cpp/c/lua。
+/// - 当前支持 rust/python/go/cpp/c/lua。
 #[tauri::command]
 pub async fn lsp_detect_server(args: LspDetectServerArgs) -> Result<LspDetectServerResult, String> {
     let lang = args.language_id.trim();
@@ -246,6 +246,7 @@ pub async fn lsp_detect_server(args: LspDetectServerArgs) -> Result<LspDetectSer
                 ("basedpyright-langserver", &["--stdio"]),
             ],
         ),
+        "go" => detect_lsp_by_candidates(lang, &[("gopls", &[])]),
         "cpp" | "c" => detect_lsp_by_candidates(lang, &[("clangd", &[])]),
         "lua" => detect_lsp_by_candidates(lang, &[("lua-language-server", &[])]),
         _ => Err(format!("暂不支持自动探测该语言的 LSP：{lang}")),

@@ -368,6 +368,7 @@ const languageForPath = (path: string) => {
   if (lower.endsWith('.md') || lower.endsWith('.markdown')) return 'markdown';
   if (lower.endsWith('.py')) return 'python';
   if (lower.endsWith('.rs')) return 'rust';
+  if (lower.endsWith('.go')) return 'go';
   if (lower.endsWith('.c')) return 'c';
   if (
     lower.endsWith('.cc') ||
@@ -390,12 +391,13 @@ const languageForPath = (path: string) => {
   return 'plaintext';
 };
 
-const AUTO_DETECT_LSP_LANGUAGES = ['rust', 'python', 'cpp', 'c', 'lua'] as const;
+const AUTO_DETECT_LSP_LANGUAGES = ['rust', 'python', 'go', 'cpp', 'c', 'lua'] as const;
 const isAutoDetectableLspLanguage = (languageId: string) =>
   AUTO_DETECT_LSP_LANGUAGES.includes(languageId as (typeof AUTO_DETECT_LSP_LANGUAGES)[number]);
 const AUTO_DETECT_LSP_FILE_QUERIES: Record<string, string[]> = {
   rust: ['.rs', 'cargo.toml'],
   python: ['.py', 'pyproject.toml', 'requirements.txt'],
+  go: ['.go', 'go.mod', 'go.work', 'go.sum'],
   cpp: ['.cpp', '.cc', '.cxx', '.hpp', '.hh', '.hxx', '.ixx', '.cppm'],
   c: ['.c'],
   lua: ['.lua'],
@@ -427,6 +429,8 @@ const isAutoDetectMatchForLanguage = (languageId: string, filePath: string): boo
         name === 'requirements.txt' ||
         name === 'setup.py'
       );
+    case 'go':
+      return lower.endsWith('.go') || name === 'go.mod' || name === 'go.sum' || name === 'go.work';
     case 'cpp':
       return (
         lower.endsWith('.cc') ||
@@ -7596,7 +7600,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
   // Auto-config LSP（产品级兜底）：
   // - 当 command 为空/非绝对路径时，尝试探测并写回绝对路径，避免依赖 PATH。
-  // - 优先修复已有配置；当配置为空时，尝试自动创建常见语言（rust/python/cpp/c/lua）。
+  // - 优先修复已有配置；当配置为空时，尝试自动创建常见语言（rust/python/go/cpp/c/lua）。
   // - 失败仅记录，不阻塞其它语言。
   useEffect(() => {
     if (!isTauri()) return;

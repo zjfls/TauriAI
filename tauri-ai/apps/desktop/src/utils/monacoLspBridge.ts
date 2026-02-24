@@ -61,6 +61,7 @@ const languageForPath = (path: string) => {
   if (lower.endsWith('.md') || lower.endsWith('.markdown')) return 'markdown';
   if (lower.endsWith('.py') || lower.endsWith('.pyi')) return 'python';
   if (lower.endsWith('.rs')) return 'rust';
+  if (lower.endsWith('.go')) return 'go';
   if (lower.endsWith('.c')) return 'c';
   if (
     lower.endsWith('.cc') ||
@@ -93,6 +94,7 @@ const getEnabledServerLanguageIds = (cfg: CodeIntelligenceSettings | null | unde
   // 给一些常见语言兜底：即使用户没配，也允许以后热更新配置后立即生效
   out.add('rust');
   out.add('python');
+  out.add('go');
   out.add('cpp');
   out.add('c');
   out.add('lua');
