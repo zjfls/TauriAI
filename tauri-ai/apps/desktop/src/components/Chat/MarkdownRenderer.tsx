@@ -52,6 +52,15 @@ const mermaidCache = new Map<string, string>();
 const MERMAID_CACHE_MAX_ENTRIES = 120;
 let mermaidIdCounter = 0;
 
+const MarkdownDetailsSummary: React.FC<any> = ({ children, ...props }: any) => (
+  <summary
+    className="cursor-pointer rounded-t-lg bg-gray-100 px-4 py-2 font-medium dark:bg-gray-800"
+    {...props}
+  >
+    {children}
+  </summary>
+);
+
 function generateMermaidId(): string {
   return `mermaid-${++mermaidIdCounter}-${Math.random().toString(36).slice(2, 9)}`;
 }
@@ -1256,10 +1265,20 @@ export const MarkdownRenderer = React.memo(function MarkdownRendererImpl({ conte
     ),
     details: ({ children, ...props }: any) => {
       const parts = React.Children.toArray(children);
-      const summaryParts = parts.filter(
-        (p) => React.isValidElement(p) && (p.type as any) === 'summary'
-      );
-      const bodyParts = parts.filter((p) => !summaryParts.includes(p as any));
+      const isSummary = (p: unknown): p is React.ReactElement =>
+        React.isValidElement(p) &&
+        (p.type === 'summary' || p.type === MarkdownDetailsSummary);
+
+      let summaryPart: React.ReactElement | null = null;
+      const bodyParts: React.ReactNode[] = [];
+      for (const p of parts) {
+        if (!summaryPart && isSummary(p)) {
+          summaryPart = p;
+          continue;
+        }
+        bodyParts.push(p);
+      }
+
       const bodyText = bodyParts.filter((p) => typeof p === 'string').join('');
       const bodyNodes = bodyParts.filter((p) => typeof p !== 'string');
       const hasBodyMarkdown = bodyText.trim().length > 0;
@@ -1269,7 +1288,7 @@ export const MarkdownRenderer = React.memo(function MarkdownRendererImpl({ conte
           className="my-2 rounded-lg border border-gray-200 dark:border-gray-700"
           {...props}
         >
-          {summaryParts}
+          {summaryPart ?? <MarkdownDetailsSummary>详情</MarkdownDetailsSummary>}
           {(hasBodyMarkdown || bodyNodes.length > 0) && (
             <div className="px-4 py-3">
               {hasBodyMarkdown && (
@@ -1285,14 +1304,7 @@ export const MarkdownRenderer = React.memo(function MarkdownRendererImpl({ conte
         </details>
       );
     },
-    summary: ({ children, ...props }: any) => (
-      <summary
-        className="cursor-pointer rounded-t-lg bg-gray-100 px-4 py-2 font-medium dark:bg-gray-800"
-        {...props}
-      >
-        {children}
-      </summary>
-    ),
+    summary: MarkdownDetailsSummary,
     table: ({ children }: any) => (
       <div className="my-2 overflow-x-auto">
         <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">

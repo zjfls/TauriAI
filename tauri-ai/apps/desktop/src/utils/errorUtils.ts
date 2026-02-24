@@ -19,6 +19,18 @@ const ERROR_THROTTLE_MS = 2000;
  * @param err 原生 Error 对象（可选，用于提取 StackTrace）
  */
 export async function showGlobalError(title: string, errorMessage: string, err?: unknown) {
+    // If the GlobalErrorModal isn't mounted, dispatching the event will be a no-op and
+    // our internal counters (activeDialogCount/throttle) would get stuck.
+    // Guard it to keep tests and isolated component renders clean.
+    try {
+        if (typeof document !== 'undefined') {
+            const mounted = document.body?.dataset?.tauriaiGlobalErrorModalMounted === '1';
+            if (!mounted) return;
+        }
+    } catch {
+        // ignore
+    }
+
     if (activeDialogCount >= MAX_ACTIVE_DIALOGS) {
         console.warn(`[GlobalError active limit reached] ${title}: ${errorMessage}`);
         return;

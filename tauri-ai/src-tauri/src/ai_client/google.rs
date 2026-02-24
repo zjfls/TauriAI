@@ -772,16 +772,49 @@ impl AiClient for GoogleClient {
 
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            if let Ok(error_response) = serde_json::from_str::<GoogleErrorResponse>(&error_text) {
-                let _ = token_sender
-                    .send(StreamEvent::Error(error_response.error.message.clone()))
-                    .await;
-                return Err(AiError::RequestFailed(error_response.error.message));
-            }
+            let error_msg = if let Ok(error_response) =
+                serde_json::from_str::<GoogleErrorResponse>(&error_text)
+            {
+                error_response.error.message
+            } else {
+                error_text.clone()
+            };
+
+            let debug_info = DebugInfoData {
+                request: Some(debug_request.clone()),
+                response: Some(DebugResponseData {
+                    status: status_code,
+                    headers: response_headers.clone(),
+                    body: serde_json::from_str(&error_text)
+                        .unwrap_or(serde_json::Value::String(error_text.clone())),
+                }),
+                stream_termination: Some(StreamTerminationInfo {
+                    protocol_complete: Some(false),
+                    termination_source: Some(StreamTerminationSource::HttpError),
+                    protocol_kind: Some("sse_json_chunk".to_string()),
+                    expected_signal: None,
+                    observed_signal: None,
+                    last_event_type: None,
+                    chunk_count: Some(0),
+                }),
+            };
+
+            // Send Error FIRST, then DoneWithDebug so the UI always has the debug context.
+            let _ = token_sender.send(StreamEvent::Error(error_msg.clone())).await;
             let _ = token_sender
-                .send(StreamEvent::Error(error_text.clone()))
+                .send(StreamEvent::DoneWithDebug {
+                    content: String::new(),
+                    thinking: None,
+                    debug_info: Some(debug_info),
+                    usage: None,
+                })
                 .await;
-            return Err(AiError::RequestFailed(error_text));
+
+            return Err(match status_code {
+                401 | 403 => AiError::AuthenticationFailed(error_msg),
+                429 => AiError::RateLimited(error_msg),
+                _ => AiError::RequestFailed(error_msg),
+            });
         }
 
         let mut full_content = String::new();

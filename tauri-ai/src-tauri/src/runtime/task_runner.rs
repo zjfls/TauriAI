@@ -2375,14 +2375,17 @@ impl<'a> TurnLoop<'a> {
                     });
 
                     let persisted_usage = usage.clone();
+                    // 失败时即使未开启 debug_mode，也应提供“已脱敏”的调试上下文，避免黑盒报错。
+                    // - 前端全局弹窗/DebugModal 依赖 RunEvent::Error/TurnFinished 携带 debugInfo
+                    // - 仅对失败兜底，避免常规成功路径产生过大/过敏感的调试负担
+                    let persisted_debug_info =
+                        debug_info.as_ref().map(redact_debug_info_for_store);
                     let turn_debug_info = if self.debug_mode {
                         debug_info.clone()
                     } else {
-                        None
+                        persisted_debug_info.clone()
                     };
                     let turn_usage = if self.debug_mode { usage } else { None };
-                    let persisted_debug_info =
-                        turn_debug_info.as_ref().map(redact_debug_info_for_store);
 
                     if !thinking.trim().is_empty() {
                         blocks.push(MessageBlock::Thinking {
@@ -2970,6 +2973,78 @@ fn is_sensitive_header_name(name: &str) -> bool {
     )
 }
 
+fn is_sensitive_query_param_name(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "key"
+            | "api_key"
+            | "apikey"
+            | "access_token"
+            | "token"
+            | "auth"
+            | "authorization"
+            | "sig"
+            | "signature"
+            | "secret"
+            | "client_secret"
+            | "password"
+    )
+}
+
+fn redact_debug_url(url: &str) -> String {
+    // Best-effort URL redaction: keep non-sensitive query params, but mask known secret-ish ones.
+    // This prevents accidental leakage in persisted debugInfo (e.g. Google `?key=...`).
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return trimmed.to_string();
+    }
+
+    let (before_hash, frag) = match trimmed.split_once('#') {
+        Some((a, b)) => (a, Some(b)),
+        None => (trimmed, None),
+    };
+    let (base, query) = match before_hash.split_once('?') {
+        Some((a, b)) => (a, Some(b)),
+        None => (before_hash, None),
+    };
+    let Some(query) = query else {
+        return trimmed.to_string();
+    };
+
+    let mut out_params: Vec<String> = Vec::new();
+    for part in query.split('&') {
+        if part.trim().is_empty() {
+            continue;
+        }
+        if let Some((k, v)) = part.split_once('=') {
+            if is_sensitive_query_param_name(k) {
+                out_params.push(format!("{k}=***"));
+            } else {
+                out_params.push(format!("{k}={v}"));
+            }
+        } else {
+            // A bare key without "=".
+            if is_sensitive_query_param_name(part) {
+                out_params.push(format!("{part}=***"));
+            } else {
+                out_params.push(part.to_string());
+            }
+        }
+    }
+
+    let mut out = String::new();
+    out.push_str(base);
+    if !out_params.is_empty() {
+        out.push('?');
+        out.push_str(&out_params.join("&"));
+    }
+    if let Some(f) = frag {
+        out.push('#');
+        out.push_str(f);
+    }
+    out
+}
+
 fn redact_debug_headers(headers: &HashMap<String, String>) -> HashMap<String, String> {
     headers
         .iter()
@@ -2986,7 +3061,7 @@ fn redact_debug_headers(headers: &HashMap<String, String>) -> HashMap<String, St
 fn redact_debug_info_for_store(debug_info: &DebugInfoData) -> DebugInfoData {
     DebugInfoData {
         request: debug_info.request.as_ref().map(|req| DebugRequestData {
-            url: req.url.clone(),
+            url: redact_debug_url(&req.url),
             method: req.method.clone(),
             headers: redact_debug_headers(&req.headers),
             body: req.body.clone(),
@@ -5754,6 +5829,16 @@ mod tests {
             }
             other => panic!("expected TurnStreamResult::Error, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn redact_debug_url_masks_sensitive_query_params() {
+        let url = "https://generativelanguage.googleapis.com/v1beta/models/demo:streamGenerateContent?alt=sse&key=SECRET&foo=bar";
+        let redacted = redact_debug_url(url);
+        assert!(redacted.contains("alt=sse"));
+        assert!(redacted.contains("foo=bar"));
+        assert!(redacted.contains("key=***"));
+        assert!(!redacted.contains("SECRET"));
     }
 
     struct EmptyOkClient;
