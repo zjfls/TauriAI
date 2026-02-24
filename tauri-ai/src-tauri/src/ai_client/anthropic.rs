@@ -753,6 +753,7 @@ impl AiClient for AnthropicClient {
                     observed_signal: None,
                     last_event_type: None,
                     chunk_count: Some(0),
+                    raw_event_tail: None,
                 }),
             };
 

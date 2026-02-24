@@ -1369,7 +1369,7 @@ fn compute_replacements(
                 });
                 let mut msg = String::new();
                 msg.push_str(&format!(
-                    "无法找到锚定行（@@）: '{ctx_line}'（文件: {}）\n- 搜索起点: 第 {} 行",
+                    "无法找到锚定行（@@）: '{}'（文件: {}）\n- 搜索起点: 第 {} 行",
                     ctx_line,
                     path.display(),
                     search_start + 1
