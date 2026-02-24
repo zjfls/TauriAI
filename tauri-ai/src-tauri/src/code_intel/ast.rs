@@ -82,11 +82,7 @@ fn collect_symbols(node: tree_sitter::Node, src: &str, language_id: &str) -> Vec
     out
 }
 
-fn symbol_from_node(
-    node: tree_sitter::Node,
-    src: &str,
-    language_id: &str,
-) -> Option<AstSymbol> {
+fn symbol_from_node(node: tree_sitter::Node, src: &str, language_id: &str) -> Option<AstSymbol> {
     match language_id {
         "rust" => rust_symbol_from_node(node, src),
         "typescript" | "javascript" | "tsx" => ts_symbol_from_node(node, src),
@@ -187,14 +183,29 @@ fn c_like_symbol_from_node(
     let kind = node.kind();
 
     let (sym_kind, name_node) = match kind {
-        "function_definition" => ("function", find_first_identifier_in_field(node, "declarator")),
-        "struct_specifier" => ("struct", node.child_by_field_name("name").or_else(|| find_first_type_identifier(node))),
-        "enum_specifier" => ("enum", node.child_by_field_name("name").or_else(|| find_first_type_identifier(node))),
+        "function_definition" => (
+            "function",
+            find_first_identifier_in_field(node, "declarator"),
+        ),
+        "struct_specifier" => (
+            "struct",
+            node.child_by_field_name("name")
+                .or_else(|| find_first_type_identifier(node)),
+        ),
+        "enum_specifier" => (
+            "enum",
+            node.child_by_field_name("name")
+                .or_else(|| find_first_type_identifier(node)),
+        ),
         // C++ only
-        "class_specifier" if language_id == "cpp" => {
-            ("class", node.child_by_field_name("name").or_else(|| find_first_type_identifier(node)))
+        "class_specifier" if language_id == "cpp" => (
+            "class",
+            node.child_by_field_name("name")
+                .or_else(|| find_first_type_identifier(node)),
+        ),
+        "namespace_definition" if language_id == "cpp" => {
+            ("namespace", node.child_by_field_name("name"))
         }
-        "namespace_definition" if language_id == "cpp" => ("namespace", node.child_by_field_name("name")),
         _ => return None,
     };
 
@@ -220,9 +231,14 @@ fn lua_symbol_from_node(node: tree_sitter::Node, src: &str) -> Option<AstSymbol>
     // - function_declaration / function_definition / local_function / function_statement
     // - assignment 里形如 `foo = function() end`（可能需要更深解析，这里只覆盖常见声明）
     let (sym_kind, name_node) = match kind {
-        "function_declaration" | "function_definition" | "local_function" | "function_statement" => {
-            ("function", node.child_by_field_name("name").or_else(|| find_first_identifier(node)))
-        }
+        "function_declaration"
+        | "function_definition"
+        | "local_function"
+        | "function_statement" => (
+            "function",
+            node.child_by_field_name("name")
+                .or_else(|| find_first_identifier(node)),
+        ),
         _ => return None,
     };
 

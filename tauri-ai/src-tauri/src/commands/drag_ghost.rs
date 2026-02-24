@@ -115,9 +115,7 @@ pub fn drag_ghost_create(
             .set_position(PhysicalPosition::new(x, y))
             .map_err(|e| e.to_string())?;
         let _ = ghost.set_title(&format!("[GHOST] {}", title));
-        ghost
-            .set_focusable(false)
-            .map_err(|e| e.to_string())?;
+        ghost.set_focusable(false).map_err(|e| e.to_string())?;
         ghost
             // 关键：ghost 必须“鼠标穿透”，否则会抢占拖拽事件，导致拖拽中断或 move 不再触发。
             .set_ignore_cursor_events(true)
@@ -254,7 +252,9 @@ pub fn drag_ghost_follow_start(
 
     // already running?
     {
-        let st = follow_state().lock().map_err(|_| "follow state poisoned".to_string())?;
+        let st = follow_state()
+            .lock()
+            .map_err(|_| "follow state poisoned".to_string())?;
         if st.stop.is_some() {
             return Ok(());
         }
@@ -272,7 +272,9 @@ pub fn drag_ghost_follow_start(
         .get_webview_window(&source_label)
         .or_else(|| app.get_webview_window("main"));
 
-    let main = source.clone().or_else(|| app.get_webview_window(&ghost_label));
+    let main = source
+        .clone()
+        .or_else(|| app.get_webview_window(&ghost_label));
     let scale = main
         .as_ref()
         .and_then(|w| w.scale_factor().ok())
@@ -324,7 +326,9 @@ pub fn drag_ghost_follow_start(
         }
     });
 
-    let mut st = follow_state().lock().map_err(|_| "follow state poisoned".to_string())?;
+    let mut st = follow_state()
+        .lock()
+        .map_err(|_| "follow state poisoned".to_string())?;
     st.stop = Some(stop);
     st.join = Some(join);
     st.offset_x = oxp;
@@ -354,7 +358,9 @@ pub fn drag_ghost_follow_start(
 
     // already running?
     {
-        let st = follow_state().lock().map_err(|_| "follow state poisoned".to_string())?;
+        let st = follow_state()
+            .lock()
+            .map_err(|_| "follow state poisoned".to_string())?;
         if st.stop.is_some() {
             return Ok(());
         }
@@ -414,7 +420,8 @@ pub fn drag_ghost_follow_start(
             let _ = handle.run_on_main_thread(move || {
                 let mtm = unsafe { MainThreadMarker::new_unchecked() };
                 let _ = mtm;
-                let ns_window: &NSWindow = unsafe { &*(ns_window_ptr as *mut std::ffi::c_void).cast() };
+                let ns_window: &NSWindow =
+                    unsafe { &*(ns_window_ptr as *mut std::ffi::c_void).cast() };
                 let cur = NSEvent::mouseLocation();
                 let top_left = NSPoint::new(cur.x - ox, cur.y + oy);
                 ns_window.setFrameTopLeftPoint(top_left);
@@ -423,7 +430,9 @@ pub fn drag_ghost_follow_start(
         }
     });
 
-    let mut st = follow_state().lock().map_err(|_| "follow state poisoned".to_string())?;
+    let mut st = follow_state()
+        .lock()
+        .map_err(|_| "follow state poisoned".to_string())?;
     st.stop = Some(stop);
     st.join = Some(join);
     println!("[drag_ghost_follow_start][mac] ok label={}", ghost_label);
@@ -447,7 +456,9 @@ pub fn drag_ghost_follow_start(
 
 #[tauri::command]
 pub fn drag_ghost_follow_stop() -> Result<(), String> {
-    let mut st = follow_state().lock().map_err(|_| "follow state poisoned".to_string())?;
+    let mut st = follow_state()
+        .lock()
+        .map_err(|_| "follow state poisoned".to_string())?;
     if let Some(stop) = st.stop.take() {
         stop.store(true, Ordering::Relaxed);
     }

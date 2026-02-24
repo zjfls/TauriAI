@@ -125,7 +125,11 @@ impl ToolOrchestrator {
 
     fn maybe_extract_apply_patch_from_call(
         call: &ToolCall,
-    ) -> Option<(String, ApplyPatchInterceptMode, apply_patch::VerifiedApplyPatchKind)> {
+    ) -> Option<(
+        String,
+        ApplyPatchInterceptMode,
+        apply_patch::VerifiedApplyPatchKind,
+    )> {
         let (field, mode) = match call.name.as_str() {
             "shell_command" => ("command", ApplyPatchInterceptMode::PlainText),
             "exec_command" | "exec_command_persistent" => {

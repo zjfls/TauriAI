@@ -11,9 +11,9 @@ use std::time::Duration;
 
 use tokio::sync::{Mutex, MutexGuard};
 
+use crate::runtime::text::decode_process_output;
 use crate::runtime::tools::services::{PtySession, PtySessionScope};
 use crate::runtime::RunState;
-use crate::runtime::text::decode_process_output;
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -81,7 +81,8 @@ fn default_shell_command() -> Vec<String> {
             None
         }
 
-        let shell = find_in_path(&["pwsh.exe", "powershell.exe", "cmd.exe"]).unwrap_or_else(|| "cmd.exe".to_string());
+        let shell = find_in_path(&["pwsh.exe", "powershell.exe", "cmd.exe"])
+            .unwrap_or_else(|| "cmd.exe".to_string());
         let lower = shell.to_lowercase();
         if lower.ends_with("pwsh.exe") || lower.ends_with("powershell.exe") {
             // 统一 UTF-8：避免中文输出在前端出现 “�” 乱码（ConPTY + xterm 默认按 UTF-8 解码）。
@@ -98,11 +99,7 @@ fn default_shell_command() -> Vec<String> {
             ]
         } else {
             // cmd.exe 也尽量切到 UTF-8，减少乱码概率
-            vec![
-                shell,
-                "/K".to_string(),
-                "chcp 65001 >nul 2>&1".to_string(),
-            ]
+            vec![shell, "/K".to_string(), "chcp 65001 >nul 2>&1".to_string()]
         }
     }
     #[cfg(not(windows))]

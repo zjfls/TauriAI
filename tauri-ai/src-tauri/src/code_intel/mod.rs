@@ -5,9 +5,9 @@
 //! - 后端负责管理 LSP 进程（stdio JSON-RPC），并向前端提供命令式 API
 //! - AST 能力用于轻量解析/符号提取（作为 LSP 的补充或兜底）
 
-pub mod lsp;
 pub mod ast;
-pub mod types;
 pub mod index_db;
-pub mod index_types;
 pub mod index_manager;
+pub mod index_types;
+pub mod lsp;
+pub mod types;

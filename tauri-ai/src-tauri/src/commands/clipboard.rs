@@ -88,9 +88,13 @@ pub async fn clipboard_write_png_base64(
     {
         use uuid::Uuid;
 
-        let tmp_path = std::env::temp_dir().join(format!("tauri-ai-clipboard-{}.png", Uuid::new_v4()));
+        let tmp_path =
+            std::env::temp_dir().join(format!("tauri-ai-clipboard-{}.png", Uuid::new_v4()));
         let html = if png_bytes.len() <= MAX_INLINE_DATA_URL_PNG_BYTES {
-            format!("<img src=\"data:image/png;base64,{}\" alt=\"image\" />", base64_data)
+            format!(
+                "<img src=\"data:image/png;base64,{}\" alt=\"image\" />",
+                base64_data
+            )
         } else {
             "<span>[image]</span>".to_string()
         };
@@ -102,10 +106,11 @@ pub async fn clipboard_write_png_base64(
             use objc2::rc::autoreleasepool;
             use objc2::AnyThread;
             use objc2_app_kit::{
-                NSPasteboard, NSPasteboardTypeFileURL, NSPasteboardTypeHTML, NSPasteboardTypePNG,
-                NSPasteboardTypeString, NSPasteboardTypeTIFF, NSPasteboardTypeURL, NSImage,
+                NSImage, NSPasteboard, NSPasteboardTypeFileURL, NSPasteboardTypeHTML,
+                NSPasteboardTypePNG, NSPasteboardTypeString, NSPasteboardTypeTIFF,
+                NSPasteboardTypeURL,
             };
-            use objc2_foundation::{NSMutableArray, NSData, NSString, NSURL};
+            use objc2_foundation::{NSData, NSMutableArray, NSString, NSURL};
 
             std::fs::write(&tmp_path, &png_bytes).map_err(|e| format!("写入临时图片失败: {e}"))?;
             let tmp_path_str = tmp_path
@@ -184,8 +189,9 @@ pub async fn clipboard_write_png_base64(
             let decoded: Result<(usize, usize, Vec<u8>), String> = tokio::task::spawn_blocking({
                 let png_bytes = png_bytes.clone();
                 move || -> Result<(usize, usize, Vec<u8>), String> {
-                    let img = image::load_from_memory_with_format(&png_bytes, image::ImageFormat::Png)
-                        .map_err(|e| format!("parse PNG failed: {e}"))?;
+                    let img =
+                        image::load_from_memory_with_format(&png_bytes, image::ImageFormat::Png)
+                            .map_err(|e| format!("parse PNG failed: {e}"))?;
                     let rgba = img.to_rgba8();
                     let (w, h) = rgba.dimensions();
 

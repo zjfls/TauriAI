@@ -96,6 +96,9 @@ impl ToolHandler for GetTimeTool {
             format: Some("plain".to_string()),
             delta: content.clone(),
         });
-        Ok(ToolCallResult { content, meta: None })
+        Ok(ToolCallResult {
+            content,
+            meta: None,
+        })
     }
 }

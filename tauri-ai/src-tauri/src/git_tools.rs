@@ -42,7 +42,10 @@ async fn run_git_for_stdout(
             cmd.env(k, v);
         }
     }
-    let out = cmd.output().await.map_err(|e| format!("启动 git 失败: {e}"))?;
+    let out = cmd
+        .output()
+        .await
+        .map_err(|e| format!("启动 git 失败: {e}"))?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
         let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
@@ -74,7 +77,10 @@ async fn run_git_for_status(
             cmd.env(k, v);
         }
     }
-    let out = cmd.output().await.map_err(|e| format!("启动 git 失败: {e}"))?;
+    let out = cmd
+        .output()
+        .await
+        .map_err(|e| format!("启动 git 失败: {e}"))?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
         let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
@@ -102,7 +108,10 @@ async fn run_git_for_stdout_in_repo(
 
     let git_dir = git_dir_path(repo_root);
     let mut env: Vec<(OsString, OsString)> = vec![
-        (OsString::from("GIT_DIR"), OsString::from(git_dir.as_os_str())),
+        (
+            OsString::from("GIT_DIR"),
+            OsString::from(git_dir.as_os_str()),
+        ),
         (
             OsString::from("GIT_WORK_TREE"),
             OsString::from(work_tree.as_os_str()),
@@ -126,7 +135,10 @@ async fn run_git_for_status_in_repo(
 
     let git_dir = git_dir_path(repo_root);
     let mut env: Vec<(OsString, OsString)> = vec![
-        (OsString::from("GIT_DIR"), OsString::from(git_dir.as_os_str())),
+        (
+            OsString::from("GIT_DIR"),
+            OsString::from(git_dir.as_os_str()),
+        ),
         (
             OsString::from("GIT_WORK_TREE"),
             OsString::from(work_tree.as_os_str()),
@@ -141,16 +153,28 @@ async fn run_git_for_status_in_repo(
 fn default_commit_identity_env() -> Vec<(OsString, OsString)> {
     vec![
         (OsString::from("GIT_AUTHOR_NAME"), OsString::from("TauriAI")),
-        (OsString::from("GIT_AUTHOR_EMAIL"), OsString::from("tauri-ai@local")),
-        (OsString::from("GIT_COMMITTER_NAME"), OsString::from("TauriAI")),
-        (OsString::from("GIT_COMMITTER_EMAIL"), OsString::from("tauri-ai@local")),
+        (
+            OsString::from("GIT_AUTHOR_EMAIL"),
+            OsString::from("tauri-ai@local"),
+        ),
+        (
+            OsString::from("GIT_COMMITTER_NAME"),
+            OsString::from("TauriAI"),
+        ),
+        (
+            OsString::from("GIT_COMMITTER_EMAIL"),
+            OsString::from("tauri-ai@local"),
+        ),
     ]
 }
 
 pub(crate) async fn resolve_repo_root(workdir: &Path) -> Result<PathBuf, String> {
     let out = run_git_for_stdout(
         workdir,
-        vec![OsString::from("rev-parse"), OsString::from("--show-toplevel")],
+        vec![
+            OsString::from("rev-parse"),
+            OsString::from("--show-toplevel"),
+        ],
         None,
     )
     .await?;
@@ -379,7 +403,10 @@ pub(crate) async fn git_checkout_branch(workdir: &Path, branch: &str) -> Result<
     .await
 }
 
-pub(crate) async fn git_create_and_checkout_branch(workdir: &Path, branch: &str) -> Result<(), String> {
+pub(crate) async fn git_create_and_checkout_branch(
+    workdir: &Path,
+    branch: &str,
+) -> Result<(), String> {
     if !workdir.is_dir() {
         return Err("workdir 不是目录".to_string());
     }
@@ -572,9 +599,13 @@ pub(crate) async fn create_ghost_commit_for_paths_with_worktree(
             commit_args.extend([OsString::from("-p"), OsString::from(parent_sha)]);
         }
         commit_args.extend([OsString::from("-m"), OsString::from(message)]);
-        let commit_id =
-            run_git_for_stdout_in_repo(repo_root, work_tree, commit_args, Some(commit_env.as_slice()))
-                .await?;
+        let commit_id = run_git_for_stdout_in_repo(
+            repo_root,
+            work_tree,
+            commit_args,
+            Some(commit_env.as_slice()),
+        )
+        .await?;
         Ok::<String, String>(commit_id)
     }
     .await;

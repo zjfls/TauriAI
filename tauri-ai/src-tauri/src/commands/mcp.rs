@@ -226,9 +226,7 @@ pub async fn warmup_mcp_servers(
             let cfg = entry.config;
 
             let tools = if force_refresh {
-                global_mcp_runtime()
-                    .list_tools(&server_name, &cfg)
-                    .await
+                global_mcp_runtime().list_tools(&server_name, &cfg).await
             } else {
                 global_mcp_runtime()
                     .list_tools_cached(&server_name, &cfg)

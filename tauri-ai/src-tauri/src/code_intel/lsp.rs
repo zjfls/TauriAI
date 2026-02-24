@@ -64,10 +64,14 @@ pub(crate) fn resolve_lsp_spawn_program(
             search_dirs.push(PathBuf::from(ws_main_folder));
         }
 
-        if let Some(path_var) = get_env_var_from_launch_env(launch_env, "PATH")
-            .or_else(|| std::env::var("PATH").ok())
+        if let Some(path_var) =
+            get_env_var_from_launch_env(launch_env, "PATH").or_else(|| std::env::var("PATH").ok())
         {
-            let separator = if cfg!(target_os = "windows") { ';' } else { ':' };
+            let separator = if cfg!(target_os = "windows") {
+                ';'
+            } else {
+                ':'
+            };
             for part in path_var.split(separator) {
                 let mut dir = normalize_path_list_item(part).to_string();
                 if cfg!(target_os = "windows") {
@@ -79,7 +83,10 @@ pub(crate) fn resolve_lsp_spawn_program(
                 search_dirs.push(PathBuf::from(dir));
             }
         } else {
-            warnings.push("[lsp] 启动诊断：PATH 环境变量为空，可能无法自动找到语言服务器可执行文件。".to_string());
+            warnings.push(
+                "[lsp] 启动诊断：PATH 环境变量为空，可能无法自动找到语言服务器可执行文件。"
+                    .to_string(),
+            );
         }
 
         let pathext = if cfg!(target_os = "windows") {
@@ -185,7 +192,9 @@ pub(crate) fn resolve_lsp_spawn_program(
         };
 
         if !found.is_absolute() {
-            let mut err = if cfg!(target_os = "windows") && command.eq_ignore_ascii_case("rust-analyzer") {
+            let mut err = if cfg!(target_os = "windows")
+                && command.eq_ignore_ascii_case("rust-analyzer")
+            {
                 format!(
                     "未找到可执行文件：{command}。请在 设置 → Code Intelligence 中把 command 填成绝对路径，或安装 rust-analyzer（例如 rustup component add rust-analyzer）。另外：从开始菜单启动时 Explorer 的 PATH 可能未刷新，可尝试重启资源管理器或注销/重启系统。"
                 )
@@ -355,7 +364,8 @@ fn pathext_extensions(pathext: Option<&str>) -> Vec<String> {
 }
 
 fn cargo_bin_dir(launch_env: &[(String, String)]) -> Option<PathBuf> {
-    let raw = get_env_var_from_launch_env(launch_env, "CARGO_HOME").or_else(|| std::env::var("CARGO_HOME").ok());
+    let raw = get_env_var_from_launch_env(launch_env, "CARGO_HOME")
+        .or_else(|| std::env::var("CARGO_HOME").ok());
     let base = if let Some(raw) = raw {
         let mut s = normalize_path_list_item(raw.trim()).to_string();
         if cfg!(target_os = "windows") {
@@ -389,7 +399,8 @@ fn rustup_toolchain_bin_dirs(launch_env: &[(String, String)]) -> Vec<PathBuf> {
         return out;
     }
 
-    let raw = get_env_var_from_launch_env(launch_env, "RUSTUP_HOME").or_else(|| std::env::var("RUSTUP_HOME").ok());
+    let raw = get_env_var_from_launch_env(launch_env, "RUSTUP_HOME")
+        .or_else(|| std::env::var("RUSTUP_HOME").ok());
     let base = if let Some(raw) = raw {
         let mut s = normalize_path_list_item(raw.trim()).to_string();
         s = expand_windows_env_vars(&s, launch_env);
@@ -447,7 +458,8 @@ fn find_vscode_rust_analyzer() -> Option<PathBuf> {
             }
 
             let name = entry.file_name().to_string_lossy().to_string();
-            if !(name == "rust-lang.rust-analyzer" || name.starts_with("rust-lang.rust-analyzer-")) {
+            if !(name == "rust-lang.rust-analyzer" || name.starts_with("rust-lang.rust-analyzer-"))
+            {
                 continue;
             }
 
@@ -455,7 +467,9 @@ fn find_vscode_rust_analyzer() -> Option<PathBuf> {
             let candidates = [
                 ext_dir.join("server").join("rust-analyzer.exe"),
                 ext_dir.join("server").join("rust-analyzer"),
-                ext_dir.join("server").join("rust-analyzer-x86_64-pc-windows-msvc.exe"),
+                ext_dir
+                    .join("server")
+                    .join("rust-analyzer-x86_64-pc-windows-msvc.exe"),
                 ext_dir.join("server").join("rust-analyzer-win32-x64.exe"),
             ];
             for c in candidates {
@@ -495,7 +509,10 @@ fn find_vscode_rust_analyzer() -> Option<PathBuf> {
     None
 }
 
-fn find_executable_with_pathext(base: &Path, launch_env: &[(String, String)]) -> Result<PathBuf, String> {
+fn find_executable_with_pathext(
+    base: &Path,
+    launch_env: &[(String, String)],
+) -> Result<PathBuf, String> {
     match std::fs::metadata(base) {
         Ok(m) => {
             if m.is_file() {
@@ -524,7 +541,8 @@ fn find_executable_with_pathext(base: &Path, launch_env: &[(String, String)]) ->
         return Err(format!("未找到可执行文件：{}", base.to_string_lossy()));
     }
 
-    let pathext = get_env_var_from_launch_env(launch_env, "PATHEXT").or_else(|| std::env::var("PATHEXT").ok());
+    let pathext = get_env_var_from_launch_env(launch_env, "PATHEXT")
+        .or_else(|| std::env::var("PATHEXT").ok());
     let exts = pathext_extensions(pathext.as_deref());
     for ext in exts {
         let candidate = base.with_extension(ext);
@@ -797,7 +815,10 @@ impl LspServer {
         }
     }
 
-    async fn ensure_started_and_initialized(self: &Arc<Self>, ws: &Workstudio) -> Result<(), String> {
+    async fn ensure_started_and_initialized(
+        self: &Arc<Self>,
+        ws: &Workstudio,
+    ) -> Result<(), String> {
         self.ensure_started(ws).await?;
         self.ensure_initialized(ws).await?;
         Ok(())
@@ -830,7 +851,9 @@ impl LspServer {
             Err(e) => {
                 let err = format!("解析 LSP 启动命令失败: {e}");
                 self.set_last_error(err.clone()).await;
-                self.emit(LspEvent::Stderr { line: format!("[lsp] {err}") });
+                self.emit(LspEvent::Stderr {
+                    line: format!("[lsp] {err}"),
+                });
                 return Err(err);
             }
         };
@@ -911,8 +934,9 @@ impl LspServer {
                 spawn_errors.push(format!("cwd={}: {e}", spawn_cwd.unwrap_or("<none>")));
 
                 // Windows: ERROR_UNTRUSTED_MOUNT_POINT (448)
-                let should_retry_without_cwd =
-                    cfg!(target_os = "windows") && e.raw_os_error() == Some(448) && spawn_cwd.is_some();
+                let should_retry_without_cwd = cfg!(target_os = "windows")
+                    && e.raw_os_error() == Some(448)
+                    && spawn_cwd.is_some();
                 if should_retry_without_cwd {
                     self.emit(LspEvent::Stderr {
                         line: format!(
@@ -935,7 +959,10 @@ impl LspServer {
                         }
                     }
                 } else {
-                    let err = format!("启动 LSP 失败: {e}（resolvedTarget={} program={}）", resolved.target, resolved.program);
+                    let err = format!(
+                        "启动 LSP 失败: {e}（resolvedTarget={} program={}）",
+                        resolved.target, resolved.program
+                    );
                     self.set_last_error(err.clone()).await;
                     return Err(err);
                 }
@@ -1118,7 +1145,10 @@ impl LspServer {
         if let Some(err) = msg.get("error") {
             return Err(format!("LSP error: {err}"));
         }
-        Ok(msg.get("result").cloned().unwrap_or(serde_json::Value::Null))
+        Ok(msg
+            .get("result")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null))
     }
 
     pub async fn shutdown(&self) -> Result<(), String> {
@@ -1244,7 +1274,10 @@ impl LspServer {
 
         // server request -> client must respond
         if let Some(id) = msg.get("id").cloned() {
-            let params = msg.get("params").cloned().unwrap_or(serde_json::Value::Null);
+            let params = msg
+                .get("params")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
             match self.handle_server_request(&method, params).await {
                 Ok(result) => {
                     let _ = self
@@ -1269,7 +1302,10 @@ impl LspServer {
         }
 
         // notification
-        let params = msg.get("params").cloned().unwrap_or(serde_json::Value::Null);
+        let params = msg
+            .get("params")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
         self.emit(LspEvent::Notification { method, params });
         Ok(())
     }
@@ -1320,7 +1356,9 @@ impl LspServer {
                 }
                 Ok(serde_json::Value::Array(out))
             }
-            "workspace/workspaceFolders" => Ok(workspace_folders_value(&self.main_folder, &self.folders)),
+            "workspace/workspaceFolders" => {
+                Ok(workspace_folders_value(&self.main_folder, &self.folders))
+            }
             "client/registerCapability" => Ok(serde_json::Value::Null),
             "client/unregisterCapability" => Ok(serde_json::Value::Null),
             "window/workDoneProgress/create" => Ok(serde_json::Value::Null),

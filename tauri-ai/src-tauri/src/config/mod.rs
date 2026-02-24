@@ -163,7 +163,15 @@ mod tests {
 
         // Should be empty initially
         assert!(config.providers.is_empty());
-        assert!(config.agents.is_empty());
+        // normalize() 会注入系统内置的 Workspace 默认 agent/toolset，使 Workstudio 功能在用户未配置前可用。
+        assert!(!config.agents.is_empty());
+        assert!(
+            config
+                .agents
+                .iter()
+                .any(|a| a.name == "__system_symbol_analysis"),
+            "missing __system_symbol_analysis system agent"
+        );
     }
 
     #[test]

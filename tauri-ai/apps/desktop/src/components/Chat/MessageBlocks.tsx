@@ -549,7 +549,7 @@ const ApplyPatchToolRunBlock: React.FC<{
     }
   }, [args, isExpanded, parsedArgs]);
 
-  const [copiedKey, setCopiedKey] = useState<null | 'args' | 'input'>(null);
+  const [copiedKey, setCopiedKey] = useState<null | 'args'>(null);
 
   const likelyHasInputField = useMemo(() => {
     if (!args) return false;
@@ -562,22 +562,6 @@ const ApplyPatchToolRunBlock: React.FC<{
     const ok = await copyTextToClipboard(args);
     if (!ok) return;
     setCopiedKey('args');
-    window.setTimeout(() => setCopiedKey(null), 2000);
-  }, [args]);
-
-  const handleCopyInput = useCallback(async () => {
-    if (!args) return;
-    const parsed = (() => {
-      try {
-        return JSON.parse(args) as any;
-      } catch {
-        return null;
-      }
-    })();
-    const input = typeof parsed?.input === 'string' ? (parsed.input as string) : '';
-    const ok = await copyTextToClipboard(input || args);
-    if (!ok) return;
-    setCopiedKey('input');
     window.setTimeout(() => setCopiedKey(null), 2000);
   }, [args]);
 
@@ -595,10 +579,10 @@ const ApplyPatchToolRunBlock: React.FC<{
 	const snapshotErrBefore = typeof git?.snapshotErrorBefore === 'string' ? git.snapshotErrorBefore : '';
 	const snapshotErrAfter = typeof git?.snapshotErrorAfter === 'string' ? git.snapshotErrorAfter : '';
 
-	const effectiveWorkTree = workTree || repoRoot || meta?.applyPatch?.baseDir || '';
-	const canUndo = Boolean(isTauri() && repoRoot && ghostBefore && affectedPaths.length > 0);
-	const canGitDiff = Boolean(isTauri() && repoRoot && ghostBefore && affectedPaths.length > 0);
-	const [activeView, setActiveView] = useState<'git' | 'tool'>('git');
+		const effectiveWorkTree = workTree || repoRoot || meta?.applyPatch?.baseDir || '';
+		const canUndo = Boolean(isTauri() && repoRoot && ghostBefore && affectedPaths.length > 0);
+		const canGitDiff = Boolean(isTauri() && repoRoot && ghostBefore && affectedPaths.length > 0);
+		const [activeView, setActiveView] = useState<'git' | 'tool' | 'input'>('git');
 
 	const [contextLines, setContextLines] = useState<0 | 3 | 10>(3);
 	const [ignoreWhitespace, setIgnoreWhitespace] = useState(false);
@@ -610,8 +594,27 @@ const ApplyPatchToolRunBlock: React.FC<{
   const [diffData, setDiffData] = useState<GitDiffCommitsResponse | null>(null);
   const [activeFile, setActiveFile] = useState<string>('');
   const [refreshSeq, setRefreshSeq] = useState(0);
-  const [undoBusy, setUndoBusy] = useState(false);
-  const [undoMsg, setUndoMsg] = useState<string>('');
+	  const [undoBusy, setUndoBusy] = useState(false);
+	  const [undoMsg, setUndoMsg] = useState<string>('');
+
+	  const inputText = useMemo(() => {
+	    if (!isExpanded) return '';
+	    if (activeView !== 'input') return '';
+	    if (!args) return '';
+	    if (!likelyHasInputField) return '';
+
+	    const fromParsed = typeof (parsedArgs as any)?.input === 'string' ? ((parsedArgs as any).input as string) : '';
+	    if (fromParsed) return fromParsed;
+
+	    try {
+	      const parsed = JSON.parse(args) as any;
+	      if (typeof parsed?.input === 'string') return parsed.input as string;
+	      return '';
+	    } catch {
+	      // Best-effort fallback: show raw args if it isn't JSON.
+	      return args;
+	    }
+	  }, [isExpanded, activeView, args, likelyHasInputField, parsedArgs]);
 
 	useEffect(() => {
 	  if (!isExpanded) return;
@@ -750,27 +753,37 @@ const ApplyPatchToolRunBlock: React.FC<{
 
       {isExpanded ? (
         <div className={`border-t px-3 py-2 ${tone.detailBorder}`}>
-          <div className="mb-2 flex flex-wrap items-center gap-2">
-            <div className="inline-flex overflow-hidden rounded border border-gray-200 dark:border-gray-800">
-              <button
-                type="button"
-                onClick={() => setActiveView('git')}
-                className={`px-2 py-1 text-xs font-medium ${activeView === 'git' ? 'bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900' : 'bg-white text-gray-700 hover:bg-gray-50 dark:bg-gray-900/40 dark:text-gray-200 dark:hover:bg-gray-800'}`}
-                title="默认视图：Git diff"
-              >
-                变更预览（Git）
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveView('tool')}
-                className={`px-2 py-1 text-xs font-medium ${activeView === 'tool' ? 'bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900' : 'bg-white text-gray-700 hover:bg-gray-50 dark:bg-gray-900/40 dark:text-gray-200 dark:hover:bg-gray-800'}`}
-              >
-                工具详情
-              </button>
-            </div>
+	          <div className="mb-2 flex flex-wrap items-center gap-2">
+	            <div className="inline-flex overflow-hidden rounded border border-gray-200 dark:border-gray-800">
+	              <button
+	                type="button"
+	                onClick={() => setActiveView('git')}
+	                className={`px-2 py-1 text-xs font-medium ${activeView === 'git' ? 'bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900' : 'bg-white text-gray-700 hover:bg-gray-50 dark:bg-gray-900/40 dark:text-gray-200 dark:hover:bg-gray-800'}`}
+	                title="默认视图：Git diff"
+	              >
+	                变更预览（Git）
+	              </button>
+	              <button
+	                type="button"
+	                onClick={() => setActiveView('tool')}
+	                className={`px-2 py-1 text-xs font-medium ${activeView === 'tool' ? 'bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900' : 'bg-white text-gray-700 hover:bg-gray-50 dark:bg-gray-900/40 dark:text-gray-200 dark:hover:bg-gray-800'}`}
+	              >
+	                工具详情
+	              </button>
+	              {likelyHasInputField ? (
+	                <button
+	                  type="button"
+	                  onClick={() => setActiveView('input')}
+	                  className={`px-2 py-1 text-xs font-medium ${activeView === 'input' ? 'bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900' : 'bg-white text-gray-700 hover:bg-gray-50 dark:bg-gray-900/40 dark:text-gray-200 dark:hover:bg-gray-800'}`}
+	                  title="查看参数中的 input 字段原文（例如 apply_patch 的 patch 文本）"
+	                >
+	                  input
+	                </button>
+	              ) : null}
+	            </div>
 
-            {activeView === 'git' ? (
-              <>
+	          {activeView === 'git' ? (
+	            <>
                 <label className="ml-2 inline-flex items-center gap-1 text-xs text-gray-700 dark:text-gray-200">
                   上下文
                   <select
@@ -898,36 +911,36 @@ const ApplyPatchToolRunBlock: React.FC<{
                   {canGitDiff ? '等待 diff 数据…' : '缺少 ghost commit 信息，无法生成 Git diff。请切换到“工具详情”。'}
                 </div>
               )}
-            </>
-          ) : (
-            <>
-              {prettyArgs ? (
-                <>
-                  <div className="mb-1 flex items-center justify-between gap-2">
-                    <div className={`text-xs font-medium ${tone.detailLabel}`}>参数</div>
-                    <div className="flex items-center gap-2">
-                      {likelyHasInputField ? (
-                        <button
-                          type="button"
-                          onClick={handleCopyInput}
-                          className="inline-flex items-center gap-1 rounded border border-gray-200 bg-white px-2 py-0.5 text-[11px] font-medium text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-100 dark:hover:bg-gray-800"
-                          title="复制参数中的 input 字段（如 apply_patch 的 patch 文本）"
-                        >
-                          {copiedKey === 'input' ? <Check size={12} /> : <Copy size={12} />}
-                          复制 input
-                        </button>
-                      ) : null}
-                      <button
-                        type="button"
-                        onClick={handleCopyArgs}
-                        className="inline-flex items-center gap-1 rounded border border-gray-200 bg-white px-2 py-0.5 text-[11px] font-medium text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-100 dark:hover:bg-gray-800"
-                        title="复制完整参数 JSON"
-                      >
-                        {copiedKey === 'args' ? <Check size={12} /> : <Copy size={12} />}
-                        复制参数
-                      </button>
-                    </div>
-                  </div>
+	            </>
+	          ) : activeView === 'input' ? (
+	            <>
+	              <div className={`mb-1 text-xs font-medium ${tone.detailLabel}`}>input</div>
+	              {inputText ? (
+	                <pre className="h-48 overflow-y-auto whitespace-pre-wrap break-words pr-2 text-sm text-gray-800 dark:text-gray-100">
+	                  {inputText}
+	                </pre>
+	              ) : (
+	                <div className="text-xs text-gray-600 dark:text-gray-300">未找到可展示的 input 字段。</div>
+	              )}
+	            </>
+	          ) : (
+	            <>
+	              {prettyArgs ? (
+	                <>
+	                  <div className="mb-1 flex items-center justify-between gap-2">
+	                    <div className={`text-xs font-medium ${tone.detailLabel}`}>参数</div>
+	                    <div className="flex items-center gap-2">
+	                      <button
+	                        type="button"
+	                        onClick={handleCopyArgs}
+	                        className="inline-flex items-center gap-1 rounded border border-gray-200 bg-white px-2 py-0.5 text-[11px] font-medium text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-100 dark:hover:bg-gray-800"
+	                        title="复制完整参数 JSON"
+	                      >
+	                        {copiedKey === 'args' ? <Check size={12} /> : <Copy size={12} />}
+	                        复制参数
+	                      </button>
+	                    </div>
+	                  </div>
                   <pre className="mb-3 max-h-48 overflow-y-auto whitespace-pre-wrap break-words pr-2 text-sm text-gray-800 dark:text-gray-100">
                     {prettyArgs}
                   </pre>

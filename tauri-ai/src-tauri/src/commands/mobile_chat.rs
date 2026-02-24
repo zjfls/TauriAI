@@ -67,10 +67,7 @@ struct MobileChatStreamPayload {
     error: Option<String>,
 }
 
-fn emit_mobile_stream_event(
-    app: &tauri::AppHandle,
-    payload: MobileChatStreamPayload,
-) {
+fn emit_mobile_stream_event(app: &tauri::AppHandle, payload: MobileChatStreamPayload) {
     // AppHandle.emit 会广播到所有窗口；移动端通常只有 main。
     let _ = app.emit("mobile_chat_stream", payload);
 }
@@ -118,17 +115,22 @@ fn summarize_debug_info(di: &DebugInfoData) -> String {
                     .unwrap_or_else(|| "unknown".to_string());
                 *counts.entry(ty).or_default() += 1;
             }
-            parts.push(format!("req.inputs(len={}, types={:?})", input.len(), counts));
+            parts.push(format!(
+                "req.inputs(len={}, types={:?})",
+                input.len(),
+                counts
+            ));
         } else if let Some(msgs) = req.body.get("messages").and_then(|v| v.as_array()) {
             let mut counts: HashMap<String, usize> = HashMap::new();
             for m in msgs {
-                let role = m
-                    .get("role")
-                    .and_then(|r| r.as_str())
-                    .unwrap_or("unknown");
+                let role = m.get("role").and_then(|r| r.as_str()).unwrap_or("unknown");
                 *counts.entry(role.to_string()).or_default() += 1;
             }
-            parts.push(format!("req.messages(len={}, roles={:?})", msgs.len(), counts));
+            parts.push(format!(
+                "req.messages(len={}, roles={:?})",
+                msgs.len(),
+                counts
+            ));
         }
     }
 
@@ -138,7 +140,11 @@ fn summarize_debug_info(di: &DebugInfoData) -> String {
 fn resolve_provider_model(cfg: &AppConfig, agent_name: Option<&str>) -> Option<(String, String)> {
     // Highest priority: explicit agentName from the current conversation (mobile UI)
     if let Some(agent_name) = agent_name.map(str::trim).filter(|s| !s.is_empty()) {
-        if let Some(agent) = cfg.agents.iter().find(|a| a.enabled && a.name == agent_name) {
+        if let Some(agent) = cfg
+            .agents
+            .iter()
+            .find(|a| a.enabled && a.name == agent_name)
+        {
             if let Some((p, m)) = agent.model_ref.split_once('/') {
                 let p = p.trim();
                 let m = m.trim();
@@ -150,7 +156,11 @@ fn resolve_provider_model(cfg: &AppConfig, agent_name: Option<&str>) -> Option<(
     }
 
     // Prefer explicit currentModelRef: "provider/model"
-    if let Some(model_ref) = cfg.current_model_ref.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    if let Some(model_ref) = cfg
+        .current_model_ref
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
     {
         if let Some((p, m)) = model_ref.split_once('/') {
             let p = p.trim();
@@ -168,7 +178,11 @@ fn resolve_provider_model(cfg: &AppConfig, agent_name: Option<&str>) -> Option<(
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        if let Some(agent) = cfg.agents.iter().find(|a| a.enabled && a.name == agent_name) {
+        if let Some(agent) = cfg
+            .agents
+            .iter()
+            .find(|a| a.enabled && a.name == agent_name)
+        {
             if let Some((p, m)) = agent.model_ref.split_once('/') {
                 let p = p.trim();
                 let m = m.trim();
@@ -211,7 +225,11 @@ fn resolve_provider_model(cfg: &AppConfig, agent_name: Option<&str>) -> Option<(
     None
 }
 
-fn build_model_config(cfg: &AppConfig, provider_name: &str, model_name: &str) -> Result<ModelConfig, String> {
+fn build_model_config(
+    cfg: &AppConfig,
+    provider_name: &str,
+    model_name: &str,
+) -> Result<ModelConfig, String> {
     let provider = cfg
         .providers
         .iter()
@@ -231,7 +249,11 @@ fn build_model_config(cfg: &AppConfig, provider_name: &str, model_name: &str) ->
         None
     };
     parameters.max_tokens = model.max_tokens;
-    parameters.top_p = if model.top_p_enabled { model.top_p } else { None };
+    parameters.top_p = if model.top_p_enabled {
+        model.top_p
+    } else {
+        None
+    };
 
     Ok(ModelConfig {
         id: "mobile".to_string(),
@@ -289,14 +311,13 @@ fn prepend_agent_system_prompt(
     messages: &mut Vec<Message>,
 ) {
     let agent = resolve_enabled_agent(cfg, agent_name);
-    let base_prompt = agent
-        .and_then(|a| {
-            if a.system_prompt.trim().is_empty() {
-                None
-            } else {
-                Some(a.system_prompt.as_str())
-            }
-        });
+    let base_prompt = agent.and_then(|a| {
+        if a.system_prompt.trim().is_empty() {
+            None
+        } else {
+            Some(a.system_prompt.as_str())
+        }
+    });
     let format_type = agent.map(|a| a.format_type).unwrap_or_default();
 
     let Some(system_content) = compose_system_prompt(base_prompt, format_type) else {
@@ -402,10 +423,17 @@ fn qualify_mcp_tool_name(server_name: &str, tool_name: &str) -> String {
     format!("{qualified}{sha1_str}")
 }
 
-fn resolve_enabled_agent<'a>(cfg: &'a AppConfig, agent_name: Option<&str>) -> Option<&'a crate::models::Agent> {
+fn resolve_enabled_agent<'a>(
+    cfg: &'a AppConfig,
+    agent_name: Option<&str>,
+) -> Option<&'a crate::models::Agent> {
     // Highest priority: explicit agentName from the current conversation (mobile UI)
     if let Some(agent_name) = agent_name.map(str::trim).filter(|s| !s.is_empty()) {
-        if let Some(agent) = cfg.agents.iter().find(|a| a.enabled && a.name == agent_name) {
+        if let Some(agent) = cfg
+            .agents
+            .iter()
+            .find(|a| a.enabled && a.name == agent_name)
+        {
             return Some(agent);
         }
     }
@@ -417,7 +445,11 @@ fn resolve_enabled_agent<'a>(cfg: &'a AppConfig, agent_name: Option<&str>) -> Op
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        if let Some(agent) = cfg.agents.iter().find(|a| a.enabled && a.name == agent_name) {
+        if let Some(agent) = cfg
+            .agents
+            .iter()
+            .find(|a| a.enabled && a.name == agent_name)
+        {
             return Some(agent);
         }
     }
@@ -571,7 +603,10 @@ async fn build_mcp_tooling_for_mobile(
             {
                 Ok(t) => t,
                 Err(err) => {
-                    eprintln!("[mobile][mcp] 列工具失败: server={} err={}", set_server.server, err);
+                    eprintln!(
+                        "[mobile][mcp] 列工具失败: server={} err={}",
+                        set_server.server, err
+                    );
                     continue;
                 }
             };
@@ -653,7 +688,10 @@ async fn build_mcp_tooling_for_mobile(
         {
             Ok(t) => t,
             Err(err) => {
-                eprintln!("[mobile][mcp] 列工具失败: server={} err={}", server_name, err);
+                eprintln!(
+                    "[mobile][mcp] 列工具失败: server={} err={}",
+                    server_name, err
+                );
                 continue;
             }
         };
@@ -724,10 +762,8 @@ pub async fn mobile_generate_title(
 ) -> Result<String, String> {
     let cfg = config_manager.ensure_default().map_err(|e| e.to_string())?;
 
-    let (provider_name, model_name) =
-        resolve_provider_model(&cfg, agent_name.as_deref()).ok_or_else(|| {
-            "未配置 provider/model。请先在 Settings 中配置模型。".to_string()
-        })?;
+    let (provider_name, model_name) = resolve_provider_model(&cfg, agent_name.as_deref())
+        .ok_or_else(|| "未配置 provider/model。请先在 Settings 中配置模型。".to_string())?;
 
     let mut model_cfg = build_model_config(&cfg, &provider_name, &model_name)?;
     model_cfg.thinking_level = None;
@@ -1279,27 +1315,28 @@ pub async fn mobile_chat_stream_start(
                             }
                         };
 
-                        let args_value: serde_json::Value = match serde_json::from_str(&call.arguments) {
-                            Ok(v) => v,
-                            Err(e) => {
-                                emit_mobile_stream_event(
-                                    &app2,
-                                    MobileChatStreamPayload {
-                                        stream_id: stream_id2.clone(),
-                                        conversation_id: conversation_id2.clone(),
-                                        assistant_message_id: assistant_message_id2.clone(),
-                                        kind: "error".to_string(),
-                                        delta: None,
-                                        content: None,
-                                        thinking: None,
-                                        data: None,
-                                        error: Some(format!("解析 tool 参数失败：{e}")),
-                                    },
-                                );
-                                terminal = Some("error");
-                                break;
-                            }
-                        };
+                        let args_value: serde_json::Value =
+                            match serde_json::from_str(&call.arguments) {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    emit_mobile_stream_event(
+                                        &app2,
+                                        MobileChatStreamPayload {
+                                            stream_id: stream_id2.clone(),
+                                            conversation_id: conversation_id2.clone(),
+                                            assistant_message_id: assistant_message_id2.clone(),
+                                            kind: "error".to_string(),
+                                            delta: None,
+                                            content: None,
+                                            thinking: None,
+                                            data: None,
+                                            error: Some(format!("解析 tool 参数失败：{e}")),
+                                        },
+                                    );
+                                    terminal = Some("error");
+                                    break;
+                                }
+                            };
 
                         let result = match global_mcp_runtime()
                             .call_tool(
@@ -1331,8 +1368,8 @@ pub async fn mobile_chat_stream_start(
                             }
                         };
 
-                        let output =
-                            serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string());
+                        let output = serde_json::to_string_pretty(&result)
+                            .unwrap_or_else(|_| result.to_string());
                         log_mobile(format!(
                             "mcp_call_done id={} name={} output_len={}",
                             call_id,
@@ -1439,13 +1476,7 @@ pub async fn mobile_chat_stream_start(
 
         if terminal == Some("done") {
             let thinking = final_thinking
-                .and_then(|t| {
-                    if t.trim().is_empty() {
-                        None
-                    } else {
-                        Some(t)
-                    }
-                })
+                .and_then(|t| if t.trim().is_empty() { None } else { Some(t) })
                 .or_else(|| {
                     let t = thinking_buf.trim();
                     if t.is_empty() {

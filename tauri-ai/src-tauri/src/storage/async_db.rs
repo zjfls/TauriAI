@@ -208,7 +208,8 @@ pub async fn read_message(
         guard.get_message_raw(conversation_id, message_id)?
     };
     let mut out = parse_raw_messages(vec![row]).await?;
-    out.pop().ok_or_else(|| StorageError::NotFound("message missing".to_string()))
+    out.pop()
+        .ok_or_else(|| StorageError::NotFound("message missing".to_string()))
 }
 
 pub async fn read_latest_message_containing(

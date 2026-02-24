@@ -256,11 +256,15 @@ fn collect_snippet_token_ids(text: &str, out: &mut std::collections::HashSet<Str
     const PREFIX: &str = "@{snippet:";
     let mut i = 0;
     while i < text.len() {
-        let Some(rel) = text[i..].find(PREFIX) else { break };
+        let Some(rel) = text[i..].find(PREFIX) else {
+            break;
+        };
         let token_start = i + rel;
         let id_start = token_start + PREFIX.len();
         let rest = &text[id_start..];
-        let Some(end_brace) = rest.find('}') else { break };
+        let Some(end_brace) = rest.find('}') else {
+            break;
+        };
         let id = &rest[..end_brace];
         if !id.trim().is_empty() {
             out.insert(id.to_string());

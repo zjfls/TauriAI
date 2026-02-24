@@ -15,4 +15,3 @@ use crate::storage::async_db::DbLockSnapshot;
 pub fn get_db_lock_snapshot() -> Option<DbLockSnapshot> {
     crate::storage::async_db::get_db_lock_snapshot()
 }
-

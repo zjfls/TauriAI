@@ -411,13 +411,10 @@ pub async fn run_normal_compact(
     }
 
     // Load full history for compaction (chronological).
-    let all_messages = async_db::read_all_messages(
-        &db,
-        "context_compaction:get_all_messages",
-        conversation_id,
-    )
-    .await
-    .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
+    let all_messages =
+        async_db::read_all_messages(&db, "context_compaction:get_all_messages", conversation_id)
+            .await
+            .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
 
     let eligible: Vec<Message> = all_messages
         .into_iter()

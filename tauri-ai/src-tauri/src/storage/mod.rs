@@ -2719,7 +2719,9 @@ impl Database {
         )?;
 
         let row = stmt
-            .query_row(params![conversation_id, like], |row| RawMessageRow::from_row(row))
+            .query_row(params![conversation_id, like], |row| {
+                RawMessageRow::from_row(row)
+            })
             .optional()?;
 
         Ok(row)
@@ -2753,7 +2755,9 @@ impl Database {
         )?;
 
         let msg = stmt
-            .query_row(params![conversation_id, message_id], |row| RawMessageRow::from_row(row))
+            .query_row(params![conversation_id, message_id], |row| {
+                RawMessageRow::from_row(row)
+            })
             .optional()?;
 
         msg.ok_or_else(|| {

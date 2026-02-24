@@ -5118,6 +5118,7 @@ async fn stream_one_turn(
 
         let client = client.clone();
         let model_config = model_config.clone();
+        let resume_partial_output_enabled = model_config.resume_partial_output;
         let tools = tools.clone();
         let attempt_messages = messages.clone();
 
@@ -5270,9 +5271,11 @@ async fn stream_one_turn(
 
             let reconnecting = emitted_any_delta;
             let resume_possible = turn_state.is_some();
+            let can_reconnect_after_partial_output =
+                emitted_any_delta && resume_possible && resume_partial_output_enabled;
             let can_retry = attempt < max_attempts
                 && is_retryable_error(&stream_err, debug_info.as_ref())
-                && (!emitted_any_delta || resume_possible);
+                && (!emitted_any_delta || can_reconnect_after_partial_output);
 
             if can_retry {
                 let shift = attempt.saturating_sub(1).min(30);

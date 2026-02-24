@@ -21,15 +21,15 @@ use rmcp::ClientHandler;
 use rmcp::RoleClient;
 use serde_json::Value;
 use sse_stream::SseStream;
-use tokio::sync::{OnceCell, Notify, RwLock};
+use tokio::sync::{Notify, OnceCell, RwLock};
 use tokio::time;
 
 use crate::models::{McpServerConfig, McpServerTransportConfig};
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-use std::process::Stdio;
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use rmcp::transport::child_process::TokioChildProcess;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use std::process::Stdio;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tokio::io::{AsyncBufReadExt, BufReader};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -365,40 +365,42 @@ impl McpClient {
                 #[cfg(any(target_os = "android", target_os = "ios"))]
                 {
                     let _ = (command, args, env, env_vars, cwd);
-                    return Err("移动端暂不支持 MCP stdio transport（仅支持 http-streamable / sse）"
-                        .to_string());
+                    return Err(
+                        "移动端暂不支持 MCP stdio transport（仅支持 http-streamable / sse）"
+                            .to_string(),
+                    );
                 }
 
                 #[cfg(not(any(target_os = "android", target_os = "ios")))]
                 {
-                let mut command_builder = Command::new(command);
-                command_builder
-                    .kill_on_drop(true)
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .env_clear()
-                    .envs(create_env_for_mcp_server(env.clone(), env_vars))
-                    .args(args);
-                if let Some(cwd) = cwd {
-                    command_builder.current_dir(cwd);
-                }
+                    let mut command_builder = Command::new(command);
+                    command_builder
+                        .kill_on_drop(true)
+                        .stdin(Stdio::piped())
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .env_clear()
+                        .envs(create_env_for_mcp_server(env.clone(), env_vars))
+                        .args(args);
+                    if let Some(cwd) = cwd {
+                        command_builder.current_dir(cwd);
+                    }
 
-                let (transport, stderr) = TokioChildProcess::builder(command_builder)
-                    .spawn()
-                    .map_err(|e| format!("启动 MCP 子进程失败: {e}"))?;
+                    let (transport, stderr) = TokioChildProcess::builder(command_builder)
+                        .spawn()
+                        .map_err(|e| format!("启动 MCP 子进程失败: {e}"))?;
 
-                if let Some(stderr) = stderr {
-                    let program_name = command.clone();
-                    tokio::spawn(async move {
-                        let mut reader = BufReader::new(stderr).lines();
-                        while let Ok(Some(line)) = reader.next_line().await {
-                            println!("[MCP][stderr][{program_name}] {line}");
-                        }
-                    });
-                }
+                    if let Some(stderr) = stderr {
+                        let program_name = command.clone();
+                        tokio::spawn(async move {
+                            let mut reader = BufReader::new(stderr).lines();
+                            while let Ok(Some(line)) = reader.next_line().await {
+                                println!("[MCP][stderr][{program_name}] {line}");
+                            }
+                        });
+                    }
 
-                Ok(PendingTransport::ChildProcess(transport))
+                    Ok(PendingTransport::ChildProcess(transport))
                 }
             }
             McpServerTransportConfig::StreamableHttp {
@@ -427,8 +429,7 @@ impl McpClient {
                 http_headers,
                 env_http_headers,
             } => {
-                let sse_url = reqwest::Url::parse(url)
-                    .map_err(|e| format!("SSE url 非法: {e}"))?;
+                let sse_url = reqwest::Url::parse(url).map_err(|e| format!("SSE url 非法: {e}"))?;
 
                 let bearer_token = bearer_token_env_var
                     .as_deref()
@@ -657,7 +658,10 @@ enum SseTransportError {
     #[error("Tokio join error: {0}")]
     TokioJoinError(#[from] tokio::task::JoinError),
     #[error("HTTP 状态码异常: {status}（{body}）")]
-    HttpStatus { status: reqwest::StatusCode, body: String },
+    HttpStatus {
+        status: reqwest::StatusCode,
+        body: String,
+    },
 }
 
 #[derive(Clone)]
@@ -774,7 +778,8 @@ impl Worker for SseClientWorker {
                     };
 
                     if let Some(new_retry) = ev.retry {
-                        retry_interval = Duration::from_millis(new_retry).max(Duration::from_millis(200));
+                        retry_interval =
+                            Duration::from_millis(new_retry).max(Duration::from_millis(200));
                     }
                     if let Some(id) = ev.id.clone() {
                         last_event_id = Some(id);
@@ -788,20 +793,25 @@ impl Worker for SseClientWorker {
                                 continue;
                             }
 
-                            let endpoint_str: String = match serde_json::from_str::<serde_json::Value>(raw) {
-                                Ok(v) => {
-                                    if let Some(s) = v.as_str() {
-                                        s.to_string()
-                                    } else if let Some(s) = v.get("endpoint").and_then(|v| v.as_str()) {
-                                        s.to_string()
-                                    } else if let Some(s) = v.get("url").and_then(|v| v.as_str()) {
-                                        s.to_string()
-                                    } else {
-                                        raw.to_string()
+                            let endpoint_str: String =
+                                match serde_json::from_str::<serde_json::Value>(raw) {
+                                    Ok(v) => {
+                                        if let Some(s) = v.as_str() {
+                                            s.to_string()
+                                        } else if let Some(s) =
+                                            v.get("endpoint").and_then(|v| v.as_str())
+                                        {
+                                            s.to_string()
+                                        } else if let Some(s) =
+                                            v.get("url").and_then(|v| v.as_str())
+                                        {
+                                            s.to_string()
+                                        } else {
+                                            raw.to_string()
+                                        }
                                     }
-                                }
-                                Err(_) => raw.to_string(),
-                            };
+                                    Err(_) => raw.to_string(),
+                                };
 
                             let endpoint_str = endpoint_str.trim();
                             if endpoint_str.is_empty() {
@@ -810,9 +820,9 @@ impl Worker for SseClientWorker {
 
                             let full = match reqwest::Url::parse(endpoint_str) {
                                 Ok(u) => u,
-                                Err(_) => sse_url
-                                    .join(endpoint_str)
-                                    .map_err(|_| SseTransportError::InvalidEndpoint(endpoint_str.to_string()))?,
+                                Err(_) => sse_url.join(endpoint_str).map_err(|_| {
+                                    SseTransportError::InvalidEndpoint(endpoint_str.to_string())
+                                })?,
                             };
 
                             {

@@ -2588,7 +2588,12 @@ fn ensure_system_workspace_defaults(cfg: &mut AppConfig) -> bool {
                     changed = true;
                 }
                 // Default run mode: keep it conservative (chat permission + tools).
-                if a.default_run_mode.as_deref().unwrap_or("").trim().is_empty() {
+                if a.default_run_mode
+                    .as_deref()
+                    .unwrap_or("")
+                    .trim()
+                    .is_empty()
+                {
                     a.default_run_mode = Some("chat".to_string());
                     changed = true;
                 }

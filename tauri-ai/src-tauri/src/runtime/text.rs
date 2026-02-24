@@ -88,4 +88,3 @@ fn decode_windows_codepage(bytes: &[u8]) -> Option<String> {
     }
     None
 }
-

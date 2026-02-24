@@ -97,9 +97,11 @@ impl CodeIndexDb {
             return Ok(None);
         }
         self.conn
-            .query_row("SELECT value FROM meta WHERE key = ?1", params![key], |row| {
-                row.get::<_, String>(0)
-            })
+            .query_row(
+                "SELECT value FROM meta WHERE key = ?1",
+                params![key],
+                |row| row.get::<_, String>(0),
+            )
             .optional()
             .map_err(|e| format!("读取 meta 失败: {e}"))
     }
@@ -152,7 +154,15 @@ impl CodeIndexDb {
             .optional()
             .map_err(|e| format!("读取索引 DB 失败: {e}"))?;
 
-        let Some((language_id, source, symbols_json, updated_at_ms, file_mtime_ms, file_size_bytes)) = row_opt else {
+        let Some((
+            language_id,
+            source,
+            symbols_json,
+            updated_at_ms,
+            file_mtime_ms,
+            file_size_bytes,
+        )) = row_opt
+        else {
             return Ok(None);
         };
 
@@ -198,8 +208,8 @@ impl CodeIndexDb {
             return Err("source 为空".to_string());
         }
 
-        let symbols_json = serde_json::to_string(symbols)
-            .map_err(|e| format!("序列化 symbols 失败: {e}"))?;
+        let symbols_json =
+            serde_json::to_string(symbols).map_err(|e| format!("序列化 symbols 失败: {e}"))?;
 
         let (mtime_ms, size_bytes) = meta
             .map(|m| (m.mtime_ms, m.size_bytes))
@@ -240,7 +250,10 @@ impl CodeIndexDb {
             return Ok(());
         }
         self.conn
-            .execute("DELETE FROM file_symbols WHERE file_path = ?1", params![file_path])
+            .execute(
+                "DELETE FROM file_symbols WHERE file_path = ?1",
+                params![file_path],
+            )
             .map_err(|e| format!("删除索引记录失败: {e}"))?;
         Ok(())
     }

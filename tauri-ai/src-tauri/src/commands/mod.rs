@@ -51,12 +51,10 @@ pub use clipboard::clipboard_write_png_base64;
 pub use code_intel::{
     ai_analyze_workstudio_symbol, ai_chat_with_selection, ai_code_completion, ast_document_symbols,
     code_index_request_document_symbols, code_index_start_workspace_scan, code_index_status,
-    code_index_summary,
-    delete_workstudio_symbol_analysis, get_workstudio_symbol_analysis,
-    list_workstudio_symbol_analysis_keys_for_file,
-    save_workstudio_symbol_analysis, lsp_detect_server,
-    lsp_ensure_server, lsp_notify, lsp_request, lsp_shutdown_language, lsp_shutdown_workstudio,
-    lsp_status, workstudio_abort_agent, workstudio_run_agent_stream,
+    code_index_summary, delete_workstudio_symbol_analysis, get_workstudio_symbol_analysis,
+    list_workstudio_symbol_analysis_keys_for_file, lsp_detect_server, lsp_ensure_server,
+    lsp_notify, lsp_request, lsp_shutdown_language, lsp_shutdown_workstudio, lsp_status,
+    save_workstudio_symbol_analysis, workstudio_abort_agent, workstudio_run_agent_stream,
 };
 pub use config::{fetch_provider_models, get_app_config, save_app_config, test_connection};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]

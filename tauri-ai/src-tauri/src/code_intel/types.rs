@@ -33,7 +33,10 @@ pub struct LspEventPayload {
 pub enum LspEvent {
     /// LSP notification from server to client.
     #[serde(rename_all = "camelCase")]
-    Notification { method: String, params: serde_json::Value },
+    Notification {
+        method: String,
+        params: serde_json::Value,
+    },
     /// Best-effort log line captured from server stderr.
     #[serde(rename_all = "camelCase")]
     Stderr { line: String },
@@ -61,4 +64,3 @@ pub struct LspServerStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
 }
-

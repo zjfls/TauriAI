@@ -5,10 +5,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::git_tools::{
-    git_diff_between_commits, git_diff_name_status_between_commits,
-    git_diff_numstat_between_commits, git_restore_worktree_from_commit_with_worktree, GitDiffOptions,
-    create_ghost_commit_for_paths_with_worktree,
-    git_current_branch,
+    create_ghost_commit_for_paths_with_worktree, git_current_branch, git_diff_between_commits,
+    git_diff_name_status_between_commits, git_diff_numstat_between_commits,
+    git_restore_worktree_from_commit_with_worktree, GitDiffOptions,
 };
 
 #[derive(Debug, Deserialize)]
@@ -177,7 +176,8 @@ pub async fn git_diff_commits(args: GitDiffCommitsArgs) -> Result<GitDiffCommits
         detect_renames: args.options.detect_renames,
     };
 
-    let diff = git_diff_between_commits(&repo_root, &args.from, &args.to, &pathspecs, &opts).await?;
+    let diff =
+        git_diff_between_commits(&repo_root, &args.from, &args.to, &pathspecs, &opts).await?;
     let name_status = git_diff_name_status_between_commits(
         &repo_root,
         &args.from,
@@ -210,7 +210,8 @@ pub async fn git_diff_commits(args: GitDiffCommitsArgs) -> Result<GitDiffCommits
         .collect();
 
     // Attach numstat counts (best-effort).
-    let mut numstat_map = std::collections::HashMap::<String, (Option<i64>, Option<i64>, Option<bool>)>::new();
+    let mut numstat_map =
+        std::collections::HashMap::<String, (Option<i64>, Option<i64>, Option<bool>)>::new();
     for (path, added, deleted, is_binary) in parse_numstat(&numstat) {
         numstat_map.insert(path, (added, deleted, is_binary));
     }
@@ -382,7 +383,9 @@ pub struct GitGetCurrentBranchArgs {
 /// - Returns `None` when the workdir is not a git work tree (or git is unavailable).
 /// - For detached HEAD, returns `detached@<shortsha>`.
 #[tauri::command]
-pub async fn git_get_current_branch(args: GitGetCurrentBranchArgs) -> Result<Option<String>, String> {
+pub async fn git_get_current_branch(
+    args: GitGetCurrentBranchArgs,
+) -> Result<Option<String>, String> {
     let workdir = args.workdir.trim();
     if workdir.is_empty() {
         return Ok(None);
@@ -398,7 +401,9 @@ pub struct GitListLocalBranchesArgs {
 
 /// List local branches (`refs/heads/*`) for a given workdir.
 #[tauri::command]
-pub async fn git_list_local_branches(args: GitListLocalBranchesArgs) -> Result<Vec<String>, String> {
+pub async fn git_list_local_branches(
+    args: GitListLocalBranchesArgs,
+) -> Result<Vec<String>, String> {
     let workdir = args.workdir.trim();
     if workdir.is_empty() {
         return Ok(Vec::new());

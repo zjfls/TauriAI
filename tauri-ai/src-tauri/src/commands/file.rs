@@ -362,9 +362,9 @@ pub async fn delete_local_path(args: DeleteLocalPathArgs) -> Result<(), String> 
         let parent_canon = fs::canonicalize(parent)
             .await
             .map_err(|e| format!("无法解析父目录: {e}"))?;
-        roots_canon.iter().any(|root| {
-            parent_canon == *root || parent_canon.starts_with(root)
-        })
+        roots_canon
+            .iter()
+            .any(|root| parent_canon == *root || parent_canon.starts_with(root))
     } else {
         // Non-symlink target: canonicalize full path to avoid traversal through symlink components.
         let canon = fs::canonicalize(&target)
