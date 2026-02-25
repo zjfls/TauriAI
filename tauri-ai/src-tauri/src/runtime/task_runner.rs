@@ -5609,11 +5609,21 @@ async fn stream_one_turn(
 
             let reconnecting = emitted_any_delta;
             let resume_possible = turn_state.is_some();
+            let no_visible_output_yet = full_content.trim().is_empty();
             let can_reconnect_after_partial_output =
                 emitted_any_delta && resume_possible && resume_partial_output_enabled;
+            // 特殊兜底：即使没有开启 resume_partial_output，只要「还没产生任何可见输出」
+            // （token 输出为空/仅空白），也允许走断线重连逻辑。
+            //
+            // 典型场景：流里只吐了 thinking / 状态事件（或响应被网关截断），最终没有任何输出文本。
+            // 这种情况下重连不会造成“重复可见内容”，因此应优先尝试用 TurnState(cursor) 续流恢复。
+            let can_reconnect_after_no_visible_output =
+                emitted_any_delta && resume_possible && no_visible_output_yet;
+            let can_reconnect = can_reconnect_after_partial_output
+                || can_reconnect_after_no_visible_output;
             let can_retry = attempt < max_attempts
                 && is_retryable_error(&stream_err, debug_info.as_ref())
-                && (!emitted_any_delta || can_reconnect_after_partial_output);
+                && (!emitted_any_delta || can_reconnect);
 
             if can_retry {
                 let shift = attempt.saturating_sub(1).min(30);
@@ -6048,6 +6058,96 @@ mod tests {
         match result {
             TurnStreamResult::Error { content, .. } => assert_eq!(content, "he"),
             other => panic!("expected TurnStreamResult::Error, got: {other:?}"),
+        }
+    }
+
+    struct ResumeAfterThinkingOnlyClient {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl crate::ai_client::AiClient for ResumeAfterThinkingOnlyClient {
+        async fn chat(
+            &self,
+            _messages: Vec<crate::models::Message>,
+            _config: &crate::models::ModelConfig,
+            _tools: Option<Vec<crate::ai_client::ToolDefinition>>,
+        ) -> Result<String, crate::ai_client::AiError> {
+            Ok("ok".to_string())
+        }
+
+        async fn chat_stream(
+            &self,
+            _messages: Vec<crate::models::Message>,
+            _config: &crate::models::ModelConfig,
+            _tools: Option<Vec<crate::ai_client::ToolDefinition>>,
+            token_sender: mpsc::Sender<crate::ai_client::StreamEvent>,
+            options: crate::ai_client::StreamOptions,
+        ) -> Result<(), crate::ai_client::AiError> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                let _ = token_sender
+                    .send(crate::ai_client::StreamEvent::TurnState(
+                        "state1".to_string(),
+                    ))
+                    .await;
+                let _ = token_sender
+                    .send(crate::ai_client::StreamEvent::Thinking(
+                        "thinking".to_string(),
+                    ))
+                    .await;
+                let _ = token_sender
+                    .send(crate::ai_client::StreamEvent::DoneWithDebug {
+                        content: String::new(),
+                        thinking: None,
+                        debug_info: None,
+                        usage: None,
+                    })
+                    .await;
+                return Ok(());
+            }
+
+            assert_eq!(options.resume_state.as_deref(), Some("state1"));
+            let _ = token_sender
+                .send(crate::ai_client::StreamEvent::Token("ok".to_string()))
+                .await;
+            let _ = token_sender
+                .send(crate::ai_client::StreamEvent::Done("ok".to_string()))
+                .await;
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_one_turn_should_retry_and_resume_when_no_visible_output() {
+        let client: Arc<dyn crate::ai_client::AiClient> = Arc::new(ResumeAfterThinkingOnlyClient {
+            calls: AtomicUsize::new(0),
+        });
+        let mut emitter = NoopEmitter;
+        let (abort_tx, mut abort_rx) = mpsc::channel(1);
+        let _keep_abort = abort_tx;
+
+        let mut config = test_model_config();
+        config.resume_partial_output = false;
+
+        let result = stream_one_turn(
+            client,
+            config,
+            None,
+            vec![test_user_message()],
+            &mut emitter,
+            "task",
+            "turn",
+            "assistant",
+            None,
+            &mut abort_rx,
+            2,
+        )
+        .await;
+
+        match result {
+            TurnStreamResult::Final { content, .. } => assert_eq!(content, "ok"),
+            other => panic!("expected TurnStreamResult::Final, got: {other:?}"),
         }
     }
 
