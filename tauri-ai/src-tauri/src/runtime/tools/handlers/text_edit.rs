@@ -460,15 +460,15 @@ impl ToolHandler for ReplaceStringTool {
         ToolSpec {
             name: REPLACE_STRING_TOOL_NAME.to_string(),
             description: Some(
-                "在指定文件中做一次“精确字符串替换”（old_string 必须唯一命中 1 次）。"
+                "对指定文件执行一次“精确字符串替换”。适用于小范围改动：当你能提供一段在文件中**唯一出现 1 次**的原文（old_string，包含空格/换行也算）并将其替换为新文（new_string）时，优先使用本工具（比 apply_patch 更简单、也更容易调试）。若 old_string 不唯一或需要按行上下文定位，请改用 apply_patch。"
                     .to_string(),
             ),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "file_path": { "type": "string", "description": "文件路径（相对工作区；建议不要用绝对路径）" },
-                    "old_string": { "type": "string", "description": "要被替换的原始字符串（必须在文件中唯一出现 1 次）" },
-                    "new_string": { "type": "string", "description": "替换后的字符串" }
+                    "old_string": { "type": "string", "description": "要被替换的原始字符串（必须在文件中唯一出现 1 次；建议直接从文件中复制，保持所有空格与换行不变）" },
+                    "new_string": { "type": "string", "description": "替换后的字符串（将原样写入；保持空格与换行符合预期）" }
                 },
                 "required": ["file_path", "old_string", "new_string"],
                 "additionalProperties": false
