@@ -1494,7 +1494,9 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
   const terminalScope: TerminalScope | null = useMemo(() => {
     if (!workstudioId) return null;
-    return { kind: 'workstudio', id: workstudioId };
+    // Workstudio 终端改为复用“主窗口终端”的 scope 类型，保证后端会话创建逻辑完全一致
+    // （包括后续可能对 workspace_terminal scope 做的环境/行为修正）。
+    return { kind: 'workspace_terminal', id: workstudioId };
   }, [workstudioId]);
   const terminalSessionId = useTerminalSessionStore((s) => (terminalScope ? s.getSessionId(terminalScope) : null));
 

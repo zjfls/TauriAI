@@ -105,8 +105,16 @@ fn default_shell_command() -> Vec<String> {
     #[cfg(not(windows))]
     {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-        // Use login shell to approximate user terminal environment.
-        vec![shell, "-l".to_string()]
+        // Use interactive login shell to approximate user terminal environment.
+        // - login: load profile (.zprofile/.bash_profile)
+        // - interactive: ensure rc hooks (e.g. env managers) behave like a real terminal
+        let shell_lower = shell.to_ascii_lowercase();
+        let flag = if shell_lower.ends_with("zsh") || shell_lower.ends_with("bash") {
+            "-il"
+        } else {
+            "-l"
+        };
+        vec![shell, flag.to_string()]
     }
 }
 
