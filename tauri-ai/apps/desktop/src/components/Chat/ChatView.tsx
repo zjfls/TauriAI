@@ -97,6 +97,8 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
 
   const inputRef = useRef<InputAreaHandle>(null);
   const messageListRef = useRef<MessageListHandle>(null);
+  const outlinePanelRef = useRef<HTMLDivElement>(null);
+  const outlineToggleButtonRef = useRef<HTMLButtonElement>(null);
   const chatOpenProfileScheduledRef = useRef<string | null>(null);
 
   // 仅对“当前聚焦 Pane 的激活会话”自动聚焦，避免 keep-alive 多会话同时挂载时互相抢焦点。
@@ -734,6 +736,28 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
     setWorkstudioMenuOpen(false);
     setWorkstudioSecurityOpen(false);
   }, [sessionId]);
+
+  useEffect(() => {
+    if (!outlineOpen) return;
+    const handlePointerDown = (event: MouseEvent | TouchEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (outlinePanelRef.current?.contains(target)) return;
+      if (outlineToggleButtonRef.current?.contains(target)) return;
+      setOutlineOpen(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOutlineOpen(false);
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('touchstart', handlePointerDown);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('touchstart', handlePointerDown);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [outlineOpen]);
 
   useEffect(() => {
     if (!workstudioMenuOpen) return;
@@ -1540,6 +1564,7 @@ Guidelines:
               <button
                 type="button"
                 onClick={() => setOutlineOpen((v) => !v)}
+                ref={outlineToggleButtonRef}
                 className={[
                   'order-first flex items-center gap-1 rounded border border-transparent px-2 py-1 text-xs text-gray-600 hover:bg-gray-100',
                   'dark:text-gray-300 dark:hover:bg-gray-800',
@@ -1603,14 +1628,16 @@ Guidelines:
           </React.Profiler>
         </div>
         <div className="absolute inset-y-0 left-0 z-30">
-          <ChatOutlinePanel
-            items={outlineItems}
-            selectedMessageId={selectedRequestMessageId}
-            selectedFullText={selectedOutlineFullText}
-            isOpen={outlineOpen}
-            onToggle={() => setOutlineOpen((v) => !v)}
-            onSelect={handleSelectOutline}
-          />
+          <div ref={outlinePanelRef} className="h-full">
+            <ChatOutlinePanel
+              items={outlineItems}
+              selectedMessageId={selectedRequestMessageId}
+              selectedFullText={selectedOutlineFullText}
+              isOpen={outlineOpen}
+              onToggle={() => setOutlineOpen((v) => !v)}
+              onSelect={handleSelectOutline}
+            />
+          </div>
         </div>
       </div>
       {/* Conversation total token usage */}
