@@ -131,6 +131,15 @@ export const SHORTCUT_ACTIONS: ShortcutActionDefinition[] = [
     allowWhenTyping: true,
   },
   {
+    id: 'workstudio.closeAllWindows',
+    title: '关闭所有 Workstudio 窗口',
+    description: '关闭所有独立 Workstudio 窗口（不影响主窗口）',
+    category: 'Workstudio',
+    defaultMac: 'Cmd+Option+W',
+    defaultWindows: 'Ctrl+Alt+W',
+    allowWhenTyping: true,
+  },
+  {
     id: 'workstudio.fileSearch',
     title: '文件搜索（Workstudio）',
     description: '打开 Workstudio 文件搜索面板（类似 VS Code 快速打开）',

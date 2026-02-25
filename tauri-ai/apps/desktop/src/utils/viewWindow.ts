@@ -70,6 +70,21 @@ const pointInRect = (p: { x: number; y: number }, r: PhysicalRect) => {
   return p.x >= r.x && p.y >= r.y && p.x <= r.x + r.width && p.y <= r.y + r.height;
 };
 
+const isWorkstudioViewWindowLabel = (label: string): boolean => {
+  const v = (label ?? '').trim();
+  if (!v) return false;
+  return v.startsWith('view-workstudio-') || v.startsWith('view-workstudio-dir-');
+};
+
+const normalizeWorkstudioWindowTitle = (title: string): string => {
+  const raw = (title ?? '').trim();
+  if (!raw) return 'Workstudio';
+  if (/^workstudio\b/i.test(raw)) {
+    return raw.replace(/^workstudio\b/i, 'Workstudio');
+  }
+  return `Workstudio: ${raw}`;
+};
+
 const isOpenFileDebugEnabled = () => {
   try {
     return window.localStorage.getItem('tauri-ai:debug:open_file') === '1';
@@ -385,6 +400,7 @@ export const openViewWindow = (
     window?: { x?: number; y?: number; width?: number; height?: number };
   }
 ) => {
+  const normalizedTitle = view === 'workstudio' ? normalizeWorkstudioWindowTitle(title) : title;
   const label = opts?.label ?? `view-${view}-${Date.now()}`;
   const params = new URLSearchParams();
   params.set('view', view);
@@ -441,7 +457,7 @@ export const openViewWindow = (
   try {
     upsertWindowRecord({
       label,
-      title,
+      title: normalizedTitle,
       params: {
         view,
         standalone: true,
@@ -479,7 +495,7 @@ export const openViewWindow = (
   }
 
   const win = new WebviewWindow(label, {
-    title,
+    title: normalizedTitle,
     url,
     width: Math.max(240, Math.floor(opts?.window?.width ?? 900)),
     height: Math.max(160, Math.floor(opts?.window?.height ?? 700)),
@@ -525,11 +541,15 @@ export const openOrFocusViewWindow = async (
     window?: { x?: number; y?: number; width?: number; height?: number };
   }
 ) => {
+  const normalizedTitle = view === 'workstudio' ? normalizeWorkstudioWindowTitle(title) : title;
   const label = opts?.label ?? `view-${view}-${Date.now()}`;
   if (opts?.label) {
     try {
       const existing = await WebviewWindow.getByLabel(label);
       if (existing) {
+        if (view === 'workstudio') {
+          void existing.setTitle(normalizedTitle).catch(() => {});
+        }
         await existing.setFocus();
         return existing;
       }
@@ -592,7 +612,7 @@ export const openOrFocusViewWindow = async (
   try {
     upsertWindowRecord({
       label,
-      title,
+      title: normalizedTitle,
       params: {
         view,
         standalone: true,
@@ -630,7 +650,7 @@ export const openOrFocusViewWindow = async (
   }
 
   const win = new WebviewWindow(label, {
-    title,
+    title: normalizedTitle,
     url,
     width: Math.max(240, Math.floor(opts?.window?.width ?? 900)),
     height: Math.max(160, Math.floor(opts?.window?.height ?? 700)),
@@ -697,6 +717,16 @@ export const openOrFocusWorkstudioWindow = async (
     throw new Error('workstudioId 不能为空');
   }
 
+  const normalizedTitle = (() => {
+    const t = (title ?? '').trim();
+    const mainFolder = (opts.mainFolder ?? '').trim();
+    const base = normalizeWorkstudioWindowTitle(t);
+    if (mainFolder && base === 'Workstudio') {
+      return `Workstudio: ${mainFolder}`;
+    }
+    return base;
+  })();
+
   const label = (() => {
     const byFolder = opts.mainFolder ? workstudioWindowLabelByMainFolder(opts.mainFolder) : null;
     return byFolder ?? workstudioWindowLabel(workstudioId);
@@ -720,7 +750,7 @@ export const openOrFocusWorkstudioWindow = async (
   );
   const win = existing
     ? existing
-    : openViewWindow('workstudio', title, {
+    : openViewWindow('workstudio', normalizedTitle, {
         label,
         workstudioId,
         noDefaultSession: true,
@@ -734,6 +764,11 @@ export const openOrFocusWorkstudioWindow = async (
   // If the window already exists but is minimized, make it visible first; otherwise the
   // open_file event and Monaco reveal logic may be delayed/throttled and time out.
   await ensureWindowVisible(win);
+  try {
+    await win.setTitle(normalizedTitle);
+  } catch {
+    // ignore
+  }
 
   if (existing && opts.filePath) {
     await emitWorkstudioOpenFileOnce(win, label, {
@@ -754,7 +789,7 @@ export const openOrFocusWorkstudioWindow = async (
     try {
       upsertWindowRecord({
         label,
-        title,
+        title: normalizedTitle,
         params: {
           view: 'workstudio',
           standalone: true,
@@ -789,6 +824,40 @@ export type ChatWindowInfo = {
   label: string;
   kind: 'main' | 'chat';
   conversationId?: string | null;
+};
+
+export const closeAllWorkstudioWindows = async (): Promise<number> => {
+  if (!isTauri()) return 0;
+  const currentLabel = (() => {
+    try {
+      return getCurrentWebviewWindow().label;
+    } catch {
+      return null;
+    }
+  })();
+
+  const wins = await WebviewWindow.getAll().catch(() => []);
+  const targets = wins.filter((w) => isWorkstudioViewWindowLabel(w.label));
+  if (targets.length === 0) return 0;
+
+  const ordered = currentLabel
+    ? targets.slice().sort((a, b) => {
+        if (a.label === currentLabel && b.label !== currentLabel) return 1;
+        if (b.label === currentLabel && a.label !== currentLabel) return -1;
+        return a.label.localeCompare(b.label);
+      })
+    : targets.slice().sort((a, b) => a.label.localeCompare(b.label));
+
+  let closed = 0;
+  for (const w of ordered) {
+    try {
+      await w.close();
+      closed += 1;
+    } catch {
+      // ignore
+    }
+  }
+  return closed;
 };
 
 export const listChatWindows = async (): Promise<ChatWindowInfo[]> => {

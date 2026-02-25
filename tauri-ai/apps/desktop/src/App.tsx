@@ -29,7 +29,7 @@ import { ChatViewContainer } from './views/ChatViewContainer';
 import { getViewWindowParams, openOrFocusViewWindow } from './utils/viewWindow';
 import { resolveActiveWorkstudioMainFolder } from './utils/terminalWorkdir';
 import { getCurrentWindowLabelSafe, removeWindowPresence, writeWindowPresence } from './utils/windowPresence';
-import type { CodeSnippetContentPart, WorkspaceMentionChip } from './types';
+import type { CodeSnippetContentPart, WorkspaceMentionChip, Workstudio } from './types';
 import {
   clearAppClosingIfStale,
   isAppClosingRecently,
@@ -65,6 +65,64 @@ function App() {
   const isWorkstudioWindow = viewOverride === 'workstudio';
   const isDragGhostWindow = viewOverride === 'drag-ghost' || isGhostLabel;
   const shouldInitChatRuntime = !isWorkstudioWindow && !isDragGhostWindow;
+
+  // Standalone Workstudio window: ensure native window title contains "Workstudio".
+  // This avoids macOS Window menu showing the default HTML <title> ("Tauri + React + Typescript")
+  // when a window is restored/created without an explicit title.
+  useEffect(() => {
+    if (!isTauri()) return;
+    if (!isWorkstudioWindow) return;
+    let disposed = false;
+    const win = getCurrentWebviewWindow();
+
+    const setTitleSafe = async (title: string) => {
+      const t = (title ?? '').trim() || 'Workstudio';
+      try {
+        document.title = t;
+      } catch {
+        // ignore
+      }
+      try {
+        await win.setTitle(t);
+      } catch {
+        // ignore
+      }
+    };
+
+    void (async () => {
+      const workstudioId = (workstudioIdOverride ?? '').trim();
+      const currentTitle = await win.title().catch(() => '');
+      if (disposed) return;
+
+      const hasWorkstudioPrefix = /^workstudio\b/i.test((currentTitle ?? '').trim());
+      if (!hasWorkstudioPrefix) {
+        await setTitleSafe('Workstudio');
+        if (disposed) return;
+      } else {
+        // Ensure document title is aligned; native title is already ok.
+        await setTitleSafe(currentTitle);
+        if (disposed) return;
+        // If the title already contains a path, skip the DB roundtrip.
+        if (/^workstudio:\s*.+/i.test((currentTitle ?? '').trim())) return;
+      }
+
+      if (!workstudioId) return;
+
+      try {
+        const ws = await invoke<Workstudio | null>('get_workstudio', { workstudioId });
+        if (disposed) return;
+        const mainFolder = (ws?.mainFolder ?? '').trim();
+        if (!mainFolder) return;
+        await setTitleSafe(`Workstudio: ${mainFolder}`);
+      } catch {
+        // ignore
+      }
+    })();
+
+    return () => {
+      disposed = true;
+    };
+  }, [isWorkstudioWindow, workstudioIdOverride]);
 
   // Session store for multi-agent workspace
   const restoreSessionState = useSessionStore((state) => state.restoreSessionState);
