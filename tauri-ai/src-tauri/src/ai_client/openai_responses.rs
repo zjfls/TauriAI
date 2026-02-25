@@ -31,7 +31,8 @@ use tokio::sync::mpsc;
 use super::content_converter::ContentBlock;
 use super::traits::{
     AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent,
-    StreamTerminationInfo, StreamTerminationSource, TokenUsage, ToolCall, ToolDefinition,
+    ErrorLayer, ErrorOrigin, StreamTerminationInfo, StreamTerminationSource, TokenUsage, ToolCall,
+    ToolDefinition,
 };
 use super::utf8_stream::Utf8StreamDecoder;
 use super::{
@@ -1110,6 +1111,11 @@ impl AiClient for OpenAiResponsesClient {
                     chunk_count: Some(0),
                     raw_event_tail: None,
                 }),
+                error_origin: Some(ErrorOrigin {
+                    layer: ErrorLayer::Http,
+                    module: "ai_client/openai_responses".to_string(),
+                    operation: Some("chat_stream:http_status".to_string()),
+                }),
             };
 
             if let Ok(error_response) = serde_json::from_str::<ErrorResponse>(&error_text) {
@@ -1282,6 +1288,11 @@ impl AiClient for OpenAiResponsesClient {
                                 Some(raw_event_tail.clone())
                             },
                         }),
+                        error_origin: Some(ErrorOrigin {
+                            layer: ErrorLayer::Transport,
+                            module: "ai_client/openai_responses".to_string(),
+                            operation: Some("chat_stream:read_stream".to_string()),
+                        }),
                     };
 
                     let _ = token_sender
@@ -1395,6 +1406,7 @@ impl AiClient for OpenAiResponsesClient {
                                     Some(raw_event_tail.clone())
                                 },
                             }),
+                            error_origin: None,
                         };
 
                         let _ = token_sender
@@ -1735,6 +1747,11 @@ impl AiClient for OpenAiResponsesClient {
                                             Some(raw_event_tail.clone())
                                         },
                                     }),
+                                    error_origin: Some(ErrorOrigin {
+                                        layer: ErrorLayer::Protocol,
+                                        module: "ai_client/openai_responses".to_string(),
+                                        operation: Some("chat_stream:event_error".to_string()),
+                                    }),
                                 };
 
                                 let _ = token_sender
@@ -1860,6 +1877,11 @@ impl AiClient for OpenAiResponsesClient {
                                         } else {
                                             Some(raw_event_tail.clone())
                                         },
+                                    }),
+                                    error_origin: Some(ErrorOrigin {
+                                        layer: ErrorLayer::Protocol,
+                                        module: "ai_client/openai_responses".to_string(),
+                                        operation: Some(format!("chat_stream:event_{event_type}")),
                                     }),
                                 };
 
@@ -2039,6 +2061,7 @@ impl AiClient for OpenAiResponsesClient {
                                             Some(raw_event_tail.clone())
                                         },
                                     }),
+                                    error_origin: None,
                                 };
 
                                 let _ = token_sender
@@ -2135,6 +2158,11 @@ impl AiClient for OpenAiResponsesClient {
                 } else {
                     Some(raw_event_tail)
                 },
+            }),
+            error_origin: Some(ErrorOrigin {
+                layer: ErrorLayer::Protocol,
+                module: "ai_client/openai_responses".to_string(),
+                operation: Some("chat_stream:eof_fallback".to_string()),
             }),
         };
 

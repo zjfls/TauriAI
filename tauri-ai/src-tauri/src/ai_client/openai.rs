@@ -14,7 +14,8 @@ use tokio::sync::mpsc;
 use super::content_converter::{content_part_to_blocks, ContentBlock};
 use super::traits::{
     AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent,
-    StreamTerminationInfo, StreamTerminationSource, TokenUsage, ToolCall, ToolDefinition,
+    ErrorLayer, ErrorOrigin, StreamTerminationInfo, StreamTerminationSource, TokenUsage, ToolCall,
+    ToolDefinition,
 };
 use super::utf8_stream::Utf8StreamDecoder;
 use super::{
@@ -935,6 +936,11 @@ impl OpenAiBaseClient {
                     chunk_count: Some(0),
                     raw_event_tail: None,
                 }),
+                error_origin: Some(ErrorOrigin {
+                    layer: ErrorLayer::Http,
+                    module: "ai_client/openai".to_string(),
+                    operation: Some("chat_stream:http_status".to_string()),
+                }),
             };
 
             // Send Error event FIRST, then DoneWithDebug for debug/usage
@@ -1070,6 +1076,11 @@ impl OpenAiBaseClient {
                                 Some(raw_event_tail.clone())
                             },
                         }),
+                        error_origin: Some(ErrorOrigin {
+                            layer: ErrorLayer::Transport,
+                            module: "ai_client/openai".to_string(),
+                            operation: Some("chat_stream:read_stream".to_string()),
+                        }),
                     };
 
                     let _ = token_sender
@@ -1193,6 +1204,7 @@ impl OpenAiBaseClient {
                                     Some(raw_event_tail.clone())
                                 },
                             }),
+                            error_origin: None,
                         };
 
                         // Always send DoneWithDebug for debug info and usage
@@ -1392,6 +1404,11 @@ impl OpenAiBaseClient {
                 } else {
                     Some(raw_event_tail)
                 },
+            }),
+            error_origin: Some(ErrorOrigin {
+                layer: ErrorLayer::Protocol,
+                module: "ai_client/openai".to_string(),
+                operation: Some("chat_stream:eof_fallback".to_string()),
             }),
         };
 

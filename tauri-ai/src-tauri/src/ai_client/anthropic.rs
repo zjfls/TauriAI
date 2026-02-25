@@ -10,7 +10,8 @@ use tokio::sync::mpsc;
 use super::content_converter::{image_url_to_base64, ContentBlock};
 use super::traits::{
     AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent,
-    StreamTerminationInfo, StreamTerminationSource, TokenUsage, ToolCall, ToolDefinition,
+    ErrorLayer, ErrorOrigin, StreamTerminationInfo, StreamTerminationSource, TokenUsage, ToolCall,
+    ToolDefinition,
 };
 use super::utf8_stream::Utf8StreamDecoder;
 use super::{
@@ -755,6 +756,11 @@ impl AiClient for AnthropicClient {
                     chunk_count: Some(0),
                     raw_event_tail: None,
                 }),
+                error_origin: Some(ErrorOrigin {
+                    layer: ErrorLayer::Http,
+                    module: "ai_client/anthropic".to_string(),
+                    operation: Some("chat_stream:http_status".to_string()),
+                }),
             };
 
             // Send Error FIRST, then DoneWithDebug so the UI always has the debug context.
@@ -873,6 +879,11 @@ impl AiClient for AnthropicClient {
                             } else {
                                 Some(raw_event_tail.clone())
                             },
+                        }),
+                        error_origin: Some(ErrorOrigin {
+                            layer: ErrorLayer::Transport,
+                            module: "ai_client/anthropic".to_string(),
+                            operation: Some("chat_stream:read_stream".to_string()),
                         }),
                     };
 
@@ -1096,6 +1107,7 @@ impl AiClient for AnthropicClient {
                                             Some(raw_event_tail.clone())
                                         },
                                     }),
+                                    error_origin: None,
                                 };
                                 let _ = token_sender
                                     .send(StreamEvent::DoneWithDebug {
@@ -1158,6 +1170,11 @@ impl AiClient for AnthropicClient {
                                         } else {
                                             Some(raw_event_tail.clone())
                                         },
+                                    }),
+                                    error_origin: Some(ErrorOrigin {
+                                        layer: ErrorLayer::Protocol,
+                                        module: "ai_client/anthropic".to_string(),
+                                        operation: Some("chat_stream:event_error".to_string()),
                                     }),
                                 };
 
@@ -1246,6 +1263,11 @@ impl AiClient for AnthropicClient {
                 } else {
                     Some(raw_event_tail)
                 },
+            }),
+            error_origin: Some(ErrorOrigin {
+                layer: ErrorLayer::Protocol,
+                module: "ai_client/anthropic".to_string(),
+                operation: Some("chat_stream:eof_fallback".to_string()),
             }),
         };
         let _ = token_sender

@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 
 use super::traits::{
     AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent,
-    StreamTerminationInfo, StreamTerminationSource, ToolDefinition,
+    ErrorLayer, ErrorOrigin, StreamTerminationInfo, StreamTerminationSource, ToolDefinition,
 };
 use super::utf8_stream::Utf8StreamDecoder;
 use super::{
@@ -260,6 +260,11 @@ impl AiClient for OllamaClient {
                     chunk_count: Some(0),
                     raw_event_tail: None,
                 }),
+                error_origin: Some(ErrorOrigin {
+                    layer: ErrorLayer::Http,
+                    module: "ai_client/ollama".to_string(),
+                    operation: Some("chat_stream:http_status".to_string()),
+                }),
             };
 
             let error_msg = serde_json::from_str::<OllamaErrorResponse>(&error_text)
@@ -350,6 +355,11 @@ impl AiClient for OllamaClient {
                                 Some(raw_event_tail.clone())
                             },
                         }),
+                        error_origin: Some(ErrorOrigin {
+                            layer: ErrorLayer::Transport,
+                            module: "ai_client/ollama".to_string(),
+                            operation: Some("chat_stream:read_stream".to_string()),
+                        }),
                     };
 
                     let _ = token_sender
@@ -423,6 +433,7 @@ impl AiClient for OllamaClient {
                                     Some(raw_event_tail.clone())
                                 },
                             }),
+                            error_origin: None,
                         };
 
                         let _ = token_sender
@@ -482,6 +493,11 @@ impl AiClient for OllamaClient {
                 } else {
                     Some(raw_event_tail)
                 },
+            }),
+            error_origin: Some(ErrorOrigin {
+                layer: ErrorLayer::Protocol,
+                module: "ai_client/ollama".to_string(),
+                operation: Some("chat_stream:eof_fallback".to_string()),
             }),
         };
 

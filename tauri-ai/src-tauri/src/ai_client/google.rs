@@ -10,7 +10,8 @@ use tokio::sync::mpsc;
 use super::content_converter::{content_parts_to_blocks_with_limit, parse_data_url, ContentBlock};
 use super::traits::{
     AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent,
-    StreamTerminationInfo, StreamTerminationSource, TokenUsage, ToolCall, ToolDefinition,
+    ErrorLayer, ErrorOrigin, StreamTerminationInfo, StreamTerminationSource, TokenUsage, ToolCall,
+    ToolDefinition,
 };
 use super::utf8_stream::Utf8StreamDecoder;
 use super::{
@@ -798,6 +799,11 @@ impl AiClient for GoogleClient {
                     chunk_count: Some(0),
                     raw_event_tail: None,
                 }),
+                error_origin: Some(ErrorOrigin {
+                    layer: ErrorLayer::Http,
+                    module: "ai_client/google".to_string(),
+                    operation: Some("chat_stream:http_status".to_string()),
+                }),
             };
 
             // Send Error FIRST, then DoneWithDebug so the UI always has the debug context.
@@ -911,6 +917,11 @@ impl AiClient for GoogleClient {
                             } else {
                                 Some(raw_event_tail.clone())
                             },
+                        }),
+                        error_origin: Some(ErrorOrigin {
+                            layer: ErrorLayer::Transport,
+                            module: "ai_client/google".to_string(),
+                            operation: Some("chat_stream:read_stream".to_string()),
                         }),
                     };
 
@@ -1116,6 +1127,7 @@ impl AiClient for GoogleClient {
                     Some(raw_event_tail)
                 },
             }),
+            error_origin: None,
         };
 
         let _ = token_sender

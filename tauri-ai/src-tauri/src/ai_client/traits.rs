@@ -57,6 +57,48 @@ pub enum AiError {
     RateLimited(String),
 }
 
+/// High-level error layer classification for diagnostics.
+///
+/// This is intentionally coarse-grained: its job is to help users quickly
+/// understand *where* the failure happened (network vs HTTP vs protocol vs runtime),
+/// and to avoid mis-attribution when errors are surfaced by a wrapper layer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorLayer {
+    /// Local config / input validation (no request was sent).
+    Config,
+    /// Network / transport (DNS/TLS/connect/timeout/body read/decode, etc.).
+    Transport,
+    /// HTTP request succeeded but returned non-2xx status.
+    Http,
+    /// Streaming protocol (SSE/NDJSON) semantics (missing done marker, protocol error event, etc.).
+    Protocol,
+    /// Response schema / parsing (unexpected JSON shape, missing fields, etc.).
+    Content,
+    /// Our runtime/orchestration layer (turn loop, retries, tool plumbing, etc.).
+    Runtime,
+    /// Tool execution layer.
+    Tool,
+    /// Database / storage layer.
+    Db,
+    /// Unknown/unclassified.
+    Unknown,
+}
+
+/// Diagnostic origin information attached to `DebugInfoData`.
+///
+/// - `layer` tells users which layer failed.
+/// - `module` tells users which subsystem emitted the diagnostic (e.g. `ai_client/openai_responses`).
+/// - `operation` is a short, stable label for the failing step.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ErrorOrigin {
+    pub layer: ErrorLayer,
+    pub module: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation: Option<String>,
+}
+
 /// Events emitted during streaming responses
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum StreamEvent {
@@ -169,6 +211,12 @@ pub struct DebugInfoData {
     pub response: Option<DebugResponseData>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "streamTermination")]
     pub stream_termination: Option<StreamTerminationInfo>,
+    /// Best-effort diagnostic origin for *this* debug payload.
+    ///
+    /// Note: wrapper layers (runtime/UI) may surface errors originating from deeper layers.
+    /// This field helps users understand the true origin.
+    #[serde(skip_serializing_if = "Option::is_none", rename = "errorOrigin")]
+    pub error_origin: Option<ErrorOrigin>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

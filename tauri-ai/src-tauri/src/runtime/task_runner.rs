@@ -3072,7 +3072,46 @@ fn redact_debug_info_for_store(debug_info: &DebugInfoData) -> DebugInfoData {
             body: resp.body.clone(),
         }),
         stream_termination: debug_info.stream_termination.clone(),
+        error_origin: debug_info.error_origin.clone(),
     }
+}
+
+fn error_layer_cn(layer: &crate::ai_client::ErrorLayer) -> &'static str {
+    use crate::ai_client::ErrorLayer;
+    match layer {
+        ErrorLayer::Config => "配置/输入",
+        ErrorLayer::Transport => "网络/传输",
+        ErrorLayer::Http => "HTTP",
+        ErrorLayer::Protocol => "协议",
+        ErrorLayer::Content => "内容/解析",
+        ErrorLayer::Runtime => "运行时",
+        ErrorLayer::Tool => "工具",
+        ErrorLayer::Db => "数据库",
+        ErrorLayer::Unknown => "未知",
+    }
+}
+
+fn format_error_origin_line(origin: &crate::ai_client::ErrorOrigin) -> String {
+    let layer = error_layer_cn(&origin.layer);
+    let op = origin.operation.as_deref().unwrap_or("<none>");
+    format!(
+        "错误来源：层次={layer} 模块={} 操作={op}",
+        origin.module
+    )
+}
+
+fn decorate_user_error_with_origin(error: &str, debug_info: Option<&DebugInfoData>) -> String {
+    let Some(origin) = debug_info.and_then(|d| d.error_origin.as_ref()) else {
+        return error.to_string();
+    };
+    let header = format_error_origin_line(origin);
+    if error.starts_with("错误来源：") {
+        return error.to_string();
+    }
+    if error.contains(&header) {
+        return error.to_string();
+    }
+    format!("{header}\n\n{error}")
 }
 
 fn format_debug_info_for_reply(debug_info: &DebugInfoData) -> String {
@@ -4748,6 +4787,7 @@ async fn run_task_inner(
             blocks,
             turns,
         } => {
+            let error = decorate_user_error_with_origin(&error, debug_info.as_ref());
             if let Some(id) = user_message_id_for_status_update.as_deref() {
                 let err = error.clone();
                 let _ = async_db::with_db(&db, "run_task:failed:update_user_status", |db| {
@@ -5513,6 +5553,27 @@ async fn stream_one_turn(
         // - 旧逻辑会返回 TurnStreamResult::Final(content="")，进而被上层当作 TaskOutcome::Success，
         //   导致前端“无消息、无错误”。
         if stream_result.is_ok() && last_error.is_none() && full_content.trim().is_empty() {
+            if let Some(di) = debug_info.as_mut() {
+                if di.error_origin.is_none() {
+                    di.error_origin = Some(crate::ai_client::ErrorOrigin {
+                        layer: crate::ai_client::ErrorLayer::Runtime,
+                        module: "runtime/task_runner".to_string(),
+                        operation: Some("turn_stream:empty_content".to_string()),
+                    });
+                }
+            } else {
+                debug_info = Some(DebugInfoData {
+                    request: None,
+                    response: None,
+                    stream_termination: None,
+                    error_origin: Some(crate::ai_client::ErrorOrigin {
+                        layer: crate::ai_client::ErrorLayer::Runtime,
+                        module: "runtime/task_runner".to_string(),
+                        operation: Some("turn_stream:empty_content".to_string()),
+                    }),
+                });
+            }
+
             let mut lines: Vec<String> = Vec::new();
             lines.push("模型流结束但未返回任何内容".to_string());
             lines.push("".to_string());
