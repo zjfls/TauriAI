@@ -538,11 +538,36 @@ const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferen
 	const [isFullscreen, setIsFullscreen] = useState(false);
 	const [scale, setScale] = useState(1.5);
 
-	const [copiedText, setCopiedText] = useState(false);
-	const [copiedImage, setCopiedImage] = useState(false);
-	const [isCopyingImage, setIsCopyingImage] = useState(false);
-	const containerRef = useRef<HTMLDivElement | null>(null);
-	const fullscreenScrollRef = useRef<HTMLDivElement | null>(null);
+		const [copiedText, setCopiedText] = useState(false);
+		const [copiedImage, setCopiedImage] = useState(false);
+		const [isCopyingImage, setIsCopyingImage] = useState(false);
+		const containerRef = useRef<HTMLDivElement | null>(null);
+		const fullscreenScrollRef = useRef<HTMLDivElement | null>(null);
+		const fullscreenPanRef = useRef<{
+			active: boolean;
+			pointerId: number | null;
+			startX: number;
+			startY: number;
+			startScrollLeft: number;
+			startScrollTop: number;
+			moved: boolean;
+			blockNextClickUntilMs: number;
+			pendingScrollLeft: number;
+			pendingScrollTop: number;
+			rafId: number | null;
+		}>({
+			active: false,
+			pointerId: null,
+			startX: 0,
+			startY: 0,
+			startScrollLeft: 0,
+			startScrollTop: 0,
+			moved: false,
+			blockNextClickUntilMs: 0,
+			pendingScrollLeft: 0,
+			pendingScrollTop: 0,
+			rafId: null,
+		});
 
   const cleanCode = useMemo(() => code.trim().replace(/\r\n/g, '\n'), [code]);
   const cacheKey = useMemo(() => hashCode(cleanCode), [cleanCode]);
@@ -759,10 +784,122 @@ const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferen
     [svg, cleanCode]
   );
 
-	if (error) {
-		return (
-			<div className="my-2 rounded-lg bg-red-900/20 p-4 text-red-400">
-				<p className="text-sm font-medium">Mermaid 渲染失败</p>
+		// Fullscreen mouse pan handlers（基于原生 scrollTop/scrollLeft；仅鼠标，避免干扰触屏惯性滚动）
+		const handleFullscreenPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+			if (e.pointerType && e.pointerType !== 'mouse') return;
+			if (e.button !== 0) return;
+			if (!e.isPrimary) return;
+			const scroller = fullscreenScrollRef.current;
+			if (!scroller) return;
+
+			// 如果点在链接上，优先保留点击语义（文件引用等）
+			const target = e.target as Element | null;
+			if (target && findNearestAnchorWithLink(target)) return;
+
+			// 避免在滚动条区域误触发拖拽平移
+			const rect = scroller.getBoundingClientRect();
+			const sbW = scroller.offsetWidth - scroller.clientWidth;
+			const sbH = scroller.offsetHeight - scroller.clientHeight;
+			if (sbW > 0 && e.clientX >= rect.right - sbW - 2) return;
+			if (sbH > 0 && e.clientY >= rect.bottom - sbH - 2) return;
+
+			const st = fullscreenPanRef.current;
+			st.active = true;
+			st.pointerId = e.pointerId;
+			st.startX = e.clientX;
+			st.startY = e.clientY;
+			st.startScrollLeft = scroller.scrollLeft;
+			st.startScrollTop = scroller.scrollTop;
+			st.moved = false;
+			st.blockNextClickUntilMs = 0;
+			st.pendingScrollLeft = scroller.scrollLeft;
+			st.pendingScrollTop = scroller.scrollTop;
+
+			try {
+				scroller.setPointerCapture(e.pointerId);
+			} catch {
+				// ignore
+			}
+		}, []);
+
+		const handleFullscreenPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+			const st = fullscreenPanRef.current;
+			if (!st.active) return;
+			if (st.pointerId !== e.pointerId) return;
+
+			const scroller = fullscreenScrollRef.current;
+			if (!scroller) return;
+
+			const dx = e.clientX - st.startX;
+			const dy = e.clientY - st.startY;
+			if (!st.moved && (Math.abs(dx) >= 3 || Math.abs(dy) >= 3)) {
+				st.moved = true;
+			}
+			if (!st.moved) return;
+
+			st.pendingScrollLeft = st.startScrollLeft - dx;
+			st.pendingScrollTop = st.startScrollTop - dy;
+			st.blockNextClickUntilMs = Date.now() + 400;
+
+			if (st.rafId === null) {
+				st.rafId = requestAnimationFrame(() => {
+					const next = fullscreenPanRef.current;
+					next.rafId = null;
+					const sc = fullscreenScrollRef.current;
+					if (!sc) return;
+					sc.scrollLeft = next.pendingScrollLeft;
+					sc.scrollTop = next.pendingScrollTop;
+				});
+			}
+
+			// Prevent click-through when panning.
+			e.preventDefault();
+		}, []);
+
+		const handleFullscreenPointerUpOrCancel = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+			const st = fullscreenPanRef.current;
+			if (st.pointerId !== e.pointerId) return;
+
+			st.active = false;
+			st.pointerId = null;
+
+			const scroller = fullscreenScrollRef.current;
+			if (scroller && st.moved) {
+				scroller.scrollLeft = st.pendingScrollLeft;
+				scroller.scrollTop = st.pendingScrollTop;
+			}
+
+			st.moved = false;
+
+			if (st.rafId !== null) {
+				cancelAnimationFrame(st.rafId);
+				st.rafId = null;
+			}
+
+			if (!scroller) return;
+			try {
+				scroller.releasePointerCapture(e.pointerId);
+			} catch {
+				// ignore
+			}
+		}, []);
+
+		const handleFullscreenClickCapture = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+			const st = fullscreenPanRef.current;
+			if (!st.blockNextClickUntilMs) return;
+			if (Date.now() > st.blockNextClickUntilMs) {
+				st.blockNextClickUntilMs = 0;
+				return;
+			}
+			e.preventDefault();
+			e.stopPropagation();
+			st.blockNextClickUntilMs = 0;
+		}, []);
+
+		if (error) {
+			return (
+				<div className="my-2 rounded-lg bg-red-900/20 p-4 text-red-400">
+					<p className="text-sm font-medium">Mermaid 渲染失败</p>
 				<p className="mt-1 text-xs opacity-70">{error}</p>
         <pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs opacity-70 bg-red-900/10 p-2 rounded">{code}</pre>
       </div>
@@ -889,8 +1026,13 @@ const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferen
 
 					<div
 						ref={fullscreenScrollRef}
-						className="w-[90vw] h-[85vh] mt-12 overflow-auto bg-white dark:bg-gray-800 rounded-lg p-6 select-none"
+						className="w-[90vw] h-[85vh] mt-12 overflow-auto bg-white dark:bg-gray-800 rounded-lg p-6 select-none cursor-grab active:cursor-grabbing"
 						onClick={(e) => e.stopPropagation()}
+						onPointerDown={handleFullscreenPointerDown}
+						onPointerMove={handleFullscreenPointerMove}
+						onPointerUp={handleFullscreenPointerUpOrCancel}
+						onPointerCancel={handleFullscreenPointerUpOrCancel}
+						onClickCapture={handleFullscreenClickCapture}
 					>
 						<div
 							style={{ transform: `scale(${scale})`, transformOrigin: 'top left', marginBottom: `${(scale - 1) * 100}%` }}
