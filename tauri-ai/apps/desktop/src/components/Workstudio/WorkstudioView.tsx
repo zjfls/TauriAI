@@ -2764,7 +2764,6 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const [leftSidebarTab, setLeftSidebarTab] = useState<'explorer' | 'outline'>('explorer');
   const [outlinePreferLsp, setOutlinePreferLsp] = useState(DEFAULT_OUTLINE_PREFER_LSP);
   const [outlineSortMode, setOutlineSortMode] = useState<OutlineSortMode>(DEFAULT_OUTLINE_SORT_MODE);
-  const [outlineActionsMenuOpen, setOutlineActionsMenuOpen] = useState(false);
   const [outlineToolsMenuOpen, setOutlineToolsMenuOpen] = useState(false);
   const [outlineAnalyzeAllPanelOpen, setOutlineAnalyzeAllPanelOpen] = useState(false);
   const [outlineAnalyzeAllExcludeVariables, setOutlineAnalyzeAllExcludeVariables] = useState(true);
@@ -3279,7 +3278,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
   useEffect(() => {
     if (outlineOpen && leftSidebarTab === 'outline') return;
-    setOutlineActionsMenuOpen(false);
+    setOutlineToolsMenuOpen(false);
     setOutlineAnalyzeAllPanelOpen(false);
   }, [leftSidebarTab, outlineOpen]);
 
@@ -10052,7 +10051,6 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       !tabMenu &&
       !lspMenu &&
       !outlineMenu &&
-      !outlineActionsMenuOpen &&
       !outlineToolsMenuOpen &&
       !outlineAnalyzeAllPanelOpen &&
       !workstudioAiSettingsOpen
@@ -10063,7 +10061,6 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       setTabMenu(null);
       setLspMenu(null);
       setOutlineMenu(null);
-      setOutlineActionsMenuOpen(false);
       setOutlineToolsMenuOpen(false);
       setOutlineAnalyzeAllPanelOpen(false);
       setWorkstudioAiSettingsOpen(false);
@@ -10073,7 +10070,6 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   }, [
     contextMenu,
     lspMenu,
-    outlineActionsMenuOpen,
     outlineToolsMenuOpen,
     outlineAnalyzeAllPanelOpen,
     outlineMenu,
@@ -11005,35 +11001,52 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	                        'rounded border border-gray-200 p-1 text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800',
 	                        outlineToolsMenuOpen ? 'bg-gray-100 dark:bg-gray-800' : '',
 	                      ].join(' ')}
-	                      onClick={() => {
-	                        if (leftSidebarTab !== 'outline') setLeftSidebarTab('outline');
-	                        if (outlineToolsMenuOpen) {
-	                          setOutlineToolsMenuOpen(false);
-	                          return;
-	                        }
-	                        setOutlineActionsMenuOpen(false);
-	                        setOutlineAnalyzeAllPanelOpen(false);
-	                        setOutlineToolsMenuOpen(true);
-	                      }}
-	                      title="Outline 工具"
-	                    >
+		                      onClick={() => {
+		                        if (leftSidebarTab !== 'outline') setLeftSidebarTab('outline');
+		                        if (outlineToolsMenuOpen) {
+		                          setOutlineToolsMenuOpen(false);
+		                          return;
+		                        }
+		                        setOutlineAnalyzeAllPanelOpen(false);
+		                        setOutlineToolsMenuOpen(true);
+		                      }}
+		                      title="Outline 菜单"
+		                    >
 	                      <SlidersHorizontal size={14} />
 	                    </button>
 
-	                    {outlineToolsMenuOpen && (
-	                      <div
-	                        className="absolute right-0 top-full z-[210] mt-2 w-[240px] max-w-[80vw] overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900"
-	                        onMouseDown={(e) => e.stopPropagation()}
-	                      >
-	                        <div className="py-1 text-sm">
-	                          <div className="px-3 pb-1 pt-2 text-[11px] font-semibold text-gray-500 dark:text-gray-400">
-	                            排序
-	                          </div>
-	                          <button
-	                            type="button"
-	                            className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
-	                            onClick={() => {
-	                              setOutlineSortMode('kind');
+		                    {outlineToolsMenuOpen && (
+		                      <div
+		                        className="absolute right-0 top-full z-[210] mt-2 w-[260px] max-w-[80vw] overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900"
+		                        onMouseDown={(e) => e.stopPropagation()}
+		                      >
+		                        <div className="py-1 text-sm">
+		                          <div className="px-3 pb-1 pt-2 text-[11px] font-semibold text-gray-500 dark:text-gray-400">
+		                            排序
+		                          </div>
+		                          <button
+		                            type="button"
+		                            className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+		                            onClick={() => {
+		                              setOutlineSortMode('position');
+		                              setOutlineToolsMenuOpen(false);
+		                            }}
+		                            title="按代码位置排序（与文件中的出现顺序一致）"
+		                          >
+		                            <span className="flex items-center gap-2">
+		                              {outlineSortMode === 'position' ? (
+		                                <CheckCircle2 size={14} className="shrink-0 text-blue-600 dark:text-blue-300" />
+		                              ) : (
+		                                <span className="shrink-0 w-[14px]" />
+		                              )}
+		                              <span className="truncate">按位置（代码顺序）</span>
+		                            </span>
+		                          </button>
+		                          <button
+		                            type="button"
+		                            className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+		                            onClick={() => {
+		                              setOutlineSortMode('kind');
 	                              setOutlineToolsMenuOpen(false);
 	                            }}
 	                            title="按类型排序（先类/结构，再函数/方法，再变量/字段）"
@@ -11044,14 +11057,32 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	                              ) : (
 	                                <span className="shrink-0 w-[14px]" />
 	                              )}
-	                              <span className="truncate">按类型（类/函数/变量）</span>
-	                            </span>
-	                          </button>
-	                          <button
-	                            type="button"
-	                            className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
-	                            onClick={() => {
-	                              setOutlineSortMode('size');
+		                              <span className="truncate">按类型（类/函数/变量）</span>
+		                            </span>
+		                          </button>
+		                          <button
+		                            type="button"
+		                            className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+		                            onClick={() => {
+		                              setOutlineSortMode('name');
+		                              setOutlineToolsMenuOpen(false);
+		                            }}
+		                            title="按名称排序（A → Z）"
+		                          >
+		                            <span className="flex items-center gap-2">
+		                              {outlineSortMode === 'name' ? (
+		                                <CheckCircle2 size={14} className="shrink-0 text-blue-600 dark:text-blue-300" />
+		                              ) : (
+		                                <span className="shrink-0 w-[14px]" />
+		                              )}
+		                              <span className="truncate">按名称（A → Z）</span>
+		                            </span>
+		                          </button>
+		                          <button
+		                            type="button"
+		                            className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+		                            onClick={() => {
+		                              setOutlineSortMode('size');
 	                              setOutlineToolsMenuOpen(false);
 	                            }}
 	                            title="按重要程度排序（行数多 → 少）"
@@ -11100,12 +11131,111 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	                            }}
 	                            title="全部展开"
 	                          >
-	                            展开全部符号
-	                          </button>
-	                        </div>
-	                      </div>
-	                    )}
-	                  </div>
+		                            展开全部符号
+		                          </button>
+		                          <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
+		                          <button
+		                            type="button"
+		                            disabled={
+		                              !codeIntelligenceConfig?.symbolAnalysis?.enabled ||
+		                              !activeTextFileInFocusedPane ||
+		                              outlineItems.length === 0 ||
+		                              outlineLoading
+		                            }
+		                            className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:text-gray-200 dark:hover:bg-gray-800"
+		                            onClick={() => {
+		                              setOutlineToolsMenuOpen(false);
+		                              openOutlineAnalyzeAllPanel();
+		                            }}
+		                            title={
+		                              !codeIntelligenceConfig?.symbolAnalysis?.enabled
+		                                ? '请先在“设置 -> 代码智能 -> 符号分析”中启用'
+		                                : outlineItems.length === 0
+		                                  ? 'Outline 为空：没有可解析的符号'
+		                                  : `批量解析当前文件的全部符号（默认：${
+		                                      codeIntelligenceConfig?.symbolAnalysis?.bulkExcludeVariables !== false
+		                                        ? '跳过变量/字段'
+		                                        : '包含变量/字段'
+		                                    }，点击可修改）`
+		                            }
+		                          >
+		                            全部解析
+		                          </button>
+		                        </div>
+		                      </div>
+		                    )}
+
+		                    {outlineAnalyzeAllPanelOpen && (
+		                      <div
+		                        className="absolute right-0 top-full z-[210] mt-2 w-[320px] max-w-[80vw] overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900"
+		                        onMouseDown={(e) => e.stopPropagation()}
+		                      >
+		                        <div className="px-3 py-2 text-xs font-semibold text-gray-800 dark:text-gray-100">
+		                          全部解析
+		                        </div>
+		                        <div className="px-3 pb-2 text-[11px] text-gray-500 dark:text-gray-400">
+		                          {activeTextFileInFocusedPane ? `文件：${basename(activeTextFileInFocusedPane.path)}` : '当前无文本文件'}
+		                        </div>
+
+		                        <div className="px-3 pb-2 text-[11px] text-gray-600 dark:text-gray-300">
+		                          将加入解析队列：
+		                          <span className="ml-1 font-semibold text-gray-800 dark:text-gray-100">
+		                            {outlineAnalyzeAllTargets.length}
+		                          </span>
+		                          <span className="ml-1">个符号</span>
+		                          <span className="ml-1 text-gray-400 dark:text-gray-500">
+		                            （{outlineAnalyzeAllExcludeVariables ? '跳过变量/字段' : '包含变量/字段'}）
+		                          </span>
+		                        </div>
+
+		                        <label className="flex cursor-pointer items-start gap-2 px-3 py-2 text-[11px] text-gray-700 hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-gray-800/40">
+		                          <input
+		                            type="checkbox"
+		                            className="mt-0.5"
+		                            checked={outlineAnalyzeAllExcludeVariables}
+		                            onChange={(e) => setOutlineAnalyzeAllExcludeVariables(e.target.checked)}
+		                          />
+		                          <div className="min-w-0">
+		                            <div className="font-semibold">跳过变量/字段</div>
+		                            <div className="mt-0.5 text-gray-500 dark:text-gray-400">
+		                              变量/字段通常数量很多，跳过可更快更省（仍会解析类、函数、struct 等）。
+		                            </div>
+		                          </div>
+		                        </label>
+
+		                        {outlineAnalyzeAllTargets.length === 0 && (
+		                          <div className="px-3 pb-2 text-[11px] text-red-600 dark:text-red-300">
+		                            当前配置下没有可解析的符号。
+		                          </div>
+		                        )}
+
+		                        <div className="px-3 pb-2 text-[11px] text-amber-700 dark:text-amber-200">
+		                          提示：这会发起大量模型请求，可能耗时较长并产生费用。
+		                        </div>
+
+		                        <div className="flex items-center justify-end gap-2 border-t border-gray-200 px-3 py-2 dark:border-gray-700">
+		                          <button
+		                            type="button"
+		                            className="rounded border border-gray-200 px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+		                            onClick={() => setOutlineAnalyzeAllPanelOpen(false)}
+		                          >
+		                            取消
+		                          </button>
+		                          <button
+		                            type="button"
+		                            className="rounded bg-blue-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+		                            disabled={outlineAnalyzeAllTargets.length === 0 || outlineLoading}
+		                            onClick={() => {
+		                              setOutlineAnalyzeAllPanelOpen(false);
+		                              void runOutlineAnalyzeAll({ excludeVariables: outlineAnalyzeAllExcludeVariables });
+		                            }}
+		                          >
+		                            确认并开始
+		                          </button>
+		                        </div>
+		                      </div>
+		                    )}
+		                  </div>
 	                </>
 	              )}
 	            </div>
@@ -11143,255 +11273,11 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                         : '当前无文本文件'}
                     </div>
                   </div>
-                  <div className="relative">
-                    <button
-                      type="button"
-                      className="inline-flex items-center gap-1.5 rounded border border-gray-200 px-2 py-1 text-[11px] font-semibold text-gray-600 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
-                      onClick={() => {
-                        if (outlineActionsMenuOpen) {
-                          setOutlineActionsMenuOpen(false);
-                          return;
-                        }
-                        setOutlineAnalyzeAllPanelOpen(false);
-                        setOutlineActionsMenuOpen(true);
-                      }}
-                      title="Outline 菜单"
-                    >
-                      菜单
-                      <ChevronDown
-                        size={12}
-                        className={['opacity-70 transition-transform', outlineActionsMenuOpen ? 'rotate-180' : ''].join(' ')}
-                      />
-                    </button>
-
-                    {outlineActionsMenuOpen && (
-                      <div
-                        className="absolute right-0 top-full z-[210] mt-2 w-[240px] max-w-[80vw] overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900"
-                        onMouseDown={(e) => e.stopPropagation()}
-                      >
-                        <div className="py-1 text-sm">
-	                          <button
-	                            type="button"
-	                            disabled={
-	                              !activeTextFileInFocusedPane ||
-	                              outlineItems.length === 0 ||
-                              outlineLoading ||
-                              outlineCollapsibleKeyCount === 0
-                            }
-                            className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:text-gray-200 dark:hover:bg-gray-800"
-                            onClick={() => {
-                              setOutlineActionsMenuOpen(false);
-                              collapseAllOutline();
-                            }}
-                            title={
-                              outlineCollapsibleKeyCount > 0 ? '全部折叠（仅折叠包含子节点的符号）' : '没有可折叠的符号'
-                            }
-                          >
-                            全部折叠
-                          </button>
-                          <button
-                            type="button"
-                            disabled={
-                              !activeTextFileInFocusedPane ||
-                              outlineItems.length === 0 ||
-                              outlineLoading ||
-                              outlineCollapsedKeys.size === 0
-                            }
-                            className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:text-gray-200 dark:hover:bg-gray-800"
-                            onClick={() => {
-                              setOutlineActionsMenuOpen(false);
-                              expandAllOutline();
-                            }}
-                            title="全部展开"
-	                          >
-	                            全部展开
-	                          </button>
-	                          <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
-	                          <div className="px-3 pb-1 pt-2 text-[11px] font-semibold text-gray-500 dark:text-gray-400">
-	                            排序
-	                          </div>
-	                          <button
-	                            type="button"
-	                            className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
-	                            onClick={() => {
-	                              setOutlineSortMode('position');
-	                              setOutlineActionsMenuOpen(false);
-	                            }}
-	                            title="按代码位置排序（与文件中的出现顺序一致）"
-	                          >
-	                            <span className="flex items-center gap-2">
-	                              {outlineSortMode === 'position' ? (
-	                                <CheckCircle2 size={14} className="shrink-0 text-blue-600 dark:text-blue-300" />
-	                              ) : (
-	                                <span className="shrink-0 w-[14px]" />
-	                              )}
-	                              <span className="truncate">按位置（代码顺序）</span>
-	                            </span>
-	                          </button>
-	                          <button
-	                            type="button"
-	                            className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
-	                            onClick={() => {
-	                              setOutlineSortMode('kind');
-	                              setOutlineActionsMenuOpen(false);
-	                            }}
-	                            title="按类型排序（先类/结构，再函数/方法，再变量/字段）"
-	                          >
-	                            <span className="flex items-center gap-2">
-	                              {outlineSortMode === 'kind' ? (
-	                                <CheckCircle2 size={14} className="shrink-0 text-blue-600 dark:text-blue-300" />
-	                              ) : (
-	                                <span className="shrink-0 w-[14px]" />
-	                              )}
-	                              <span className="truncate">按类型（类/函数/变量）</span>
-	                            </span>
-	                          </button>
-		                          <button
-		                            type="button"
-		                            className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
-		                            onClick={() => {
-		                              setOutlineSortMode('name');
-		                              setOutlineActionsMenuOpen(false);
-		                            }}
-		                            title="按名称排序（A → Z）"
-		                          >
-		                            <span className="flex items-center gap-2">
-		                              {outlineSortMode === 'name' ? (
-		                                <CheckCircle2 size={14} className="shrink-0 text-blue-600 dark:text-blue-300" />
-		                              ) : (
-		                                <span className="shrink-0 w-[14px]" />
-		                              )}
-		                              <span className="truncate">按名称（A → Z）</span>
-		                            </span>
-		                          </button>
-			                          <button
-			                            type="button"
-			                            className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
-			                            onClick={() => {
-			                              setOutlineSortMode('size');
-			                              setOutlineActionsMenuOpen(false);
-			                            }}
-			                            title="按重要程度排序（行数多 → 少）"
-			                          >
-			                            <span className="flex items-center gap-2">
-			                              {outlineSortMode === 'size' ? (
-			                                <CheckCircle2 size={14} className="shrink-0 text-blue-600 dark:text-blue-300" />
-			                              ) : (
-			                                <span className="shrink-0 w-[14px]" />
-			                              )}
-			                              <span className="truncate">按重要程度（行数多 → 少）</span>
-			                            </span>
-			                          </button>
-		                          <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
-		                          <button
-		                            type="button"
-		                            disabled={
-		                              !codeIntelligenceConfig?.symbolAnalysis?.enabled ||
-                              !activeTextFileInFocusedPane ||
-                              outlineItems.length === 0 ||
-                              outlineLoading
-                            }
-                            className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:text-gray-200 dark:hover:bg-gray-800"
-                            onClick={() => {
-                              setOutlineActionsMenuOpen(false);
-                              openOutlineAnalyzeAllPanel();
-                            }}
-                            title={
-                              !codeIntelligenceConfig?.symbolAnalysis?.enabled
-                                ? '请先在“设置 -> 代码智能 -> 符号分析”中启用'
-                                : outlineItems.length === 0
-                                  ? 'Outline 为空：没有可解析的符号'
-                                  : `批量解析当前文件的全部符号（默认：${
-                                    codeIntelligenceConfig?.symbolAnalysis?.bulkExcludeVariables !== false
-                                      ? '跳过变量/字段'
-                                      : '包含变量/字段'
-                                  }，点击可修改）`
-                            }
-                          >
-                            全部解析
-                          </button>
-                        </div>
-                      </div>
-                    )}
-
-                    {outlineAnalyzeAllPanelOpen && (
-                      <div
-                        className="absolute right-0 top-full z-[210] mt-2 w-[320px] max-w-[80vw] overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900"
-                        onMouseDown={(e) => e.stopPropagation()}
-                      >
-                        <div className="px-3 py-2 text-xs font-semibold text-gray-800 dark:text-gray-100">
-                          全部解析
-                        </div>
-                        <div className="px-3 pb-2 text-[11px] text-gray-500 dark:text-gray-400">
-                          {activeTextFileInFocusedPane
-                            ? `文件：${basename(activeTextFileInFocusedPane.path)}`
-                            : '当前无文本文件'}
-                        </div>
-
-                        <div className="px-3 pb-2 text-[11px] text-gray-600 dark:text-gray-300">
-                          将加入解析队列：
-                          <span className="ml-1 font-semibold text-gray-800 dark:text-gray-100">
-                            {outlineAnalyzeAllTargets.length}
-                          </span>
-                          <span className="ml-1">个符号</span>
-                          <span className="ml-1 text-gray-400 dark:text-gray-500">
-                            （{outlineAnalyzeAllExcludeVariables ? '跳过变量/字段' : '包含变量/字段'}）
-                          </span>
-                        </div>
-
-                        <label className="flex cursor-pointer items-start gap-2 px-3 py-2 text-[11px] text-gray-700 hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-gray-800/40">
-                          <input
-                            type="checkbox"
-                            className="mt-0.5"
-                            checked={outlineAnalyzeAllExcludeVariables}
-                            onChange={(e) => setOutlineAnalyzeAllExcludeVariables(e.target.checked)}
-                          />
-                          <div className="min-w-0">
-                            <div className="font-semibold">跳过变量/字段</div>
-                            <div className="mt-0.5 text-gray-500 dark:text-gray-400">
-                              变量/字段通常数量很多，跳过可更快更省（仍会解析类、函数、struct 等）。
-                            </div>
-                          </div>
-                        </label>
-
-                        {outlineAnalyzeAllTargets.length === 0 && (
-                          <div className="px-3 pb-2 text-[11px] text-red-600 dark:text-red-300">
-                            当前配置下没有可解析的符号。
-                          </div>
-                        )}
-
-                        <div className="px-3 pb-2 text-[11px] text-amber-700 dark:text-amber-200">
-                          提示：这会发起大量模型请求，可能耗时较长并产生费用。
-                        </div>
-
-                        <div className="flex items-center justify-end gap-2 border-t border-gray-200 px-3 py-2 dark:border-gray-700">
-                          <button
-                            type="button"
-                            className="rounded border border-gray-200 px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
-                            onClick={() => setOutlineAnalyzeAllPanelOpen(false)}
-                          >
-                            取消
-                          </button>
-                          <button
-                            type="button"
-                            className="rounded bg-blue-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
-                            disabled={outlineAnalyzeAllTargets.length === 0 || outlineLoading}
-                            onClick={() => {
-                              setOutlineAnalyzeAllPanelOpen(false);
-                              void runOutlineAnalyzeAll({ excludeVariables: outlineAnalyzeAllExcludeVariables });
-                            }}
-                          >
-                            确认并开始
-                          </button>
-                        </div>
-                      </div>
-	                    )}
-	                  </div>
-		                  <button
-		                    type="button"
-		                    className="rounded border border-gray-200 p-1 text-gray-500 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-		                    onClick={() => {
-		                      setOutlineRefreshSeq((v) => v + 1);
+	                  <button
+	                    type="button"
+	                    className="rounded border border-gray-200 p-1 text-gray-500 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+	                    onClick={() => {
+	                      setOutlineRefreshSeq((v) => v + 1);
 	                      {
 	                        // 强制刷新“分析状态”（即使 Outline keys 没变化也要重新对齐 DB）
 	                        const wsId = String(workstudioId ?? '').trim();
@@ -11404,28 +11290,28 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	                        }
 	                      }
 	                      if (!isTauri()) return;
-		                      const wsId = ws?.id ?? null;
-		                      const file = activeTextFileInFocusedPane;
-		                      if (!wsId || !file) return;
-		                      const normalizedPath = normalizeFsPath(file.path);
+	                      const wsId = ws?.id ?? null;
+	                      const file = activeTextFileInFocusedPane;
+	                      if (!wsId || !file) return;
+	                      const normalizedPath = normalizeFsPath(file.path);
 	                      if (!normalizedPath || isUntitledPath(normalizedPath)) return;
 	                      const indexable = ['rust', 'typescript', 'javascript', 'python', 'go', 'c', 'cpp', 'lua'].includes(
 	                        activeTextLanguageId
 	                      );
-                      if (!indexable) return;
-                      setOutlineLoading(true);
-                      void codeIndexRequestDocumentSymbols({
-                        workstudioId: wsId,
-                        filePath: normalizedPath,
-                        languageId: activeTextLanguageId,
-                        priority: CODE_INDEX_PRIORITY_USER,
-                        force: true,
-                      }).catch(() => {});
-                    }}
-                    title="刷新 Outline"
-                  >
-                    <RefreshCw size={12} />
-                  </button>
+	                      if (!indexable) return;
+	                      setOutlineLoading(true);
+	                      void codeIndexRequestDocumentSymbols({
+	                        workstudioId: wsId,
+	                        filePath: normalizedPath,
+	                        languageId: activeTextLanguageId,
+	                        priority: CODE_INDEX_PRIORITY_USER,
+	                        force: true,
+	                      }).catch(() => {});
+	                    }}
+	                    title="刷新 Outline"
+	                  >
+	                    <RefreshCw size={12} />
+	                  </button>
                 </div>
                 <div
                   className="min-h-0 flex-1 overflow-auto px-2 py-2"
