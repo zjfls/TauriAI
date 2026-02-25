@@ -37,6 +37,204 @@ struct ReplaceStringArgs {
     new_string: String,
 }
 
+fn byte_index_for_char_boundary(s: &str, char_index: usize) -> usize {
+    if char_index == 0 {
+        return 0;
+    }
+    s.char_indices()
+        .nth(char_index)
+        .map(|(i, _)| i)
+        .unwrap_or_else(|| s.len())
+}
+
+fn first_n_chars(s: &str, n: usize) -> &str {
+    if n == 0 {
+        return "";
+    }
+    let end = byte_index_for_char_boundary(s, n);
+    &s[..end]
+}
+
+fn last_n_chars(s: &str, n: usize) -> &str {
+    if n == 0 {
+        return "";
+    }
+    let total = s.chars().count();
+    if total <= n {
+        return s;
+    }
+    let start = byte_index_for_char_boundary(s, total - n);
+    &s[start..]
+}
+
+fn format_replace_string_audit(
+    file_path: &str,
+    abs_path: &Path,
+    original: &str,
+    old_string: &str,
+    new_string: &str,
+) -> (String, serde_json::Value) {
+    let Some(match_start) = original.find(old_string) else {
+        let content = [
+            "replace_string: 已替换 1 处（唯一匹配）",
+            &format!("file_path: {file_path}"),
+            &format!("abs_path: {}", abs_path.display()),
+            "位置: <unknown>",
+            "",
+            "审计预览生成失败：无法在原始内容中再次定位 old_string（可能是内部一致性错误）",
+        ]
+        .join("\n");
+
+        let meta = serde_json::json!({
+            "replaceString": {
+                "path": abs_path.to_string_lossy().to_string(),
+                "matches": 1,
+                "location": { "line": 0, "column": 0 },
+                "truncated": true,
+                "auditError": "old_string_not_found_in_original"
+            }
+        });
+
+        return (content, meta);
+    };
+    let prefix = &original[..match_start];
+    let line = prefix.bytes().filter(|b| *b == b'\n').count() + 1;
+    let col = prefix
+        .rsplit('\n')
+        .next()
+        .map(|s| s.chars().count() + 1)
+        .unwrap_or(1);
+
+    let mut lines_out: Vec<String> = Vec::new();
+    lines_out.push("replace_string: 已替换 1 处（唯一匹配）".to_string());
+    lines_out.push(format!("file_path: {file_path}"));
+    lines_out.push(format!("abs_path: {}", abs_path.display()));
+    lines_out.push(format!("位置: 第 {line} 行, 第 {col} 列"));
+    lines_out.push(String::new());
+
+    lines_out.push(format!("--- a/{file_path}"));
+    lines_out.push(format!("+++ b/{file_path}"));
+    lines_out.push(format!("@@ line {line}, col {col} @@"));
+
+    let is_single_line = !old_string.contains('\n') && !new_string.contains('\n');
+    let mut truncated = false;
+
+    let (old_preview, new_preview) = if is_single_line {
+        let match_end = match_start + old_string.len();
+        let line_start = prefix.rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let line_end = original[match_end..]
+            .find('\n')
+            .map(|off| match_end + off)
+            .unwrap_or_else(|| original.len());
+        let old_line = &original[line_start..line_end];
+
+        let rel = match_start.saturating_sub(line_start);
+        let line_prefix = &old_line[..rel];
+        let line_suffix = &old_line[rel + old_string.len()..];
+
+        const WINDOW_CHARS: usize = 120;
+        let prefix_tail = last_n_chars(line_prefix, WINDOW_CHARS);
+        let suffix_head = first_n_chars(line_suffix, WINDOW_CHARS);
+
+        let prefix_truncated = prefix_tail.len() != line_prefix.len();
+        let suffix_truncated = suffix_head.len() != line_suffix.len();
+        truncated = prefix_truncated || suffix_truncated;
+
+        let old_preview = format!(
+            "{}{}{}{}{}",
+            if prefix_truncated { "…" } else { "" },
+            prefix_tail,
+            old_string,
+            suffix_head,
+            if suffix_truncated { "…" } else { "" }
+        );
+        let new_preview = format!(
+            "{}{}{}{}{}",
+            if prefix_truncated { "…" } else { "" },
+            prefix_tail,
+            new_string,
+            suffix_head,
+            if suffix_truncated { "…" } else { "" }
+        );
+        (old_preview, new_preview)
+    } else {
+        const MAX_LINES: usize = 60;
+        const MAX_CHARS: usize = 12_000;
+
+        let mut old_lines: Vec<&str> = old_string.split('\n').collect();
+        let mut new_lines: Vec<&str> = new_string.split('\n').collect();
+        let old_total_lines = old_lines.len();
+        let new_total_lines = new_lines.len();
+        let old_total_chars = old_string.chars().count();
+        let new_total_chars = new_string.chars().count();
+
+        if old_lines.len() > MAX_LINES {
+            old_lines.truncate(MAX_LINES);
+            truncated = true;
+        }
+        if new_lines.len() > MAX_LINES {
+            new_lines.truncate(MAX_LINES);
+            truncated = true;
+        }
+
+        let mut old_preview = old_lines.join("\n");
+        let mut new_preview = new_lines.join("\n");
+
+        if old_preview.chars().count() > MAX_CHARS {
+            let head = first_n_chars(&old_preview, MAX_CHARS);
+            old_preview = format!("{head}\n…(old_string 已截断)");
+            truncated = true;
+        }
+        if new_preview.chars().count() > MAX_CHARS {
+            let head = first_n_chars(&new_preview, MAX_CHARS);
+            new_preview = format!("{head}\n…(new_string 已截断)");
+            truncated = true;
+        }
+
+        if truncated {
+            if old_total_lines > MAX_LINES || old_total_chars > MAX_CHARS {
+                old_preview = format!(
+                    "{old_preview}\n…(old_string 总计 {old_total_lines} 行 / {old_total_chars} 字符)"
+                );
+            }
+            if new_total_lines > MAX_LINES || new_total_chars > MAX_CHARS {
+                new_preview = format!(
+                    "{new_preview}\n…(new_string 总计 {new_total_lines} 行 / {new_total_chars} 字符)"
+                );
+            }
+        }
+
+        (old_preview, new_preview)
+    };
+
+    if truncated {
+        lines_out.push(" (预览已截断：仅显示替换附近文本 / 限制行数)".to_string());
+    }
+
+    if is_single_line {
+        lines_out.push(format!("-{old_preview}"));
+        lines_out.push(format!("+{new_preview}"));
+    } else {
+        for l in old_preview.split('\n') {
+            lines_out.push(format!("-{l}"));
+        }
+        for l in new_preview.split('\n') {
+            lines_out.push(format!("+{l}"));
+        }
+    }
+
+    let content = lines_out.join("\n");
+    let meta = serde_json::json!({
+        "replaceString": {
+            "path": abs_path.to_string_lossy().to_string(),
+            "matches": 1,
+            "location": { "line": line as u64, "column": col as u64 },
+            "truncated": truncated,
+        }
+    });
+    (content, meta)
+}
+
 fn default_true() -> bool {
     true
 }
@@ -320,18 +518,18 @@ impl ToolHandler for ReplaceStringTool {
             .await
             .map_err(|e| ToolError::new(format!("写入文件失败: {e}")))?;
 
-        let summary = format!("Replaced 1 occurrence in: {}", abs_path.display());
-        emit_tool_result(ctx, call.id.as_str(), &summary);
+        let (audit, meta) = format_replace_string_audit(
+            args.file_path.trim(),
+            &abs_path,
+            &original,
+            &args.old_string,
+            &args.new_string,
+        );
+        emit_tool_result(ctx, call.id.as_str(), &audit);
 
         Ok(ToolCallResult {
-            content: summary,
-            meta: Some(serde_json::json!({
-                "replaceString": {
-                    "path": abs_path.to_string_lossy().to_string(),
-                    "matches": matches
-                }
-            })),
+            content: audit,
+            meta: Some(meta),
         })
     }
 }
-
