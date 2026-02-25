@@ -17,6 +17,7 @@ import type {
   PersistedSessionState,
   ContentPart,
   CodeSnippetContentPart,
+  WorkspaceMentionChip,
   ThinkingMode,
   ApiProtocolType,
   RunEventPayload,
@@ -282,11 +283,12 @@ export interface SessionState {
   setSessionAgent: (sessionId: string, agentName: string) => void;
 
   // Per-session settings
-	  setSessionRunMode: (sessionId: string, runMode: RunMode) => void;
-	  setSessionThinkingMode: (sessionId: string, thinkingMode: ThinkingMode) => void;
-	  setSessionWebSearchProvider: (sessionId: string, provider: 'native' | 'tavily' | 'google' | 'brave' | null) => void;
-	  setSessionDraftContent: (sessionId: string, draftContent: string) => void;
-	  setSessionDraftCodeSnippets: (sessionId: string, snippets: CodeSnippetContentPart[]) => void;
+		  setSessionRunMode: (sessionId: string, runMode: RunMode) => void;
+		  setSessionThinkingMode: (sessionId: string, thinkingMode: ThinkingMode) => void;
+		  setSessionWebSearchProvider: (sessionId: string, provider: 'native' | 'tavily' | 'google' | 'brave' | null) => void;
+		  setSessionDraftContent: (sessionId: string, draftContent: string) => void;
+		  setSessionDraftWorkspaceMentions: (sessionId: string, mentions: WorkspaceMentionChip[]) => void;
+		  setSessionDraftCodeSnippets: (sessionId: string, snippets: CodeSnippetContentPart[]) => void;
 
   // Title (conversation title shown in tab)
   setSessionTitle: (sessionId: string, title: string) => void;
@@ -531,21 +533,22 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
     }
 
-    const session: AgentSession = {
-      id: sessionId,
-      agentName,
-      title: defaultTitle,
+	    const session: AgentSession = {
+	      id: sessionId,
+	      agentName,
+	      title: defaultTitle,
       modelRef,
       conversationId: conversation.id,
       workstudioId: resolvedWorkstudioId,
       apiType: apiProtocol, // 当前会话协议（不再做“首条消息锁定”）
       runMode,
-	      thinkingMode,
-	      draftContent: '',
-	      draftCodeSnippets: [],
-	      messages: [],
-	      queuedMessages: [],
-      streamingBlocks: null,
+		      thinkingMode,
+		      draftContent: '',
+		      draftWorkspaceMentions: [],
+		      draftCodeSnippets: [],
+		      messages: [],
+		      queuedMessages: [],
+	      streamingBlocks: null,
       isGenerating: false,
       error: null,
       createdAt: now,
@@ -2284,7 +2287,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   /**
    * Update per-session draft input content (unsent text)
    */
-  setSessionDraftContent: (sessionId: string, draftContent: string) => {
+	  setSessionDraftContent: (sessionId: string, draftContent: string) => {
     set((state) => {
       const newSessions = new Map(state.sessions);
       const session = newSessions.get(sessionId);
@@ -2307,12 +2310,48 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       draftPersistTimeout = null;
       void get().saveSessionState();
     }, DRAFT_PERSIST_DEBOUNCE_MS);
-  },
+	  },
 
-  setSessionDraftCodeSnippets: (sessionId: string, snippets: CodeSnippetContentPart[]) => {
-    set((state) => {
-      const newSessions = new Map(state.sessions);
-      const session = newSessions.get(sessionId);
+	  setSessionDraftWorkspaceMentions: (sessionId: string, mentions: WorkspaceMentionChip[]) => {
+	    set((state) => {
+	      const newSessions = new Map(state.sessions);
+	      const session = newSessions.get(sessionId);
+	      if (!session) return {};
+
+	      const raw = Array.isArray(mentions) ? mentions : [];
+	      const next: WorkspaceMentionChip[] = [];
+	      const seen = new Set<string>();
+	      for (const m of raw) {
+	        const id = String(m?.id ?? '').trim();
+	        const absPath = String(m?.absPath ?? '').trim();
+	        const label = String(m?.label ?? '').trim();
+	        if (!id || !absPath) continue;
+	        if (seen.has(id)) continue;
+	        seen.add(id);
+	        next.push({ id, absPath, label: label || absPath.split('/').pop() || absPath });
+	      }
+
+	      newSessions.set(sessionId, {
+	        ...session,
+	        draftWorkspaceMentions: next,
+	      });
+
+	      return { sessions: newSessions };
+	    });
+
+	    if (draftPersistTimeout) {
+	      clearTimeout(draftPersistTimeout);
+	    }
+	    draftPersistTimeout = setTimeout(() => {
+	      draftPersistTimeout = null;
+	      void get().saveSessionState();
+	    }, DRAFT_PERSIST_DEBOUNCE_MS);
+	  },
+
+	  setSessionDraftCodeSnippets: (sessionId: string, snippets: CodeSnippetContentPart[]) => {
+	    set((state) => {
+	      const newSessions = new Map(state.sessions);
+	      const session = newSessions.get(sessionId);
       if (!session) return {};
 
       const next = Array.isArray(snippets) ? snippets.filter((s) => s?.type === 'code_snippet') : [];
@@ -2415,14 +2454,26 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    * Save session state to localStorage
    * Requirements: 5.1
    */
-	  saveSessionState: async () => {
-	    const { sessions, activeSessionId, panes, focusedPaneId } = get();
+		  saveSessionState: async () => {
+		    const { sessions, activeSessionId, panes, focusedPaneId } = get();
 
-	    const persistedSessions: PersistedSession[] = Array.from(sessions.values()).map((session) => {
-	      const rawSnippets = Array.isArray(session.draftCodeSnippets) ? session.draftCodeSnippets : [];
-	      let draftCodeSnippets: CodeSnippetContentPart[] | undefined;
-	      if (rawSnippets.length > 0) {
-	        let totalChars = 0;
+		    const persistedSessions: PersistedSession[] = Array.from(sessions.values()).map((session) => {
+		      const rawMentions = Array.isArray(session.draftWorkspaceMentions) ? session.draftWorkspaceMentions : [];
+		      const draftWorkspaceMentions: WorkspaceMentionChip[] | undefined =
+		        rawMentions.length > 0
+		          ? rawMentions
+		              .map((m) => ({
+		                id: String(m?.id ?? '').trim(),
+		                absPath: String(m?.absPath ?? '').trim(),
+		                label: String(m?.label ?? '').trim(),
+		              }))
+		              .filter((m) => m.id && m.absPath)
+		          : undefined;
+
+		      const rawSnippets = Array.isArray(session.draftCodeSnippets) ? session.draftCodeSnippets : [];
+		      let draftCodeSnippets: CodeSnippetContentPart[] | undefined;
+		      if (rawSnippets.length > 0) {
+		        let totalChars = 0;
 	        const kept: CodeSnippetContentPart[] = [];
 	        for (const s of rawSnippets) {
 	          if (!s || s.type !== 'code_snippet') continue;
@@ -2447,14 +2498,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 	        workstudioId: session.workstudioId ?? null,
 	        apiType: session.apiType,
 	        runMode: session.runMode,
-	        thinkingMode: session.thinkingMode,
-	        webSearchProvider: session.webSearchProvider,
-	        draftContent: session.draftContent,
-	        draftCodeSnippets,
-	        createdAt: session.createdAt,
-	        lastActiveAt: session.lastActiveAt,
-	      };
-	    });
+		        thinkingMode: session.thinkingMode,
+		        webSearchProvider: session.webSearchProvider,
+		        draftContent: session.draftContent,
+		        draftWorkspaceMentions,
+		        draftCodeSnippets,
+		        createdAt: session.createdAt,
+		        lastActiveAt: session.lastActiveAt,
+		      };
+		    });
 
     const state: PersistedSessionState = {
       version: PERSISTENCE_VERSION,
@@ -2559,22 +2611,31 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         const defaultRunMode: RunMode = (agent?.type ?? 'chat') === 'tool' ? 'agent' : 'chat';
         const runMode = persisted.runMode ?? defaultRunMode;
 
-	        const session: AgentSession = {
-	          id: persisted.id,
-	          agentName,
-	          title,
-	          modelRef,
-	          conversationId: persisted.conversationId,
-	          workstudioId: persisted.workstudioId ?? convWorkstudioId,
-	          apiType: apiProtocol,
-	          runMode,
-	          thinkingMode: coerceThinkingModeForProtocol(persisted.thinkingMode, apiProtocol, providerType),
-	          webSearchProvider: persisted.webSearchProvider,
-	          draftContent: persisted.draftContent ?? '',
-	          draftCodeSnippets: Array.isArray(persisted.draftCodeSnippets)
-	            ? persisted.draftCodeSnippets.filter((s) => s?.type === 'code_snippet')
-	            : [],
-	          messages,
+		        const session: AgentSession = {
+		          id: persisted.id,
+		          agentName,
+		          title,
+		          modelRef,
+		          conversationId: persisted.conversationId,
+		          workstudioId: persisted.workstudioId ?? convWorkstudioId,
+		          apiType: apiProtocol,
+		          runMode,
+		          thinkingMode: coerceThinkingModeForProtocol(persisted.thinkingMode, apiProtocol, providerType),
+		          webSearchProvider: persisted.webSearchProvider,
+		          draftContent: persisted.draftContent ?? '',
+		          draftWorkspaceMentions: Array.isArray(persisted.draftWorkspaceMentions)
+		            ? persisted.draftWorkspaceMentions
+		                .map((m) => ({
+		                  id: String((m as any)?.id ?? '').trim(),
+		                  absPath: String((m as any)?.absPath ?? '').trim(),
+		                  label: String((m as any)?.label ?? '').trim(),
+		                }))
+		                .filter((m) => m.id && m.absPath)
+		            : [],
+		          draftCodeSnippets: Array.isArray(persisted.draftCodeSnippets)
+		            ? persisted.draftCodeSnippets.filter((s) => s?.type === 'code_snippet')
+		            : [],
+		          messages,
 	          queuedMessages: [],
 	          streamingBlocks: null,
 	          isGenerating: false,

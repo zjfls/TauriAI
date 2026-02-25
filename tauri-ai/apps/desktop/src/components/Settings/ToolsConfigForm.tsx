@@ -140,12 +140,12 @@ export const ToolsConfigForm: React.FC = () => {
     setSelectedToolsetName(duplicated.name);
   };
 
-  const handleDeleteToolset = () => {
+  const handleDeleteToolset = async () => {
     if (!selectedToolsetName) return;
-    if (
-      !confirm(`确定要删除 toolset「${selectedToolsetName}」吗？相关智能体会自动取消绑定。`)
-    )
-      return;
+    const ok = await Promise.resolve(
+      window.confirm(`确定要删除 toolset「${selectedToolsetName}」吗？相关智能体会自动取消绑定。`)
+    );
+    if (!ok) return;
 
     const nextToolsets = toolsets.filter((t) => t.name !== selectedToolsetName);
     const nextAgents = config.agents.map((a) =>

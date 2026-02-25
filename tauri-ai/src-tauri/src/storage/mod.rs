@@ -17,7 +17,8 @@ use thiserror::Error;
 use crate::models::WorkstudioUiState;
 use crate::models::{
     CodeSnippetRange, ContentPart, Conversation, Message, MessageRole, Workstudio,
-    WorkstudioSymbolAnalysis,
+    WorkstudioFolderAnalysis, WorkstudioFolderAnalysisSummary, WorkstudioSymbolAnalysis,
+    WorkstudioSymbolAnalysisSummary, WorkstudioSymbolDiagnosisCounts,
 };
 
 pub mod async_db;
@@ -287,6 +288,7 @@ impl Database {
                 workstudio_id TEXT NOT NULL,
                 file_path TEXT NOT NULL,
                 language_id TEXT NOT NULL,
+                symbol_source TEXT,
                 symbol_key TEXT NOT NULL,
                 symbol_name TEXT NOT NULL,
                 symbol_kind TEXT NOT NULL,
@@ -299,12 +301,58 @@ impl Database {
                 answer_md TEXT NOT NULL,
                 model_ref TEXT,
                 latency_ms INTEGER,
+                health_level INTEGER,
+                diagnosis_verdict TEXT,
+                diagnosis_confidence REAL,
+                diagnosis_summary TEXT,
+                diagnosis_errors INTEGER,
+                diagnosis_defects INTEGER,
+                diagnosis_improvements INTEGER,
+                diagnosis_json TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 UNIQUE(workstudio_id, file_path, symbol_key)
             )",
             [],
         )?;
+        // Migration: Add diagnosis columns if they don't exist
+        let _ = conn.execute(
+            "ALTER TABLE workstudio_symbol_analyses ADD COLUMN health_level INTEGER",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE workstudio_symbol_analyses ADD COLUMN diagnosis_verdict TEXT",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE workstudio_symbol_analyses ADD COLUMN diagnosis_confidence REAL",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE workstudio_symbol_analyses ADD COLUMN diagnosis_summary TEXT",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE workstudio_symbol_analyses ADD COLUMN diagnosis_errors INTEGER",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE workstudio_symbol_analyses ADD COLUMN diagnosis_defects INTEGER",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE workstudio_symbol_analyses ADD COLUMN diagnosis_improvements INTEGER",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE workstudio_symbol_analyses ADD COLUMN diagnosis_json TEXT",
+            [],
+        );
+        // Migration: Add symbol_source column if it doesn't exist
+        let _ = conn.execute(
+            "ALTER TABLE workstudio_symbol_analyses ADD COLUMN symbol_source TEXT",
+            [],
+        );
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_workstudio_symbol_analyses_ws
              ON workstudio_symbol_analyses(workstudio_id)",
@@ -313,6 +361,40 @@ impl Database {
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_workstudio_symbol_analyses_file
              ON workstudio_symbol_analyses(file_path)",
+            [],
+        )?;
+
+        // Create workstudio_folder_analyses table (persisted AI analysis results for Explorer folders)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS workstudio_folder_analyses (
+                id TEXT PRIMARY KEY,
+                workstudio_id TEXT NOT NULL,
+                folder_path TEXT NOT NULL,
+                answer_md TEXT NOT NULL,
+                model_ref TEXT,
+                latency_ms INTEGER,
+                health_level INTEGER,
+                diagnosis_verdict TEXT,
+                diagnosis_confidence REAL,
+                diagnosis_summary TEXT,
+                diagnosis_errors INTEGER,
+                diagnosis_defects INTEGER,
+                diagnosis_improvements INTEGER,
+                diagnosis_json TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(workstudio_id, folder_path)
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_workstudio_folder_analyses_ws
+             ON workstudio_folder_analyses(workstudio_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_workstudio_folder_analyses_folder
+             ON workstudio_folder_analyses(folder_path)",
             [],
         )?;
 
@@ -797,6 +879,12 @@ impl Database {
             .lock()
             .map_err(|e| StorageError::Lock(e.to_string()))?;
 
+        // NOTE(perf):
+        // - Avoid heavy JSON aggregation (e.g. summing meta.turns across all messages) in the
+        //   conversation list query. It can be extremely slow for large histories and will
+        //   hold the async DB mutex for seconds, causing other commands to hit "DB lock 超时".
+        // - We compute only lightweight stats here (last_message_at / message_count).
+        // - turn_count is intentionally omitted (NULL) and can be computed lazily elsewhere if needed.
         let mut stmt = conn.prepare(
             "SELECT
                c.id,
@@ -815,23 +903,19 @@ impl Database {
                c.active_files_updated_at,
                c.created_at,
                c.updated_at,
-               (SELECT MAX(m.created_at) FROM messages m WHERE m.conversation_id = c.id) AS last_message_at,
-               (SELECT COUNT(1) FROM messages m WHERE m.conversation_id = c.id) AS message_count,
-               (
-                 SELECT COALESCE(
-                   SUM(
-                     CASE
-                       WHEN m.meta IS NULL OR m.meta = '' THEN 0
-                       WHEN json_valid(m.meta) = 0 THEN 0
-                       ELSE COALESCE(json_array_length(json_extract(m.meta, '$.turns')), 0)
-                     END
-                   ),
-                   0
-                 )
-                 FROM messages m
-                 WHERE m.conversation_id = c.id
-               ) AS turn_count
+               s.last_message_at AS last_message_at,
+               COALESCE(s.message_count, 0) AS message_count,
+               NULL AS turn_count
              FROM conversations c
+             LEFT JOIN (
+               SELECT
+                 conversation_id,
+                 MAX(created_at) AS last_message_at,
+                 COUNT(1) AS message_count
+               FROM messages
+               GROUP BY conversation_id
+             ) s
+             ON s.conversation_id = c.id
              ORDER BY c.updated_at DESC",
         )?;
 
@@ -851,7 +935,7 @@ impl Database {
                 let updated_at_str: String = row.get(15)?;
                 let last_message_at_str: Option<String> = row.get(16)?;
                 let message_count_i64: i64 = row.get(17)?;
-                let turn_count_i64: i64 = row.get(18)?;
+                let turn_count_i64_opt: Option<i64> = row.get(18)?;
 
                 let thinking_mode: Option<serde_json::Value> = thinking_mode_str
                     .as_deref()
@@ -882,7 +966,9 @@ impl Database {
                     run_mode,
                     workstudio_id,
                     message_count: u32::try_from(message_count_i64).ok(),
-                    turn_count: u32::try_from(turn_count_i64).ok(),
+                    turn_count: turn_count_i64_opt
+                        .and_then(|v| u32::try_from(v).ok())
+                        .filter(|v| *v > 0),
                     last_message_at,
                     primary_path,
                     primary_path_kind,
@@ -2153,48 +2239,65 @@ impl Database {
 
         let mut stmt = conn.prepare(
             "SELECT
-                id,
-                workstudio_id,
-                file_path,
-                language_id,
-                symbol_key,
-                symbol_name,
-                symbol_kind,
-                selection_line,
-                selection_column,
-                range_start_line,
-                range_start_column,
-                range_end_line,
-                range_end_column,
-                answer_md,
-                model_ref,
-                latency_ms,
-                created_at,
-                updated_at
-             FROM workstudio_symbol_analyses
-             WHERE workstudio_id = ?1 AND file_path = ?2 AND symbol_key = ?3",
+	                id,
+	                workstudio_id,
+	                file_path,
+	                language_id,
+	                symbol_source,
+	                symbol_key,
+	                symbol_name,
+	                symbol_kind,
+	                selection_line,
+	                selection_column,
+	                range_start_line,
+	                range_start_column,
+	                range_end_line,
+	                range_end_column,
+	                answer_md,
+	                model_ref,
+	                latency_ms,
+	                health_level,
+	                diagnosis_verdict,
+	                diagnosis_confidence,
+	                diagnosis_summary,
+	                diagnosis_errors,
+	                diagnosis_defects,
+	                diagnosis_improvements,
+	                created_at,
+	                updated_at
+	             FROM workstudio_symbol_analyses
+	             WHERE workstudio_id = ?1 AND file_path = ?2 AND symbol_key = ?3",
         )?;
 
         let row = stmt
             .query_row(params![workstudio_id, file_path, symbol_key], |r| {
-                let created_at_str: String = r.get(16)?;
-                let updated_at_str: String = r.get(17)?;
+                let created_at_str: String = r.get(24)?;
+                let updated_at_str: String = r.get(25)?;
 
-                let selection_line: i64 = r.get(7)?;
-                let selection_column: i64 = r.get(8)?;
-                let start_line: i64 = r.get(9)?;
-                let start_column: i64 = r.get(10)?;
-                let end_line: i64 = r.get(11)?;
-                let end_column: i64 = r.get(12)?;
+                let selection_line: i64 = r.get(8)?;
+                let selection_column: i64 = r.get(9)?;
+                let start_line: i64 = r.get(10)?;
+                let start_column: i64 = r.get(11)?;
+                let end_line: i64 = r.get(12)?;
+                let end_column: i64 = r.get(13)?;
+
+                let health_level: Option<i64> = r.get(17)?;
+                let diagnosis_errors: Option<i64> = r.get(21)?;
+                let diagnosis_defects: Option<i64> = r.get(22)?;
+                let diagnosis_improvements: Option<i64> = r.get(23)?;
+                let has_counts = diagnosis_errors.is_some()
+                    || diagnosis_defects.is_some()
+                    || diagnosis_improvements.is_some();
 
                 Ok(WorkstudioSymbolAnalysis {
                     id: r.get(0)?,
                     workstudio_id: r.get(1)?,
                     file_path: r.get(2)?,
                     language_id: r.get(3)?,
-                    symbol_key: r.get(4)?,
-                    symbol_name: r.get(5)?,
-                    symbol_kind: r.get(6)?,
+                    symbol_source: r.get(4)?,
+                    symbol_key: r.get(5)?,
+                    symbol_name: r.get(6)?,
+                    symbol_kind: r.get(7)?,
                     selection_line: selection_line.max(0) as u32,
                     selection_column: selection_column.max(0) as u32,
                     range: CodeSnippetRange {
@@ -2203,9 +2306,26 @@ impl Database {
                         end_line: end_line.max(0) as u32,
                         end_column: end_column.max(0) as u32,
                     },
-                    answer_md: r.get(13)?,
-                    model_ref: r.get(14)?,
-                    latency_ms: r.get::<_, Option<i64>>(15)?.map(|v| v.max(0) as u64),
+                    answer_md: r.get(14)?,
+                    model_ref: r.get(15)?,
+                    latency_ms: r.get::<_, Option<i64>>(16)?.map(|v| v.max(0) as u64),
+                    health_level: health_level
+                        .map(|v| v.max(0) as u8)
+                        .filter(|v| (1..=10).contains(v)),
+                    verdict: r.get(18)?,
+                    confidence: r
+                        .get::<_, Option<f64>>(19)?
+                        .map(|v| v.max(0.0).min(1.0) as f32),
+                    diagnosis_summary: r.get(20)?,
+                    diagnosis_counts: if has_counts {
+                        Some(crate::models::WorkstudioSymbolDiagnosisCounts {
+                            errors: diagnosis_errors.unwrap_or(0).max(0) as u32,
+                            defects: diagnosis_defects.unwrap_or(0).max(0) as u32,
+                            improvements: diagnosis_improvements.unwrap_or(0).max(0) as u32,
+                        })
+                    } else {
+                        None
+                    },
                     created_at: DateTime::parse_from_rfc3339(&created_at_str)
                         .map(|dt| dt.with_timezone(&Utc))
                         .unwrap_or_else(|_| Utc::now()),
@@ -2247,11 +2367,83 @@ impl Database {
         Ok(rows)
     }
 
+    /// List lightweight analysis summaries for a given workstudio+file.
+    ///
+    /// Used by the Workstudio Outline to:
+    /// - colorize symbols by health level (1..=10)
+    /// - show a short tooltip / status tag without loading full markdown
+    pub fn list_workstudio_symbol_analysis_summaries_for_file(
+        &self,
+        workstudio_id: &str,
+        file_path: &str,
+    ) -> Result<Vec<WorkstudioSymbolAnalysisSummary>, StorageError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Lock(e.to_string()))?;
+
+        let mut stmt = conn.prepare(
+            "SELECT
+	                symbol_key,
+	                symbol_source,
+	                health_level,
+	                diagnosis_verdict,
+	                diagnosis_confidence,
+	                diagnosis_summary,
+	                diagnosis_errors,
+	                diagnosis_defects,
+	                diagnosis_improvements,
+	                updated_at
+	             FROM workstudio_symbol_analyses
+	             WHERE workstudio_id = ?1 AND file_path = ?2
+	             ORDER BY updated_at DESC",
+        )?;
+
+        let rows = stmt
+            .query_map(params![workstudio_id, file_path], |r| {
+                let updated_at_str: String = r.get(9)?;
+                let health_level: Option<i64> = r.get(2)?;
+                let errors: Option<i64> = r.get(6)?;
+                let defects: Option<i64> = r.get(7)?;
+                let improvements: Option<i64> = r.get(8)?;
+                let has_counts = errors.is_some() || defects.is_some() || improvements.is_some();
+
+                Ok(WorkstudioSymbolAnalysisSummary {
+                    symbol_key: r.get(0)?,
+                    symbol_source: r.get(1)?,
+                    health_level: health_level
+                        .map(|v| v.max(0) as u8)
+                        .filter(|v| (1..=10).contains(v)),
+                    verdict: r.get(3)?,
+                    confidence: r
+                        .get::<_, Option<f64>>(4)?
+                        .map(|v| v.max(0.0).min(1.0) as f32),
+                    diagnosis_summary: r.get(5)?,
+                    diagnosis_counts: if has_counts {
+                        Some(WorkstudioSymbolDiagnosisCounts {
+                            errors: errors.unwrap_or(0).max(0) as u32,
+                            defects: defects.unwrap_or(0).max(0) as u32,
+                            improvements: improvements.unwrap_or(0).max(0) as u32,
+                        })
+                    } else {
+                        None
+                    },
+                    updated_at: DateTime::parse_from_rfc3339(&updated_at_str)
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .unwrap_or_else(|_| Utc::now()),
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(rows)
+    }
+
     pub fn upsert_workstudio_symbol_analysis(
         &self,
         workstudio_id: &str,
         file_path: &str,
         language_id: &str,
+        symbol_source: Option<&str>,
         symbol_key: &str,
         symbol_name: &str,
         symbol_kind: &str,
@@ -2261,6 +2453,14 @@ impl Database {
         answer_md: &str,
         model_ref: Option<&str>,
         latency_ms: Option<u64>,
+        health_level: Option<u8>,
+        diagnosis_verdict: Option<&str>,
+        diagnosis_confidence: Option<f32>,
+        diagnosis_summary: Option<&str>,
+        diagnosis_errors: Option<u32>,
+        diagnosis_defects: Option<u32>,
+        diagnosis_improvements: Option<u32>,
+        diagnosis_json: Option<&str>,
     ) -> Result<WorkstudioSymbolAnalysis, StorageError> {
         let now = Utc::now();
         let now_str = now.to_rfc3339();
@@ -2280,6 +2480,7 @@ impl Database {
                     workstudio_id,
                     file_path,
                     language_id,
+                    symbol_source,
                     symbol_key,
                     symbol_name,
                     symbol_kind,
@@ -2292,13 +2493,22 @@ impl Database {
                     answer_md,
                     model_ref,
                     latency_ms,
+                    health_level,
+                    diagnosis_verdict,
+                    diagnosis_confidence,
+                    diagnosis_summary,
+                    diagnosis_errors,
+                    diagnosis_defects,
+                    diagnosis_improvements,
+                    diagnosis_json,
                     created_at,
                     updated_at
                 ) VALUES (
-                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18
+                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27
                 )
                 ON CONFLICT(workstudio_id, file_path, symbol_key) DO UPDATE
                   SET language_id = excluded.language_id,
+                      symbol_source = excluded.symbol_source,
                       symbol_name = excluded.symbol_name,
                       symbol_kind = excluded.symbol_kind,
                       selection_line = excluded.selection_line,
@@ -2310,12 +2520,21 @@ impl Database {
                       answer_md = excluded.answer_md,
                       model_ref = excluded.model_ref,
                       latency_ms = excluded.latency_ms,
+                      health_level = excluded.health_level,
+                      diagnosis_verdict = excluded.diagnosis_verdict,
+                      diagnosis_confidence = excluded.diagnosis_confidence,
+                      diagnosis_summary = excluded.diagnosis_summary,
+                      diagnosis_errors = excluded.diagnosis_errors,
+                      diagnosis_defects = excluded.diagnosis_defects,
+                      diagnosis_improvements = excluded.diagnosis_improvements,
+                      diagnosis_json = excluded.diagnosis_json,
                       updated_at = excluded.updated_at",
                 params![
                     id,
                     workstudio_id,
                     file_path,
                     language_id,
+                    symbol_source,
                     symbol_key,
                     symbol_name,
                     symbol_kind,
@@ -2328,6 +2547,14 @@ impl Database {
                     answer_md,
                     model_ref,
                     latency_ms.map(|v| v as i64),
+                    health_level.map(|v| v as i64),
+                    diagnosis_verdict,
+                    diagnosis_confidence.map(|v| v as f64),
+                    diagnosis_summary,
+                    diagnosis_errors.map(|v| v as i64),
+                    diagnosis_defects.map(|v| v as i64),
+                    diagnosis_improvements.map(|v| v as i64),
+                    diagnosis_json,
                     now_str,
                     now_str,
                 ],
@@ -2357,6 +2584,265 @@ impl Database {
             "DELETE FROM workstudio_symbol_analyses
              WHERE workstudio_id = ?1 AND file_path = ?2 AND symbol_key = ?3",
             params![workstudio_id, file_path, symbol_key],
+        )?;
+        Ok(())
+    }
+
+    // ==================== Workstudio Folder Analysis ====================
+
+    pub fn get_workstudio_folder_analysis(
+        &self,
+        workstudio_id: &str,
+        folder_path: &str,
+    ) -> Result<Option<WorkstudioFolderAnalysis>, StorageError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Lock(e.to_string()))?;
+
+        let mut stmt = conn.prepare(
+            "SELECT
+                id,
+                workstudio_id,
+                folder_path,
+                answer_md,
+                model_ref,
+                latency_ms,
+                health_level,
+                diagnosis_verdict,
+                diagnosis_confidence,
+                diagnosis_summary,
+                diagnosis_errors,
+                diagnosis_defects,
+                diagnosis_improvements,
+                created_at,
+                updated_at
+             FROM workstudio_folder_analyses
+             WHERE workstudio_id = ?1 AND folder_path = ?2",
+        )?;
+
+        let row = stmt
+            .query_row(params![workstudio_id, folder_path], |r| {
+                let created_at_str: String = r.get(13)?;
+                let updated_at_str: String = r.get(14)?;
+
+                let latency_ms: Option<i64> = r.get(5)?;
+                let health_level: Option<i64> = r.get(6)?;
+                let errors: Option<i64> = r.get(10)?;
+                let defects: Option<i64> = r.get(11)?;
+                let improvements: Option<i64> = r.get(12)?;
+                let has_counts = errors.is_some() || defects.is_some() || improvements.is_some();
+
+                Ok(WorkstudioFolderAnalysis {
+                    id: r.get(0)?,
+                    workstudio_id: r.get(1)?,
+                    folder_path: r.get(2)?,
+                    answer_md: r.get(3)?,
+                    model_ref: r.get(4)?,
+                    latency_ms: latency_ms.map(|v| v.max(0) as u64),
+                    health_level: health_level
+                        .map(|v| v.max(0) as u8)
+                        .filter(|v| (1..=10).contains(v)),
+                    verdict: r.get(7)?,
+                    confidence: r
+                        .get::<_, Option<f64>>(8)?
+                        .map(|v| v.max(0.0).min(1.0) as f32),
+                    diagnosis_summary: r.get(9)?,
+                    diagnosis_counts: if has_counts {
+                        Some(WorkstudioSymbolDiagnosisCounts {
+                            errors: errors.unwrap_or(0).max(0) as u32,
+                            defects: defects.unwrap_or(0).max(0) as u32,
+                            improvements: improvements.unwrap_or(0).max(0) as u32,
+                        })
+                    } else {
+                        None
+                    },
+                    created_at: DateTime::parse_from_rfc3339(&created_at_str)
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .unwrap_or_else(|_| Utc::now()),
+                    updated_at: DateTime::parse_from_rfc3339(&updated_at_str)
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .unwrap_or_else(|_| Utc::now()),
+                })
+            })
+            .optional()?;
+
+        Ok(row)
+    }
+
+    /// List lightweight analysis summaries for folders in a workstudio.
+    ///
+    /// Used by the Workstudio Explorer to:
+    /// - colorize folders by health level (1..=10)
+    /// - show a short tooltip / status tag without loading full markdown
+    pub fn list_workstudio_folder_analysis_summaries(
+        &self,
+        workstudio_id: &str,
+    ) -> Result<Vec<WorkstudioFolderAnalysisSummary>, StorageError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Lock(e.to_string()))?;
+
+        let mut stmt = conn.prepare(
+            "SELECT
+                folder_path,
+                health_level,
+                diagnosis_verdict,
+                diagnosis_confidence,
+                diagnosis_summary,
+                diagnosis_errors,
+                diagnosis_defects,
+                diagnosis_improvements,
+                updated_at
+             FROM workstudio_folder_analyses
+             WHERE workstudio_id = ?1
+             ORDER BY updated_at DESC",
+        )?;
+
+        let rows = stmt
+            .query_map(params![workstudio_id], |r| {
+                let updated_at_str: String = r.get(8)?;
+                let health_level: Option<i64> = r.get(1)?;
+                let errors: Option<i64> = r.get(5)?;
+                let defects: Option<i64> = r.get(6)?;
+                let improvements: Option<i64> = r.get(7)?;
+                let has_counts = errors.is_some() || defects.is_some() || improvements.is_some();
+
+                Ok(WorkstudioFolderAnalysisSummary {
+                    folder_path: r.get(0)?,
+                    health_level: health_level
+                        .map(|v| v.max(0) as u8)
+                        .filter(|v| (1..=10).contains(v)),
+                    verdict: r.get(2)?,
+                    confidence: r
+                        .get::<_, Option<f64>>(3)?
+                        .map(|v| v.max(0.0).min(1.0) as f32),
+                    diagnosis_summary: r.get(4)?,
+                    diagnosis_counts: if has_counts {
+                        Some(WorkstudioSymbolDiagnosisCounts {
+                            errors: errors.unwrap_or(0).max(0) as u32,
+                            defects: defects.unwrap_or(0).max(0) as u32,
+                            improvements: improvements.unwrap_or(0).max(0) as u32,
+                        })
+                    } else {
+                        None
+                    },
+                    updated_at: DateTime::parse_from_rfc3339(&updated_at_str)
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .unwrap_or_else(|_| Utc::now()),
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(rows)
+    }
+
+    pub fn upsert_workstudio_folder_analysis(
+        &self,
+        workstudio_id: &str,
+        folder_path: &str,
+        answer_md: &str,
+        model_ref: Option<&str>,
+        latency_ms: Option<u64>,
+        health_level: Option<u8>,
+        diagnosis_verdict: Option<&str>,
+        diagnosis_confidence: Option<f32>,
+        diagnosis_summary: Option<&str>,
+        diagnosis_errors: Option<u32>,
+        diagnosis_defects: Option<u32>,
+        diagnosis_improvements: Option<u32>,
+        diagnosis_json: Option<&str>,
+    ) -> Result<WorkstudioFolderAnalysis, StorageError> {
+        let now = Utc::now();
+        let now_str = now.to_rfc3339();
+        let id = uuid::Uuid::new_v4().to_string();
+
+        // IMPORTANT: do not call any other `self.*` methods while holding `conn` mutex.
+        // Otherwise it can deadlock (std::sync::Mutex is not re-entrant).
+        {
+            let conn = self
+                .conn
+                .lock()
+                .map_err(|e| StorageError::Lock(e.to_string()))?;
+
+            conn.execute(
+                "INSERT INTO workstudio_folder_analyses (
+                    id,
+                    workstudio_id,
+                    folder_path,
+                    answer_md,
+                    model_ref,
+                    latency_ms,
+                    health_level,
+                    diagnosis_verdict,
+                    diagnosis_confidence,
+                    diagnosis_summary,
+                    diagnosis_errors,
+                    diagnosis_defects,
+                    diagnosis_improvements,
+                    diagnosis_json,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16
+                )
+                ON CONFLICT(workstudio_id, folder_path) DO UPDATE
+                  SET answer_md = excluded.answer_md,
+                      model_ref = excluded.model_ref,
+                      latency_ms = excluded.latency_ms,
+                      health_level = excluded.health_level,
+                      diagnosis_verdict = excluded.diagnosis_verdict,
+                      diagnosis_confidence = excluded.diagnosis_confidence,
+                      diagnosis_summary = excluded.diagnosis_summary,
+                      diagnosis_errors = excluded.diagnosis_errors,
+                      diagnosis_defects = excluded.diagnosis_defects,
+                      diagnosis_improvements = excluded.diagnosis_improvements,
+                      diagnosis_json = excluded.diagnosis_json,
+                      updated_at = excluded.updated_at",
+                params![
+                    id,
+                    workstudio_id,
+                    folder_path,
+                    answer_md,
+                    model_ref,
+                    latency_ms.map(|v| v as i64),
+                    health_level.map(|v| v as i64),
+                    diagnosis_verdict,
+                    diagnosis_confidence.map(|v| v as f64),
+                    diagnosis_summary,
+                    diagnosis_errors.map(|v| v as i64),
+                    diagnosis_defects.map(|v| v as i64),
+                    diagnosis_improvements.map(|v| v as i64),
+                    diagnosis_json,
+                    now_str,
+                    now_str,
+                ],
+            )?;
+        }
+
+        self.get_workstudio_folder_analysis(workstudio_id, folder_path)?
+            .ok_or_else(|| {
+                StorageError::NotFound(
+                    "workstudio_folder_analysis missing after upsert".to_string(),
+                )
+            })
+    }
+
+    pub fn delete_workstudio_folder_analysis(
+        &self,
+        workstudio_id: &str,
+        folder_path: &str,
+    ) -> Result<(), StorageError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Lock(e.to_string()))?;
+
+        conn.execute(
+            "DELETE FROM workstudio_folder_analyses
+             WHERE workstudio_id = ?1 AND folder_path = ?2",
+            params![workstudio_id, folder_path],
         )?;
         Ok(())
     }

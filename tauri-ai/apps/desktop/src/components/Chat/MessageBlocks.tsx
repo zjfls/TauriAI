@@ -569,6 +569,7 @@ const ApplyPatchToolRunBlock: React.FC<{
 
 	const meta = toolMeta as ApplyPatchToolMeta | null;
 	const git = meta?.applyPatch?.git;
+  const baseDir = typeof meta?.applyPatch?.baseDir === 'string' ? meta.applyPatch.baseDir : '';
 	const repoRoot = typeof git?.repoRoot === 'string' ? git.repoRoot : '';
 	const workTree = typeof git?.workTree === 'string' ? git.workTree : '';
 	const ghostBefore = typeof git?.ghostBefore === 'string' ? git.ghostBefore : '';
@@ -579,10 +580,10 @@ const ApplyPatchToolRunBlock: React.FC<{
 	const snapshotErrBefore = typeof git?.snapshotErrorBefore === 'string' ? git.snapshotErrorBefore : '';
 	const snapshotErrAfter = typeof git?.snapshotErrorAfter === 'string' ? git.snapshotErrorAfter : '';
 
-		const effectiveWorkTree = workTree || repoRoot || meta?.applyPatch?.baseDir || '';
-		const canUndo = Boolean(isTauri() && repoRoot && ghostBefore && affectedPaths.length > 0);
-		const canGitDiff = Boolean(isTauri() && repoRoot && ghostBefore && affectedPaths.length > 0);
-		const [activeView, setActiveView] = useState<'git' | 'tool' | 'input'>('git');
+	const effectiveWorkTree = workTree || repoRoot || baseDir || '';
+	const canUndo = Boolean(isTauri() && repoRoot && ghostBefore && affectedPaths.length > 0);
+	const canGitDiff = Boolean(isTauri() && repoRoot && ghostBefore && affectedPaths.length > 0);
+	const [activeView, setActiveView] = useState<'git' | 'tool' | 'input'>('git');
 
 	const [contextLines, setContextLines] = useState<0 | 3 | 10>(3);
 	const [ignoreWhitespace, setIgnoreWhitespace] = useState(false);
@@ -681,10 +682,80 @@ const ApplyPatchToolRunBlock: React.FC<{
     return diffData.diff;
   }, [diffData, activeFile, diffByFile]);
 
+  const debugDetailsText = useMemo(() => {
+    const lines: string[] = [];
+    const statusLabel = (() => {
+      switch (toolStatus.kind) {
+        case 'running':
+          return '运行中';
+        case 'success':
+          return '成功';
+        case 'denied':
+          return '被拒绝';
+        case 'aborted':
+          return '已中止';
+        case 'error':
+        default:
+          return '失败';
+      }
+    })();
+
+    lines.push(`工具: ${name || 'unknown'}`);
+    if (callId) lines.push(`callId: ${callId}`);
+    lines.push(`状态: ${statusLabel}`);
+
+    if (baseDir) lines.push(`baseDir: ${baseDir}`);
+    if (repoRoot) lines.push(`repoRoot: ${repoRoot}`);
+    if (effectiveWorkTree && effectiveWorkTree !== repoRoot) lines.push(`workTree: ${effectiveWorkTree}`);
+    if (ghostBefore) lines.push(`ghostBefore: ${ghostBefore}`);
+    if (ghostAfter) lines.push(`ghostAfter: ${ghostAfter}`);
+
+    if (affectedPaths.length > 0) {
+      lines.push(`affectedPaths(${affectedPaths.length}):`);
+      for (const p of affectedPaths) lines.push(`- ${p}`);
+    } else {
+      lines.push('affectedPaths: (empty)');
+    }
+
+    if (createdPaths.length > 0) {
+      lines.push(`createdPaths(${createdPaths.length}):`);
+      for (const p of createdPaths) lines.push(`- ${p}`);
+    }
+
+    if (gitError) lines.push(`gitError: ${gitError}`);
+    if (snapshotErrBefore) lines.push(`snapshotErrorBefore: ${snapshotErrBefore}`);
+    if (snapshotErrAfter) lines.push(`snapshotErrorAfter: ${snapshotErrAfter}`);
+
+    if (resultText) {
+      lines.push('');
+      lines.push('resultText:');
+      lines.push(resultText.trimEnd());
+    }
+
+    return lines.join('\n');
+  }, [
+    name,
+    callId,
+    toolStatus.kind,
+    baseDir,
+    repoRoot,
+    effectiveWorkTree,
+    ghostBefore,
+    ghostAfter,
+    affectedPaths.join('|'),
+    createdPaths.join('|'),
+    gitError,
+    snapshotErrBefore,
+    snapshotErrAfter,
+    resultText,
+  ]);
+
 	const doUndo = useCallback(async () => {
 	  if (!isTauri()) return;
 	  if (!repoRoot || !ghostBefore || affectedPaths.length === 0) return;
-	  const ok = window.confirm(`确认撤销本次 ${name || 'apply_patch'} 的修改吗？这会覆盖这些文件的当前工作区内容。`);
+	  const ok = await Promise.resolve(
+	    window.confirm(`确认撤销本次 ${name || 'apply_patch'} 的修改吗？这会覆盖这些文件的当前工作区内容。`)
+	  );
 	  if (!ok) return;
 	  setUndoBusy(true);
 	  setUndoMsg('');
@@ -902,7 +973,7 @@ const ApplyPatchToolRunBlock: React.FC<{
                   <details className="mt-2">
                     <summary className="cursor-pointer text-xs text-gray-600 dark:text-gray-300">详情</summary>
                     <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded border border-gray-200 bg-white p-2 text-[11px] text-gray-800 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-100">
-                      {JSON.stringify(toolMeta ?? null, null, 2)}
+                      {debugDetailsText}
                     </pre>
                   </details>
                 </>
@@ -1033,7 +1104,9 @@ const TaskPatchSummaryCard: React.FC<{
   const doUndo = useCallback(async () => {
     if (!canUseTauri) return;
     if (!group.repoRoot || !group.ghostBefore || group.affectedPaths.length === 0) return;
-    const ok = window.confirm('确认撤销本次任务内所有补丁修改吗？这会覆盖 affected 文件的当前工作区内容。');
+    const ok = await Promise.resolve(
+      window.confirm('确认撤销本次任务内所有补丁修改吗？这会覆盖 affected 文件的当前工作区内容。')
+    );
     if (!ok) return;
     setUndoBusy(true);
     setUndoMsg('');

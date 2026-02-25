@@ -65,11 +65,12 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
 		    removeQueuedMessage,
 		    updateQueuedMessageContent,
 			    setSessionRunMode,
-			    setSessionThinkingMode,
-			    setSessionDraftContent,
-			    setSessionDraftCodeSnippets,
-			  } = useSessionStore(
-			    useShallow((state) => ({
+				    setSessionThinkingMode,
+				    setSessionDraftContent,
+				    setSessionDraftWorkspaceMentions,
+				    setSessionDraftCodeSnippets,
+				  } = useSessionStore(
+				    useShallow((state) => ({
 			      session: sessionId ? state.sessions.get(sessionId) : undefined,
 			      sendMessage: state.sendMessage,
 			      abortGeneration: state.abortGeneration,
@@ -82,11 +83,12 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
 			      removeQueuedMessage: state.removeQueuedMessage,
 			      updateQueuedMessageContent: state.updateQueuedMessageContent,
 			      setSessionRunMode: state.setSessionRunMode,
-			      setSessionThinkingMode: state.setSessionThinkingMode,
-			      setSessionDraftContent: state.setSessionDraftContent,
-			      setSessionDraftCodeSnippets: state.setSessionDraftCodeSnippets,
-			    }))
-		  );
+				      setSessionThinkingMode: state.setSessionThinkingMode,
+				      setSessionDraftContent: state.setSessionDraftContent,
+				      setSessionDraftWorkspaceMentions: state.setSessionDraftWorkspaceMentions,
+				      setSessionDraftCodeSnippets: state.setSessionDraftCodeSnippets,
+				    }))
+			  );
   const [showToolSessions, setShowToolSessions] = useState(false);
   const [selectedRequestMessageId, setSelectedRequestMessageId] = useState<string | null>(null);
   const [outlineOpen, setOutlineOpen] = useState(false);
@@ -1805,14 +1807,19 @@ Guidelines:
           if (!sessionId) return;
           useSessionStore.getState().setSessionWebSearchProvider(sessionId, provider);
         }}
-	        webSearchDetails={webSearchDetails}
-	        workstudio={workstudio ?? null}
-	        codeSnippets={session?.draftCodeSnippets ?? []}
-	        onCodeSnippetsChange={(snips) => {
-	          if (!sessionId) return;
-	          setSessionDraftCodeSnippets(sessionId, snips);
-	        }}
-	      />
+		        webSearchDetails={webSearchDetails}
+		        workstudio={workstudio ?? null}
+		        workspaceMentions={session?.draftWorkspaceMentions ?? []}
+		        onWorkspaceMentionsChange={(mentions) => {
+		          if (!sessionId) return;
+		          setSessionDraftWorkspaceMentions(sessionId, mentions);
+		        }}
+		        codeSnippets={session?.draftCodeSnippets ?? []}
+		        onCodeSnippetsChange={(snips) => {
+		          if (!sessionId) return;
+		          setSessionDraftCodeSnippets(sessionId, snips);
+		        }}
+		      />
       {persistanceShellEnhance && conversationId && (
         <ToolSessionsPanel
           conversationId={conversationId}

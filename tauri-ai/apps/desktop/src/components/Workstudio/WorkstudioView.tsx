@@ -35,6 +35,7 @@ import {
   ListTree,
   MessageSquare,
   RefreshCw,
+  SlidersHorizontal,
   X,
 } from 'lucide-react';
 import type {
@@ -45,24 +46,33 @@ import type {
   MessageTurn,
   RunEventPayload,
   TerminalScope,
-  Workstudio,
-  WorkstudioSymbolAnalysis,
-  WorkstudioUiState,
-} from '../../types';
+  ThinkingLevel,
+	  Workstudio,
+	  WorkstudioFolderAnalysis,
+	  WorkstudioFolderAnalysisSummary,
+	  WorkstudioSymbolAnalysis,
+	  WorkstudioSymbolAnalysisSummary,
+	  WorkstudioUiState,
+	} from '../../types';
 import { SHORTCUT_ACTIONS, detectShortcutPlatform, normalizeKeybindingString } from '../../shortcuts';
 import {
   astDocumentSymbols,
   codeIndexRequestDocumentSymbols,
   codeIndexSummary,
   codeIndexStartWorkspaceScan,
+	  deleteWorkstudioFolderAnalysis,
 	  deleteWorkstudioSymbolAnalysis,
 	  getMessages,
-	  getWorkstudioSymbolAnalysis,
-	  listWorkstudioSymbolAnalysisKeysForFile,
-	  saveWorkstudioSymbolAnalysis,
-	  lspDetectServer,
-	  lspEnsureServer,
-	  lspNotify,
+		  getWorkstudioFolderAnalysis,
+		  getWorkstudioSymbolAnalysis,
+		  listWorkstudioFolderAnalysisSummaries,
+		  listWorkstudioSymbolAnalysisKeysForFile,
+		  listWorkstudioSymbolAnalysisSummariesForFile,
+		  saveWorkstudioFolderAnalysis,
+		  saveWorkstudioSymbolAnalysis,
+		  lspDetectServer,
+		  lspEnsureServer,
+		  lspNotify,
   lspRequest,
   lspShutdownLanguage,
   lspStatus,
@@ -76,6 +86,7 @@ import { focusMainWindow, getViewWindowParams } from '../../utils/viewWindow';
 import { MarkdownRenderer } from '../Chat/MarkdownRenderer';
 import { MessageBlocks } from '../Chat/MessageBlocks';
 import { DebugModal } from '../Chat/DebugModal';
+import { getApiProtocol, getProviderType } from '../../utils/apiUtils';
 import { setupMonaco } from '../../utils/monaco';
 import { attachMonacoLspBridge } from '../../utils/monacoLspBridge';
 import { attachMonacoAiCompletionBridge } from '../../utils/monacoAiCompletionBridge';
@@ -129,7 +140,7 @@ type InlineChatSelection = {
   label: string;
 };
 
-type WorkstudioAiBubbleKind = 'inline_chat' | 'symbol_analysis' | 'agent_run';
+type WorkstudioAiBubbleKind = 'inline_chat' | 'symbol_analysis' | 'folder_analysis' | 'agent_run';
 
 // Streaming state machine for AI Bubbles
 // idle → queued → connecting → thinking → streaming → tool_calling → done / error
@@ -154,12 +165,19 @@ type WorkstudioSymbolAnalysisMeta = {
   workstudioId: string;
   languageId: string;
   filePath: string;
+  /** lsp | ast_cst（可选，旧数据可能为空） */
+  symbolSource?: string;
   symbolKey: string;
   symbolName: string;
   symbolKind: string;
   selectionLine: number;
   selectionColumn: number;
   range: OutlineRange;
+};
+
+type WorkstudioFolderAnalysisMeta = {
+  workstudioId: string;
+  folderPath: string;
 };
 
 type WorkstudioAiBubble = {
@@ -186,6 +204,8 @@ type WorkstudioAiBubble = {
   agentName?: string;
   /** Optional meta for persisting symbol analysis results */
   analysisMeta?: WorkstudioSymbolAnalysisMeta;
+  /** Optional meta for persisting folder analysis results */
+  folderAnalysisMeta?: WorkstudioFolderAnalysisMeta;
   /** Snapshot code snippet for symbol analysis (avoids relying on editor state later) */
   analysisCode?: string;
   error?: string;
@@ -272,6 +292,7 @@ const OUTLINE_RECENT_KEY_LIMIT = 64;
 const OUTLINE_FILE_STATE_LIMIT = 120;
 const OUTLINE_COLLAPSED_KEY_LIMIT = 512;
 const DEFAULT_OUTLINE_PREFER_LSP = true;
+const DEFAULT_OUTLINE_SORT_MODE: OutlineSortMode = 'position';
 
 // Code Index（落盘缓存）优先级：数值越大越优先。
 // 与后端约定保持一致（index_manager.rs），但前端不强依赖具体实现细节。
@@ -306,46 +327,51 @@ const PaneDropZone: React.FC<{ paneId: string; children: React.ReactNode }> = ({
   );
 };
 
-const SortableTab: React.FC<{
-  id: string;
-  active: boolean;
-  title: string;
-  pinnedWhileDragging?: boolean;
-  onClick: () => void;
-  onClose: () => void;
-  onContextMenu?: (e: React.MouseEvent) => void;
-}> = ({ id, active, title, pinnedWhileDragging, onClick, onClose, onContextMenu }) => {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
-  const effectiveTransform = pinnedWhileDragging && isDragging ? null : transform;
-  const style: React.CSSProperties = {
-    transform: CSS.Transform.toString(effectiveTransform),
-    transition,
-    opacity: isDragging ? 0.6 : 1,
-  };
+		const SortableTab: React.FC<{
+		  id: string;
+		  active: boolean;
+		  title: string;
+		  tooltip?: string;
+		  pinnedWhileDragging?: boolean;
+		  onClick: () => void;
+		  onClose: () => void;
+		  onContextMenu?: (e: React.MouseEvent) => void;
+		  onMouseEnter?: (e: React.MouseEvent) => void;
+		  onMouseLeave?: (e: React.MouseEvent) => void;
+		}> = ({ id, active, title, tooltip, pinnedWhileDragging, onClick, onClose, onContextMenu, onMouseEnter, onMouseLeave }) => {
+		  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
+		  const effectiveTransform = pinnedWhileDragging && isDragging ? null : transform;
+		  const style: React.CSSProperties = {
+		    transform: CSS.Transform.toString(effectiveTransform),
+	    transition,
+	    opacity: isDragging ? 0.6 : 1,
+	  };
 
   return (
     <button
       ref={setNodeRef}
       style={style}
-      type="button"
-      onClick={onClick}
-      onContextMenu={onContextMenu}
-      data-workstudio-tab-id={id}
-      className={[
-        'group flex items-center gap-2 rounded px-2 py-1 text-xs',
-        active
-          ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
-          : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800',
-      ].join(' ')}
-      title={title}
-      {...attributes}
-      {...listeners}
-    >
-      <span className="max-w-[180px] truncate">{title}</span>
-      <span
-        className="rounded p-0.5 text-gray-400 hover:bg-gray-200 hover:text-gray-700 dark:hover:bg-gray-700 dark:hover:text-gray-200"
-        onClick={(event) => {
-          event.stopPropagation();
+	      type="button"
+	      onClick={onClick}
+	      onContextMenu={onContextMenu}
+	      onMouseEnter={onMouseEnter}
+	      onMouseLeave={onMouseLeave}
+	      data-workstudio-tab-id={id}
+		      className={[
+		        'group flex items-center gap-2 rounded px-2 py-1 text-xs',
+		        active
+		          ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
+		          : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800',
+		      ].join(' ')}
+		      title={tooltip || title}
+		      {...attributes}
+		      {...listeners}
+		    >
+		      <span className="max-w-[180px] truncate" title={tooltip || title}>{title}</span>
+	      <span
+	        className="rounded p-0.5 text-gray-400 hover:bg-gray-200 hover:text-gray-700 dark:hover:bg-gray-700 dark:hover:text-gray-200"
+	        onClick={(event) => {
+	          event.stopPropagation();
           onClose();
         }}
         role="button"
@@ -745,13 +771,19 @@ const outlineItemLineCount = (item: OutlineItem): number => {
   return Math.max(1, hi - lo + 1);
 };
 
-const compareOutlineKind = (a: OutlineItem, b: OutlineItem): number => {
+const compareOutlineByName = (a: OutlineItem, b: OutlineItem): number => {
+  const nameDiff = a.name.localeCompare(b.name);
+  if (nameDiff !== 0) return nameDiff;
   const kindDiff = outlineKindRank(a.kind) - outlineKindRank(b.kind);
   if (kindDiff !== 0) return kindDiff;
   return compareOutlinePosition(a, b);
 };
 
-const compareOutlineName = (a: OutlineItem, b: OutlineItem): number => {
+const compareOutlineByKindThenName = (a: OutlineItem, b: OutlineItem): number => {
+  const rankDiff = outlineKindRank(a.kind) - outlineKindRank(b.kind);
+  if (rankDiff !== 0) return rankDiff;
+  const kindDiff = normalizeOutlineKind(a.kind).localeCompare(normalizeOutlineKind(b.kind));
+  if (kindDiff !== 0) return kindDiff;
   const nameDiff = a.name.localeCompare(b.name);
   if (nameDiff !== 0) return nameDiff;
   return compareOutlinePosition(a, b);
@@ -763,33 +795,17 @@ const compareOutlineSizeDesc = (a: OutlineItem, b: OutlineItem): number => {
   return compareOutlinePosition(a, b);
 };
 
-const sortOutlineTreeForDisplay = (items: OutlineItem[], sortMode: OutlineSortMode): OutlineItem[] => {
-  if (items.length === 0) return items;
-  if (sortMode === 'position') return items;
-
-  const compare = (() => {
-    switch (sortMode) {
-      case 'kind':
-        return compareOutlineKind;
-      case 'name':
-        return compareOutlineName;
-      case 'size':
-        return compareOutlineSizeDesc;
-      default:
-        return compareOutlinePosition;
-    }
-  })();
-
-  const walk = (nodes: OutlineItem[]): OutlineItem[] => {
-    const next = nodes.map((node) => ({
-      ...node,
-      children: node.children.length > 0 ? walk(node.children) : [],
-    }));
-    next.sort(compare);
-    return next;
-  };
-
-  return walk(items);
+const sortOutlineTreeForDisplay = (
+  items: OutlineItem[],
+  comparator: (a: OutlineItem, b: OutlineItem) => number
+): OutlineItem[] => {
+  if (items.length === 0) return [];
+  const next = items.map((item) => ({
+    ...item,
+    children: item.children.length > 0 ? sortOutlineTreeForDisplay(item.children, comparator) : [],
+  }));
+  next.sort(comparator);
+  return next;
 };
 
 const outlineRangeContains = (parent: OutlineItem, child: OutlineItem): boolean => {
@@ -807,6 +823,50 @@ const outlineRangeContains = (parent: OutlineItem, child: OutlineItem): boolean 
     parent.range.endLine === child.range.endLine &&
     parent.range.endColumn === child.range.endColumn;
   return startsBefore && endsAfter && !sameRange;
+};
+
+const outlineRangeContainsPosition = (range: OutlineRange, line: number, column: number): boolean => {
+  const l = clampOutlineLine(line);
+  const c = clampOutlineColumn(column);
+  if (l < range.startLine || l > range.endLine) return false;
+  if (l === range.startLine && c < range.startColumn) return false;
+  if (l === range.endLine && c > range.endColumn) return false;
+  return true;
+};
+
+const outlineRangeSpecificityScore = (range: OutlineRange): number => {
+  const lineSpan = Math.max(0, range.endLine - range.startLine);
+  const columnSpan = Math.max(0, range.endColumn - range.startColumn);
+  return lineSpan * 1_000_000 + columnSpan;
+};
+
+const findOutlinePathAtPosition = (items: OutlineItem[], line: number, column: number): OutlineItem[] | null => {
+  if (items.length === 0) return null;
+  let best: OutlineItem[] | null = null;
+  for (const item of items) {
+    if (!outlineRangeContainsPosition(item.range, line, column)) continue;
+    const childPath = findOutlinePathAtPosition(item.children, line, column);
+    const path = childPath ? [item, ...childPath] : [item];
+    if (!best) {
+      best = path;
+      continue;
+    }
+
+    const aLeaf = path[path.length - 1]!;
+    const bLeaf = best[best.length - 1]!;
+    const aScore = outlineRangeSpecificityScore(aLeaf.range);
+    const bScore = outlineRangeSpecificityScore(bLeaf.range);
+    if (aScore < bScore) {
+      best = path;
+      continue;
+    }
+    if (aScore > bScore) continue;
+    if (path.length > best.length) {
+      best = path;
+      continue;
+    }
+  }
+  return best;
 };
 
 const outlineCanContain = (parent: OutlineItem, child: OutlineItem): boolean => {
@@ -852,6 +912,89 @@ const describeWorkstudioAiBubbleStatus = (status: WorkstudioAiBubbleStatus): str
     default:
       return '请求中…';
   }
+};
+
+const clampHealthLevel = (value: unknown): number | null => {
+  const n = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(n)) return null;
+  const v = Math.floor(n);
+  if (v < 1 || v > 10) return null;
+  return v;
+};
+
+// 10 档健康度颜色（10 最健康 -> 亮绿，1 最危险 -> 深红）
+const healthLevelToColor = (healthLevel: number, isDark: boolean): string => {
+  const v = clampHealthLevel(healthLevel) ?? 10;
+  const t = (v - 1) / 9; // 1..10 -> 0..1
+  const hue = Math.round(t * 120); // 0=red, 120=green
+  const sat = 88;
+  const light = isDark ? 62 : 42;
+  return `hsl(${hue} ${sat}% ${light}%)`;
+};
+
+const verdictToLabel = (verdictRaw: string): string => {
+  const v = String(verdictRaw ?? '').trim().toUpperCase();
+  if (!v) return '';
+  switch (v) {
+    case 'HEALTHY':
+      return '健康';
+    case 'IMPROVABLE':
+      return '可改进';
+    case 'RISKY':
+      return '有风险';
+    case 'CRITICAL':
+      return '致命';
+    case 'POSSIBLY_UNUSED':
+      return '可能无用';
+    default:
+      return verdictRaw;
+  }
+};
+
+const symbolSourceToLabel = (raw: string): string => {
+  const v = String(raw ?? '').trim().toLowerCase();
+  if (!v) return '';
+  if (v === 'lsp') return 'LSP';
+  if (v === 'ast' || v === 'ast_cst' || v === 'cst' || v === 'tree_sitter') return 'AST/CST';
+  return raw;
+};
+
+const formatIsoDateTimeLocal = (isoRaw: string): string => {
+  const iso = String(isoRaw ?? '').trim();
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return iso;
+  const pad2 = (n: number) => String(n).padStart(2, '0');
+  const y = d.getFullYear();
+  const m = pad2(d.getMonth() + 1);
+  const day = pad2(d.getDate());
+  const h = pad2(d.getHours());
+  const min = pad2(d.getMinutes());
+  return `${y}-${m}-${day} ${h}:${min}`;
+};
+
+const formatRelativeAgeLabel = (isoRaw: string): string => {
+  const iso = String(isoRaw ?? '').trim();
+  if (!iso) return '';
+  const d = new Date(iso);
+  const t = d.getTime();
+  if (!Number.isFinite(t)) return '';
+  const diffMs = Date.now() - t;
+  if (!Number.isFinite(diffMs) || diffMs < 0) return '';
+  const sec = Math.floor(diffMs / 1000);
+  if (sec < 10) return '刚刚';
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}分钟`;
+  const hour = Math.floor(min / 60);
+  if (hour < 24) return `${hour}小时`;
+  const day = Math.floor(hour / 24);
+  if (day < 14) return `${day}天`;
+  const week = Math.floor(day / 7);
+  if (week < 8) return `${week}周`;
+  const month = Math.floor(day / 30);
+  if (month < 18) return `${month}个月`;
+  const year = Math.floor(day / 365);
+  return `${year}年`;
 };
 
 const buildOutlineHierarchy = (flatItems: OutlineItem[]): OutlineItem[] => {
@@ -1140,17 +1283,28 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const [aiBubbles, setAiBubbles] = useState<WorkstudioAiBubble[]>([]);
   const aiBubblesRef = useRef<WorkstudioAiBubble[]>([]);
   const activeSymbolAnalysisKeysRef = useRef<Set<string>>(new Set());
+  const activeFolderAnalysisKeysRef = useRef<Set<string>>(new Set());
   const symbolAnalysisKeyByConversationIdRef = useRef<Map<string, string>>(new Map());
   const symbolAnalysisConversationIdByBubbleIdRef = useRef<Map<string, string>>(new Map());
   const symbolAnalysisBubbleIdByConversationIdRef = useRef<Map<string, string>>(new Map());
+  const folderAnalysisKeyByConversationIdRef = useRef<Map<string, string>>(new Map());
+  const folderAnalysisConversationIdByBubbleIdRef = useRef<Map<string, string>>(new Map());
+  const folderAnalysisBubbleIdByConversationIdRef = useRef<Map<string, string>>(new Map());
   const cancelledSymbolAnalysisBubbleIdsRef = useRef<Set<string>>(new Set());
+  const cancelledFolderAnalysisBubbleIdsRef = useRef<Set<string>>(new Set());
   const scheduleSymbolAnalysisRunsRef = useRef<(() => void) | null>(null);
+  const scheduleFolderAnalysisRunsRef = useRef<(() => void) | null>(null);
 	  const symbolAnalysisRoundRobinCursorRef = useRef<number>(0);
+	  const folderAnalysisRoundRobinCursorRef = useRef<number>(0);
 	  const startingSymbolAnalysisBubbleIdsRef = useRef<Set<string>>(new Set());
+	  const startingFolderAnalysisBubbleIdsRef = useRef<Set<string>>(new Set());
 	  const trackedRunConversationsRef = useRef<Set<string>>(new Set());
 	  const symbolAnalysisFirstRunEventWaitersRef = useRef<Map<string, () => void>>(new Map());
 	  const symbolAnalysisCompletionWaitersRef = useRef<Map<string, () => void>>(new Map());
 	  const symbolAnalysisLastRunEventAtMsByConversationIdRef = useRef<Map<string, number>>(new Map());
+	  const folderAnalysisFirstRunEventWaitersRef = useRef<Map<string, () => void>>(new Map());
+	  const folderAnalysisCompletionWaitersRef = useRef<Map<string, () => void>>(new Map());
+	  const folderAnalysisLastRunEventAtMsByConversationIdRef = useRef<Map<string, number>>(new Map());
 	  useEffect(() => {
 	    aiBubblesRef.current = aiBubbles;
 	  }, [aiBubbles]);
@@ -1161,6 +1315,14 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const symbolAnalysisActiveCount = useMemo(() => {
     const ACTIVE: WorkstudioAiBubbleStatus[] = ['connecting', 'thinking', 'streaming', 'tool_calling'];
     return aiBubbles.filter((b) => b.kind === 'symbol_analysis' && ACTIVE.includes(b.status)).length;
+  }, [aiBubbles]);
+  const folderAnalysisQueuedCount = useMemo(
+    () => aiBubbles.filter((b) => b.kind === 'folder_analysis' && b.status === 'queued').length,
+    [aiBubbles]
+  );
+  const folderAnalysisActiveCount = useMemo(() => {
+    const ACTIVE: WorkstudioAiBubbleStatus[] = ['connecting', 'thinking', 'streaming', 'tool_calling'];
+    return aiBubbles.filter((b) => b.kind === 'folder_analysis' && ACTIVE.includes(b.status)).length;
   }, [aiBubbles]);
   const [aiViewerId, setAiViewerId] = useState<string | null>(null);
   const [aiViewerMode, setAiViewerMode] = useState<'result' | 'details'>('result');
@@ -1338,6 +1500,8 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
   const keyboardShortcuts = useConfigStore((s) => s.config?.general?.keyboardShortcuts);
   const codeIntelligenceConfig = useConfigStore((s) => s.config?.codeIntelligence);
+  const symbolAnalysisThinkingLevel: ThinkingLevel = (codeIntelligenceConfig?.symbolAnalysis?.thinkingLevel ??
+    null) as ThinkingLevel;
 
   // 某些 Monaco 选项（如 suggest/wordBasedSuggestions）在 React wrapper 下更新不一定稳定，
   // 这里显式对已挂载的 editor 实例执行 updateOptions，确保设置切换立即生效。
@@ -1447,6 +1611,10 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     symbolAnalysisConversationIdByBubbleIdRef.current.clear();
     symbolAnalysisBubbleIdByConversationIdRef.current.clear();
     cancelledSymbolAnalysisBubbleIdsRef.current.clear();
+    // 同理：文件夹分析
+    folderAnalysisConversationIdByBubbleIdRef.current.clear();
+    folderAnalysisBubbleIdByConversationIdRef.current.clear();
+    cancelledFolderAnalysisBubbleIdsRef.current.clear();
   }, [ws?.id]);
 
   const shouldShowOpenMainFolderAction = useMemo(() => {
@@ -1511,69 +1679,119 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     | { visible: true; x: number; y: number; paneId: string; fileId: string; path: string }
     | null
   >(null);
-	  const [outlineMenu, setOutlineMenu] = useState<
-	    | {
-	      visible: true;
-	      anchorX: number;
-	      anchorY: number;
-	      x: number;
-	      y: number;
-	      filePath: string;
-	      languageId: string;
-	      item: OutlineItem;
-	      analysis: WorkstudioSymbolAnalysis | null | undefined;
-	      analysisExists: boolean | undefined;
-	    }
-	    | null
-	  >(null);
-	  const outlineMenuRef = useRef<HTMLDivElement | null>(null);
+  const [tabPathTooltip, setTabPathTooltip] = useState<
+    | { text: string; x: number; y: number; maxWidth: number }
+    | null
+  >(null);
+  const showTabPathTooltip = useCallback((e: React.MouseEvent, filePathRaw: string) => {
+    const text = String(filePathRaw ?? '').trim();
+    if (!text) return;
+    const el = e.currentTarget as HTMLElement | null;
+    const rect = el?.getBoundingClientRect?.() ?? null;
+    const margin = 8;
+    const maxWidth = Math.max(240, Math.min(860, Math.floor(window.innerWidth * 0.92)));
+    const x = rect
+      ? Math.max(margin, Math.min(rect.left, window.innerWidth - maxWidth - margin))
+      : margin;
+    const y = rect
+      ? Math.max(margin, Math.min(rect.bottom + 6, window.innerHeight - 160 - margin))
+      : margin;
+    setTabPathTooltip({ text, x, y, maxWidth });
+  }, []);
+  const hideTabPathTooltip = useCallback(() => setTabPathTooltip(null), []);
+  const [outlineMenu, setOutlineMenu] = useState<
+    | {
+        visible: true;
+        anchorX: number;
+        anchorY: number;
+        x: number;
+        y: number;
+        filePath: string;
+        languageId: string;
+        item: OutlineItem;
+        analysis: WorkstudioSymbolAnalysis | null | undefined;
+        analysisExists: boolean | undefined;
+      }
+    | null
+  >(null);
+  const outlineMenuRef = useRef<HTMLDivElement | null>(null);
 
-	  useLayoutEffect(() => {
-	    if (!outlineMenu?.visible) return;
-	    const el = outlineMenuRef.current;
-	    if (!el) return;
+  useLayoutEffect(() => {
+    if (!outlineMenu?.visible) return;
+    const el = outlineMenuRef.current;
+    if (!el) return;
 
-	    const rect = el.getBoundingClientRect();
-	    const vw = window.innerWidth;
-	    const vh = window.innerHeight;
-	    const margin = 8;
+    const rect = el.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const margin = 8;
 
-	    const anchorX = Number.isFinite(outlineMenu.anchorX) ? outlineMenu.anchorX : outlineMenu.x;
-	    const anchorY = Number.isFinite(outlineMenu.anchorY) ? outlineMenu.anchorY : outlineMenu.y;
+    const anchorX = Number.isFinite(outlineMenu.anchorX) ? outlineMenu.anchorX : outlineMenu.x;
+    const anchorY = Number.isFinite(outlineMenu.anchorY) ? outlineMenu.anchorY : outlineMenu.y;
 
-	    const maxX = Math.max(margin, vw - rect.width - margin);
-	    const maxY = Math.max(margin, vh - rect.height - margin);
+    const maxX = Math.max(margin, vw - rect.width - margin);
+    const maxY = Math.max(margin, vh - rect.height - margin);
 
-	    let nextX = Math.min(Math.max(margin, anchorX), maxX);
+    const nextX = Math.min(Math.max(margin, anchorX), maxX);
 
-	    const canPlaceDown = anchorY + rect.height + margin <= vh;
-	    const canPlaceUp = anchorY - rect.height - margin >= margin;
-	    let nextY = anchorY;
-	    if (!canPlaceDown && canPlaceUp) {
-	      nextY = anchorY - rect.height;
-	    }
-	    nextY = Math.min(Math.max(margin, nextY), maxY);
+    const canPlaceDown = anchorY + rect.height + margin <= vh;
+    const canPlaceUp = anchorY - rect.height - margin >= margin;
+    let nextY = anchorY;
+    if (!canPlaceDown && canPlaceUp) {
+      nextY = anchorY - rect.height;
+    }
+    nextY = Math.min(Math.max(margin, nextY), maxY);
 
-	    if (nextX === outlineMenu.x && nextY === outlineMenu.y) return;
-	    setOutlineMenu((prev) => (prev ? { ...prev, x: nextX, y: nextY } : prev));
-	  }, [outlineMenu]);
-	  const [symbolAnalysisCache, setSymbolAnalysisCache] = useState<Record<string, WorkstudioSymbolAnalysis | null>>({});
-	  const symbolAnalysisCacheRef = useRef<Record<string, WorkstudioSymbolAnalysis | null>>({});
-	  useEffect(() => {
-	    symbolAnalysisCacheRef.current = symbolAnalysisCache;
-	  }, [symbolAnalysisCache]);
-	  const [symbolAnalysisExistsCache, setSymbolAnalysisExistsCache] = useState<Record<string, boolean>>({});
-	  const symbolAnalysisExistsCacheRef = useRef<Record<string, boolean>>(symbolAnalysisExistsCache);
-	  useEffect(() => {
-	    symbolAnalysisExistsCacheRef.current = symbolAnalysisExistsCache;
-	  }, [symbolAnalysisExistsCache]);
-	  const prefetchedSymbolAnalysisStatusByFileRef = useRef<Map<string, string>>(new Map());
-	  useEffect(() => {
-	    // Workstudio 切换时清空缓存，避免跨工作区误命中。
-	    setSymbolAnalysisCache({});
-	    setSymbolAnalysisExistsCache({});
-	    prefetchedSymbolAnalysisStatusByFileRef.current.clear();
-	  }, [ws?.id]);
+    if (nextX === outlineMenu.x && nextY === outlineMenu.y) return;
+    setOutlineMenu((prev) => (prev ? { ...prev, x: nextX, y: nextY } : prev));
+  }, [outlineMenu]);
+
+  const [symbolAnalysisCache, setSymbolAnalysisCache] = useState<Record<string, WorkstudioSymbolAnalysis | null>>({});
+  const symbolAnalysisCacheRef = useRef<Record<string, WorkstudioSymbolAnalysis | null>>({});
+  useEffect(() => {
+    symbolAnalysisCacheRef.current = symbolAnalysisCache;
+  }, [symbolAnalysisCache]);
+  const [symbolAnalysisExistsCache, setSymbolAnalysisExistsCache] = useState<Record<string, boolean>>({});
+  const symbolAnalysisExistsCacheRef = useRef<Record<string, boolean>>(symbolAnalysisExistsCache);
+  useEffect(() => {
+    symbolAnalysisExistsCacheRef.current = symbolAnalysisExistsCache;
+  }, [symbolAnalysisExistsCache]);
+  const [symbolAnalysisSummaryCache, setSymbolAnalysisSummaryCache] = useState<Record<string, WorkstudioSymbolAnalysisSummary | null>>({});
+  const symbolAnalysisSummaryCacheRef = useRef<Record<string, WorkstudioSymbolAnalysisSummary | null>>({});
+  useEffect(() => {
+    symbolAnalysisSummaryCacheRef.current = symbolAnalysisSummaryCache;
+  }, [symbolAnalysisSummaryCache]);
+
+  const [folderAnalysisCache, setFolderAnalysisCache] = useState<Record<string, WorkstudioFolderAnalysis | null>>({});
+  const folderAnalysisCacheRef = useRef<Record<string, WorkstudioFolderAnalysis | null>>({});
+  useEffect(() => {
+    folderAnalysisCacheRef.current = folderAnalysisCache;
+  }, [folderAnalysisCache]);
+  const [folderAnalysisExistsCache, setFolderAnalysisExistsCache] = useState<Record<string, boolean>>({});
+  const folderAnalysisExistsCacheRef = useRef<Record<string, boolean>>(folderAnalysisExistsCache);
+  useEffect(() => {
+    folderAnalysisExistsCacheRef.current = folderAnalysisExistsCache;
+  }, [folderAnalysisExistsCache]);
+  const [folderAnalysisSummaryCache, setFolderAnalysisSummaryCache] = useState<Record<string, WorkstudioFolderAnalysisSummary | null>>({});
+  const folderAnalysisSummaryCacheRef = useRef<Record<string, WorkstudioFolderAnalysisSummary | null>>({});
+  useEffect(() => {
+    folderAnalysisSummaryCacheRef.current = folderAnalysisSummaryCache;
+  }, [folderAnalysisSummaryCache]);
+
+  const prefetchedSymbolAnalysisStatusByFileRef = useRef<Map<string, string>>(new Map());
+  // 当用户点击“刷新 Outline”时：强制刷新分析状态，并检查/清理冗余的 DB 记录（需用户确认）。
+  const pendingOutlineAnalysisRefreshByFileRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    // Workstudio 切换时清空缓存，避免跨工作区误命中。
+    setSymbolAnalysisCache({});
+    setSymbolAnalysisExistsCache({});
+    setSymbolAnalysisSummaryCache({});
+    setFolderAnalysisCache({});
+    setFolderAnalysisExistsCache({});
+    setFolderAnalysisSummaryCache({});
+    prefetchedSymbolAnalysisStatusByFileRef.current.clear();
+    pendingOutlineAnalysisRefreshByFileRef.current.clear();
+  }, [ws?.id]);
 
   // ── run:event listener（run_task）─────────────────────────────────
   // 说明：
@@ -1604,6 +1822,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     const pendingByConversationId = new Map<string, PendingStreamChunks>();
     const turnIndexByConversationId = new Map<string, Map<string, number>>();
     const savedSymbolAnalysisByConversationId = new Set<string>();
+    const savedFolderAnalysisByConversationId = new Set<string>();
     let flushTimer: ReturnType<typeof setTimeout> | null = null;
 
     const getOrCreateTurnIndexMap = (conversationId: string): Map<string, number> => {
@@ -1969,12 +2188,26 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
 	          // 只处理 Workstudio 主动发起的 run_task（避免被主窗口聊天流拖慢）。
 	          if (!trackedRunConversationsRef.current.has(conversationId)) return;
-	          const mappedBubbleId = symbolAnalysisBubbleIdByConversationIdRef.current.get(conversationId) ?? null;
-	          symbolAnalysisLastRunEventAtMsByConversationIdRef.current.set(conversationId, Date.now());
-	          const firstWaiter = symbolAnalysisFirstRunEventWaitersRef.current.get(conversationId);
-	          if (firstWaiter) {
+	          const mappedBubbleId =
+	            symbolAnalysisBubbleIdByConversationIdRef.current.get(conversationId) ??
+	            folderAnalysisBubbleIdByConversationIdRef.current.get(conversationId) ??
+	            null;
+	          const nowMs = Date.now();
+	          if (symbolAnalysisBubbleIdByConversationIdRef.current.has(conversationId)) {
+	            symbolAnalysisLastRunEventAtMsByConversationIdRef.current.set(conversationId, nowMs);
+	          }
+	          if (folderAnalysisBubbleIdByConversationIdRef.current.has(conversationId)) {
+	            folderAnalysisLastRunEventAtMsByConversationIdRef.current.set(conversationId, nowMs);
+	          }
+	          const symFirstWaiter = symbolAnalysisFirstRunEventWaitersRef.current.get(conversationId);
+	          if (symFirstWaiter) {
 	            symbolAnalysisFirstRunEventWaitersRef.current.delete(conversationId);
-	            firstWaiter();
+	            symFirstWaiter();
+	          }
+	          const folderFirstWaiter = folderAnalysisFirstRunEventWaitersRef.current.get(conversationId);
+	          if (folderFirstWaiter) {
+	            folderAnalysisFirstRunEventWaitersRef.current.delete(conversationId);
+	            folderFirstWaiter();
 	          }
 
           if (payload.type === 'turn_started') {
@@ -2066,10 +2299,15 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 		          if (payload.type === 'done') {
 		            // 收尾前先 flush，避免最后一批 token 被节流队列丢弃
 		            flushPending();
-		            const completionWaiter = symbolAnalysisCompletionWaitersRef.current.get(conversationId);
-		            if (completionWaiter) {
+		            const symCompletionWaiter = symbolAnalysisCompletionWaitersRef.current.get(conversationId);
+		            if (symCompletionWaiter) {
 		              symbolAnalysisCompletionWaitersRef.current.delete(conversationId);
-		              completionWaiter();
+		              symCompletionWaiter();
+		            }
+		            const folderCompletionWaiter = folderAnalysisCompletionWaitersRef.current.get(conversationId);
+		            if (folderCompletionWaiter) {
+		              folderAnalysisCompletionWaitersRef.current.delete(conversationId);
+		              folderCompletionWaiter();
 		            }
 
 		            const doneAtMs = Date.now();
@@ -2081,6 +2319,9 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 		            if (isAbortedByUser && bubbleForSave?.kind === 'symbol_analysis') {
 		              cancelledSymbolAnalysisBubbleIdsRef.current.delete(bubbleForSave.id);
 	            }
+		            if (isAbortedByUser && bubbleForSave?.kind === 'folder_analysis') {
+		              cancelledFolderAnalysisBubbleIdsRef.current.delete(bubbleForSave.id);
+		            }
 
 		            if (!isAbortedByUser) {
 		              setAiBubbles((prev) => {
@@ -2121,8 +2362,8 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
 	            // 符号分析：把最终结果落盘到 workstudio_symbol_analyses，并刷新右键菜单/缓存。
 	            if (!isAbortedByUser && !savedSymbolAnalysisByConversationId.has(conversationId) && bubbleForSave?.analysisMeta) {
-		              savedSymbolAnalysisByConversationId.add(conversationId);
-		              void (async () => {
+	              savedSymbolAnalysisByConversationId.add(conversationId);
+	              void (async () => {
 		                const meta = bubbleForSave.analysisMeta!;
 		                const settings = useConfigStore.getState().config?.codeIntelligence?.symbolAnalysis ?? null;
 		                const timeoutMsRaw = Number(settings?.timeoutMs ?? 20000);
@@ -2141,14 +2382,27 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 		                    timeoutMs,
 		                    `阶段超时：save_workstudio_symbol_analysis (${attempt})`
 			                  );
-			                  const cacheKey = `${meta.workstudioId}::${normalizeFsPath(meta.filePath)}::${meta.symbolKey}`;
-			                  setSymbolAnalysisCache((prev) => ({ ...prev, [cacheKey]: res }));
-			                  setSymbolAnalysisExistsCache((prev) => ({ ...prev, [cacheKey]: true }));
-			                  setOutlineMenu((prev) => {
-			                    if (!prev) return prev;
-			                    if (prev.filePath !== meta.filePath) return prev;
-			                    if (prev.item.key !== meta.symbolKey) return prev;
-			                    return { ...prev, analysis: res, analysisExists: true };
+				                  const cacheKey = `${meta.workstudioId}::${normalizeFsPath(meta.filePath)}::${meta.symbolKey}`;
+				                  setSymbolAnalysisCache((prev) => ({ ...prev, [cacheKey]: res }));
+				                  setSymbolAnalysisExistsCache((prev) => ({ ...prev, [cacheKey]: true }));
+				                  setSymbolAnalysisSummaryCache((prev) => ({
+				                    ...prev,
+					                    [cacheKey]: {
+					                      symbolKey: res.symbolKey,
+					                      symbolSource: res.symbolSource,
+					                      healthLevel: res.healthLevel,
+					                      verdict: res.verdict,
+					                      confidence: res.confidence,
+					                      diagnosisSummary: res.diagnosisSummary,
+					                      diagnosisCounts: res.diagnosisCounts,
+				                      updatedAt: res.updatedAt,
+				                    },
+				                  }));
+				                  setOutlineMenu((prev) => {
+				                    if (!prev) return prev;
+				                    if (prev.filePath !== meta.filePath) return prev;
+				                    if (prev.item.key !== meta.symbolKey) return prev;
+				                    return { ...prev, analysis: res, analysisExists: true };
 			                  });
 			                };
 
@@ -2201,8 +2455,101 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 		                    );
 		                  }
 		                }
-		              })();
-		            }
+	              })();
+	            }
+
+	            // 文件夹分析：把最终结果落盘到 workstudio_folder_analyses，并刷新 Explorer 缓存/上色。
+	            if (
+	              !isAbortedByUser &&
+	              !savedFolderAnalysisByConversationId.has(conversationId) &&
+	              bubbleForSave?.kind === 'folder_analysis' &&
+	              bubbleForSave.folderAnalysisMeta
+	            ) {
+	              savedFolderAnalysisByConversationId.add(conversationId);
+	              void (async () => {
+	                const meta = bubbleForSave.folderAnalysisMeta!;
+	                const settings = useConfigStore.getState().config?.codeIntelligence?.folderAnalysis ?? null;
+	                const timeoutMsRaw = Number((settings as any)?.timeoutMs ?? 30000);
+	                const timeoutMs = Number.isFinite(timeoutMsRaw)
+	                  ? Math.max(2000, Math.min(180000, Math.floor(timeoutMsRaw)))
+	                  : 30000;
+
+	                const doSave = async (attempt: 'first' | 'retry') => {
+	                  const res = await withTimeout(
+	                    saveWorkstudioFolderAnalysis({
+	                      workstudioId: meta.workstudioId,
+	                      folderPath: meta.folderPath,
+	                      answerMd: payload.fullContent ?? '',
+	                      modelRef: bubbleForSave.modelRef,
+	                      latencyMs,
+	                    }),
+	                    timeoutMs,
+	                    `阶段超时：save_workstudio_folder_analysis (${attempt})`
+	                  );
+	                  const cacheKey = `${meta.workstudioId}::${normalizeFsPath(meta.folderPath)}`;
+	                  setFolderAnalysisCache((prev) => ({ ...prev, [cacheKey]: res }));
+	                  setFolderAnalysisExistsCache((prev) => ({ ...prev, [cacheKey]: true }));
+	                  setFolderAnalysisSummaryCache((prev) => ({
+	                    ...prev,
+	                    [cacheKey]: {
+	                      folderPath: res.folderPath,
+	                      healthLevel: res.healthLevel,
+	                      verdict: res.verdict,
+	                      confidence: res.confidence,
+	                      diagnosisSummary: res.diagnosisSummary,
+	                      diagnosisCounts: res.diagnosisCounts,
+	                      updatedAt: res.updatedAt,
+	                    },
+	                  }));
+	                };
+
+	                try {
+	                  await doSave('first');
+	                } catch (err) {
+	                  const msg = toErrorMessage(err);
+	                  void showGlobalError(
+	                    'Workstudio 文件夹分析落盘失败（将自动重试一次）',
+	                    [
+	                      `stage=save_workstudio_folder_analysis`,
+	                      `attempt=first`,
+	                      `conversationId=${conversationId}`,
+	                      `bubbleId=${bubbleForSave.id}`,
+	                      `workstudioId=${meta.workstudioId}`,
+	                      `folderPath=${meta.folderPath}`,
+	                      `agent=${bubbleForSave.agentName ?? ''}`,
+	                      `modelRef=${bubbleForSave.modelRef ?? ''}`,
+	                      '',
+	                      msg,
+	                    ].join('\n'),
+	                    err
+	                  );
+
+	                  try {
+	                    await new Promise((r) => setTimeout(r, 800));
+	                    await doSave('retry');
+	                  } catch (retryErr) {
+	                    const retryMsg = toErrorMessage(retryErr);
+	                    savedFolderAnalysisByConversationId.delete(conversationId);
+	                    void showGlobalError(
+	                      'Workstudio 文件夹分析落盘重试失败',
+	                      [
+	                        `stage=save_workstudio_folder_analysis`,
+	                        `attempt=retry`,
+	                        `conversationId=${conversationId}`,
+	                        `bubbleId=${bubbleForSave.id}`,
+	                        `workstudioId=${meta.workstudioId}`,
+	                        `folderPath=${meta.folderPath}`,
+	                        `agent=${bubbleForSave.agentName ?? ''}`,
+	                        `modelRef=${bubbleForSave.modelRef ?? ''}`,
+	                        '',
+	                        retryMsg,
+	                      ].join('\n'),
+	                      retryErr
+	                    );
+	                  }
+	                }
+	              })();
+	            }
 
             // 释放“该符号正在分析中/队列中”的锁，允许后续重新分析。
             {
@@ -2217,30 +2564,54 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
               }
 		            }
 
+		            // 释放“该文件夹正在分析中/队列中”的锁，允许后续重新分析。
+		            {
+		              const analysisKey = folderAnalysisKeyByConversationIdRef.current.get(conversationId);
+		              if (analysisKey) {
+		                activeFolderAnalysisKeysRef.current.delete(analysisKey);
+		                folderAnalysisKeyByConversationIdRef.current.delete(conversationId);
+		              } else if (bubbleForSave?.folderAnalysisMeta) {
+		                const meta = bubbleForSave.folderAnalysisMeta;
+		                const fallbackKey = `${meta.workstudioId}::${normalizeFsPath(meta.folderPath)}`;
+		                activeFolderAnalysisKeysRef.current.delete(fallbackKey);
+		              }
+		            }
+
 		            // 结束后清理缓冲与追踪标记（避免残留定时 flush）。
 		            {
 		              const bubbleId = bubbleForSave?.id ?? mappedBubbleId;
 		              if (bubbleId) {
 		                symbolAnalysisConversationIdByBubbleIdRef.current.delete(bubbleId);
+		                folderAnalysisConversationIdByBubbleIdRef.current.delete(bubbleId);
 		              }
 		            }
 		            symbolAnalysisBubbleIdByConversationIdRef.current.delete(conversationId);
+		            folderAnalysisBubbleIdByConversationIdRef.current.delete(conversationId);
 		            symbolAnalysisCompletionWaitersRef.current.delete(conversationId);
+		            folderAnalysisCompletionWaitersRef.current.delete(conversationId);
 		            pendingByConversationId.delete(conversationId);
 		            turnIndexByConversationId.delete(conversationId);
 		            trackedRunConversationsRef.current.delete(conversationId);
 		            symbolAnalysisFirstRunEventWaitersRef.current.delete(conversationId);
+		            folderAnalysisFirstRunEventWaitersRef.current.delete(conversationId);
 		            symbolAnalysisLastRunEventAtMsByConversationIdRef.current.delete(conversationId);
+		            folderAnalysisLastRunEventAtMsByConversationIdRef.current.delete(conversationId);
 		            scheduleSymbolAnalysisRunsRef.current?.();
+		            scheduleFolderAnalysisRunsRef.current?.();
 		            return;
 		          }
 
 		          if (payload.type === 'error') {
 		            flushPending();
-		            const completionWaiter = symbolAnalysisCompletionWaitersRef.current.get(conversationId);
-		            if (completionWaiter) {
+		            const symCompletionWaiter = symbolAnalysisCompletionWaitersRef.current.get(conversationId);
+		            if (symCompletionWaiter) {
 		              symbolAnalysisCompletionWaitersRef.current.delete(conversationId);
-		              completionWaiter();
+		              symCompletionWaiter();
+		            }
+		            const folderCompletionWaiter = folderAnalysisCompletionWaitersRef.current.get(conversationId);
+		            if (folderCompletionWaiter) {
+		              folderAnalysisCompletionWaitersRef.current.delete(conversationId);
+		              folderCompletionWaiter();
 		            }
 		            const bubbleForCancel =
 		              aiBubblesRef.current.find((b) => (b.conversationId ?? '').trim() === conversationId) ??
@@ -2248,6 +2619,9 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 		            const isAbortedByUser = bubbleForCancel?.status === 'error' && bubbleForCancel.error === '已中止';
 		            if (isAbortedByUser && bubbleForCancel?.kind === 'symbol_analysis') {
 		              cancelledSymbolAnalysisBubbleIdsRef.current.delete(bubbleForCancel.id);
+		            }
+		            if (isAbortedByUser && bubbleForCancel?.kind === 'folder_analysis') {
+		              cancelledFolderAnalysisBubbleIdsRef.current.delete(bubbleForCancel.id);
 		            }
 			            const errorMessage = isAbortedByUser ? '已中止' : payload.error || 'Unknown error';
 			            setAiBubbles((prev) => {
@@ -2266,24 +2640,43 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 			              return next;
 			            });
 			            if (!isAbortedByUser) {
-			              const meta = bubbleForCancel?.analysisMeta;
-			              void showGlobalError(
-			                'Workstudio 符号分析运行失败',
-			                [
-			                  `stage=run:event:error`,
-			                  `conversationId=${conversationId}`,
-			                  `bubbleId=${bubbleForCancel?.id ?? mappedBubbleId ?? ''}`,
-			                  `workstudioId=${meta?.workstudioId ?? ''}`,
-			                  `filePath=${meta?.filePath ?? ''}`,
-			                  `symbolKey=${meta?.symbolKey ?? ''}`,
-			                  `symbol=${meta?.symbolName ?? ''} (${meta?.symbolKind ?? ''})`,
-			                  `agent=${bubbleForCancel?.agentName ?? ''}`,
-			                  `modelRef=${bubbleForCancel?.modelRef ?? ''}`,
-			                  '',
-			                  errorMessage,
-			                ].join('\n'),
-			                new Error(errorMessage)
-			              );
+			              if (bubbleForCancel?.kind === 'folder_analysis') {
+			                const meta = bubbleForCancel.folderAnalysisMeta;
+			                void showGlobalError(
+			                  'Workstudio 文件夹分析运行失败',
+			                  [
+			                    `stage=run:event:error`,
+			                    `conversationId=${conversationId}`,
+			                    `bubbleId=${bubbleForCancel?.id ?? mappedBubbleId ?? ''}`,
+			                    `workstudioId=${meta?.workstudioId ?? ''}`,
+			                    `folderPath=${meta?.folderPath ?? ''}`,
+			                    `agent=${bubbleForCancel?.agentName ?? ''}`,
+			                    `modelRef=${bubbleForCancel?.modelRef ?? ''}`,
+			                    '',
+			                    errorMessage,
+			                  ].join('\n'),
+			                  new Error(errorMessage)
+			                );
+			              } else {
+			                const meta = bubbleForCancel?.analysisMeta;
+			                void showGlobalError(
+			                  'Workstudio 符号分析运行失败',
+			                  [
+			                    `stage=run:event:error`,
+			                    `conversationId=${conversationId}`,
+			                    `bubbleId=${bubbleForCancel?.id ?? mappedBubbleId ?? ''}`,
+			                    `workstudioId=${meta?.workstudioId ?? ''}`,
+			                    `filePath=${meta?.filePath ?? ''}`,
+			                    `symbolKey=${meta?.symbolKey ?? ''}`,
+			                    `symbol=${meta?.symbolName ?? ''} (${meta?.symbolKind ?? ''})`,
+			                    `agent=${bubbleForCancel?.agentName ?? ''}`,
+			                    `modelRef=${bubbleForCancel?.modelRef ?? ''}`,
+			                    '',
+			                    errorMessage,
+			                  ].join('\n'),
+			                  new Error(errorMessage)
+			                );
+			              }
 			            }
 		            {
 		              const analysisKey = symbolAnalysisKeyByConversationIdRef.current.get(conversationId);
@@ -2302,19 +2695,41 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	              }
 	            }
 		            {
+		              const analysisKey = folderAnalysisKeyByConversationIdRef.current.get(conversationId);
+		              if (analysisKey) {
+		                activeFolderAnalysisKeysRef.current.delete(analysisKey);
+		                folderAnalysisKeyByConversationIdRef.current.delete(conversationId);
+		              } else {
+		                const bubble =
+		                  aiBubblesRef.current.find((b) => (b.conversationId ?? '').trim() === conversationId) ??
+		                  (mappedBubbleId ? aiBubblesRef.current.find((b) => b.id === mappedBubbleId) ?? null : null);
+		                if (bubble?.folderAnalysisMeta) {
+		                  const meta = bubble.folderAnalysisMeta;
+		                  const fallbackKey = `${meta.workstudioId}::${normalizeFsPath(meta.folderPath)}`;
+		                  activeFolderAnalysisKeysRef.current.delete(fallbackKey);
+		                }
+		              }
+		            }
+		            {
 		              const bubbleId = bubbleForCancel?.id ?? mappedBubbleId;
 		              if (bubbleId) {
 		                symbolAnalysisConversationIdByBubbleIdRef.current.delete(bubbleId);
+		                folderAnalysisConversationIdByBubbleIdRef.current.delete(bubbleId);
 		              }
 		            }
 		            symbolAnalysisBubbleIdByConversationIdRef.current.delete(conversationId);
+		            folderAnalysisBubbleIdByConversationIdRef.current.delete(conversationId);
 		            symbolAnalysisCompletionWaitersRef.current.delete(conversationId);
+		            folderAnalysisCompletionWaitersRef.current.delete(conversationId);
 		            pendingByConversationId.delete(conversationId);
 		            turnIndexByConversationId.delete(conversationId);
 		            trackedRunConversationsRef.current.delete(conversationId);
 		            symbolAnalysisFirstRunEventWaitersRef.current.delete(conversationId);
+		            folderAnalysisFirstRunEventWaitersRef.current.delete(conversationId);
 		            symbolAnalysisLastRunEventAtMsByConversationIdRef.current.delete(conversationId);
+		            folderAnalysisLastRunEventAtMsByConversationIdRef.current.delete(conversationId);
 		            scheduleSymbolAnalysisRunsRef.current?.();
+		            scheduleFolderAnalysisRunsRef.current?.();
 		          }
         });
       } catch {
@@ -2331,17 +2746,26 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	      pendingByConversationId.clear();
 	      turnIndexByConversationId.clear();
 	      savedSymbolAnalysisByConversationId.clear();
+	      savedFolderAnalysisByConversationId.clear();
 	      symbolAnalysisKeyByConversationIdRef.current.clear();
+	      folderAnalysisKeyByConversationIdRef.current.clear();
 	      symbolAnalysisFirstRunEventWaitersRef.current.clear();
+	      folderAnalysisFirstRunEventWaitersRef.current.clear();
 	      symbolAnalysisLastRunEventAtMsByConversationIdRef.current.clear();
+	      folderAnalysisLastRunEventAtMsByConversationIdRef.current.clear();
+	      folderAnalysisCompletionWaitersRef.current.clear();
+	      symbolAnalysisCompletionWaitersRef.current.clear();
 	    };
   }, []);
   const lspStatusButtonRef = useRef<HTMLButtonElement | null>(null);
   const [outlineOpen, setOutlineOpen] = useState(true);
   const [leftSidebarTab, setLeftSidebarTab] = useState<'explorer' | 'outline'>('explorer');
   const [outlinePreferLsp, setOutlinePreferLsp] = useState(DEFAULT_OUTLINE_PREFER_LSP);
-  const [outlineSortMode, setOutlineSortMode] = useState<OutlineSortMode>('position');
-  const outlineSortButtonRef = useRef<HTMLButtonElement | null>(null);
+  const [outlineSortMode, setOutlineSortMode] = useState<OutlineSortMode>(DEFAULT_OUTLINE_SORT_MODE);
+  const [outlineActionsMenuOpen, setOutlineActionsMenuOpen] = useState(false);
+  const [outlineAnalyzeAllPanelOpen, setOutlineAnalyzeAllPanelOpen] = useState(false);
+  const [outlineAnalyzeAllExcludeVariables, setOutlineAnalyzeAllExcludeVariables] = useState(true);
+  const [workstudioAiSettingsOpen, setWorkstudioAiSettingsOpen] = useState(false);
 
 
 
@@ -2358,6 +2782,10 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     outlineSourceRef.current = outlineSource;
   }, [outlineSource]);
   const [outlineActiveKey, setOutlineActiveKey] = useState<string | null>(null);
+  const outlineActiveKeyRef = useRef<string | null>(outlineActiveKey);
+  useEffect(() => {
+    outlineActiveKeyRef.current = outlineActiveKey;
+  }, [outlineActiveKey]);
   const [outlineCollapsedKeys, setOutlineCollapsedKeys] = useState<Set<string>>(() => new Set());
   const [outlineFileStateByPath, setOutlineFileStateByPath] = useState<Record<string, OutlineFileViewState>>({});
   const outlineFileStateByPathRef = useRef<Record<string, OutlineFileViewState>>(outlineFileStateByPath);
@@ -2367,10 +2795,6 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const [outlineRefreshSeq, setOutlineRefreshSeq] = useState(0);
   const outlineRequestSeqRef = useRef(0);
   const codeIndexScanStartedRef = useRef<Set<string>>(new Set());
-  const [outlineSortMenu, setOutlineSortMenu] = useState<
-    | { visible: true; x: number; y: number }
-    | null
-  >(null);
   const [lspMenu, setLspMenu] = useState<
     | { visible: true; x: number; y: number }
     | null
@@ -2621,24 +3045,44 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   );
 
   const outlineItemCount = useMemo(() => countOutlineItems(outlineItems), [outlineItems]);
-  const outlineItemsForRender = useMemo(
-    () => sortOutlineTreeForDisplay(outlineItems, outlineSortMode),
-    [outlineItems, outlineSortMode]
-  );
+  const outlineCollapsibleKeyCount = useMemo(() => collectOutlineCollapsibleKeys(outlineItems).length, [outlineItems]);
+  const outlineSourceLabel = outlineSource === 'lsp' ? 'LSP' : outlineSource === 'ast' ? 'AST' : '';
   const outlineSortModeLabel = useMemo(() => {
     switch (outlineSortMode) {
       case 'kind':
-        return '类型';
+        return '按类型';
       case 'name':
-        return '名称';
+        return '按名称';
       case 'size':
-        return '大小';
+        return '按大小';
       case 'position':
       default:
-        return '位置';
+        return '按位置';
     }
   }, [outlineSortMode]);
-  const outlineSourceLabel = outlineSource === 'lsp' ? 'LSP' : outlineSource === 'ast' ? 'AST' : '';
+  const outlineItemsForRender = useMemo(() => {
+    switch (outlineSortMode) {
+      case 'name':
+        return sortOutlineTreeForDisplay(outlineItems, compareOutlineByName);
+      case 'kind':
+        return sortOutlineTreeForDisplay(outlineItems, compareOutlineByKindThenName);
+      case 'size':
+        return sortOutlineTreeForDisplay(outlineItems, compareOutlineSizeDesc);
+      case 'position':
+      default:
+        return outlineItems;
+    }
+  }, [outlineItems, outlineSortMode]);
+  const outlineAnalyzeAllTargets = useMemo(() => {
+    if (outlineItems.length === 0) return [];
+    const flat = flattenOutlineItems(outlineItems);
+    const excludeVariables = outlineAnalyzeAllExcludeVariables;
+    return flat.filter((item) => {
+      const kind = normalizeOutlineKind(item.kind);
+      if (excludeVariables && OUTLINE_VALUE_KINDS.has(kind)) return false;
+      return true;
+    });
+  }, [outlineAnalyzeAllExcludeVariables, outlineItems]);
   const activeOutlineFilePath = useMemo(
     () => (activeTextFileInFocusedPane ? normalizeFsPath(activeTextFileInFocusedPane.path) : null),
     [activeTextFileInFocusedPane]
@@ -2828,6 +3272,12 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     if (leftSidebarTab !== 'explorer') {
       setLeftSidebarTab('explorer');
     }
+  }, [leftSidebarTab, outlineOpen]);
+
+  useEffect(() => {
+    if (outlineOpen && leftSidebarTab === 'outline') return;
+    setOutlineActionsMenuOpen(false);
+    setOutlineAnalyzeAllPanelOpen(false);
   }, [leftSidebarTab, outlineOpen]);
 
   // 背景扫描（低优先级）：
@@ -3036,6 +3486,15 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         for (const [paneId, editor] of editorByPaneRef.current.entries()) {
           if (!alivePaneIds.has(paneId)) continue;
           try {
+            const el = paneBodyRefs.current.get(paneId) ?? null;
+            if (el) {
+              const width = el.clientWidth;
+              const height = el.clientHeight;
+              if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+                editor.layout({ width, height });
+                continue;
+              }
+            }
             editor.layout();
           } catch {
             // ignore
@@ -4028,6 +4487,24 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     [activeOutlineFilePath, persistOutlineCollapsedSet]
   );
 
+  const collapseAllOutline = useCallback(() => {
+    const filePath = activeOutlineFilePath;
+    if (!filePath) return;
+    if (outlineItems.length === 0) return;
+    const keys = trimOutlineCollapsedKeys(collectOutlineCollapsibleKeys(outlineItems));
+    const next = new Set(keys);
+    setOutlineCollapsedKeys(next);
+    persistOutlineCollapsedSet(filePath, next);
+  }, [activeOutlineFilePath, outlineItems, persistOutlineCollapsedSet]);
+
+  const expandAllOutline = useCallback(() => {
+    const filePath = activeOutlineFilePath;
+    if (!filePath) return;
+    const next = new Set<string>();
+    setOutlineCollapsedKeys(next);
+    persistOutlineCollapsedSet(filePath, next);
+  }, [activeOutlineFilePath, persistOutlineCollapsedSet]);
+
   const jumpToOutlineItem = useCallback(
     (item: OutlineItem) => {
       const state = useWindowLayoutStore.getState();
@@ -4094,86 +4571,260 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     [workstudioId]
   );
 
-	  const ensureSymbolAnalysis = useCallback(
-	    async (filePath: string, symbolKey: string): Promise<WorkstudioSymbolAnalysis | null> => {
-	      if (!workstudioId) return null;
-	      const cacheKey = makeSymbolAnalysisCacheKey(filePath, symbolKey);
+  const makeFolderAnalysisCacheKey = useCallback(
+    (folderPathRaw: string) => {
+      const fp = normalizeFsPath(String(folderPathRaw ?? '').trim());
+      return `${workstudioId ?? ''}::${fp}`;
+    },
+    [workstudioId]
+  );
+
+		  const ensureSymbolAnalysis = useCallback(
+		    async (filePath: string, symbolKey: string): Promise<WorkstudioSymbolAnalysis | null> => {
+		      if (!workstudioId) return null;
+		      const cacheKey = makeSymbolAnalysisCacheKey(filePath, symbolKey);
 	      const cache = symbolAnalysisCacheRef.current;
 	      if (Object.prototype.hasOwnProperty.call(cache, cacheKey)) {
 	        return cache[cacheKey] ?? null;
 	      }
 
-	      try {
-	        const res = await getWorkstudioSymbolAnalysis({ workstudioId, filePath, symbolKey });
-	        setSymbolAnalysisCache((prev) => ({ ...prev, [cacheKey]: res }));
-	        setSymbolAnalysisExistsCache((prev) => ({ ...prev, [cacheKey]: Boolean(res) }));
-	        return res;
-	      } catch (err) {
-	        console.warn('[Workstudio][Outline] getWorkstudioSymbolAnalysis failed:', err);
-	        setSymbolAnalysisCache((prev) => ({ ...prev, [cacheKey]: null }));
-	        setSymbolAnalysisExistsCache((prev) => ({ ...prev, [cacheKey]: false }));
-	        return null;
-	      }
-	    },
-	    [makeSymbolAnalysisCacheKey, workstudioId]
-	  );
+		      try {
+		        const res = await getWorkstudioSymbolAnalysis({ workstudioId, filePath, symbolKey });
+		        setSymbolAnalysisCache((prev) => ({ ...prev, [cacheKey]: res }));
+		        setSymbolAnalysisExistsCache((prev) => ({ ...prev, [cacheKey]: Boolean(res) }));
+		        setSymbolAnalysisSummaryCache((prev) => ({
+		          ...prev,
+			          [cacheKey]: res
+			            ? {
+			                symbolKey: res.symbolKey,
+			                symbolSource: res.symbolSource,
+			                healthLevel: res.healthLevel,
+			                verdict: res.verdict,
+			                confidence: res.confidence,
+			                diagnosisSummary: res.diagnosisSummary,
+			                diagnosisCounts: res.diagnosisCounts,
+			                updatedAt: res.updatedAt,
+			              }
+			            : null,
+			        }));
+		        return res;
+		      } catch (err) {
+		        console.warn('[Workstudio][Outline] getWorkstudioSymbolAnalysis failed:', err);
+		        setSymbolAnalysisCache((prev) => ({ ...prev, [cacheKey]: null }));
+		        setSymbolAnalysisExistsCache((prev) => ({ ...prev, [cacheKey]: false }));
+		        setSymbolAnalysisSummaryCache((prev) => ({ ...prev, [cacheKey]: null }));
+		        return null;
+		      }
+		    },
+			    [makeSymbolAnalysisCacheKey, workstudioId]
+			  );
 
-		  // Outline: proactively refresh analysis status for the active file on page open / file switch.
-		  // This avoids "right click to refresh" UX.
+		  const ensureFolderAnalysis = useCallback(
+		    async (folderPath: string): Promise<WorkstudioFolderAnalysis | null> => {
+		      if (!workstudioId) return null;
+		      const cacheKey = makeFolderAnalysisCacheKey(folderPath);
+		      const cache = folderAnalysisCacheRef.current;
+		      if (Object.prototype.hasOwnProperty.call(cache, cacheKey)) {
+		        return cache[cacheKey] ?? null;
+		      }
+
+		      try {
+		        const res = await getWorkstudioFolderAnalysis({ workstudioId, folderPath });
+		        setFolderAnalysisCache((prev) => ({ ...prev, [cacheKey]: res }));
+		        setFolderAnalysisExistsCache((prev) => ({ ...prev, [cacheKey]: Boolean(res) }));
+		        setFolderAnalysisSummaryCache((prev) => ({
+		          ...prev,
+		          [cacheKey]: res
+		            ? {
+		                folderPath: res.folderPath,
+		                healthLevel: res.healthLevel,
+		                verdict: res.verdict,
+		                confidence: res.confidence,
+		                diagnosisSummary: res.diagnosisSummary,
+		                diagnosisCounts: res.diagnosisCounts,
+		                updatedAt: res.updatedAt,
+		              }
+		            : null,
+		        }));
+		        return res;
+		      } catch (err) {
+		        console.warn('[Workstudio][Explorer] getWorkstudioFolderAnalysis failed:', err);
+		        setFolderAnalysisCache((prev) => ({ ...prev, [cacheKey]: null }));
+		        setFolderAnalysisExistsCache((prev) => ({ ...prev, [cacheKey]: false }));
+		        setFolderAnalysisSummaryCache((prev) => ({ ...prev, [cacheKey]: null }));
+		        return null;
+		      }
+		    },
+		    [makeFolderAnalysisCacheKey, workstudioId]
+		  );
+
+		  // Explorer: prefetch folder analysis summaries on workstudio open.
 		  useEffect(() => {
-		    if (!outlineOpen) return;
-		    if (outlineLoading) return;
 		    if (!workstudioId) return;
-		    const filePath = activeOutlineFilePath;
-		    if (!filePath) return;
-		    if (outlineItems.length === 0) return;
-
-		    const key = `${workstudioId}::${normalizeFsPath(filePath)}`;
-		    const outlineKeys = Array.from(collectOutlineKeys(outlineItemsRef.current));
-		    if (outlineKeys.length === 0) return;
-		    outlineKeys.sort((a, b) => a.localeCompare(b));
-		    const fingerprint = outlineKeys.join('\n');
-		    const prevFingerprint = prefetchedSymbolAnalysisStatusByFileRef.current.get(key) ?? null;
-		    if (prevFingerprint === fingerprint) return;
-		    prefetchedSymbolAnalysisStatusByFileRef.current.set(key, fingerprint);
-
+		    if (!isTauri()) return;
+		    const wsId = workstudioId;
 		    let cancelled = false;
-		    const timer = window.setTimeout(() => {
-		      void (async () => {
-		        try {
-		          const analyzedKeysRaw = await listWorkstudioSymbolAnalysisKeysForFile({
-		            workstudioId,
-		            filePath,
+		    void (async () => {
+		      try {
+		        const rows = await listWorkstudioFolderAnalysisSummaries({ workstudioId: wsId });
+		        if (cancelled) return;
+		        const nextSummaries: Record<string, WorkstudioFolderAnalysisSummary | null> = {};
+		        const nextExists: Record<string, boolean> = {};
+		        for (const raw of rows ?? []) {
+		          const folderPath = normalizeFsPath(String((raw as any)?.folderPath ?? '').trim());
+		          if (!folderPath) continue;
+		          const cacheKey = makeFolderAnalysisCacheKey(folderPath);
+		          nextSummaries[cacheKey] = { ...(raw as any), folderPath } as WorkstudioFolderAnalysisSummary;
+		          nextExists[cacheKey] = true;
+		        }
+		        setFolderAnalysisSummaryCache(nextSummaries);
+		        setFolderAnalysisExistsCache(nextExists);
+		      } catch (err) {
+		        console.warn('[Workstudio][Explorer] listWorkstudioFolderAnalysisSummaries failed:', err);
+		      }
+		    })();
+		    return () => {
+		      cancelled = true;
+		    };
+		  }, [makeFolderAnalysisCacheKey, workstudioId, ws?.id]);
+
+			  // Outline: proactively refresh analysis status for the active file on page open / file switch.
+			  // This avoids "right click to refresh" UX.
+				  useEffect(() => {
+			    if (!outlineOpen) return;
+			    if (outlineLoading) return;
+			    if (!workstudioId) return;
+			    const filePath = activeOutlineFilePath;
+			    if (!filePath) return;
+			    if (outlineItems.length === 0) return;
+
+			    const key = `${workstudioId}::${normalizeFsPath(filePath)}`;
+			    const forceRefresh = pendingOutlineAnalysisRefreshByFileRef.current.has(key);
+			    const outlineKeys = Array.from(collectOutlineKeys(outlineItemsRef.current));
+			    if (outlineKeys.length === 0) return;
+			    outlineKeys.sort((a, b) => a.localeCompare(b));
+			    const fingerprint = outlineKeys.join('\n');
+			    const prevFingerprint = prefetchedSymbolAnalysisStatusByFileRef.current.get(key) ?? null;
+			    if (!forceRefresh && prevFingerprint === fingerprint) return;
+			    prefetchedSymbolAnalysisStatusByFileRef.current.set(key, fingerprint);
+
+			    let cancelled = false;
+			    const timer = window.setTimeout(() => {
+				      void (async () => {
+				        try {
+				          let analyzedSet = new Set<string>();
+				          const summaryByKey = new Map<string, WorkstudioSymbolAnalysisSummary>();
+				          try {
+				            const summariesRaw = await listWorkstudioSymbolAnalysisSummariesForFile({
+				              workstudioId,
+				              filePath,
+				            });
+				            for (const row of summariesRaw ?? []) {
+				              const symbolKey = String((row as any)?.symbolKey ?? '').trim();
+				              if (!symbolKey) continue;
+				              summaryByKey.set(symbolKey, { ...row, symbolKey });
+				            }
+				            analyzedSet = new Set(summaryByKey.keys());
+				          } catch {
+				            // Backward-compatible fallback: if backend doesn't support summaries yet, use keys only.
+				            const analyzedKeysRaw = await listWorkstudioSymbolAnalysisKeysForFile({
+				              workstudioId,
+				              filePath,
+				            });
+				            analyzedSet = new Set(
+				              (analyzedKeysRaw ?? [])
+				                .map((k) => String(k ?? '').trim())
+				                .filter((k) => Boolean(k))
+				            );
+				          }
+				          if (cancelled) return;
+				          // Outline 已刷新：丢弃旧请求，避免错误覆盖新状态。
+				          if (prefetchedSymbolAnalysisStatusByFileRef.current.get(key) !== fingerprint) return;
+
+				          // 用户手动刷新 Outline：检查 DB 冗余记录（符号已删除/重命名/位置变化等）。
+				          if (forceRefresh) {
+				            pendingOutlineAnalysisRefreshByFileRef.current.delete(key);
+				            const outlineKeySet = new Set(outlineKeys);
+				            const staleKeys = Array.from(analyzedSet).filter((k) => !outlineKeySet.has(k));
+				            if (staleKeys.length > 0) {
+				              const preview = staleKeys
+				                .slice(0, 12)
+				                .map((k) => `- ${k}`)
+				                .join('\n');
+				              const more = staleKeys.length > 12 ? `\n…以及另外 ${staleKeys.length - 12} 条` : '';
+				              const ok = await Promise.resolve(
+				                window.confirm(
+				                  [
+				                    `检测到当前文件存在 ${staleKeys.length} 条冗余的“符号分析”记录。`,
+				                    '',
+				                    '可能原因：符号被删除 / 重命名 / 行号变化（导致 key 变化）/ Outline 来源切换（LSP ↔ AST/CST）。',
+				                    '',
+				                    '是否删除这些旧记录？（需要你确认才会真正删除）',
+				                    '',
+				                    preview + more,
+				                  ].join('\n')
+				                )
+				              );
+				              if (ok) {
+				                let deleted = 0;
+				                for (let i = 0; i < staleKeys.length; i++) {
+				                  const symbolKey = staleKeys[i]!;
+				                  try {
+				                    // eslint-disable-next-line no-await-in-loop
+				                    await deleteWorkstudioSymbolAnalysis({ workstudioId, filePath, symbolKey });
+				                    deleted += 1;
+				                  } catch {
+				                    // ignore single-row failure; keep going
+				                  }
+				                  // 避免长列表一次性阻塞 UI
+				                  if (i > 0 && i % 16 === 0) {
+				                    // eslint-disable-next-line no-await-in-loop
+				                    await new Promise((r) => setTimeout(r, 0));
+				                  }
+				                }
+				                if (deleted > 0) {
+				                  showNavToast(`已清理冗余分析记录：${deleted}/${staleKeys.length}`);
+				                }
+				              }
+				            }
+				          }
+
+				          setSymbolAnalysisExistsCache((prev) => {
+				            let changed = false;
+				            const next: Record<string, boolean> = { ...prev };
+			            for (const symbolKey of outlineKeys) {
+			              const cacheKey = makeSymbolAnalysisCacheKey(filePath, symbolKey);
+		              const exists = analyzedSet.has(symbolKey);
+		              if (next[cacheKey] !== exists) {
+		                next[cacheKey] = exists;
+		                changed = true;
+		              }
+		            }
+		            return changed ? next : prev;
 		          });
-		          if (cancelled) return;
-		          // Outline 已刷新：丢弃旧请求，避免错误覆盖新状态。
-		          if (prefetchedSymbolAnalysisStatusByFileRef.current.get(key) !== fingerprint) return;
 
-		          const analyzedSet = new Set(
-		            (analyzedKeysRaw ?? [])
-		              .map((k) => String(k ?? '').trim())
-		              .filter((k) => Boolean(k))
-		          );
-
-		          setSymbolAnalysisExistsCache((prev) => {
+		          setSymbolAnalysisSummaryCache((prev) => {
 		            let changed = false;
-		            const next: Record<string, boolean> = { ...prev };
-	            for (const symbolKey of outlineKeys) {
-	              const cacheKey = makeSymbolAnalysisCacheKey(filePath, symbolKey);
-	              const exists = analyzedSet.has(symbolKey);
-	              if (next[cacheKey] !== exists) {
-	                next[cacheKey] = exists;
-	                changed = true;
-	              }
-	            }
-	            return changed ? next : prev;
-	          });
+		            const next: Record<string, WorkstudioSymbolAnalysisSummary | null> = { ...prev };
+		            for (const symbolKey of outlineKeys) {
+		              const cacheKey = makeSymbolAnalysisCacheKey(filePath, symbolKey);
+		              const exists = analyzedSet.has(symbolKey);
+		              const incoming = exists
+		                ? summaryByKey.get(symbolKey) ?? (Object.prototype.hasOwnProperty.call(prev, cacheKey) ? prev[cacheKey] : null)
+		                : null;
+		              if (next[cacheKey] !== incoming) {
+		                next[cacheKey] = incoming ?? null;
+		                changed = true;
+		              }
+		            }
+		            return changed ? next : prev;
+		          });
 
-	          // Warm negative cache (null) so the menu can render immediately without extra DB round-trips.
-	          // If DB says it exists, ensure we don't keep a stale `null` that would block `ensureSymbolAnalysis`.
-	          setSymbolAnalysisCache((prev) => {
-	            let changed = false;
-	            const next: Record<string, WorkstudioSymbolAnalysis | null> = { ...prev };
+		          // Warm negative cache (null) so the menu can render immediately without extra DB round-trips.
+		          // If DB says it exists, ensure we don't keep a stale `null` that would block `ensureSymbolAnalysis`.
+		          setSymbolAnalysisCache((prev) => {
+		            let changed = false;
+		            const next: Record<string, WorkstudioSymbolAnalysis | null> = { ...prev };
 	            for (const symbolKey of outlineKeys) {
 	              const cacheKey = makeSymbolAnalysisCacheKey(filePath, symbolKey);
 	              const exists = analyzedSet.has(symbolKey);
@@ -4204,49 +4855,141 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	            };
 	          });
 		        } catch (err) {
-		          // Allow retry later.
-		          if (prefetchedSymbolAnalysisStatusByFileRef.current.get(key) === fingerprint) {
-		            prefetchedSymbolAnalysisStatusByFileRef.current.delete(key);
-		          }
-		          console.warn('[Workstudio][Outline] prefetch analysis status failed:', err);
-		        }
-		      })();
-		    }, 180);
+			          // Allow retry later.
+			          if (prefetchedSymbolAnalysisStatusByFileRef.current.get(key) === fingerprint) {
+			            prefetchedSymbolAnalysisStatusByFileRef.current.delete(key);
+			          }
+			          console.warn('[Workstudio][Outline] prefetch analysis status failed:', err);
+			          // 避免手动刷新卡住：失败时也清除 pending 标记，让用户下次刷新可重试。
+			          if (forceRefresh) {
+			            pendingOutlineAnalysisRefreshByFileRef.current.delete(key);
+			          }
+			        }
+			      })();
+			    }, 180);
 
-		    return () => {
-		      cancelled = true;
-		      window.clearTimeout(timer);
-		    };
-		  }, [
-		    activeOutlineFilePath,
-		    outlineItems,
-		    outlineLoading,
-		    outlineOpen,
-		    workstudioId,
-		    makeSymbolAnalysisCacheKey,
-		  ]);
+			    return () => {
+			      cancelled = true;
+			      window.clearTimeout(timer);
+			    };
+			  }, [
+			    activeOutlineFilePath,
+			    outlineItems,
+			    outlineLoading,
+			    outlineOpen,
+			    workstudioId,
+			    makeSymbolAnalysisCacheKey,
+			    showNavToast,
+			  ]);
 
-	  const outlineAnalysisActionLabel = useCallback((kindRaw: string): string => {
-	    const kind = normalizeOutlineKind(kindRaw);
-	    if (OUTLINE_CALLABLE_KINDS.has(kind)) return '分析函数';
-	    if (OUTLINE_VALUE_KINDS.has(kind)) return '分析变量';
-    if (kind === 'class') return '分析类';
-    if (OUTLINE_CONTAINER_KINDS.has(kind)) return '分析结构';
-    return '分析符号';
-  }, []);
+		  const outlineAnalysisActionLabel = useCallback((kindRaw: string): string => {
+		    const kind = normalizeOutlineKind(kindRaw);
+		    if (OUTLINE_CALLABLE_KINDS.has(kind)) return '分析函数';
+		    if (OUTLINE_VALUE_KINDS.has(kind)) return '分析变量';
+	    if (kind === 'class') return '分析类';
+	    if (OUTLINE_CONTAINER_KINDS.has(kind)) return '分析结构';
+	    return '分析符号';
+	  }, []);
 
-	  const outlineAnalysisPromptPreview = useCallback((kindRaw: string): string => {
-	    const kind = normalizeOutlineKind(kindRaw);
-	    if (OUTLINE_CALLABLE_KINDS.has(kind)) {
-	      return '请分析该函数/方法，并调查其可能的业务调用路径（入口/上游调用者/下游依赖）；结合代码给出业务层分析、风险点与验证建议（关键结论请带文件引用）。';
-	    }
-	    if (OUTLINE_VALUE_KINDS.has(kind)) {
-	      return '请对该变量/字段做引用分析（写入点/读取点/传递路径），解释其在系统中的作用与不变量，并给出常见误用与风险点（关键结论请带文件引用）。';
-	    }
-	    if (OUTLINE_CONTAINER_KINDS.has(kind)) {
-	      return '请分析该类型/容器符号。若代码片段较大，请优先做偏宏观的分析（职责边界、对外 API、关键成员分组、依赖/生命周期/并发/错误处理/扩展点），避免逐行复述（关键结论请带文件引用）。';
-	    }
-	    return '请分析该符号在模块中的角色、用途与潜在问题，并用文件引用支撑关键结论。';
+	  const buildSymbolAnalysisOutputContract = useCallback(
+	    (opts: { fileRefExample?: string }) => {
+	      const fileRefExample = String(opts.fileRefExample ?? '').trim();
+	      const lines: string[] = [
+	        '你是一名资深代码分析工程师。你需要输出“分析 + 诊断”。请严格遵守以下输出协议（用于 UI 解析与 Outline 上色）：',
+	        '',
+	        '1) 你的回答必须以一个 ```json 代码块开始（第一行就是 ```json），且该 JSON 必须是严格 JSON（不要注释/尾逗号）。',
+	        '2) JSON 必须包含以下字段（字段名必须完全一致，camelCase）：',
+	        '',
+	        '```json',
+	        '{',
+	        '  "schema": "tauriai.symbol_diagnosis.v1",',
+	        '  "healthLevel": 10,',
+	        '  "verdict": "IMPROVABLE",',
+	        '  "confidence": 0.8,',
+	        '  "summary": "一句话诊断摘要（用于 tooltip）",',
+	        '  "counts": { "errors": 0, "defects": 0, "improvements": 0 }',
+	        '}',
+	        '```',
+	        '',
+	        'verdict 只能从以下枚举中选 1 个：HEALTHY / IMPROVABLE / RISKY / CRITICAL / POSSIBLY_UNUSED。',
+	        '',
+	        'healthLevel 取值说明：10=最健康（亮绿），1=最危险（深红）。当存在“致命 bug / 安全风险 / 数据损坏风险”时，请明显降低 healthLevel。',
+	        '',
+	        '3) JSON 之后输出 Markdown 正文，必须包含以下章节（标题必须出现）：',
+	        '- ## 诊断结论',
+	        '- ## Errors（致命问题）',
+	        '- ## Defects（缺陷/风险）',
+	        '- ## Improvements（可改进点）',
+	        '- ## 建议修改（最小改动优先）',
+	        '- ## 验证步骤',
+	        '',
+	        '4) “关键结论/证据”必须带文件引用，格式：`path#L行C列` 或 `path:行:列`（优先相对 workstudio 根目录）。',
+	      ];
+	      if (fileRefExample) {
+	        lines.push(`- 文件引用示例：\`${fileRefExample}\``);
+	      }
+	      lines.push(
+	        '',
+	        '你可以在需要时调用工具（read_file / list_dir / rg / web_search）来补齐上下文，但不要修改文件。',
+	      );
+	      return lines.join('\n');
+	    },
+	    []
+	  );
+
+		  const outlineAnalysisPromptPreview = useCallback((kindRaw: string): string => {
+		    const kind = normalizeOutlineKind(kindRaw);
+		    if (OUTLINE_CALLABLE_KINDS.has(kind)) {
+		      return '请分析该函数/方法，并调查其可能的业务调用路径（入口/上游调用者/下游依赖）；给出业务层解释与诊断（Errors/Defects/Improvements），并附上可执行的验证步骤（关键结论请带文件引用）。';
+		    }
+		    if (OUTLINE_VALUE_KINDS.has(kind)) {
+		      return '请对该变量/字段做引用分析（写入点/读取点/传递路径），解释其在系统中的作用与不变量；输出诊断（Errors/Defects/Improvements）与验证建议（关键结论请带文件引用）。';
+		    }
+		    if (OUTLINE_CONTAINER_KINDS.has(kind)) {
+		      return '请分析该类型/容器符号。若代码片段较大，请优先做偏宏观的分析（职责边界、对外 API、关键成员分组、依赖/生命周期/并发/错误处理/扩展点），避免逐行复述；并输出诊断（Errors/Defects/Improvements）与验证建议（关键结论请带文件引用）。';
+		    }
+		    return '请分析该符号在模块中的角色、用途与潜在问题；输出诊断（Errors/Defects/Improvements）与验证建议，并用文件引用支撑关键结论。';
+		  }, []);
+
+	  const buildFolderAnalysisOutputContract = useCallback(() => {
+	    const lines: string[] = [
+	      '你是一名资深代码分析工程师。你需要输出“分析 + 诊断”。请严格遵守以下输出协议（用于 UI 解析与 Explorer 上色）：',
+	      '',
+	      '1) 你的回答必须以一个 ```json 代码块开始（第一行就是 ```json），且该 JSON 必须是严格 JSON（不要注释/尾逗号）。',
+	      '2) JSON 必须包含以下字段（字段名必须完全一致，camelCase）：',
+	      '',
+	      '```json',
+	      '{',
+	      '  "schema": "tauriai.folder_diagnosis.v1",',
+	      '  "healthLevel": 10,',
+	      '  "verdict": "IMPROVABLE",',
+	      '  "confidence": 0.8,',
+	      '  "summary": "一句话诊断摘要（用于 tooltip）",',
+	      '  "counts": { "errors": 0, "defects": 0, "improvements": 0 }',
+	      '}',
+	      '```',
+	      '',
+	      'verdict 只能从以下枚举中选 1 个：HEALTHY / IMPROVABLE / RISKY / CRITICAL / POSSIBLY_UNUSED。',
+	      '',
+	      'healthLevel 取值说明：10=最健康（亮绿），1=最危险（深红）。当存在“致命 bug / 安全风险 / 数据损坏风险”时，请明显降低 healthLevel。',
+	      '',
+	      '3) JSON 之后输出 Markdown 正文，必须包含以下章节（标题必须出现）：',
+	      '- ## 诊断结论',
+	      '- ## Errors（致命问题）',
+	      '- ## Defects（缺陷/风险）',
+	      '- ## Improvements（可改进点）',
+	      '- ## 建议修改（最小改动优先）',
+	      '- ## 验证步骤',
+	      '',
+	      '4) “关键结论/证据”必须带文件引用，格式：`path#L行C列` 或 `path:行:列`（优先相对 workstudio 根目录）。',
+	      '',
+	      '你可以在需要时调用工具（read_file / list_dir / rg / web_search）来补齐上下文，但不要修改文件。',
+	    ];
+	    return lines.join('\n');
+	  }, []);
+
+	  const folderAnalysisPromptPreview = useCallback((): string => {
+	    return '请对该文件夹做宏观结构分析 + 风险诊断：模块分层、入口与关键流程、数据/状态、依赖边界、错误处理/可观测性、测试；输出诊断（Errors/Defects/Improvements）与可执行的验证步骤（关键结论请带文件引用）。';
 	  }, []);
 
   const getActiveSymbolAnalysisStatus = useCallback(
@@ -4265,6 +5008,27 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         if (String(meta.workstudioId ?? '').trim() !== wsId) continue;
         if (normalizeFsPath(meta.filePath) !== filePath) continue;
         if (String(meta.symbolKey ?? '').trim() !== symbolKey) continue;
+        return b.status;
+      }
+      return null;
+    },
+    [aiBubbles, workstudioId]
+  );
+
+  const getActiveFolderAnalysisStatus = useCallback(
+    (folderPathRaw: string): WorkstudioAiBubbleStatus | null => {
+      const wsId = String(workstudioId ?? '').trim();
+      const folderPath = normalizeFsPath(String(folderPathRaw ?? '').trim());
+      if (!wsId || !folderPath) return null;
+
+      const ACTIVE_STATUSES: WorkstudioAiBubbleStatus[] = ['queued', 'connecting', 'thinking', 'streaming', 'tool_calling'];
+      for (const b of aiBubbles) {
+        if (b.kind !== 'folder_analysis') continue;
+        if (!ACTIVE_STATUSES.includes(b.status)) continue;
+        const meta = b.folderAnalysisMeta;
+        if (!meta) continue;
+        if (String(meta.workstudioId ?? '').trim() !== wsId) continue;
+        if (normalizeFsPath(meta.folderPath) !== folderPath) continue;
         return b.status;
       }
       return null;
@@ -4312,6 +5076,33 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     const defaultAgentName = String(settings?.agentRef ?? '').trim() || '__system_symbol_analysis';
     const poolByAgentName = new Map<string, number>();
     poolByAgentName.set(defaultAgentName, clampConcurrency(settings?.concurrency, 2));
+
+    for (const row of settings?.additionalAgents ?? []) {
+      const agentName = String(row?.agentRef ?? '').trim();
+      if (!agentName) continue;
+      const concurrency = clampConcurrency(row?.concurrency, 1);
+      poolByAgentName.set(agentName, (poolByAgentName.get(agentName) ?? 0) + concurrency);
+    }
+
+    return Array.from(poolByAgentName.entries()).map(([agentName, concurrency]) => ({
+      agentName,
+      concurrency,
+    }));
+  }, []);
+
+  const buildFolderAnalysisAgentPool = useCallback(() => {
+    const clampConcurrency = (v: unknown, fallback: number) => {
+      const n = Number(v);
+      if (!Number.isFinite(n)) return fallback;
+      return Math.max(1, Math.min(64, Math.floor(n)));
+    };
+
+    const cfgStore = useConfigStore.getState();
+    const settings = cfgStore.config?.codeIntelligence?.folderAnalysis ?? null;
+
+    const defaultAgentName = String(settings?.agentRef ?? '').trim() || '__system_folder_analysis';
+    const poolByAgentName = new Map<string, number>();
+    poolByAgentName.set(defaultAgentName, clampConcurrency(settings?.concurrency, 1));
 
     for (const row of settings?.additionalAgents ?? []) {
       const agentName = String(row?.agentRef ?? '').trim();
@@ -4379,6 +5170,28 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	      const agent = cfgStore.getAgent(agentName);
 	      const modelRef = agent?.modelRef || cfgStore.getCurrentModelRef?.() || '';
 	      const analysisKey = makeSymbolAnalysisCacheKey(meta.filePath, meta.symbolKey);
+	      const symbolAnalysisThinkingParam: boolean | string = (() => {
+	        const rawLevel = (cfgStore.config?.codeIntelligence?.symbolAnalysis as any)?.thinkingLevel;
+	        const level: ThinkingLevel =
+	          rawLevel === 'low' || rawLevel === 'medium' || rawLevel === 'high' || rawLevel === 'xhigh'
+	            ? rawLevel
+	            : null;
+
+	        const providers = cfgStore.config?.providers ?? [];
+	        const apiProtocol = modelRef ? getApiProtocol(modelRef, providers) : 'chat_completions';
+	        const providerType = modelRef ? getProviderType(modelRef, providers) : undefined;
+	        const normalizedLevel: ThinkingLevel =
+	          providerType === 'google' && level === 'xhigh' ? 'high' : level;
+
+	        if (apiProtocol === 'responses') {
+	          // Tauri invoke -> Rust Option<Value>: `null` 会被反序列化为 None，触发后端默认 "medium"。
+	          // 因此这里用 `false` 显式禁用 thinking；非空等级则直接传递强度字符串。
+	          return normalizedLevel === null ? false : normalizedLevel;
+	        }
+
+	        // chat_completions：无=>不思考，其它=>思考
+	        return normalizedLevel === null ? false : true;
+	      })();
 
 	      // 先把 UI 状态切到“连接中”，避免 schedule 被重复触发导致重复启动。
 	      setAiBubbles((prev) => {
@@ -4520,7 +5333,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 		              agentName,
 		              modelRef: modelRef || undefined,
 		              runMode: 'chat',
-		              thinkingMode: false,
+		              thinkingMode: symbolAnalysisThinkingParam,
 		              workstudioId,
 		            }),
 		          stageTimeoutMs
@@ -4543,29 +5356,32 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 		          return;
 		        }
 
-	        const userMessageId = crypto.randomUUID();
-	        const relPath = (() => {
-	          const main = normalizeFsPath(ws?.mainFolder ?? '');
-	          const fp = normalizeFsPath(meta.filePath);
+			        const userMessageId = crypto.randomUUID();
+			        const relPath = (() => {
+			          const main = normalizeFsPath(ws?.mainFolder ?? '');
+			          const fp = normalizeFsPath(meta.filePath);
           if (main && fp.startsWith(main)) {
             const trimmed = fp.slice(main.length).replace(/^\/+/, '');
             return trimmed || basename(fp);
           }
-          return fp;
-        })();
+	          return fp;
+	        })();
 
-		        const userContent = [
-		          `${bubble.prompt || outlineAnalysisPromptPreview(meta.symbolKind)}`,
-		          '',
-		          `languageId: ${meta.languageId}`,
-          `filePath: ${relPath}`,
-          `symbol: ${meta.symbolName} (${meta.symbolKind})`,
-          `location: ${meta.selectionLine}:${meta.selectionColumn}`,
-          '',
-          '你可以在需要时调用工具（read_file / list_dir / rg / web_search）来补齐上下文，但不要修改文件。',
+			        const fileRefExample = `${relPath}#L${meta.selectionLine}C${meta.selectionColumn}`;
+			        const outputContract = buildSymbolAnalysisOutputContract({ fileRefExample });
+
+			        const userContent = [
+			          outputContract,
+			          '',
+			          `${bubble.prompt || outlineAnalysisPromptPreview(meta.symbolKind)}`,
+			          '',
+			          `languageId: ${meta.languageId}`,
+	          `filePath: ${relPath}`,
+	          `symbol: ${meta.symbolName} (${meta.symbolKind})`,
+	          `location: ${meta.selectionLine}:${meta.selectionColumn}`,
 	          '',
-		          `\`\`\`${meta.languageId || 'text'}\n${code}\n\`\`\``,
-		        ].join('\n');
+			          `\`\`\`${meta.languageId || 'text'}\n${code}\n\`\`\``,
+			        ].join('\n');
 
 		        const firstEventPromise = new Promise<void>((resolve) => {
 		          symbolAnalysisFirstRunEventWaitersRef.current.set(conversation.id, resolve);
@@ -4577,7 +5393,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 		          agentName,
 		          modelRef: modelRef || undefined,
 		          runMode: 'chat',
-		          thinking: false,
+		          thinking: symbolAnalysisThinkingParam,
 		          debugMode: cfgStore.config?.general?.debugMode ?? false,
 		        });
 
@@ -4690,20 +5506,32 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	                return next;
 	              });
 
-			              if (answerMd && meta) {
-				                const res = await awaitStage('recover_save_analysis', () => saveWorkstudioSymbolAnalysis({
-				                  ...meta,
-				                  answerMd,
-				                  modelRef: bubbleAfterRun?.modelRef,
-				                  latencyMs,
-			                }), stageTimeoutMs);
-				                const cacheKey = `${meta.workstudioId}::${normalizeFsPath(meta.filePath)}::${meta.symbolKey}`;
-				                setSymbolAnalysisCache((prev) => ({ ...prev, [cacheKey]: res }));
-				                setSymbolAnalysisExistsCache((prev) => ({ ...prev, [cacheKey]: true }));
-				                setOutlineMenu((prev) => {
-		                  if (!prev) return prev;
-		                  if (prev.filePath !== meta.filePath) return prev;
-		                  if (prev.item.key !== meta.symbolKey) return prev;
+				              if (answerMd && meta) {
+					                const res = await awaitStage('recover_save_analysis', () => saveWorkstudioSymbolAnalysis({
+					                  ...meta,
+					                  answerMd,
+					                  modelRef: bubbleAfterRun?.modelRef,
+					                  latencyMs,
+				                }), stageTimeoutMs);
+					                const cacheKey = `${meta.workstudioId}::${normalizeFsPath(meta.filePath)}::${meta.symbolKey}`;
+					                setSymbolAnalysisCache((prev) => ({ ...prev, [cacheKey]: res }));
+					                setSymbolAnalysisExistsCache((prev) => ({ ...prev, [cacheKey]: true }));
+					                setSymbolAnalysisSummaryCache((prev) => ({
+					                  ...prev,
+					                  [cacheKey]: {
+					                    symbolKey: res.symbolKey,
+					                    healthLevel: res.healthLevel,
+					                    verdict: res.verdict,
+					                    confidence: res.confidence,
+					                    diagnosisSummary: res.diagnosisSummary,
+					                    diagnosisCounts: res.diagnosisCounts,
+					                    updatedAt: res.updatedAt,
+					                  },
+					                }));
+					                setOutlineMenu((prev) => {
+				                  if (!prev) return prev;
+				                  if (prev.filePath !== meta.filePath) return prev;
+				                  if (prev.item.key !== meta.symbolKey) return prev;
 		                  return { ...prev, analysis: res, analysisExists: true };
 		                });
 		              }
@@ -4801,13 +5629,520 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	        startingSymbolAnalysisBubbleIdsRef.current.delete(bubbleId);
 	      }
     },
-    [
-      makeSymbolAnalysisCacheKey,
-      outlineAnalysisActionLabel,
-      outlineAnalysisPromptPreview,
-      workstudioId,
+	    [
+	      buildSymbolAnalysisOutputContract,
+	      makeSymbolAnalysisCacheKey,
+	      outlineAnalysisActionLabel,
+	      outlineAnalysisPromptPreview,
+	      workstudioId,
       ws?.mainFolder,
     ]
+  );
+
+  const startQueuedFolderAnalysis = useCallback(
+    async (bubbleId: string, agentNameRaw: string) => {
+      if (!workstudioId) return;
+
+      const bubble = aiBubblesRef.current.find((b) => b.id === bubbleId) ?? null;
+      if (!bubble || bubble.kind !== 'folder_analysis') return;
+      if (bubble.status !== 'queued') return;
+
+      // 用户可能在 queued 阶段就点击了“中止”，此时直接标记并释放锁。
+      if (cancelledFolderAnalysisBubbleIdsRef.current.has(bubbleId)) {
+        cancelledFolderAnalysisBubbleIdsRef.current.delete(bubbleId);
+        const metaForKey = bubble.folderAnalysisMeta ?? null;
+        if (metaForKey) {
+          const analysisKey = makeFolderAnalysisCacheKey(metaForKey.folderPath);
+          activeFolderAnalysisKeysRef.current.delete(analysisKey);
+        }
+        setAiBubbles((prev) => {
+          const next = prev.map((b) =>
+            b.id === bubbleId ? { ...b, status: 'error' as WorkstudioAiBubbleStatus, error: '已中止' } : b
+          );
+          aiBubblesRef.current = next;
+          return next;
+        });
+        return;
+      }
+
+      const meta = bubble.folderAnalysisMeta ?? null;
+      if (!meta) {
+        const analysisKeyFallback = makeFolderAnalysisCacheKey('');
+        if (analysisKeyFallback) activeFolderAnalysisKeysRef.current.delete(analysisKeyFallback);
+        setAiBubbles((prev) => {
+          const next = prev.map((b) =>
+            b.id === bubbleId
+              ? { ...b, status: 'error' as WorkstudioAiBubbleStatus, error: '缺少文件夹分析的必要信息，无法启动任务' }
+              : b
+          );
+          aiBubblesRef.current = next;
+          return next;
+        });
+        return;
+      }
+
+      if (startingFolderAnalysisBubbleIdsRef.current.has(bubbleId)) return;
+      startingFolderAnalysisBubbleIdsRef.current.add(bubbleId);
+
+      const cfgStore = useConfigStore.getState();
+      const agentName = String(agentNameRaw ?? '').trim() || '__system_folder_analysis';
+      const agent = cfgStore.getAgent(agentName);
+      const modelRef = agent?.modelRef || cfgStore.getCurrentModelRef?.() || '';
+      const analysisKey = makeFolderAnalysisCacheKey(meta.folderPath);
+
+      const folderAnalysisThinkingParam: boolean | string = (() => {
+        const rawLevel = (cfgStore.config?.codeIntelligence?.folderAnalysis as any)?.thinkingLevel;
+        const level: ThinkingLevel =
+          rawLevel === 'low' || rawLevel === 'medium' || rawLevel === 'high' || rawLevel === 'xhigh'
+            ? rawLevel
+            : null;
+
+        const providers = cfgStore.config?.providers ?? [];
+        const apiProtocol = modelRef ? getApiProtocol(modelRef, providers) : 'chat_completions';
+        const providerType = modelRef ? getProviderType(modelRef, providers) : undefined;
+        const normalizedLevel: ThinkingLevel =
+          providerType === 'google' && level === 'xhigh' ? 'high' : level;
+
+        if (apiProtocol === 'responses') {
+          // Tauri invoke -> Rust Option<Value>: `null` 会被反序列化为 None，触发后端默认 "medium"。
+          // 因此这里用 `false` 显式禁用 thinking；非空等级则直接传递强度字符串。
+          return normalizedLevel === null ? false : normalizedLevel;
+        }
+
+        // chat_completions：无=>不思考，其它=>思考
+        return normalizedLevel === null ? false : true;
+      })();
+
+      // 先把 UI 状态切到“连接中”，避免 schedule 被重复触发导致重复启动。
+      setAiBubbles((prev) => {
+        const next = prev.map((b) =>
+          b.id === bubbleId
+            ? {
+                ...b,
+                status: 'connecting' as WorkstudioAiBubbleStatus,
+                startedAtMs: Date.now(),
+                agentName,
+                modelRef: modelRef || b.modelRef,
+                error: undefined,
+              }
+            : b
+        );
+        aiBubblesRef.current = next;
+        return next;
+      });
+
+      if (cancelledFolderAnalysisBubbleIdsRef.current.has(bubbleId)) {
+        cancelledFolderAnalysisBubbleIdsRef.current.delete(bubbleId);
+        activeFolderAnalysisKeysRef.current.delete(analysisKey);
+        setAiBubbles((prev) => {
+          const next = prev.map((b) =>
+            b.id === bubbleId ? { ...b, status: 'error' as WorkstudioAiBubbleStatus, error: '已中止' } : b
+          );
+          aiBubblesRef.current = next;
+          return next;
+        });
+        startingFolderAnalysisBubbleIdsRef.current.delete(bubbleId);
+        return;
+      }
+
+      let trackedConversationId: string | null = null;
+      let runStage = 'init';
+      const flowStartedAtMs = Date.now();
+      const clampTimeoutMs = (v: unknown, fallback: number) => {
+        const n = Number(v);
+        if (!Number.isFinite(n)) return fallback;
+        return Math.max(2000, Math.min(180000, Math.floor(n)));
+      };
+
+      try {
+        const folderAnalysisSettings = cfgStore.config?.codeIntelligence?.folderAnalysis ?? null;
+        const stageTimeoutMs = clampTimeoutMs((folderAnalysisSettings as any)?.timeoutMs, 30000);
+        const runTaskTimeoutMs = Math.min(2 * 60 * 60 * 1000, Math.max(10 * 60 * 1000, stageTimeoutMs * 30));
+
+        const awaitStage = async <T,>(stageName: string, op: () => Promise<T>, timeoutMs: number): Promise<T> => {
+          runStage = stageName;
+          if (cancelledFolderAnalysisBubbleIdsRef.current.has(bubbleId)) {
+            throw new Error('已中止');
+          }
+          let cancelPollTimer: number | null = null;
+          let timeoutTimer: number | null = null;
+          try {
+            return await Promise.race([
+              Promise.resolve().then(op),
+              new Promise<T>((_, reject) => {
+                cancelPollTimer = window.setInterval(() => {
+                  if (cancelledFolderAnalysisBubbleIdsRef.current.has(bubbleId)) {
+                    reject(new Error('已中止'));
+                  }
+                }, 80);
+              }),
+              new Promise<T>((_, reject) => {
+                timeoutTimer = window.setTimeout(() => {
+                  reject(new Error(`阶段超时：${stageName}`));
+                }, timeoutMs);
+              }),
+            ]);
+          } finally {
+            if (cancelPollTimer !== null) window.clearInterval(cancelPollTimer);
+            if (timeoutTimer !== null) window.clearTimeout(timeoutTimer);
+          }
+        };
+
+        // 确保任何“刚改完的 agent/toolset”先落盘，否则后端读取到旧配置会导致工具缺失。
+        await awaitStage('flush_config_saves', async () => {
+          await cfgStore.flushConfigSaves?.();
+        }, stageTimeoutMs);
+
+        const folderBase = basename(meta.folderPath) || meta.folderPath;
+        const convTitleRaw = `文件夹分析:${folderBase}`;
+        const convTitle = convTitleRaw.length > 64 ? `${convTitleRaw.slice(0, 64)}…` : convTitleRaw;
+        const conversation = await awaitStage(
+          'create_conversation',
+          () => invoke<Conversation>('create_conversation', { title: convTitle }),
+          stageTimeoutMs
+        );
+        trackedRunConversationsRef.current.add(conversation.id);
+        trackedConversationId = conversation.id;
+        folderAnalysisKeyByConversationIdRef.current.set(conversation.id, analysisKey);
+        folderAnalysisConversationIdByBubbleIdRef.current.set(bubbleId, conversation.id);
+        folderAnalysisBubbleIdByConversationIdRef.current.set(conversation.id, bubbleId);
+
+        // 若用户在创建会话期间点击了“中止”，则不再继续启动 run_task。
+        if (cancelledFolderAnalysisBubbleIdsRef.current.has(bubbleId)) {
+          cancelledFolderAnalysisBubbleIdsRef.current.delete(bubbleId);
+          trackedRunConversationsRef.current.delete(conversation.id);
+          folderAnalysisKeyByConversationIdRef.current.delete(conversation.id);
+          folderAnalysisConversationIdByBubbleIdRef.current.delete(bubbleId);
+          folderAnalysisBubbleIdByConversationIdRef.current.delete(conversation.id);
+          activeFolderAnalysisKeysRef.current.delete(analysisKey);
+          setAiBubbles((prev) => {
+            const next = prev.map((b) =>
+              b.id === bubbleId ? { ...b, status: 'error' as WorkstudioAiBubbleStatus, error: '已中止' } : b
+            );
+            aiBubblesRef.current = next;
+            return next;
+          });
+          return;
+        }
+
+        // 尽早把 conversationId 绑定到 bubble，避免“事件流先到但 bubble 还没绑定 conversationId”导致 UI 卡在 connecting。
+        setAiBubbles((prev) => {
+          const next = prev.map((b) =>
+            b.id === bubbleId
+              ? {
+                  ...b,
+                  conversationId: conversation.id,
+                  agentName,
+                  modelRef: modelRef || b.modelRef,
+                }
+              : b
+          );
+          aiBubblesRef.current = next;
+          return next;
+        });
+
+        // 绑定到当前 workstudio，确保工具默认 workdir/工作区提示词可用。
+        await awaitStage(
+          'update_conversation_metadata',
+          () =>
+            invoke('update_conversation_metadata', {
+              conversationId: conversation.id,
+              agentName,
+              modelRef: modelRef || undefined,
+              runMode: 'chat',
+              thinkingMode: folderAnalysisThinkingParam,
+              workstudioId,
+            }),
+          stageTimeoutMs
+        );
+
+        if (cancelledFolderAnalysisBubbleIdsRef.current.has(bubbleId)) {
+          cancelledFolderAnalysisBubbleIdsRef.current.delete(bubbleId);
+          trackedRunConversationsRef.current.delete(conversation.id);
+          folderAnalysisKeyByConversationIdRef.current.delete(conversation.id);
+          folderAnalysisConversationIdByBubbleIdRef.current.delete(bubbleId);
+          folderAnalysisBubbleIdByConversationIdRef.current.delete(conversation.id);
+          activeFolderAnalysisKeysRef.current.delete(analysisKey);
+          setAiBubbles((prev) => {
+            const next = prev.map((b) =>
+              b.id === bubbleId ? { ...b, status: 'error' as WorkstudioAiBubbleStatus, error: '已中止' } : b
+            );
+            aiBubblesRef.current = next;
+            return next;
+          });
+          return;
+        }
+
+        const userMessageId = crypto.randomUUID();
+        const relFolderPath = (() => {
+          const main = normalizeFsPath(ws?.mainFolder ?? '');
+          const fp = normalizeFsPath(meta.folderPath);
+          if (main && fp.startsWith(main)) {
+            const trimmed = fp.slice(main.length).replace(/^\/+/, '');
+            return trimmed || basename(fp);
+          }
+          return fp;
+        })();
+
+        const outputContract = buildFolderAnalysisOutputContract();
+        const maxDepth = Number(folderAnalysisSettings?.maxDepth ?? 3);
+        const maxFiles = Number(folderAnalysisSettings?.maxFiles ?? 200);
+        const maxTotalBytes = Number(folderAnalysisSettings?.maxTotalBytes ?? 5_000_000);
+        const includeHidden = folderAnalysisSettings?.includeHidden === true;
+        const ignoreGlobs = Array.isArray(folderAnalysisSettings?.ignoreGlobs) ? folderAnalysisSettings!.ignoreGlobs : [];
+
+        const userContent = [
+          outputContract,
+          '',
+          `${bubble.prompt || folderAnalysisPromptPreview()}`,
+          '',
+          `folderPath: ${relFolderPath}`,
+          `workstudioMainFolder: ${normalizeFsPath(ws?.mainFolder ?? '')}`,
+          '',
+          '采集约束（请尽量遵守；避免一次性扫描太大目录）：',
+          `- maxDepth: ${Number.isFinite(maxDepth) ? Math.max(0, Math.floor(maxDepth)) : 3}`,
+          `- maxFiles: ${Number.isFinite(maxFiles) ? Math.max(0, Math.floor(maxFiles)) : 200}`,
+          `- maxTotalBytes: ${Number.isFinite(maxTotalBytes) ? Math.max(0, Math.floor(maxTotalBytes)) : 5000000}`,
+          `- includeHidden: ${includeHidden}`,
+          ignoreGlobs.length > 0 ? `- ignoreGlobs:\n${ignoreGlobs.map((g) => `  - ${g}`).join('\n')}` : '- ignoreGlobs: (none)',
+        ].join('\n');
+
+        const firstEventPromise = new Promise<void>((resolve) => {
+          folderAnalysisFirstRunEventWaitersRef.current.set(conversation.id, resolve);
+        });
+        const runTaskPromise = invoke('run_task', {
+          conversationId: conversation.id,
+          messageId: userMessageId,
+          content: userContent,
+          agentName,
+          modelRef: modelRef || undefined,
+          runMode: 'chat',
+          thinking: folderAnalysisThinkingParam,
+          debugMode: cfgStore.config?.general?.debugMode ?? false,
+        });
+
+        // 启动握手：短时间内至少应该收到 1 条 run:event（turn_started/turn_phase_started 等）或 run_task 返回。
+        await awaitStage(
+          'wait_first_run_event',
+          () => Promise.race([firstEventPromise, runTaskPromise.then(() => undefined)]),
+          stageTimeoutMs
+        );
+        await awaitStage('run_task', () => runTaskPromise, runTaskTimeoutMs);
+
+        {
+          const completionPromise = new Promise<void>((resolve) => {
+            folderAnalysisCompletionWaitersRef.current.set(conversation.id, resolve);
+          });
+          await awaitStage(
+            'wait_done_event_or_settle',
+            () => Promise.race([completionPromise, new Promise<void>((r) => setTimeout(r, 600))]),
+            stageTimeoutMs
+          );
+          folderAnalysisCompletionWaitersRef.current.delete(conversation.id);
+        }
+
+        // 兜底恢复：run:event 丢失时，从 DB 拉取最后 assistant 消息恢复气泡状态并落盘。
+        try {
+          const bubbleAfterRun = aiBubblesRef.current.find((b) => b.id === bubbleId) ?? null;
+          const ACTIVE_STATUSES: WorkstudioAiBubbleStatus[] = ['queued', 'connecting', 'thinking', 'streaming', 'tool_calling'];
+          const shouldRecover = bubbleAfterRun ? ACTIVE_STATUSES.includes(bubbleAfterRun.status) : true;
+          if (shouldRecover) {
+            const msgs = await awaitStage(
+              'recover_get_messages',
+              async () => {
+                const MAX_ATTEMPTS = 3;
+                let lastErr: unknown = null;
+                for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+                  if (cancelledFolderAnalysisBubbleIdsRef.current.has(bubbleId)) {
+                    throw new Error('已中止');
+                  }
+                  try {
+                    return await getMessages(conversation.id, 30);
+                  } catch (e) {
+                    lastErr = e;
+                    const msg = toErrorMessage(e);
+                    const isDbLock = msg.includes('DB lock 超时');
+                    if (!isDbLock || attempt === MAX_ATTEMPTS) throw e;
+                    await new Promise<void>((r) => window.setTimeout(r, 200 * attempt));
+                  }
+                }
+                throw lastErr ?? new Error('recover_get_messages failed');
+              },
+              stageTimeoutMs
+            );
+            const lastAssistant = [...msgs].reverse().find((m) => m.role === 'assistant') ?? null;
+            const answerMdFromContent = String(lastAssistant?.content ?? '').trim();
+            const answerMdFromBlocks = (() => {
+              const blocks = lastAssistant?.blocks ?? [];
+              const parts: string[] = [];
+              for (const blk of blocks) {
+                const anyBlk = blk as any;
+                if (anyBlk && anyBlk.type === 'text' && typeof anyBlk.text === 'string') {
+                  const t = String(anyBlk.text ?? '').trimEnd();
+                  if (t) parts.push(t);
+                }
+              }
+              return parts.join('\n').trim();
+            })();
+            const answerMd = answerMdFromContent || answerMdFromBlocks;
+
+            const blocks: MessageBlock[] = (() => {
+              const fromHistory = lastAssistant?.blocks ?? [];
+              if (fromHistory.length > 0) return fromHistory;
+              if (!answerMd) return [];
+              return [
+                {
+                  id: `${lastAssistant?.id ?? conversation.id}:assistant_text:final`,
+                  type: 'text',
+                  format: 'markdown',
+                  text: answerMd,
+                } as MessageBlock,
+              ];
+            })();
+
+            if (lastAssistant && (answerMd || blocks.length > 0)) {
+              const doneAtMs = Date.now();
+              const startedAtMs = bubbleAfterRun?.startedAtMs;
+              const latencyMs =
+                typeof startedAtMs === 'number' ? Math.max(0, doneAtMs - startedAtMs) : undefined;
+
+              setAiBubbles((prev) => {
+                const next = prev.map((b) =>
+                  b.id === bubbleId
+                    ? {
+                        ...b,
+                        conversationId: conversation.id,
+                        status: 'done' as WorkstudioAiBubbleStatus,
+                        assistantMessageId: lastAssistant.id,
+                        blocks: blocks.length > 0 ? blocks : b.blocks,
+                        turns: lastAssistant.turns ?? b.turns,
+                        modelRef: b.modelRef || lastAssistant.meta?.model || undefined,
+                        latencyMs: b.latencyMs ?? latencyMs,
+                      }
+                    : b
+                );
+                aiBubblesRef.current = next;
+                return next;
+              });
+
+              if (answerMd && meta) {
+                const res = await awaitStage(
+                  'recover_save_analysis',
+                  () =>
+                    saveWorkstudioFolderAnalysis({
+                      workstudioId: meta.workstudioId,
+                      folderPath: meta.folderPath,
+                      answerMd,
+                      modelRef: bubbleAfterRun?.modelRef,
+                      latencyMs,
+                    }),
+                  stageTimeoutMs
+                );
+                const cacheKey = `${meta.workstudioId}::${normalizeFsPath(meta.folderPath)}`;
+                setFolderAnalysisCache((prev) => ({ ...prev, [cacheKey]: res }));
+                setFolderAnalysisExistsCache((prev) => ({ ...prev, [cacheKey]: true }));
+                setFolderAnalysisSummaryCache((prev) => ({
+                  ...prev,
+                  [cacheKey]: {
+                    folderPath: res.folderPath,
+                    healthLevel: res.healthLevel,
+                    verdict: res.verdict,
+                    confidence: res.confidence,
+                    diagnosisSummary: res.diagnosisSummary,
+                    diagnosisCounts: res.diagnosisCounts,
+                    updatedAt: res.updatedAt,
+                  },
+                }));
+              }
+            }
+
+            // 资源回收（幂等）：即便 run:event 未触发 done/error，也确保不会占用 pool 或残留锁。
+            trackedRunConversationsRef.current.delete(conversation.id);
+            folderAnalysisKeyByConversationIdRef.current.delete(conversation.id);
+            folderAnalysisConversationIdByBubbleIdRef.current.delete(bubbleId);
+            folderAnalysisBubbleIdByConversationIdRef.current.delete(conversation.id);
+            folderAnalysisFirstRunEventWaitersRef.current.delete(conversation.id);
+            folderAnalysisLastRunEventAtMsByConversationIdRef.current.delete(conversation.id);
+            activeFolderAnalysisKeysRef.current.delete(analysisKey);
+            scheduleFolderAnalysisRunsRef.current?.();
+          }
+        } catch (err) {
+          const msg = toErrorMessage(err);
+          void showGlobalError(
+            'Workstudio 文件夹分析恢复失败',
+            [
+              `stage=recover_after_run_task`,
+              `runStage=${runStage}`,
+              `conversationId=${conversation.id}`,
+              `bubbleId=${bubbleId}`,
+              `workstudioId=${workstudioId ?? ''}`,
+              `folderPath=${meta.folderPath}`,
+              `agent=${agentName}`,
+              `modelRef=${modelRef}`,
+              `elapsedMs=${Date.now() - flowStartedAtMs}`,
+              '',
+              msg,
+            ].join('\n'),
+            err
+          );
+        }
+      } catch (err) {
+        if (trackedConversationId) {
+          trackedRunConversationsRef.current.delete(trackedConversationId);
+          folderAnalysisKeyByConversationIdRef.current.delete(trackedConversationId);
+          folderAnalysisBubbleIdByConversationIdRef.current.delete(trackedConversationId);
+          folderAnalysisFirstRunEventWaitersRef.current.delete(trackedConversationId);
+          folderAnalysisLastRunEventAtMsByConversationIdRef.current.delete(trackedConversationId);
+        }
+        if (trackedConversationId) {
+          void invoke('abort_run', { conversationId: trackedConversationId }).catch(() => {});
+        }
+        activeFolderAnalysisKeysRef.current.delete(analysisKey);
+        folderAnalysisConversationIdByBubbleIdRef.current.delete(bubbleId);
+        for (const [cid, bid] of folderAnalysisBubbleIdByConversationIdRef.current.entries()) {
+          if (bid === bubbleId) {
+            folderAnalysisBubbleIdByConversationIdRef.current.delete(cid);
+            break;
+          }
+        }
+        cancelledFolderAnalysisBubbleIdsRef.current.delete(bubbleId);
+        const isAborted = toErrorMessage(err) === '已中止';
+        const message = isAborted ? '已中止' : toErrorMessage(err);
+        if (!isAborted) {
+          const lastEventAt = trackedConversationId
+            ? folderAnalysisLastRunEventAtMsByConversationIdRef.current.get(trackedConversationId)
+            : undefined;
+          void showGlobalError(
+            'Workstudio 文件夹分析失败',
+            [
+              `stage=start_folder_analysis`,
+              `runStage=${runStage}`,
+              `bubbleId=${bubbleId}`,
+              `conversationId=${trackedConversationId ?? ''}`,
+              `workstudioId=${workstudioId ?? ''}`,
+              `folderPath=${meta.folderPath}`,
+              `agent=${agentName}`,
+              `modelRef=${modelRef}`,
+              `elapsedMs=${Date.now() - flowStartedAtMs}`,
+              `lastRunEventAtMs=${lastEventAt ?? ''}`,
+              '',
+              message,
+            ].join('\n'),
+            err
+          );
+        }
+        setAiBubbles((prev) => {
+          const next = prev.map((b) =>
+            b.id === bubbleId ? { ...b, status: 'error' as WorkstudioAiBubbleStatus, error: message } : b
+          );
+          aiBubblesRef.current = next;
+          return next;
+        });
+      } finally {
+        startingFolderAnalysisBubbleIdsRef.current.delete(bubbleId);
+      }
+    },
+    [buildFolderAnalysisOutputContract, folderAnalysisPromptPreview, makeFolderAnalysisCacheKey, workstudioId, ws?.mainFolder]
   );
 
   const scheduleSymbolAnalysisRuns = useCallback(() => {
@@ -4899,6 +6234,91 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     scheduleSymbolAnalysisRuns();
   }, [scheduleSymbolAnalysisRuns, symbolAnalysisActiveCount, symbolAnalysisQueuedCount, workstudioId]);
 
+  const scheduleFolderAnalysisRuns = useCallback(() => {
+    if (!workstudioId) return;
+
+    const settings = useConfigStore.getState().config?.codeIntelligence?.folderAnalysis;
+    const enabled = settings?.enabled !== false;
+    if (!enabled) {
+      const queued = aiBubblesRef.current.filter((b) => b.kind === 'folder_analysis' && b.status === 'queued');
+      if (queued.length > 0) {
+        for (const b of queued) {
+          const meta = b.folderAnalysisMeta;
+          if (!meta) continue;
+          const analysisKey = makeFolderAnalysisCacheKey(meta.folderPath);
+          activeFolderAnalysisKeysRef.current.delete(analysisKey);
+        }
+        setAiBubbles((prev) =>
+          prev.map((b) =>
+            b.kind === 'folder_analysis' && b.status === 'queued'
+              ? { ...b, status: 'error', error: '文件夹分析已关闭：请在设置中启用后再试' }
+              : b
+          )
+        );
+      }
+      return;
+    }
+
+    const pool = buildFolderAnalysisAgentPool();
+    if (pool.length === 0) return;
+
+    const RUNNING_STATUSES: WorkstudioAiBubbleStatus[] = ['connecting', 'thinking', 'streaming', 'tool_calling'];
+    const activeCountByAgentName = new Map<string, number>();
+    for (const b of aiBubblesRef.current) {
+      if (b.kind !== 'folder_analysis') continue;
+      if (!RUNNING_STATUSES.includes(b.status)) continue;
+      const agentName = String(b.agentName ?? '').trim();
+      if (!agentName) continue;
+      activeCountByAgentName.set(agentName, (activeCountByAgentName.get(agentName) ?? 0) + 1);
+    }
+
+    const queued = aiBubblesRef.current.filter((b) => b.kind === 'folder_analysis' && b.status === 'queued');
+    if (queued.length === 0) return;
+
+    const freeSlots = pool.map((p) => p.concurrency - (activeCountByAgentName.get(p.agentName) ?? 0));
+    const hasAnyFreeSlot = freeSlots.some((v) => v > 0);
+    if (!hasAnyFreeSlot) return;
+
+    let cursor = folderAnalysisRoundRobinCursorRef.current % pool.length;
+    let queueIdx = 0;
+
+    while (queueIdx < queued.length) {
+      let agentIdx = -1;
+      for (let i = 0; i < pool.length; i++) {
+        const idx = (cursor + i) % pool.length;
+        if ((freeSlots[idx] ?? 0) > 0) {
+          agentIdx = idx;
+          break;
+        }
+      }
+      if (agentIdx === -1) break;
+
+      const bubble = queued[queueIdx]!;
+      queueIdx += 1;
+
+      if (startingFolderAnalysisBubbleIdsRef.current.has(bubble.id)) continue;
+      freeSlots[agentIdx] = (freeSlots[agentIdx] ?? 0) - 1;
+      cursor = (agentIdx + 1) % pool.length;
+      void startQueuedFolderAnalysis(bubble.id, pool[agentIdx]!.agentName);
+    }
+
+    folderAnalysisRoundRobinCursorRef.current = cursor;
+  }, [buildFolderAnalysisAgentPool, makeFolderAnalysisCacheKey, startQueuedFolderAnalysis, workstudioId]);
+
+  useEffect(() => {
+    scheduleFolderAnalysisRunsRef.current = scheduleFolderAnalysisRuns;
+  }, [scheduleFolderAnalysisRuns]);
+
+  useEffect(() => {
+    scheduleFolderAnalysisRuns();
+  }, [codeIntelligenceConfig?.folderAnalysis, scheduleFolderAnalysisRuns]);
+
+  useEffect(() => {
+    if (!workstudioId) return;
+    if (folderAnalysisQueuedCount <= 0) return;
+    scheduleFolderAnalysisRuns();
+  }, [folderAnalysisActiveCount, folderAnalysisQueuedCount, scheduleFolderAnalysisRuns, workstudioId]);
+
   const runOutlineSymbolAnalysis = useCallback(
     async (filePath: string, languageId: string, item: OutlineItem) => {
       if (!workstudioId) return;
@@ -4933,14 +6353,16 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         code = `${code.slice(0, maxChars)}\n…（已截断）`;
       }
 
-      const symbolKind = normalizeOutlineKind(item.kind);
-      const actionLabel = outlineAnalysisActionLabel(symbolKind);
-      const promptPreview = outlineAnalysisPromptPreview(symbolKind);
-      const id = crypto.randomUUID();
-      const createdAt = new Date().toISOString();
-      const displayName = `${actionLabel}：${item.name}`;
-      const name = displayName.length > 32 ? `${displayName.slice(0, 32)}…` : displayName;
-      const subtitle = `${basename(filePath)}:${item.selectionLine}:${item.selectionColumn}`;
+	      const symbolKind = normalizeOutlineKind(item.kind);
+	      const actionLabel = outlineAnalysisActionLabel(symbolKind);
+	      const promptPreview = outlineAnalysisPromptPreview(symbolKind);
+	      const symbolSource =
+	        outlineSourceRef.current === 'lsp' ? 'lsp' : outlineSourceRef.current === 'ast' ? 'ast_cst' : undefined;
+	      const id = crypto.randomUUID();
+	      const createdAt = new Date().toISOString();
+	      const displayName = `${actionLabel}：${item.name}`;
+	      const name = displayName.length > 32 ? `${displayName.slice(0, 32)}…` : displayName;
+	      const subtitle = `${basename(filePath)}:${item.selectionLine}:${item.selectionColumn}`;
 
       const bubble: WorkstudioAiBubble = {
         id,
@@ -4950,15 +6372,16 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         prompt: promptPreview,
         status: 'queued',
         createdAt,
-        analysisMeta: {
-          workstudioId,
-          languageId,
-          filePath,
-          symbolKey: item.key,
-          symbolName: item.name,
-          symbolKind,
-          selectionLine: item.selectionLine,
-          selectionColumn: item.selectionColumn,
+	        analysisMeta: {
+	          workstudioId,
+	          languageId,
+	          filePath,
+	          symbolSource,
+	          symbolKey: item.key,
+	          symbolName: item.name,
+	          symbolKind,
+	          selectionLine: item.selectionLine,
+	          selectionColumn: item.selectionColumn,
           range: item.range,
         },
         analysisCode: code,
@@ -4976,7 +6399,58 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     ]
   );
 
-  const runOutlineAnalyzeAll = useCallback(async () => {
+  const runExplorerFolderAnalysis = useCallback(
+    async (folderPathRaw: string) => {
+      if (!workstudioId) return;
+      const enabled = useConfigStore.getState().config?.codeIntelligence?.folderAnalysis?.enabled !== false;
+      if (!enabled) {
+        throw new Error('文件夹分析已关闭：请在“设置 -> 代码智能 -> 文件夹分析”中启用');
+      }
+
+      const folderPath = normalizeFsPath(String(folderPathRaw ?? '').trim());
+      if (!folderPath) {
+        throw new Error('folderPath 为空');
+      }
+
+      const analysisKey = makeFolderAnalysisCacheKey(folderPath);
+      if (activeFolderAnalysisKeysRef.current.has(analysisKey)) {
+        throw new Error('该文件夹正在分析中（或已在队列中），请稍后再试');
+      }
+
+      const id = crypto.randomUUID();
+      const createdAt = new Date().toISOString();
+      const relFolderPath = (() => {
+        const main = normalizeFsPath(ws?.mainFolder ?? '');
+        if (main && folderPath.startsWith(main)) {
+          const trimmed = folderPath.slice(main.length).replace(/^\/+/, '');
+          return trimmed || basename(folderPath);
+        }
+        return folderPath;
+      })();
+      const displayName = `分析文件夹：${basename(folderPath) || relFolderPath}`;
+      const name = displayName.length > 32 ? `${displayName.slice(0, 32)}…` : displayName;
+
+      const bubble: WorkstudioAiBubble = {
+        id,
+        kind: 'folder_analysis',
+        name,
+        subtitle: relFolderPath,
+        prompt: folderAnalysisPromptPreview(),
+        status: 'queued',
+        createdAt,
+        folderAnalysisMeta: {
+          workstudioId,
+          folderPath,
+        },
+      };
+
+      activeFolderAnalysisKeysRef.current.add(analysisKey);
+      setAiBubbles((prev) => [...prev, bubble]);
+    },
+    [folderAnalysisPromptPreview, makeFolderAnalysisCacheKey, workstudioId, ws?.mainFolder]
+  );
+
+  const runOutlineAnalyzeAll = useCallback(async (opts?: { excludeVariables?: boolean }) => {
     if (!workstudioId) return;
     const settings = useConfigStore.getState().config?.codeIntelligence?.symbolAnalysis ?? null;
     if (settings?.enabled !== true) {
@@ -4994,7 +6468,8 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       return;
     }
 
-    const bulkExcludeVariables = settings?.bulkExcludeVariables !== false;
+    const bulkExcludeVariables =
+      typeof opts?.excludeVariables === 'boolean' ? opts.excludeVariables : settings?.bulkExcludeVariables !== false;
     const flat = flattenOutlineItems(outlineItems);
     const targets = flat.filter((item) => {
       const kind = normalizeOutlineKind(item.kind);
@@ -5006,15 +6481,6 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       showNavToast(bulkExcludeVariables ? '没有可解析的符号（已跳过变量/字段）' : '没有可解析的符号');
       return;
     }
-
-	    const prompt = [
-	      `将对当前文件的 ${targets.length} 个符号执行“全部解析”${bulkExcludeVariables ? '（已跳过变量/字段）' : ''}。`,
-	      '',
-	      '这会发起大量模型请求，可能耗时较长并产生费用。',
-	      '继续？',
-	    ].join('\n');
-	    const ok = await Promise.resolve(window.confirm(prompt));
-	    if (!ok) return;
 
     const filePath = file.path;
     const languageId = activeTextLanguageId || languageForPath(filePath);
@@ -5045,6 +6511,12 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     showNavToast(`已加入解析队列：${enqueued}/${targets.length}`);
   }, [activeTextFileInFocusedPane, activeTextLanguageId, outlineItems, runOutlineSymbolAnalysis, showNavToast, workstudioId]);
 
+  const openOutlineAnalyzeAllPanel = useCallback(() => {
+    const settings = useConfigStore.getState().config?.codeIntelligence?.symbolAnalysis ?? null;
+    setOutlineAnalyzeAllExcludeVariables(settings?.bulkExcludeVariables !== false);
+    setOutlineAnalyzeAllPanelOpen(true);
+  }, []);
+
   const toWorkstudioRelativePath = useCallback(
     (absFilePath: string) => {
       const main = normalizeFsPath(ws?.mainFolder ?? '');
@@ -5058,23 +6530,29 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     [ws?.mainFolder]
   );
 
-  const buildWorkstudioSymbolAnalysisRichTextDoc = useCallback(
-    (
-      analysis: Pick<
-        WorkstudioSymbolAnalysis,
-        | 'id'
-        | 'filePath'
-        | 'selectionLine'
-        | 'selectionColumn'
-        | 'symbolName'
-        | 'languageId'
-        | 'symbolKind'
-        | 'modelRef'
-        | 'latencyMs'
-        | 'updatedAt'
-        | 'answerMd'
-      >
-    ): string => {
+	  const buildWorkstudioSymbolAnalysisRichTextDoc = useCallback(
+	    (
+		      analysis: Pick<
+		        WorkstudioSymbolAnalysis,
+		        | 'id'
+		        | 'filePath'
+		        | 'selectionLine'
+		        | 'selectionColumn'
+		        | 'symbolName'
+		        | 'languageId'
+		        | 'symbolSource'
+		        | 'symbolKind'
+		        | 'modelRef'
+		        | 'latencyMs'
+		        | 'healthLevel'
+		        | 'verdict'
+	        | 'confidence'
+	        | 'diagnosisSummary'
+	        | 'diagnosisCounts'
+	        | 'updatedAt'
+	        | 'answerMd'
+	      >
+	    ): string => {
       const generatedAt = new Date().toISOString();
       const relPath = toWorkstudioRelativePath(analysis.filePath);
       const fileRef = `${relPath}#L${analysis.selectionLine}C${analysis.selectionColumn}`;
@@ -5086,10 +6564,90 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       lines.push('');
       lines.push(`# 符号分析：${analysis.symbolName}`);
       lines.push('');
+	      lines.push(`- 生成时间：\`${generatedAt}\``);
+	      lines.push(`- 位置：\`${fileRef}\``);
+		      lines.push(`- 语言：\`${analysis.languageId}\``);
+		      if (analysis.symbolSource) {
+		        lines.push(`- 符号来源：\`${symbolSourceToLabel(analysis.symbolSource)}\``);
+		      }
+		      lines.push(`- 类型：\`${analysis.symbolKind}\``);
+		      if (typeof analysis.healthLevel === 'number') {
+		        const v = clampHealthLevel(analysis.healthLevel);
+		        if (v) lines.push(`- AI 健康度：\`H${v}/10\``);
+		      }
+	      if (analysis.verdict) {
+	        const label = verdictToLabel(analysis.verdict);
+	        lines.push(`- 诊断结论：\`${label || analysis.verdict}\``);
+	      }
+	      if (typeof analysis.confidence === 'number') {
+	        lines.push(`- 置信度：\`${Math.max(0, Math.min(1, analysis.confidence)).toFixed(2)}\``);
+	      }
+	      if (analysis.diagnosisCounts) {
+	        lines.push(
+	          `- 计数：\`Errors ${analysis.diagnosisCounts.errors} · Defects ${analysis.diagnosisCounts.defects} · Improvements ${analysis.diagnosisCounts.improvements}\``
+	        );
+	      }
+	      if (analysis.diagnosisSummary) lines.push(`- 摘要：${analysis.diagnosisSummary}`);
+	      if (analysis.modelRef) lines.push(`- 模型：\`${analysis.modelRef}\``);
+	      if (typeof analysis.latencyMs === 'number') lines.push(`- 延迟：\`${analysis.latencyMs}ms\``);
+	      lines.push(`- 更新时间：\`${analysis.updatedAt}\``);
+      lines.push('');
+      lines.push('---');
+      lines.push('');
+      lines.push((analysis.answerMd ?? '').trim());
+      lines.push('');
+      return lines.join('\n').trim() + '\n';
+    },
+    [toWorkstudioRelativePath]
+  );
+
+  const buildWorkstudioFolderAnalysisRichTextDoc = useCallback(
+    (
+      analysis: Pick<
+        WorkstudioFolderAnalysis,
+        | 'id'
+        | 'folderPath'
+        | 'modelRef'
+        | 'latencyMs'
+        | 'healthLevel'
+        | 'verdict'
+        | 'confidence'
+        | 'diagnosisSummary'
+        | 'diagnosisCounts'
+        | 'updatedAt'
+        | 'answerMd'
+      >
+    ): string => {
+      const generatedAt = new Date().toISOString();
+      const relFolderPath = toWorkstudioRelativePath(analysis.folderPath);
+      const displayName = basename(relFolderPath) || relFolderPath || basename(analysis.folderPath) || 'Folder';
+
+      const lines: string[] = [];
+      lines.push(
+        `<!-- tauri.richtxt v1 | kind=workstudio_folder_analysis | generatedAt=${generatedAt} | analysisId=${analysis.id} -->`
+      );
+      lines.push('');
+      lines.push(`# 文件夹分析：${displayName}`);
+      lines.push('');
       lines.push(`- 生成时间：\`${generatedAt}\``);
-      lines.push(`- 位置：\`${fileRef}\``);
-      lines.push(`- 语言：\`${analysis.languageId}\``);
-      lines.push(`- 类型：\`${analysis.symbolKind}\``);
+      lines.push(`- 文件夹：\`${relFolderPath}\``);
+      if (typeof analysis.healthLevel === 'number') {
+        const v = clampHealthLevel(analysis.healthLevel);
+        if (v) lines.push(`- AI 健康度：\`H${v}/10\``);
+      }
+      if (analysis.verdict) {
+        const label = verdictToLabel(analysis.verdict);
+        lines.push(`- 诊断结论：\`${label || analysis.verdict}\``);
+      }
+      if (typeof analysis.confidence === 'number') {
+        lines.push(`- 置信度：\`${Math.max(0, Math.min(1, analysis.confidence)).toFixed(2)}\``);
+      }
+      if (analysis.diagnosisCounts) {
+        lines.push(
+          `- 计数：\`Errors ${analysis.diagnosisCounts.errors} · Defects ${analysis.diagnosisCounts.defects} · Improvements ${analysis.diagnosisCounts.improvements}\``
+        );
+      }
+      if (analysis.diagnosisSummary) lines.push(`- 摘要：${analysis.diagnosisSummary}`);
       if (analysis.modelRef) lines.push(`- 模型：\`${analysis.modelRef}\``);
       if (typeof analysis.latencyMs === 'number') lines.push(`- 延迟：\`${analysis.latencyMs}ms\``);
       lines.push(`- 更新时间：\`${analysis.updatedAt}\``);
@@ -5157,20 +6715,60 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 		      );
 		      if (!ok) return;
 
-	      await deleteWorkstudioSymbolAnalysis({ workstudioId, filePath, symbolKey: item.key });
-	      const cacheKey = makeSymbolAnalysisCacheKey(filePath, item.key);
-	      setSymbolAnalysisCache((prev) => ({ ...prev, [cacheKey]: null }));
-	      setSymbolAnalysisExistsCache((prev) => ({ ...prev, [cacheKey]: false }));
-	      setOutlineMenu((prev) => {
-	        if (!prev) return prev;
-	        if (prev.filePath !== filePath) return prev;
-	        if (prev.item.key !== item.key) return prev;
-	        return { ...prev, analysis: null, analysisExists: false };
+		      await deleteWorkstudioSymbolAnalysis({ workstudioId, filePath, symbolKey: item.key });
+		      const cacheKey = makeSymbolAnalysisCacheKey(filePath, item.key);
+		      setSymbolAnalysisCache((prev) => ({ ...prev, [cacheKey]: null }));
+		      setSymbolAnalysisExistsCache((prev) => ({ ...prev, [cacheKey]: false }));
+		      setSymbolAnalysisSummaryCache((prev) => ({ ...prev, [cacheKey]: null }));
+		      setOutlineMenu((prev) => {
+		        if (!prev) return prev;
+		        if (prev.filePath !== filePath) return prev;
+		        if (prev.item.key !== item.key) return prev;
+		        return { ...prev, analysis: null, analysisExists: false };
 	      });
 	      showNavToast('已删除分析结果');
 	    },
 	    [deleteWorkstudioSymbolAnalysis, makeSymbolAnalysisCacheKey, showNavToast, workstudioId]
 	  );
+
+  const viewExplorerFolderAnalysis = useCallback(
+    async (folderPath: string) => {
+      if (!workstudioId) return;
+      const res = await ensureFolderAnalysis(folderPath);
+      if (!res) {
+        showNavToast('暂无已保存的分析结果');
+        return;
+      }
+
+      const nameBase = `查看分析：${basename(folderPath) || folderPath}`;
+      const name = nameBase.length > 32 ? `${nameBase.slice(0, 32)}…` : nameBase;
+      const content = buildWorkstudioFolderAnalysisRichTextDoc(res);
+      openVirtualRichTextFile(name, content);
+    },
+    [
+      buildWorkstudioFolderAnalysisRichTextDoc,
+      ensureFolderAnalysis,
+      openVirtualRichTextFile,
+      showNavToast,
+      workstudioId,
+    ]
+  );
+
+  const deleteExplorerFolderAnalysis = useCallback(
+    async (folderPath: string) => {
+      if (!workstudioId) return;
+      const ok = await Promise.resolve(window.confirm(`确定删除该文件夹的分析结果吗？\n\n${folderPath}`));
+      if (!ok) return;
+
+      await deleteWorkstudioFolderAnalysis({ workstudioId, folderPath });
+      const cacheKey = makeFolderAnalysisCacheKey(folderPath);
+      setFolderAnalysisCache((prev) => ({ ...prev, [cacheKey]: null }));
+      setFolderAnalysisExistsCache((prev) => ({ ...prev, [cacheKey]: false }));
+      setFolderAnalysisSummaryCache((prev) => ({ ...prev, [cacheKey]: null }));
+      showNavToast('已删除分析结果');
+    },
+    [deleteWorkstudioFolderAnalysis, makeFolderAnalysisCacheKey, showNavToast, workstudioId]
+  );
 
 	  const openOutlineItemMenu = useCallback(
 	    (e: React.MouseEvent, item: OutlineItem) => {
@@ -5219,22 +6817,48 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	    [activeTextFileInFocusedPane?.path, ensureSymbolAnalysis, makeSymbolAnalysisCacheKey]
 	  );
 
-	  const renderOutlineNodes = (nodes: OutlineItem[], depth = 0): React.ReactNode =>
-	    nodes.map((item) => {
-	      const active = outlineActiveKey === item.key;
-	      const filePath = activeTextFileInFocusedPane?.path ?? '';
-	      const analysisCacheKey = filePath ? makeSymbolAnalysisCacheKey(filePath, item.key) : '';
-	      const exists = analysisCacheKey ? symbolAnalysisExistsCache[analysisCacheKey] : undefined;
-	      const hasAnalysis = analysisCacheKey
-	        ? typeof exists === 'boolean'
-	          ? exists
-	          : Boolean(symbolAnalysisCache[analysisCacheKey])
-	        : false;
-	      const hasChildren = item.children.length > 0;
-	      const collapsed = hasChildren && outlineCollapsedKeys.has(item.key);
-	      return (
-        <React.Fragment key={item.id}>
-          <div className="flex items-center gap-1" style={{ paddingLeft: 6 + depth * 14 }}>
+			  const renderOutlineNodes = (nodes: OutlineItem[], depth = 0): React.ReactNode =>
+			    nodes.map((item) => {
+			      const active = outlineActiveKey === item.key;
+			      const filePath = activeTextFileInFocusedPane?.path ?? '';
+			      const analysisCacheKey = filePath ? makeSymbolAnalysisCacheKey(filePath, item.key) : '';
+			      const exists = analysisCacheKey ? symbolAnalysisExistsCache[analysisCacheKey] : undefined;
+			      const summary = analysisCacheKey ? symbolAnalysisSummaryCache[analysisCacheKey] : undefined;
+			      const cachedAnalysis = analysisCacheKey ? symbolAnalysisCache[analysisCacheKey] : undefined;
+			      const hasAnalysis = analysisCacheKey
+			        ? typeof exists === 'boolean'
+			          ? exists
+			          : Boolean(symbolAnalysisCache[analysisCacheKey])
+			        : false;
+			      const analysisSourceRaw = String(summary?.symbolSource ?? cachedAnalysis?.symbolSource ?? '').trim();
+			      const analysisSourceLabel = analysisSourceRaw ? symbolSourceToLabel(analysisSourceRaw) : '';
+			      const analysisUpdatedAtRaw = String(summary?.updatedAt ?? cachedAnalysis?.updatedAt ?? '').trim();
+			      const analysisUpdatedAtLabel = analysisUpdatedAtRaw ? formatRelativeAgeLabel(analysisUpdatedAtRaw) : '';
+			      const analysisUpdatedAtFull = analysisUpdatedAtRaw ? formatIsoDateTimeLocal(analysisUpdatedAtRaw) : '';
+			      const healthLevel = clampHealthLevel(summary?.healthLevel ?? cachedAnalysis?.healthLevel);
+			      const verdictRaw = String((summary?.verdict ?? cachedAnalysis?.verdict ?? '') as string).trim();
+			      const diagnosisSummary = String((summary?.diagnosisSummary ?? cachedAnalysis?.diagnosisSummary ?? '') as string).trim();
+			      const counts = summary?.diagnosisCounts ?? cachedAnalysis?.diagnosisCounts;
+			      const isDark =
+			        typeof document !== 'undefined' && Boolean(document.documentElement?.classList?.contains('dark'));
+		      const healthColor = healthLevel ? healthLevelToColor(healthLevel, isDark) : null;
+		      const hasChildren = item.children.length > 0;
+		      const collapsed = hasChildren && outlineCollapsedKeys.has(item.key);
+			      const title = (() => {
+			        const base = `${item.name} · ${item.kind} · ${item.selectionLine}:${item.selectionColumn}`;
+			        if (!hasAnalysis) return base;
+			        const parts: string[] = [base];
+			        if (healthLevel) parts.push(`AI 健康度：H${healthLevel}/10`);
+			        if (verdictRaw) parts.push(`结论：${verdictRaw}`);
+			        if (analysisSourceLabel) parts.push(`来源：${analysisSourceLabel}`);
+			        if (analysisUpdatedAtFull) parts.push(`更新时间：${analysisUpdatedAtFull}`);
+			        if (counts) parts.push(`Errors ${counts.errors} · Defects ${counts.defects} · Improvements ${counts.improvements}`);
+			        if (diagnosisSummary) parts.push(diagnosisSummary);
+			        return parts.join('\n');
+			      })();
+		      return (
+	        <React.Fragment key={item.id}>
+	          <div className="flex items-center gap-1" style={{ paddingLeft: 6 + depth * 14 }}>
             {hasChildren ? (
               <button
                 type="button"
@@ -5247,32 +6871,81 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
             ) : (
               <span className="inline-block h-4 w-4" />
             )}
-            <button
-              type="button"
-              className={[
-                'flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1 text-left text-xs',
-                active
-                  ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200'
-                  : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800',
-              ].join(' ')}
-              title={`${item.name} · ${item.kind} · ${item.selectionLine}:${item.selectionColumn}`}
-              onClick={() => jumpToOutlineItem(item)}
-              onContextMenu={(e) => openOutlineItemMenu(e, item)}
-            >
-              <span
-                className={[
-                  'min-w-0 flex-1 truncate font-medium',
-                  hasAnalysis && !active ? 'text-emerald-700 dark:text-emerald-300' : '',
-                ].join(' ')}
-                title={hasAnalysis ? '已保存分析结果' : undefined}
-              >
-                {item.name}
-              </span>
-              <span className="shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-gray-500 dark:bg-gray-800 dark:text-gray-400">
-                {item.kind}
-              </span>
-            </button>
-          </div>
+		            <button
+		              type="button"
+		              data-outline-key={item.key}
+		              className={[
+		                'flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1 text-left text-xs',
+		                active
+		                  ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200'
+		                  : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800',
+	              ].join(' ')}
+	              title={title}
+	              onClick={() => jumpToOutlineItem(item)}
+	              onContextMenu={(e) => openOutlineItemMenu(e, item)}
+	            >
+	              <span
+	                className={[
+	                  'min-w-0 flex-1 truncate font-medium',
+	                  hasAnalysis && !healthLevel && !active ? 'text-emerald-700 dark:text-emerald-300' : '',
+	                ].join(' ')}
+	                style={
+	                  hasAnalysis && healthColor
+	                    ? {
+	                        textDecorationLine: 'underline',
+	                        textDecorationColor: healthColor,
+	                        textDecorationThickness: '2px',
+	                        textUnderlineOffset: '2px',
+	                      }
+	                    : undefined
+	                }
+	                title={
+	                  hasAnalysis
+	                    ? healthLevel
+	                      ? `AI 健康度 H${healthLevel}/10`
+	                      : '已保存分析结果'
+	                    : undefined
+	                }
+	              >
+	                {item.name}
+	              </span>
+		              {hasAnalysis ? (
+		                <>
+		                  <span
+		                    className={[
+		                      'shrink-0 h-2 w-2 rounded-full',
+		                      !healthLevel ? 'bg-emerald-500 dark:bg-emerald-400' : '',
+		                    ].join(' ')}
+		                    style={healthColor ? { backgroundColor: healthColor } : undefined}
+		                    title={
+		                      healthLevel
+		                        ? `AI 健康度 H${healthLevel}/10${verdictRaw ? ` · ${verdictRaw}` : ''}`
+		                        : '已保存分析结果'
+		                    }
+		                  />
+		                  {analysisSourceLabel && (
+		                    <span
+		                      className="shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-gray-500 dark:bg-gray-800 dark:text-gray-300"
+		                      title={`分析来源：${analysisSourceLabel}`}
+		                    >
+		                      {analysisSourceLabel}
+		                    </span>
+		                  )}
+		                  {analysisUpdatedAtLabel && (
+		                    <span
+		                      className="shrink-0 text-[10px] text-gray-400 dark:text-gray-500"
+		                      title={analysisUpdatedAtFull ? `更新时间：${analysisUpdatedAtFull}` : undefined}
+		                    >
+		                      {analysisUpdatedAtLabel}
+		                    </span>
+		                  )}
+		                </>
+		              ) : null}
+		              <span className="shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-gray-500 dark:bg-gray-800 dark:text-gray-400">
+		                {item.kind}
+		              </span>
+	            </button>
+	          </div>
           {hasChildren && !collapsed ? renderOutlineNodes(item.children, depth + 1) : null}
         </React.Fragment>
       );
@@ -5423,10 +7096,22 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     []
   );
 
+  const formatPathForWorkspaceMentionLabel = useCallback(
+    (absPathRaw: string, kind: 'file' | 'folder') => {
+      const token = formatPathForChatRef(absPathRaw, kind);
+      if (token.startsWith('`') && token.endsWith('`') && token.length >= 2) return token.slice(1, -1);
+      return token;
+    },
+    [formatPathForChatRef]
+  );
+
   const addPathToMainChat = useCallback(
     async (absPathRaw: string, kind: 'file' | 'folder') => {
-      const refText = formatPathForChatRef(absPathRaw, kind);
-      if (!refText) return;
+      const absPath = normalizeFsPath(String(absPathRaw ?? '').trim());
+      if (!absPath) return;
+      const refText = formatPathForChatRef(absPath, kind);
+      const label = formatPathForWorkspaceMentionLabel(absPath, kind);
+      if (!refText || !label) return;
 
       // 保底：先复制到剪贴板（即使主窗口未打开也可手动粘贴）。
       try {
@@ -5441,9 +7126,9 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       await focusMainWindow();
       const mainWin = await WebviewWindow.getByLabel('main').catch(() => null);
       if (!mainWin) return;
-      await mainWin.emit('chat:insert_text', { text: refText }).catch(() => { });
+      await mainWin.emit('chat:insert_workspace_mention', { absPath, label, kind }).catch(() => { });
     },
-    [formatPathForChatRef]
+    [focusMainWindow, formatPathForChatRef, formatPathForWorkspaceMentionLabel]
   );
 
   const formatPathForSnippetLabel = useCallback(
@@ -5477,6 +7162,115 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       await mainWin.emit('chat:insert_code_snippet', { token, snippet }).catch(() => { });
     },
     [focusMainWindow]
+  );
+
+  const addOutlineSymbolToMainChat = useCallback(
+    async (filePathRaw: string, languageIdRaw: string, item: OutlineItem) => {
+      const filePath = normalizeFsPath(String(filePathRaw ?? '').trim());
+      if (!filePath) return;
+
+      const startLine = clampOutlineLine(item?.range?.startLine ?? 1);
+      const endLine = clampOutlineLine(item?.range?.endLine ?? startLine);
+      const clippedStartLine = Math.min(startLine, endLine);
+      const clippedEndLine = Math.max(startLine, endLine);
+
+      const extractLines = (content: string): { text: string; endColumn: number } => {
+        const normalized = String(content ?? '').replace(/\r\n/g, '\n');
+        const lines = normalized.split('\n');
+        if (lines.length === 0) return { text: '', endColumn: 1 };
+        const s = Math.max(1, Math.min(clippedStartLine, lines.length));
+        const e = Math.max(1, Math.min(clippedEndLine, lines.length));
+        const slice = lines.slice(s - 1, e).join('\n');
+        const last = lines[e - 1] ?? '';
+        // 1-based endColumn: line length + 1 (Monaco/LSP convention)
+        return { text: slice, endColumn: Math.max(1, String(last).length + 1) };
+      };
+
+      const readFromLiveEditorModel = (): { text: string; endColumn: number } | null => {
+        const state = useWindowLayoutStore.getState();
+        for (const pane of state.panes ?? []) {
+          const active =
+            pane.activeTabId && pane.tabIds.includes(pane.activeTabId)
+              ? pane.activeTabId
+              : pane.tabIds[0] ?? null;
+          if (!active) continue;
+          if (normalizeFsPath(active) !== filePath) continue;
+          const editor = editorByPaneRef.current.get(pane.id) ?? null;
+          const model = editor?.getModel() ?? null;
+          if (!model) continue;
+
+          const lineCount = model.getLineCount();
+          const s = Math.max(1, Math.min(clippedStartLine, lineCount));
+          const e = Math.max(1, Math.min(clippedEndLine, lineCount));
+          const endColumn = model.getLineMaxColumn(e);
+          const range = {
+            startLineNumber: s,
+            startColumn: 1,
+            endLineNumber: e,
+            endColumn,
+          };
+          const text = model.getValueInRange(range);
+          return { text, endColumn };
+        }
+        return null;
+      };
+
+      const live = readFromLiveEditorModel();
+      let snippetText = live?.text ?? '';
+      let endColumn = live?.endColumn ?? 1;
+
+      if (!snippetText.trim()) {
+        const opened = openFilesRef.current.find((f) => normalizeFsPath(f.path) === filePath) ?? null;
+        if (opened?.kind === 'text' && typeof opened.content === 'string') {
+          const extracted = extractLines(opened.content);
+          snippetText = extracted.text;
+          endColumn = extracted.endColumn;
+        }
+      }
+
+      if (!snippetText.trim() && isTauri()) {
+        try {
+          const file = await invoke<{ base64: string }>('read_local_file_base64', { path: filePath });
+          const content = decodeBase64ToUtf8(String(file?.base64 ?? ''));
+          const extracted = extractLines(content);
+          snippetText = extracted.text;
+          endColumn = extracted.endColumn;
+        } catch {
+          // ignore: handled below
+        }
+      }
+
+      if (!snippetText.trim()) {
+        showNavToast('加入到 Chat 失败：未获取到该符号对应的代码文本');
+        return;
+      }
+
+      const id = crypto.randomUUID();
+      const token = `@{snippet:${id}}`;
+      const labelPath = formatPathForSnippetLabel(filePath);
+      const kind = normalizeOutlineKind(item?.kind ?? 'symbol');
+      const name = String(item?.name ?? '').trim() || 'symbol';
+      const label = `${kind} ${name} · ${labelPath}:${clippedStartLine}-${clippedEndLine}`;
+
+      const snippet: CodeSnippetContentPart = {
+        type: 'code_snippet',
+        id,
+        label,
+        text: snippetText,
+        languageId: String(languageIdRaw ?? '').trim() || undefined,
+        filePath,
+        range: {
+          startLine: clippedStartLine,
+          startColumn: 1,
+          endLine: clippedEndLine,
+          endColumn,
+        },
+      };
+
+      await addCodeSnippetToMainChat(token, snippet);
+      showNavToast('已加入到 Chat');
+    },
+    [addCodeSnippetToMainChat, formatPathForSnippetLabel, showNavToast]
   );
 
 	  const deleteExplorerFile = useCallback(
@@ -6003,6 +7797,86 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           if (!isMeaningfulNavTransition(prev, next)) return;
           commitNavBackEntry(paneId, prev);
         });
+
+        // Outline 跟随光标：在代码中选中符号/移动光标后，Outline 自动选中对应条目。
+        // 说明：
+        // - 仅对“当前聚焦 Pane + 当前文本文件”生效，避免多 Pane 下互相抢状态。
+        // - 轻微 debounce，避免在同一个函数体内移动光标造成过多渲染/DOM 查询。
+        let followTimer: number | null = null;
+        editor.onDidChangeCursorSelection(() => {
+          if (followTimer) window.clearTimeout(followTimer);
+          followTimer = window.setTimeout(() => {
+            followTimer = null;
+            try {
+              const focused = useWindowLayoutStore.getState().focusedPaneId ?? null;
+              if (focused && focused !== paneId) return;
+
+              const tabId = readActiveTabId();
+              if (!tabId) return;
+              const activeOutlinePath = activeOutlineFilePathRef.current;
+              const normalizedTabPath = normalizeFsPath(tabId);
+              if (!activeOutlinePath || normalizedTabPath !== activeOutlinePath) return;
+
+              const selection = editor.getSelection();
+              const pos = selection?.getStartPosition?.() ?? editor.getPosition();
+              if (!pos) return;
+
+              const items = outlineItemsRef.current;
+              if (!items || items.length === 0) return;
+
+              const path = findOutlinePathAtPosition(items, pos.lineNumber, pos.column);
+              if (!path || path.length === 0) return;
+
+              const leaf = path[path.length - 1]!;
+              const key = String(leaf.key ?? '').trim();
+              if (!key) return;
+
+              if (outlineActiveKeyRef.current === key) return;
+              outlineActiveKeyRef.current = key;
+              setOutlineActiveKey(key);
+
+              // 父节点折叠时：临时展开（不写入持久化的 collapsedKeys，避免干扰用户手动折叠习惯）。
+              if (path.length > 1) {
+                const ancestors = path.slice(0, -1).map((node) => node.key);
+                setOutlineCollapsedKeys((prev) => {
+                  if (prev.size === 0) return prev;
+                  let changed = false;
+                  const next = new Set(prev);
+                  for (const ancestorKey of ancestors) {
+                    if (next.has(ancestorKey)) {
+                      next.delete(ancestorKey);
+                      changed = true;
+                    }
+                  }
+                  return changed ? next : prev;
+                });
+              }
+
+              const selector = `[data-outline-key="${escapeCssSelectorValue(key)}"]`;
+              let attempts = 10;
+              const tick = () => {
+                const container = outlineContainerRef.current;
+                if (!container) return;
+                const el = container.querySelector(selector) as HTMLElement | null;
+                if (el) {
+                  try {
+                    el.scrollIntoView({ block: 'nearest' });
+                  } catch {
+                    // ignore
+                  }
+                  return;
+                }
+
+                attempts -= 1;
+                if (attempts <= 0) return;
+                window.setTimeout(tick, 60);
+              };
+              window.requestAnimationFrame(() => tick());
+            } catch {
+              // ignore
+            }
+          }, 80);
+        });
       },
     [
       addCodeSnippetToMainChat,
@@ -6018,8 +7892,17 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   );
 
   const relayoutAllEditors = useCallback(() => {
-    for (const editor of editorByPaneRef.current.values()) {
+    for (const [paneId, editor] of editorByPaneRef.current.entries()) {
       try {
+        const el = paneBodyRefs.current.get(paneId) ?? null;
+        if (el) {
+          const width = el.clientWidth;
+          const height = el.clientHeight;
+          if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+            editor.layout({ width, height });
+            continue;
+          }
+        }
         editor.layout();
       } catch {
         // ignore
@@ -6878,6 +8761,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const handleDragStart = useCallback((e: DragStartEvent) => {
     const activeId = String(e.active.id);
     setActiveDragTabId(activeId);
+    setTabPathTooltip(null);
     setSplitPreview(null);
     dragCancelledByEscapeRef.current = false;
     dragGhostActiveRef.current = false;
@@ -7315,6 +9199,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     setOutlineOpen(true);
     setLeftSidebarTab('explorer');
     setOutlinePreferLsp(DEFAULT_OUTLINE_PREFER_LSP);
+    setOutlineSortMode(DEFAULT_OUTLINE_SORT_MODE);
     setOutlineCollapsedKeys(new Set());
     setOutlineActiveKey(null);
     setOutlineFileStateByPath({});
@@ -7358,6 +9243,12 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         }
         if (typeof state.outline?.preferLsp === 'boolean') {
           setOutlinePreferLsp(state.outline.preferLsp);
+        }
+        {
+          const raw = String((state.outline as any)?.sortMode ?? '').trim();
+          if (raw === 'position' || raw === 'kind' || raw === 'name') {
+            setOutlineSortMode(raw as OutlineSortMode);
+          }
         }
         setOutlineFileStateByPath(normalizeOutlineFileStateMap(state.outline?.files));
 
@@ -7552,14 +9443,17 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     if (saveStateTimerRef.current) window.clearTimeout(saveStateTimerRef.current);
     saveStateTimerRef.current = window.setTimeout(() => {
       const persistedOpenFiles = openFiles.filter((f) => !isUntitledPath(f.path));
-      const outlineFiles = normalizeOutlineFileStateMap(outlineFileStateByPath);
-      const hasOutlineFiles = Object.keys(outlineFiles).length > 0;
-      const shouldPersistOutline =
-        !outlineOpen || hasOutlineFiles || outlinePreferLsp !== DEFAULT_OUTLINE_PREFER_LSP;
-      const state: WorkstudioUiState = {
-        openFiles: Array.from(new Set(persistedOpenFiles.map((f) => f.path))),
-        panes: resolvedPanes
-          .map((p) => ({
+	      const outlineFiles = normalizeOutlineFileStateMap(outlineFileStateByPath);
+	      const hasOutlineFiles = Object.keys(outlineFiles).length > 0;
+	      const shouldPersistOutline =
+	        !outlineOpen ||
+	        hasOutlineFiles ||
+	        outlinePreferLsp !== DEFAULT_OUTLINE_PREFER_LSP ||
+	        outlineSortMode !== DEFAULT_OUTLINE_SORT_MODE;
+	      const state: WorkstudioUiState = {
+	        openFiles: Array.from(new Set(persistedOpenFiles.map((f) => f.path))),
+	        panes: resolvedPanes
+	          .map((p) => ({
             id: p.id,
             tabIds: Array.from(new Set(p.tabIds.filter((id) => !isUntitledPath(id)))),
             activeTabId: p.activeTabId && !isUntitledPath(p.activeTabId) ? p.activeTabId : undefined,
@@ -7569,17 +9463,18 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         focusedPaneId: resolvedFocusedPaneId ?? undefined,
         expandedDirs: Array.from(expandedDirs),
         ...(editorFontSize === DEFAULT_EDITOR_FONT_SIZE ? {} : { editorFontSize }),
-        ...(shouldPersistOutline
-          ? {
-            outline: {
-              ...(outlineOpen ? {} : { open: false }),
-              ...(outlinePreferLsp === DEFAULT_OUTLINE_PREFER_LSP
-                ? {}
-                : { preferLsp: outlinePreferLsp }),
-              ...(hasOutlineFiles ? { files: outlineFiles } : {}),
-            },
-          }
-          : {}),
+	        ...(shouldPersistOutline
+	          ? {
+	            outline: {
+	              ...(outlineOpen ? {} : { open: false }),
+	              ...(outlinePreferLsp === DEFAULT_OUTLINE_PREFER_LSP
+	                ? {}
+	                : { preferLsp: outlinePreferLsp }),
+	              ...(outlineSortMode === DEFAULT_OUTLINE_SORT_MODE ? {} : { sortMode: outlineSortMode }),
+	              ...(hasOutlineFiles ? { files: outlineFiles } : {}),
+	            },
+	          }
+	          : {}),
         ...(wsEnabledLspLanguageIds === null
           ? {}
           : {
@@ -7601,12 +9496,13 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     resolvedPanes,
     resolvedFocusedPaneId,
     expandedDirs,
-    editorFontSize,
-    outlineOpen,
-    outlinePreferLsp,
-    outlineFileStateByPath,
-    wsEnabledLspLanguageIds,
-  ]);
+	    editorFontSize,
+	    outlineOpen,
+	    outlinePreferLsp,
+	    outlineSortMode,
+	    outlineFileStateByPath,
+	    wsEnabledLspLanguageIds,
+	  ]);
 
   useEffect(() => {
     if (!ws) return;
@@ -8148,17 +10044,36 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   }, [lspMenu, refreshCodeIndexBrief]);
 
   useEffect(() => {
-    if (!contextMenu && !tabMenu && !lspMenu && !outlineMenu && !outlineSortMenu) return;
+    if (
+      !contextMenu &&
+      !tabMenu &&
+      !lspMenu &&
+      !outlineMenu &&
+      !outlineActionsMenuOpen &&
+      !outlineAnalyzeAllPanelOpen &&
+      !workstudioAiSettingsOpen
+    )
+      return;
     const onDown = () => {
       setContextMenu(null);
       setTabMenu(null);
       setLspMenu(null);
       setOutlineMenu(null);
-      setOutlineSortMenu(null);
+      setOutlineActionsMenuOpen(false);
+      setOutlineAnalyzeAllPanelOpen(false);
+      setWorkstudioAiSettingsOpen(false);
     };
     window.addEventListener('mousedown', onDown);
     return () => window.removeEventListener('mousedown', onDown);
-  }, [contextMenu, lspMenu, outlineMenu, outlineSortMenu, tabMenu]);
+  }, [
+    contextMenu,
+    lspMenu,
+    outlineActionsMenuOpen,
+    outlineAnalyzeAllPanelOpen,
+    outlineMenu,
+    tabMenu,
+    workstudioAiSettingsOpen,
+  ]);
 
   useEffect(() => {
     let disposed = false;
@@ -8216,6 +10131,25 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     const isLoading = loadingDirs[dirPath];
     const isRoot = Boolean(opts?.isRoot);
     const isMainRoot = Boolean(opts?.isMainRoot);
+    const folderAnalysisCacheKey = makeFolderAnalysisCacheKey(dirPath);
+    const folderSummary = folderAnalysisSummaryCache[folderAnalysisCacheKey] ?? null;
+    const folderHealthLevel = clampHealthLevel(folderSummary?.healthLevel ?? null);
+    const folderVerdictLabel = folderSummary?.verdict ? verdictToLabel(folderSummary.verdict) : '';
+    const folderHasAnalysis = Boolean(folderSummary);
+    const folderAnalysisTitle = (() => {
+      if (!folderHasAnalysis) return '';
+      const parts: string[] = [];
+      if (folderHealthLevel) parts.push(`AI 健康度 H${folderHealthLevel}/10`);
+      if (folderVerdictLabel) parts.push(folderVerdictLabel);
+      if (folderSummary?.diagnosisSummary) parts.push(folderSummary.diagnosisSummary);
+      if (folderSummary?.updatedAt) parts.push(`updatedAt: ${folderSummary.updatedAt}`);
+      return parts.join(' · ');
+    })();
+    const folderHealthColor = (() => {
+      if (!folderHealthLevel) return null;
+      const isDark = typeof document !== 'undefined' && document.documentElement.classList.contains('dark');
+      return healthLevelToColor(folderHealthLevel, Boolean(isDark));
+    })();
 
     return (
       <div key={dirPath}>
@@ -8244,7 +10178,26 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
           {expanded ? <FolderOpen size={14} /> : <Folder size={14} />}
           <span className="truncate">{basename(dirPath)}</span>
-          {isLoading && <span className="ml-auto text-[10px] text-gray-400">...</span>}
+          <span className="ml-auto flex items-center gap-1">
+            {folderHasAnalysis && (
+              <span
+                className={[
+                  'inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold',
+                  'border border-gray-200 bg-white text-gray-700 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-200',
+                ].join(' ')}
+                title={folderAnalysisTitle}
+              >
+                <span
+                  className="inline-block h-2 w-2 rounded-full"
+                  style={{
+                    backgroundColor: folderHealthColor ?? 'rgb(16 185 129)', // emerald-500
+                  }}
+                />
+                {folderHealthLevel ? `H${folderHealthLevel}/10` : 'AI'}
+              </span>
+            )}
+            {isLoading && <span className="text-[10px] text-gray-400">...</span>}
+          </span>
         </button>
 
         {expanded && (
@@ -8333,6 +10286,16 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-gray-50 dark:bg-gray-900">
+      {tabPathTooltip && (
+        <div
+          className="pointer-events-none fixed z-[220]"
+          style={{ left: tabPathTooltip.x, top: tabPathTooltip.y, maxWidth: tabPathTooltip.maxWidth }}
+        >
+          <div className="break-all rounded border border-gray-200 bg-white px-2 py-1 text-[11px] text-gray-700 shadow-lg dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100">
+            {tabPathTooltip.text}
+          </div>
+        </div>
+      )}
       {navToast && (
         <div className="pointer-events-none fixed bottom-4 right-4 z-[200]">
           <div className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-gray-700 shadow-lg dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200">
@@ -8390,27 +10353,29 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	                          return;
 	                        }
 
-	                        const docInput: Pick<
-	                          WorkstudioSymbolAnalysis,
-	                          | 'id'
-	                          | 'filePath'
-	                          | 'selectionLine'
-	                          | 'selectionColumn'
-	                          | 'symbolName'
-	                          | 'languageId'
-	                          | 'symbolKind'
-	                          | 'modelRef'
-	                          | 'latencyMs'
-	                          | 'updatedAt'
-	                          | 'answerMd'
+		                        const docInput: Pick<
+		                          WorkstudioSymbolAnalysis,
+		                          | 'id'
+		                          | 'filePath'
+		                          | 'selectionLine'
+		                          | 'selectionColumn'
+		                          | 'symbolName'
+		                          | 'languageId'
+		                          | 'symbolSource'
+		                          | 'symbolKind'
+		                          | 'modelRef'
+		                          | 'latencyMs'
+		                          | 'updatedAt'
+		                          | 'answerMd'
 	                        > = loaded ?? {
 	                          id: crypto.randomUUID(),
-	                          filePath: meta.filePath,
-	                          languageId: meta.languageId,
-	                          symbolName: meta.symbolName,
-	                          symbolKind: meta.symbolKind,
-	                          selectionLine: meta.selectionLine,
-	                          selectionColumn: meta.selectionColumn,
+		                          filePath: meta.filePath,
+		                          languageId: meta.languageId,
+		                          symbolSource: meta.symbolSource,
+		                          symbolName: meta.symbolName,
+		                          symbolKind: meta.symbolKind,
+		                          selectionLine: meta.selectionLine,
+		                          selectionColumn: meta.selectionColumn,
 	                          answerMd,
 	                          modelRef: b.modelRef,
 	                          latencyMs: b.latencyMs,
@@ -8421,6 +10386,81 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	                        openVirtualRichTextFile(`分析：${meta.symbolName}`, content);
 
 	                        // 打开后移除气泡，避免堆积（分析结果可随时通过 Outline -> 查看分析 再次打开）
+	                        if (aiViewerId === b.id) setAiViewerId(null);
+	                        setAiBubbles((prev) => prev.filter((x) => x.id !== b.id));
+	                      } catch (err) {
+	                        const message = err instanceof Error ? err.message : String(err);
+	                        showNavToast(message);
+	                        openAiViewer(b.id);
+	                      }
+	                    })();
+	                    return;
+	                  }
+
+	                  if (b.kind === 'folder_analysis' && isTerminalState) {
+	                    void (async () => {
+	                      try {
+	                        const meta = b.folderAnalysisMeta ?? null;
+	                        if (!meta) {
+	                          throw new Error('缺少文件夹分析元信息，无法打开结果');
+	                        }
+
+	                        let loaded: WorkstudioFolderAnalysis | null = null;
+	                        try {
+	                          loaded = await ensureFolderAnalysis(meta.folderPath);
+	                        } catch {
+	                          loaded = null;
+	                        }
+
+	                        const answerFromBlocks = (() => {
+	                          const blocks = b.blocks ?? [];
+	                          const textBlocks = blocks.filter((blk) => blk.type === 'text');
+	                          if (textBlocks.length === 0) return null;
+	                          const finalBlock =
+	                            textBlocks.find((blk) => String(blk.id ?? '').endsWith(':assistant_text:final')) ??
+	                            textBlocks[textBlocks.length - 1] ??
+	                            null;
+	                          return typeof finalBlock?.text === 'string' ? finalBlock.text : null;
+	                        })();
+
+	                        const answerMd =
+	                          loaded?.answerMd ??
+	                          answerFromBlocks ??
+	                          (b.status === 'error'
+	                            ? `**错误**\n\n\`\`\`text\n${b.error || '未知错误'}\n\`\`\`\n`
+	                            : '');
+
+	                        if (!answerMd.trim()) {
+	                          showNavToast('暂无可打开的分析内容');
+	                          openAiViewer(b.id);
+	                          return;
+	                        }
+
+	                        const docInput: Pick<
+	                          WorkstudioFolderAnalysis,
+	                          | 'id'
+	                          | 'folderPath'
+	                          | 'modelRef'
+	                          | 'latencyMs'
+	                          | 'healthLevel'
+	                          | 'verdict'
+	                          | 'confidence'
+	                          | 'diagnosisSummary'
+	                          | 'diagnosisCounts'
+	                          | 'updatedAt'
+	                          | 'answerMd'
+	                        > = loaded ?? {
+	                          id: crypto.randomUUID(),
+	                          folderPath: meta.folderPath,
+	                          answerMd,
+	                          modelRef: b.modelRef,
+	                          latencyMs: b.latencyMs,
+	                          updatedAt: new Date().toISOString(),
+	                        };
+
+	                        const content = buildWorkstudioFolderAnalysisRichTextDoc(docInput);
+	                        openVirtualRichTextFile(`文件夹分析：${basename(meta.folderPath)}`, content);
+
 	                        if (aiViewerId === b.id) setAiViewerId(null);
 	                        setAiBubbles((prev) => prev.filter((x) => x.id !== b.id));
 	                      } catch (err) {
@@ -8457,9 +10497,11 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	                </div>
 	                {b.kind === 'symbol_analysis' ? (
 	                  <ListTree size={14} className="shrink-0 opacity-60" />
+	                ) : b.kind === 'folder_analysis' ? (
+	                  <Folder size={14} className="shrink-0 opacity-60" />
 	                ) : (
-                  <MessageSquare size={14} className="shrink-0 opacity-60" />
-                )}
+	                  <MessageSquare size={14} className="shrink-0 opacity-60" />
+	                )}
               </button>
             );
           })}
@@ -8533,8 +10575,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       {aiViewer && (
 	        <div className="fixed inset-0 z-[230] flex items-center justify-center bg-black/35 p-4">
 	          <div
-	            className="flex w-full max-w-3xl flex-col rounded-xl border border-gray-200 bg-white shadow-xl dark:border-gray-800 dark:bg-gray-950"
-	            style={{ height: '85vh' }}
+	            className="flex h-[calc(100vh-2rem)] w-full max-w-7xl flex-col rounded-xl border border-gray-200 bg-white shadow-xl dark:border-gray-800 dark:bg-gray-950"
 	          >
 	            {/* Header */}
 	            <div className="flex shrink-0 items-start justify-between gap-3 border-b border-gray-100 p-4 dark:border-gray-800">
@@ -8597,6 +10638,40 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	                        scheduleSymbolAnalysisRunsRef.current?.();
 	                        return;
 	                      }
+	                      if (aiViewer.kind === 'folder_analysis') {
+	                        // 文件夹分析同样走 run_task/run:event：优先用 conversationId 走 abort_run。
+	                        if (aiViewer.status === 'queued' || aiViewer.status === 'connecting') {
+	                          cancelledFolderAnalysisBubbleIdsRef.current.add(bubbleId);
+	                        }
+
+	                        const convIdDirect = (aiViewer.conversationId ?? '').trim();
+	                        const convIdFromMap = String(
+	                          folderAnalysisConversationIdByBubbleIdRef.current.get(bubbleId) ?? ''
+	                        ).trim();
+	                        const convId = convIdDirect || convIdFromMap;
+
+	                        if (convId) {
+	                          void invoke('abort_run', { conversationId: convId }).catch(() => {});
+	                        }
+
+	                        const bubble = aiBubblesRef.current.find((b) => b.id === bubbleId) ?? null;
+	                        if (bubble?.folderAnalysisMeta) {
+	                          const analysisKey = makeFolderAnalysisCacheKey(bubble.folderAnalysisMeta.folderPath);
+	                          activeFolderAnalysisKeysRef.current.delete(analysisKey);
+	                        }
+
+	                        setAiBubbles((prev) => {
+	                          const next = prev.map((b) =>
+	                            b.id === bubbleId
+	                              ? { ...b, status: 'error' as WorkstudioAiBubbleStatus, error: '已中止' }
+	                              : b
+	                          );
+	                          aiBubblesRef.current = next;
+	                          return next;
+	                        });
+	                        scheduleFolderAnalysisRunsRef.current?.();
+	                        return;
+	                      }
 
                       const convId = (aiViewer.conversationId ?? '').trim();
                       if (convId) void invoke('abort_run', { conversationId: convId }).catch(() => {});
@@ -8622,7 +10697,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
               {/* Prompt */}
               <details open={false}>
                 <summary className="cursor-pointer select-none text-[11px] font-medium text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">
-                  {aiViewer.kind === 'symbol_analysis' ? '分析指令' : '问题'}
+                  {aiViewer.kind === 'symbol_analysis' || aiViewer.kind === 'folder_analysis' ? '分析指令' : '问题'}
                 </summary>
                 <div className="mt-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-900 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-100">
                   {aiViewer.prompt}
@@ -8634,7 +10709,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	                <div>
 	                  <div className="mb-1 flex items-center justify-between gap-3">
 	                    <div className="text-[11px] font-medium text-gray-600 dark:text-gray-300">
-	                      {aiViewer.kind === 'symbol_analysis' ? '分析结果' : '回答'}
+	                      {aiViewer.kind === 'symbol_analysis' || aiViewer.kind === 'folder_analysis' ? '分析结果' : '回答'}
 	                      {['queued', 'connecting', 'thinking', 'streaming', 'tool_calling'].includes(aiViewer.status) && (
 	                        <span className="ml-1.5 inline-flex items-center gap-1 text-blue-500">
 	                          <Loader2 size={10} className="animate-spin" />
@@ -8719,12 +10794,21 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
 	                  {(() => {
 	                    const isStreaming = ['queued', 'connecting', 'thinking', 'streaming', 'tool_calling'].includes(aiViewer.status);
-	                    const cacheKey =
-	                      aiViewer.kind === 'symbol_analysis' && aiViewer.analysisMeta
-	                        ? makeSymbolAnalysisCacheKey(aiViewer.analysisMeta.filePath, aiViewer.analysisMeta.symbolKey)
-	                        : null;
-	                    const savedAnalysis = cacheKey ? symbolAnalysisCache[cacheKey] ?? null : null;
-	                    const finalMd = (savedAnalysis?.answerMd ?? extractLatestTurnMarkdownFromBlocks(aiViewer.blocks, aiViewer.turns)).trim();
+	                    const savedAnswerMd = (() => {
+	                      if (aiViewer.kind === 'symbol_analysis' && aiViewer.analysisMeta) {
+	                        const cacheKey = makeSymbolAnalysisCacheKey(
+	                          aiViewer.analysisMeta.filePath,
+	                          aiViewer.analysisMeta.symbolKey
+	                        );
+	                        return symbolAnalysisCache[cacheKey]?.answerMd ?? null;
+	                      }
+	                      if (aiViewer.kind === 'folder_analysis' && aiViewer.folderAnalysisMeta) {
+	                        const cacheKey = makeFolderAnalysisCacheKey(aiViewer.folderAnalysisMeta.folderPath);
+	                        return folderAnalysisCache[cacheKey]?.answerMd ?? null;
+	                      }
+	                      return null;
+	                    })();
+	                    const finalMd = (savedAnswerMd ?? extractLatestTurnMarkdownFromBlocks(aiViewer.blocks, aiViewer.turns)).trim();
 
 	                    if (aiViewerMode === 'result') {
 	                      if (aiViewer.status === 'error' && !finalMd) {
@@ -8813,7 +10897,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                   {/* Main answer */}
                   <div>
                     <div className="mb-1 text-[11px] font-medium text-gray-600 dark:text-gray-300">
-	                      {aiViewer.kind === 'symbol_analysis' ? '分析结果' : '回答'}
+	                      {aiViewer.kind === 'symbol_analysis' || aiViewer.kind === 'folder_analysis' ? '分析结果' : '回答'}
 	                      {['queued', 'connecting', 'thinking', 'streaming', 'tool_calling'].includes(aiViewer.status) && (
 	                        <span className="ml-1.5 inline-flex items-center gap-1 text-blue-500">
 	                          <Loader2 size={10} className="animate-spin" />
@@ -8868,21 +10952,21 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
       <div className="flex flex-1 overflow-hidden">
         <div className="flex w-[300px] flex-shrink-0 flex-col border-r border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-950">
-          <div className="flex items-center justify-between border-b border-gray-200 px-3 py-2 dark:border-gray-800">
-            <div className="min-w-0">
-              <div className="truncate text-[11px] text-gray-500 dark:text-gray-400" title={ws.mainFolder}>
-                主工作区:{' '}
-                <span className="font-semibold text-blue-700 dark:text-blue-200">
-                  {basename(ws.mainFolder)}
-                </span>
-              </div>
-            </div>
-          </div>
+	          <div className="flex items-center justify-between border-b border-gray-200 px-3 py-2 dark:border-gray-800">
+	            <div className="min-w-0">
+	              <div className="truncate text-[11px] text-gray-500 dark:text-gray-400" title={ws.mainFolder}>
+	                主工作区:{' '}
+	                <span className="font-semibold text-blue-700 dark:text-blue-200">
+	                  {basename(ws.mainFolder)}
+	                </span>
+	              </div>
+	            </div>
+	          </div>
 
-          <div className="flex min-h-0 flex-1 flex-col">
-            <div className="flex items-center gap-1 border-b border-gray-200 px-2 py-1.5 dark:border-gray-800">
-              <button
-                type="button"
+	          <div className="flex min-h-0 flex-1 flex-col">
+	            <div className="flex items-center gap-1 border-b border-gray-200 px-2 py-1.5 dark:border-gray-800">
+	              <button
+	                type="button"
                 className={[
                   'rounded px-2 py-1 text-[11px] font-semibold uppercase tracking-wide',
                   leftSidebarTab === 'explorer' || !outlineOpen
@@ -8938,96 +11022,279 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                     </div>
                     <div className="mt-0.5 truncate text-[11px] text-gray-500 dark:text-gray-400">
                       {activeTextFileInFocusedPane
-                        ? `${basename(activeTextFileInFocusedPane.path)}${outlineSourceLabel ? ` · ${outlineSourceLabel}` : ''}`
+                        ? `${basename(activeTextFileInFocusedPane.path)}${outlineSourceLabel ? ` · ${outlineSourceLabel}` : ''} · ${outlineSortModeLabel}`
                         : '当前无文本文件'}
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    className="rounded border border-gray-200 px-2 py-1 text-[11px] font-semibold text-gray-600 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
-                    disabled={
-                      !codeIntelligenceConfig?.symbolAnalysis?.enabled ||
-                      !activeTextFileInFocusedPane ||
-                      outlineItems.length === 0 ||
-                      outlineLoading
-                    }
-                    onClick={() => void runOutlineAnalyzeAll()}
-                    title={
-                      !codeIntelligenceConfig?.symbolAnalysis?.enabled
-                        ? '请先在“设置 -> 代码智能 -> 符号分析”中启用'
-                        : outlineItems.length === 0
-                          ? 'Outline 为空：没有可解析的符号'
-                          : `批量解析当前文件的全部符号（${
-                            codeIntelligenceConfig?.symbolAnalysis?.bulkExcludeVariables !== false ? '跳过变量/字段' : '包含变量/字段'
-                          }）`
-                    }
-                  >
-                    全部解析
-                  </button>
-                  <button
-                    type="button"
-                    className={[
-                      'rounded border px-2 py-1 text-[11px] font-semibold',
-                      outlinePreferLsp
-                        ? 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 dark:border-blue-800/40 dark:bg-blue-900/20 dark:text-blue-200 dark:hover:bg-blue-900/30'
-                        : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-200 dark:hover:bg-gray-800',
-                    ].join(' ')}
-                    onClick={() => {
-                      const next = !outlinePreferLsp;
-                      setOutlinePreferLsp(next);
-                      // 切换策略后立刻刷新一次，确保 Outline 源与 UI 一致。
-                      setOutlineRefreshSeq((v) => v + 1);
-                      if (next) {
-                        // 进入“优先 LSP”后不再使用 AST/缓存兜底：清空旧结果，避免符号集不一致影响分析稳定性。
-                        setOutlineItems([]);
-                        setOutlineSource('none');
-                        setOutlineError(null);
-                        setOutlineLoading(true);
-                      }
-                    }}
-                    title={
-                      outlinePreferLsp
-                        ? '已开启：优先使用 LSP 生成 Outline（更全更稳定）。点击可切换为“自动（允许 AST/缓存兜底）”。'
-                        : '当前：自动（LSP 不可用/超时时回退 AST/缓存）。点击可切换为“优先 LSP”。'
-                    }
-                  >
-                    LSP优先
-                  </button>
-                  <button
-                    ref={outlineSortButtonRef}
-                    type="button"
-                    className="inline-flex items-center gap-1 rounded border border-gray-200 px-2 py-1 text-[11px] font-semibold text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
-                    onClick={() => {
-                      const btn = outlineSortButtonRef.current;
-                      if (!btn) return;
-                      if (outlineSortMenu) {
-                        setOutlineSortMenu(null);
-                        return;
-                      }
-                      const rect = btn.getBoundingClientRect();
-                      const menuWidth = 240;
-                      const x = Math.max(8, Math.min(rect.left, window.innerWidth - menuWidth - 8));
-                      setOutlineSortMenu({ visible: true, x, y: rect.bottom + 4 });
-                    }}
-                    title="Outline 排序"
-                  >
-                    <span className="whitespace-nowrap">排序:{outlineSortModeLabel}</span>
-                    <ChevronDown size={12} className="opacity-70" />
-                  </button>
-                  <button
-                    type="button"
-                    className="rounded border border-gray-200 p-1 text-gray-500 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-                    onClick={() => {
-                      setOutlineRefreshSeq((v) => v + 1);
-                      if (!isTauri()) return;
-                      const wsId = ws?.id ?? null;
-                      const file = activeTextFileInFocusedPane;
-                      if (!wsId || !file) return;
-                      const normalizedPath = normalizeFsPath(file.path);
-                      if (!normalizedPath || isUntitledPath(normalizedPath)) return;
-                      const indexable = ['rust', 'typescript', 'javascript', 'python', 'go', 'c', 'cpp', 'lua'].includes(
-                        activeTextLanguageId
-                      );
+                  <div className="relative">
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1.5 rounded border border-gray-200 px-2 py-1 text-[11px] font-semibold text-gray-600 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+                      onClick={() => {
+                        if (outlineActionsMenuOpen) {
+                          setOutlineActionsMenuOpen(false);
+                          return;
+                        }
+                        setOutlineAnalyzeAllPanelOpen(false);
+                        setOutlineActionsMenuOpen(true);
+                      }}
+                      title="Outline 菜单"
+                    >
+                      菜单
+                      <ChevronDown
+                        size={12}
+                        className={['opacity-70 transition-transform', outlineActionsMenuOpen ? 'rotate-180' : ''].join(' ')}
+                      />
+                    </button>
+
+                    {outlineActionsMenuOpen && (
+                      <div
+                        className="absolute right-0 top-full z-[210] mt-2 w-[240px] max-w-[80vw] overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900"
+                        onMouseDown={(e) => e.stopPropagation()}
+                      >
+                        <div className="py-1 text-sm">
+	                          <button
+	                            type="button"
+	                            disabled={
+	                              !activeTextFileInFocusedPane ||
+	                              outlineItems.length === 0 ||
+                              outlineLoading ||
+                              outlineCollapsibleKeyCount === 0
+                            }
+                            className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:text-gray-200 dark:hover:bg-gray-800"
+                            onClick={() => {
+                              setOutlineActionsMenuOpen(false);
+                              collapseAllOutline();
+                            }}
+                            title={
+                              outlineCollapsibleKeyCount > 0 ? '全部折叠（仅折叠包含子节点的符号）' : '没有可折叠的符号'
+                            }
+                          >
+                            全部折叠
+                          </button>
+                          <button
+                            type="button"
+                            disabled={
+                              !activeTextFileInFocusedPane ||
+                              outlineItems.length === 0 ||
+                              outlineLoading ||
+                              outlineCollapsedKeys.size === 0
+                            }
+                            className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:text-gray-200 dark:hover:bg-gray-800"
+                            onClick={() => {
+                              setOutlineActionsMenuOpen(false);
+                              expandAllOutline();
+                            }}
+                            title="全部展开"
+	                          >
+	                            全部展开
+	                          </button>
+	                          <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
+	                          <div className="px-3 pb-1 pt-2 text-[11px] font-semibold text-gray-500 dark:text-gray-400">
+	                            排序
+	                          </div>
+	                          <button
+	                            type="button"
+	                            className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+	                            onClick={() => {
+	                              setOutlineSortMode('position');
+	                              setOutlineActionsMenuOpen(false);
+	                            }}
+	                            title="按代码位置排序（与文件中的出现顺序一致）"
+	                          >
+	                            <span className="flex items-center gap-2">
+	                              {outlineSortMode === 'position' ? (
+	                                <CheckCircle2 size={14} className="shrink-0 text-blue-600 dark:text-blue-300" />
+	                              ) : (
+	                                <span className="shrink-0 w-[14px]" />
+	                              )}
+	                              <span className="truncate">按位置（代码顺序）</span>
+	                            </span>
+	                          </button>
+	                          <button
+	                            type="button"
+	                            className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+	                            onClick={() => {
+	                              setOutlineSortMode('kind');
+	                              setOutlineActionsMenuOpen(false);
+	                            }}
+	                            title="按类型排序（先类/结构，再函数/方法，再变量/字段）"
+	                          >
+	                            <span className="flex items-center gap-2">
+	                              {outlineSortMode === 'kind' ? (
+	                                <CheckCircle2 size={14} className="shrink-0 text-blue-600 dark:text-blue-300" />
+	                              ) : (
+	                                <span className="shrink-0 w-[14px]" />
+	                              )}
+	                              <span className="truncate">按类型（类/函数/变量）</span>
+	                            </span>
+	                          </button>
+		                          <button
+		                            type="button"
+		                            className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+		                            onClick={() => {
+		                              setOutlineSortMode('name');
+		                              setOutlineActionsMenuOpen(false);
+		                            }}
+		                            title="按名称排序（A → Z）"
+		                          >
+		                            <span className="flex items-center gap-2">
+		                              {outlineSortMode === 'name' ? (
+		                                <CheckCircle2 size={14} className="shrink-0 text-blue-600 dark:text-blue-300" />
+		                              ) : (
+		                                <span className="shrink-0 w-[14px]" />
+		                              )}
+		                              <span className="truncate">按名称（A → Z）</span>
+		                            </span>
+		                          </button>
+		                          <button
+		                            type="button"
+		                            className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+		                            onClick={() => {
+		                              setOutlineSortMode('size');
+		                              setOutlineActionsMenuOpen(false);
+		                            }}
+		                            title="按大小排序（行数大 → 小）"
+		                          >
+		                            <span className="flex items-center gap-2">
+		                              {outlineSortMode === 'size' ? (
+		                                <CheckCircle2 size={14} className="shrink-0 text-blue-600 dark:text-blue-300" />
+		                              ) : (
+		                                <span className="shrink-0 w-[14px]" />
+		                              )}
+		                              <span className="truncate">按大小（行数大 → 小）</span>
+		                            </span>
+		                          </button>
+		                          <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
+		                          <button
+		                            type="button"
+		                            disabled={
+		                              !codeIntelligenceConfig?.symbolAnalysis?.enabled ||
+                              !activeTextFileInFocusedPane ||
+                              outlineItems.length === 0 ||
+                              outlineLoading
+                            }
+                            className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:text-gray-200 dark:hover:bg-gray-800"
+                            onClick={() => {
+                              setOutlineActionsMenuOpen(false);
+                              openOutlineAnalyzeAllPanel();
+                            }}
+                            title={
+                              !codeIntelligenceConfig?.symbolAnalysis?.enabled
+                                ? '请先在“设置 -> 代码智能 -> 符号分析”中启用'
+                                : outlineItems.length === 0
+                                  ? 'Outline 为空：没有可解析的符号'
+                                  : `批量解析当前文件的全部符号（默认：${
+                                    codeIntelligenceConfig?.symbolAnalysis?.bulkExcludeVariables !== false
+                                      ? '跳过变量/字段'
+                                      : '包含变量/字段'
+                                  }，点击可修改）`
+                            }
+                          >
+                            全部解析
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {outlineAnalyzeAllPanelOpen && (
+                      <div
+                        className="absolute right-0 top-full z-[210] mt-2 w-[320px] max-w-[80vw] overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900"
+                        onMouseDown={(e) => e.stopPropagation()}
+                      >
+                        <div className="px-3 py-2 text-xs font-semibold text-gray-800 dark:text-gray-100">
+                          全部解析
+                        </div>
+                        <div className="px-3 pb-2 text-[11px] text-gray-500 dark:text-gray-400">
+                          {activeTextFileInFocusedPane
+                            ? `文件：${basename(activeTextFileInFocusedPane.path)}`
+                            : '当前无文本文件'}
+                        </div>
+
+                        <div className="px-3 pb-2 text-[11px] text-gray-600 dark:text-gray-300">
+                          将加入解析队列：
+                          <span className="ml-1 font-semibold text-gray-800 dark:text-gray-100">
+                            {outlineAnalyzeAllTargets.length}
+                          </span>
+                          <span className="ml-1">个符号</span>
+                          <span className="ml-1 text-gray-400 dark:text-gray-500">
+                            （{outlineAnalyzeAllExcludeVariables ? '跳过变量/字段' : '包含变量/字段'}）
+                          </span>
+                        </div>
+
+                        <label className="flex cursor-pointer items-start gap-2 px-3 py-2 text-[11px] text-gray-700 hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-gray-800/40">
+                          <input
+                            type="checkbox"
+                            className="mt-0.5"
+                            checked={outlineAnalyzeAllExcludeVariables}
+                            onChange={(e) => setOutlineAnalyzeAllExcludeVariables(e.target.checked)}
+                          />
+                          <div className="min-w-0">
+                            <div className="font-semibold">跳过变量/字段</div>
+                            <div className="mt-0.5 text-gray-500 dark:text-gray-400">
+                              变量/字段通常数量很多，跳过可更快更省（仍会解析类、函数、struct 等）。
+                            </div>
+                          </div>
+                        </label>
+
+                        {outlineAnalyzeAllTargets.length === 0 && (
+                          <div className="px-3 pb-2 text-[11px] text-red-600 dark:text-red-300">
+                            当前配置下没有可解析的符号。
+                          </div>
+                        )}
+
+                        <div className="px-3 pb-2 text-[11px] text-amber-700 dark:text-amber-200">
+                          提示：这会发起大量模型请求，可能耗时较长并产生费用。
+                        </div>
+
+                        <div className="flex items-center justify-end gap-2 border-t border-gray-200 px-3 py-2 dark:border-gray-700">
+                          <button
+                            type="button"
+                            className="rounded border border-gray-200 px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+                            onClick={() => setOutlineAnalyzeAllPanelOpen(false)}
+                          >
+                            取消
+                          </button>
+                          <button
+                            type="button"
+                            className="rounded bg-blue-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                            disabled={outlineAnalyzeAllTargets.length === 0 || outlineLoading}
+                            onClick={() => {
+                              setOutlineAnalyzeAllPanelOpen(false);
+                              void runOutlineAnalyzeAll({ excludeVariables: outlineAnalyzeAllExcludeVariables });
+                            }}
+                          >
+                            确认并开始
+                          </button>
+                        </div>
+                      </div>
+	                    )}
+	                  </div>
+		                  <button
+		                    type="button"
+		                    className="rounded border border-gray-200 p-1 text-gray-500 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+		                    onClick={() => {
+		                      setOutlineRefreshSeq((v) => v + 1);
+	                      {
+	                        // 强制刷新“分析状态”（即使 Outline keys 没变化也要重新对齐 DB）
+	                        const wsId = String(workstudioId ?? '').trim();
+	                        const file = activeTextFileInFocusedPane;
+	                        const normalizedPath = file ? normalizeFsPath(file.path) : '';
+	                        if (wsId && normalizedPath && !isUntitledPath(normalizedPath)) {
+	                          const refreshKey = `${wsId}::${normalizedPath}`;
+	                          pendingOutlineAnalysisRefreshByFileRef.current.add(refreshKey);
+	                          prefetchedSymbolAnalysisStatusByFileRef.current.delete(refreshKey);
+	                        }
+	                      }
+	                      if (!isTauri()) return;
+		                      const wsId = ws?.id ?? null;
+		                      const file = activeTextFileInFocusedPane;
+		                      if (!wsId || !file) return;
+		                      const normalizedPath = normalizeFsPath(file.path);
+	                      if (!normalizedPath || isUntitledPath(normalizedPath)) return;
+	                      const indexable = ['rust', 'typescript', 'javascript', 'python', 'go', 'c', 'cpp', 'lua'].includes(
+	                        activeTextLanguageId
+	                      );
                       if (!indexable) return;
                       setOutlineLoading(true);
                       void codeIndexRequestDocumentSymbols({
@@ -9177,6 +11444,148 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                 <ListTree size={12} />
                 <span className="whitespace-nowrap">Outline{outlineItemCount > 0 ? `(${outlineItemCount})` : ''}</span>
               </button>
+              <div className="relative">
+                <button
+                  type="button"
+                  className={[
+                    'inline-flex items-center gap-2 rounded border px-2 py-1 text-xs',
+                    workstudioAiSettingsOpen
+                      ? 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 dark:border-blue-700/60 dark:bg-blue-900/30 dark:text-blue-200 dark:hover:bg-blue-900/40'
+                      : 'border-gray-200 text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800',
+                  ].join(' ')}
+                  onClick={() => setWorkstudioAiSettingsOpen((v) => !v)}
+                  title="Workstudio AI 设置（符号分析 / Outline）"
+                >
+                  <SlidersHorizontal size={12} />
+                  <span className="whitespace-nowrap">AI设置</span>
+                  <ChevronDown size={12} className={['opacity-70 transition-transform', workstudioAiSettingsOpen ? 'rotate-180' : ''].join(' ')} />
+                </button>
+
+                {workstudioAiSettingsOpen && (
+                  <div
+                    className="absolute right-0 top-full z-[220] mt-2 w-[360px] max-w-[80vw] overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900"
+                    onMouseDown={(e) => e.stopPropagation()}
+                  >
+                    <div className="px-3 py-2 text-xs font-semibold text-gray-800 dark:text-gray-100">
+                      Workstudio AI 设置
+                    </div>
+
+                    <div className="px-3 pb-2 text-[11px] text-gray-500 dark:text-gray-400">
+                      影响范围：Outline 生成策略、符号分析 run_task 参数（思考强度）。
+                    </div>
+
+                    <div className="border-t border-gray-200 px-3 py-2 dark:border-gray-700">
+                      <div className="text-[11px] font-semibold text-gray-700 dark:text-gray-200">
+                        Outline
+                      </div>
+                      <label className="mt-2 flex cursor-pointer items-start gap-2 rounded-md px-2 py-2 text-[11px] text-gray-700 hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-gray-800/40">
+                        <input
+                          type="checkbox"
+                          className="mt-0.5"
+	                          checked={outlinePreferLsp}
+	                          onChange={() => {
+	                            const next = !outlinePreferLsp;
+	                            setOutlinePreferLsp(next);
+	                            setOutlineRefreshSeq((v) => v + 1);
+	                            {
+	                              const wsId = String(workstudioId ?? '').trim();
+	                              const file = activeTextFileInFocusedPane;
+	                              const normalizedPath = file ? normalizeFsPath(file.path) : '';
+	                              if (wsId && normalizedPath && !isUntitledPath(normalizedPath)) {
+	                                const refreshKey = `${wsId}::${normalizedPath}`;
+	                                pendingOutlineAnalysisRefreshByFileRef.current.add(refreshKey);
+	                                prefetchedSymbolAnalysisStatusByFileRef.current.delete(refreshKey);
+	                              }
+	                            }
+	                            if (next) {
+	                              setOutlineItems([]);
+	                              setOutlineSource('none');
+	                              setOutlineError(null);
+	                              setOutlineLoading(true);
+                            }
+                          }}
+                        />
+                        <div className="min-w-0">
+                          <div className="font-semibold">优先使用 LSP 生成 Outline</div>
+                          <div className="mt-0.5 text-gray-500 dark:text-gray-400">
+                            开启后更全更稳定；关闭后允许在 LSP 不可用/超时时回退 AST/缓存。
+                          </div>
+                        </div>
+                      </label>
+                    </div>
+
+                    <div className="border-t border-gray-200 px-3 py-2 dark:border-gray-700">
+                      <div className="text-[11px] font-semibold text-gray-700 dark:text-gray-200">
+                        符号分析
+                      </div>
+                      <div className="mt-2 text-[11px] text-gray-600 dark:text-gray-300">
+                        思考强度
+                      </div>
+
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {(
+                          [
+                            { value: null, label: '无', title: '不思考：responses 会禁用 reasoning；其它 client 会关闭 thinking。' },
+                            { value: 'low', label: '低', title: '低强度思考（responses：low；其它 client：thinking=on）。' },
+                            { value: 'medium', label: '中', title: '中强度思考（responses：medium；其它 client：thinking=on）。' },
+                            { value: 'high', label: '高', title: '高强度思考（responses：high；其它 client：thinking=on）。' },
+                            { value: 'xhigh', label: '超高', title: '超高思考（responses：xhigh；Google 会回退为 high）。' },
+                          ] as { value: ThinkingLevel; label: string; title: string }[]
+                        ).map((opt) => {
+                          const active = opt.value === symbolAnalysisThinkingLevel;
+                          return (
+                            <button
+                              key={opt.value ?? 'none'}
+                              type="button"
+                              className={[
+                                'rounded border px-2 py-1 text-[11px] font-semibold',
+                                active
+                                  ? 'border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100 dark:border-purple-700/60 dark:bg-purple-900/30 dark:text-purple-200 dark:hover:bg-purple-900/40'
+                                  : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-200 dark:hover:bg-gray-800/40',
+                              ].join(' ')}
+                              title={opt.title}
+                              onClick={() => {
+                                const currentConfig = useConfigStore.getState().config;
+                                if (!currentConfig) {
+                                  showNavToast('配置未加载完成');
+                                  return;
+                                }
+                                const currentCi = currentConfig.codeIntelligence ?? { enabled: true, lspServers: [] };
+                                const currentSymbolAnalysis = currentCi.symbolAnalysis ?? {
+                                  enabled: false,
+                                  timeoutMs: 20000,
+                                  maxTokens: 8192,
+                                  temperature: 0.2,
+                                  includeProjectContext: true,
+                                };
+                                useConfigStore.getState().saveConfigDebounced(
+                                  {
+                                    ...currentConfig,
+                                    codeIntelligence: {
+                                      ...currentCi,
+                                      symbolAnalysis: {
+                                        ...currentSymbolAnalysis,
+                                        thinkingLevel: opt.value,
+                                      },
+                                    },
+                                  },
+                                  0
+                                );
+                              }}
+                            >
+                              {opt.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      <div className="mt-2 text-[11px] text-gray-500 dark:text-gray-400">
+                        映射规则：OpenAI Responses / Google（responses）直接使用该等级；其它 client：无=不思考，其它=思考。
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
               <button
                 type="button"
                 className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
@@ -9249,23 +11658,27 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                                     if (!file) return null;
                                     const active = file.id === activeFileId;
                                     const title = `${file.title}${file.dirty ? ' *' : ''}`;
-                                    return (
-                                      <SortableTab
-                                        key={`${pane.id}:${file.id}`}
-                                        id={file.id}
-                                        active={active}
-                                        title={title}
-                                        pinnedWhileDragging={pinActiveTabWhileDragging && activeDragTabId === file.id}
-                                        onClick={() => activateTabInPane(pane.id, file.id)}
-                                        onClose={() => closeFileTab(file.id)}
-                                        onContextMenu={(e) => {
-                                          e.preventDefault();
-                                          e.stopPropagation();
-                                          setTabMenu({
-                                            visible: true,
-                                            x: e.clientX,
-                                            y: e.clientY,
-                                            paneId: pane.id,
+	                                    return (
+		                                      <SortableTab
+		                                        key={`${pane.id}:${file.id}`}
+		                                        id={file.id}
+		                                        active={active}
+		                                        title={title}
+		                                        tooltip={file.path}
+		                                        pinnedWhileDragging={pinActiveTabWhileDragging && activeDragTabId === file.id}
+		                                        onClick={() => activateTabInPane(pane.id, file.id)}
+		                                        onClose={() => closeFileTab(file.id)}
+		                                        onMouseEnter={(e) => showTabPathTooltip(e, file.path)}
+		                                        onMouseLeave={hideTabPathTooltip}
+		                                        onContextMenu={(e) => {
+		                                          e.preventDefault();
+		                                          e.stopPropagation();
+		                                          hideTabPathTooltip();
+		                                          setTabMenu({
+		                                            visible: true,
+		                                            x: e.clientX,
+		                                            y: e.clientY,
+		                                            paneId: pane.id,
                                             fileId: file.id,
                                             path: file.path,
                                           });
@@ -9882,42 +12295,6 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         </div>
       )}
 
-      {outlineSortMenu && (
-        <div
-          className="fixed z-[205] min-w-[240px] rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900"
-          style={{ left: outlineSortMenu.x, top: outlineSortMenu.y }}
-          onMouseDown={(e) => e.stopPropagation()}
-        >
-          <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">Outline 排序</div>
-          <div className="py-1 text-sm">
-            {(
-              [
-                { mode: 'position' as OutlineSortMode, label: '按位置（代码顺序）' },
-                { mode: 'kind' as OutlineSortMode, label: '按类型（类/函数/变量）' },
-                { mode: 'name' as OutlineSortMode, label: '按名称（A→Z）' },
-                { mode: 'size' as OutlineSortMode, label: '按大小（行数大→小）' },
-              ] as Array<{ mode: OutlineSortMode; label: string }>
-            ).map((opt) => {
-              const active = outlineSortMode === opt.mode;
-              return (
-                <button
-                  key={`outline-sort:${opt.mode}`}
-                  type="button"
-                  className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
-                  onClick={() => {
-                    setOutlineSortMode(opt.mode);
-                    setOutlineSortMenu(null);
-                  }}
-                >
-                  <span>{opt.label}</span>
-                  {active ? <CheckCircle2 size={14} className="text-blue-600 dark:text-blue-300" /> : null}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
       {outlineMenu && (
         <div
           ref={outlineMenuRef}
@@ -9925,22 +12302,35 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           style={{ left: outlineMenu.x, top: outlineMenu.y }}
           onMouseDown={(e) => e.stopPropagation()}
         >
-	          {(() => {
-		            const busyStatus = getActiveSymbolAnalysisStatus(outlineMenu.filePath, outlineMenu.item.key);
-		            const isBusy = Boolean(busyStatus);
-		            const analysisExists =
-		              typeof outlineMenu.analysisExists === 'boolean'
-		                ? outlineMenu.analysisExists
-		                : outlineMenu.analysis
-		                  ? true
-		                  : outlineMenu.analysis === null
-		                    ? false
-		                    : undefined;
-		            const actionLabel = analysisExists ? '重新分析' : outlineAnalysisActionLabel(outlineMenu.item.kind);
-		            const statusTag = (() => {
-		              switch (busyStatus) {
-		                case 'queued':
-		                  return '（排队中）';
+		          {(() => {
+			            const busyStatus = getActiveSymbolAnalysisStatus(outlineMenu.filePath, outlineMenu.item.key);
+			            const isBusy = Boolean(busyStatus);
+			            const analysisExists =
+			              typeof outlineMenu.analysisExists === 'boolean'
+			                ? outlineMenu.analysisExists
+			                : outlineMenu.analysis
+			                  ? true
+			                  : outlineMenu.analysis === null
+			                    ? false
+			                    : undefined;
+			            const actionLabel = analysisExists ? '重新分析' : outlineAnalysisActionLabel(outlineMenu.item.kind);
+			            const menuCacheKey = makeSymbolAnalysisCacheKey(outlineMenu.filePath, outlineMenu.item.key);
+			            const summary = menuCacheKey ? symbolAnalysisSummaryCache[menuCacheKey] : undefined;
+			            const healthLevel = clampHealthLevel(summary?.healthLevel ?? outlineMenu.analysis?.healthLevel);
+			            const verdictRaw = String((summary?.verdict ?? outlineMenu.analysis?.verdict ?? '') as string).trim();
+			            const verdictLabel = verdictToLabel(verdictRaw);
+			            const diagnosisSummary = String(
+			              (summary?.diagnosisSummary ?? outlineMenu.analysis?.diagnosisSummary ?? '') as string
+			            ).trim();
+			            const counts = summary?.diagnosisCounts ?? outlineMenu.analysis?.diagnosisCounts;
+			            const hasAnyDiagnosis = Boolean(healthLevel || verdictLabel || diagnosisSummary || counts);
+			            const isDark =
+			              typeof document !== 'undefined' && Boolean(document.documentElement?.classList?.contains('dark'));
+			            const healthColor = healthLevel ? healthLevelToColor(healthLevel, isDark) : null;
+			            const statusTag = (() => {
+			              switch (busyStatus) {
+			                case 'queued':
+			                  return '（排队中）';
 	                case 'connecting':
 	                  return '（连接中）';
 	                case 'thinking':
@@ -9955,14 +12345,68 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	            })();
 
 	            return (
-	              <>
-	          <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400 truncate" title={outlineMenu.item.name}>
-	            {outlineMenu.item.name}
-            <span className="ml-2 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-gray-500 dark:bg-gray-800 dark:text-gray-400">
-              {normalizeOutlineKind(outlineMenu.item.kind)}
-            </span>
-          </div>
-          <div className="py-1 text-sm">
+		              <>
+		          <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400 truncate" title={outlineMenu.item.name}>
+		            {outlineMenu.item.name}
+	            <span className="ml-2 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-gray-500 dark:bg-gray-800 dark:text-gray-400">
+	              {normalizeOutlineKind(outlineMenu.item.kind)}
+	            </span>
+	          </div>
+	          {analysisExists ? (
+	            <div className="px-3 pb-2 text-[11px] text-gray-500 dark:text-gray-400">
+	              <div className="flex items-center gap-2">
+	                <span className="inline-flex items-center gap-1">
+	                  <span
+	                    className={[
+	                      'inline-block h-2 w-2 rounded-full',
+	                      !healthColor ? 'bg-emerald-500 dark:bg-emerald-400' : '',
+	                    ].join(' ')}
+	                    style={healthColor ? { backgroundColor: healthColor } : undefined}
+	                  />
+	                  <span className="font-medium">AI</span>
+	                </span>
+	                {healthLevel ? (
+	                  <span className="font-mono" style={healthColor ? { color: healthColor } : undefined}>
+	                    H{healthLevel}/10
+	                  </span>
+	                ) : (
+	                  <span className="font-mono">H?</span>
+	                )}
+	                {verdictLabel ? <span>{verdictLabel}</span> : null}
+	                {counts ? (
+	                  <span className="text-gray-400 dark:text-gray-500">
+	                    E{counts.errors} D{counts.defects} I{counts.improvements}
+	                  </span>
+	                ) : null}
+	              </div>
+	              {diagnosisSummary ? (
+	                <div className="mt-1 truncate" title={diagnosisSummary}>
+	                  {diagnosisSummary}
+	                </div>
+	              ) : hasAnyDiagnosis ? null : (
+	                <div className="mt-1 truncate" title="已保存分析结果，但未包含可解析的诊断字段（可能是旧结果或模型未按协议输出）。">
+	                  已保存分析结果（无诊断字段）
+	                </div>
+	              )}
+	            </div>
+	          ) : null}
+	          <div className="py-1 text-sm">
+            <button
+              type="button"
+              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+              title="将该符号对应的代码片段加入主窗口 Chat 输入框"
+              onClick={() => {
+                const menu = outlineMenu;
+                setOutlineMenu(null);
+                void addOutlineSymbolToMainChat(menu.filePath, menu.languageId, menu.item).catch((err) => {
+                  const msg = err instanceof Error ? err.message : String(err);
+                  showNavToast(msg || '加入到 Chat 失败');
+                });
+              }}
+            >
+              加入到 Chat
+            </button>
+            <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
             <button
               type="button"
               disabled={isBusy}
@@ -9994,16 +12438,26 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	            >
               <span>{actionLabel}</span>
               <span className="text-gray-400">：</span>
-	              <span
-	                className={analysisExists ? 'text-emerald-700 dark:text-emerald-300' : ''}
-	              >
-	                {outlineMenu.item.name}
-	              </span>
-	              {statusTag ? <span className="ml-2 text-xs text-gray-400 dark:text-gray-600">{statusTag}</span> : null}
-	            </button>
+		              <span
+		                className={analysisExists && !healthColor ? 'text-emerald-700 dark:text-emerald-300' : ''}
+		                style={
+		                  analysisExists && healthColor
+		                    ? {
+		                        textDecorationLine: 'underline',
+		                        textDecorationColor: healthColor,
+		                        textDecorationThickness: '2px',
+		                        textUnderlineOffset: '2px',
+		                      }
+		                    : undefined
+		                }
+		              >
+		                {outlineMenu.item.name}
+		              </span>
+              {statusTag ? <span className="ml-2 text-xs text-gray-400 dark:text-gray-600">{statusTag}</span> : null}
+            </button>
 
-	            {analysisExists === undefined ? (
-	              <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">加载分析状态中…</div>
+            {analysisExists === undefined ? (
+              <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">加载分析状态中…</div>
 	            ) : analysisExists ? (
 	              <>
 	                <button
@@ -10101,6 +12555,54 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
               >
                 {contextMenu.folder}
               </div>
+              {(() => {
+                const folderPath = contextMenu.folder;
+                const cacheKey = makeFolderAnalysisCacheKey(folderPath);
+                const summary = folderAnalysisSummaryCache[cacheKey] ?? null;
+                if (!summary) return null;
+                const healthLevel = clampHealthLevel(summary.healthLevel ?? null);
+                const verdictLabel = summary.verdict ? verdictToLabel(summary.verdict) : '';
+                const counts = summary.diagnosisCounts ?? null;
+                const diagnosisSummary = summary.diagnosisSummary ?? '';
+                const isDark = typeof document !== 'undefined' && document.documentElement.classList.contains('dark');
+                const healthColor = healthLevel ? healthLevelToColor(healthLevel, Boolean(isDark)) : null;
+                const hasAnyDiagnosis = Boolean(healthLevel || verdictLabel || counts || diagnosisSummary);
+                if (!hasAnyDiagnosis) return null;
+                return (
+                  <div className="px-3 pb-2 text-[11px] text-gray-500 dark:text-gray-400">
+                    <div className="flex items-center gap-2">
+                      <span className="inline-flex items-center gap-1">
+                        <span
+                          className={[
+                            'inline-block h-2 w-2 rounded-full',
+                            !healthColor ? 'bg-emerald-500 dark:bg-emerald-400' : '',
+                          ].join(' ')}
+                          style={healthColor ? { backgroundColor: healthColor } : undefined}
+                        />
+                        <span className="font-medium">AI</span>
+                      </span>
+                      {healthLevel ? (
+                        <span className="font-mono" style={healthColor ? { color: healthColor } : undefined}>
+                          H{healthLevel}/10
+                        </span>
+                      ) : (
+                        <span className="font-mono">H?</span>
+                      )}
+                      {verdictLabel ? <span>{verdictLabel}</span> : null}
+                      {counts ? (
+                        <span className="text-gray-400 dark:text-gray-500">
+                          E{counts.errors} D{counts.defects} I{counts.improvements}
+                        </span>
+                      ) : null}
+                    </div>
+                    {diagnosisSummary ? (
+                      <div className="mt-1 truncate" title={diagnosisSummary}>
+                        {diagnosisSummary}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })()}
               <button
                 type="button"
                 className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
@@ -10142,9 +12644,80 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                   setContextMenu(null);
                   void addPathToMainChat(folder, 'folder');
                 }}
-              >
-                加入到 Chat
-              </button>
+                >
+                  加入到 Chat
+                </button>
+              <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
+              {(() => {
+                const folderPath = contextMenu.folder;
+                const cacheKey = makeFolderAnalysisCacheKey(folderPath);
+                const summary = folderAnalysisSummaryCache[cacheKey] ?? null;
+                const hasExisting = Boolean(summary);
+                const activeStatus = getActiveFolderAnalysisStatus(folderPath);
+                const isBusy = Boolean(activeStatus);
+                const statusTag = activeStatus ? `（${describeWorkstudioAiBubbleStatus(activeStatus)}）` : '';
+                const primaryLabel = hasExisting ? '重新分析文件夹' : '分析文件夹';
+                return (
+                  <>
+                    <button
+                      type="button"
+                      disabled={isBusy}
+                      title={isBusy ? '该文件夹正在分析中（或在队列中），请等待完成后再试' : undefined}
+                      className={[
+                        'w-full px-3 py-2 text-left',
+                        isBusy
+                          ? 'cursor-not-allowed text-gray-400 dark:text-gray-600'
+                          : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800',
+                      ].join(' ')}
+                      onClick={() => {
+                        const folder = contextMenu.folder;
+                        void (async () => {
+                          if (hasExisting) {
+                            const ok = await Promise.resolve(window.confirm('已存在分析结果，确定重新分析并覆盖吗？'));
+                            if (!ok) return;
+                          }
+                          setContextMenu(null);
+                          try {
+                            await runExplorerFolderAnalysis(folder);
+                          } catch (err) {
+                            const msg = err instanceof Error ? err.message : String(err);
+                            showNavToast(msg);
+                          }
+                        })();
+                      }}
+                    >
+                      <span>{primaryLabel}</span>
+                      {statusTag ? <span className="ml-2 text-xs text-gray-400 dark:text-gray-600">{statusTag}</span> : null}
+                    </button>
+                    {hasExisting ? (
+                      <>
+                        <button
+                          type="button"
+                          className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+                          onClick={() => {
+                            const folder = contextMenu.folder;
+                            setContextMenu(null);
+                            void viewExplorerFolderAnalysis(folder);
+                          }}
+                        >
+                          查看分析
+                        </button>
+                        <button
+                          type="button"
+                          className="w-full px-3 py-2 text-left text-red-600 hover:bg-gray-100 dark:text-red-400 dark:hover:bg-gray-800"
+                          onClick={() => {
+                            const folder = contextMenu.folder;
+                            setContextMenu(null);
+                            void deleteExplorerFolderAnalysis(folder);
+                          }}
+                        >
+                          删除分析
+                        </button>
+                      </>
+                    ) : null}
+                  </>
+                );
+              })()}
             </div>
           )}
 
@@ -10223,6 +12796,54 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
               >
                 {contextMenu.folder}
               </div>
+              {(() => {
+                const folderPath = contextMenu.folder;
+                const cacheKey = makeFolderAnalysisCacheKey(folderPath);
+                const summary = folderAnalysisSummaryCache[cacheKey] ?? null;
+                if (!summary) return null;
+                const healthLevel = clampHealthLevel(summary.healthLevel ?? null);
+                const verdictLabel = summary.verdict ? verdictToLabel(summary.verdict) : '';
+                const counts = summary.diagnosisCounts ?? null;
+                const diagnosisSummary = summary.diagnosisSummary ?? '';
+                const isDark = typeof document !== 'undefined' && document.documentElement.classList.contains('dark');
+                const healthColor = healthLevel ? healthLevelToColor(healthLevel, Boolean(isDark)) : null;
+                const hasAnyDiagnosis = Boolean(healthLevel || verdictLabel || counts || diagnosisSummary);
+                if (!hasAnyDiagnosis) return null;
+                return (
+                  <div className="px-3 pb-2 text-[11px] text-gray-500 dark:text-gray-400">
+                    <div className="flex items-center gap-2">
+                      <span className="inline-flex items-center gap-1">
+                        <span
+                          className={[
+                            'inline-block h-2 w-2 rounded-full',
+                            !healthColor ? 'bg-emerald-500 dark:bg-emerald-400' : '',
+                          ].join(' ')}
+                          style={healthColor ? { backgroundColor: healthColor } : undefined}
+                        />
+                        <span className="font-medium">AI</span>
+                      </span>
+                      {healthLevel ? (
+                        <span className="font-mono" style={healthColor ? { color: healthColor } : undefined}>
+                          H{healthLevel}/10
+                        </span>
+                      ) : (
+                        <span className="font-mono">H?</span>
+                      )}
+                      {verdictLabel ? <span>{verdictLabel}</span> : null}
+                      {counts ? (
+                        <span className="text-gray-400 dark:text-gray-500">
+                          E{counts.errors} D{counts.defects} I{counts.improvements}
+                        </span>
+                      ) : null}
+                    </div>
+                    {diagnosisSummary ? (
+                      <div className="mt-1 truncate" title={diagnosisSummary}>
+                        {diagnosisSummary}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })()}
               <button
                 type="button"
                 className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
@@ -10231,9 +12852,80 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                   setContextMenu(null);
                   void revealItemInDir(folder);
                 }}
-              >
-                在系统中打开
-              </button>
+                >
+                  在系统中打开
+                </button>
+              <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
+              {(() => {
+                const folderPath = contextMenu.folder;
+                const cacheKey = makeFolderAnalysisCacheKey(folderPath);
+                const summary = folderAnalysisSummaryCache[cacheKey] ?? null;
+                const hasExisting = Boolean(summary);
+                const activeStatus = getActiveFolderAnalysisStatus(folderPath);
+                const isBusy = Boolean(activeStatus);
+                const statusTag = activeStatus ? `（${describeWorkstudioAiBubbleStatus(activeStatus)}）` : '';
+                const primaryLabel = hasExisting ? '重新分析文件夹' : '分析文件夹';
+                return (
+                  <>
+                    <button
+                      type="button"
+                      disabled={isBusy}
+                      title={isBusy ? '该文件夹正在分析中（或在队列中），请等待完成后再试' : undefined}
+                      className={[
+                        'w-full px-3 py-2 text-left',
+                        isBusy
+                          ? 'cursor-not-allowed text-gray-400 dark:text-gray-600'
+                          : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800',
+                      ].join(' ')}
+                      onClick={() => {
+                        const folder = contextMenu.folder;
+                        void (async () => {
+                          if (hasExisting) {
+                            const ok = await Promise.resolve(window.confirm('已存在分析结果，确定重新分析并覆盖吗？'));
+                            if (!ok) return;
+                          }
+                          setContextMenu(null);
+                          try {
+                            await runExplorerFolderAnalysis(folder);
+                          } catch (err) {
+                            const msg = err instanceof Error ? err.message : String(err);
+                            showNavToast(msg);
+                          }
+                        })();
+                      }}
+                    >
+                      <span>{primaryLabel}</span>
+                      {statusTag ? <span className="ml-2 text-xs text-gray-400 dark:text-gray-600">{statusTag}</span> : null}
+                    </button>
+                    {hasExisting ? (
+                      <>
+                        <button
+                          type="button"
+                          className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+                          onClick={() => {
+                            const folder = contextMenu.folder;
+                            setContextMenu(null);
+                            void viewExplorerFolderAnalysis(folder);
+                          }}
+                        >
+                          查看分析
+                        </button>
+                        <button
+                          type="button"
+                          className="w-full px-3 py-2 text-left text-red-600 hover:bg-gray-100 dark:text-red-400 dark:hover:bg-gray-800"
+                          onClick={() => {
+                            const folder = contextMenu.folder;
+                            setContextMenu(null);
+                            void deleteExplorerFolderAnalysis(folder);
+                          }}
+                        >
+                          删除分析
+                        </button>
+                      </>
+                    ) : null}
+                  </>
+                );
+              })()}
               <button
                 type="button"
                 disabled={contextMenu.folder === ws.mainFolder}

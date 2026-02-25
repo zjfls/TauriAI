@@ -35,7 +35,7 @@ const defaultAgent: Agent = {
 type AgentCategory = 'chat' | 'workspace';
 
 /**
- * Built-in non-deletable system agents for Workspace AI.
+ * Built-in non-deletable system agents for Workstudio AI.
  * The backend falls back to these defaults when no user agent is configured for the role.
  */
 const SYSTEM_WORKSPACE_AGENTS: Agent[] = [
@@ -114,11 +114,26 @@ const SYSTEM_WORKSPACE_AGENTS: Agent[] = [
 - 先给结论摘要（1-3 句），再给结构化分析（分点/小标题均可），最后给风险点 + 可执行改进建议 + 验证清单。
 - 当缺少关键上下文时：明确列出需要看的文件/需要搜索的关键字/需要补充的信息，不要猜。
 
-### 文件引用（必须严格遵守）
-当你在讨论代码定位、调用链、实现细节或引用关系时，所有关键结论必须附带**可点击文件引用**，格式只允许：
-- \`相对路径:行\` 或 \`相对路径:行:列\`
-- \`相对路径#L行\` 或 \`相对路径#L行C列\`
-禁止使用 Markdown 链接语法引用文件（例如 \`[label](path)\`）；不要编造行号：拿不到行号时请先用 \`rg\`/打开文件定位，再输出引用。
+### 文件引用（必须严格遵守｜可点击跳转）
+- 这是“代码问题域”的强约束：当你在讨论代码/报错/定位/调用链/实现细节/引用关系时，所有文件引用都必须使用**行内代码**的“路径格式”，系统会据此解析为可点击跳转；若用其它写法通常会不可点击。
+- 普通网页 URL 可以使用 \`[文本](url)\`；但**文件引用禁止使用** Markdown 链接语法（例如 \`[label](path)\`），也不要输出 \`file://\` / \`vscode://\` 之类的 URI。
+- 唯一允许/推荐的写法（请严格遵守）：\`相对路径:行\`、\`相对路径:行:列\`、\`相对路径#L行\`、\`相对路径#L行C列\`
+  - ✅ 示例：\`tauri-ai/src-tauri/src/prompts.rs:123\`、\`tauri-ai/apps/desktop/src/components/Chat/ChatView.tsx#L771\`
+  - ❌ 禁止：\`(line 59)\`、单独写 \`:59\`、或只写 \`prompts.rs:123\`（缺目录）
+- 优先使用“相对主工作区根目录的相对路径（包含子目录）”；只有在必要时才使用绝对路径（Windows 示例：\`C:\\\\repo\\\\project\\\\main.rs:12:5\`）。
+- 拿不到行号时不要猜：先用工具（\`rg\` / \`read_file\`）定位到定义/调用处的行号，再输出引用。
+- 如需引用一段范围（可选）：\`path#L10-L20\` 或 \`path:10-20\`。
+
+### Mermaid 图中的文件引用（必须可点击）
+当你输出 Mermaid 图（flowchart/classDiagram/sequenceDiagram…）并希望用户能“点击节点跳到 Workstudio 的代码位置”时：
+- 节点文本里写 \`path:line\` 只是展示，不会自动变成可点击跳转。
+- 必须使用 Mermaid 的 \`click\` 指令绑定可点击的 href（建议同时把 token 作为 tooltip）：
+\`\`\`mermaid
+flowchart TD
+  R["Request Handler"]
+  click R href "tauri-ai/src-tauri/src/prompts.rs:123" "tauri-ai/src-tauri/src/prompts.rs:123"
+\`\`\`
+- 美观建议：节点标签只写简短职责名；把完整 \`path:line\` 放到 \`click\` 的 tooltip（第三个参数）里；正文也应列出关键节点对应的文件引用。
 
 ### 分析策略（按符号类型自适应）
 1) 若符号是大型类型/容器（class/struct/trait/enum/module…）：
@@ -133,6 +148,38 @@ const SYSTEM_WORKSPACE_AGENTS: Agent[] = [
 3) 若符号是变量/字段/常量：
 - 做引用分析：解释语义与不变量（单位/范围/默认值/可变性），并尽量找出写入点/读取点/传递路径。
 - 说明它如何影响系统行为（配置、状态机、缓存、并发共享状态等），列出代表性的引用位置（带文件引用）；引用过多时按模块聚类，避免穷举。
+`,
+    formatType: 'chat',
+  },
+  {
+    name: '__system_folder_analysis',
+    systemRole: 'folder_analysis',
+    isSystem: true,
+    displayName: '文件夹分析（Folder Analysis）',
+    description: '对工作区文件夹做宏观结构与风险诊断的服务',
+    type: 'tool',
+    workspaceSupport: true,
+    workstudioEnabled: true,
+    modelRef: '',
+    systemPrompt: `你是 IDE 中的“文件夹分析助手”（Folder Analysis）。
+
+你的目标：在不臆测的前提下，对给定文件夹进行宏观结构分析 + 风险诊断，输出“可执行、可验证”的建议。
+
+你会收到：
+- 一个文件夹路径（folderPath）
+- 一些工程元信息（projectRoot、workstudioMainFolder 等）
+- 你可以在需要时使用工具（read_file / rg / list_dir / web_search）来补齐上下文，但不要修改文件。
+
+输出要求（必须）：
+- 使用 Markdown。
+- 先给结论摘要（1-3 句），再给结构化分析（模块分层/入口与关键流程/数据与状态/依赖与边界/错误处理/可观测性/测试），最后给风险点 + 可执行改进建议 + 验证清单。
+- 当缺少关键上下文时：明确列出需要看的文件/需要搜索的关键字/需要补充的信息，不要猜。
+
+### 文件引用（必须严格遵守｜可点击跳转）
+当你在讨论代码定位、调用链、实现细节或引用关系时，所有关键结论必须附带**可点击文件引用**，格式只允许：
+- \`相对路径:行\` 或 \`相对路径:行:列\`
+- \`相对路径#L行\` 或 \`相对路径#L行C列\`
+禁止使用 Markdown 链接语法引用文件（例如 \`[label](path)\`）；不要编造行号：拿不到行号时请先用 \`rg\`/打开文件定位，再输出引用。
 `,
     formatType: 'chat',
   },
@@ -156,12 +203,12 @@ export const AgentConfigForm: React.FC = () => {
 
   const isSystemWorkspaceAgentName = (name: string) => SYSTEM_WORKSPACE_AGENT_NAMES.has(name);
 
-  // Chat tab: exclude system Workspace AI agents; keep the rest (including tool agents).
+  // Chat tab: exclude system Workstudio AI agents; keep the rest (including tool agents).
   const chatAgents = agents.filter((a) => !isSystemWorkspaceAgentName(a.name) && a.workstudioEnabled !== true);
 
-  // Workspace tab:
+  // Workstudio tab:
   // - System agents first (merged with saved overrides)
-  // - Then user-created Workspace AI agents (workstudioEnabled=true)
+  // - Then user-created Workstudio AI agents (workstudioEnabled=true)
   const systemWorkspaceAgents = SYSTEM_WORKSPACE_AGENTS.map((sys) => {
     const saved = agents.find((a) => a.name === sys.name);
     if (!saved) return sys;
@@ -218,7 +265,7 @@ export const AgentConfigForm: React.FC = () => {
       ...defaultAgent,
       name,
       displayName: name,
-      // Workspace AI agents default to tool type + workspaceSupport
+      // Workstudio AI agents default to tool type + workspaceSupport
       ...(agentCategory === 'workspace'
         ? { type: 'tool' as AgentType, workspaceSupport: true, workstudioEnabled: true }
         : {}),
@@ -232,27 +279,27 @@ export const AgentConfigForm: React.FC = () => {
     setSelectedAgentName(created.name);
   };
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (!selectedAgentName) return;
     const agent = activeList.find(a => a.name === selectedAgentName);
     if (agent?.isSystem) return; // system agents cannot be deleted
-    if (confirm('确定要删除这个智能体吗？')) {
-      if (!config) return;
-      const nextAgents = agents.filter((a) => a.name !== selectedAgentName);
-      const nextDefault =
-        agentCategory === 'chat' && config.defaultAgent === selectedAgentName
-          ? nextAgents.find((a) => !isSystemWorkspaceAgentName(a.name) && a.workstudioEnabled !== true)?.name ?? ''
-          : config.defaultAgent;
-      saveConfigDebounced({ ...config, agents: nextAgents, defaultAgent: nextDefault });
+    const ok = await Promise.resolve(window.confirm('确定要删除这个智能体吗？'));
+    if (!ok) return;
+    if (!config) return;
+    const nextAgents = agents.filter((a) => a.name !== selectedAgentName);
+    const nextDefault =
+      agentCategory === 'chat' && config.defaultAgent === selectedAgentName
+        ? nextAgents.find((a) => !isSystemWorkspaceAgentName(a.name) && a.workstudioEnabled !== true)?.name ?? ''
+        : config.defaultAgent;
+    saveConfigDebounced({ ...config, agents: nextAgents, defaultAgent: nextDefault });
 
-      // After delete, select the first in the same tab (workspace falls back to system agents).
-      if (agentCategory === 'workspace') {
-        const nextSystem = systemWorkspaceAgents[0]?.name ?? SYSTEM_WORKSPACE_AGENTS[0]?.name ?? null;
-        setSelectedAgentNameWs(nextSystem);
-      } else {
-        const nextChat = nextAgents.filter((a) => !isSystemWorkspaceAgentName(a.name) && a.workstudioEnabled !== true);
-        setSelectedAgentNameChat(nextChat[0]?.name ?? null);
-      }
+    // After delete, select the first in the same tab (workspace falls back to system agents).
+    if (agentCategory === 'workspace') {
+      const nextSystem = systemWorkspaceAgents[0]?.name ?? SYSTEM_WORKSPACE_AGENTS[0]?.name ?? null;
+      setSelectedAgentNameWs(nextSystem);
+    } else {
+      const nextChat = nextAgents.filter((a) => !isSystemWorkspaceAgentName(a.name) && a.workstudioEnabled !== true);
+      setSelectedAgentNameChat(nextChat[0]?.name ?? null);
     }
   };
 
@@ -310,7 +357,7 @@ export const AgentConfigForm: React.FC = () => {
       <div className="flex items-center gap-0 border-b border-gray-200 dark:border-gray-700 mb-4">
         {([
           { id: 'chat' as AgentCategory, label: '聊天智能体', count: chatAgents.length },
-          { id: 'workspace' as AgentCategory, label: 'Workspace AI', count: workspaceAgents.length },
+          { id: 'workspace' as AgentCategory, label: 'Workstudio AI', count: workspaceAgents.length },
 
         ] as const).map((tab) => (
           <button
@@ -341,7 +388,7 @@ export const AgentConfigForm: React.FC = () => {
               <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
               <input
                 type="text"
-                placeholder={agentCategory === 'workspace' ? '搜索 Workspace AI...' : '搜索聊天智能体...'}
+                placeholder={agentCategory === 'workspace' ? '搜索 Workstudio AI...' : '搜索聊天智能体...'}
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="w-full pl-9 pr-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm"
@@ -404,11 +451,11 @@ export const AgentConfigForm: React.FC = () => {
             className="mt-3 flex items-center justify-center gap-2 w-full py-2 rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 text-gray-500 hover:border-blue-500 hover:text-blue-500 transition-colors"
           >
             <Plus size={16} />
-            <span className="text-sm">{agentCategory === 'workspace' ? '添加 Workspace AI 智能体' : '添加智能体'}</span>
+            <span className="text-sm">{agentCategory === 'workspace' ? '添加 Workstudio AI 智能体' : '添加智能体'}</span>
           </button>
           {agentCategory === 'workspace' && (
             <p className="mt-2 text-[11px] leading-4 text-center text-gray-400 dark:text-gray-500 px-2">
-              系统内置的 3 个 Workspace AI 智能体不可删除，将作为 fallback；你可以新增/删除/修改其他 Workspace AI 智能体。
+              系统内置的 3 个 Workstudio AI 智能体不可删除，将作为 fallback；你可以新增/删除/修改其他 Workstudio AI 智能体（也可以复制系统内置智能体来创建可编辑版本）。
             </p>
           )}
 
@@ -449,7 +496,7 @@ export const AgentConfigForm: React.FC = () => {
               <p>
                 {activeList.length === 0
                   ? agentCategory === 'workspace'
-                    ? '还没有 Workspace AI 智能体'
+                    ? '还没有 Workstudio AI 智能体'
                     : '点击添加第一个聊天智能体'
                   : '选择一个智能体'}
               </p>
@@ -460,7 +507,7 @@ export const AgentConfigForm: React.FC = () => {
                   className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 text-white text-sm hover:bg-blue-700"
                 >
                   <Plus size={14} />
-                  {agentCategory === 'workspace' ? '创建 Workspace AI 智能体' : '创建智能体'}
+                  {agentCategory === 'workspace' ? '创建 Workstudio AI 智能体' : '创建智能体'}
                 </button>
               )}
             </div>
@@ -666,17 +713,16 @@ const AgentForm: React.FC<AgentFormProps> = ({
             </button>
           )}
           <div className="flex items-center gap-2">
-            {!isSystem && (
-              <button
-                type="button"
-                onClick={onDuplicate}
-                disabled={!isEditing}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 text-sm text-gray-700 dark:text-gray-300 disabled:opacity-50"
-              >
-                <Copy size={14} />
-                复制
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={onDuplicate}
+              disabled={!isEditing}
+              title={isSystem ? '复制为可编辑的自定义智能体' : undefined}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 text-sm text-gray-700 dark:text-gray-300 disabled:opacity-50"
+            >
+              <Copy size={14} />
+              复制
+            </button>
             {!isSystem && (
               <button
                 type="button"
@@ -754,7 +800,7 @@ const AgentForm: React.FC<AgentFormProps> = ({
               ))}
             </select>
             {isWorkspaceContext && (
-              <p className="text-xs text-gray-500 mt-1">Workspace AI 固定为工具类型</p>
+              <p className="text-xs text-gray-500 mt-1">Workstudio AI 固定为工具类型</p>
             )}
           </div>
 

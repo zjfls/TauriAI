@@ -617,6 +617,9 @@ pub struct WorkstudioOutlineState {
     /// 是否优先使用 LSP 生成 Outline（可选；未设置时由前端使用默认值）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prefer_lsp: Option<bool>,
+    /// Outline 符号排序方式（可选；例如 position/kind/name）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sort_mode: Option<String>,
     #[serde(default)]
     pub files: HashMap<String, WorkstudioOutlineFileState>,
 }
@@ -667,6 +670,15 @@ fn default_group_weight() -> f32 {
 // Workstudio Symbol Analysis (AI, persisted)
 // ============================================================================
 
+/// Diagnosis counters for symbol analysis.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkstudioSymbolDiagnosisCounts {
+    pub errors: u32,
+    pub defects: u32,
+    pub improvements: u32,
+}
+
 /// Persisted AI analysis result for a symbol in Workstudio outline.
 ///
 /// 说明：
@@ -679,6 +691,9 @@ pub struct WorkstudioSymbolAnalysis {
     pub workstudio_id: String,
     pub file_path: String,
     pub language_id: String,
+    /// Symbol origin for the analysis: e.g. "lsp" or "ast_cst" (optional for backward compat).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbol_source: Option<String>,
     /// A stable key from Outline item (frontend-generated).
     pub symbol_key: String,
     pub symbol_name: String,
@@ -692,13 +707,107 @@ pub struct WorkstudioSymbolAnalysis {
     pub model_ref: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_ms: Option<u64>,
+    /// Health score (1..=10). 10 is best, 1 is critical.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub health_level: Option<u8>,
+    /// Verdict: HEALTHY | IMPROVABLE | RISKY | CRITICAL | POSSIBLY_UNUSED
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<String>,
+    /// Confidence for the diagnosis (0.0..=1.0)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f32>,
+    /// Short 1-line diagnosis summary for Outline tooltip / menu.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnosis_summary: Option<String>,
+    /// Counters for Errors/Defects/Improvements.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnosis_counts: Option<WorkstudioSymbolDiagnosisCounts>,
     pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Lightweight diagnosis summary for Workstudio Outline prefetch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkstudioSymbolAnalysisSummary {
+    pub symbol_key: String,
+    /// Symbol origin for the analysis: e.g. "lsp" or "ast_cst" (optional for backward compat).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbol_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub health_level: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnosis_summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnosis_counts: Option<WorkstudioSymbolDiagnosisCounts>,
+    pub updated_at: DateTime<Utc>,
+}
+
+// ============================================================================
+// Workstudio Folder Analysis (AI, persisted)
+// ============================================================================
+
+/// Persisted AI analysis result for a folder in Workstudio explorer.
+///
+/// 说明：
+/// - 用于右键 Explorer 文件夹 -> “分析文件夹”等能力的结果缓存。
+/// - 存储为 Markdown（前端用富文本渲染组件展示）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkstudioFolderAnalysis {
+    pub id: String,
+    pub workstudio_id: String,
+    pub folder_path: String,
+    /// Markdown content (rich text).
+    pub answer_md: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u64>,
+    /// Health score (1..=10). 10 is best, 1 is critical.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub health_level: Option<u8>,
+    /// Verdict: HEALTHY | IMPROVABLE | RISKY | CRITICAL | POSSIBLY_UNUSED
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<String>,
+    /// Confidence for the diagnosis (0.0..=1.0)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f32>,
+    /// Short 1-line diagnosis summary for Explorer tooltip / menu.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnosis_summary: Option<String>,
+    /// Counters for Errors/Defects/Improvements.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnosis_counts: Option<WorkstudioSymbolDiagnosisCounts>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Lightweight diagnosis summary for Workstudio explorer prefetch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkstudioFolderAnalysisSummary {
+    pub folder_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub health_level: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnosis_summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnosis_counts: Option<WorkstudioSymbolDiagnosisCounts>,
     pub updated_at: DateTime<Utc>,
 }
 
 // ============================================================================
 // New Provider-Model-Agent Architecture
-// ============================================================================
+// ====================================================== ======================
 
 /// Provider type for API compatibility
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1725,6 +1834,11 @@ pub struct SymbolAnalysisSettings {
     /// 绑定的智能体标识（Agent Name），为空则回退到系统默认智能体
     #[serde(default)]
     pub agent_ref: String,
+    /// 符号分析的思考强度（主要用于 OpenAI Responses API 的 reasoning.effort）。
+    /// - None: 未配置（等同于“无”，保持默认不思考）
+    /// - Some("low" | "medium" | "high" | "xhigh"): 思考强度
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_level: Option<String>,
     /// 默认绑定智能体的最大并发数
     #[serde(default = "default_symbol_analysis_concurrency")]
     pub concurrency: u32,
@@ -1765,6 +1879,7 @@ impl Default for SymbolAnalysisSettings {
         Self {
             enabled: false,
             agent_ref: String::new(),
+            thinking_level: None,
             concurrency: default_symbol_analysis_concurrency(),
             additional_agents: Vec::new(),
             bulk_exclude_variables: true,
@@ -1772,6 +1887,127 @@ impl Default for SymbolAnalysisSettings {
             max_tokens: default_symbol_analysis_max_tokens(),
             temperature: default_symbol_analysis_temperature(),
             include_project_context: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderAnalysisAgentBinding {
+    /// 绑定的智能体标识（Agent Name）
+    #[serde(default)]
+    pub agent_ref: String,
+    /// 该智能体的最大并发数（同一时间允许跑多少个文件夹分析任务）
+    #[serde(default = "default_folder_analysis_concurrency")]
+    pub concurrency: u32,
+}
+
+fn default_folder_analysis_concurrency() -> u32 {
+    1
+}
+
+fn default_folder_analysis_timeout_ms() -> u64 {
+    30_000
+}
+
+fn default_folder_analysis_max_tokens() -> u32 {
+    8192
+}
+
+fn default_folder_analysis_temperature() -> f64 {
+    0.2
+}
+
+fn default_folder_analysis_max_depth() -> u32 {
+    3
+}
+
+fn default_folder_analysis_max_files() -> u32 {
+    200
+}
+
+fn default_folder_analysis_max_total_bytes() -> u64 {
+    5_000_000
+}
+
+fn default_folder_analysis_ignore_globs() -> Vec<String> {
+    vec![
+        "**/.git/**".to_string(),
+        "**/node_modules/**".to_string(),
+        "**/target/**".to_string(),
+        "**/dist/**".to_string(),
+        "**/build/**".to_string(),
+        "**/.next/**".to_string(),
+        "**/.turbo/**".to_string(),
+    ]
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderAnalysisSettings {
+    /// 总开关：关闭后不请求模型
+    #[serde(default)]
+    pub enabled: bool,
+    /// 绑定的智能体标识（Agent Name），为空则回退到系统默认智能体
+    #[serde(default)]
+    pub agent_ref: String,
+    /// 文件夹分析的思考强度（主要用于 OpenAI Responses API 的 reasoning.effort）。
+    /// - None: 未配置（等同于“无”，保持默认不思考）
+    /// - Some("low" | "medium" | "high" | "xhigh"): 思考强度
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_level: Option<String>,
+    /// 默认绑定智能体的最大并发数
+    #[serde(default = "default_folder_analysis_concurrency")]
+    pub concurrency: u32,
+    /// 附加智能体（用于多模型/多并发）
+    #[serde(default)]
+    pub additional_agents: Vec<FolderAnalysisAgentBinding>,
+    /// 单次请求超时（毫秒）
+    #[serde(default = "default_folder_analysis_timeout_ms")]
+    pub timeout_ms: u64,
+    /// 最大生成 tokens
+    #[serde(default = "default_folder_analysis_max_tokens")]
+    pub max_tokens: u32,
+    /// 温度（分析建议低温）
+    #[serde(default = "default_folder_analysis_temperature")]
+    pub temperature: f64,
+    /// 是否允许发送项目上下文（路径、工作区信息等）
+    #[serde(default = "default_true")]
+    pub include_project_context: bool,
+    /// 文件夹扫描最大深度（用于生成树/采样，非强制，模型仍可用工具继续探索）
+    #[serde(default = "default_folder_analysis_max_depth")]
+    pub max_depth: u32,
+    /// 文件夹扫描最大文件数（用于生成树/采样）
+    #[serde(default = "default_folder_analysis_max_files")]
+    pub max_files: u32,
+    /// 文件夹扫描最大总字节数（用于读取文件内容采样）
+    #[serde(default = "default_folder_analysis_max_total_bytes")]
+    pub max_total_bytes: u64,
+    /// 是否包含隐藏文件（以 . 开头）
+    #[serde(default)]
+    pub include_hidden: bool,
+    /// 忽略规则（glob 风格）
+    #[serde(default = "default_folder_analysis_ignore_globs")]
+    pub ignore_globs: Vec<String>,
+}
+
+impl Default for FolderAnalysisSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            agent_ref: String::new(),
+            thinking_level: None,
+            concurrency: default_folder_analysis_concurrency(),
+            additional_agents: Vec::new(),
+            timeout_ms: default_folder_analysis_timeout_ms(),
+            max_tokens: default_folder_analysis_max_tokens(),
+            temperature: default_folder_analysis_temperature(),
+            include_project_context: true,
+            max_depth: default_folder_analysis_max_depth(),
+            max_files: default_folder_analysis_max_files(),
+            max_total_bytes: default_folder_analysis_max_total_bytes(),
+            include_hidden: false,
+            ignore_globs: default_folder_analysis_ignore_globs(),
         }
     }
 }
@@ -1796,6 +2032,9 @@ pub struct CodeIntelligenceSettings {
     /// Workstudio 符号分析（Outline 右键“分析类/函数/变量”等）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub symbol_analysis: Option<SymbolAnalysisSettings>,
+    /// Workstudio 文件夹分析（Explorer 右键“分析文件夹”等）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder_analysis: Option<FolderAnalysisSettings>,
 }
 
 impl Default for CodeIntelligenceSettings {
@@ -1825,6 +2064,7 @@ impl Default for CodeIntelligenceSettings {
             ],
             ai_completion: AiCompletionSettings::default(),
             symbol_analysis: Some(SymbolAnalysisSettings::default()),
+            folder_analysis: Some(FolderAnalysisSettings::default()),
         }
     }
 }
@@ -2359,6 +2599,23 @@ impl AppConfig {
             changed = true;
         }
 
+        // Backward compatibility: folder analysis is a newer feature.
+        // If existing config doesn't have folderAnalysis, initialize it based on symbolAnalysis
+        // to keep the "AI analysis" features consistent after upgrading.
+        if self.code_intelligence.folder_analysis.is_none() {
+            let mut migrated = FolderAnalysisSettings::default();
+            if let Some(sym) = self.code_intelligence.symbol_analysis.as_ref() {
+                migrated.enabled = sym.enabled;
+                migrated.thinking_level = sym.thinking_level.clone();
+                migrated.timeout_ms = default_folder_analysis_timeout_ms().max(sym.timeout_ms);
+                migrated.max_tokens = sym.max_tokens;
+                migrated.temperature = sym.temperature;
+                migrated.include_project_context = sym.include_project_context;
+            }
+            self.code_intelligence.folder_analysis = Some(migrated);
+            changed = true;
+        }
+
         // Best-effort defaults for existing configs: infer missing model context lengths.
         for provider in &mut self.providers {
             for model in &mut provider.models {
@@ -2528,6 +2785,7 @@ fn ensure_system_workspace_defaults(cfg: &mut AppConfig) -> bool {
     const AGENT_CODE_COMPLETION: &str = "__system_code_completion";
     const AGENT_CHAT_WITH: &str = "__system_chat_with";
     const AGENT_SYMBOL_ANALYSIS: &str = "__system_symbol_analysis";
+    const AGENT_FOLDER_ANALYSIS: &str = "__system_folder_analysis";
 
     let mut changed = false;
 
@@ -2579,6 +2837,27 @@ fn ensure_system_workspace_defaults(cfg: &mut AppConfig) -> bool {
 3) 若符号是变量/字段/常量：
 - 做引用分析：解释语义与不变量（单位/范围/默认值/可变性），并尽量找出写入点/读取点/传递路径。
 - 说明它如何影响系统行为（配置、状态机、缓存、并发共享状态等），列出代表性的引用位置（带文件引用）；引用过多时按模块聚类，避免穷举。
+	"#;
+
+    const FOLDER_ANALYSIS_PROMPT_V1: &str = r#"你是 IDE 中的“文件夹分析助手”（Folder Analysis）。
+
+你的目标：在不臆测的前提下，对给定文件夹进行宏观结构分析 + 风险诊断，输出“可执行、可验证”的建议。
+
+你会收到：
+- 一个文件夹路径（folderPath）
+- 一些工程元信息（projectRoot、workstudioMainFolder 等）
+- 你可以在需要时使用工具（read_file / rg / list_dir / web_search）来补齐上下文，但不要修改文件。
+
+输出要求（必须）：
+- 使用 Markdown。
+- 先给结论摘要（1-3 句），再给结构化分析（模块分层/入口与关键流程/数据与状态/依赖与边界/错误处理/可观测性/测试），最后给风险点 + 可执行改进建议 + 验证清单。
+- 当缺少关键上下文时：明确列出需要看的文件/需要搜索的关键字/需要补充的信息，不要猜。
+
+### 文件引用（必须严格遵守）
+当你在讨论代码定位、调用链、实现细节或引用关系时，所有关键结论必须附带**可点击文件引用**，格式只允许：
+- `相对路径:行` 或 `相对路径:行:列`
+- `相对路径#L行` 或 `相对路径#L行C列`
+禁止使用 Markdown 链接语法引用文件（例如 `[label](path)`）；不要编造行号：拿不到行号时请先用 `rg`/打开文件定位，再输出引用。
 "#;
 
     // 1) Toolset: safe read-only tools for Workstudio AI (no apply_patch / no exec).
@@ -2757,6 +3036,15 @@ fn ensure_system_workspace_defaults(cfg: &mut AppConfig) -> bool {
         "对代码符号（函数/类/变量）进行深度解析的服务",
         SYMBOL_ANALYSIS_PROMPT_V2,
         Some(LEGACY_SYMBOL_ANALYSIS_PROMPT),
+        Some(TOOLSET_NAME),
+    );
+
+    ensure_agent(
+        AGENT_FOLDER_ANALYSIS,
+        "文件夹分析（Folder Analysis）",
+        "对工作区文件夹做宏观结构与风险诊断的服务",
+        FOLDER_ANALYSIS_PROMPT_V1,
+        None,
         Some(TOOLSET_NAME),
     );
 

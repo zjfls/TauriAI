@@ -21,7 +21,8 @@ use crate::code_intel::types::{LspLaunchConfig, LspServerStatus};
 use crate::config::ConfigManager;
 use crate::models::{
     AppConfig, CodeSnippetRange, Message, MessageRole, MessageStatus, Workstudio,
-    WorkstudioSymbolAnalysis,
+    WorkstudioFolderAnalysis, WorkstudioFolderAnalysisSummary, WorkstudioSymbolAnalysis,
+    WorkstudioSymbolAnalysisSummary,
 };
 use crate::storage::async_db;
 use crate::storage::Database;
@@ -826,6 +827,40 @@ pub async fn list_workstudio_symbol_analysis_keys_for_file(
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ListWorkstudioSymbolAnalysisSummariesForFileArgs {
+    pub workstudio_id: String,
+    pub file_path: String,
+}
+
+/// List analysis summaries (health level / verdict / counters) for a file.
+///
+/// Used by Workstudio Outline for color rendering and tooltips without loading full markdown.
+#[tauri::command]
+pub async fn list_workstudio_symbol_analysis_summaries_for_file(
+    args: ListWorkstudioSymbolAnalysisSummariesForFileArgs,
+    db: tauri::State<'_, Arc<Mutex<Database>>>,
+) -> Result<Vec<WorkstudioSymbolAnalysisSummary>, String> {
+    let ws_id = args.workstudio_id.trim();
+    let file_path = args.file_path.trim();
+
+    if ws_id.is_empty() {
+        return Err("workstudioId 为空".to_string());
+    }
+    if file_path.is_empty() {
+        return Err("filePath 为空".to_string());
+    }
+
+    async_db::with_db(
+        db.inner(),
+        "list_workstudio_symbol_analysis_summaries_for_file",
+        |db| db.list_workstudio_symbol_analysis_summaries_for_file(ws_id, file_path),
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DeleteWorkstudioSymbolAnalysisArgs {
     pub workstudio_id: String,
     pub file_path: String,
@@ -864,6 +899,8 @@ pub struct SaveWorkstudioSymbolAnalysisArgs {
     pub workstudio_id: String,
     pub language_id: String,
     pub file_path: String,
+    /// Symbol origin for the analysis: "lsp" | "ast_cst" (optional).
+    pub symbol_source: Option<String>,
     pub symbol_key: String,
     pub symbol_name: String,
     pub symbol_kind: String,
@@ -873,6 +910,149 @@ pub struct SaveWorkstudioSymbolAnalysisArgs {
     pub answer_md: String,
     pub model_ref: Option<String>,
     pub latency_ms: Option<u64>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SymbolDiagnosisCountsV1 {
+    pub errors: Option<u32>,
+    pub defects: Option<u32>,
+    pub improvements: Option<u32>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SymbolDiagnosisV1 {
+    pub schema: Option<String>,
+    pub health_level: Option<u8>,
+    pub verdict: Option<String>,
+    pub confidence: Option<f32>,
+    pub summary: Option<String>,
+    pub counts: Option<SymbolDiagnosisCountsV1>,
+}
+
+fn try_extract_symbol_diagnosis_v1(
+    answer_md: &str,
+) -> (Option<SymbolDiagnosisV1>, Option<String>, String) {
+    // Expected format:
+    // ```json
+    // { ... }
+    // ```
+    // <markdown...>
+
+    let text = answer_md.trim();
+    if text.is_empty() {
+        return (None, None, String::new());
+    }
+
+    // Only extract the first json code block; ignore others.
+    let open_idx = match text.find("```json") {
+        Some(v) => v,
+        None => return (None, None, text.to_string()),
+    };
+
+    // Find end of the opening fence line.
+    let open_line_end = match text[open_idx..].find('\n') {
+        Some(v) => open_idx + v + 1,
+        None => return (None, None, text.to_string()),
+    };
+
+    let rest = &text[open_line_end..];
+    let close_rel = match rest.find("```") {
+        Some(v) => v,
+        None => return (None, None, text.to_string()),
+    };
+
+    let json_raw = rest[..close_rel].trim();
+    if json_raw.is_empty() {
+        return (None, None, text.to_string());
+    }
+
+    let diag: SymbolDiagnosisV1 = match serde_json::from_str(json_raw) {
+        Ok(v) => v,
+        Err(_) => return (None, None, text.to_string()),
+    };
+
+    let schema_ok = diag
+        .schema
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s == "tauriai.symbol_diagnosis.v1" || s.starts_with("tauriai.symbol_diagnosis."))
+        .unwrap_or(false);
+    if !schema_ok {
+        return (None, None, text.to_string());
+    }
+
+    let markdown = rest[close_rel + 3..].trim_start().to_string();
+    let kept = if markdown.trim().is_empty() {
+        // Don't drop content if model forgot to output markdown.
+        text.to_string()
+    } else {
+        markdown
+    };
+
+    (Some(diag), Some(json_raw.to_string()), kept)
+}
+
+fn try_extract_folder_diagnosis_v1(
+    answer_md: &str,
+) -> (Option<SymbolDiagnosisV1>, Option<String>, String) {
+    // Same extraction protocol as symbol diagnosis, but schema differs:
+    // - tauriai.folder_diagnosis.v1
+    let text = answer_md.trim();
+    if text.is_empty() {
+        return (None, None, String::new());
+    }
+
+    // Only extract the first json code block; ignore others.
+    let open_idx = match text.find("```json") {
+        Some(v) => v,
+        None => return (None, None, text.to_string()),
+    };
+
+    // Find end of the opening fence line.
+    let open_line_end = match text[open_idx..].find('\n') {
+        Some(v) => open_idx + v + 1,
+        None => return (None, None, text.to_string()),
+    };
+
+    let rest = &text[open_line_end..];
+    let close_rel = match rest.find("```") {
+        Some(v) => v,
+        None => return (None, None, text.to_string()),
+    };
+
+    let json_raw = rest[..close_rel].trim();
+    if json_raw.is_empty() {
+        return (None, None, text.to_string());
+    }
+
+    let diag: SymbolDiagnosisV1 = match serde_json::from_str(json_raw) {
+        Ok(v) => v,
+        Err(_) => return (None, None, text.to_string()),
+    };
+
+    let schema_ok = diag
+        .schema
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s == "tauriai.folder_diagnosis.v1" || s.starts_with("tauriai.folder_diagnosis."))
+        .unwrap_or(false);
+    if !schema_ok {
+        return (None, None, text.to_string());
+    }
+
+    let markdown = rest[close_rel + 3..].trim_start().to_string();
+    let kept = if markdown.trim().is_empty() {
+        // Don't drop content if model forgot to output markdown.
+        text.to_string()
+    } else {
+        markdown
+    };
+
+    (Some(diag), Some(json_raw.to_string()), kept)
 }
 
 #[tauri::command]
@@ -911,26 +1091,252 @@ pub async fn save_workstudio_symbol_analysis(
     }
 
     let symbol_kind = symbol_kind_raw.to_lowercase();
+    let symbol_source = args
+        .symbol_source
+        .as_deref()
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty())
+        .filter(|s| s == "lsp" || s == "ast_cst");
     let model_ref = args
         .model_ref
         .as_deref()
         .map(|s| s.trim())
         .filter(|s| !s.is_empty());
 
+    let (diagnosis, diagnosis_json, answer_md_cleaned) = try_extract_symbol_diagnosis_v1(answer_md);
+    let health_level = diagnosis
+        .as_ref()
+        .and_then(|d| d.health_level)
+        .filter(|v| (1..=10).contains(v));
+    let diagnosis_verdict = diagnosis
+        .as_ref()
+        .and_then(|d| d.verdict.as_deref())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+    let diagnosis_confidence = diagnosis
+        .as_ref()
+        .and_then(|d| d.confidence)
+        .map(|v| v.max(0.0).min(1.0));
+    let diagnosis_summary = diagnosis
+        .as_ref()
+        .and_then(|d| d.summary.as_deref())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+    let diagnosis_errors = diagnosis
+        .as_ref()
+        .and_then(|d| d.counts.as_ref())
+        .and_then(|c| c.errors);
+    let diagnosis_defects = diagnosis
+        .as_ref()
+        .and_then(|d| d.counts.as_ref())
+        .and_then(|c| c.defects);
+    let diagnosis_improvements = diagnosis
+        .as_ref()
+        .and_then(|d| d.counts.as_ref())
+        .and_then(|c| c.improvements);
+
     async_db::with_db(db.inner(), "save_workstudio_symbol_analysis", |db| {
         db.upsert_workstudio_symbol_analysis(
             ws_id,
             file_path,
             lang,
+            symbol_source.as_deref(),
             symbol_key,
             symbol_name,
             &symbol_kind,
             args.selection_line,
             args.selection_column,
             &args.range,
-            answer_md,
+            answer_md_cleaned.trim(),
             model_ref,
             args.latency_ms,
+            health_level,
+            diagnosis_verdict,
+            diagnosis_confidence,
+            diagnosis_summary,
+            diagnosis_errors,
+            diagnosis_defects,
+            diagnosis_improvements,
+            diagnosis_json.as_deref(),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+// ============================================================================
+// Workstudio Folder Analysis (Explorer)
+// ============================================================================
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetWorkstudioFolderAnalysisArgs {
+    pub workstudio_id: String,
+    pub folder_path: String,
+}
+
+#[tauri::command]
+pub async fn get_workstudio_folder_analysis(
+    args: GetWorkstudioFolderAnalysisArgs,
+    db: tauri::State<'_, Arc<Mutex<Database>>>,
+) -> Result<Option<WorkstudioFolderAnalysis>, String> {
+    let ws_id = args.workstudio_id.trim();
+    let folder_path = args.folder_path.trim();
+
+    if ws_id.is_empty() {
+        return Err("workstudioId 为空".to_string());
+    }
+    if folder_path.is_empty() {
+        return Err("folderPath 为空".to_string());
+    }
+
+    async_db::with_db(db.inner(), "get_workstudio_folder_analysis", |db| {
+        db.get_workstudio_folder_analysis(ws_id, folder_path)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListWorkstudioFolderAnalysisSummariesArgs {
+    pub workstudio_id: String,
+}
+
+/// List lightweight folder analysis summaries for a workstudio.
+///
+/// Used by Workstudio Explorer to colorize folders without loading full markdown.
+#[tauri::command]
+pub async fn list_workstudio_folder_analysis_summaries(
+    args: ListWorkstudioFolderAnalysisSummariesArgs,
+    db: tauri::State<'_, Arc<Mutex<Database>>>,
+) -> Result<Vec<WorkstudioFolderAnalysisSummary>, String> {
+    let ws_id = args.workstudio_id.trim();
+
+    if ws_id.is_empty() {
+        return Err("workstudioId 为空".to_string());
+    }
+
+    async_db::with_db(
+        db.inner(),
+        "list_workstudio_folder_analysis_summaries",
+        |db| db.list_workstudio_folder_analysis_summaries(ws_id),
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteWorkstudioFolderAnalysisArgs {
+    pub workstudio_id: String,
+    pub folder_path: String,
+}
+
+#[tauri::command]
+pub async fn delete_workstudio_folder_analysis(
+    args: DeleteWorkstudioFolderAnalysisArgs,
+    db: tauri::State<'_, Arc<Mutex<Database>>>,
+) -> Result<(), String> {
+    let ws_id = args.workstudio_id.trim();
+    let folder_path = args.folder_path.trim();
+
+    if ws_id.is_empty() {
+        return Err("workstudioId 为空".to_string());
+    }
+    if folder_path.is_empty() {
+        return Err("folderPath 为空".to_string());
+    }
+
+    async_db::with_db(db.inner(), "delete_workstudio_folder_analysis", |db| {
+        db.delete_workstudio_folder_analysis(ws_id, folder_path)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveWorkstudioFolderAnalysisArgs {
+    pub workstudio_id: String,
+    pub folder_path: String,
+    pub answer_md: String,
+    pub model_ref: Option<String>,
+    pub latency_ms: Option<u64>,
+}
+
+#[tauri::command]
+pub async fn save_workstudio_folder_analysis(
+    args: SaveWorkstudioFolderAnalysisArgs,
+    db: tauri::State<'_, Arc<Mutex<Database>>>,
+) -> Result<WorkstudioFolderAnalysis, String> {
+    let ws_id = args.workstudio_id.trim();
+    let folder_path = args.folder_path.trim();
+    let answer_md = args.answer_md.trim();
+
+    if ws_id.is_empty() {
+        return Err("workstudioId 为空".to_string());
+    }
+    if folder_path.is_empty() {
+        return Err("folderPath 为空".to_string());
+    }
+    if answer_md.is_empty() {
+        return Err("answerMd 为空".to_string());
+    }
+
+    let model_ref = args
+        .model_ref
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+
+    let (diagnosis, diagnosis_json, answer_md_cleaned) = try_extract_folder_diagnosis_v1(answer_md);
+    let health_level = diagnosis
+        .as_ref()
+        .and_then(|d| d.health_level)
+        .filter(|v| (1..=10).contains(v));
+    let diagnosis_verdict = diagnosis
+        .as_ref()
+        .and_then(|d| d.verdict.as_deref())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+    let diagnosis_confidence = diagnosis
+        .as_ref()
+        .and_then(|d| d.confidence)
+        .map(|v| v.max(0.0).min(1.0));
+    let diagnosis_summary = diagnosis
+        .as_ref()
+        .and_then(|d| d.summary.as_deref())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+    let diagnosis_errors = diagnosis
+        .as_ref()
+        .and_then(|d| d.counts.as_ref())
+        .and_then(|c| c.errors);
+    let diagnosis_defects = diagnosis
+        .as_ref()
+        .and_then(|d| d.counts.as_ref())
+        .and_then(|c| c.defects);
+    let diagnosis_improvements = diagnosis
+        .as_ref()
+        .and_then(|d| d.counts.as_ref())
+        .and_then(|c| c.improvements);
+
+    async_db::with_db(db.inner(), "save_workstudio_folder_analysis", |db| {
+        db.upsert_workstudio_folder_analysis(
+            ws_id,
+            folder_path,
+            answer_md_cleaned.trim(),
+            model_ref,
+            args.latency_ms,
+            health_level,
+            diagnosis_verdict,
+            diagnosis_confidence,
+            diagnosis_summary,
+            diagnosis_errors,
+            diagnosis_defects,
+            diagnosis_improvements,
+            diagnosis_json.as_deref(),
         )
     })
     .await
@@ -1146,20 +1552,62 @@ pub async fn ai_analyze_workstudio_symbol(
 
     let latency_ms = started.elapsed().as_millis() as u64;
 
+    let (diagnosis, diagnosis_json, answer_md_cleaned) =
+        try_extract_symbol_diagnosis_v1(&answer_md);
+    let health_level = diagnosis
+        .as_ref()
+        .and_then(|d| d.health_level)
+        .filter(|v| (1..=10).contains(v));
+    let diagnosis_verdict = diagnosis
+        .as_ref()
+        .and_then(|d| d.verdict.as_deref())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+    let diagnosis_confidence = diagnosis
+        .as_ref()
+        .and_then(|d| d.confidence)
+        .map(|v| v.max(0.0).min(1.0));
+    let diagnosis_summary = diagnosis
+        .as_ref()
+        .and_then(|d| d.summary.as_deref())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+    let diagnosis_errors = diagnosis
+        .as_ref()
+        .and_then(|d| d.counts.as_ref())
+        .and_then(|c| c.errors);
+    let diagnosis_defects = diagnosis
+        .as_ref()
+        .and_then(|d| d.counts.as_ref())
+        .and_then(|c| c.defects);
+    let diagnosis_improvements = diagnosis
+        .as_ref()
+        .and_then(|d| d.counts.as_ref())
+        .and_then(|c| c.improvements);
+
     let analysis = async_db::with_db(db.inner(), "ai_analyze_workstudio_symbol:upsert", |db| {
         db.upsert_workstudio_symbol_analysis(
             ws_id,
             file_path,
             lang,
+            None,
             symbol_key,
             symbol_name,
             &symbol_kind,
             args.selection_line,
             args.selection_column,
             &args.range,
-            &answer_md,
+            answer_md_cleaned.trim(),
             Some(model_ref),
             Some(latency_ms),
+            health_level,
+            diagnosis_verdict,
+            diagnosis_confidence,
+            diagnosis_summary,
+            diagnosis_errors,
+            diagnosis_defects,
+            diagnosis_improvements,
+            diagnosis_json.as_deref(),
         )
     })
     .await
@@ -1289,11 +1737,26 @@ fn symbol_analysis_system_prompt() -> String {
 - 先给结论摘要（1-3 句），再给结构化分析（分点/小标题均可），最后给风险点 + 可执行改进建议 + 验证清单。
 - 当缺少关键上下文时：明确列出需要看的文件/需要搜索的关键字/需要补充的信息，不要猜。
 
-### 文件引用（必须严格遵守）
-当你在讨论代码定位、调用链、实现细节或引用关系时，所有关键结论必须附带**可点击文件引用**，格式只允许：
-- `相对路径:行` 或 `相对路径:行:列`
-- `相对路径#L行` 或 `相对路径#L行C列`
-禁止使用 Markdown 链接语法引用文件（例如 `[label](path)`）；不要编造行号。
+### 文件引用（必须严格遵守｜可点击跳转）
+- 这是“代码问题域”的强约束：当你在讨论代码/报错/定位/调用链/实现细节/引用关系时，所有文件引用都必须使用**行内代码**的“路径格式”，系统会据此解析为可点击跳转；若用其它写法通常会不可点击。
+- 普通网页 URL 可以使用 `[文本](url)`；但**文件引用禁止使用** Markdown 链接语法（例如 `[label](path)`），也不要输出 `file://` / `vscode://` 之类的 URI。
+- 唯一允许/推荐的写法（请严格遵守）：`相对路径:行`、`相对路径:行:列`、`相对路径#L行`、`相对路径#L行C列`
+  - ✅ 示例：`tauri-ai/src-tauri/src/prompts.rs:123`、`tauri-ai/apps/desktop/src/components/Chat/ChatView.tsx#L771`
+  - ❌ 禁止：`(line 59)`、单独写 `:59`、或只写 `prompts.rs:123`（缺目录）
+- 优先使用“相对主工作区根目录的相对路径（包含子目录）”；只有在必要时才使用绝对路径（Windows 示例：`C:\repo\project\main.rs:12:5`）。
+- 拿不到行号时不要猜：先用工具或上下文定位到行号，再输出引用。
+- 如需引用一段范围（可选）：`path#L10-L20` 或 `path:10-20`。
+
+### Mermaid 图中的文件引用（必须可点击）
+当你输出 Mermaid 图并希望用户能“点击节点跳到代码位置”时：
+- 节点文本里写 `path:line` 只是展示，不会自动变成可点击跳转。
+- 必须使用 Mermaid 的 `click` 指令绑定可点击的 href（建议同时把 token 作为 tooltip）：
+```mermaid
+flowchart TD
+  R["Request Handler"]
+  click R href "tauri-ai/src-tauri/src/prompts.rs:123" "tauri-ai/src-tauri/src/prompts.rs:123"
+```
+- 美观建议：节点标签只写简短职责名；把完整 `path:line` 放到 `click` 的 tooltip（第三个参数）里；正文也应列出关键节点对应的文件引用。
 
 ### 分析策略（按符号类型自适应）
 1) 若符号是大型类型/容器（class/struct/trait/enum/module…）：优先宏观（职责边界、对外 API、关键成员分组、依赖/生命周期/并发/错误处理/扩展点），避免逐行复述。

@@ -15,8 +15,10 @@ import type {
   AiCompletionSettings,
   AiCompletionTriggerMode,
   AppConfig,
+  FolderAnalysisSettings,
   LspServerConfig,
   SymbolAnalysisSettings,
+  ThinkingLevel,
 } from '../../types';
 
 const Toggle: React.FC<{
@@ -120,6 +122,22 @@ const defaultSymbolAnalysisSettings = (): SymbolAnalysisSettings => ({
   includeProjectContext: true,
 });
 
+const defaultFolderAnalysisSettings = (): FolderAnalysisSettings => ({
+  enabled: false,
+  agentRef: '',
+  concurrency: 1,
+  additionalAgents: [],
+  timeoutMs: 30000,
+  maxTokens: 8192,
+  temperature: 0.2,
+  includeProjectContext: true,
+  maxDepth: 3,
+  maxFiles: 200,
+  maxTotalBytes: 5000000,
+  includeHidden: false,
+  ignoreGlobs: ['**/.git/**', '**/node_modules/**', '**/target/**', '**/dist/**', '**/build/**', '**/.next/**', '**/.turbo/**'],
+});
+
 const AUTO_DETECT_LANGUAGE_ORDER = ['rust', 'python', 'go', 'cpp', 'c', 'lua'] as const;
 const AUTO_DETECT_LANGUAGE_SET = new Set<string>(AUTO_DETECT_LANGUAGE_ORDER);
 const AUTO_DETECT_LANGUAGE_LABEL: Record<string, string> = {
@@ -153,6 +171,8 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
   const aiCompletion: AiCompletionSettings = config?.codeIntelligence?.aiCompletion ?? defaultAiCompletionSettings();
   const symbolAnalysis: SymbolAnalysisSettings =
     config?.codeIntelligence?.symbolAnalysis ?? defaultSymbolAnalysisSettings();
+  const folderAnalysis: FolderAnalysisSettings =
+    config?.codeIntelligence?.folderAnalysis ?? defaultFolderAnalysisSettings();
 
   const getToolAgents = () => {
     const agents = config?.agents ?? [];
@@ -268,6 +288,16 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
     });
   };
 
+  const updateFolderAnalysis = (updater: (s: FolderAnalysisSettings) => FolderAnalysisSettings) => {
+    updateConfig((cfg) => {
+      const prev = cfg.codeIntelligence?.folderAnalysis ?? defaultFolderAnalysisSettings();
+      return {
+        ...cfg,
+        codeIntelligence: { ...cfg.codeIntelligence, folderAnalysis: updater(prev) },
+      };
+    });
+  };
+
   const commitAdvancedDrafts = () => {
     if (!selectedServer) return;
 
@@ -312,9 +342,12 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
     setSelectedIndex(servers.length);
   };
 
-  const deleteSelected = () => {
+  const deleteSelected = async () => {
     if (!selectedServer) return;
-    if (!confirm(`确定删除该 LSP 配置吗？（${selectedServer.languageId || 'unknown'}）`)) return;
+    const ok = await Promise.resolve(
+      window.confirm(`确定删除该 LSP 配置吗？（${selectedServer.languageId || 'unknown'}）`)
+    );
+    if (!ok) return;
     const nextServers = servers.filter((_, i) => i !== selectedIndex);
     updateConfig((cfg) => ({
       ...cfg,
@@ -1079,6 +1112,331 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
                     }
                     title="是否在分析请求里包含 filePath / projectRoot 等信息"
                   />
+                </div>
+              </div>
+            </details>
+          </div>
+
+          {/* Folder Analysis */}
+          <div className="space-y-5 rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm font-semibold text-gray-800 dark:text-white">文件夹分析</div>
+                <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                  Workstudio Explorer 右键“分析文件夹/重新分析/查看分析”等会发起大模型请求，并把结果落盘用于文件夹上色。
+                </div>
+              </div>
+              <Toggle
+                checked={Boolean(folderAnalysis.enabled)}
+                onChange={(enabled) => updateFolderAnalysis((s) => ({ ...s, enabled }))}
+                title="启用文件夹分析"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">绑定智能体</label>
+                <select
+                  value={folderAnalysis.agentRef ?? ''}
+                  onChange={(e) => updateFolderAnalysis((s) => ({ ...s, agentRef: e.target.value }))}
+                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                >
+                  <option value="">（系统默认：文件夹分析）</option>
+                  {toolAgents.map((opt) => (
+                    <option key={opt.name} value={opt.name}>
+                      {opt.displayName || opt.name} {opt.name.startsWith('__system_') ? '(系统)' : ''}
+                    </option>
+                  ))}
+                </select>
+                <div className="text-xs text-gray-500 dark:text-gray-400">
+                  指定处理“文件夹分析”的智能体（支持在智能体设置页添加自定义 Tool 智能体）。
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">并发上限</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={64}
+                  value={folderAnalysis.concurrency ?? 1}
+                  onChange={(e) => {
+                    const n = Number(e.target.value);
+                    const next = Number.isFinite(n) ? Math.max(1, Math.min(64, Math.floor(n))) : 1;
+                    updateFolderAnalysis((s) => ({ ...s, concurrency: next }));
+                  }}
+                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                />
+                <div className="text-xs text-gray-500 dark:text-gray-400">
+                  控制“默认绑定智能体”同时跑多少个文件夹分析任务；并发越大越快，但更占用模型/网络资源。
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">思考强度（可选）</label>
+              <select
+                value={String(folderAnalysis.thinkingLevel ?? '')}
+                onChange={(e) => {
+                  const v = String(e.target.value || '').trim();
+                  const next: ThinkingLevel | undefined =
+                    v === 'low' || v === 'medium' || v === 'high' || v === 'xhigh' ? (v as ThinkingLevel) : undefined;
+                  updateFolderAnalysis((s) => ({ ...s, thinkingLevel: next }));
+                }}
+                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+              >
+                <option value="">（无 / 默认）</option>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+                <option value="xhigh">xhigh</option>
+              </select>
+              <div className="text-xs text-gray-500 dark:text-gray-400">
+                用于 OpenAI Responses API 的 reasoning.effort；其它协议会按“有/无”做近似映射。
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-950">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-gray-800 dark:text-gray-100">附加智能体（多模型 / 多并发）</div>
+                  <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                    可添加多个 Tool 智能体并分别设置并发上限；Workstudio 会在这些智能体之间调度，提升批量分析速度。
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    updateFolderAnalysis((s) => ({
+                      ...s,
+                      additionalAgents: [...(s.additionalAgents ?? []), { agentRef: '', concurrency: 1 }],
+                    }))
+                  }
+                  className="flex items-center gap-2 rounded-md border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
+                  title="新增一条附加智能体配置"
+                >
+                  <Plus size={14} />
+                  新增
+                </button>
+              </div>
+
+              <div className="mt-3 space-y-2">
+                {(folderAnalysis.additionalAgents ?? []).length === 0 ? (
+                  <div className="text-xs text-gray-500 dark:text-gray-400">（未配置附加智能体）</div>
+                ) : (
+                  (folderAnalysis.additionalAgents ?? []).map((row, idx) => (
+                    <div
+                      key={`folderAnalysis.additionalAgents:${idx}`}
+                      className="grid grid-cols-1 gap-2 md:grid-cols-12 md:items-end"
+                    >
+                      <div className="md:col-span-7 space-y-1">
+                        <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">智能体</label>
+                        <select
+                          value={row.agentRef ?? ''}
+                          onChange={(e) => {
+                            const agentRef = e.target.value;
+                            updateFolderAnalysis((s) => {
+                              const next = [...(s.additionalAgents ?? [])];
+                              next[idx] = { ...(next[idx] ?? { agentRef: '', concurrency: 1 }), agentRef };
+                              return { ...s, additionalAgents: next };
+                            });
+                          }}
+                          className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                        >
+                          <option value="">（请选择）</option>
+                          {toolAgents.map((opt) => (
+                            <option key={opt.name} value={opt.name}>
+                              {opt.displayName || opt.name} {opt.name.startsWith('__system_') ? '(系统)' : ''}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="md:col-span-3 space-y-1">
+                        <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">并发</label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={64}
+                          value={row.concurrency ?? 1}
+                          onChange={(e) => {
+                            const n = Number(e.target.value);
+                            const concurrency = Number.isFinite(n) ? Math.max(1, Math.min(64, Math.floor(n))) : 1;
+                            updateFolderAnalysis((s) => {
+                              const next = [...(s.additionalAgents ?? [])];
+                              next[idx] = { ...(next[idx] ?? { agentRef: '', concurrency: 1 }), concurrency };
+                              return { ...s, additionalAgents: next };
+                            });
+                          }}
+                          className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                        />
+                      </div>
+
+                      <div className="md:col-span-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            updateFolderAnalysis((s) => ({
+                              ...s,
+                              additionalAgents: (s.additionalAgents ?? []).filter((_, i) => i !== idx),
+                            }))
+                          }
+                          className="flex w-full items-center justify-center gap-2 rounded-md border border-red-200 bg-red-50 px-2 py-2 text-xs text-red-700 hover:bg-red-100 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-200 dark:hover:bg-red-900/30"
+                          title="移除该附加智能体配置"
+                        >
+                          <Trash2 size={14} />
+                          移除
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            <details className="rounded-lg border border-gray-200 bg-white px-3 py-2 dark:border-gray-700 dark:bg-gray-900">
+              <summary className="cursor-pointer text-sm font-medium text-gray-700 dark:text-gray-200">
+                高级参数（超时 / Token / 温度 / 采集限制）
+              </summary>
+              <div className="mt-3 grid grid-cols-1 gap-4 md:grid-cols-2">
+                <div className="space-y-1">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">超时（ms）</label>
+                  <input
+                    type="number"
+                    min={2000}
+                    max={180000}
+                    value={folderAnalysis.timeoutMs ?? 30000}
+                    onChange={(e) => {
+                      const n = Number(e.target.value);
+                      const next = Number.isFinite(n) ? Math.max(2000, Math.min(180000, Math.floor(n))) : 30000;
+                      updateFolderAnalysis((s) => ({ ...s, timeoutMs: next }));
+                    }}
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">maxTokens</label>
+                  <input
+                    type="number"
+                    min={256}
+                    max={65536}
+                    value={folderAnalysis.maxTokens ?? 8192}
+                    onChange={(e) => {
+                      const n = Number(e.target.value);
+                      const next = Number.isFinite(n) ? Math.max(256, Math.min(65536, Math.floor(n))) : 8192;
+                      updateFolderAnalysis((s) => ({ ...s, maxTokens: next }));
+                    }}
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">温度</label>
+                  <input
+                    type="number"
+                    step={0.05}
+                    min={0}
+                    max={2}
+                    value={folderAnalysis.temperature ?? 0.2}
+                    onChange={(e) => {
+                      const n = Number(e.target.value);
+                      const next = Number.isFinite(n) ? Math.max(0, Math.min(2, n)) : 0.2;
+                      updateFolderAnalysis((s) => ({ ...s, temperature: next }));
+                    }}
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                  />
+                </div>
+
+                <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-950">
+                  <div className="min-w-0">
+                    <div className="text-xs text-gray-500 dark:text-gray-400">Context</div>
+                    <div className="text-sm text-gray-800 dark:text-gray-100">发送项目上下文</div>
+                  </div>
+                  <Toggle
+                    checked={Boolean(folderAnalysis.includeProjectContext)}
+                    onChange={(includeProjectContext) =>
+                      updateFolderAnalysis((s) => ({ ...s, includeProjectContext }))
+                    }
+                    title="是否在分析请求里包含 projectRoot/workstudioMainFolder 等信息"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">maxDepth</label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={50}
+                    value={folderAnalysis.maxDepth ?? 3}
+                    onChange={(e) => {
+                      const n = Number(e.target.value);
+                      const next = Number.isFinite(n) ? Math.max(0, Math.min(50, Math.floor(n))) : 3;
+                      updateFolderAnalysis((s) => ({ ...s, maxDepth: next }));
+                    }}
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">maxFiles</label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={20000}
+                    value={folderAnalysis.maxFiles ?? 200}
+                    onChange={(e) => {
+                      const n = Number(e.target.value);
+                      const next = Number.isFinite(n) ? Math.max(0, Math.min(20000, Math.floor(n))) : 200;
+                      updateFolderAnalysis((s) => ({ ...s, maxFiles: next }));
+                    }}
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">maxTotalBytes</label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={500000000}
+                    value={folderAnalysis.maxTotalBytes ?? 5000000}
+                    onChange={(e) => {
+                      const n = Number(e.target.value);
+                      const next = Number.isFinite(n) ? Math.max(0, Math.min(500000000, Math.floor(n))) : 5000000;
+                      updateFolderAnalysis((s) => ({ ...s, maxTotalBytes: next }));
+                    }}
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                  />
+                </div>
+
+                <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-950">
+                  <div className="min-w-0">
+                    <div className="text-xs text-gray-500 dark:text-gray-400">Hidden</div>
+                    <div className="text-sm text-gray-800 dark:text-gray-100">包含隐藏文件</div>
+                  </div>
+                  <Toggle
+                    checked={Boolean(folderAnalysis.includeHidden)}
+                    onChange={(includeHidden) => updateFolderAnalysis((s) => ({ ...s, includeHidden }))}
+                    title="是否允许分析时包含 . 开头的隐藏文件"
+                  />
+                </div>
+              </div>
+
+              <div className="mt-3 space-y-1">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">ignoreGlobs（每行一条）</label>
+                <textarea
+                  rows={5}
+                  value={(folderAnalysis.ignoreGlobs ?? []).join('\n')}
+                  onChange={(e) => {
+                    const ignoreGlobs = parseLines(e.target.value);
+                    updateFolderAnalysis((s) => ({ ...s, ignoreGlobs }));
+                  }}
+                  className="w-full resize-y rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                  placeholder="例如：**/node_modules/**"
+                />
+                <div className="text-xs text-gray-500 dark:text-gray-400">
+                  用于提示模型尽量忽略这些路径；不影响你手动在 Explorer 打开的文件。
                 </div>
               </div>
             </details>

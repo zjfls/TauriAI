@@ -249,7 +249,7 @@ export interface Agent {
   /** workstudio AI panel visibility (default: true for 'coding' agents) */
   workstudioEnabled?: boolean;
   /**
-   * System-provided agent — shown in Workspace AI but cannot be deleted.
+   * System-provided agent — shown in Workstudio AI but cannot be deleted.
    * If not user-configured, the backend falls back to built-in defaults for this role.
    */
   isSystem?: boolean;
@@ -341,6 +341,21 @@ export interface FileRefContentPart {
   type: 'file_ref';
   path: string;      // Absolute path (backend/tool-friendly)
   label?: string;    // UI label (usually basename)
+}
+
+/**
+ * Workspace mention chip (draft token -> UI label mapping)
+ *
+ * Used by InputArea to render internal tokens like `@{ref:<uuid>}` as a chip label.
+ * Tokens are expanded to `@/abs/path` before sending the message to the backend.
+ */
+export interface WorkspaceMentionChip {
+  /** UUID referenced by `@{ref:<id>}` token */
+  id: string;
+  /** Absolute file/folder path */
+  absPath: string;
+  /** UI label (usually basename) */
+  label: string;
 }
 
 export interface CodeSnippetRange {
@@ -948,11 +963,19 @@ export interface Workstudio {
  * Persisted AI analysis result for a symbol in Workstudio Outline.
  * - answerMd is Markdown (rendered as rich text in UI).
  */
+export interface WorkstudioSymbolDiagnosisCounts {
+  errors: number;
+  defects: number;
+  improvements: number;
+}
+
 export interface WorkstudioSymbolAnalysis {
   id: string;
   workstudioId: string;
   filePath: string;
   languageId: string;
+  /** 符号来源：用于标注该分析基于 LSP 或 AST/CST 的符号信息生成（可选，旧数据可能为空）。 */
+  symbolSource?: string;
   symbolKey: string;
   symbolName: string;
   symbolKind: string;
@@ -962,7 +985,70 @@ export interface WorkstudioSymbolAnalysis {
   answerMd: string;
   modelRef?: string;
   latencyMs?: number;
+  /** 健康度：1..10（10 最健康，1 最危险） */
+  healthLevel?: number;
+  /** HEALTHY | IMPROVABLE | RISKY | CRITICAL | POSSIBLY_UNUSED */
+  verdict?: string;
+  /** 0..1 */
+  confidence?: number;
+  /** 1 行诊断摘要（用于 Outline tooltip / 右键菜单） */
+  diagnosisSummary?: string;
+  /** Errors/Defects/Improvements 计数 */
+  diagnosisCounts?: WorkstudioSymbolDiagnosisCounts;
   createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Lightweight diagnosis summary for Outline prefetch (no markdown payload).
+ */
+export interface WorkstudioSymbolAnalysisSummary {
+  symbolKey: string;
+  /** 符号来源：用于标注该分析基于 LSP 或 AST/CST 的符号信息生成（可选，旧数据可能为空）。 */
+  symbolSource?: string;
+  healthLevel?: number;
+  verdict?: string;
+  confidence?: number;
+  diagnosisSummary?: string;
+  diagnosisCounts?: WorkstudioSymbolDiagnosisCounts;
+  updatedAt: string;
+}
+
+/**
+ * Persisted AI analysis result for a folder in Workstudio Explorer.
+ */
+export interface WorkstudioFolderAnalysis {
+  id: string;
+  workstudioId: string;
+  folderPath: string;
+  /** Markdown content (rendered as rich text in UI). */
+  answerMd: string;
+  modelRef?: string;
+  latencyMs?: number;
+  /** 健康度：1..10（10 最健康，1 最危险） */
+  healthLevel?: number;
+  /** HEALTHY | IMPROVABLE | RISKY | CRITICAL | POSSIBLY_UNUSED */
+  verdict?: string;
+  /** 0..1 */
+  confidence?: number;
+  /** 1 行诊断摘要（用于 Explorer tooltip / 右键菜单） */
+  diagnosisSummary?: string;
+  /** Errors/Defects/Improvements 计数 */
+  diagnosisCounts?: WorkstudioSymbolDiagnosisCounts;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Lightweight diagnosis summary for Workstudio Explorer prefetch (no markdown payload).
+ */
+export interface WorkstudioFolderAnalysisSummary {
+  folderPath: string;
+  healthLevel?: number;
+  verdict?: string;
+  confidence?: number;
+  diagnosisSummary?: string;
+  diagnosisCounts?: WorkstudioSymbolDiagnosisCounts;
   updatedAt: string;
 }
 
@@ -988,6 +1074,8 @@ export interface WorkstudioOutlineUiState {
   open?: boolean;
   /** 是否优先使用 LSP 生成 Outline（默认 true）。 */
   preferLsp?: boolean;
+  /** Outline 符号排序方式（默认 position）。 */
+  sortMode?: 'position' | 'kind' | 'name' | 'size';
   files?: Record<string, WorkstudioOutlineFileUiState>;
 }
 
@@ -1166,6 +1254,8 @@ export interface CodeIntelligenceSettings {
   aiCompletion?: AiCompletionSettings;
   /** Workstudio 符号分析（Outline 右键“分析类/函数/变量”等） */
   symbolAnalysis?: SymbolAnalysisSettings;
+  /** Workstudio 文件夹分析（Explorer 右键“分析文件夹”等） */
+  folderAnalysis?: FolderAnalysisSettings;
 }
 
 export type AiCompletionQueueScope = 'global' | 'language';
@@ -1203,6 +1293,15 @@ export interface SymbolAnalysisSettings {
   /** 绑定的智能体名称（如：__system_symbol_analysis） */
   agentRef?: string;
   /**
+   * 思考强度（用于 OpenAI Responses API 的 reasoning.effort）。
+   * 映射规则：
+   * - OpenAI Responses / Google（responses）：直接使用该等级；
+   * - 其它 client（chat_completions）：无=>不思考，其它=>思考。
+   *
+   * 说明：未设置时等同于“无”（保持默认不思考，避免额外开销/费用）。
+   */
+  thinkingLevel?: ThinkingLevel;
+  /**
    * 该智能体的最大并发数（同一时间允许发起多少个“符号分析”请求）。
    * 说明：并发越大，分析越快，但可能更占用带宽/额度/模型资源。
    */
@@ -1230,6 +1329,37 @@ export interface SymbolAnalysisAgentBinding {
   agentRef: string;
   /** 该智能体的最大并发数 */
   concurrency: number;
+}
+
+export interface FolderAnalysisAgentBinding {
+  /** 绑定的智能体名称（如：__system_folder_analysis） */
+  agentRef: string;
+  /** 该智能体的最大并发数 */
+  concurrency: number;
+}
+
+export interface FolderAnalysisSettings {
+  enabled: boolean;
+  /** 绑定的智能体名称（如：__system_folder_analysis） */
+  agentRef?: string;
+  thinkingLevel?: ThinkingLevel;
+  concurrency?: number;
+  additionalAgents?: FolderAnalysisAgentBinding[];
+  timeoutMs: number;
+  maxTokens: number;
+  temperature: number;
+  /** 是否允许发送项目上下文（路径、工作区信息等） */
+  includeProjectContext: boolean;
+  /** 文件夹扫描最大深度（用于生成树/采样） */
+  maxDepth?: number;
+  /** 文件夹扫描最大文件数（用于生成树/采样） */
+  maxFiles?: number;
+  /** 文件夹扫描最大总字节数（用于读取文件内容采样） */
+  maxTotalBytes?: number;
+  /** 是否包含隐藏文件（以 . 开头） */
+  includeHidden?: boolean;
+  /** 忽略规则（glob 风格） */
+  ignoreGlobs?: string[];
 }
 
 export interface LspServerStatus {
@@ -1476,6 +1606,8 @@ export interface AgentSession {
   thinkingMode?: ThinkingMode;        // Current thinking mode/level for this session
   webSearchProvider?: 'native' | 'tavily' | 'google' | 'brave' | null;  // Selected web search provider for this session
   draftContent?: string;              // Unsent input text for this session
+  /** 草稿里的“文件引用 chip”（用于 `@{ref:<uuid>}` token 的 UI 显示） */
+  draftWorkspaceMentions?: WorkspaceMentionChip[];
   /** 草稿里的“代码片段 chip”（来自 Workstudio 选中内容右键 Add to chat） */
   draftCodeSnippets?: CodeSnippetContentPart[];
 
@@ -1513,6 +1645,8 @@ export interface PersistedSession {
   thinkingMode?: ThinkingMode;      // Persisted thinking mode/level
   webSearchProvider?: 'native' | 'tavily' | 'google' | 'brave' | null;  // Persisted web search provider selection
   draftContent?: string;            // Persisted unsent input text
+  /** 持久化草稿里的文件引用 chip（体积较小，主要用于 UI token->label 映射） */
+  draftWorkspaceMentions?: WorkspaceMentionChip[];
   /** 持久化草稿里的代码片段 chip（可能较大；存储层会做限制） */
   draftCodeSnippets?: CodeSnippetContentPart[];
   createdAt: string;

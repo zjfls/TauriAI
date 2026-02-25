@@ -1,6 +1,14 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 
-import type { AstSymbol, LspDetectServerResult, LspServerStatus, WorkstudioSymbolAnalysis } from '../types';
+import type {
+  AstSymbol,
+  LspDetectServerResult,
+  LspServerStatus,
+  WorkstudioFolderAnalysis,
+  WorkstudioFolderAnalysisSummary,
+  WorkstudioSymbolAnalysis,
+  WorkstudioSymbolAnalysisSummary,
+} from '../types';
 
 export type LspEnsureServerArgs = {
   workstudioId: string;
@@ -226,6 +234,17 @@ export const listWorkstudioSymbolAnalysisKeysForFile = async (
   return invoke<string[]>('list_workstudio_symbol_analysis_keys_for_file', { args });
 };
 
+export const listWorkstudioSymbolAnalysisSummariesForFile = async (
+  args: WorkstudioSymbolAnalysisFileKey
+): Promise<WorkstudioSymbolAnalysisSummary[]> => {
+  if (!isTauri()) {
+    throw new Error('Not running in Tauri');
+  }
+  return invoke<WorkstudioSymbolAnalysisSummary[]>('list_workstudio_symbol_analysis_summaries_for_file', {
+    args,
+  });
+};
+
 export const deleteWorkstudioSymbolAnalysis = async (args: WorkstudioSymbolAnalysisKey): Promise<void> => {
   if (!isTauri()) {
     throw new Error('Not running in Tauri');
@@ -237,6 +256,8 @@ export type SaveWorkstudioSymbolAnalysisArgs = {
   workstudioId: string;
   languageId: string;
   filePath: string;
+  /** 符号来源：lsp | ast_cst（可选，旧版本后端可忽略） */
+  symbolSource?: string;
   symbolKey: string;
   symbolName: string;
   symbolKind: string;
@@ -277,4 +298,55 @@ export const aiAnalyzeWorkstudioSymbol = async (
     throw new Error('Not running in Tauri');
   }
   return invoke<WorkstudioSymbolAnalysis>('ai_analyze_workstudio_symbol', { args });
+};
+
+// ============================================================================
+// AI Folder Analysis (Workstudio Explorer folders, persisted in DB)
+// ============================================================================
+
+export type WorkstudioFolderAnalysisKey = {
+  workstudioId: string;
+  folderPath: string;
+};
+
+export const getWorkstudioFolderAnalysis = async (
+  args: WorkstudioFolderAnalysisKey
+): Promise<WorkstudioFolderAnalysis | null> => {
+  if (!isTauri()) {
+    throw new Error('Not running in Tauri');
+  }
+  return invoke<WorkstudioFolderAnalysis | null>('get_workstudio_folder_analysis', { args });
+};
+
+export const listWorkstudioFolderAnalysisSummaries = async (args: {
+  workstudioId: string;
+}): Promise<WorkstudioFolderAnalysisSummary[]> => {
+  if (!isTauri()) {
+    throw new Error('Not running in Tauri');
+  }
+  return invoke<WorkstudioFolderAnalysisSummary[]>('list_workstudio_folder_analysis_summaries', { args });
+};
+
+export const deleteWorkstudioFolderAnalysis = async (args: WorkstudioFolderAnalysisKey): Promise<void> => {
+  if (!isTauri()) {
+    throw new Error('Not running in Tauri');
+  }
+  await invoke<void>('delete_workstudio_folder_analysis', { args });
+};
+
+export type SaveWorkstudioFolderAnalysisArgs = {
+  workstudioId: string;
+  folderPath: string;
+  answerMd: string;
+  modelRef?: string;
+  latencyMs?: number;
+};
+
+export const saveWorkstudioFolderAnalysis = async (
+  args: SaveWorkstudioFolderAnalysisArgs
+): Promise<WorkstudioFolderAnalysis> => {
+  if (!isTauri()) {
+    throw new Error('Not running in Tauri');
+  }
+  return invoke<WorkstudioFolderAnalysis>('save_workstudio_folder_analysis', { args });
 };

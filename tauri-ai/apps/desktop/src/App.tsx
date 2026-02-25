@@ -29,7 +29,7 @@ import { ChatViewContainer } from './views/ChatViewContainer';
 import { getViewWindowParams, openOrFocusViewWindow } from './utils/viewWindow';
 import { resolveActiveWorkstudioMainFolder } from './utils/terminalWorkdir';
 import { getCurrentWindowLabelSafe, removeWindowPresence, writeWindowPresence } from './utils/windowPresence';
-import type { CodeSnippetContentPart } from './types';
+import type { CodeSnippetContentPart, WorkspaceMentionChip } from './types';
 import {
   clearAppClosingIfStale,
   isAppClosingRecently,
@@ -759,8 +759,8 @@ function App() {
   }, [isDragGhostWindow]);
 
   // ---------------------------------------------------------------------------
-  // Workstudio -> Main window: insert text into chat draft
-  // - Used by Workstudio explorer context menu (“加入到 Chat”)
+  // Workstudio -> Main window: insert plain text into chat draft
+  // - Legacy / misc: non-chip inserts
   // - Main window receives 'chat:insert_text' events and appends to the active chat draft
   // ---------------------------------------------------------------------------
   useEffect(() => {
@@ -816,6 +816,83 @@ function App() {
       })
       .catch((err) => {
         console.error('listen chat:insert_text failed:', err);
+      });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [isDragGhostWindow, shouldInitChatRuntime]);
+
+  // ---------------------------------------------------------------------------
+  // Workstudio -> Main window: insert workspace mention chip into chat draft
+  // - Used by Workstudio explorer context menu (“加入到 Chat”)
+  // - Payload includes absPath + label (InputArea renders @{ref:<uuid>} as a chip)
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    if (!isTauri()) return;
+    if (!shouldInitChatRuntime) return;
+    if (isDragGhostWindow) return;
+
+    let disposed = false;
+    let unlisten: null | (() => void) = null;
+
+    void listen('chat:insert_workspace_mention', (event) => {
+      if (disposed) return;
+      const payload = (event as any)?.payload ?? null;
+      const absPath = String(payload?.absPath ?? '').trim();
+      const label = String(payload?.label ?? '').trim() || absPath.split('/').pop() || absPath;
+      if (!absPath) return;
+
+      const layout = useWindowLayoutStore.getState();
+      const panes = layout.panes ?? [];
+      const focusedPaneId = layout.focusedPaneId;
+      const pane =
+        (focusedPaneId ? panes.find((p) => p.id === focusedPaneId) : null) ?? panes[0] ?? null;
+      const activeTabIdRaw =
+        pane?.activeTabId && pane.tabIds.includes(pane.activeTabId)
+          ? pane.activeTabId
+          : pane?.tabIds[0] ?? null;
+
+      const sessionStore = useSessionStore.getState();
+      const sessions = sessionStore.sessions;
+
+      const fromFocusedPane =
+        typeof activeTabIdRaw === 'string' && activeTabIdRaw.startsWith('chat:')
+          ? activeTabIdRaw.slice('chat:'.length)
+          : '';
+      const candidateSessionId = fromFocusedPane || sessionStore.activeSessionId || '';
+
+      const targetSessionId = (() => {
+        const sid = candidateSessionId.trim();
+        if (sid && sessions.has(sid)) return sid;
+        const first = sessions.keys().next().value as string | undefined;
+        return first && sessions.has(first) ? first : null;
+      })();
+
+      if (!targetSessionId) return;
+
+      const prevDraft = sessions.get(targetSessionId)?.draftContent ?? '';
+      const prevMentions = sessions.get(targetSessionId)?.draftWorkspaceMentions ?? [];
+
+      const existing = prevMentions.find((m) => m.absPath === absPath) ?? null;
+      const id = existing?.id ?? crypto.randomUUID();
+      const token = `@{ref:${id}}`;
+      const mention: WorkspaceMentionChip = { id, absPath, label };
+      const nextMentions = existing ? prevMentions : [...prevMentions, mention];
+
+      const spacer = prevDraft && !/\s$/.test(prevDraft) ? ' ' : '';
+      const nextDraft = prevDraft ? `${prevDraft}${spacer}${token} ` : `${token} `;
+
+      sessionStore.setSessionDraftContent(targetSessionId, nextDraft);
+      sessionStore.setSessionDraftWorkspaceMentions(targetSessionId, nextMentions);
+      useWindowLayoutStore.getState().openTabInFocusedPane(chatTabId(targetSessionId));
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch((err) => {
+        console.error('listen chat:insert_workspace_mention failed:', err);
       });
 
     return () => {

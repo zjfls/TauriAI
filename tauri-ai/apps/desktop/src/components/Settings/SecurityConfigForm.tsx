@@ -217,14 +217,16 @@ export const SecurityConfigForm: React.FC = () => {
     setSelectedPolicyName(nextName);
   };
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (!currentPolicy) return;
     if (policies.length <= 1) {
       alert('至少需要保留一个安全策略');
       return;
     }
-    if (!confirm(`确定要删除安全策略「${currentPolicy.name}」吗？相关智能体会自动回退到默认策略。`))
-      return;
+    const ok = await Promise.resolve(
+      window.confirm(`确定要删除安全策略「${currentPolicy.name}」吗？相关智能体会自动回退到默认策略。`)
+    );
+    if (!ok) return;
 
     const nextPolicies = policies.filter((p) => p.name !== currentPolicy.name);
     const nextDefaultPolicy =

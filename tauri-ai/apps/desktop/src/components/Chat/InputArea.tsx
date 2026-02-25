@@ -18,6 +18,7 @@ import type {
   Agent,
   ContentPart,
   CodeSnippetContentPart,
+  WorkspaceMentionChip,
   PendingImage,
   PendingTextFile,
   PendingPdf,
@@ -448,6 +449,9 @@ interface InputAreaProps {
   pdfDebugMode?: boolean;  // Whether to enable PDF debug mode controls
   // Workstudio (for @ mention file chips)
   workstudio?: Workstudio | null;
+  /** 草稿里的“文件引用 chip”（用于 `@{ref:<uuid>}` token 的 UI 显示） */
+  workspaceMentions?: WorkspaceMentionChip[];
+  onWorkspaceMentionsChange?: (mentions: WorkspaceMentionChip[]) => void;
   /** 草稿里的“代码片段 chip”（来自 Workstudio 选中内容右键 Add to chat） */
   codeSnippets?: CodeSnippetContentPart[];
   onCodeSnippetsChange?: (snippets: CodeSnippetContentPart[]) => void;
@@ -1040,6 +1044,8 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   webSearchDetails,
   pdfDebugMode = false,
   workstudio,
+  workspaceMentions: controlledWorkspaceMentions,
+  onWorkspaceMentionsChange,
   codeSnippets = [],
   onCodeSnippetsChange,
 }, ref) => {
@@ -1268,8 +1274,17 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   const [pendingPdfs, setPendingPdfs] = useState<PendingPdf[]>([]);
   const [fileError, setFileError] = useState<string | null>(null);
   const [pdfError, setPdfError] = useState<string | null>(null);
-  type WorkspaceMentionChip = { id: string; absPath: string; label: string };
-  const [workspaceMentions, setWorkspaceMentions] = useState<WorkspaceMentionChip[]>([]);
+  const [workspaceMentionsDraft, setWorkspaceMentionsDraft] = useState<WorkspaceMentionChip[]>([]);
+  const workspaceMentions = controlledWorkspaceMentions ?? workspaceMentionsDraft;
+  const handleWorkspaceMentionsChange = useCallback(
+    (next: WorkspaceMentionChip[]) => {
+      onWorkspaceMentionsChange?.(next);
+      if (controlledWorkspaceMentions === undefined) {
+        setWorkspaceMentionsDraft(next);
+      }
+    },
+    [controlledWorkspaceMentions, onWorkspaceMentionsChange]
+  );
   const [atQuery, setAtQuery] = useState<{ start: number; query: string } | null>(null);
   const [atResults, setAtResults] = useState<{ uri: string; absPath: string; label: string }[]>([]);
   const [atIndex, setAtIndex] = useState(0);
@@ -2341,7 +2356,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
     setPendingTextFiles([]);
 	    // Clear pending PDFs after sending
 	    setPendingPdfs([]);
-	    setWorkspaceMentions([]);
+	    handleWorkspaceMentionsChange([]);
 	    onCodeSnippetsChange?.([]);
 	    setAtQuery(null);
 	    setAtResults([]);
@@ -2364,15 +2379,16 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
 	    pendingImages,
 	    pendingTextFiles,
 	    pendingPdfs,
-	    workspaceMentions,
-	    codeSnippets,
-	    disabled,
-	    onSend,
-	    supportsThinking,
-	    thinkingMode,
-	    handleContentChange,
-	    onCodeSnippetsChange,
-	  ]);
+		    workspaceMentions,
+		    codeSnippets,
+		    disabled,
+		    onSend,
+		    supportsThinking,
+		    thinkingMode,
+		    handleContentChange,
+		    handleWorkspaceMentionsChange,
+		    onCodeSnippetsChange,
+		  ]);
 
   /**
    * Handle keyboard events in textarea
@@ -2412,23 +2428,26 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
           e.preventDefault();
           const chosen = atResults.length > 0 ? atResults[atIndex] : undefined;
           if (!chosen) return;
-          const el = textareaRef.current;
-          const cursor = el?.selectionStart ?? content.length;
-          const refId = crypto.randomUUID();
-          const token = `@{ref:${refId}}`;
-          const nextContent = content.slice(0, atQuery.start) + token + ' ' + content.slice(cursor);
-          handleContentChange(nextContent);
-          setAtQuery(null);
-          setAtResults([]);
-          setAtIndex(0);
-          setWorkspaceMentions((prev) => {
-            if (prev.some((m) => m.absPath === chosen.absPath)) return prev;
-            return [...prev, { id: refId, absPath: chosen.absPath, label: chosen.label }];
-          });
-          window.setTimeout(() => {
-            const el2 = textareaRef.current;
-            if (!el2) return;
-            el2.focus();
+	          const el = textareaRef.current;
+	          const cursor = el?.selectionStart ?? content.length;
+	          const existing = workspaceMentions.find((m) => m.absPath === chosen.absPath) ?? null;
+	          const refId = existing?.id ?? crypto.randomUUID();
+	          const token = `@{ref:${refId}}`;
+	          const nextContent = content.slice(0, atQuery.start) + token + ' ' + content.slice(cursor);
+	          handleContentChange(nextContent);
+	          setAtQuery(null);
+	          setAtResults([]);
+	          setAtIndex(0);
+	          if (!existing) {
+	            handleWorkspaceMentionsChange([
+	              ...workspaceMentions,
+	              { id: refId, absPath: chosen.absPath, label: chosen.label },
+	            ]);
+	          }
+	          window.setTimeout(() => {
+	            const el2 = textareaRef.current;
+	            if (!el2) return;
+	            el2.focus();
             const pos = atQuery.start + token.length + 1;
             try {
               el2.setSelectionRange(pos, pos);
@@ -2518,15 +2537,18 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
 	          const cursor = el.selectionStart ?? content.length;
 	          const probeIndex = e.key === 'Backspace' ? cursor - 1 : cursor;
 	          const hit = findWorkspaceMentionTokenAt(content, probeIndex);
-	          if (hit) {
-	            e.preventDefault();
-	            const next = content.slice(0, hit.start) + content.slice(hit.end);
-	            handleContentChange(next);
-	            setWorkspaceMentions((prev) => prev.filter((m) => m.id !== hit.id));
-	            window.setTimeout(() => {
-	              const el2 = textareaRef.current;
-	              if (!el2) return;
-	              try {
+		          if (hit) {
+		            e.preventDefault();
+		            const next = content.slice(0, hit.start) + content.slice(hit.end);
+		            handleContentChange(next);
+		            const stillReferenced = next.includes(`@{ref:${hit.id}}`);
+		            if (!stillReferenced) {
+		              handleWorkspaceMentionsChange(workspaceMentions.filter((m) => m.id !== hit.id));
+		            }
+		            window.setTimeout(() => {
+		              const el2 = textareaRef.current;
+		              if (!el2) return;
+		              try {
 	                el2.setSelectionRange(hit.start, hit.start);
 	              } catch {
 	                // ignore
@@ -2563,21 +2585,23 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
         void handleSend();
       }
     },
-	    [
-	      workstudio?.id,
-	      atQuery,
-	      atResults,
-	      atIndex,
-	      dollarQuery,
-	      dollarResults,
-	      dollarIndex,
-	      content,
-	      codeSnippets,
-	      onCodeSnippetsChange,
-	      handleContentChange,
-	      handleSend,
-	    ]
-	  );
+		    [
+		      workstudio?.id,
+		      atQuery,
+		      atResults,
+		      atIndex,
+		      dollarQuery,
+		      dollarResults,
+		      dollarIndex,
+		      content,
+		      workspaceMentions,
+		      handleWorkspaceMentionsChange,
+		      codeSnippets,
+		      onCodeSnippetsChange,
+		      handleContentChange,
+		      handleSend,
+		    ]
+		  );
 
   /**
    * Handle input change in textarea
@@ -3266,24 +3290,27 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
                           : 'hover:bg-gray-50 dark:hover:bg-gray-700',
                       ].join(' ')}
                       onMouseDown={(ev) => ev.preventDefault()}
-                      onClick={() => {
-                        const el = textareaRef.current;
-                        const cursor = el?.selectionStart ?? content.length;
-                        const refId = crypto.randomUUID();
-                        const token = `@{ref:${refId}}`;
-                        const nextContent = content.slice(0, atQuery.start) + token + ' ' + content.slice(cursor);
-                        handleContentChange(nextContent);
-                        setAtQuery(null);
-                        setAtResults([]);
-                        setAtIndex(0);
-                        setWorkspaceMentions((prev) => {
-                          if (prev.some((m) => m.absPath === r.absPath)) return prev;
-                          return [...prev, { id: refId, absPath: r.absPath, label: r.label }];
-                        });
-                        window.setTimeout(() => {
-                          const el2 = textareaRef.current;
-                          if (!el2) return;
-                          el2.focus();
+	                      onClick={() => {
+	                        const el = textareaRef.current;
+	                        const cursor = el?.selectionStart ?? content.length;
+	                        const existing = workspaceMentions.find((m) => m.absPath === r.absPath) ?? null;
+	                        const refId = existing?.id ?? crypto.randomUUID();
+	                        const token = `@{ref:${refId}}`;
+	                        const nextContent = content.slice(0, atQuery.start) + token + ' ' + content.slice(cursor);
+	                        handleContentChange(nextContent);
+	                        setAtQuery(null);
+	                        setAtResults([]);
+	                        setAtIndex(0);
+	                        if (!existing) {
+	                          handleWorkspaceMentionsChange([
+	                            ...workspaceMentions,
+	                            { id: refId, absPath: r.absPath, label: r.label },
+	                          ]);
+	                        }
+	                        window.setTimeout(() => {
+	                          const el2 = textareaRef.current;
+	                          if (!el2) return;
+	                          el2.focus();
                           const pos = atQuery.start + token.length + 1;
                           try {
                             el2.setSelectionRange(pos, pos);

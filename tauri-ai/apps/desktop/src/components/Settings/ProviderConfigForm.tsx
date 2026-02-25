@@ -136,14 +136,14 @@ export const ProviderConfigForm: React.FC = () => {
     setTestStatus('idle');
   };
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (!selectedProviderName) return;
-    if (confirm('确定要删除这个提供商吗？')) {
-      if (!config) return;
-      const nextProviders = providers.filter((p) => p.name !== selectedProviderName);
-      saveConfigDebounced({ ...config, providers: nextProviders });
-      setSelectedProviderName(nextProviders[0]?.name ?? null);
-    }
+    const ok = await Promise.resolve(window.confirm('确定要删除这个提供商吗？'));
+    if (!ok) return;
+    if (!config) return;
+    const nextProviders = providers.filter((p) => p.name !== selectedProviderName);
+    saveConfigDebounced({ ...config, providers: nextProviders });
+    setSelectedProviderName(nextProviders[0]?.name ?? null);
   };
 
   const nextUniqueProviderName = (baseName: string) => {
