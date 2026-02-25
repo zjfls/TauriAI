@@ -2763,6 +2763,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const [outlinePreferLsp, setOutlinePreferLsp] = useState(DEFAULT_OUTLINE_PREFER_LSP);
   const [outlineSortMode, setOutlineSortMode] = useState<OutlineSortMode>(DEFAULT_OUTLINE_SORT_MODE);
   const [outlineActionsMenuOpen, setOutlineActionsMenuOpen] = useState(false);
+  const [outlineToolsMenuOpen, setOutlineToolsMenuOpen] = useState(false);
   const [outlineAnalyzeAllPanelOpen, setOutlineAnalyzeAllPanelOpen] = useState(false);
   const [outlineAnalyzeAllExcludeVariables, setOutlineAnalyzeAllExcludeVariables] = useState(true);
   const [workstudioAiSettingsOpen, setWorkstudioAiSettingsOpen] = useState(false);
@@ -3054,7 +3055,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       case 'name':
         return '按名称';
       case 'size':
-        return '按大小';
+        return '按重要程度';
       case 'position':
       default:
         return '按位置';
@@ -10050,6 +10051,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       !lspMenu &&
       !outlineMenu &&
       !outlineActionsMenuOpen &&
+      !outlineToolsMenuOpen &&
       !outlineAnalyzeAllPanelOpen &&
       !workstudioAiSettingsOpen
     )
@@ -10060,6 +10062,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       setLspMenu(null);
       setOutlineMenu(null);
       setOutlineActionsMenuOpen(false);
+      setOutlineToolsMenuOpen(false);
       setOutlineAnalyzeAllPanelOpen(false);
       setWorkstudioAiSettingsOpen(false);
     };
@@ -10069,6 +10072,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     contextMenu,
     lspMenu,
     outlineActionsMenuOpen,
+    outlineToolsMenuOpen,
     outlineAnalyzeAllPanelOpen,
     outlineMenu,
     tabMenu,
@@ -10963,35 +10967,146 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	            </div>
 	          </div>
 
-	          <div className="flex min-h-0 flex-1 flex-col">
-	            <div className="flex items-center gap-1 border-b border-gray-200 px-2 py-1.5 dark:border-gray-800">
-	              <button
-	                type="button"
-                className={[
-                  'rounded px-2 py-1 text-[11px] font-semibold uppercase tracking-wide',
-                  leftSidebarTab === 'explorer' || !outlineOpen
-                    ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
-                    : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800',
-                ].join(' ')}
-                onClick={() => setLeftSidebarTab('explorer')}
-              >
-                Explorer
-              </button>
-              {outlineOpen && (
-                <button
-                  type="button"
-                  className={[
-                    'rounded px-2 py-1 text-[11px] font-semibold uppercase tracking-wide',
-                    leftSidebarTab === 'outline'
-                      ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
-                      : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800',
-                  ].join(' ')}
-                  onClick={() => setLeftSidebarTab('outline')}
-                >
-                  Outline{outlineItemCount > 0 ? `(${outlineItemCount})` : ''}
-                </button>
-              )}
-            </div>
+		          <div className="flex min-h-0 flex-1 flex-col">
+		            <div className="flex items-center gap-1 border-b border-gray-200 px-2 py-1.5 dark:border-gray-800">
+		              <button
+		                type="button"
+	                className={[
+	                  'rounded px-2 py-1 text-[11px] font-semibold uppercase tracking-wide',
+	                  leftSidebarTab === 'explorer' || !outlineOpen
+	                    ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
+	                    : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800',
+	                ].join(' ')}
+	                onClick={() => setLeftSidebarTab('explorer')}
+	              >
+	                Explorer
+	              </button>
+	              {outlineOpen && (
+	                <>
+	                  <button
+	                    type="button"
+	                    className={[
+	                      'rounded px-2 py-1 text-[11px] font-semibold uppercase tracking-wide',
+	                      leftSidebarTab === 'outline'
+	                        ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
+	                        : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800',
+	                    ].join(' ')}
+	                    onClick={() => setLeftSidebarTab('outline')}
+	                  >
+	                    Outline{outlineItemCount > 0 ? `(${outlineItemCount})` : ''}
+	                  </button>
+
+	                  <div className="relative ml-auto">
+	                    <button
+	                      type="button"
+	                      className={[
+	                        'rounded border border-gray-200 p-1 text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800',
+	                        outlineToolsMenuOpen ? 'bg-gray-100 dark:bg-gray-800' : '',
+	                      ].join(' ')}
+	                      onClick={() => {
+	                        if (leftSidebarTab !== 'outline') setLeftSidebarTab('outline');
+	                        if (outlineToolsMenuOpen) {
+	                          setOutlineToolsMenuOpen(false);
+	                          return;
+	                        }
+	                        setOutlineActionsMenuOpen(false);
+	                        setOutlineAnalyzeAllPanelOpen(false);
+	                        setOutlineToolsMenuOpen(true);
+	                      }}
+	                      title="Outline 工具"
+	                    >
+	                      <SlidersHorizontal size={14} />
+	                    </button>
+
+	                    {outlineToolsMenuOpen && (
+	                      <div
+	                        className="absolute right-0 top-full z-[210] mt-2 w-[240px] max-w-[80vw] overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900"
+	                        onMouseDown={(e) => e.stopPropagation()}
+	                      >
+	                        <div className="py-1 text-sm">
+	                          <div className="px-3 pb-1 pt-2 text-[11px] font-semibold text-gray-500 dark:text-gray-400">
+	                            排序
+	                          </div>
+	                          <button
+	                            type="button"
+	                            className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+	                            onClick={() => {
+	                              setOutlineSortMode('kind');
+	                              setOutlineToolsMenuOpen(false);
+	                            }}
+	                            title="按类型排序（先类/结构，再函数/方法，再变量/字段）"
+	                          >
+	                            <span className="flex items-center gap-2">
+	                              {outlineSortMode === 'kind' ? (
+	                                <CheckCircle2 size={14} className="shrink-0 text-blue-600 dark:text-blue-300" />
+	                              ) : (
+	                                <span className="shrink-0 w-[14px]" />
+	                              )}
+	                              <span className="truncate">按类型（类/函数/变量）</span>
+	                            </span>
+	                          </button>
+	                          <button
+	                            type="button"
+	                            className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+	                            onClick={() => {
+	                              setOutlineSortMode('size');
+	                              setOutlineToolsMenuOpen(false);
+	                            }}
+	                            title="按重要程度排序（行数多 → 少）"
+	                          >
+	                            <span className="flex items-center gap-2">
+	                              {outlineSortMode === 'size' ? (
+	                                <CheckCircle2 size={14} className="shrink-0 text-blue-600 dark:text-blue-300" />
+	                              ) : (
+	                                <span className="shrink-0 w-[14px]" />
+	                              )}
+	                              <span className="truncate">按重要程度（行数多 → 少）</span>
+	                            </span>
+	                          </button>
+	                          <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
+	                          <button
+	                            type="button"
+	                            disabled={
+	                              !activeTextFileInFocusedPane ||
+	                              outlineItems.length === 0 ||
+	                              outlineLoading ||
+	                              outlineCollapsibleKeyCount === 0
+	                            }
+	                            className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:text-gray-200 dark:hover:bg-gray-800"
+	                            onClick={() => {
+	                              setOutlineToolsMenuOpen(false);
+	                              collapseAllOutline();
+	                            }}
+	                            title={
+	                              outlineCollapsibleKeyCount > 0 ? '全部折叠（仅折叠包含子节点的符号）' : '没有可折叠的符号'
+	                            }
+	                          >
+	                            折叠全部符号
+	                          </button>
+	                          <button
+	                            type="button"
+	                            disabled={
+	                              !activeTextFileInFocusedPane ||
+	                              outlineItems.length === 0 ||
+	                              outlineLoading ||
+	                              outlineCollapsedKeys.size === 0
+	                            }
+	                            className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:text-gray-200 dark:hover:bg-gray-800"
+	                            onClick={() => {
+	                              setOutlineToolsMenuOpen(false);
+	                              expandAllOutline();
+	                            }}
+	                            title="全部展开"
+	                          >
+	                            展开全部符号
+	                          </button>
+	                        </div>
+	                      </div>
+	                    )}
+	                  </div>
+	                </>
+	              )}
+	            </div>
 
             {(!outlineOpen || leftSidebarTab === 'explorer') && (
               <div
@@ -11147,24 +11262,24 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 		                              <span className="truncate">按名称（A → Z）</span>
 		                            </span>
 		                          </button>
-		                          <button
-		                            type="button"
-		                            className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
-		                            onClick={() => {
-		                              setOutlineSortMode('size');
-		                              setOutlineActionsMenuOpen(false);
-		                            }}
-		                            title="按大小排序（行数大 → 小）"
-		                          >
-		                            <span className="flex items-center gap-2">
-		                              {outlineSortMode === 'size' ? (
-		                                <CheckCircle2 size={14} className="shrink-0 text-blue-600 dark:text-blue-300" />
-		                              ) : (
-		                                <span className="shrink-0 w-[14px]" />
-		                              )}
-		                              <span className="truncate">按大小（行数大 → 小）</span>
-		                            </span>
-		                          </button>
+			                          <button
+			                            type="button"
+			                            className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+			                            onClick={() => {
+			                              setOutlineSortMode('size');
+			                              setOutlineActionsMenuOpen(false);
+			                            }}
+			                            title="按重要程度排序（行数多 → 少）"
+			                          >
+			                            <span className="flex items-center gap-2">
+			                              {outlineSortMode === 'size' ? (
+			                                <CheckCircle2 size={14} className="shrink-0 text-blue-600 dark:text-blue-300" />
+			                              ) : (
+			                                <span className="shrink-0 w-[14px]" />
+			                              )}
+			                              <span className="truncate">按重要程度（行数多 → 少）</span>
+			                            </span>
+			                          </button>
 		                          <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
 		                          <button
 		                            type="button"
