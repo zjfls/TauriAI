@@ -2688,10 +2688,15 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
             nodes.push(
               <span
                 key={`ws-${id}-${start}`}
-                className="inline-flex items-center gap-1 rounded-md bg-blue-50 px-2 py-0.5 text-xs text-blue-700 dark:bg-blue-900/30 dark:text-blue-200 align-baseline"
-                title={mention.absPath}
+                className="relative align-baseline rounded-md bg-blue-50 dark:bg-blue-900/30"
               >
-                {mention.label}
+                <span className="text-transparent">{raw}</span>
+                <span
+                  className="absolute inset-0 inline-flex items-center gap-1 px-2 text-xs text-blue-700 dark:text-blue-200 overflow-hidden whitespace-nowrap text-ellipsis pointer-events-none"
+                  title={mention.absPath}
+                >
+                  {mention.label}
+                </span>
               </span>
             );
           } else {
@@ -2730,10 +2735,15 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
 	            nodes.push(
 	              <span
 	                key={`snip-${id}-${start}`}
-	                className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700 dark:bg-emerald-900/25 dark:text-emerald-200 align-baseline"
-	                title={titleParts.join('\n')}
+	                className="relative align-baseline rounded-md bg-emerald-50 dark:bg-emerald-900/25"
 	              >
-	                {snippet.label}
+                  <span className="text-transparent">{raw}</span>
+                  <span
+                    className="absolute inset-0 inline-flex items-center gap-1 px-2 text-xs text-emerald-700 dark:text-emerald-200 overflow-hidden whitespace-nowrap text-ellipsis pointer-events-none"
+                    title={titleParts.join('\n')}
+                  >
+                    {snippet.label}
+                  </span>
 	              </span>
 	            );
 	          } else {
@@ -2801,6 +2811,9 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
     }
 
 	    flushText(lastTextStart, text.length);
+      if (text.endsWith('\n')) {
+        nodes.push(<span key={`eof-${text.length}`}>{'\u200b'}</span>);
+      }
 	    return nodes;
 	  }, [content, workspaceMentionsById, codeSnippetsById]);
 
