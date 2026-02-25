@@ -299,11 +299,56 @@ struct ErrorResponse {
 #[derive(Debug, Deserialize)]
 struct ErrorDetail {
     message: String,
+    #[serde(default)]
+    #[serde(rename = "type")]
+    error_type: Option<String>,
+    #[serde(default)]
+    code: Option<String>,
+    #[serde(default)]
+    param: Option<serde_json::Value>,
 }
 
 // ============================================================================
 // Helper functions
 // ============================================================================
+fn format_openai_error_detail(status: u16, detail: &ErrorDetail) -> String {
+    let mut meta: Vec<String> = Vec::new();
+    meta.push(format!("HTTP {status}"));
+
+    if let Some(t) = detail
+        .error_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        meta.push(format!("type={t}"));
+    }
+    if let Some(c) = detail.code.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        meta.push(format!("code={c}"));
+    }
+    if let Some(p) = detail.param.as_ref() {
+        if !p.is_null() {
+            let raw = match p {
+                serde_json::Value::String(s) => s.trim().to_string(),
+                other => other.to_string(),
+            };
+            if !raw.is_empty() {
+                meta.push(format!("param={raw}"));
+            }
+        }
+    }
+
+    let mut out = detail.message.trim().to_string();
+    if out.is_empty() {
+        out = "openai_error".to_string();
+    }
+    if !meta.is_empty() {
+        out.push('（');
+        out.push_str(&meta.join("; "));
+        out.push('）');
+    }
+    out
+}
 
 /// Convert ContentBlocks to typed Responses API content parts.
 ///
@@ -813,10 +858,14 @@ impl AiClient for OpenAiResponsesClient {
             .await
             .map_err(|e| AiError::ConnectionError(e.to_string()))?;
 
+        let status_code = response.status().as_u16();
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();
             if let Ok(error_response) = serde_json::from_str::<ErrorResponse>(&error_text) {
-                return Err(AiError::RequestFailed(error_response.error.message));
+                return Err(AiError::RequestFailed(format_openai_error_detail(
+                    status_code,
+                    &error_response.error,
+                )));
             }
             return Err(AiError::RequestFailed(error_text));
         }
@@ -1064,8 +1113,9 @@ impl AiClient for OpenAiResponsesClient {
             };
 
             if let Ok(error_response) = serde_json::from_str::<ErrorResponse>(&error_text) {
+                let msg = format_openai_error_detail(response_status, &error_response.error);
                 let _ = token_sender
-                    .send(StreamEvent::Error(error_response.error.message.clone()))
+                    .send(StreamEvent::Error(msg.clone()))
                     .await;
                 let _ = token_sender
                     .send(StreamEvent::DoneWithDebug {
@@ -1075,7 +1125,6 @@ impl AiClient for OpenAiResponsesClient {
                         usage: None,
                     })
                     .await;
-                let msg = error_response.error.message;
                 let err = match response_status {
                     401 | 403 => AiError::AuthenticationFailed(msg),
                     429 => AiError::RateLimited(msg),

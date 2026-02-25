@@ -278,6 +278,51 @@ struct OpenAiErrorDetail {
     #[allow(dead_code)]
     #[serde(rename = "type")]
     error_type: Option<String>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    code: Option<String>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    param: Option<serde_json::Value>,
+}
+
+fn format_openai_error_detail(status: u16, detail: &OpenAiErrorDetail) -> String {
+    let mut meta: Vec<String> = Vec::new();
+    meta.push(format!("HTTP {status}"));
+
+    if let Some(t) = detail
+        .error_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        meta.push(format!("type={t}"));
+    }
+    if let Some(c) = detail.code.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        meta.push(format!("code={c}"));
+    }
+    if let Some(p) = detail.param.as_ref() {
+        if !p.is_null() {
+            let raw = match p {
+                serde_json::Value::String(s) => s.trim().to_string(),
+                other => other.to_string(),
+            };
+            if !raw.is_empty() {
+                meta.push(format!("param={raw}"));
+            }
+        }
+    }
+
+    let mut out = detail.message.trim().to_string();
+    if out.is_empty() {
+        out = "openai_error".to_string();
+    }
+    if !meta.is_empty() {
+        out.push('（');
+        out.push_str(&meta.join("; "));
+        out.push('）');
+    }
+    out
 }
 
 /// System prompt role type
@@ -668,9 +713,14 @@ impl OpenAiBaseClient {
             let error_msg = if let Ok(error_response) =
                 serde_json::from_str::<OpenAiErrorResponse>(&error_text)
             {
-                error_response.error.message
+                format_openai_error_detail(status_code, &error_response.error)
             } else {
-                error_text
+                let trimmed = error_text.trim();
+                if trimmed.is_empty() {
+                    format!("openai_error（HTTP {status_code}）")
+                } else {
+                    format!("{trimmed}（HTTP {status_code}）")
+                }
             };
             return Err(match status_code {
                 401 | 403 => AiError::AuthenticationFailed(error_msg),
@@ -891,8 +941,15 @@ impl OpenAiBaseClient {
             // (runtime/task_runner will pick up the error but still keep debug info if available).
             let error_msg = serde_json::from_str::<OpenAiErrorResponse>(&error_text)
                 .ok()
-                .map(|e| e.error.message)
-                .unwrap_or_else(|| error_text.clone());
+                .map(|e| format_openai_error_detail(response_status, &e.error))
+                .unwrap_or_else(|| {
+                    let trimmed = error_text.trim();
+                    if trimmed.is_empty() {
+                        format!("openai_error（HTTP {response_status}）")
+                    } else {
+                        format!("{trimmed}（HTTP {response_status}）")
+                    }
+                });
 
             let _ = token_sender.send(StreamEvent::Error(error_msg.clone())).await;
             let _ = token_sender
