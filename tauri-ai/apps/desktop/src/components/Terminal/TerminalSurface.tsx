@@ -9,9 +9,24 @@ import { useTerminalSessionStore } from '../../stores/terminalSessionStore';
 const decodeBase64ToBytes = (base64: string) => Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
 
 const getTheme = () => {
-  return document.documentElement.classList.contains('dark')
-    ? { background: '#0b0f19', foreground: '#e5e7eb' }
-    : { background: '#ffffff', foreground: '#111827' };
+  const isDark = document.documentElement.classList.contains('dark');
+  // NOTE: xterm's default cursor color is close to white; in light mode that can become invisible.
+  // Always set an explicit cursor color for contrast.
+  return isDark
+    ? {
+        background: '#0b0f19',
+        foreground: '#e5e7eb',
+        cursor: '#e5e7eb',
+        cursorAccent: '#0b0f19',
+        selectionBackground: 'rgba(148, 163, 184, 0.35)',
+      }
+    : {
+        background: '#ffffff',
+        foreground: '#111827',
+        cursor: '#111827',
+        cursorAccent: '#ffffff',
+        selectionBackground: 'rgba(17, 24, 39, 0.18)',
+      };
 };
 
 const patchXtermRenderServiceDimensions = (term: XTerm) => {
