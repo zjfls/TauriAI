@@ -123,7 +123,11 @@ export const TerminalSurface = React.forwardRef<TerminalSurfaceHandle, TerminalS
     const tickInFlightRef = useRef<boolean>(false);
     const tickPendingRef = useRef<boolean>(false);
 
-    const scopeKey = useMemo(() => `${scope.kind}:${scope.id}`, [scope.kind, scope.id]);
+    // Important: `scope` is frequently passed as an inline object literal by parents.
+    // If we depend on the object identity, React re-renders (e.g. chat streaming) would
+    // repeatedly tear down and recreate the terminal, causing massive jank.
+    const stableScope: TerminalScope = useMemo(() => ({ kind: scope.kind, id: scope.id }), [scope.kind, scope.id]);
+    const scopeKey = useMemo(() => `${stableScope.kind}:${stableScope.id}`, [stableScope.kind, stableScope.id]);
 
     useEffect(() => {
       activeRef.current = isActive;
@@ -158,17 +162,17 @@ export const TerminalSurface = React.forwardRef<TerminalSurfaceHandle, TerminalS
 
     const connect = useCallback(async (): Promise<number | null> => {
       manuallyDisconnectedRef.current = false;
-      const sid = await useTerminalSessionStore.getState().ensureSession(scope, { workdir });
+      const sid = await useTerminalSessionStore.getState().ensureSession(stableScope, { workdir });
       schedule(0);
       return sid;
-    }, [schedule, scope, workdir]);
+    }, [schedule, stableScope, workdir]);
 
     const disconnect = useCallback(async (): Promise<boolean> => {
       manuallyDisconnectedRef.current = true;
-      const ok = await useTerminalSessionStore.getState().closeSession(scope);
+      const ok = await useTerminalSessionStore.getState().closeSession(stableScope);
       schedule(0);
       return ok;
-    }, [schedule, scope]);
+    }, [schedule, stableScope]);
 
     const reset = useCallback(() => {
       try {
@@ -261,7 +265,7 @@ export const TerminalSurface = React.forwardRef<TerminalSurfaceHandle, TerminalS
         if (!isTauri()) return;
         // 用户输入视为显式交互：即使之前手动断开，也允许自动重连。
         manuallyDisconnectedRef.current = false;
-        void useTerminalSessionStore.getState().write(scope, data);
+        void useTerminalSessionStore.getState().write(stableScope, data);
         schedule(0);
       });
 
@@ -333,7 +337,7 @@ export const TerminalSurface = React.forwardRef<TerminalSurfaceHandle, TerminalS
           }
         });
       };
-    }, [enqueueWrite, schedule, scope, scopeKey]);
+    }, [enqueueWrite, schedule, stableScope, scopeKey]);
 
     // Read loop (single unified pump) — no duplicate loops anywhere else.
     const tickRef = useRef<() => void>(() => { });
@@ -353,14 +357,14 @@ export const TerminalSurface = React.forwardRef<TerminalSurfaceHandle, TerminalS
           if (!term) return;
           const gen = termGenRef.current;
 
-          const sid = useTerminalSessionStore.getState().getSessionId(scope);
+          const sid = useTerminalSessionStore.getState().getSessionId(stableScope);
           if (!sid) {
             hadOutputRef.current = false;
             return;
           }
 
           const active = activeRef.current;
-          const base64 = await useTerminalSessionStore.getState().readBase64(scope, {
+          const base64 = await useTerminalSessionStore.getState().readBase64(stableScope, {
             timeoutMs: active ? 900 : 0,
             maxBytes: 64 * 1024,
           });
@@ -402,7 +406,7 @@ export const TerminalSurface = React.forwardRef<TerminalSurfaceHandle, TerminalS
         if (timerRef.current) window.clearTimeout(timerRef.current);
         timerRef.current = null;
       };
-    }, [enqueueWrite, schedule, scope, scopeKey]);
+    }, [enqueueWrite, schedule, stableScope, scopeKey]);
 
     // Auto-connect policy.
     useEffect(() => {
@@ -439,9 +443,9 @@ export const TerminalSurface = React.forwardRef<TerminalSurfaceHandle, TerminalS
     useEffect(() => {
       return () => {
         if (!closeOnUnmount) return;
-        void useTerminalSessionStore.getState().closeSession(scope);
+        void useTerminalSessionStore.getState().closeSession(stableScope);
       };
-    }, [closeOnUnmount, scope, scopeKey]);
+    }, [closeOnUnmount, stableScope, scopeKey]);
 
     return <div ref={containerRef} className={className || 'h-full w-full'} />;
   }
