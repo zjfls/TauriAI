@@ -645,10 +645,24 @@ const AgentForm: React.FC<AgentFormProps> = ({
   const effectiveSandboxPolicy: SandboxPolicy = agent.sandboxPolicy ?? baseSecurityPolicy.sandboxPolicy;
   const effectiveApprovalPolicy: AskForApproval = agent.approvalPolicy ?? baseSecurityPolicy.approvalPolicy;
 
-  const contextPolicyType = (agent.contextPolicy?.type ?? 'disabled') as 'disabled' | 'normal_compact' | 'custom';
-  const normalCompactPolicy =
-    contextPolicyType === 'normal_compact' ? (agent.contextPolicy as any) : null;
+  const rawContextPolicyType = String(agent.contextPolicy?.type ?? 'simple').trim() || 'simple';
+  const contextPolicyType = (
+    rawContextPolicyType === 'disabled' ? 'simple' : rawContextPolicyType
+  ) as 'simple' | 'normal_compact' | 'custom';
+  const simplePolicy = contextPolicyType === 'simple' ? (agent.contextPolicy as any) : null;
+  const normalCompactPolicy = contextPolicyType === 'normal_compact' ? (agent.contextPolicy as any) : null;
   const customPolicy = contextPolicyType === 'custom' ? (agent.contextPolicy as any) : null;
+  const effectiveSimpleHardLimitPercent = (() => {
+    const v = Number(simplePolicy?.hardLimitPercent);
+    if (!Number.isFinite(v)) return 90;
+    return Math.max(1, Math.min(99, v));
+  })();
+  const effectiveSimplePolicy = {
+    type: 'simple',
+    enabled: Boolean(simplePolicy?.enabled ?? true),
+    trimEnabled: Boolean(simplePolicy?.trimEnabled ?? true),
+    hardLimitPercent: effectiveSimpleHardLimitPercent,
+  };
   const [customParamsText, setCustomParamsText] = useState(() => {
     if (contextPolicyType !== 'custom') return '';
     try {
@@ -1103,8 +1117,8 @@ const AgentForm: React.FC<AgentFormProps> = ({
             value={contextPolicyType}
             onChange={(e) => {
               const v = e.target.value as typeof contextPolicyType;
-              if (v === 'disabled') {
-                onFieldChange('contextPolicy', undefined);
+              if (v === 'simple') {
+                onFieldChange('contextPolicy', { type: 'simple', enabled: true, trimEnabled: true, hardLimitPercent: 90 });
                 return;
               }
               if (v === 'normal_compact') {
@@ -1127,10 +1141,79 @@ const AgentForm: React.FC<AgentFormProps> = ({
             disabled={!isEditing}
             className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800"
           >
-            <option value="disabled">关闭（不自动 compact）</option>
+            <option value="simple">Simple（不自动 compact）</option>
             <option value="normal_compact">Normal Compact（类 Codex）</option>
             <option value="custom">自定义（JSON 参数）</option>
           </select>
+
+          {contextPolicyType === 'simple' && (
+            <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-900/30 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-medium text-gray-800 dark:text-gray-200">Simple</div>
+                <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(effectiveSimplePolicy.enabled ?? true)}
+                    onChange={(e) =>
+                      onFieldChange('contextPolicy', {
+                        ...effectiveSimplePolicy,
+                        enabled: e.target.checked,
+                      })
+                    }
+                    disabled={!isEditing}
+                    className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
+                  />
+                  启用
+                </label>
+              </div>
+
+              <div className="rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-900/40 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="text-xs font-medium text-gray-700 dark:text-gray-300">硬裁剪（Trim）</div>
+                  <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(effectiveSimplePolicy.trimEnabled ?? true)}
+                      onChange={(e) =>
+                        onFieldChange('contextPolicy', {
+                          ...effectiveSimplePolicy,
+                          trimEnabled: e.target.checked,
+                        })
+                      }
+                      disabled={!isEditing || !(effectiveSimplePolicy.enabled ?? true)}
+                      className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
+                    />
+                    启用硬裁剪
+                  </label>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="block text-xs text-gray-600 dark:text-gray-400">硬上限（%）</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={99}
+                    value={effectiveSimplePolicy.hardLimitPercent ?? 90}
+                    onChange={(e) =>
+                      onFieldChange('contextPolicy', {
+                        ...effectiveSimplePolicy,
+                        hardLimitPercent: Number(e.target.value || 90),
+                      })
+                    }
+                    disabled={
+                      !isEditing ||
+                      !(effectiveSimplePolicy.enabled ?? true) ||
+                      !(effectiveSimplePolicy.trimEnabled ?? true)
+                    }
+                    className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800 text-sm"
+                  />
+                  <div className="text-[11px] text-gray-500 dark:text-gray-400">
+                    仅对本次请求的运行时 prompt 做裁剪，不会改写历史消息。
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
           {contextPolicyType === 'normal_compact' && (
             <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-900/30 space-y-3">

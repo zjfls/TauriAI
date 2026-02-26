@@ -362,6 +362,57 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
     Ok(menu)
 }
 
+/// Desktop native menu can "blink" on Windows when repeatedly calling `app.set_menu(...)`.
+/// To avoid this, we keep a lightweight signature and only rebuild/apply when menu-relevant
+/// config changes (currently: enabled agents + default agent).
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[derive(Default)]
+pub(crate) struct DesktopMenuSyncState(pub(crate) std::sync::Mutex<Option<String>>);
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub(crate) fn desktop_menu_signature(config: &crate::models::AppConfig) -> String {
+    // Keep in sync with the behavior of `build_desktop_menu`:
+    // - enabled agents only
+    // - default agent (or first enabled fallback)
+    // - default agent moved to the top
+    let mut enabled_agents: Vec<_> = config.agents.iter().filter(|a| a.enabled).collect();
+
+    let configured_default = config.default_agent.trim();
+    let default_exists = !configured_default.is_empty()
+        && enabled_agents.iter().any(|a| a.name == configured_default);
+    let effective_default_agent = if default_exists {
+        configured_default
+    } else {
+        enabled_agents
+            .first()
+            .map(|a| a.name.as_str())
+            .unwrap_or_default()
+    };
+
+    if !effective_default_agent.is_empty() {
+        if let Some(pos) = enabled_agents
+            .iter()
+            .position(|a| a.name == effective_default_agent)
+        {
+            if pos != 0 {
+                let default_agent = enabled_agents.remove(pos);
+                enabled_agents.insert(0, default_agent);
+            }
+        }
+    }
+
+    let mut sig = String::from("v1|default=");
+    sig.push_str(effective_default_agent);
+    sig.push('|');
+    for a in enabled_agents {
+        sig.push_str(&a.name);
+        sig.push('=');
+        sig.push_str(&a.display_name);
+        sig.push(';');
+    }
+    sig
+}
+
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn run_desktop() {
     use crate::commands::*;
@@ -686,6 +737,7 @@ fn run_desktop() {
         .manage(database)
         .manage(config_manager)
         .manage(run_state)
+        .manage(DesktopMenuSyncState::default())
         .invoke_handler(tauri::generate_handler![
             // Runtime commands
             run_task,
@@ -824,6 +876,18 @@ fn run_desktop() {
             delete_local_path,
         ])
         .setup(|app| {
+            // Initialize desktop menu signature so that subsequent `save_app_config` calls
+            // don't repeatedly rebuild native menus (notably causing flicker on Windows).
+            if let Some(state) = app.try_state::<DesktopMenuSyncState>() {
+                let config = app
+                    .state::<Arc<ConfigManager>>()
+                    .ensure_default()
+                    .unwrap_or_default();
+                let sig = desktop_menu_signature(&config);
+                let mut guard = state.0.lock().unwrap();
+                *guard = Some(sig);
+            }
+
             // Skills watcher for realtime refresh
             app.manage(SkillsWatcherState(SkillsWatcher::new(app.handle().clone())));
 

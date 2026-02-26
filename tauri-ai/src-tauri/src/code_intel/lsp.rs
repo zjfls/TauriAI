@@ -15,6 +15,10 @@ use crate::models::Workstudio;
 
 use super::types::{LspEvent, LspEventPayload, LspLaunchConfig, LspServerStatus, LSP_EVENT_NAME};
 
+// Windows: prevent console window flashing for LSP child processes.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedSpawnProgram {
     pub(crate) program: String,
@@ -904,6 +908,8 @@ impl LspServer {
 
         let spawn_once = |cwd: Option<&str>| -> Result<tokio::process::Child, std::io::Error> {
             let mut cmd = Command::new(&resolved.program);
+            #[cfg(windows)]
+            cmd.creation_flags(CREATE_NO_WINDOW);
             cmd.args(&resolved.prefix_args);
             cmd.args(&self.launch.args);
 

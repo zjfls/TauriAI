@@ -35,6 +35,10 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tokio::process::Command;
 
+// Windows: prevent console window flashing for MCP stdio child processes.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 // tools/call 默认超时（对应前端 toolTimeoutMs 默认值）
 const DEFAULT_TOOL_TIMEOUT: Duration = Duration::from_millis(6000);
@@ -374,6 +378,8 @@ impl McpClient {
                 #[cfg(not(any(target_os = "android", target_os = "ios")))]
                 {
                     let mut command_builder = Command::new(command);
+                    #[cfg(windows)]
+                    command_builder.creation_flags(CREATE_NO_WINDOW);
                     command_builder
                         .kill_on_drop(true)
                         .stdin(Stdio::piped())

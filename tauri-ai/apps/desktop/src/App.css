@@ -183,6 +183,11 @@ html[data-theme="solarized"] {
   background: rgba(59, 130, 246, 0.9);
 }
 
+/* Reserve scrollbar gutter to prevent layout shift (notably on Windows). */
+.scrollbar-stable {
+  scrollbar-gutter: stable;
+}
+
 /* Disable text selection on drag regions */
 [data-tauri-drag-region] {
   -webkit-user-select: none;

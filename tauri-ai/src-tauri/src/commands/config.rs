@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 use crate::ai_client::get_client;
 use crate::config::ConfigManager;
@@ -31,8 +31,26 @@ pub async fn save_app_config(
     // Desktop: keep native menu in sync with latest agent config (new session by agent).
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
-        if let Ok(menu) = crate::build_desktop_menu(&app, &config) {
-            let _ = app.set_menu(menu);
+        // On Windows, repeatedly calling `set_menu` can cause the native menu bar to "blink".
+        // Since the menu only depends on enabled agents + default agent, we only rebuild/apply
+        // when those fields actually change.
+        let new_sig = crate::desktop_menu_signature(&config);
+        let mut needs_update = true;
+        if let Some(state) = app.try_state::<crate::DesktopMenuSyncState>() {
+            if let Ok(guard) = state.0.lock() {
+                needs_update = guard.as_deref() != Some(new_sig.as_str());
+            }
+        }
+
+        if needs_update {
+            if let Ok(menu) = crate::build_desktop_menu(&app, &config) {
+                let _ = app.set_menu(menu);
+                if let Some(state) = app.try_state::<crate::DesktopMenuSyncState>() {
+                    if let Ok(mut guard) = state.0.lock() {
+                        *guard = Some(new_sig);
+                    }
+                }
+            }
         }
     }
 

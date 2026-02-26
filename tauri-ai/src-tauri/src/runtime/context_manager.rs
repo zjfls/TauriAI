@@ -46,12 +46,15 @@ pub struct ContextManager {
 impl ContextManager {
     pub fn new(policy: Option<ContextPolicyConfig>) -> Self {
         Self {
-            policy: policy.unwrap_or(ContextPolicyConfig::Disabled),
+            // Safe-by-default: if an agent does not specify a context policy, fall back to "simple"
+            // trimming-only behavior to avoid context-window exceeded errors.
+            policy: policy.unwrap_or_else(|| ContextPolicyConfig::Simple(Default::default())),
         }
     }
 
     pub fn hard_limit_percent(&self) -> u8 {
         match &self.policy {
+            ContextPolicyConfig::Simple(cfg) => cfg.hard_limit_percent.unwrap_or(90),
             ContextPolicyConfig::NormalCompact(cfg) => cfg.hard_limit_percent.unwrap_or(90),
             _ => 90,
         }
@@ -69,7 +72,7 @@ impl ContextManager {
     pub fn should_trim(&self) -> bool {
         match &self.policy {
             // 保持安全默认：即便关闭策略，也保留 hard trim（避免超窗）。
-            ContextPolicyConfig::Disabled => true,
+            ContextPolicyConfig::Simple(cfg) => cfg.enabled && cfg.trim_enabled,
             ContextPolicyConfig::NormalCompact(cfg) => cfg.enabled && cfg.trim_enabled,
             ContextPolicyConfig::Custom { .. } => true,
         }
@@ -113,7 +116,7 @@ impl ContextManager {
 
     pub fn is_enabled(&self) -> bool {
         match &self.policy {
-            ContextPolicyConfig::Disabled => false,
+            ContextPolicyConfig::Simple(cfg) => cfg.enabled,
             ContextPolicyConfig::NormalCompact(cfg) => cfg.enabled,
             ContextPolicyConfig::Custom { .. } => true,
         }

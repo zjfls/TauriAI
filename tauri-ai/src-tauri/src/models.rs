@@ -1141,8 +1141,8 @@ pub struct Agent {
 
     /// Context 管理策略（可选，按 agent 级配置）。
     ///
-    /// - None：等价于 Disabled（不做自动 compact/裁剪）
-    /// - Some(...)：启用对应策略（例如 NormalCompact）
+    /// - None：默认使用 Simple（仅做硬裁剪 Trim，不自动 compact），避免超出上下文窗口
+    /// - Some(...)：启用对应策略（例如 Simple/NormalCompact）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_policy: Option<ContextPolicyConfig>,
 
@@ -1194,8 +1194,12 @@ impl Default for Agent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContextPolicyConfig {
-    /// Disable all automatic context management (default).
-    Disabled,
+    /// Simple context management: hard trimming only (no compaction).
+    ///
+    /// Backward compatibility:
+    /// - older configs used `type: "disabled"` to represent this "simple" behavior.
+    #[serde(rename = "simple", alias = "disabled")]
+    Simple(SimplePolicyConfig),
     /// Codex-like compaction + hard trimming.
     #[serde(rename_all = "camelCase")]
     NormalCompact(NormalCompactPolicyConfig),
@@ -1209,7 +1213,38 @@ pub enum ContextPolicyConfig {
 
 impl Default for ContextPolicyConfig {
     fn default() -> Self {
-        Self::Disabled
+        Self::Simple(SimplePolicyConfig::default())
+    }
+}
+
+/// A minimal "simple" policy: trimming only, no compaction.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SimplePolicyConfig {
+    /// Master switch for this policy.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Enable hard trimming for the *runtime prompt* to avoid context window exceeded.
+    ///
+    /// - This does NOT mutate persisted history.
+    /// - Disabling this may cause model requests to fail when the context gets too long.
+    #[serde(default = "default_true")]
+    pub trim_enabled: bool,
+
+    /// Hard cap in percent of model context length used for the final prompt (after trimming).
+    /// Default: 90 (%).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hard_limit_percent: Option<u8>,
+}
+
+impl Default for SimplePolicyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            trim_enabled: true,
+            hard_limit_percent: Some(90),
+        }
     }
 }
 
@@ -1654,7 +1689,7 @@ pub struct LspServerConfig {
     pub language_id: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// 启动命令（例如：rust-analyzer / pylsp / clangd）
+    /// 启动命令（例如：rust-analyzer / pyright-langserver / pylsp / clangd）
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
@@ -2039,7 +2074,7 @@ pub struct CodeIntelligenceSettings {
 
 impl Default for CodeIntelligenceSettings {
     fn default() -> Self {
-        // 默认开启 Rust/Go（若本机未安装对应语言服务器，会在 UI 层提示；不会影响其它功能）
+        // 默认开启 Rust/Python/Go（若本机未安装对应语言服务器，会在 UI 层提示；不会影响其它功能）
         Self {
             enabled: true,
             lsp_completion_enabled: true,
@@ -2051,6 +2086,13 @@ impl Default for CodeIntelligenceSettings {
                     command: "rust-analyzer".to_string(),
                     // rust-analyzer 默认使用 stdio 通信；无需传 `--stdio`（部分版本会报 unknown flag）。
                     args: vec![],
+                    ..Default::default()
+                },
+                LspServerConfig {
+                    language_id: "python".to_string(),
+                    enabled: true,
+                    command: "pyright-langserver".to_string(),
+                    args: vec!["--stdio".to_string()],
                     ..Default::default()
                 },
                 LspServerConfig {
@@ -2072,6 +2114,18 @@ impl Default for CodeIntelligenceSettings {
 fn ensure_default_lsp_server_configs(cfg: &mut CodeIntelligenceSettings) -> bool {
     let mut changed = false;
 
+    // vNext defaults: ensure Python LSP is present for existing configs.
+    if !cfg.lsp_servers.iter().any(|s| s.language_id == "python") {
+        cfg.lsp_servers.push(LspServerConfig {
+            language_id: "python".to_string(),
+            enabled: true,
+            command: "pyright-langserver".to_string(),
+            args: vec!["--stdio".to_string()],
+            ..Default::default()
+        });
+        changed = true;
+    }
+
     // vNext defaults: ensure Go LSP is present for existing configs.
     if !cfg.lsp_servers.iter().any(|s| s.language_id == "go") {
         cfg.lsp_servers.push(LspServerConfig {
@@ -2085,6 +2139,32 @@ fn ensure_default_lsp_server_configs(cfg: &mut CodeIntelligenceSettings) -> bool
     }
 
     changed
+}
+
+#[cfg(test)]
+mod context_policy_tests {
+    use super::*;
+
+    #[test]
+    fn context_policy_disabled_alias_deserializes_to_simple() {
+        let json = r#"{"type":"disabled"}"#;
+        let policy: ContextPolicyConfig = serde_json::from_str(json).expect("should parse legacy disabled");
+        match &policy {
+            ContextPolicyConfig::Simple(cfg) => {
+                assert!(cfg.enabled);
+                assert!(cfg.trim_enabled);
+                // legacy config may not specify this field; runtime falls back to 90.
+                assert!(cfg.hard_limit_percent.is_none() || cfg.hard_limit_percent == Some(90));
+            }
+            _ => panic!("expected Simple variant"),
+        }
+
+        let out = serde_json::to_string(&policy).expect("should serialize");
+        assert!(
+            out.contains(r#""type":"simple""#),
+            "should serialize as type=simple, got: {out}"
+        );
+    }
 }
 
 // ============================================================================

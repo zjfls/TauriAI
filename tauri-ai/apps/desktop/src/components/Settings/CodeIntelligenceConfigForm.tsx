@@ -142,7 +142,7 @@ const AUTO_DETECT_LANGUAGE_ORDER = ['rust', 'python', 'go', 'cpp', 'c', 'lua'] a
 const AUTO_DETECT_LANGUAGE_SET = new Set<string>(AUTO_DETECT_LANGUAGE_ORDER);
 const AUTO_DETECT_LANGUAGE_LABEL: Record<string, string> = {
   rust: 'rust-analyzer',
-  python: 'pylsp',
+  python: 'pyright-langserver',
   go: 'gopls',
   cpp: 'clangd',
   c: 'clangd',
@@ -1525,7 +1525,7 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
                     updateServer(selectedIndex, (s) => ({ ...s, command: e.target.value }));
                   }}
                   className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
-                  placeholder="rust-analyzer / pylsp / clangd / lua-language-server ..."
+                  placeholder="rust-analyzer / pyright-langserver / pylsp / clangd / lua-language-server ..."
                 />
                 {autoConfigMessage && (
                   <div className="text-xs text-green-700 dark:text-green-300">{autoConfigMessage}</div>

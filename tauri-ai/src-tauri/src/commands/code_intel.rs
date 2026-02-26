@@ -242,9 +242,9 @@ pub async fn lsp_detect_server(args: LspDetectServerArgs) -> Result<LspDetectSer
         "python" => detect_lsp_by_candidates(
             lang,
             &[
-                ("pylsp", &[]),
                 ("pyright-langserver", &["--stdio"]),
                 ("basedpyright-langserver", &["--stdio"]),
+                ("pylsp", &[]),
             ],
         ),
         // gopls 在新版本中无参会默认 serve，但这里显式传 serve 以兼容旧版本。

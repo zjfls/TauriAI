@@ -1523,21 +1523,6 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   }, [codeIntelligenceConfig?.monacoWordSuggestionsEnabled]);
 
   const shortcutPlatform = useMemo(() => detectShortcutPlatform(), []);
-  const backToMainShortcutLabel = useMemo(() => {
-    const def = SHORTCUT_ACTIONS.find((a) => a.id === 'workstudio.backToMain');
-    const userRaw =
-      shortcutPlatform === 'mac'
-        ? keyboardShortcuts?.mac?.['workstudio.backToMain']
-        : keyboardShortcuts?.windows?.['workstudio.backToMain'];
-    const raw =
-      userRaw ??
-      (shortcutPlatform === 'mac' ? def?.defaultMac : def?.defaultWindows) ??
-      (shortcutPlatform === 'mac' ? 'Cmd+Shift+M' : 'Ctrl+Shift+M');
-    return (
-      normalizeKeybindingString(String(raw || ''), shortcutPlatform) ??
-      (shortcutPlatform === 'mac' ? 'Cmd+Shift+M' : 'Ctrl+Shift+M')
-    );
-  }, [keyboardShortcuts, shortcutPlatform]);
   const fileSearchShortcutLabel = useMemo(() => {
     const def = SHORTCUT_ACTIONS.find((a) => a.id === 'workstudio.fileSearch');
     const userRaw =
@@ -10695,7 +10680,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
             </div>
 
             {/* Scrollable body */}
-            <div className="min-h-0 flex-1 overflow-y-auto p-4 space-y-3">
+            <div className="min-h-0 flex-1 overflow-y-auto p-4 space-y-3 scrollbar-stable">
               {/* Prompt */}
               <details open={false}>
                 <summary className="cursor-pointer select-none text-[11px] font-medium text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">
@@ -11242,7 +11227,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
             {(!outlineOpen || leftSidebarTab === 'explorer') && (
               <div
-                className="min-h-0 flex-1 overflow-auto px-2 py-2"
+                className="min-h-0 flex-1 overflow-auto px-2 py-2 scrollbar-stable"
                 ref={explorerContainerRef}
                 onContextMenu={(e) => {
                   const target = e.target as HTMLElement | null;
@@ -11314,7 +11299,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	                  </button>
                 </div>
                 <div
-                  className="min-h-0 flex-1 overflow-auto px-2 py-2"
+                  className="min-h-0 flex-1 overflow-auto px-2 py-2 scrollbar-stable"
                   ref={outlineContainerRef}
                   onScroll={handleOutlineScroll}
                 >
@@ -11395,16 +11380,6 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
               </div>
             </div>
             <div className="flex items-center gap-2">
-              {isStandaloneWorkstudioWindow && (
-                <button
-                  type="button"
-                  className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-                  onClick={() => void returnToMainWindow()}
-                  title={`返回主窗口（${backToMainShortcutLabel}）`}
-                >
-                  返回主窗口
-                </button>
-              )}
               <button
                 ref={lspStatusButtonRef}
                 type="button"
@@ -11982,7 +11957,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           <div className="flex items-start justify-between gap-3 border-b border-gray-200 px-3 py-2 dark:border-gray-700">
             <div className="min-w-0">
               <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">代码智能</div>
-              <div className="mt-0.5 truncate text-[11px] text-gray-500 dark:text-gray-400" title="LSP: rust-analyzer / pylsp / clangd / lua-language-server 等">
+              <div className="mt-0.5 truncate text-[11px] text-gray-500 dark:text-gray-400" title="LSP: rust-analyzer / pyright-langserver / pylsp / clangd / lua-language-server 等">
                 LSP 状态与进度（多语言索引/就绪）
               </div>
             </div>
@@ -12035,7 +12010,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
                 {lspMenuServers.length === 0 ? (
                   <div className="text-sm text-gray-600 dark:text-gray-300">
-                    未配置 LSP server：在 设置 → Code Intelligence 中添加 rust-analyzer / pylsp / clangd / lua-language-server 等。
+                    未配置 LSP server：在 设置 → Code Intelligence 中添加 rust-analyzer / pyright-langserver / pylsp / clangd / lua-language-server 等。
                   </div>
                 ) : (
                   <div className="rounded-lg border border-gray-200 bg-white p-2 dark:border-gray-700 dark:bg-gray-900">

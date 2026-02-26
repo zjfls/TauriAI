@@ -5,6 +5,10 @@ use std::process::Stdio;
 
 use tokio::process::Command;
 
+// Windows: prevent console window flashing for short-lived git commands.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 fn to_git_path(path: &Path) -> String {
     let mut parts: Vec<String> = Vec::new();
     for c in path.components() {
@@ -32,6 +36,8 @@ async fn run_git_for_stdout(
     env: Option<&[(OsString, OsString)]>,
 ) -> Result<String, String> {
     let mut cmd = Command::new("git");
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
     cmd.current_dir(repo_root);
     cmd.args(args);
     cmd.stdin(Stdio::null());
@@ -67,6 +73,8 @@ async fn run_git_for_status(
     env: Option<&[(OsString, OsString)]>,
 ) -> Result<(), String> {
     let mut cmd = Command::new("git");
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
     cmd.current_dir(repo_root);
     cmd.args(args);
     cmd.stdin(Stdio::null());

@@ -265,6 +265,13 @@ export interface ContextPolicyDisabled {
   type: 'disabled';
 }
 
+export interface SimpleContextPolicy {
+  type: 'simple';
+  enabled?: boolean;
+  trimEnabled?: boolean;
+  hardLimitPercent?: number;
+}
+
 export interface NormalCompactContextPolicy {
   type: 'normal_compact';
   enabled?: boolean;
@@ -284,7 +291,11 @@ export interface CustomContextPolicy {
   params?: any;
 }
 
-export type ContextPolicyConfig = ContextPolicyDisabled | NormalCompactContextPolicy | CustomContextPolicy;
+export type ContextPolicyConfig =
+  | ContextPolicyDisabled // legacy alias (backend maps to `simple`)
+  | SimpleContextPolicy
+  | NormalCompactContextPolicy
+  | CustomContextPolicy;
 
 // ============================================================================
 // Multimodal Content Types
@@ -1224,7 +1235,7 @@ export interface LspServerConfig {
   /** Monaco language id，例如：rust / python / cpp */
   languageId: string;
   enabled: boolean;
-  /** 启动命令，例如：rust-analyzer / pylsp / clangd */
+  /** 启动命令，例如：rust-analyzer / pyright-langserver / pylsp / clangd */
   command: string;
   args: string[];
   /** 仅对该 LSP 进程生效 */
