@@ -10,6 +10,7 @@ import type {
   Agent,
   AgentType,
   AskForApproval,
+  SimpleContextPolicy,
   FormatPromptType,
   RunMode,
   SandboxPolicy,
@@ -657,7 +658,7 @@ const AgentForm: React.FC<AgentFormProps> = ({
     if (!Number.isFinite(v)) return 90;
     return Math.max(1, Math.min(99, v));
   })();
-  const effectiveSimplePolicy = {
+  const effectiveSimplePolicy: SimpleContextPolicy = {
     type: 'simple',
     enabled: Boolean(simplePolicy?.enabled ?? true),
     trimEnabled: Boolean(simplePolicy?.trimEnabled ?? true),
