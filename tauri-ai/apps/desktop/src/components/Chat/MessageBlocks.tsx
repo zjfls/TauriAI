@@ -210,6 +210,11 @@ const extractToolSummary = (toolName: string, rawArgs: string, parsedArgs: unkno
       if (ops.length > 0) return normalizeToolSummary(`${tool}: ${ops.join(', ')}`);
       return tool;
     }
+    case 'write_file':
+    case 'replace_string': {
+      const filePath = getObjString('file_path') ?? getRawString('file_path');
+      return filePath ? normalizeToolSummary(filePath) : tool;
+    }
     case 'view_image': {
       const path = getObjString('path') ?? getRawString('path');
       return path ? normalizeToolSummary(path) : '';
@@ -268,22 +273,42 @@ const detectToolRunStatus = (resultText?: string): { kind: ToolRunStatusKind; ba
 };
 
 	type ApplyPatchToolMeta = {
-	  applyPatch?: {
-	    baseDir?: string;
-	    git?: {
-	      repoRoot?: string;
-	      workTree?: string;
-	      repoPrefix?: string | null;
-	      ghostBefore?: string | null;
-	      ghostAfter?: string | null;
-	      affectedPaths?: string[];
-      createdPaths?: string[];
-      snapshotErrorBefore?: string;
-      snapshotErrorAfter?: string;
-      error?: string;
-    };
+	  applyPatch?: { baseDir?: string; git?: GitSnapshotMeta };
+    writeFile?: { baseDir?: string; git?: GitSnapshotMeta };
+    replaceString?: { baseDir?: string; git?: GitSnapshotMeta };
+	};
+
+  type GitSnapshotMeta = {
+    repoRoot?: string;
+    workTree?: string;
+    repoPrefix?: string | null;
+    ghostBefore?: string | null;
+    ghostAfter?: string | null;
+    affectedPaths?: string[];
+    createdPaths?: string[];
+    snapshotErrorBefore?: string;
+    snapshotErrorAfter?: string;
+    repoDetectError?: string;
+    error?: string;
   };
-};
+
+  const pickGitSnapshot = (
+    toolName: string,
+    toolMeta: unknown
+  ): { baseDir: string; git: GitSnapshotMeta | null } => {
+    const meta = toolMeta && typeof toolMeta === 'object' ? (toolMeta as any) : null;
+    const pick = (key: 'applyPatch' | 'writeFile' | 'replaceString') => {
+      const container = meta?.[key];
+      const baseDir = typeof container?.baseDir === 'string' ? (container.baseDir as string) : '';
+      const git =
+        container?.git && typeof container.git === 'object' ? (container.git as GitSnapshotMeta) : null;
+      return { baseDir, git };
+    };
+    if (toolName === 'apply_patch' || toolName === 'apply_patch_unified_diff') return pick('applyPatch');
+    if (toolName === 'write_file') return pick('writeFile');
+    if (toolName === 'replace_string') return pick('replaceString');
+    return pick('applyPatch');
+  };
 
 type GitDiffCommitsResponse = {
   repoRoot: string;
@@ -317,15 +342,21 @@ const buildTaskPatchSummaryGroups = (blocks: MessageBlock[]): TaskPatchSummaryGr
   for (const b of blocks) {
     if (!b || (b as any).type !== 'tool_call') continue;
     const toolName = (b as any).name;
-    if (toolName !== 'apply_patch' && toolName !== 'apply_patch_unified_diff') continue;
+    const isPatchLikeTool =
+      toolName === 'apply_patch' ||
+      toolName === 'apply_patch_unified_diff' ||
+      toolName === 'write_file' ||
+      toolName === 'replace_string';
+    if (!isPatchLikeTool) continue;
 
     const meta = ((b as any).meta ?? null) as ApplyPatchToolMeta | null;
-    const git = meta?.applyPatch?.git;
+    const picked = pickGitSnapshot(toolName, meta);
+    const git = picked.git;
     const repoRoot = typeof git?.repoRoot === 'string' ? git.repoRoot : '';
     const workTree = typeof git?.workTree === 'string' ? git.workTree : '';
     const ghostBefore = typeof git?.ghostBefore === 'string' ? git.ghostBefore : '';
     const ghostAfter = typeof git?.ghostAfter === 'string' ? git.ghostAfter : '';
-    const baseDir = typeof meta?.applyPatch?.baseDir === 'string' ? meta.applyPatch.baseDir : '';
+    const baseDir = picked.baseDir || '';
 
     const affectedPaths = Array.isArray(git?.affectedPaths)
       ? git!.affectedPaths!.filter((s) => typeof s === 'string' && s.trim() !== '')
@@ -565,11 +596,11 @@ const ApplyPatchToolRunBlock: React.FC<{
     window.setTimeout(() => setCopiedKey(null), 2000);
   }, [args]);
 
-  const summary = useMemo(() => extractToolSummary(name, args, parsedArgs), [name, args, parsedArgs]);
+	const summary = useMemo(() => extractToolSummary(name, args, parsedArgs), [name, args, parsedArgs]);
 
-	const meta = toolMeta as ApplyPatchToolMeta | null;
-	const git = meta?.applyPatch?.git;
-  const baseDir = typeof meta?.applyPatch?.baseDir === 'string' ? meta.applyPatch.baseDir : '';
+  const picked = useMemo(() => pickGitSnapshot(name, toolMeta), [name, toolMeta]);
+	const git = picked.git;
+  const baseDir = picked.baseDir || '';
 	const repoRoot = typeof git?.repoRoot === 'string' ? git.repoRoot : '';
 	const workTree = typeof git?.workTree === 'string' ? git.workTree : '';
 	const ghostBefore = typeof git?.ghostBefore === 'string' ? git.ghostBefore : '';
@@ -2739,7 +2770,12 @@ export const MessageBlocks: React.FC<{
               if (block.type === 'tool_call') {
                 const next = g.blocks[blockIdx + 1];
                 if (next && next.type === 'tool_result' && next.callId === block.callId) {
-                  return block.name === 'apply_patch' || block.name === 'apply_patch_unified_diff' ? (
+                  const isPatchLikeTool =
+                    block.name === 'apply_patch' ||
+                    block.name === 'apply_patch_unified_diff' ||
+                    block.name === 'write_file' ||
+                    block.name === 'replace_string';
+                  return isPatchLikeTool ? (
                     <ApplyPatchToolRunBlock
                       key={`${block.id}:${next.id}`}
                       name={block.name}

@@ -344,21 +344,38 @@ pub async fn undo_apply_patch(args: UndoApplyPatchArgs) -> Result<bool, String> 
         return Err("affected_paths 不能为空".to_string());
     }
 
-    git_restore_worktree_from_commit_with_worktree(
-        &repo_root,
-        &work_tree,
-        &args.ghost_before,
-        &affected,
-    )
-    .await?;
-
-    // Remove files/directories created by apply_patch (best-effort).
-    for rel in args
+    let created = args
         .created_paths
         .into_iter()
         .map(|s| normalize_git_pathspec(&s))
         .filter(|s| !s.is_empty())
-    {
+        .collect::<Vec<_>>();
+
+    // NOTE:
+    // - 通过 ghost commit 做 undo 时，"新创建的文件" 在 ghost_before 里通常不存在；
+    // - 直接 `git restore --source <ghost_before> -- <created>` 会报：
+    //   `pathspec 'x' did not match any file(s) known to git`；
+    // - 因此：先 restore 非 created 的 affected，再删除 created。
+    let created_set: std::collections::HashSet<&str> =
+        created.iter().map(|s| s.as_str()).collect();
+    let restore_targets = affected
+        .iter()
+        .filter(|p| !created_set.contains(p.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if !restore_targets.is_empty() {
+        git_restore_worktree_from_commit_with_worktree(
+            &repo_root,
+            &work_tree,
+            &args.ghost_before,
+            &restore_targets,
+        )
+        .await?;
+    }
+
+    // Remove files/directories created by apply_patch (best-effort).
+    for rel in created.into_iter() {
         let abs = work_tree.join(PathBuf::from(&rel));
         if !abs.exists() {
             continue;

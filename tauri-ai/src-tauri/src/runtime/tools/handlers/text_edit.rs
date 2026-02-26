@@ -2,9 +2,14 @@ use std::path::{Component, Path, PathBuf};
 
 use async_trait::async_trait;
 use serde::Deserialize;
+use serde_json::json;
 use tokio::fs;
 
 use crate::ai_client::ToolCall;
+use crate::git_tools::{
+    abs_to_repo_rel, create_ghost_commit_for_paths, create_ghost_commit_for_paths_with_worktree,
+    ensure_git_repo, repo_prefix, resolve_repo_root, GhostCommit,
+};
 use crate::models::SandboxPolicy;
 use crate::runtime::events::RunEvent;
 use crate::runtime::tools::permissions::ToolPermission;
@@ -290,6 +295,27 @@ fn resolve_edit_path(base_dir: &Path, raw: &str) -> Result<PathBuf, ToolError> {
     Ok(base_dir.join(path))
 }
 
+fn abs_to_worktree_rel(work_tree: &Path, abs: &Path) -> Option<String> {
+    let rel = abs.strip_prefix(work_tree).ok()?;
+    if rel.as_os_str().is_empty() {
+        return None;
+    }
+    let mut parts: Vec<String> = Vec::new();
+    for c in rel.components() {
+        let s = match c {
+            Component::Normal(v) => v.to_string_lossy().to_string(),
+            Component::CurDir => ".".to_string(),
+            Component::ParentDir => "..".to_string(),
+            _ => continue,
+        };
+        if s.is_empty() {
+            continue;
+        }
+        parts.push(s);
+    }
+    Some(parts.join("/"))
+}
+
 fn compute_allowed_roots(
     base_dir: &Path,
     policy: &SandboxPolicy,
@@ -337,6 +363,170 @@ fn compute_allowed_roots(
         }
         SandboxPolicy::ReadOnly => Ok(Some(Vec::new())),
         SandboxPolicy::DangerFullAccess | SandboxPolicy::ExternalSandbox { .. } => Ok(None),
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+struct TextEditGitSnapshotCtx {
+    repo_root: Option<PathBuf>,
+    work_tree: Option<PathBuf>,
+    affected_paths: Vec<String>,
+    created_paths: Vec<String>,
+}
+
+async fn capture_git_snapshot_before(
+    base_dir: &Path,
+    affected_abs_paths: &[PathBuf],
+    created_abs_paths: &[PathBuf],
+    label: &str,
+) -> (TextEditGitSnapshotCtx, serde_json::Value) {
+    let mut ctx = TextEditGitSnapshotCtx::default();
+
+    let mut ghost_before: Option<GhostCommit> = None;
+    let mut snapshot_err_before: Option<String> = None;
+
+    match resolve_repo_root(base_dir).await {
+        Ok(root) => {
+            let prefix = repo_prefix(&root, base_dir).map(|p| p.to_string_lossy().to_string());
+            ctx.repo_root = Some(root.clone());
+            ctx.work_tree = Some(root.clone());
+
+            for abs in affected_abs_paths {
+                if let Some(rel) = abs_to_repo_rel(&root, abs) {
+                    ctx.affected_paths.push(rel);
+                }
+            }
+            ctx.affected_paths.sort();
+            ctx.affected_paths.dedup();
+
+            for abs in created_abs_paths {
+                if let Some(rel) = abs_to_repo_rel(&root, abs) {
+                    ctx.created_paths.push(rel);
+                }
+            }
+            ctx.created_paths.sort();
+            ctx.created_paths.dedup();
+
+            if !ctx.affected_paths.is_empty() {
+                match create_ghost_commit_for_paths(
+                    &root,
+                    &ctx.affected_paths,
+                    &format!("tauri-ai {label} snapshot (before)"),
+                )
+                .await
+                {
+                    Ok(c) => ghost_before = Some(c),
+                    Err(e) => snapshot_err_before = Some(e),
+                }
+            }
+
+            let mut git_meta = json!({
+                "repoRoot": root.display().to_string(),
+                "workTree": root.display().to_string(),
+                "repoPrefix": prefix,
+                "affectedPaths": ctx.affected_paths.clone(),
+                "createdPaths": ctx.created_paths.clone(),
+                "ghostBefore": ghost_before.as_ref().map(|c| c.id.clone()),
+            });
+            if let Some(e) = snapshot_err_before.as_ref() {
+                git_meta["snapshotErrorBefore"] = json!(e);
+            }
+            return (ctx, git_meta);
+        }
+        Err(repo_detect_err) => {
+            // Fallback: base_dir not in a git repo. Create a small snapshot repo under `<base_dir>/.tauriai/`.
+            let snapshot_repo_root = base_dir.join(".tauriai").join("text_edit_git");
+            match ensure_git_repo(&snapshot_repo_root).await {
+                Ok(()) => {
+                    ctx.repo_root = Some(snapshot_repo_root.clone());
+                    ctx.work_tree = Some(base_dir.to_path_buf());
+
+                    for abs in affected_abs_paths {
+                        if let Some(rel) = abs_to_worktree_rel(base_dir, abs) {
+                            ctx.affected_paths.push(rel);
+                        }
+                    }
+                    ctx.affected_paths.sort();
+                    ctx.affected_paths.dedup();
+
+                    for abs in created_abs_paths {
+                        if let Some(rel) = abs_to_worktree_rel(base_dir, abs) {
+                            ctx.created_paths.push(rel);
+                        }
+                    }
+                    ctx.created_paths.sort();
+                    ctx.created_paths.dedup();
+
+                    if !ctx.affected_paths.is_empty() {
+                        match create_ghost_commit_for_paths_with_worktree(
+                            &snapshot_repo_root,
+                            base_dir,
+                            &ctx.affected_paths,
+                            &format!("tauri-ai {label} snapshot (before)"),
+                        )
+                        .await
+                        {
+                            Ok(c) => ghost_before = Some(c),
+                            Err(e) => snapshot_err_before = Some(e),
+                        }
+                    }
+
+                    let mut git_meta = json!({
+                        "repoRoot": snapshot_repo_root.display().to_string(),
+                        "workTree": base_dir.display().to_string(),
+                        "repoPrefix": null,
+                        "affectedPaths": ctx.affected_paths.clone(),
+                        "createdPaths": ctx.created_paths.clone(),
+                        "ghostBefore": ghost_before.as_ref().map(|c| c.id.clone()),
+                        "repoDetectError": repo_detect_err,
+                    });
+                    if let Some(e) = snapshot_err_before.as_ref() {
+                        git_meta["snapshotErrorBefore"] = json!(e);
+                    }
+                    return (ctx, git_meta);
+                }
+                Err(err) => {
+                    return (
+                        ctx,
+                        json!({
+                            "error": format!("未检测到 git 仓库，且无法初始化快照仓库: {err}"),
+                            "repoDetectError": repo_detect_err,
+                        }),
+                    );
+                }
+            }
+        }
+    }
+}
+
+async fn capture_git_snapshot_after(
+    ctx: &TextEditGitSnapshotCtx,
+    git_meta: &mut serde_json::Value,
+    label: &str,
+) {
+    let Some(repo_root) = ctx.repo_root.as_ref() else {
+        return;
+    };
+    let Some(work_tree) = ctx.work_tree.as_ref() else {
+        return;
+    };
+    if ctx.affected_paths.is_empty() {
+        return;
+    }
+    match create_ghost_commit_for_paths_with_worktree(
+        repo_root,
+        work_tree,
+        &ctx.affected_paths,
+        &format!("tauri-ai {label} snapshot (after)"),
+    )
+    .await
+    {
+        Ok(c) => {
+            git_meta["ghostAfter"] = json!(c.id.clone());
+        }
+        Err(e) => {
+            git_meta["snapshotErrorAfter"] = json!(e);
+        }
     }
 }
 
@@ -419,9 +609,23 @@ impl ToolHandler for WriteFileTool {
 
         let base_dir = base_dir_from_ctx(ctx);
         let abs_path = resolve_edit_path(&base_dir, &args.file_path)?;
+        let existed_before = abs_path.exists();
 
         let allowed_roots = compute_allowed_roots(&base_dir, &ctx.sandbox_policy, &ctx.workspace_roots)?;
         ensure_writable(&ctx.sandbox_policy, allowed_roots.as_ref(), &abs_path)?;
+
+        let bytes = args.content.as_bytes().len() as u64;
+        let affected_abs_paths = vec![abs_path.clone()];
+        let created_abs_paths = if existed_before {
+            Vec::new()
+        } else {
+            vec![abs_path.clone()]
+        };
+
+        // Git snapshot meta (best-effort): enables UI diff/undo similar to apply_patch.
+        let (git_ctx, mut git_meta) =
+            capture_git_snapshot_before(&base_dir, &affected_abs_paths, &created_abs_paths, "write_file")
+                .await;
 
         if args.create_dirs {
             if let Some(parent) = abs_path.parent() {
@@ -433,7 +637,19 @@ impl ToolHandler for WriteFileTool {
 
         fs::write(&abs_path, args.content.as_bytes())
             .await
-            .map_err(|e| ToolError::new(format!("写入文件失败: {e}")))?;
+            .map_err(|e| {
+                ToolError::new(format!("写入文件失败: {e}")).with_meta(json!({
+                    "writeFile": {
+                        "baseDir": base_dir.display().to_string(),
+                        "path": abs_path.to_string_lossy().to_string(),
+                        "bytes": bytes,
+                        "existedBefore": existed_before,
+                        "git": git_meta.clone(),
+                    }
+                }))
+            })?;
+
+        capture_git_snapshot_after(&git_ctx, &mut git_meta, "write_file").await;
 
         let summary = format!(
             "Wrote file: {} ({} bytes)",
@@ -446,8 +662,11 @@ impl ToolHandler for WriteFileTool {
             content: summary,
             meta: Some(serde_json::json!({
                 "writeFile": {
+                    "baseDir": base_dir.display().to_string(),
                     "path": abs_path.to_string_lossy().to_string(),
-                    "bytes": args.content.as_bytes().len() as u64
+                    "bytes": bytes,
+                    "existedBefore": existed_before,
+                    "git": git_meta
                 }
             })),
         })
@@ -495,9 +714,23 @@ impl ToolHandler for ReplaceStringTool {
         let allowed_roots = compute_allowed_roots(&base_dir, &ctx.sandbox_policy, &ctx.workspace_roots)?;
         ensure_writable(&ctx.sandbox_policy, allowed_roots.as_ref(), &abs_path)?;
 
+        let affected_abs_paths = vec![abs_path.clone()];
+        let created_abs_paths: Vec<PathBuf> = Vec::new();
+        let (git_ctx, mut git_meta) =
+            capture_git_snapshot_before(&base_dir, &affected_abs_paths, &created_abs_paths, "replace_string")
+                .await;
+
         let original = fs::read_to_string(&abs_path)
             .await
-            .map_err(|e| ToolError::new(format!("读取文件失败: {e}")))?;
+            .map_err(|e| {
+                ToolError::new(format!("读取文件失败: {e}")).with_meta(json!({
+                    "replaceString": {
+                        "baseDir": base_dir.display().to_string(),
+                        "path": abs_path.to_string_lossy().to_string(),
+                        "git": git_meta.clone()
+                    }
+                }))
+            })?;
 
         let matches = original.match_indices(&args.old_string).count();
         if matches == 0 {
@@ -516,15 +749,28 @@ impl ToolHandler for ReplaceStringTool {
         let updated = original.replacen(&args.old_string, &args.new_string, 1);
         fs::write(&abs_path, updated.as_bytes())
             .await
-            .map_err(|e| ToolError::new(format!("写入文件失败: {e}")))?;
+            .map_err(|e| {
+                ToolError::new(format!("写入文件失败: {e}")).with_meta(json!({
+                    "replaceString": {
+                        "baseDir": base_dir.display().to_string(),
+                        "path": abs_path.to_string_lossy().to_string(),
+                        "matches": 1,
+                        "git": git_meta.clone()
+                    }
+                }))
+            })?;
 
-        let (audit, meta) = format_replace_string_audit(
+        capture_git_snapshot_after(&git_ctx, &mut git_meta, "replace_string").await;
+
+        let (audit, mut meta) = format_replace_string_audit(
             args.file_path.trim(),
             &abs_path,
             &original,
             &args.old_string,
             &args.new_string,
         );
+        meta["replaceString"]["baseDir"] = json!(base_dir.display().to_string());
+        meta["replaceString"]["git"] = git_meta;
         emit_tool_result(ctx, call.id.as_str(), &audit);
 
         Ok(ToolCallResult {
