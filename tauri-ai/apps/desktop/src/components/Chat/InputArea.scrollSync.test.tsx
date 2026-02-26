@@ -15,7 +15,9 @@ describe('InputArea textarea overlay scroll sync', () => {
 
     const textarea = screen.getByRole('textbox', { name: '消息输入框' }) as HTMLTextAreaElement;
     const overlay = container.querySelector('div[aria-hidden="true"]') as HTMLDivElement | null;
+    const overlayContent = overlay?.firstElementChild as HTMLDivElement | null;
     expect(overlay).toBeTruthy();
+    expect(overlayContent).toBeTruthy();
 
     textarea.focus();
     expect(document.activeElement).toBe(textarea);
@@ -23,8 +25,6 @@ describe('InputArea textarea overlay scroll sync', () => {
     Object.defineProperty(textarea, 'scrollHeight', { value: 2000, configurable: true });
     let textareaScrollTop = 0;
     let textareaScrollLeft = 0;
-    let overlayScrollTop = 0;
-    let overlayScrollLeft = 0;
     Object.defineProperty(textarea, 'scrollTop', {
       configurable: true,
       get: () => textareaScrollTop,
@@ -34,16 +34,6 @@ describe('InputArea textarea overlay scroll sync', () => {
       configurable: true,
       get: () => textareaScrollLeft,
       set: (v) => { textareaScrollLeft = Number(v); },
-    });
-    Object.defineProperty(overlay!, 'scrollTop', {
-      configurable: true,
-      get: () => overlayScrollTop,
-      set: (v) => { overlayScrollTop = Number(v); },
-    });
-    Object.defineProperty(overlay!, 'scrollLeft', {
-      configurable: true,
-      get: () => overlayScrollLeft,
-      set: (v) => { overlayScrollLeft = Number(v); },
     });
 
     // 固定光标不在末尾，避免触发“末尾自动滚动到底部”的逻辑，便于测试 scroll 同步行为
@@ -58,18 +48,19 @@ describe('InputArea textarea overlay scroll sync', () => {
 
     const bigText = 'line\n'.repeat(600);
     fireEvent.change(textarea, { target: { value: bigText } });
+    expect(overlayContent!.style.transform).toBe('translate3d(0px, 0px, 0)');
 
     // 模拟“粘贴大量文本后浏览器自动滚动了 textarea，但没有触发 scroll 事件”，导致 overlay 未同步
     textarea.scrollTop = 123;
     expect(textarea.scrollTop).toBe(123);
-    expect(overlay!.scrollTop).toBe(0);
+    expect(overlayContent!.style.transform).toBe('translate3d(0px, 0px, 0)');
 
     // 下一次输入（内容变化）应自动把 overlay 滚动同步到 textarea 当前滚动位置
     const nextText = bigText + 'more';
     fireEvent.change(textarea, { target: { value: nextText } });
 
     expect(textarea.scrollTop).toBe(123);
-    expect(overlay!.scrollTop).toBe(123);
+    expect(overlayContent!.style.transform).toBe('translate3d(0px, -123px, 0)');
   });
 
   it('光标在末尾时自动滚动到底部，避免“输入了但看不到”', () => {
@@ -84,7 +75,9 @@ describe('InputArea textarea overlay scroll sync', () => {
 
     const textarea = screen.getByRole('textbox', { name: '消息输入框' }) as HTMLTextAreaElement;
     const overlay = container.querySelector('div[aria-hidden="true"]') as HTMLDivElement | null;
+    const overlayContent = overlay?.firstElementChild as HTMLDivElement | null;
     expect(overlay).toBeTruthy();
+    expect(overlayContent).toBeTruthy();
 
     textarea.focus();
     expect(document.activeElement).toBe(textarea);
@@ -93,8 +86,6 @@ describe('InputArea textarea overlay scroll sync', () => {
     Object.defineProperty(textarea, 'scrollHeight', { value: 2000, configurable: true });
     let textareaScrollTop = 0;
     let textareaScrollLeft = 0;
-    let overlayScrollTop = 0;
-    let overlayScrollLeft = 0;
     Object.defineProperty(textarea, 'scrollTop', {
       configurable: true,
       get: () => textareaScrollTop,
@@ -104,16 +95,6 @@ describe('InputArea textarea overlay scroll sync', () => {
       configurable: true,
       get: () => textareaScrollLeft,
       set: (v) => { textareaScrollLeft = Number(v); },
-    });
-    Object.defineProperty(overlay!, 'scrollTop', {
-      configurable: true,
-      get: () => overlayScrollTop,
-      set: (v) => { overlayScrollTop = Number(v); },
-    });
-    Object.defineProperty(overlay!, 'scrollLeft', {
-      configurable: true,
-      get: () => overlayScrollLeft,
-      set: (v) => { overlayScrollLeft = Number(v); },
     });
 
     // 避免依赖 jsdom 对 selectionStart/End 的实现细节（以及 setSelectionRange 的滚动副作用）
@@ -133,7 +114,7 @@ describe('InputArea textarea overlay scroll sync', () => {
     fireEvent.change(textarea, { target: { value: bigText } });
 
     expect(textarea.scrollTop).toBe(2000);
-    expect(overlay!.scrollTop).toBe(2000);
+    expect(overlayContent!.style.transform).toBe('translate3d(0px, -2000px, 0)');
 
     const nextText = bigText + 'x';
     Object.defineProperty(textarea, 'scrollHeight', { value: 2100, configurable: true });
@@ -143,6 +124,6 @@ describe('InputArea textarea overlay scroll sync', () => {
 
     expect(overlay!.textContent).toContain('x');
     expect(textarea.scrollTop).toBe(2100);
-    expect(overlay!.scrollTop).toBe(2100);
+    expect(overlayContent!.style.transform).toBe('translate3d(0px, -2100px, 0)');
   });
 });

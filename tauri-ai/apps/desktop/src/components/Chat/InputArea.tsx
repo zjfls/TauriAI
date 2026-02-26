@@ -1299,6 +1299,8 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   const [isComposing, setIsComposing] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const textareaOverlayRef = useRef<HTMLDivElement>(null);
+  const textareaOverlayContentRef = useRef<HTMLDivElement>(null);
+  const textareaOverlaySyncRafRef = useRef<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textFileInputRef = useRef<HTMLInputElement>(null);
   const pdfFileInputRef = useRef<HTMLInputElement>(null);
@@ -2164,8 +2166,21 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
     }
 
     if (overlay) {
-      overlay.scrollTop = textarea.scrollTop;
-      overlay.scrollLeft = textarea.scrollLeft;
+      try {
+        const css = window.getComputedStyle(textarea);
+        const paddingRight = parseFloat(css.paddingRight) || 0;
+        const borderLeft = parseFloat(css.borderLeftWidth) || 0;
+        const borderRight = parseFloat(css.borderRightWidth) || 0;
+        const gutter = Math.max(0, textarea.offsetWidth - textarea.clientWidth - borderLeft - borderRight);
+        overlay.style.paddingRight = `${paddingRight + gutter}px`;
+      } catch {
+        // ignore
+      }
+    }
+
+    const overlayContent = textareaOverlayContentRef.current;
+    if (overlayContent) {
+      overlayContent.style.transform = `translate3d(${-textarea.scrollLeft}px, ${-textarea.scrollTop}px, 0)`;
     }
   }, []);
 
@@ -2819,10 +2834,22 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
 
   const handleTextareaScroll = useCallback(() => {
     const el = textareaRef.current;
-    const overlay = textareaOverlayRef.current;
-    if (!el || !overlay) return;
-    overlay.scrollTop = el.scrollTop;
-    overlay.scrollLeft = el.scrollLeft;
+    const overlayContent = textareaOverlayContentRef.current;
+    if (!el || !overlayContent) return;
+    if (textareaOverlaySyncRafRef.current !== null) return;
+    textareaOverlaySyncRafRef.current = requestAnimationFrame(() => {
+      textareaOverlaySyncRafRef.current = null;
+      overlayContent.style.transform = `translate3d(${-el.scrollLeft}px, ${-el.scrollTop}px, 0)`;
+    });
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (textareaOverlaySyncRafRef.current !== null) {
+        cancelAnimationFrame(textareaOverlaySyncRafRef.current);
+        textareaOverlaySyncRafRef.current = null;
+      }
+    };
   }, []);
 
   const handleCompositionStart = useCallback(() => {
@@ -3424,12 +3451,14 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
                 ref={textareaOverlayRef}
                 aria-hidden="true"
                 className={[
-                  "absolute inset-0 z-0 w-full resize-none overflow-auto bg-transparent px-2 py-0 text-gray-900 placeholder-gray-500 focus:outline-none dark:text-gray-100 dark:placeholder-gray-400 pointer-events-none whitespace-pre-wrap break-words",
+                  "absolute inset-0 z-0 w-full resize-none overflow-hidden bg-transparent px-2 py-0 text-gray-900 placeholder-gray-500 focus:outline-none dark:text-gray-100 dark:placeholder-gray-400 pointer-events-none whitespace-pre-wrap break-words",
                   isComposing ? "opacity-0" : "opacity-100",
                 ].join(" ")}
                 style={{ minHeight: `${MIN_TEXTAREA_HEIGHT}px` }}
               >
-                {textareaOverlayNodes}
+                <div ref={textareaOverlayContentRef} className="w-full will-change-transform">
+                  {textareaOverlayNodes}
+                </div>
               </div>
 
               <textarea
