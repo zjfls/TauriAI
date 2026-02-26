@@ -1181,6 +1181,7 @@ export type KeyboardShortcutActionId =
   | 'session.close'
   | 'session.next'
   | 'session.previous'
+  | 'workstudio.closeAllWindows'
   | 'workstudio.backToMain'
   | 'workstudio.fileSearch'
   | 'workstudio.triggerSuggest'

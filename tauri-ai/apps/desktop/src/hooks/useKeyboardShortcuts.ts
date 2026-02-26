@@ -10,7 +10,7 @@ import { useSessionStore } from '../stores/sessionStore';
 import { useConfigStore } from '../stores/configStore';
 import { useUIStore } from '../stores/uiStore';
 import { markChatOpenProfile, startChatOpenProfile } from '../utils/chatOpenProfile';
-import { openOrFocusWorkstudioWindow } from '../utils/viewWindow';
+import { closeAllWorkstudioWindows, openOrFocusWorkstudioWindow } from '../utils/viewWindow';
 import { detectShortcutPlatform, eventToKeybindingString, isEditableElement, normalizeKeybindingString } from '../shortcuts';
 import { SHORTCUT_ACTIONS } from '../shortcuts/registry';
 import type { AgentSession, AppConfig, Workstudio } from '../types';
@@ -399,6 +399,16 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
           }
           return openWorkstudioFromActiveSession();
         }
+        case 'workstudio.closeAllWindows': {
+          if (!isTauri()) return false;
+          try {
+            await closeAllWorkstudioWindows();
+            return true;
+          } catch (error) {
+            console.error('Failed to close all workstudio windows:', error);
+            return false;
+          }
+        }
         case 'workstudio.fileSearch': {
           if (useUIStore.getState().activeView !== 'workstudio') return false;
           dispatchShortcutEvent(actionId);
@@ -515,6 +525,8 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
     const canHandleNow = (() => {
       switch (actionId) {
         case 'app.openDevtools':
+          return isTauri();
+        case 'workstudio.closeAllWindows':
           return isTauri();
         case 'workstudio.backToMain':
         case 'workstudio.fileSearch':
