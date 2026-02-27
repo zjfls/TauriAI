@@ -60,6 +60,24 @@ impl ContextManager {
         }
     }
 
+    pub fn trim_target_percent(&self) -> u8 {
+        let hard = self.hard_limit_percent().clamp(1, 99);
+        let fallback = if hard > 1 { hard.saturating_sub(10) } else { 1 };
+
+        let raw = match &self.policy {
+            ContextPolicyConfig::Simple(cfg) => cfg.trim_target_percent.unwrap_or(fallback),
+            ContextPolicyConfig::NormalCompact(cfg) => cfg.trim_target_percent.unwrap_or(fallback),
+            ContextPolicyConfig::Custom { .. } => fallback,
+        }
+        .clamp(1, 99);
+
+        if raw >= hard {
+            hard.saturating_sub(1).max(1)
+        } else {
+            raw
+        }
+    }
+
     pub fn auto_compact_threshold_percent(&self) -> u8 {
         match &self.policy {
             ContextPolicyConfig::NormalCompact(cfg) => {
@@ -231,9 +249,7 @@ pub fn estimate_prompt_tokens(messages: &[Message]) -> u32 {
             }
         }
         if let Some(meta) = m.meta.as_ref() {
-            if let Ok(s) = serde_json::to_string(meta) {
-                total = total.saturating_add(approx_tokens_for_text(s.as_str()));
-            }
+            total = total.saturating_add(estimate_prompt_meta_tokens(meta));
         }
     }
     total
@@ -270,6 +286,22 @@ fn approx_tokens_for_text(text: &str) -> u32 {
     u32::try_from(tokens.ceil() as i64).unwrap_or(u32::MAX)
 }
 
+fn estimate_prompt_meta_tokens(meta: &MessageMeta) -> u32 {
+    let mut total = 0u32;
+    if let Some(tool_call_id) = meta.tool_call_id.as_deref() {
+        total = total.saturating_add(approx_tokens_for_text(tool_call_id));
+        total = total.saturating_add(2);
+    }
+    if let Some(tool_calls) = meta.tool_calls.as_ref() {
+        if let Ok(s) = serde_json::to_string(tool_calls) {
+            total = total.saturating_add(approx_tokens_for_text(s.as_str()));
+            total = total.saturating_add(4);
+        }
+    }
+
+    total
+}
+
 pub fn hard_limit_tokens(context_length: u32, hard_limit_percent: u8) -> u32 {
     let pct = u32::from(hard_limit_percent.clamp(1, 99));
     context_length.saturating_mul(pct) / 100
@@ -289,6 +321,7 @@ pub fn auto_compact_threshold_tokens(context_length: u32, threshold_percent: u8)
 pub fn trim_runtime_messages_to_hard_limit(
     mut messages: Vec<Message>,
     hard_limit_tokens: u32,
+    trim_target_tokens: u32,
 ) -> ContextTrimResult {
     let estimated_before = estimate_prompt_tokens(&messages);
     if estimated_before <= hard_limit_tokens {
@@ -301,6 +334,7 @@ pub fn trim_runtime_messages_to_hard_limit(
         };
     }
 
+    let target_tokens = trim_target_tokens.min(hard_limit_tokens).max(1);
     let first_non_system = messages
         .iter()
         .position(|m| m.role != MessageRole::System)
@@ -309,7 +343,7 @@ pub fn trim_runtime_messages_to_hard_limit(
     let mut removed = 0usize;
     loop {
         let cur = estimate_prompt_tokens(&messages);
-        if cur <= hard_limit_tokens {
+        if cur <= target_tokens {
             return ContextTrimResult {
                 trimmed_messages: messages,
                 removed_messages: removed,
@@ -354,8 +388,11 @@ pub fn trim_runtime_messages_to_hard_limit(
 
 #[cfg(test)]
 mod tests {
-    use super::trim_runtime_messages_to_hard_limit;
-    use crate::models::{Message, MessageRole, MessageStatus};
+    use super::{estimate_prompt_tokens, trim_runtime_messages_to_hard_limit, ContextManager};
+    use crate::models::{
+        ContextPolicyConfig, Message, MessageBlock, MessageMeta, MessageRole, MessageStatus,
+        NormalCompactPolicyConfig, SimplePolicyConfig,
+    };
 
     fn mk_message(role: MessageRole, content: &str) -> Message {
         Message {
@@ -379,7 +416,10 @@ mod tests {
         // With a very small hard limit, we still must keep that user message.
         let messages = vec![
             mk_message(MessageRole::System, "system prompt"),
-            mk_message(MessageRole::User, "please inspect the shadow map and do not modify code"),
+            mk_message(
+                MessageRole::User,
+                "please inspect the shadow map and do not modify code",
+            ),
             mk_message(
                 MessageRole::Assistant,
                 "turn 1: planning and tool call metadata content that is fairly long",
@@ -394,7 +434,7 @@ mod tests {
             ),
         ];
 
-        let result = trim_runtime_messages_to_hard_limit(messages, 1);
+        let result = trim_runtime_messages_to_hard_limit(messages, 1, 1);
 
         assert!(
             result
@@ -410,6 +450,109 @@ mod tests {
                 .any(|m| m.role == MessageRole::Assistant),
             "latest non-system message should still be preserved"
         );
+    }
+
+    #[test]
+    fn estimate_prompt_tokens_ignores_heavy_persisted_meta_payloads() {
+        let base = vec![
+            mk_message(MessageRole::System, "system prompt"),
+            mk_message(MessageRole::User, "hello"),
+            mk_message(MessageRole::Assistant, "ok"),
+        ];
+        let base_est = estimate_prompt_tokens(&base);
+
+        let mut with_heavy_meta = base;
+        if let Some(last) = with_heavy_meta.last_mut() {
+            last.meta = Some(MessageMeta {
+                blocks: Some(vec![MessageBlock::ToolResult {
+                    id: "t1:tool_result:c1".to_string(),
+                    turn_id: Some("t1".to_string()),
+                    turn_index: Some(1),
+                    call_id: "c1".to_string(),
+                    text: "x".repeat(200_000),
+                }]),
+                ..Default::default()
+            });
+        }
+
+        let heavy_est = estimate_prompt_tokens(&with_heavy_meta);
+
+        assert!(
+            heavy_est <= base_est + 64,
+            "persisted blocks should not inflate prompt estimation: base={}, heavy={}",
+            base_est,
+            heavy_est
+        );
+    }
+
+    #[test]
+    fn trim_triggers_on_hard_limit_but_trims_to_target() {
+        let messages = vec![
+            mk_message(MessageRole::System, "system prompt"),
+            mk_message(MessageRole::User, &"u".repeat(1200)),
+            mk_message(MessageRole::Assistant, &"a".repeat(1200)),
+            mk_message(MessageRole::User, "latest user"),
+            mk_message(MessageRole::Assistant, "latest assistant"),
+        ];
+
+        let result = trim_runtime_messages_to_hard_limit(messages, 600, 300);
+        assert!(
+            result.removed_messages > 0,
+            "should trim when over hard limit"
+        );
+        assert!(
+            result.estimated_tokens_after <= 300,
+            "should trim to target watermark, after={}",
+            result.estimated_tokens_after
+        );
+    }
+
+    #[test]
+    fn trim_does_not_trigger_when_below_hard_limit() {
+        let messages = vec![
+            mk_message(MessageRole::System, "system prompt"),
+            mk_message(MessageRole::User, &"u".repeat(1000)),
+            mk_message(MessageRole::Assistant, "latest assistant"),
+        ];
+        let before = estimate_prompt_tokens(&messages);
+        assert!(before > 200, "fixture should be above target");
+        assert!(before <= 700, "fixture should stay below hard");
+
+        let result = trim_runtime_messages_to_hard_limit(messages, 700, 200);
+        assert_eq!(result.removed_messages, 0);
+        assert_eq!(result.estimated_tokens_after, before);
+    }
+
+    #[test]
+    fn trim_target_percent_is_clamped_below_hard_limit() {
+        let mgr = ContextManager::new(Some(ContextPolicyConfig::Simple(SimplePolicyConfig {
+            enabled: true,
+            trim_enabled: true,
+            hard_limit_percent: Some(80),
+            trim_target_percent: Some(95),
+        })));
+        assert_eq!(mgr.hard_limit_percent(), 80);
+        assert_eq!(mgr.trim_target_percent(), 79);
+    }
+
+    #[test]
+    fn normal_compact_policy_uses_default_trim_target_gap() {
+        let mgr = ContextManager::new(Some(ContextPolicyConfig::NormalCompact(
+            NormalCompactPolicyConfig {
+                enabled: true,
+                compact_enabled: true,
+                auto_compact: true,
+                trim_enabled: true,
+                auto_compact_threshold_percent: Some(85),
+                hard_limit_percent: Some(90),
+                trim_target_percent: None,
+                keep_last_messages: None,
+                max_summary_tokens: None,
+                max_compact_input_messages: None,
+            },
+        )));
+
+        assert_eq!(mgr.trim_target_percent(), 80);
     }
 }
 

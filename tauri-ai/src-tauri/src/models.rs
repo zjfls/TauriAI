@@ -1266,6 +1266,11 @@ pub struct SimplePolicyConfig {
     /// Default: 90 (%).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hard_limit_percent: Option<u8>,
+
+    /// Target watermark in percent of model context length after trimming.
+    /// Must be smaller than `hard_limit_percent`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trim_target_percent: Option<u8>,
 }
 
 impl Default for SimplePolicyConfig {
@@ -1274,6 +1279,7 @@ impl Default for SimplePolicyConfig {
             enabled: true,
             trim_enabled: true,
             hard_limit_percent: Some(90),
+            trim_target_percent: None,
         }
     }
 }
@@ -1313,6 +1319,11 @@ pub struct NormalCompactPolicyConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hard_limit_percent: Option<u8>,
 
+    /// Target watermark in percent of model context length after trimming.
+    /// Must be smaller than `hard_limit_percent`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trim_target_percent: Option<u8>,
+
     /// After compaction, keep the last N messages (excluding the inserted summary).
     /// Default: 60.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1338,6 +1349,7 @@ impl Default for NormalCompactPolicyConfig {
             trim_enabled: true,
             auto_compact_threshold_percent: None,
             hard_limit_percent: None,
+            trim_target_percent: None,
             keep_last_messages: None,
             max_summary_tokens: None,
             max_compact_input_messages: None,
@@ -2178,7 +2190,8 @@ mod context_policy_tests {
     #[test]
     fn context_policy_disabled_alias_deserializes_to_simple() {
         let json = r#"{"type":"disabled"}"#;
-        let policy: ContextPolicyConfig = serde_json::from_str(json).expect("should parse legacy disabled");
+        let policy: ContextPolicyConfig =
+            serde_json::from_str(json).expect("should parse legacy disabled");
         match &policy {
             ContextPolicyConfig::Simple(cfg) => {
                 assert!(cfg.enabled);
@@ -3193,7 +3206,13 @@ fn ensure_toolset_text_edit_normalized(cfg: &mut AppConfig) -> bool {
         // 文本编辑工具统一收敛为抽象开关 `text_edit`：
         // - 旧配置可能直接包含 apply_patch / apply_patch_unified_diff / write_file / replace_string
         // - 新配置只保留 `text_edit`，具体实现由“模型的 textEditImplementation”选择
-        let edit_tools = [MARKER, APPLY_PATCH, APPLY_PATCH_UNIFIED, WRITE_FILE, REPLACE_STRING];
+        let edit_tools = [
+            MARKER,
+            APPLY_PATCH,
+            APPLY_PATCH_UNIFIED,
+            WRITE_FILE,
+            REPLACE_STRING,
+        ];
         let first_edit_idx = cleaned
             .iter()
             .position(|t| edit_tools.contains(&t.as_str()));
