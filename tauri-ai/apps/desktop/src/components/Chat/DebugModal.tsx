@@ -72,6 +72,7 @@ interface TextViewerProps {
   label?: string;
   maxHeightClassName?: string;
   containerClassName?: string;
+  onOpenLarge?: (() => void) | null;
   renderAnsi?: boolean;
   ansiRenderMode?: AnsiRenderMode;
   ansiColorMode?: AnsiColorMode;
@@ -122,11 +123,12 @@ type StreamTerminationSummary = {
   tone: 'success' | 'warn' | 'error' | 'neutral';
 };
 
-type DebugModalPage = 'overview' | 'http_json' | 'http_text';
+type DebugModalPage = 'overview' | 'tools' | 'http_json' | 'http_text';
 type HttpDebugView = 'response' | 'request';
 type LargeTextViewerState = {
   title: string;
   text: string;
+  rawJson?: unknown;
 };
 
 const maskSensitiveHeaders = (headers: Record<string, string>): Record<string, string> => {
@@ -877,6 +879,7 @@ const TextViewer: React.FC<TextViewerProps> = ({
   label,
   maxHeightClassName = 'max-h-64',
   containerClassName = 'bg-gray-50 dark:bg-gray-800 text-gray-800 dark:text-gray-200',
+  onOpenLarge,
   renderAnsi = false,
   ansiRenderMode,
   ansiColorMode,
@@ -907,6 +910,17 @@ const TextViewer: React.FC<TextViewerProps> = ({
           )}
         </pre>
         <button
+          type="button"
+          onClick={() => onOpenLarge?.()}
+          className={`absolute top-2 right-10 p-1.5 rounded bg-gray-200 dark:bg-gray-700 transition-opacity ${
+            onOpenLarge ? 'opacity-0 group-hover:opacity-100' : 'hidden'
+          }`}
+          title="大窗口查看"
+        >
+          <Maximize2 size={14} className="text-gray-500 dark:text-gray-400" />
+        </button>
+        <button
+          type="button"
           onClick={handleCopy}
           className="absolute top-2 right-2 p-1.5 rounded bg-gray-200 dark:bg-gray-700 opacity-0 group-hover:opacity-100 transition-opacity"
           title="复制"
@@ -1174,7 +1188,6 @@ export const DebugModal: React.FC<DebugModalProps> = ({
   const activeTurn = activeTurnId
     ? sortedTurns.find((t) => t.turnId === activeTurnId) ?? null
     : null;
-  const activeTurnTrim = activeTurn?.contextTrim ?? null;
   const activeTurnPos = useMemo(() => {
     if (!activeTurnId) return -1;
     return sortedTurns.findIndex((t) => t.turnId === activeTurnId);
@@ -1230,7 +1243,7 @@ export const DebugModal: React.FC<DebugModalProps> = ({
   }, [isOpen, activeHttpView, hasHttpResponse, hasHttpRequest]);
 
   const httpViewTabs = useMemo(() => {
-    if (!hasHttpResponse && !hasHttpRequest) return null;
+    if (!hasHttpResponse && !hasHttpRequest && activePage !== 'tools') return null;
     const responseDisabled = !hasHttpResponse;
     const requestDisabled = !hasHttpRequest;
 
@@ -1243,16 +1256,20 @@ export const DebugModal: React.FC<DebugModalProps> = ({
     return (
       <div
         className="inline-flex rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden"
-        title="切换 HTTP 请求/响应"
+        title="切换 响应 / 请求 / 工具执行"
       >
         <button
           type="button"
-          onClick={() => !responseDisabled && setActiveHttpView('response')}
+          onClick={() => {
+            if (responseDisabled) return;
+            setActiveHttpView('response');
+            if (activePage === 'tools') setActivePage('http_text');
+          }}
           disabled={responseDisabled}
           className={`px-3 py-1.5 text-xs font-medium transition-colors ${
             responseDisabled
               ? disabledClass
-              : activeHttpView === 'response'
+              : activePage !== 'tools' && activeHttpView === 'response'
                 ? activeClass
                 : inactiveClass
           }`}
@@ -1261,21 +1278,34 @@ export const DebugModal: React.FC<DebugModalProps> = ({
         </button>
         <button
           type="button"
-          onClick={() => !requestDisabled && setActiveHttpView('request')}
+          onClick={() => {
+            if (requestDisabled) return;
+            setActiveHttpView('request');
+            if (activePage === 'tools') setActivePage('http_text');
+          }}
           disabled={requestDisabled}
           className={`px-3 py-1.5 text-xs font-medium transition-colors ${
             requestDisabled
               ? disabledClass
-              : activeHttpView === 'request'
+              : activePage !== 'tools' && activeHttpView === 'request'
                 ? activeClass
                 : inactiveClass
           }`}
         >
           请求
         </button>
+        <button
+          type="button"
+          onClick={() => setActivePage('tools')}
+          className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+            activePage === 'tools' ? activeClass : inactiveClass
+          }`}
+        >
+          工具执行
+        </button>
       </div>
     );
-  }, [activeHttpView, hasHttpResponse, hasHttpRequest]);
+  }, [activeHttpView, activePage, hasHttpResponse, hasHttpRequest]);
   const requestUrlParts = useMemo(
     () => safeParseUrlParts(effectiveDebugInfo?.request?.url ?? ''),
     [effectiveDebugInfo?.request?.url]
@@ -1331,23 +1361,6 @@ export const DebugModal: React.FC<DebugModalProps> = ({
     () => summarizeStreamTermination(streamTerminationInfo),
     [streamTerminationInfo]
   );
-  const streamTerminationClass =
-    streamTerminationSummary.tone === 'success'
-      ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
-      : streamTerminationSummary.tone === 'warn'
-        ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300'
-        : streamTerminationSummary.tone === 'error'
-          ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'
-          : 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300';
-  const streamTerminationPanelClass =
-    streamTerminationSummary.tone === 'success'
-      ? 'border-green-200 bg-green-50/70 dark:border-green-800 dark:bg-green-900/20'
-      : streamTerminationSummary.tone === 'warn'
-        ? 'border-yellow-200 bg-yellow-50/70 dark:border-yellow-800 dark:bg-yellow-900/20'
-        : streamTerminationSummary.tone === 'error'
-          ? 'border-red-200 bg-red-50/70 dark:border-red-800 dark:bg-red-900/20'
-          : 'border-gray-200 bg-gray-50/70 dark:border-gray-700 dark:bg-gray-800/40';
-
   const endReasonSummary = useMemo(() => {
     const parts: string[] = [];
 
@@ -1526,6 +1539,62 @@ export const DebugModal: React.FC<DebugModalProps> = ({
     };
   }, [effectiveDebugInfo?.response?.body, toolResults, toolCalls]);
 
+  const largeViewerJsonData = useMemo(() => {
+    if (!largeTextViewer) return null;
+
+    const fromRaw = largeTextViewer.rawJson;
+    if (fromRaw !== undefined && fromRaw !== null) {
+      const normalized = normalizeJsonLikeStrings(fromRaw);
+      if (isRecord(normalized) || Array.isArray(normalized)) {
+        return normalized;
+      }
+    }
+
+    const parsed = maybeParseJsonContainerString(largeTextViewer.text);
+    if (parsed !== null) {
+      const normalized = normalizeJsonLikeStrings(parsed);
+      if (isRecord(normalized) || Array.isArray(normalized)) {
+        return normalized;
+      }
+    }
+
+    return null;
+  }, [largeTextViewer]);
+
+  const largeViewerDisplayText = useMemo(() => {
+    if (!largeTextViewer) return '';
+
+    if (largeViewerJsonData) {
+      return safeStringify(largeViewerJsonData, 2);
+    }
+
+    const fromRaw = largeTextViewer.rawJson;
+    if (typeof fromRaw === 'string') {
+      return normalizeStringForDisplay(fromRaw);
+    }
+    if (fromRaw !== undefined && fromRaw !== null) {
+      const normalized = normalizeJsonLikeStrings(fromRaw);
+      if (typeof normalized === 'string') {
+        return normalizeStringForDisplay(normalized);
+      }
+      return safeStringify(normalized, 2);
+    }
+
+    return normalizeStringForDisplay(largeTextViewer.text);
+  }, [largeTextViewer, largeViewerJsonData]);
+
+  const hasTaskSummary =
+    Boolean(
+      finalTurn ||
+        finalStatus ||
+        providerFinishReason ||
+        typeof httpStatus === 'number' ||
+        effectiveDebugInfo?.request ||
+        errorMessage ||
+        conversationId ||
+        messageId
+    ) || sortedTurns.length > 1;
+
   if (!isOpen) return null;
 
   return (
@@ -1576,180 +1645,185 @@ export const DebugModal: React.FC<DebugModalProps> = ({
 
         {/* Content */}
         <div className="p-6 max-h-[calc(80vh-80px)] overflow-hidden">
-          {(finalTurn ||
-            finalStatus ||
-            providerFinishReason ||
-            typeof httpStatus === 'number' ||
-            effectiveDebugInfo?.request ||
-            errorMessage ||
-            conversationId ||
-            messageId) && (
-            <div className="mb-4 rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-700 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-200">
-              <div className="flex flex-col gap-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-medium text-gray-600 dark:text-gray-300">结束原因</span>
-                  {finalStatus && (
-                    <Chip
-                      tone={
-                        finalStatus === 'success'
-                          ? 'green'
-                          : finalStatus === 'aborted'
-                            ? 'yellow'
-                            : finalStatus === 'failed'
-                              ? 'red'
-                              : 'gray'
-                      }
-                    >
-                      {finalStatusTitle}
-                    </Chip>
-                  )}
-                  {finalTurn && <Chip tone="gray">最后 Turn {finalTurn.turnIndex}</Chip>}
-                  {finalTurn?.model && <Chip tone="purple" title="model">{finalTurn.model}</Chip>}
-                  {providerFinishReason && (
-                    <Chip
-                      tone="gray"
-                      title={[providerFinishReasonZh, providerFinishReasonSource].filter(Boolean).join(' | ') || undefined}
-                    >
-                      finish_reason: {providerFinishReason}
-                    </Chip>
-                  )}
-                  {typeof httpStatus === 'number' && (
-                    <Chip tone={httpStatus >= 200 && httpStatus < 300 ? 'green' : 'red'}>
-                      HTTP {httpStatus}
-                    </Chip>
-                  )}
-                  {effectiveDebugInfo && (
-                    <Chip
-                      tone={
-                        streamTerminationSummary.tone === 'success'
-                          ? 'green'
-                          : streamTerminationSummary.tone === 'warn'
-                            ? 'yellow'
-                            : streamTerminationSummary.tone === 'error'
-                              ? 'red'
-                              : 'gray'
-                      }
-                      title={streamTerminationSummary.detail}
-                    >
-                      协议终止: {streamTerminationSummary.label}
-                    </Chip>
-                  )}
-                </div>
+          {hasTaskSummary && (
+            <div className="mb-4">
+              <CollapsibleSection title="结束原因与 Turn 导航" defaultExpanded={false}>
+                {(finalTurn ||
+                  finalStatus ||
+                  providerFinishReason ||
+                  typeof httpStatus === 'number' ||
+                  effectiveDebugInfo?.request ||
+                  errorMessage ||
+                  conversationId ||
+                  messageId) && (
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-700 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-200">
+                    <div className="flex flex-col gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-medium text-gray-600 dark:text-gray-300">结束原因</span>
+                        {finalStatus && (
+                          <Chip
+                            tone={
+                              finalStatus === 'success'
+                                ? 'green'
+                                : finalStatus === 'aborted'
+                                  ? 'yellow'
+                                  : finalStatus === 'failed'
+                                    ? 'red'
+                                    : 'gray'
+                            }
+                          >
+                            {finalStatusTitle}
+                          </Chip>
+                        )}
+                        {finalTurn && <Chip tone="gray">最后 Turn {finalTurn.turnIndex}</Chip>}
+                        {finalTurn?.model && <Chip tone="purple" title="model">{finalTurn.model}</Chip>}
+                        {providerFinishReason && (
+                          <Chip
+                            tone="gray"
+                            title={[providerFinishReasonZh, providerFinishReasonSource].filter(Boolean).join(' | ') || undefined}
+                          >
+                            finish_reason: {providerFinishReason}
+                          </Chip>
+                        )}
+                        {typeof httpStatus === 'number' && (
+                          <Chip tone={httpStatus >= 200 && httpStatus < 300 ? 'green' : 'red'}>
+                            HTTP {httpStatus}
+                          </Chip>
+                        )}
+                        {effectiveDebugInfo && (
+                          <Chip
+                            tone={
+                              streamTerminationSummary.tone === 'success'
+                                ? 'green'
+                                : streamTerminationSummary.tone === 'warn'
+                                  ? 'yellow'
+                                  : streamTerminationSummary.tone === 'error'
+                                    ? 'red'
+                                    : 'gray'
+                            }
+                            title={streamTerminationSummary.detail}
+                          >
+                            协议终止: {streamTerminationSummary.label}
+                          </Chip>
+                        )}
+                      </div>
 
-                {effectiveDebugInfo?.request && (
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-medium text-gray-600 dark:text-gray-300">请求</span>
-                    {effectiveDebugInfo.request.method && (
-                      <Chip tone="blue">{effectiveDebugInfo.request.method}</Chip>
+                      {effectiveDebugInfo?.request && (
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-medium text-gray-600 dark:text-gray-300">请求</span>
+                          {effectiveDebugInfo.request.method && (
+                            <Chip tone="blue">{effectiveDebugInfo.request.method}</Chip>
+                          )}
+                          {requestUrlParts ? (
+                            <>
+                              <Chip tone="gray" title={requestUrlParts.host}>
+                                host: {truncateMiddle(requestUrlParts.host, 24, 12)}
+                              </Chip>
+                              <Chip tone="gray" title={requestUrlParts.path}>
+                                path: {truncateMiddle(requestUrlParts.path, 28, 18)}
+                              </Chip>
+                            </>
+                          ) : effectiveDebugInfo.request.url ? (
+                            <Chip tone="gray" title={effectiveDebugInfo.request.url}>
+                              url: {truncateMiddle(effectiveDebugInfo.request.url, 26, 22)}
+                            </Chip>
+                          ) : null}
+                        </div>
+                      )}
+                    </div>
+                    {endReasonSummary && (
+                      <div className="mt-1 text-[11px] text-gray-600 dark:text-gray-300">
+                        {endReasonSummary}
+                      </div>
                     )}
-                    {requestUrlParts ? (
-                      <>
-                        <Chip tone="gray" title={requestUrlParts.host}>
-                          host: {truncateMiddle(requestUrlParts.host, 24, 12)}
-                        </Chip>
-                        <Chip tone="gray" title={requestUrlParts.path}>
-                          path: {truncateMiddle(requestUrlParts.path, 28, 18)}
-                        </Chip>
-                      </>
-                    ) : effectiveDebugInfo.request.url ? (
-                      <Chip tone="gray" title={effectiveDebugInfo.request.url}>
-                        url: {truncateMiddle(effectiveDebugInfo.request.url, 26, 22)}
-                      </Chip>
-                    ) : null}
+                    {effectiveDebugInfo && (
+                      <div className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
+                        协议终止详情：{streamTerminationSummary.detail}
+                      </div>
+                    )}
+                    {errorMessage && (
+                      <div className="mt-2 rounded bg-red-50 px-2 py-1 text-red-700 dark:bg-red-900/20 dark:text-red-300">
+                        {errorMessage}
+                      </div>
+                    )}
+                    {(conversationId || messageId) && (
+                      <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-gray-500 dark:text-gray-400">
+                        {conversationId && <span>conversationId: {conversationId}</span>}
+                        {messageId && <span>messageId: {messageId}</span>}
+                        {finalTurn?.turnId && <span>turnId: {finalTurn.turnId}</span>}
+                      </div>
+                    )}
                   </div>
                 )}
-              </div>
-              {endReasonSummary && (
-                <div className="mt-1 text-[11px] text-gray-600 dark:text-gray-300">
-                  {endReasonSummary}
-                </div>
-              )}
-              {effectiveDebugInfo && (
-                <div className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
-                  协议终止详情：{streamTerminationSummary.detail}
-                </div>
-              )}
-              {errorMessage && (
-                <div className="mt-2 rounded bg-red-50 px-2 py-1 text-red-700 dark:bg-red-900/20 dark:text-red-300">
-                  {errorMessage}
-                </div>
-              )}
-              {(conversationId || messageId) && (
-                <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-gray-500 dark:text-gray-400">
-                  {conversationId && <span>conversationId: {conversationId}</span>}
-                  {messageId && <span>messageId: {messageId}</span>}
-                  {finalTurn?.turnId && <span>turnId: {finalTurn.turnId}</span>}
-                </div>
-              )}
-            </div>
-          )}
 
-          {/* Turn selector (multi-turn tasks) */}
-          {sortedTurns.length > 1 && (
-            <div className="mb-4">
-              {sortedTurns.length > TURNS_PER_PAGE && (
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <div className="text-xs text-gray-500 dark:text-gray-400">
-                    Turn 分页：第 {turnPage + 1}/{turnPageCount} 页（共 {sortedTurns.length}）
+                {sortedTurns.length > 1 && (
+                  <div className={`${finalTurn || finalStatus || providerFinishReason || typeof httpStatus === 'number' || effectiveDebugInfo?.request || errorMessage || conversationId || messageId ? 'mt-3' : ''}`}>
+                    {sortedTurns.length > TURNS_PER_PAGE && (
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <div className="text-xs text-gray-500 dark:text-gray-400">
+                          Turn 分页：第 {turnPage + 1}/{turnPageCount} 页（共 {sortedTurns.length}）
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => setTurnPage((p) => Math.max(0, p - 1))}
+                            disabled={turnPage <= 0}
+                            className="inline-flex items-center justify-center rounded border border-gray-200 bg-white p-1 text-gray-600 disabled:opacity-40 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-300"
+                            title="上一页"
+                          >
+                            <ChevronLeft size={16} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setTurnPage((p) => Math.min(turnPageCount - 1, p + 1))}
+                            disabled={turnPage >= turnPageCount - 1}
+                            className="inline-flex items-center justify-center rounded border border-gray-200 bg-white p-1 text-gray-600 disabled:opacity-40 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-300"
+                            title="下一页"
+                          >
+                            <ChevronRight size={16} />
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="flex flex-nowrap items-center gap-2 overflow-x-auto pb-1">
+                      {(sortedTurns.length > TURNS_PER_PAGE ? pagedTurns : sortedTurns).map((t) => {
+                        const isActive = t.turnId === activeTurnId;
+                        const status = t.status || 'success';
+                        const statusClass =
+                          status === 'success'
+                            ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
+                            : status === 'aborted'
+                              ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300'
+                              : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300';
+                        const statusTitle = status === 'success' ? '成功' : status === 'failed' ? '失败' : '中止';
+
+                        return (
+                          <button
+                            key={t.turnId}
+                            onClick={() => setActiveTurnId(t.turnId)}
+                            className={`flex items-center gap-2 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                              isActive
+                                ? 'bg-gray-200 text-gray-900 dark:bg-gray-800 dark:text-gray-100'
+                                : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-900/40 dark:text-gray-300 dark:hover:bg-gray-800'
+                            }`}
+                            title={t.model ? `model: ${t.model}` : undefined}
+                          >
+                            <span>Turn {t.turnIndex}</span>
+                            <span
+                              className={`inline-flex items-center gap-1 rounded px-2 py-0.5 ${statusClass}`}
+                              title={statusTitle}
+                            >
+                              {status === 'success' ? <Check size={12} /> : status === 'failed' ? <X size={12} /> : null}
+                              {status === 'aborted' ? <span>aborted</span> : null}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
-                  <div className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => setTurnPage((p) => Math.max(0, p - 1))}
-                      disabled={turnPage <= 0}
-                      className="inline-flex items-center justify-center rounded border border-gray-200 bg-white p-1 text-gray-600 disabled:opacity-40 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-300"
-                      title="上一页"
-                    >
-                      <ChevronLeft size={16} />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setTurnPage((p) => Math.min(turnPageCount - 1, p + 1))}
-                      disabled={turnPage >= turnPageCount - 1}
-                      className="inline-flex items-center justify-center rounded border border-gray-200 bg-white p-1 text-gray-600 disabled:opacity-40 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-300"
-                      title="下一页"
-                    >
-                      <ChevronRight size={16} />
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              <div className="flex flex-nowrap items-center gap-2 overflow-x-auto pb-1">
-                {(sortedTurns.length > TURNS_PER_PAGE ? pagedTurns : sortedTurns).map((t) => {
-                  const isActive = t.turnId === activeTurnId;
-                  const status = t.status || 'success';
-                  const statusClass =
-                    status === 'success'
-                      ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
-                      : status === 'aborted'
-                        ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300'
-                        : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300';
-                  const statusTitle = status === 'success' ? '成功' : status === 'failed' ? '失败' : '中止';
-
-                  return (
-                    <button
-                      key={t.turnId}
-                      onClick={() => setActiveTurnId(t.turnId)}
-                      className={`flex items-center gap-2 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-                        isActive
-                          ? 'bg-gray-200 text-gray-900 dark:bg-gray-800 dark:text-gray-100'
-                          : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-900/40 dark:text-gray-300 dark:hover:bg-gray-800'
-                      }`}
-                      title={t.model ? `model: ${t.model}` : undefined}
-                    >
-                      <span>Turn {t.turnIndex}</span>
-                      <span
-                        className={`inline-flex items-center gap-1 rounded px-2 py-0.5 ${statusClass}`}
-                        title={statusTitle}
-                      >
-                        {status === 'success' ? <Check size={12} /> : status === 'failed' ? <X size={12} /> : null}
-                        {status === 'aborted' ? <span>aborted</span> : null}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
+                )}
+              </CollapsibleSection>
             </div>
           )}
 
@@ -1767,47 +1841,6 @@ export const DebugModal: React.FC<DebugModalProps> = ({
           <div className="overflow-auto max-h-[calc(80vh-80px-72px)] space-y-4 pr-1">
             {activePage === 'overview' ? (
               <>
-                {activeTurn && (
-                  <CollapsibleSection
-                    title="上下文裁剪"
-                    defaultExpanded={defaultExpandedForStreaming || (activeTurnTrim?.removedMessages ?? 0) > 0}
-                  >
-                    {activeTurnTrim ? (
-                      <div className="space-y-2">
-                        <div className="grid grid-cols-2 gap-2 text-xs">
-                          <div>
-                            <span className="text-gray-500 dark:text-gray-400">启用: </span>
-                            <span className="text-gray-800 dark:text-gray-200">
-                              {activeTurnTrim.enabled ? '是' : '否'}
-                            </span>
-                          </div>
-                          <div>
-                            <span className="text-gray-500 dark:text-gray-400">删除消息: </span>
-                            <span className="text-gray-800 dark:text-gray-200">{activeTurnTrim.removedMessages}</span>
-                          </div>
-                          <div>
-                            <span className="text-gray-500 dark:text-gray-400">估算 tokens: </span>
-                            <span className="text-gray-800 dark:text-gray-200">
-                              {activeTurnTrim.estimatedTokensBefore} → {activeTurnTrim.estimatedTokensAfter}
-                            </span>
-                          </div>
-                          <div>
-                            <span className="text-gray-500 dark:text-gray-400">hard limit: </span>
-                            <span className="text-gray-800 dark:text-gray-200">{activeTurnTrim.hardLimitTokens}</span>
-                          </div>
-                        </div>
-                        <p className="text-xs text-gray-500 dark:text-gray-400">
-                          注：tokens 为后端粗估（偏保守），用于避免 context window exceeded。
-                        </p>
-                      </div>
-                    ) : (
-                      <div className="text-xs text-gray-500 dark:text-gray-400">
-                        本轮无裁剪统计（可能未配置 model 的 contextLength）
-                      </div>
-                    )}
-                  </CollapsibleSection>
-                )}
-
                 {thinkingText && (
                   <CollapsibleSection title="思考过程" defaultExpanded={defaultExpandedForStreaming}>
                     <TextViewer
@@ -1815,95 +1848,6 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                       containerClassName="bg-purple-50 dark:bg-purple-900/30 text-purple-800 dark:text-purple-200"
                       maxHeightClassName="max-h-64"
                     />
-                  </CollapsibleSection>
-                )}
-
-                {(toolCalls.length > 0 || toolResults.length > 0 || webSearchBlocks.length > 0) && (
-                  <CollapsibleSection title="工具执行" defaultExpanded={defaultExpandedForStreaming}>
-                    <div className="space-y-3">
-                      {pairedToolRuns.runs.map(({ call, result }) => {
-                        let prettyArgs: string = call.arguments;
-                        try {
-                          prettyArgs = JSON.stringify(JSON.parse(call.arguments), null, 2);
-                        } catch {
-                          // keep raw
-                        }
-
-                        return (
-                          <div
-                            key={call.id}
-                            className="rounded-lg border border-green-200 bg-green-50 p-3 dark:border-green-800 dark:bg-green-900/30"
-                          >
-                            <div className="mb-2 text-xs font-medium text-green-800 dark:text-green-200">
-                              {call.name} <span className="opacity-70">({call.callId})</span>
-                            </div>
-
-                            <div className="space-y-2">
-                              <TextViewer
-                                label="参数"
-                                text={prettyArgs}
-                                maxHeightClassName="max-h-48"
-                                containerClassName="bg-white/60 dark:bg-black/20 text-green-900 dark:text-green-100"
-                              />
-
-                              <TextViewer
-                                label="结果"
-                                text={result?.text ?? '(暂无工具结果)'}
-                                maxHeightClassName="max-h-64"
-                                containerClassName="bg-white/60 dark:bg-black/20 text-gray-900 dark:text-gray-100"
-                                renderAnsi={Boolean(result?.text)}
-                                ansiRenderMode={ansiRenderMode}
-                                ansiColorMode={ansiColorMode}
-                              />
-                            </div>
-                          </div>
-                        );
-                      })}
-
-                      {pairedToolRuns.orphanResults.length > 0 && (
-                        <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-800/40">
-                          <div className="mb-2 text-xs font-medium text-gray-700 dark:text-gray-300">
-                            未配对的工具结果
-                          </div>
-                          <div className="space-y-3">
-                            {pairedToolRuns.orphanResults.map((r) => (
-                              <div
-                                key={r.id}
-                                className="rounded border border-gray-200 bg-white/60 p-2 dark:border-gray-700 dark:bg-black/20"
-                              >
-                                <div className="mb-2 text-xs font-medium text-gray-700 dark:text-gray-300">
-                                  call_id: <span className="font-mono">{r.callId}</span>
-                                </div>
-                                <TextViewer
-                                  text={r.text}
-                                  maxHeightClassName="max-h-64"
-                                  renderAnsi
-                                  ansiRenderMode={ansiRenderMode}
-                                  ansiColorMode={ansiColorMode}
-                                />
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                      {webSearchBlocks.map((b) => (
-                        <div
-                          key={b.id}
-                          className="rounded-lg border border-blue-200 bg-blue-50 p-3 dark:border-blue-800 dark:bg-blue-900/30"
-                        >
-                          <div className="mb-2 text-xs font-medium text-blue-800 dark:text-blue-200">
-                            web_search <span className="opacity-70">({b.callId})</span>
-                          </div>
-                          <JsonViewer
-                            data={{
-                              status: b.status,
-                              action: b.action,
-                            }}
-                          />
-                        </div>
-                      ))}
-                    </div>
                   </CollapsibleSection>
                 )}
 
@@ -1954,67 +1898,6 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                     ) : effectiveDebugInfo.response ? (
                       <CollapsibleSection title="HTTP 响应">
                         <div className="space-y-4">
-                          <div className="flex items-center gap-2 text-sm">
-                            <span
-                              className={`px-2 py-1 rounded font-medium ${
-                                effectiveDebugInfo.response.status >= 200 &&
-                                effectiveDebugInfo.response.status < 300
-                                  ? 'bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300'
-                                  : 'bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300'
-                              }`}
-                            >
-                              {effectiveDebugInfo.response.status}
-                            </span>
-                          </div>
-                          <div className={`rounded-lg border px-3 py-2 text-xs ${streamTerminationPanelClass}`}>
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span className="font-medium text-gray-700 dark:text-gray-200">协议终止</span>
-                              <span className={`inline-flex items-center rounded px-2 py-0.5 font-medium ${streamTerminationClass}`}>
-                                {streamTerminationSummary.label}
-                              </span>
-                              {streamTerminationInfo?.protocolKind && (
-                                <span className="text-gray-500 dark:text-gray-400">
-                                  protocol: {streamTerminationInfo.protocolKind}
-                                </span>
-                              )}
-                              {streamTerminationInfo?.expectedSignal && (
-                                <span className="text-gray-500 dark:text-gray-400">
-                                  expected: {streamTerminationInfo.expectedSignal}
-                                </span>
-                              )}
-                              {streamTerminationInfo?.observedSignal && (
-                                <span className="text-gray-500 dark:text-gray-400">
-                                  observed: {streamTerminationInfo.observedSignal}
-                                </span>
-                              )}
-                              {streamTerminationInfo?.lastEventType && (
-                                <span className="text-gray-500 dark:text-gray-400">
-                                  last_event: {streamTerminationInfo.lastEventType}
-                                </span>
-                              )}
-                              {typeof streamTerminationInfo?.chunkCount === 'number' && (
-                                <span className="text-gray-500 dark:text-gray-400">
-                                  chunks: {streamTerminationInfo.chunkCount}
-                                </span>
-                              )}
-                            </div>
-                            <div className="mt-1 text-[11px] text-gray-600 dark:text-gray-300">
-                              {streamTerminationSummary.detail}
-                            </div>
-                            {streamTerminationInfo?.rawEventTail &&
-                              streamTerminationInfo.rawEventTail.length > 0 && (
-                                <div className="mt-2">
-                                  <TextViewer
-                                    label={`raw msg（尾部 ${streamTerminationInfo.rawEventTail.length} 条）`}
-                                    text={streamTerminationInfo.rawEventTail
-                                      .map((line, idx) => `${idx + 1}. ${line}`)
-                                      .join('\n')}
-                                    maxHeightClassName="max-h-56"
-                                    containerClassName="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200"
-                                  />
-                                </div>
-                              )}
-                          </div>
                           {Object.keys(effectiveDebugInfo.response.headers).length > 0 && (
                             <CollapsibleSection title="响应头" defaultExpanded={false}>
                               <HeadersViewer headers={effectiveDebugInfo.response.headers} />
@@ -2035,6 +1918,105 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                         暂无 HTTP 响应调试信息
                       </div>
                     )}
+                  </div>
+                )}
+              </>
+            ) : activePage === 'tools' ? (
+              <>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-xs text-gray-500 dark:text-gray-400">
+                    这里展示本轮工具调用参数与结果，便于排障与复现。
+                  </div>
+                  {httpViewTabs}
+                </div>
+                {toolCalls.length > 0 || toolResults.length > 0 || webSearchBlocks.length > 0 ? (
+                  <div className="space-y-3">
+                    {pairedToolRuns.runs.map(({ call, result }) => {
+                      let prettyArgs: string = call.arguments;
+                      try {
+                        prettyArgs = JSON.stringify(JSON.parse(call.arguments), null, 2);
+                      } catch {
+                        // keep raw
+                      }
+
+                      return (
+                        <div
+                          key={call.id}
+                          className="rounded-lg border border-green-200 bg-green-50 p-3 dark:border-green-800 dark:bg-green-900/30"
+                        >
+                          <div className="mb-2 text-xs font-medium text-green-800 dark:text-green-200">
+                            {call.name} <span className="opacity-70">({call.callId})</span>
+                          </div>
+
+                          <div className="space-y-2">
+                            <TextViewer
+                              label="参数"
+                              text={prettyArgs}
+                              maxHeightClassName="max-h-48"
+                              containerClassName="bg-white/60 dark:bg-black/20 text-green-900 dark:text-green-100"
+                            />
+
+                            <TextViewer
+                              label="结果"
+                              text={result?.text ?? '(暂无工具结果)'}
+                              maxHeightClassName="max-h-64"
+                              containerClassName="bg-white/60 dark:bg-black/20 text-gray-900 dark:text-gray-100"
+                              renderAnsi={Boolean(result?.text)}
+                              ansiRenderMode={ansiRenderMode}
+                              ansiColorMode={ansiColorMode}
+                            />
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                    {pairedToolRuns.orphanResults.length > 0 && (
+                      <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-800/40">
+                        <div className="mb-2 text-xs font-medium text-gray-700 dark:text-gray-300">
+                          未配对的工具结果
+                        </div>
+                        <div className="space-y-3">
+                          {pairedToolRuns.orphanResults.map((r) => (
+                            <div
+                              key={r.id}
+                              className="rounded border border-gray-200 bg-white/60 p-2 dark:border-gray-700 dark:bg-black/20"
+                            >
+                              <div className="mb-2 text-xs font-medium text-gray-700 dark:text-gray-300">
+                                call_id: <span className="font-mono">{r.callId}</span>
+                              </div>
+                              <TextViewer
+                                text={r.text}
+                                maxHeightClassName="max-h-64"
+                                renderAnsi
+                                ansiRenderMode={ansiRenderMode}
+                                ansiColorMode={ansiColorMode}
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {webSearchBlocks.map((b) => (
+                      <div
+                        key={b.id}
+                        className="rounded-lg border border-blue-200 bg-blue-50 p-3 dark:border-blue-800 dark:bg-blue-900/30"
+                      >
+                        <div className="mb-2 text-xs font-medium text-blue-800 dark:text-blue-200">
+                          web_search <span className="opacity-70">({b.callId})</span>
+                        </div>
+                        <JsonViewer
+                          data={{
+                            status: b.status,
+                            action: b.action,
+                          }}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-300">
+                    暂无工具执行信息
                   </div>
                 )}
               </>
@@ -2182,28 +2164,18 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                           </CollapsibleSection>
 
                           <CollapsibleSection title="请求体（文本）" defaultExpanded>
-                            <div className="space-y-2">
-                              <div className="flex items-center justify-end">
-                                <button
-                                  type="button"
-                                  className="inline-flex items-center gap-1 rounded-md border border-gray-200 px-2 py-1 text-[11px] font-medium text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-                                  onClick={() =>
-                                    setLargeTextViewer({
-                                      title: 'HTTP 请求体（文本）',
-                                      text: requestBodyText,
-                                    })
-                                  }
-                                >
-                                  <Maximize2 size={12} />
-                                  大窗口查看
-                                </button>
-                              </div>
-                              <TextViewer
-                                text={requestBodyText}
-                                maxHeightClassName="max-h-[50vh]"
-                                containerClassName="bg-gray-50 dark:bg-gray-800/40 text-gray-800 dark:text-gray-200"
-                              />
-                            </div>
+                            <TextViewer
+                              text={requestBodyText}
+                              maxHeightClassName="max-h-[50vh]"
+                              containerClassName="bg-gray-50 dark:bg-gray-800/40 text-gray-800 dark:text-gray-200"
+                              onOpenLarge={() =>
+                                setLargeTextViewer({
+                                  title: 'HTTP 请求体（文本）',
+                                  text: requestBodyText,
+                                  rawJson: effectiveDebugInfo.request?.body,
+                                })
+                              }
+                            />
                           </CollapsibleSection>
                           </div>
                         </CollapsibleSection>
@@ -2238,28 +2210,18 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                           </CollapsibleSection>
 
                           <CollapsibleSection title="响应体（文本）" defaultExpanded>
-                            <div className="space-y-2">
-                              <div className="flex items-center justify-end">
-                                <button
-                                  type="button"
-                                  className="inline-flex items-center gap-1 rounded-md border border-gray-200 px-2 py-1 text-[11px] font-medium text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-                                  onClick={() =>
-                                    setLargeTextViewer({
-                                      title: 'HTTP 响应体（文本）',
-                                      text: responseBodyText,
-                                    })
-                                  }
-                                >
-                                  <Maximize2 size={12} />
-                                  大窗口查看
-                                </button>
-                              </div>
-                              <TextViewer
-                                text={responseBodyText}
-                                maxHeightClassName="max-h-[50vh]"
-                                containerClassName="bg-gray-50 dark:bg-gray-800/40 text-gray-800 dark:text-gray-200"
-                              />
-                            </div>
+                            <TextViewer
+                              text={responseBodyText}
+                              maxHeightClassName="max-h-[50vh]"
+                              containerClassName="bg-gray-50 dark:bg-gray-800/40 text-gray-800 dark:text-gray-200"
+                              onOpenLarge={() =>
+                                setLargeTextViewer({
+                                  title: 'HTTP 响应体（文本）',
+                                  text: responseBodyText,
+                                  rawJson: effectiveDebugInfo.response?.body,
+                                })
+                              }
+                            />
                           </CollapsibleSection>
                         </div>
                       </CollapsibleSection>
@@ -2293,7 +2255,7 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                   type="button"
                   className="rounded-md px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
                   onClick={() => {
-                    void navigator.clipboard.writeText(largeTextViewer.text);
+                    void navigator.clipboard.writeText(largeViewerDisplayText);
                   }}
                 >
                   复制
@@ -2308,9 +2270,17 @@ export const DebugModal: React.FC<DebugModalProps> = ({
               </div>
             </div>
             <div className="h-[calc(100%-48px)] p-4 overflow-auto">
-              <pre className="min-h-full rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs whitespace-pre-wrap break-words text-gray-800 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-200">
-                {largeTextViewer.text}
-              </pre>
+              {largeViewerJsonData ? (
+                <StructuredJsonTextViewer
+                  data={largeViewerJsonData}
+                  maxHeightClassName="max-h-[calc(92vh-11rem)]"
+                  emptyText="(空)"
+                />
+              ) : (
+                <pre className="min-h-full rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs whitespace-pre-wrap break-words text-gray-800 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-200">
+                  {largeViewerDisplayText}
+                </pre>
+              )}
             </div>
           </div>
         </div>

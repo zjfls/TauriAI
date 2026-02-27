@@ -8,7 +8,7 @@ import { useEffect, useRef } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
-import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { WebviewWindow, getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { MainLayout } from './components/Layout/MainLayout';
 import { StandaloneLayout } from './components/Layout/StandaloneLayout';
 import { GlobalErrorModal } from './components/GlobalErrorModal';
@@ -346,9 +346,14 @@ function App() {
     if (label !== 'main') return;
     if (restoredWindowsRef.current) return;
     restoredWindowsRef.current = true;
+    let disposed = false;
 
     const layout = readWindowLayout();
     const records = layout.windows.filter((w) => w.label !== 'main' && w.params?.standalone && w.params?.view);
+    const preferredWorkstudioLabel =
+      records
+        .filter((w) => w.params?.view === 'workstudio')
+        .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))[0]?.label ?? null;
 
     // 逐个恢复；openOrFocus 会自动去重（若窗口已存在则只聚焦）
     for (const w of records) {
@@ -377,6 +382,45 @@ function App() {
         // ignore: best-effort
       });
     }
+
+    // 启动恢复后：若存在 Workstudio 窗口，优先把最新使用的 Workstudio 置前。
+    if (preferredWorkstudioLabel) {
+      void (async () => {
+        const retryDelaysMs = [90, 180, 320, 500, 800, 1200];
+        for (const delayMs of retryDelaysMs) {
+          if (disposed) return;
+          await new Promise<void>((resolve) => window.setTimeout(resolve, delayMs));
+          if (disposed) return;
+
+          const win = await WebviewWindow.getByLabel(preferredWorkstudioLabel).catch(() => null);
+          if (!win) continue;
+
+          try {
+            const minimized = await (win as any).isMinimized?.();
+            if (minimized) {
+              await (win as any).unminimize?.();
+            }
+          } catch {
+            // ignore
+          }
+          try {
+            await (win as any).show?.();
+          } catch {
+            // ignore
+          }
+          try {
+            await win.setFocus();
+            return;
+          } catch {
+            // ignore and retry
+          }
+        }
+      })();
+    }
+
+    return () => {
+      disposed = true;
+    };
   }, [isStandalone]);
 
   /**

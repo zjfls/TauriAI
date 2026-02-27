@@ -5,7 +5,7 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { User, Bot, Bug, AlertCircle, RefreshCw, ZoomIn, X, File as FileIcon } from 'lucide-react';
+import { User, Bot, Bug, AlertCircle, RefreshCw, ZoomIn, X, File as FileIcon, Copy, Check } from 'lucide-react';
 import type { Message, Action, ContentPart } from '../../types';
 import { DeferredMarkdown } from './DeferredMarkdown';
 import { MessageToolbar } from './MessageToolbar';
@@ -27,6 +27,29 @@ function basenameFromPath(path: string): string {
   const parts = normalized.split('/').filter(Boolean);
   return parts.length > 0 ? parts[parts.length - 1] : path;
 }
+
+const copyTextToClipboard = async (text: string): Promise<boolean> => {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    try {
+      const el = document.createElement('textarea');
+      el.value = text;
+      el.style.position = 'fixed';
+      el.style.left = '-9999px';
+      el.style.top = '0';
+      document.body.appendChild(el);
+      el.focus();
+      el.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(el);
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+};
 
 function renderUserTextWithPathChips(
   text: string,
@@ -271,6 +294,7 @@ export const MessageItem = React.memo(function MessageItem({
 }: MessageItemProps) {
   const [isHovered, setIsHovered] = useState(false);
   const [showDebugModal, setShowDebugModal] = useState(false);
+  const [copied, setCopied] = useState(false);
   const { config } = useConfigStore();
   const debugMode = config?.general?.debugMode ?? false;
   const taskEndDebugButton = config?.general?.taskEndDebugButton ?? true;
@@ -309,6 +333,14 @@ export const MessageItem = React.memo(function MessageItem({
     () => (isAssistant ? getAssistantMessageBlocks(message) : []),
     [isAssistant, message]
   );
+  const assistantTextFromBlocks = useMemo(() => {
+    if (!isAssistant || assistantBlocks.length === 0) return '';
+    return assistantBlocks
+      .filter((b) => b.type === 'text')
+      .map((b) => (typeof b.text === 'string' ? b.text : ''))
+      .filter((t) => t.trim().length > 0)
+      .join('\n\n');
+  }, [assistantBlocks, isAssistant]);
   const initialTurnId = useMemo(() => {
     const turns = message.turns ?? [];
     if (turns.length > 0) return turns[turns.length - 1]?.turnId ?? null;
@@ -319,6 +351,33 @@ export const MessageItem = React.memo(function MessageItem({
   const shouldPreferWideBubble =
     hasWideVisualFence(message.content) ||
     assistantBlocks.some((b) => b.type === 'text' && hasWideVisualFence(b.text));
+  const copyPayload = useMemo(() => {
+    const copyActionPayload = actions.find((a) => a.action_type === 'copy')?.payload;
+    if (typeof copyActionPayload === 'string' && copyActionPayload.trim().length > 0) {
+      return copyActionPayload;
+    }
+    if (typeof message.content === 'string' && message.content.trim().length > 0) {
+      return message.content;
+    }
+    if (assistantTextFromBlocks.trim().length > 0) {
+      return assistantTextFromBlocks;
+    }
+    return '';
+  }, [actions, assistantTextFromBlocks, message.content]);
+  const canCopyMessage = !isStreaming && copyPayload.trim().length > 0;
+  const handleCopyMessage = useCallback(async () => {
+    if (!canCopyMessage) return;
+    const ok = await copyTextToClipboard(copyPayload);
+    if (!ok) return;
+    setCopied(true);
+  }, [canCopyMessage, copyPayload]);
+
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(false), 1300);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+
   // 气泡宽度策略：
   // - 默认使用“内容自适应 + 上限”保持对话气泡感
   // - streaming 初期内容很短会导致宽度反复变化；最小宽度由 streaming 容器控制（见 MessageList）
@@ -341,8 +400,19 @@ export const MessageItem = React.memo(function MessageItem({
 
         {/* Error Content */}
         <div
-          className={`relative ${bubbleWidthClass} rounded-2xl px-4 py-2 bg-red-50 text-red-800 border border-red-200 dark:bg-red-900/20 dark:text-red-300 dark:border-red-800`}
+          className={`relative ${bubbleWidthClass} rounded-2xl pl-4 pr-11 py-2 bg-red-50 text-red-800 border border-red-200 dark:bg-red-900/20 dark:text-red-300 dark:border-red-800`}
         >
+          {canCopyMessage && (
+            <button
+              type="button"
+              onClick={handleCopyMessage}
+              className="absolute right-2 top-2 inline-flex h-6 w-6 items-center justify-center rounded-md bg-red-100/90 text-red-700 hover:bg-red-200 dark:bg-red-900/50 dark:text-red-200 dark:hover:bg-red-900/70 transition-colors"
+              title={copied ? '已复制' : '复制消息'}
+              aria-label={copied ? '已复制' : '复制消息'}
+            >
+              {copied ? <Check size={13} /> : <Copy size={13} />}
+            </button>
+          )}
           <div className="text-sm font-medium mb-1">请求失败</div>
           <p className="text-sm whitespace-pre-wrap">{message.content}</p>
 
@@ -406,13 +476,27 @@ export const MessageItem = React.memo(function MessageItem({
 
       {/* Message Content */}
       <div
-        className={`relative ${bubbleWidthClass} rounded-2xl px-4 py-2 overflow-hidden ${isUser
+        className={`relative ${bubbleWidthClass} rounded-2xl pl-4 pr-11 py-2 overflow-hidden ${isUser
           ? isPending
             ? 'bg-blue-400 text-white'
             : 'bg-blue-500 text-white'
           : 'bg-white text-gray-900 shadow-sm dark:bg-gray-800 dark:text-gray-100'
           }`}
       >
+        {canCopyMessage && (
+          <button
+            type="button"
+            onClick={handleCopyMessage}
+            className={`absolute right-2 top-2 inline-flex h-6 w-6 items-center justify-center rounded-md transition-colors ${isUser
+              ? 'bg-white/20 text-white hover:bg-white/30'
+              : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600'
+              }`}
+            title={copied ? '已复制' : '复制消息'}
+            aria-label={copied ? '已复制' : '复制消息'}
+          >
+            {copied ? <Check size={13} /> : <Copy size={13} />}
+          </button>
+        )}
         {/* Model name label for assistant messages */}
         {isAssistant && (message.meta?.model || message.usage || hasTrimmedTurns) && (
           <div className="mb-1 text-xs text-gray-500 dark:text-gray-400">
