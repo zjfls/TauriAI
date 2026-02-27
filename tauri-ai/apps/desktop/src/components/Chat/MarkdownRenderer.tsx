@@ -1253,17 +1253,19 @@ export const MarkdownRenderer = React.memo(function MarkdownRendererImpl({ conte
   );
 
   // Memoize components object to prevent recreation on each render
-	  const components = useMemo(() => ({
+ 	  const components = useMemo(() => ({
     a: ({ href, children, ...props }: any) => {
       const hrefStr = typeof href === 'string' ? href : '';
+      const tauri = isTauriRuntime();
       const token = hrefStr ? parseFileReferenceTokenFromHref(hrefStr) : null;
       const fileRef = token ? parseFileReferenceToken(token) : null;
       const filePathToken = !fileRef && token && looksLikeFilePath(token) ? token.trim() : null;
-      const canOpenFileRef = Boolean(fileRef) && isTauriRuntime() && Boolean(conversationId || workstudioId);
-      const canOpenFilePath = Boolean(filePathToken) && isTauriRuntime() && Boolean(conversationId || workstudioId);
-      const canOpenWebTab = isTauriRuntime() && looksLikeWebUrl(hrefStr);
+      const canOpenFileRef = Boolean(fileRef) && tauri && Boolean(conversationId || workstudioId);
+      const canOpenFilePath = Boolean(filePathToken) && tauri && Boolean(conversationId || workstudioId);
+      const canOpenWebTab = tauri && looksLikeWebUrl(hrefStr);
 
-      if (!canOpenFileRef && !canOpenFilePath && !canOpenWebTab) {
+      // 非 Tauri 环境：保持原生链接行为（浏览器预览/测试环境）。
+      if (!tauri) {
         return (
           <a href={hrefStr} {...props}>
             {children}
@@ -1298,10 +1300,12 @@ export const MarkdownRenderer = React.memo(function MarkdownRendererImpl({ conte
             e.preventDefault();
             e.stopPropagation();
             if (fileRef) {
+              if (!canOpenFileRef) return;
               void openFileReference(fileRef);
               return;
             }
             if (filePathToken) {
+              if (!canOpenFilePath) return;
               void openFilePath(filePathToken);
               return;
             }
