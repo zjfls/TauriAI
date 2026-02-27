@@ -115,7 +115,7 @@ type StreamTerminationSummary = {
   tone: 'success' | 'warn' | 'error' | 'neutral';
 };
 
-type DebugModalPage = 'overview' | 'http_json';
+type DebugModalPage = 'overview' | 'http_json' | 'http_text';
 
 const maskSensitiveHeaders = (headers: Record<string, string>): Record<string, string> => {
   const masked: Record<string, string> = {};
@@ -167,6 +167,222 @@ const sortRecordKeys = (record: Record<string, string>): Record<string, string> 
 
 const prepareHeadersForJson = (headers: Record<string, string>): Record<string, string> => {
   return sortRecordKeys(maskSensitiveHeaders(headers));
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> => {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+};
+
+const safeStringify = (value: unknown, indent: number = 2): string => {
+  try {
+    const out = JSON.stringify(value, null, indent);
+    return typeof out === 'string' ? out : String(out ?? '');
+  } catch {
+    try {
+      return String(value ?? '');
+    } catch {
+      return '';
+    }
+  }
+};
+
+const safeParseUrlParts = (rawUrl: string): { host: string; path: string } | null => {
+  const raw = (rawUrl ?? '').trim();
+  if (!raw) return null;
+  try {
+    const u = new URL(raw);
+    const host = u.host || u.hostname || raw;
+    const path = `${u.pathname || ''}${u.search || ''}${u.hash || ''}` || '/';
+    return { host, path };
+  } catch {
+    return null;
+  }
+};
+
+const toPrettyMaybeJson = (raw: unknown): string => {
+  const text = typeof raw === 'string' ? raw : safeStringify(raw);
+  if (!text) return '';
+  try {
+    return JSON.stringify(JSON.parse(text), null, 2);
+  } catch {
+    return text;
+  }
+};
+
+const truncateMiddle = (text: string, head: number = 28, tail: number = 28): string => {
+  const s = String(text ?? '');
+  const h = Math.max(0, head);
+  const t = Math.max(0, tail);
+  if (s.length <= h + t + 3) return s;
+  return `${s.slice(0, h)}...${s.slice(-t)}`;
+};
+
+const headersToText = (headers: Record<string, string> | null | undefined): string => {
+  const prepared = headers ? prepareHeadersForJson(headers) : {};
+  const entries = Object.entries(prepared);
+  if (entries.length === 0) return '(空)';
+  return entries.map(([k, v]) => `${k}: ${v}`).join('\n');
+};
+
+const formatMessageContentAsText = (content: unknown): string => {
+  if (content === null || content === undefined) return '';
+  if (typeof content === 'string') return content;
+
+  if (Array.isArray(content)) {
+    const parts: string[] = [];
+    for (const p of content) {
+      if (typeof p === 'string') {
+        if (p.trim()) parts.push(p);
+        continue;
+      }
+      if (!isRecord(p)) {
+        const s = safeStringify(p);
+        if (s.trim()) parts.push(s);
+        continue;
+      }
+
+      const type = typeof p.type === 'string' ? p.type : '';
+      if (type === 'text' && typeof p.text === 'string') {
+        if (p.text.trim()) parts.push(p.text);
+        continue;
+      }
+
+      // OpenAI-like: { type: "image_url", image_url: { url } }
+      if (type === 'image_url') {
+        const imageUrl = isRecord(p.image_url) && typeof p.image_url.url === 'string' ? p.image_url.url : null;
+        parts.push(imageUrl ? `[image] ${imageUrl}` : '[image]');
+        continue;
+      }
+
+      // Anthropic-like: { type: "image", source: { ... } }
+      if (type === 'image') {
+        parts.push('[image]');
+        continue;
+      }
+
+      // Fallback: known "text" field, otherwise stringify.
+      if (typeof p.text === 'string' && p.text.trim()) {
+        parts.push(p.text);
+        continue;
+      }
+      const s = safeStringify(p);
+      if (s.trim()) parts.push(s);
+    }
+    return parts.join('\n');
+  }
+
+  if (isRecord(content)) {
+    if (typeof content.text === 'string') return content.text;
+  }
+
+  return safeStringify(content);
+};
+
+const formatRequestBodyAsText = (body: unknown): string => {
+  if (typeof body === 'string') return toPrettyMaybeJson(body);
+  if (!isRecord(body)) return safeStringify(body);
+
+  const model = typeof body.model === 'string' ? body.model : null;
+  const stream = typeof body.stream === 'boolean' ? body.stream : null;
+  const messages = Array.isArray(body.messages) ? body.messages : null;
+  const tools = Array.isArray(body.tools) ? body.tools : null;
+
+  const header: string[] = [];
+  if (model) header.push(`model: ${model}`);
+  if (typeof stream === 'boolean') header.push(`stream: ${String(stream)}`);
+  if (messages) header.push(`messages: ${messages.length}`);
+  if (tools) header.push(`tools: ${tools.length}`);
+
+  if (!messages) {
+    return safeStringify(body);
+  }
+
+  const lines: string[] = [];
+  if (header.length > 0) {
+    lines.push(header.join(' | '));
+    lines.push('');
+  }
+
+  messages.forEach((mRaw, idx) => {
+    const m = isRecord(mRaw) ? mRaw : null;
+    const role = m && typeof m.role === 'string' ? m.role : 'unknown';
+    const name = m && typeof m.name === 'string' ? m.name : null;
+    const toolCallId = m && typeof m.tool_call_id === 'string' ? m.tool_call_id : null;
+    const titleBits = [
+      `[${idx}] ${role}`,
+      name ? `name=${name}` : null,
+      toolCallId ? `tool_call_id=${toolCallId}` : null,
+    ].filter(Boolean);
+    lines.push(`--- ${titleBits.join(' ')} ---`);
+
+    const contentText = m ? formatMessageContentAsText(m.content) : safeStringify(mRaw);
+    if (contentText.trim()) {
+      lines.push(contentText.trimEnd());
+    }
+
+    // tool_calls (OpenAI-like)
+    const toolCalls = m && Array.isArray(m.tool_calls) ? m.tool_calls : null;
+    if (toolCalls && toolCalls.length > 0) {
+      for (const tcRaw of toolCalls) {
+        const tc = isRecord(tcRaw) ? tcRaw : null;
+        const tcId = tc && typeof tc.id === 'string' ? tc.id : null;
+        const fn = tc && isRecord(tc.function) ? tc.function : null;
+        const fnName = fn && typeof fn.name === 'string' ? fn.name : null;
+        const fnArgs = fn ? fn.arguments : null;
+        const toolLine = [
+          '[tool_call]',
+          fnName ?? '(unknown)',
+          tcId ? `id=${tcId}` : null,
+        ].filter(Boolean);
+        lines.push(toolLine.join(' '));
+        if (fnArgs !== null && fnArgs !== undefined) {
+          lines.push(toPrettyMaybeJson(fnArgs).trimEnd());
+        }
+      }
+    }
+
+    // function_call (legacy)
+    const functionCall = m && isRecord(m.function_call) ? m.function_call : null;
+    if (functionCall) {
+      const fnName = typeof functionCall.name === 'string' ? functionCall.name : null;
+      const fnArgs = functionCall.arguments ?? null;
+      const toolLine = ['[function_call]', fnName ?? '(unknown)'].filter(Boolean);
+      lines.push(toolLine.join(' '));
+      if (fnArgs !== null && fnArgs !== undefined) {
+        lines.push(toPrettyMaybeJson(fnArgs).trimEnd());
+      }
+    }
+
+    lines.push('');
+  });
+
+  return lines.join('\n').trimEnd();
+};
+
+type ChipTone = 'gray' | 'blue' | 'green' | 'yellow' | 'red' | 'purple';
+
+const chipToneClass: Record<ChipTone, string> = {
+  gray: 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-200',
+  blue: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200',
+  green: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-200',
+  yellow: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-100',
+  red: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-200',
+  purple: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-200',
+};
+
+const Chip: React.FC<{ tone?: ChipTone; title?: string; children: React.ReactNode }> = ({
+  tone = 'gray',
+  title,
+  children,
+}) => {
+  return (
+    <span
+      className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${chipToneClass[tone]}`}
+      title={title}
+    >
+      {children}
+    </span>
+  );
 };
 
 // Check if response body contains SSE info
@@ -647,14 +863,6 @@ export const DebugModal: React.FC<DebugModalProps> = ({
   const finalTurn = sortedTurns.length > 0 ? sortedTurns[sortedTurns.length - 1]! : null;
   const finalStatus = finalTurn?.status ?? (messageRole === 'error' ? 'failed' : null);
   const finalStatusTitle = finalStatus === 'success' ? '成功' : finalStatus === 'failed' ? '失败' : finalStatus === 'aborted' ? '中止' : '未知';
-  const finalStatusClass =
-    finalStatus === 'success'
-      ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
-      : finalStatus === 'aborted'
-        ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300'
-        : finalStatus === 'failed'
-          ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'
-          : 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300';
   const [loadedTurnDebugInfo, setLoadedTurnDebugInfo] = useState<Record<string, DebugInfo | null>>(
     {}
   );
@@ -728,6 +936,10 @@ export const DebugModal: React.FC<DebugModalProps> = ({
     loadedForActive !== undefined ? loadedForActive : activeTurn?.debugInfo ?? debugInfo;
   const isLoadingDebug = Boolean(activeTurnId && loadingTurnId === activeTurnId);
   const httpStatus = effectiveDebugInfo?.response?.status ?? null;
+  const requestUrlParts = useMemo(
+    () => safeParseUrlParts(effectiveDebugInfo?.request?.url ?? ''),
+    [effectiveDebugInfo?.request?.url]
+  );
   const providerEndReason = useMemo<ProviderEndReason | null>(() => {
     const body = effectiveDebugInfo?.response?.body as any;
     if (!body || typeof body !== 'object') return null;
@@ -1002,6 +1214,17 @@ export const DebugModal: React.FC<DebugModalProps> = ({
               >
                 HTTP JSON
               </button>
+              <button
+                type="button"
+                onClick={() => setActivePage('http_text')}
+                className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+                  activePage === 'http_text'
+                    ? 'bg-gray-200 text-gray-900 dark:bg-gray-800 dark:text-gray-100'
+                    : 'bg-white text-gray-600 hover:bg-gray-50 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800'
+                }`}
+              >
+                HTTP 文本
+              </button>
             </div>
 
             <button
@@ -1015,39 +1238,87 @@ export const DebugModal: React.FC<DebugModalProps> = ({
 
         {/* Content */}
         <div className="p-6 max-h-[calc(80vh-80px)] overflow-hidden">
-          {(finalStatus || errorMessage || conversationId || messageId) && (
+          {(finalTurn ||
+            finalStatus ||
+            providerFinishReason ||
+            typeof httpStatus === 'number' ||
+            effectiveDebugInfo?.request ||
+            errorMessage ||
+            conversationId ||
+            messageId) && (
             <div className="mb-4 rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-700 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-200">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="font-medium text-gray-600 dark:text-gray-300">结束原因</span>
-                {finalStatus && (
-                  <span className={`inline-flex items-center rounded px-2 py-0.5 font-medium ${finalStatusClass}`}>
-                    {finalStatusTitle}
-                  </span>
-                )}
-                {finalTurn && (
-                  <span className="text-gray-500 dark:text-gray-400">
-                    最后 Turn：{finalTurn.turnIndex}
-                  </span>
-                )}
-                {finalTurn?.model && (
-                  <span className="text-gray-500 dark:text-gray-400">
-                    model: {finalTurn.model}
-                  </span>
-                )}
-                {providerFinishReason && (
-                  <span className="text-gray-500 dark:text-gray-400">
-                    finish_reason: {providerFinishReason}
-                  </span>
-                )}
-                {typeof httpStatus === 'number' && (
-                  <span className="text-gray-500 dark:text-gray-400">
-                    HTTP: {httpStatus}
-                  </span>
-                )}
-                {effectiveDebugInfo && (
-                  <span className={`inline-flex items-center rounded px-2 py-0.5 font-medium ${streamTerminationClass}`}>
-                    协议终止: {streamTerminationSummary.label}
-                  </span>
+              <div className="flex flex-col gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-medium text-gray-600 dark:text-gray-300">结束原因</span>
+                  {finalStatus && (
+                    <Chip
+                      tone={
+                        finalStatus === 'success'
+                          ? 'green'
+                          : finalStatus === 'aborted'
+                            ? 'yellow'
+                            : finalStatus === 'failed'
+                              ? 'red'
+                              : 'gray'
+                      }
+                    >
+                      {finalStatusTitle}
+                    </Chip>
+                  )}
+                  {finalTurn && <Chip tone="gray">最后 Turn {finalTurn.turnIndex}</Chip>}
+                  {finalTurn?.model && <Chip tone="purple" title="model">{finalTurn.model}</Chip>}
+                  {providerFinishReason && (
+                    <Chip
+                      tone="gray"
+                      title={[providerFinishReasonZh, providerFinishReasonSource].filter(Boolean).join(' | ') || undefined}
+                    >
+                      finish_reason: {providerFinishReason}
+                    </Chip>
+                  )}
+                  {typeof httpStatus === 'number' && (
+                    <Chip tone={httpStatus >= 200 && httpStatus < 300 ? 'green' : 'red'}>
+                      HTTP {httpStatus}
+                    </Chip>
+                  )}
+                  {effectiveDebugInfo && (
+                    <Chip
+                      tone={
+                        streamTerminationSummary.tone === 'success'
+                          ? 'green'
+                          : streamTerminationSummary.tone === 'warn'
+                            ? 'yellow'
+                            : streamTerminationSummary.tone === 'error'
+                              ? 'red'
+                              : 'gray'
+                      }
+                      title={streamTerminationSummary.detail}
+                    >
+                      协议终止: {streamTerminationSummary.label}
+                    </Chip>
+                  )}
+                </div>
+
+                {effectiveDebugInfo?.request && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-medium text-gray-600 dark:text-gray-300">请求</span>
+                    {effectiveDebugInfo.request.method && (
+                      <Chip tone="blue">{effectiveDebugInfo.request.method}</Chip>
+                    )}
+                    {requestUrlParts ? (
+                      <>
+                        <Chip tone="gray" title={requestUrlParts.host}>
+                          host: {truncateMiddle(requestUrlParts.host, 24, 12)}
+                        </Chip>
+                        <Chip tone="gray" title={requestUrlParts.path}>
+                          path: {truncateMiddle(requestUrlParts.path, 28, 18)}
+                        </Chip>
+                      </>
+                    ) : effectiveDebugInfo.request.url ? (
+                      <Chip tone="gray" title={effectiveDebugInfo.request.url}>
+                        url: {truncateMiddle(effectiveDebugInfo.request.url, 26, 22)}
+                      </Chip>
+                    ) : null}
+                  </div>
                 )}
               </div>
               {endReasonSummary && (
@@ -1377,7 +1648,7 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                   </div>
                 )}
               </>
-            ) : (
+            ) : activePage === 'http_json' ? (
               <>
                 <div className="text-xs text-gray-500 dark:text-gray-400">
                   这里展示 turn.debugInfo 里的 HTTP 请求/响应头与响应体的原始 JSON（文本），便于复制与排障。
@@ -1445,6 +1716,111 @@ export const DebugModal: React.FC<DebugModalProps> = ({
 
                           <CollapsibleSection title="请求体（JSON）" defaultExpanded>
                             <JsonViewer data={effectiveDebugInfo.request.body} />
+                          </CollapsibleSection>
+                        </div>
+                      </CollapsibleSection>
+                    ) : (
+                      <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-300">
+                        暂无 HTTP 请求调试信息
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                <div className="text-xs text-gray-500 dark:text-gray-400">
+                  这里把 HTTP 请求/响应按可读文本渲染（headers 已脱敏）。请求体会尽量把 messages 展开成“对话 + 工具调用”格式，便于阅读历史上下文。
+                </div>
+
+                {!effectiveDebugInfo ? (
+                  <div className="text-center py-8 text-gray-500 dark:text-gray-400">
+                    <p>暂无调试信息</p>
+                    <p className="text-sm mt-2">
+                      {isLoadingDebug
+                        ? '请稍候…'
+                        : activeTurn?.hasDebugInfo
+                          ? '该轮已标记存在调试信息，但当前未能加载。'
+                          : '请确保在发送消息前开启调试模式。'}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                    {effectiveDebugInfo.response ? (
+                      <CollapsibleSection title="HTTP 响应（文本）" defaultExpanded>
+                        <div className="space-y-4">
+                          {typeof effectiveDebugInfo.response.status === 'number' && (
+                            <div className="flex flex-wrap items-center gap-2 text-sm">
+                              <Chip
+                                tone={
+                                  effectiveDebugInfo.response.status >= 200 &&
+                                  effectiveDebugInfo.response.status < 300
+                                    ? 'green'
+                                    : 'red'
+                                }
+                              >
+                                HTTP {effectiveDebugInfo.response.status}
+                              </Chip>
+                            </div>
+                          )}
+
+                          <CollapsibleSection title="响应头（文本）" defaultExpanded>
+                            <TextViewer
+                              text={headersToText(effectiveDebugInfo.response.headers)}
+                              maxHeightClassName="max-h-56"
+                            />
+                          </CollapsibleSection>
+
+                          <CollapsibleSection title="响应体（文本）" defaultExpanded>
+                            <TextViewer
+                              text={toPrettyMaybeJson(responseBodyForDisplay)}
+                              maxHeightClassName="max-h-[50vh]"
+                            />
+                          </CollapsibleSection>
+                        </div>
+                      </CollapsibleSection>
+                    ) : (
+                      <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-300">
+                        暂无 HTTP 响应调试信息
+                      </div>
+                    )}
+
+                    {effectiveDebugInfo.request ? (
+                      <CollapsibleSection title="HTTP 请求（文本）" defaultExpanded={false}>
+                        <div className="space-y-4">
+                          <div className="flex flex-wrap items-center gap-2 text-sm">
+                            {effectiveDebugInfo.request.method && (
+                              <Chip tone="blue">{effectiveDebugInfo.request.method}</Chip>
+                            )}
+                            {requestUrlParts ? (
+                              <>
+                                <Chip tone="gray" title={requestUrlParts.host}>
+                                  host: {truncateMiddle(requestUrlParts.host, 26, 14)}
+                                </Chip>
+                                <Chip tone="gray" title={requestUrlParts.path}>
+                                  path: {truncateMiddle(requestUrlParts.path, 30, 18)}
+                                </Chip>
+                              </>
+                            ) : effectiveDebugInfo.request.url ? (
+                              <Chip tone="gray" title={effectiveDebugInfo.request.url}>
+                                url: {truncateMiddle(effectiveDebugInfo.request.url, 30, 22)}
+                              </Chip>
+                            ) : null}
+                          </div>
+
+                          <CollapsibleSection title="请求头（文本）" defaultExpanded>
+                            <TextViewer
+                              text={headersToText(effectiveDebugInfo.request.headers)}
+                              maxHeightClassName="max-h-56"
+                            />
+                          </CollapsibleSection>
+
+                          <CollapsibleSection title="请求体（文本）" defaultExpanded>
+                            <TextViewer
+                              text={formatRequestBodyAsText(effectiveDebugInfo.request.body)}
+                              maxHeightClassName="max-h-[50vh]"
+                              containerClassName="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200"
+                            />
                           </CollapsibleSection>
                         </div>
                       </CollapsibleSection>
