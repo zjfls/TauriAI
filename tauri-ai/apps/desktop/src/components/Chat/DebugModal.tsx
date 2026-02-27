@@ -1416,17 +1416,6 @@ export const DebugModal: React.FC<DebugModalProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => setActivePage('http_json')}
-                className={`px-3 py-1.5 text-xs font-medium transition-colors ${
-                  activePage === 'http_json'
-                    ? 'bg-gray-200 text-gray-900 dark:bg-gray-800 dark:text-gray-100'
-                    : 'bg-white text-gray-600 hover:bg-gray-50 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800'
-                }`}
-              >
-                HTTP JSON
-              </button>
-              <button
-                type="button"
                 onClick={() => setActivePage('http_text')}
                 className={`px-3 py-1.5 text-xs font-medium transition-colors ${
                   activePage === 'http_text'
