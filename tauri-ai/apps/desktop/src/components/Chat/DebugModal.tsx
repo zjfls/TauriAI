@@ -4,7 +4,7 @@
  */
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { X, ChevronDown, ChevronRight, Copy, Check, ChevronLeft } from 'lucide-react';
+import { X, ChevronDown, ChevronRight, Copy, Check, ChevronLeft, Maximize2 } from 'lucide-react';
 import type {
   DebugInfo,
   MessageBlock,
@@ -381,13 +381,37 @@ const maybeParseJsonContainerString = (raw: string): unknown | null => {
   }
 };
 
+const maybeParseJsonStringLiteral = (raw: string): string | null => {
+  const text = raw.trim();
+  if (text.length < 2) return null;
+  if (!text.startsWith('"') || !text.endsWith('"')) return null;
+  try {
+    const parsed = JSON.parse(text);
+    return typeof parsed === 'string' ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+
 const normalizeJsonLikeStrings = (value: unknown, depth: number = 0): unknown => {
   if (depth > 10) return value;
 
   if (typeof value === 'string') {
     const parsed = maybeParseJsonContainerString(value);
-    if (parsed === null) return value;
-    return normalizeJsonLikeStrings(parsed, depth + 1);
+    if (parsed !== null) {
+      return normalizeJsonLikeStrings(parsed, depth + 1);
+    }
+
+    const decoded = maybeParseJsonStringLiteral(value);
+    if (decoded !== null) {
+      const reparsed = maybeParseJsonContainerString(decoded);
+      if (reparsed !== null) {
+        return normalizeJsonLikeStrings(reparsed, depth + 1);
+      }
+      return decoded;
+    }
+
+    return value;
   }
 
   if (Array.isArray(value)) {
@@ -426,6 +450,15 @@ const shouldRenderStringAsTextBlock = (value: string, fieldName?: string): boole
   if (value.includes('\n')) return true;
   if (value.length > 140) return true;
   return isTextualFieldName(fieldName);
+};
+
+const normalizeStringForDisplay = (value: string): string => {
+  if (!value) return value;
+  if (!value.includes('\\n') && !value.includes('\\r')) return value;
+  return value
+    .replace(/\\r\\n/g, '\n')
+    .replace(/\\n/g, '\n')
+    .replace(/\\r/g, '\n');
 };
 
 const inlinePrimitiveText = (value: unknown): string => {
@@ -501,6 +534,7 @@ const StructuredJsonNode: React.FC<{
   }
 
   if (typeof value === 'string' && shouldRenderStringAsTextBlock(value, name)) {
+    const normalizedText = normalizeStringForDisplay(value);
     return (
       <div className="space-y-1">
         {name && (
@@ -509,7 +543,7 @@ const StructuredJsonNode: React.FC<{
           </div>
         )}
         <pre className="rounded border border-gray-200 bg-white/80 px-2 py-1 text-xs whitespace-pre-wrap break-words text-gray-800 dark:border-gray-700 dark:bg-black/20 dark:text-gray-100">
-          {value || '(空字符串)'}
+          {normalizedText || '(空字符串)'}
         </pre>
       </div>
     );
@@ -1093,11 +1127,13 @@ export const DebugModal: React.FC<DebugModalProps> = ({
   const [activeHttpView, setActiveHttpView] = useState<HttpDebugView>(
     messageRole === 'user' ? 'request' : 'response'
   );
+  const [isResponseBodyFullscreenOpen, setIsResponseBodyFullscreenOpen] = useState(false);
 
   useEffect(() => {
     if (!isOpen) return;
     setActivePage('overview');
     setActiveHttpView(messageRole === 'user' ? 'request' : 'response');
+    setIsResponseBodyFullscreenOpen(false);
   }, [isOpen, messageRole]);
 
   useEffect(() => {
@@ -2144,11 +2180,16 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                           </CollapsibleSection>
 
                           <CollapsibleSection title="响应体（文本）" defaultExpanded>
-                            <StructuredJsonTextViewer
-                              data={responseBodyForDisplay}
-                              maxHeightClassName="max-h-[50vh]"
-                              emptyText="(空响应体)"
-                            />
+                            <div className="flex items-center justify-end">
+                              <button
+                                type="button"
+                                onClick={() => setIsResponseBodyFullscreenOpen(true)}
+                                className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
+                              >
+                                <Maximize2 size={14} />
+                                大窗口查看
+                              </button>
+                            </div>
                           </CollapsibleSection>
                         </div>
                       </CollapsibleSection>
@@ -2164,6 +2205,33 @@ export const DebugModal: React.FC<DebugModalProps> = ({
           </div>
         </div>
       </div>
+
+      {isResponseBodyFullscreenOpen && (
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/55 p-4">
+          <div className="flex h-[88vh] w-[92vw] max-w-7xl flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-900">
+            <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3 dark:border-gray-700">
+              <div className="text-sm font-semibold text-gray-800 dark:text-gray-100">
+                响应体（结构化）
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsResponseBodyFullscreenOpen(false)}
+                className="rounded p-1 text-gray-500 hover:bg-gray-100 hover:text-gray-700 dark:text-gray-300 dark:hover:bg-gray-800 dark:hover:text-gray-100"
+                title="关闭"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-auto p-4">
+              <StructuredJsonTextViewer
+                data={responseBodyForDisplay}
+                maxHeightClassName="max-h-[calc(88vh-9rem)]"
+                emptyText="(空响应体)"
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
