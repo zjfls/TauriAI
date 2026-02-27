@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::process::Stdio;
 
-// Windows: prevent console window flashing for short-lived child processes (cmd.exe /C ...).
+// Windows: prevent console window flashing for short-lived child processes.
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -96,13 +96,57 @@ fn is_known_safe_command(command: &str) -> bool {
     }
 }
 
+#[cfg(windows)]
+fn is_executable_available(binary: &str) -> bool {
+    let path = std::path::Path::new(binary);
+    if path.is_absolute() || binary.contains('\\') || binary.contains('/') {
+        return path.is_file();
+    }
+
+    let mut candidates = vec![binary.to_string()];
+    if path.extension().is_none() {
+        candidates.push(format!("{binary}.exe"));
+    }
+
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
+    for dir in std::env::split_paths(&paths) {
+        for name in &candidates {
+            if dir.join(name).is_file() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn build_shell_invocation(command: &str, login: bool) -> (String, Vec<String>) {
     #[cfg(windows)]
     {
         let _ = login;
         // 在 Windows 上先设置 UTF-8 代码页 (65001)，再执行命令
-        let utf8_command = format!("chcp 65001 >nul 2>&1 && {}", command);
-        ("cmd.exe".to_string(), vec!["/C".to_string(), utf8_command])
+        fn wrap_powershell_utf8_script(script: &str) -> String {
+            format!(
+                "try {{ chcp 65001 | Out-Null }} catch {{}}; try {{ [Console]::InputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new() }} catch {{}}; $OutputEncoding = [Console]::OutputEncoding; {}",
+                script
+            )
+        }
+
+        let shell = if is_executable_available("pwsh") {
+            "pwsh"
+        } else {
+            "powershell.exe"
+        };
+
+        let mut args: Vec<String> = Vec::new();
+        if !login {
+            args.push("-NoProfile".to_string());
+        }
+        args.push("-Command".to_string());
+        args.push(wrap_powershell_utf8_script(command));
+
+        (shell.to_string(), args)
     }
     #[cfg(not(windows))]
     {

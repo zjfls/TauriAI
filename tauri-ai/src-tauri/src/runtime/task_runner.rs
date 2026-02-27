@@ -5365,6 +5365,7 @@ async fn stream_one_turn(
     let mut tool_calls: Option<Vec<ToolCall>> = None;
     let mut emitted_any_delta = false;
     let mut turn_state: Option<String> = None;
+    let mut include_usage_override: Option<bool> = None;
 
     for attempt in 1..=max_attempts {
         let (token_tx, mut token_rx) = mpsc::channel::<StreamEvent>(100);
@@ -5408,6 +5409,7 @@ async fn stream_one_turn(
             // If the provider supports resume, it should stream a TurnState token (cursor/header).
             // Runtime will reuse it on reconnect to avoid duplicated output.
             resume_state: turn_state.clone(),
+            include_usage: include_usage_override,
         };
 
         let stream_handle = tokio::spawn(async move {
@@ -5425,34 +5427,38 @@ async fn stream_one_turn(
                 event = token_rx.recv() => {
                     match event {
                         Some(StreamEvent::Token(token)) => {
-                            emitted_any_delta = true;
                             token_chunk_count = token_chunk_count.saturating_add(1);
-                            push_delta_tail(&mut token_delta_tail, &token);
-                            full_content.push_str(&token);
-                            emitter.emit(RunEvent::BlockDelta {
-                                task_id: task_id.to_string(),
-                                turn_id: turn_id.to_string(),
-                                assistant_message_id: Some(assistant_message_id.to_string()),
-                                block_id: "assistant_text".to_string(),
-                                block_type: "text".to_string(),
-                                format: output_format.clone(),
-                                delta: token,
-                            });
+                            if !token.is_empty() {
+                                emitted_any_delta = true;
+                                push_delta_tail(&mut token_delta_tail, &token);
+                                full_content.push_str(&token);
+                                emitter.emit(RunEvent::BlockDelta {
+                                    task_id: task_id.to_string(),
+                                    turn_id: turn_id.to_string(),
+                                    assistant_message_id: Some(assistant_message_id.to_string()),
+                                    block_id: "assistant_text".to_string(),
+                                    block_type: "text".to_string(),
+                                    format: output_format.clone(),
+                                    delta: token,
+                                });
+                            }
                         }
                         Some(StreamEvent::Thinking(token)) => {
-                            emitted_any_delta = true;
                             thinking_chunk_count = thinking_chunk_count.saturating_add(1);
-                            push_delta_tail(&mut thinking_delta_tail, &token);
-                            full_thinking.push_str(&token);
-                            emitter.emit(RunEvent::BlockDelta {
-                                task_id: task_id.to_string(),
-                                turn_id: turn_id.to_string(),
-                                assistant_message_id: Some(assistant_message_id.to_string()),
-                                block_id: "assistant_thinking".to_string(),
-                                block_type: "thinking".to_string(),
-                                format: Some("plain".to_string()),
-                                delta: token,
-                            });
+                            if !token.is_empty() {
+                                emitted_any_delta = true;
+                                push_delta_tail(&mut thinking_delta_tail, &token);
+                                full_thinking.push_str(&token);
+                                emitter.emit(RunEvent::BlockDelta {
+                                    task_id: task_id.to_string(),
+                                    turn_id: turn_id.to_string(),
+                                    assistant_message_id: Some(assistant_message_id.to_string()),
+                                    block_id: "assistant_thinking".to_string(),
+                                    block_type: "thinking".to_string(),
+                                    format: Some("plain".to_string()),
+                                    delta: token,
+                                });
+                            }
                         }
                         Some(StreamEvent::WebSearch { id, status, action }) => {
                             emitted_any_delta = true;
@@ -5553,6 +5559,12 @@ async fn stream_one_turn(
         // - 旧逻辑会返回 TurnStreamResult::Final(content="")，进而被上层当作 TaskOutcome::Success，
         //   导致前端“无消息、无错误”。
         if stream_result.is_ok() && last_error.is_none() && full_content.trim().is_empty() {
+            if usage.as_ref().is_some_and(|u| u.completion_tokens > 0) {
+                // 某些 OpenAI-compatible 网关在 `stream_options.include_usage=true` 时会出现
+                // “有 usage 但正文 delta 为空”的兼容性问题；重试时禁用 include_usage 以提高成功率。
+                include_usage_override = Some(false);
+            }
+
             if let Some(di) = debug_info.as_mut() {
                 if di.error_origin.is_none() {
                     di.error_origin = Some(crate::ai_client::ErrorOrigin {
@@ -6029,6 +6041,96 @@ mod tests {
             TurnStreamResult::Final { content, .. } => {
                 assert_eq!(content, "hello");
             }
+            other => panic!("expected TurnStreamResult::Final, got: {other:?}"),
+        }
+    }
+
+    struct EmptyDeltaThenOkClient {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl crate::ai_client::AiClient for EmptyDeltaThenOkClient {
+        async fn chat(
+            &self,
+            _messages: Vec<crate::models::Message>,
+            _config: &crate::models::ModelConfig,
+            _tools: Option<Vec<crate::ai_client::ToolDefinition>>,
+        ) -> Result<String, crate::ai_client::AiError> {
+            Ok("ok".to_string())
+        }
+
+        async fn chat_stream(
+            &self,
+            _messages: Vec<crate::models::Message>,
+            _config: &crate::models::ModelConfig,
+            _tools: Option<Vec<crate::ai_client::ToolDefinition>>,
+            token_sender: mpsc::Sender<crate::ai_client::StreamEvent>,
+            options: crate::ai_client::StreamOptions,
+        ) -> Result<(), crate::ai_client::AiError> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                // First attempt: default include_usage (runtime may flip it on retry after empty stream).
+                assert_eq!(options.include_usage, None);
+
+                let _ = token_sender
+                    .send(crate::ai_client::StreamEvent::Token(String::new()))
+                    .await;
+                let _ = token_sender
+                    .send(crate::ai_client::StreamEvent::DoneWithDebug {
+                        content: String::new(),
+                        thinking: None,
+                        debug_info: None,
+                        usage: Some(crate::ai_client::TokenUsage {
+                            prompt_tokens: 1,
+                            completion_tokens: 33,
+                            total_tokens: 34,
+                            ..Default::default()
+                        }),
+                    })
+                    .await;
+                return Ok(());
+            }
+
+            // Second attempt: runtime should disable include_usage to avoid usage-only streams on some gateways.
+            assert_eq!(options.include_usage, Some(false));
+
+            let _ = token_sender
+                .send(crate::ai_client::StreamEvent::Token("ok".to_string()))
+                .await;
+            let _ = token_sender
+                .send(crate::ai_client::StreamEvent::Done("ok".to_string()))
+                .await;
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_one_turn_should_retry_when_only_empty_token_emitted() {
+        let client: Arc<dyn crate::ai_client::AiClient> = Arc::new(EmptyDeltaThenOkClient {
+            calls: AtomicUsize::new(0),
+        });
+        let mut emitter = NoopEmitter;
+        let (abort_tx, mut abort_rx) = mpsc::channel(1);
+        let _keep_abort = abort_tx;
+
+        let result = stream_one_turn(
+            client,
+            test_model_config(),
+            None,
+            vec![test_user_message()],
+            &mut emitter,
+            "task",
+            "turn",
+            "assistant",
+            None,
+            &mut abort_rx,
+            2,
+        )
+        .await;
+
+        match result {
+            TurnStreamResult::Final { content, .. } => assert_eq!(content, "ok"),
             other => panic!("expected TurnStreamResult::Final, got: {other:?}"),
         }
     }

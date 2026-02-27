@@ -787,6 +787,7 @@ impl OpenAiBaseClient {
         config: &ModelConfig,
         tools: Option<Vec<ToolDefinition>>,
         token_sender: mpsc::Sender<StreamEvent>,
+        options: super::StreamOptions,
     ) -> Result<(), AiError> {
         let api_base = config
             .api_base
@@ -874,9 +875,10 @@ impl OpenAiBaseClient {
             frequency_penalty: config.parameters.frequency_penalty,
             presence_penalty: config.parameters.presence_penalty,
             stream: true,
-            stream_options: Some(StreamOptions {
-                include_usage: true,
-            }),
+            stream_options: match options.include_usage {
+                Some(false) => None,
+                Some(true) | None => Some(StreamOptions { include_usage: true }),
+            },
             thinking,
             reasoning_effort,
         };
@@ -1470,10 +1472,10 @@ impl AiClient for OpenAiClient {
         config: &ModelConfig,
         tools: Option<Vec<ToolDefinition>>,
         token_sender: mpsc::Sender<StreamEvent>,
-        _options: super::StreamOptions,
+        options: super::StreamOptions,
     ) -> Result<(), AiError> {
         self.base
-            .chat_stream_impl(messages, config, tools, token_sender)
+            .chat_stream_impl(messages, config, tools, token_sender, options)
             .await
     }
 }
@@ -1519,10 +1521,10 @@ impl AiClient for OpenAiCompatibleClient {
         config: &ModelConfig,
         tools: Option<Vec<ToolDefinition>>,
         token_sender: mpsc::Sender<StreamEvent>,
-        _options: super::StreamOptions,
+        options: super::StreamOptions,
     ) -> Result<(), AiError> {
         self.base
-            .chat_stream_impl(messages, config, tools, token_sender)
+            .chat_stream_impl(messages, config, tools, token_sender, options)
             .await
     }
 }

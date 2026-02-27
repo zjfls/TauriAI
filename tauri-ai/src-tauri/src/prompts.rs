@@ -527,6 +527,12 @@ impl FormatPromptType {
 
 const TIME_TOOL_GUIDE: &str = "\n\n## 时间与日期\n\n- 如果涉及到“现在/今天/明天/本周/截止时间/几分钟前”等时间相关的问题或需要基于当前时间执行动作，并且工具可用，请先调用 `shell_command` 获取当前时间，再进行回答或计算；不要凭空猜测当前时间。\n- 优先输出 ISO8601：\n  - macOS/Linux: `date -u +\"%Y-%m-%dT%H:%M:%SZ\"`\n  - Windows PowerShell: `Get-Date -AsUTC -Format o`\n";
 
+#[cfg(windows)]
+const WINDOWS_SHELL_TOOL_GUIDE: &str = "\n\n## Windows Shell（PowerShell）\n\n- 在 Windows 上，`shell_command` 默认以 PowerShell 执行（优先 `pwsh`，其次 `powershell.exe`）。`exec_command` / `exec_command_persistent` 也同样默认使用 PowerShell。\n- 因此请直接写 PowerShell 命令/脚本，不要使用 cmd.exe 专用语法（例如：`dir /s /b`、`2>nul`）。\n- 常用替代：\n  - 查找文件：`Get-ChildItem -Recurse -Filter \"*.ts\" -File | Select-Object -ExpandProperty FullName`\n  - 文本搜索：`Select-String -Path . -Pattern \"TODO\"`\n";
+
+#[cfg(not(windows))]
+const WINDOWS_SHELL_TOOL_GUIDE: &str = "";
+
 /// Compose final system prompt from base prompt and format type
 pub fn compose_system_prompt(
     base_prompt: Option<&str>,
@@ -545,6 +551,7 @@ pub fn compose_system_prompt(
         out.push_str(base);
     }
     out.push_str(TIME_TOOL_GUIDE);
+    out.push_str(WINDOWS_SHELL_TOOL_GUIDE);
     out.push_str(format);
 
     Some(out)
