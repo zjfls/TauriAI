@@ -653,17 +653,34 @@ const AgentForm: React.FC<AgentFormProps> = ({
   const simplePolicy = contextPolicyType === 'simple' ? (agent.contextPolicy as any) : null;
   const normalCompactPolicy = contextPolicyType === 'normal_compact' ? (agent.contextPolicy as any) : null;
   const customPolicy = contextPolicyType === 'custom' ? (agent.contextPolicy as any) : null;
-  const effectiveSimpleHardLimitPercent = (() => {
-    const v = Number(simplePolicy?.hardLimitPercent);
-    if (!Number.isFinite(v)) return 90;
-    return Math.max(1, Math.min(99, v));
-  })();
+  const clampPercent = (value: unknown, fallback: number) => {
+    const v = Number(value);
+    if (!Number.isFinite(v)) return fallback;
+    return Math.max(1, Math.min(99, Math.round(v)));
+  };
+  const clampTrimTargetPercent = (value: unknown, hardLimitPercent: number) => {
+    const fallback = Math.max(1, hardLimitPercent - 10);
+    const v = clampPercent(value, fallback);
+    return Math.min(v, Math.max(1, hardLimitPercent - 1));
+  };
+
+  const effectiveSimpleHardLimitPercent = clampPercent(simplePolicy?.hardLimitPercent, 90);
+  const effectiveSimpleTrimTargetPercent = clampTrimTargetPercent(
+    simplePolicy?.trimTargetPercent,
+    effectiveSimpleHardLimitPercent,
+  );
   const effectiveSimplePolicy: SimpleContextPolicy = {
     type: 'simple',
     enabled: Boolean(simplePolicy?.enabled ?? true),
     trimEnabled: Boolean(simplePolicy?.trimEnabled ?? true),
     hardLimitPercent: effectiveSimpleHardLimitPercent,
+    trimTargetPercent: effectiveSimpleTrimTargetPercent,
   };
+  const effectiveNormalHardLimitPercent = clampPercent(normalCompactPolicy?.hardLimitPercent, 90);
+  const effectiveNormalTrimTargetPercent = clampTrimTargetPercent(
+    normalCompactPolicy?.trimTargetPercent,
+    effectiveNormalHardLimitPercent,
+  );
   const [customParamsText, setCustomParamsText] = useState(() => {
     if (contextPolicyType !== 'custom') return '';
     try {
@@ -1119,7 +1136,13 @@ const AgentForm: React.FC<AgentFormProps> = ({
             onChange={(e) => {
               const v = e.target.value as typeof contextPolicyType;
               if (v === 'simple') {
-                onFieldChange('contextPolicy', { type: 'simple', enabled: true, trimEnabled: true, hardLimitPercent: 90 });
+                onFieldChange('contextPolicy', {
+                  type: 'simple',
+                  enabled: true,
+                  trimEnabled: true,
+                  hardLimitPercent: 90,
+                  trimTargetPercent: 80,
+                });
                 return;
               }
               if (v === 'normal_compact') {
@@ -1128,6 +1151,7 @@ const AgentForm: React.FC<AgentFormProps> = ({
                   enabled: true,
                   trimEnabled: true,
                   hardLimitPercent: 90,
+                  trimTargetPercent: 80,
                   compactEnabled: true,
                   autoCompact: true,
                   autoCompactThresholdPercent: 85,
@@ -1188,29 +1212,61 @@ const AgentForm: React.FC<AgentFormProps> = ({
                   </label>
                 </div>
 
-                <div className="space-y-1">
-                  <label className="block text-xs text-gray-600 dark:text-gray-400">硬上限（%）</label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={99}
-                    value={effectiveSimplePolicy.hardLimitPercent ?? 90}
-                    onChange={(e) =>
-                      onFieldChange('contextPolicy', {
-                        ...effectiveSimplePolicy,
-                        hardLimitPercent: Number(e.target.value || 90),
-                      })
-                    }
-                    disabled={
-                      !isEditing ||
-                      !(effectiveSimplePolicy.enabled ?? true) ||
-                      !(effectiveSimplePolicy.trimEnabled ?? true)
-                    }
-                    className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800 text-sm"
-                  />
-                  <div className="text-[11px] text-gray-500 dark:text-gray-400">
-                    仅对本次请求的运行时 prompt 做裁剪，不会改写历史消息。
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <label className="block text-xs text-gray-600 dark:text-gray-400">硬上限（%）</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={99}
+                      value={effectiveSimplePolicy.hardLimitPercent ?? 90}
+                      onChange={(e) => {
+                        const nextHard = clampPercent(e.target.value, 90);
+                        const nextTarget = Math.min(
+                          effectiveSimplePolicy.trimTargetPercent ?? Math.max(1, nextHard - 10),
+                          Math.max(1, nextHard - 1),
+                        );
+                        onFieldChange('contextPolicy', {
+                          ...effectiveSimplePolicy,
+                          hardLimitPercent: nextHard,
+                          trimTargetPercent: nextTarget,
+                        });
+                      }}
+                      disabled={
+                        !isEditing ||
+                        !(effectiveSimplePolicy.enabled ?? true) ||
+                        !(effectiveSimplePolicy.trimEnabled ?? true)
+                      }
+                      className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800 text-sm"
+                    />
                   </div>
+                  <div className="space-y-1">
+                    <label className="block text-xs text-gray-600 dark:text-gray-400">裁剪目标（%）</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={Math.max(1, (effectiveSimplePolicy.hardLimitPercent ?? 90) - 1)}
+                      value={effectiveSimplePolicy.trimTargetPercent ?? Math.max(1, (effectiveSimplePolicy.hardLimitPercent ?? 90) - 10)}
+                      onChange={(e) =>
+                        onFieldChange('contextPolicy', {
+                          ...effectiveSimplePolicy,
+                          trimTargetPercent: clampTrimTargetPercent(
+                            e.target.value,
+                            effectiveSimplePolicy.hardLimitPercent ?? 90,
+                          ),
+                        })
+                      }
+                      disabled={
+                        !isEditing ||
+                        !(effectiveSimplePolicy.enabled ?? true) ||
+                        !(effectiveSimplePolicy.trimEnabled ?? true)
+                      }
+                      className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800 text-sm"
+                    />
+                  </div>
+                </div>
+                <div className="text-[11px] text-gray-500 dark:text-gray-400">
+                  超过硬上限才触发裁剪，触发后会裁到“裁剪目标”；仅影响本次运行时 prompt，不改写历史消息。
                 </div>
               </div>
             </div>
@@ -1268,11 +1324,41 @@ const AgentForm: React.FC<AgentFormProps> = ({
                         type="number"
                         min={1}
                         max={99}
-                        value={normalCompactPolicy?.hardLimitPercent ?? 90}
+                        value={effectiveNormalHardLimitPercent}
+                        onChange={(e) => {
+                          const nextHard = clampPercent(e.target.value, 90);
+                          const nextTarget = Math.min(
+                            effectiveNormalTrimTargetPercent,
+                            Math.max(1, nextHard - 1),
+                          );
+                          onFieldChange('contextPolicy', {
+                            ...(normalCompactPolicy ?? { type: 'normal_compact' }),
+                            hardLimitPercent: nextHard,
+                            trimTargetPercent: nextTarget,
+                          });
+                        }}
+                        disabled={
+                          !isEditing ||
+                          !(normalCompactPolicy?.enabled ?? true) ||
+                          !(normalCompactPolicy?.trimEnabled ?? true)
+                        }
+                        className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800 text-sm"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="block text-xs text-gray-600 dark:text-gray-400">裁剪目标（%）</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={Math.max(1, effectiveNormalHardLimitPercent - 1)}
+                        value={effectiveNormalTrimTargetPercent}
                         onChange={(e) =>
                           onFieldChange('contextPolicy', {
                             ...(normalCompactPolicy ?? { type: 'normal_compact' }),
-                            hardLimitPercent: Number(e.target.value || 90),
+                            trimTargetPercent: clampTrimTargetPercent(
+                              e.target.value,
+                              effectiveNormalHardLimitPercent,
+                            ),
                           })
                         }
                         disabled={
@@ -1282,11 +1368,11 @@ const AgentForm: React.FC<AgentFormProps> = ({
                         }
                         className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800 text-sm"
                       />
-                      <p className="text-xs text-gray-500">
-                        仅影响本次请求的 runtime prompt：会删除更老的非 system 消息，避免超窗；不会改写历史。
-                      </p>
                     </div>
                   </div>
+                  <p className="text-xs text-gray-500">
+                    仅影响本次请求的 runtime prompt：超过硬上限才裁剪，触发后裁到“裁剪目标”；不会改写历史。
+                  </p>
                 </div>
 
                 {/* Compaction (rewrite older history into a summary message) */}

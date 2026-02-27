@@ -1435,12 +1435,15 @@ impl<'a> TurnLoop<'a> {
             let mut turn_context_trim: Option<TurnContextTrimInfo> = None;
             if let Some(ctx_len) = self.context_length.filter(|v| *v > 0) {
                 let hard_pct = self.ctx_mgr.hard_limit_percent();
+                let trim_target_pct = self.ctx_mgr.trim_target_percent();
                 let hard_limit = hard_limit_tokens(ctx_len, hard_pct);
+                let trim_target = hard_limit_tokens(ctx_len, trim_target_pct);
 
                 if self.ctx_mgr.should_trim() {
                     let trim = trim_runtime_messages_to_hard_limit(
                         std::mem::take(&mut self.runtime_messages),
                         hard_limit,
+                        trim_target,
                     );
                     turn_context_trim = Some(TurnContextTrimInfo {
                         enabled: true,
@@ -1661,10 +1664,8 @@ impl<'a> TurnLoop<'a> {
                             decorate_user_error_with_origin(&error, turn_debug_info.as_ref());
                         let mut reply_content = content.clone();
                         if reply_content.trim().is_empty() {
-                            reply_content = build_fallback_reply_markdown(
-                                "任务失败",
-                                &error_display,
-                            );
+                            reply_content =
+                                build_fallback_reply_markdown("任务失败", &error_display);
                             self.emitter.emit(RunEvent::BlockDelta {
                                 task_id: self.task_id.clone(),
                                 turn_id: turn_id.clone(),
@@ -2406,7 +2407,8 @@ impl<'a> TurnLoop<'a> {
                     debug_info,
                     usage,
                 } => {
-                    let error_display = decorate_user_error_with_origin(&error, debug_info.as_ref());
+                    let error_display =
+                        decorate_user_error_with_origin(&error, debug_info.as_ref());
                     let reply_content = if content.trim().is_empty() {
                         build_fallback_reply_markdown("任务失败", &error_display)
                     } else {
@@ -2423,8 +2425,7 @@ impl<'a> TurnLoop<'a> {
                     // 失败时即使未开启 debug_mode，也应提供“已脱敏”的调试上下文，避免黑盒报错。
                     // - 前端全局弹窗/DebugModal 依赖 RunEvent::Error/TurnFinished 携带 debugInfo
                     // - 仅对失败兜底，避免常规成功路径产生过大/过敏感的调试负担
-                    let persisted_debug_info =
-                        debug_info.as_ref().map(redact_debug_info_for_store);
+                    let persisted_debug_info = debug_info.as_ref().map(redact_debug_info_for_store);
                     let turn_debug_info = if self.debug_mode {
                         debug_info.clone()
                     } else {
@@ -3142,10 +3143,7 @@ fn error_layer_cn(layer: &crate::ai_client::ErrorLayer) -> &'static str {
 fn format_error_origin_line(origin: &crate::ai_client::ErrorOrigin) -> String {
     let layer = error_layer_cn(&origin.layer);
     let op = origin.operation.as_deref().unwrap_or("<none>");
-    format!(
-        "错误来源：层次={layer} 模块={} 操作={op}",
-        origin.module
-    )
+    format!("错误来源：层次={layer} 模块={} 操作={op}", origin.module)
 }
 
 fn decorate_user_error_with_origin(error: &str, debug_info: Option<&DebugInfoData>) -> String {
@@ -4404,9 +4402,9 @@ async fn run_task_inner(
     let enable_apply_patch_unified_diff_tool_prompt = allowed_tool_names
         .as_ref()
         .is_some_and(|names| names.contains("apply_patch_unified_diff"));
-    let enable_write_file_replace_string_tool_prompt = allowed_tool_names.as_ref().is_some_and(
-        |names| names.contains("write_file") || names.contains("replace_string"),
-    );
+    let enable_write_file_replace_string_tool_prompt = allowed_tool_names
+        .as_ref()
+        .is_some_and(|names| names.contains("write_file") || names.contains("replace_string"));
     // 防御性兜底：理论上在 toolset 约束后不会同时为 true；若出现，优先保留自定义锚定版 apply_patch。
     let (enable_apply_patch_tool_prompt, enable_apply_patch_unified_diff_tool_prompt) = match (
         enable_apply_patch_tool_prompt,
@@ -4416,10 +4414,9 @@ async fn run_task_inner(
         other => other,
     };
     // 防御性兜底：文本编辑工具实现应该互斥；若出现，优先保留 apply_patch 系提示词。
-    let enable_write_file_replace_string_tool_prompt =
-        enable_write_file_replace_string_tool_prompt
-            && !enable_apply_patch_tool_prompt
-            && !enable_apply_patch_unified_diff_tool_prompt;
+    let enable_write_file_replace_string_tool_prompt = enable_write_file_replace_string_tool_prompt
+        && !enable_apply_patch_tool_prompt
+        && !enable_apply_patch_unified_diff_tool_prompt;
 
     // 4) TurnLoop：max_turns 统一以配置为准（agent.max_turns），未配置则使用全局默认值。
     let default_max_turns: u32 = 10_000;
@@ -4760,7 +4757,6 @@ async fn run_task_inner(
                 }
             }
         }
-
     }
 
     let mut turn_loop = TurnLoop {
@@ -5443,7 +5439,13 @@ async fn stream_one_turn(
 
         let stream_handle = tokio::spawn(async move {
             client
-                .chat_stream(attempt_messages, &model_config_for_stream, tools, token_tx, options)
+                .chat_stream(
+                    attempt_messages,
+                    &model_config_for_stream,
+                    tools,
+                    token_tx,
+                    options,
+                )
                 .await
         });
 
@@ -5621,7 +5623,10 @@ async fn stream_one_turn(
             lines.push("上下文：".to_string());
             lines.push(format!("- provider: {}", model_config.provider));
             lines.push(format!("- model: {}", model_config.model));
-            lines.push(format!("- output_format: {}", output_format.as_deref().unwrap_or("markdown")));
+            lines.push(format!(
+                "- output_format: {}",
+                output_format.as_deref().unwrap_or("markdown")
+            ));
             lines.push(format!("- task_id: {task_id}"));
             lines.push(format!("- turn_id: {turn_id}"));
             lines.push(format!("- assistant_message_id: {assistant_message_id}"));
@@ -5666,10 +5671,16 @@ async fn stream_one_turn(
                     lines.push(format!("- stream_termination: {}", term_lines.join(", ")));
                 }
 
-                if let (Some(true), Some(obs)) = (term.protocol_complete, term.observed_signal.as_deref()) {
+                if let (Some(true), Some(obs)) =
+                    (term.protocol_complete, term.observed_signal.as_deref())
+                {
                     if let Some(raw_tail) = term.raw_event_tail.as_ref().filter(|t| !t.is_empty()) {
                         let observed_raw: Option<String> = if obs.trim() == "[DONE]" {
-                            raw_tail.iter().rev().find(|l| l.trim() == "[DONE]").cloned()
+                            raw_tail
+                                .iter()
+                                .rev()
+                                .find(|l| l.trim() == "[DONE]")
+                                .cloned()
                         } else {
                             let needle = format!("\"type\":\"{obs}\"");
                             raw_tail.iter().rev().find(|l| l.contains(&needle)).cloned()
@@ -5747,8 +5758,8 @@ async fn stream_one_turn(
             // 这种情况下重连不会造成“重复可见内容”，因此应优先尝试用 TurnState(cursor) 续流恢复。
             let can_reconnect_after_no_visible_output =
                 emitted_any_delta && resume_possible && no_visible_output_yet;
-            let can_reconnect = can_reconnect_after_partial_output
-                || can_reconnect_after_no_visible_output;
+            let can_reconnect =
+                can_reconnect_after_partial_output || can_reconnect_after_no_visible_output;
             let can_retry = attempt < max_attempts
                 && is_retryable_error(&stream_err, debug_info.as_ref())
                 && (!emitted_any_delta || can_reconnect);
@@ -6036,7 +6047,10 @@ mod tests {
                 assert!(error.contains("上下文"), "missing context: {error}");
                 assert!(error.contains("provider"), "missing provider: {error}");
                 assert!(error.contains("model"), "missing model: {error}");
-                assert!(error.contains("end_event: channel_closed"), "missing end_event: {error}");
+                assert!(
+                    error.contains("end_event: channel_closed"),
+                    "missing end_event: {error}"
+                );
             }
             other => panic!("expected TurnStreamResult::Error, got: {other:?}"),
         }
