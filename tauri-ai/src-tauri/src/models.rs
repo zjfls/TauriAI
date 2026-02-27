@@ -808,6 +808,34 @@ pub struct WorkstudioFolderAnalysisSummary {
 }
 
 // ============================================================================
+// Workstudio Chat With (Inline Chat, persisted)
+// ============================================================================
+
+/// Persisted Chat-with (inline chat) record for a file selection in Workstudio.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkstudioChatWithRecord {
+    pub id: String,
+    pub workstudio_id: String,
+    pub agent_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_ref: Option<String>,
+    pub file_path: String,
+    pub language_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub range: Option<CodeSnippetRange>,
+    pub question: String,
+    pub code: String,
+    pub answer_md: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u64>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+// ============================================================================
 // New Provider-Model-Agent Architecture
 // ====================================================== ======================
 

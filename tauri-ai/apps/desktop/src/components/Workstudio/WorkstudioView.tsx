@@ -47,6 +47,7 @@ import type {
   RunEventPayload,
   TerminalScope,
   ThinkingLevel,
+	  WorkstudioChatWithRecord,
 	  Workstudio,
 	  WorkstudioFolderAnalysis,
 	  WorkstudioFolderAnalysisSummary,
@@ -66,6 +67,7 @@ import {
 		  getWorkstudioFolderAnalysis,
 		  getWorkstudioSymbolAnalysis,
 		  listWorkstudioFolderAnalysisSummaries,
+		  listWorkstudioChatWithRecordsForFile,
 		  listWorkstudioSymbolAnalysisKeysForFile,
 		  listWorkstudioSymbolAnalysisSummariesForFile,
 		  saveWorkstudioFolderAnalysis,
@@ -1473,8 +1475,10 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         args: {
           workstudioId: workstudioId ?? '',
           agentName: chatWithAgentRef || '__system_chat_with',
+          purpose: 'chat_with',
           languageId: selection.languageId,
           filePath: selection.filePath,
+          selectionRange: selection.range,
           code: selection.text,
           userInput: question,
         },
@@ -6661,6 +6665,84 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     [toWorkstudioRelativePath]
   );
 
+  const buildWorkstudioChatWithHistoryRichTextDoc = useCallback(
+    (filePath: string, records: WorkstudioChatWithRecord[]): string => {
+      const generatedAt = new Date().toISOString();
+      const relPath = toWorkstudioRelativePath(filePath);
+      const displayName = basename(relPath) || relPath || basename(filePath) || 'File';
+
+      const lines: string[] = [];
+      lines.push(
+        `<!-- tauri.richtxt v1 | kind=workstudio_chat_with_history | generatedAt=${generatedAt} | filePath=${relPath} -->`
+      );
+      lines.push('');
+      lines.push(`# Chat with 记录：${displayName}`);
+      lines.push('');
+      lines.push(`- 生成时间：\`${generatedAt}\``);
+      lines.push(`- 文件：\`${relPath}\``);
+      lines.push(`- 条数：\`${records.length}\``);
+      lines.push('');
+      lines.push('---');
+      lines.push('');
+
+      for (const rec of records) {
+        const when = String(rec.createdAt || rec.updatedAt || generatedAt).trim() || generatedAt;
+        const rangeLabel = rec.range
+          ? `${rec.range.startLine}:${rec.range.startColumn}-${rec.range.endLine}:${rec.range.endColumn}`
+          : '';
+        const title = (() => {
+          const raw = String(rec.question ?? '').trim();
+          if (!raw) return 'Chat with';
+          const first = raw.split('\n')[0] ?? raw;
+          return first.length > 80 ? `${first.slice(0, 80)}…` : first;
+        })();
+
+        lines.push(`## ${title}`);
+        lines.push('');
+        lines.push(`- 时间：\`${when}\``);
+        if (rangeLabel) lines.push(`- 选区：\`${rangeLabel}\``);
+        if (rec.agentName) lines.push(`- Agent：\`${rec.agentName}\``);
+        if (rec.modelRef) lines.push(`- 模型：\`${rec.modelRef}\``);
+        if (typeof rec.latencyMs === 'number') lines.push(`- 延迟：\`${rec.latencyMs}ms\``);
+        lines.push('');
+
+        lines.push('### 问题');
+        lines.push('');
+        lines.push(String(rec.question ?? '').trim());
+        lines.push('');
+
+        lines.push('### 选区代码');
+        lines.push('');
+        const lang = String(rec.languageId || 'text').trim() || 'text';
+        lines.push(`\`\`\`${lang}`);
+        lines.push(String(rec.code ?? '').replace(/\s+$/, ''));
+        lines.push('```');
+        lines.push('');
+
+        lines.push('### 回答');
+        lines.push('');
+        lines.push(String(rec.answerMd ?? '').trim());
+
+        const thinking = String(rec.thinking ?? '').trim();
+        if (thinking) {
+          lines.push('');
+          lines.push('### Thinking');
+          lines.push('');
+          lines.push('```text');
+          lines.push(thinking);
+          lines.push('```');
+        }
+
+        lines.push('');
+        lines.push('---');
+        lines.push('');
+      }
+
+      return lines.join('\\n').trim() + '\\n';
+    },
+    [toWorkstudioRelativePath]
+  );
+
   const openVirtualRichTextFile = useCallback((title: string, content: string) => {
     const id = crypto.randomUUID();
     const tabTitle = title.length > 48 ? `${title.slice(0, 48)}…` : title;
@@ -6683,6 +6765,42 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     useWindowLayoutStore.getState().openTabInFocusedPane(id);
   }, []);
 
+
+  const viewExplorerFileChatWithHistory = useCallback(
+    async (absFilePathRaw: string) => {
+      if (!workstudioId) return;
+      const normalizedPath = normalizeFsPath(absFilePathRaw) || absFilePathRaw;
+      if (!normalizedPath) return;
+
+      try {
+        const records = await listWorkstudioChatWithRecordsForFile({
+          workstudioId,
+          filePath: normalizedPath,
+          limit: 200,
+        });
+        if (!records || records.length === 0) {
+          showNavToast('暂无 Chat with 记录');
+          return;
+        }
+
+        const relPath = toWorkstudioRelativePath(normalizedPath);
+        const nameBase = `Chat with：${basename(relPath) || relPath || basename(normalizedPath) || 'File'}`;
+        const name = nameBase.length > 32 ? `${nameBase.slice(0, 32)}…` : nameBase;
+        const content = buildWorkstudioChatWithHistoryRichTextDoc(normalizedPath, records);
+        openVirtualRichTextFile(name, content);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        showNavToast(message || '读取 Chat with 记录失败');
+      }
+    },
+    [
+      buildWorkstudioChatWithHistoryRichTextDoc,
+      openVirtualRichTextFile,
+      showNavToast,
+      toWorkstudioRelativePath,
+      workstudioId,
+    ]
+  );
 
   const viewOutlineSymbolAnalysis = useCallback(
     async (filePath: string, item: OutlineItem) => {
@@ -12768,6 +12886,17 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                 }}
               >
                 加入到 Chat
+              </button>
+              <button
+                type="button"
+                className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+                onClick={() => {
+                  const file = contextMenu.file;
+                  setContextMenu(null);
+                  void viewExplorerFileChatWithHistory(file);
+                }}
+              >
+                查看 Chat with 记录
               </button>
               <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
               <button

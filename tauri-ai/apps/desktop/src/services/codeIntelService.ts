@@ -4,6 +4,7 @@ import type {
   AstSymbol,
   LspDetectServerResult,
   LspServerStatus,
+  WorkstudioChatWithRecord,
   WorkstudioFolderAnalysis,
   WorkstudioFolderAnalysisSummary,
   WorkstudioSymbolAnalysis,
@@ -349,4 +350,32 @@ export const saveWorkstudioFolderAnalysis = async (
     throw new Error('Not running in Tauri');
   }
   return invoke<WorkstudioFolderAnalysis>('save_workstudio_folder_analysis', { args });
+};
+
+// ============================================================================
+// Workstudio Chat With (Inline Chat, persisted)
+// ============================================================================
+
+export type WorkstudioChatWithFileKey = {
+  workstudioId: string;
+  filePath: string;
+  limit?: number;
+};
+
+export const listWorkstudioChatWithRecordsForFile = async (
+  args: WorkstudioChatWithFileKey
+): Promise<WorkstudioChatWithRecord[]> => {
+  if (!isTauri()) {
+    throw new Error('Not running in Tauri');
+  }
+  return invoke<WorkstudioChatWithRecord[]>('list_workstudio_chat_with_records_for_file', { args });
+};
+
+export const deleteWorkstudioChatWithRecordsForFile = async (
+  args: Omit<WorkstudioChatWithFileKey, 'limit'>
+): Promise<void> => {
+  if (!isTauri()) {
+    throw new Error('Not running in Tauri');
+  }
+  await invoke<void>('delete_workstudio_chat_with_records_for_file', { args });
 };

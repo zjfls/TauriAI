@@ -1077,6 +1077,26 @@ export interface WorkstudioFolderAnalysisSummary {
 }
 
 /**
+ * Persisted Chat-with (inline chat) record for a file selection in Workstudio.
+ */
+export interface WorkstudioChatWithRecord {
+  id: string;
+  workstudioId: string;
+  agentName: string;
+  modelRef?: string;
+  filePath: string;
+  languageId: string;
+  range?: { startLine: number; startColumn: number; endLine: number; endColumn: number };
+  question: string;
+  code: string;
+  answerMd: string;
+  thinking?: string;
+  latencyMs?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
  * Workstudio-scoped code intelligence preferences (persisted in Workstudio UI state).
  * - 未设置时：默认使用全局配置（所有已配置语言都可用）
  * - 设置后：仅对该 workstudio 启用选择的语言

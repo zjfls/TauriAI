@@ -658,6 +658,8 @@ fn run_desktop() {
 				            list_workstudio_folder_analysis_summaries,
 				            delete_workstudio_folder_analysis,
 				            save_workstudio_folder_analysis,
+				            list_workstudio_chat_with_records_for_file,
+				            delete_workstudio_chat_with_records_for_file,
 				            workstudio_run_agent_stream,
 				            workstudio_abort_agent,
 	            // Workstudio terminal (UI)

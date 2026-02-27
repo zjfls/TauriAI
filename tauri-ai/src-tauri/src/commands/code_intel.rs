@@ -21,8 +21,8 @@ use crate::code_intel::types::{LspLaunchConfig, LspServerStatus};
 use crate::config::ConfigManager;
 use crate::models::{
     AppConfig, CodeSnippetRange, Message, MessageRole, MessageStatus, Workstudio,
-    WorkstudioFolderAnalysis, WorkstudioFolderAnalysisSummary, WorkstudioSymbolAnalysis,
-    WorkstudioSymbolAnalysisSummary,
+    WorkstudioChatWithRecord, WorkstudioFolderAnalysis, WorkstudioFolderAnalysisSummary,
+    WorkstudioSymbolAnalysis, WorkstudioSymbolAnalysisSummary,
 };
 use crate::storage::async_db;
 use crate::storage::Database;
@@ -1343,6 +1343,75 @@ pub async fn save_workstudio_folder_analysis(
     .map_err(|e| e.to_string())
 }
 
+// ============================================================================
+// Workstudio Chat With (Inline Chat, persisted)
+// ============================================================================
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListWorkstudioChatWithRecordsForFileArgs {
+    pub workstudio_id: String,
+    pub file_path: String,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[tauri::command]
+pub async fn list_workstudio_chat_with_records_for_file(
+    args: ListWorkstudioChatWithRecordsForFileArgs,
+    db: tauri::State<'_, Arc<Mutex<Database>>>,
+) -> Result<Vec<WorkstudioChatWithRecord>, String> {
+    let ws_id = args.workstudio_id.trim();
+    let file_path = args.file_path.trim();
+    let limit = args.limit.unwrap_or(200) as usize;
+
+    if ws_id.is_empty() {
+        return Err("workstudioId 涓虹┖".to_string());
+    }
+    if file_path.is_empty() {
+        return Err("filePath 涓虹┖".to_string());
+    }
+
+    async_db::with_db(
+        db.inner(),
+        "list_workstudio_chat_with_records_for_file",
+        |db| db.list_workstudio_chat_with_records_for_file(ws_id, file_path, limit),
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteWorkstudioChatWithRecordsForFileArgs {
+    pub workstudio_id: String,
+    pub file_path: String,
+}
+
+#[tauri::command]
+pub async fn delete_workstudio_chat_with_records_for_file(
+    args: DeleteWorkstudioChatWithRecordsForFileArgs,
+    db: tauri::State<'_, Arc<Mutex<Database>>>,
+) -> Result<(), String> {
+    let ws_id = args.workstudio_id.trim();
+    let file_path = args.file_path.trim();
+
+    if ws_id.is_empty() {
+        return Err("workstudioId 涓虹┖".to_string());
+    }
+    if file_path.is_empty() {
+        return Err("filePath 涓虹┖".to_string());
+    }
+
+    async_db::with_db(
+        db.inner(),
+        "delete_workstudio_chat_with_records_for_file",
+        |db| db.delete_workstudio_chat_with_records_for_file(ws_id, file_path),
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiAnalyzeWorkstudioSymbolArgs {
@@ -1952,8 +2021,10 @@ fn agent_abort_map() -> &'static dashmap::DashMap<String, tokio::sync::oneshot::
 pub struct WorkstudioRunAgentArgs {
     pub workstudio_id: String,
     pub agent_name: String,
+    pub purpose: Option<String>,
     pub language_id: Option<String>,
     pub file_path: Option<String>,
+    pub selection_range: Option<CodeSnippetRange>,
     pub symbol_key: Option<String>,
     pub symbol_name: Option<String>,
     pub symbol_kind: Option<String>,
@@ -2158,11 +2229,24 @@ pub async fn workstudio_run_agent_stream(
     agent_abort_map().insert(run_id.clone(), abort_tx);
 
     // --- Spawn streaming task ---
+    let persist_chat_with = args
+        .purpose
+        .as_deref()
+        .map(|s| s.trim())
+        .is_some_and(|s| s.eq_ignore_ascii_case("chat_with"));
     let run_id_clone = run_id.clone();
     let app_handle_clone = app_handle.clone();
     let file_path = args.file_path.clone();
     let symbol_key = args.symbol_key.clone();
+    let language_id = args.language_id.clone();
+    let selection_range = args.selection_range.clone();
+    let code = args.code.clone();
+    let question = user_input.clone();
+    let agent_name_for_store = agent_name.clone();
+    let ws_id_for_store = ws_id.clone();
+    let created_at = now;
     let model_ref_clone = model_ref.clone();
+    let db_clone = Arc::clone(db.inner());
 
     tokio::spawn(async move {
         let (tx, mut rx) = mpsc::channel::<StreamEvent>(256);
@@ -2277,6 +2361,45 @@ pub async fn workstudio_run_agent_stream(
             // For heavy persistence, a separate `workstudio_save_agent_result` command can be called by frontend.
             let _ = sk; // suppress warning — persistence done client-side via separate invoke
             let _ = fp;
+        }
+
+        // Persist Chat-with history (best-effort; do not fail the UI run on DB errors).
+        if persist_chat_with {
+            if let (Some(fp), Some(lang), Some(code)) =
+                (file_path.as_deref(), language_id.as_deref(), code.as_deref())
+            {
+                let updated_at = chrono::Utc::now();
+                let record = WorkstudioChatWithRecord {
+                    id: run_id_clone.clone(),
+                    workstudio_id: ws_id_for_store.clone(),
+                    agent_name: agent_name_for_store.clone(),
+                    model_ref: Some(model_ref_clone.clone()),
+                    file_path: fp.to_string(),
+                    language_id: lang.to_string(),
+                    range: selection_range.clone(),
+                    question: question.clone(),
+                    code: code.to_string(),
+                    answer_md: answer_md.clone(),
+                    thinking: {
+                        let t = thinking_buf.trim();
+                        if t.is_empty() {
+                            None
+                        } else {
+                            Some(thinking_buf.clone())
+                        }
+                    },
+                    latency_ms: Some(latency_ms),
+                    created_at,
+                    updated_at,
+                };
+
+                let _ = async_db::with_db(
+                    &db_clone,
+                    "workstudio_run_agent_stream:insert_workstudio_chat_with_record",
+                    |db| db.insert_workstudio_chat_with_record(&record),
+                )
+                .await;
+            }
         }
 
         let _ = app_handle_clone.emit(
