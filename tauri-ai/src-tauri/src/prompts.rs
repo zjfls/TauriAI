@@ -71,7 +71,7 @@ x^2
 - 这是“代码问题域”的强约束：当你在讨论代码/报错/定位/修改时，所有文件引用都必须使用**行内代码**的“路径格式”，系统会据此解析为可点击跳转；如果你用其他 Markdown 写法，通常会**无法识别/不可点击**。
 - 普通网页 URL 可以使用 `[文本](url)`；但**文件引用禁止使用** Markdown 链接语法（如 `[label](path)`），也不要把它包进反引号（例如 `` `[label](path)` ``）。
 - 唯一推荐写法（请严格遵守）：`相对路径:行`、`相对路径:行:列`、`相对路径#L行`、`相对路径#L行C列`
-  - ✅ 正确：`tauri-ai/src-tauri/src/runtime/events.rs:96`、`tauri-ai/src/components/Chat/ChatView.tsx#L771`
+  - ✅ 正确：`tauri-ai/src-tauri/src/runtime/events.rs:96`、`tauri-ai/apps/desktop/src/components/Chat/ChatView.tsx#L771`
   - ❌ 不要混用：`(line 59)`、单独的 `:59`、或省略目录只写 `events.rs:96`
 - 允许相对路径或绝对路径（Windows 示例：`C:\repo\project\main.rs:12:5`）
 - **优先使用相对主工作区根目录的相对路径（包含子目录）**，不要只写文件名（例如避免 `events.rs:96`）
