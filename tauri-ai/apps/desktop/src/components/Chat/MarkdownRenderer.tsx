@@ -340,7 +340,7 @@ function parseFileReferenceTokenFromHref(hrefRaw: string): string | null {
 
   // 支持自定义 scheme：`tauri-ai://open-file?ref=<encoded-token>`。
   // 其中 token 格式与行内 code 一致：
-  // `src/app.ts:42`、`events.rs#L10C2`、`a/foo.rs#L9-L12` 等。
+  // `src/app.ts:42`、`src/runtime/events.rs#L10C2`、`a/src/foo.rs#L9-L12` 等。
   try {
     const url = new URL(href);
     if (url.protocol === 'tauri-ai:' && url.hostname === 'open-file') {
@@ -357,7 +357,7 @@ function parseFileReferenceTokenFromHref(hrefRaw: string): string | null {
     // ignore: 不是合法 URL（可能是相对路径/我们自己的 token）
   }
 
-  // 也允许直接把 token 当 href：`src/app.ts:42` / `events.rs#L10`
+  // 也允许直接把 token 当 href：`src/app.ts:42` / `src/runtime/events.rs#L10`
   // 如果是标准 URL（https://...），则不当作文件引用。
   if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(href)) {
     return href;

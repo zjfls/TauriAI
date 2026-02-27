@@ -3759,6 +3759,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const openLinkSeqRef = useRef(0);
   const openedFromUrlRef = useRef(false);
   const [openFromLinkError, setOpenFromLinkError] = useState<string | null>(null);
+  const [openFromLinkNotice, setOpenFromLinkNotice] = useState<string | null>(null);
   // 如果在 Workstudio UI state 尚未恢复完成时收到了 open_file 事件，先暂存，待就绪后再执行。
   const pendingOpenLinkRef = useRef<LinkTarget | null>(null);
 
@@ -4184,6 +4185,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     };
 
     setOpenFromLinkError(null);
+    setOpenFromLinkNotice(null);
     try {
       const openedId = await openFileAtPath(resolved, { paneId });
       dbg('openLinkTarget:file_opened', { seq, openedId, resolved, paneId });
@@ -4223,6 +4225,17 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         if (!best) throw error;
 
         const openedId = await openFileAtPath(best, { paneId });
+        try {
+          const bestNormalized = normalizeFsPath(best);
+          const base = normalizeFsPath(ws?.mainFolder ?? '');
+          const display =
+            base && (bestNormalized === base || bestNormalized.startsWith(`${base}/`))
+              ? (bestNormalized.slice(base.length).replace(/^\/+/, '') || basename(bestNormalized))
+              : bestNormalized;
+          setOpenFromLinkNotice(`已使用兜底（按文件名搜索）打开：${display}（原引用：${targetPath}）`);
+        } catch {
+          setOpenFromLinkNotice(`已使用兜底（按文件名搜索）打开文件（原引用：${targetPath}）`);
+        }
         dbg('openLinkTarget:fallback_file_opened', { seq, openedId, best, paneId });
         void revealFileInExplorer(best, seq);
         await applyWithWait(openedId, normalizeFsPath(best));
@@ -11577,6 +11590,11 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           {saveError && (
             <div className="border-b border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-200">
               保存失败：{saveError}
+            </div>
+          )}
+          {openFromLinkNotice && (
+            <div className="border-b border-yellow-200 bg-yellow-50 px-3 py-2 text-xs text-yellow-800 dark:border-yellow-900/40 dark:bg-yellow-900/20 dark:text-yellow-100">
+              {openFromLinkNotice}
             </div>
           )}
           {openFromLinkError && (

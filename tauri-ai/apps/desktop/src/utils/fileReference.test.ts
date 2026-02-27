@@ -13,9 +13,13 @@ describe('parseFileReferenceToken', () => {
   });
 
   it('parses colon ranges', () => {
-    expect(parseFileReferenceToken('events.rs:96-125')).toEqual({ filePath: 'events.rs', line: 96, endLine: 125 });
-    expect(parseFileReferenceToken('events.rs:96:3-125:9')).toEqual({
-      filePath: 'events.rs',
+    expect(parseFileReferenceToken('src/runtime/events.rs:96-125')).toEqual({
+      filePath: 'src/runtime/events.rs',
+      line: 96,
+      endLine: 125,
+    });
+    expect(parseFileReferenceToken('src/runtime/events.rs:96:3-125:9')).toEqual({
+      filePath: 'src/runtime/events.rs',
       line: 96,
       column: 3,
       endLine: 125,
@@ -24,9 +28,13 @@ describe('parseFileReferenceToken', () => {
   });
 
   it('parses hash ranges', () => {
-    expect(parseFileReferenceToken('events.rs#L96-L125')).toEqual({ filePath: 'events.rs', line: 96, endLine: 125 });
-    expect(parseFileReferenceToken('events.rs#L96C3-L125C9')).toEqual({
-      filePath: 'events.rs',
+    expect(parseFileReferenceToken('src/runtime/events.rs#L96-L125')).toEqual({
+      filePath: 'src/runtime/events.rs',
+      line: 96,
+      endLine: 125,
+    });
+    expect(parseFileReferenceToken('src/runtime/events.rs#L96C3-L125C9')).toEqual({
+      filePath: 'src/runtime/events.rs',
       line: 96,
       column: 3,
       endLine: 125,
@@ -41,5 +49,11 @@ describe('parseFileReferenceToken', () => {
       endLine: 20,
     });
     expect(parseFileReferenceToken('https://example.com/a.ts:1')).toBeNull();
+  });
+
+  it('parses basename-only paths', () => {
+    expect(parseFileReferenceToken('events.rs:96')).toEqual({ filePath: 'events.rs', line: 96 });
+    expect(parseFileReferenceToken('events.rs#L96')).toEqual({ filePath: 'events.rs', line: 96 });
+    expect(parseFileReferenceToken('a/foo.rs#L9')).toEqual({ filePath: 'foo.rs', line: 9 });
   });
 });

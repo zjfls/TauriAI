@@ -18,10 +18,10 @@ const stripDiffPrefix = (path: string) => {
  * - `b/server/index.js#L10`
  *
  * Supports range formats:
- * - `events.rs:96-125`
- * - `events.rs:96:3-125:9`
- * - `events.rs#L96-L125`
- * - `events.rs#L96C3-L125C9`
+ * - `src/runtime/events.rs:96-125`
+ * - `src/runtime/events.rs:96:3-125:9`
+ * - `src/runtime/events.rs#L96-L125`
+ * - `src/runtime/events.rs#L96C3-L125C9`
  */
 export const parseFileReferenceToken = (token: string): ParsedFileReference | null => {
   const raw = token.trim();
