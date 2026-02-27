@@ -66,8 +66,8 @@ fn conv_key(scope: &TerminalScope) -> String {
 fn default_shell_command() -> Vec<String> {
     #[cfg(windows)]
     {
-        // Prefer PowerShell for better ANSI/color support on Windows.
-        // Fallback order: pwsh (PowerShell 7+) -> powershell (Windows PowerShell) -> cmd.
+        // Windows UI terminal 固定走 PowerShell 体系（不再回退到 cmd）。
+        // 优先顺序：pwsh (PowerShell 7+) -> powershell (Windows PowerShell)。
         fn find_in_path(candidates: &[&str]) -> Option<String> {
             let path = std::env::var_os("PATH")?;
             for dir in std::env::split_paths(&path) {
@@ -81,26 +81,55 @@ fn default_shell_command() -> Vec<String> {
             None
         }
 
-        let shell = find_in_path(&["pwsh.exe", "powershell.exe", "cmd.exe"])
-            .unwrap_or_else(|| "cmd.exe".to_string());
-        let lower = shell.to_lowercase();
-        if lower.ends_with("pwsh.exe") || lower.ends_with("powershell.exe") {
-            // 统一 UTF-8：避免中文输出在前端出现 “�” 乱码（ConPTY + xterm 默认按 UTF-8 解码）。
-            // - `chcp 65001` 影响原生控制台程序（GetConsoleOutputCP）
-            // - `[Console]::OutputEncoding` 影响 PowerShell / native command 输出编码
-            // - `$OutputEncoding` 影响 native command 管道编码
-            let init = "try { chcp 65001 | Out-Null } catch {}; try { [Console]::InputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new() } catch {}; $OutputEncoding = [Console]::OutputEncoding";
-            vec![
-                shell,
-                "-NoLogo".to_string(),
-                "-NoExit".to_string(),
-                "-Command".to_string(),
-                init.to_string(),
-            ]
-        } else {
-            // cmd.exe 也尽量切到 UTF-8，减少乱码概率
-            vec![shell, "/K".to_string(), "chcp 65001 >nul 2>&1".to_string()]
+        fn resolve_windows_powershell() -> String {
+            if let Some(shell) = find_in_path(&["pwsh.exe", "powershell.exe"]) {
+                return shell;
+            }
+
+            // 常见安装位置兜底（某些环境下 PATH 不完整）。
+            let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+            for key in ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"] {
+                if let Some(base) = std::env::var_os(key) {
+                    candidates.push(
+                        std::path::PathBuf::from(base)
+                            .join("PowerShell")
+                            .join("7")
+                            .join("pwsh.exe"),
+                    );
+                }
+            }
+            if let Some(windir) = std::env::var_os("WINDIR") {
+                candidates.push(
+                    std::path::PathBuf::from(windir)
+                        .join("System32")
+                        .join("WindowsPowerShell")
+                        .join("v1.0")
+                        .join("powershell.exe"),
+                );
+            }
+            for path in candidates {
+                if path.is_file() {
+                    return path.to_string_lossy().to_string();
+                }
+            }
+
+            // 最终兜底：交给系统路径解析；若系统确实没有 PowerShell，会在 spawn 阶段给出明确错误。
+            "powershell.exe".to_string()
         }
+
+        let shell = resolve_windows_powershell();
+        // 统一 UTF-8：避免中文输出在前端出现 “�” 乱码（ConPTY + xterm 默认按 UTF-8 解码）。
+        // - `chcp 65001` 影响原生控制台程序（GetConsoleOutputCP）
+        // - `[Console]::OutputEncoding` 影响 PowerShell / native command 输出编码
+        // - `$OutputEncoding` 影响 native command 管道编码
+        let init = "try { chcp 65001 | Out-Null } catch {}; try { [Console]::InputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new() } catch {}; $OutputEncoding = [Console]::OutputEncoding";
+        vec![
+            shell,
+            "-NoLogo".to_string(),
+            "-NoExit".to_string(),
+            "-Command".to_string(),
+            init.to_string(),
+        ]
     }
     #[cfg(not(windows))]
     {

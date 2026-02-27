@@ -425,7 +425,79 @@ const splitDiffByFile = (diffText: string): Map<string, string> => {
   return out;
 };
 
-const DiffViewer: React.FC<{ text: string; wrap: boolean }> = ({ text, wrap }) => {
+const diffLineClass = (line: string): string => {
+  if (
+    line.startsWith('diff --git') ||
+    line.startsWith('index ') ||
+    line.startsWith('new file mode') ||
+    line.startsWith('deleted file mode') ||
+    line.startsWith('similarity index') ||
+    line.startsWith('rename from') ||
+    line.startsWith('rename to')
+  ) {
+    return 'text-gray-500 dark:text-gray-400';
+  }
+  if (line.startsWith('@@')) return 'text-blue-700 dark:text-blue-300';
+  if (line.startsWith('+++') || line.startsWith('---')) return 'text-gray-600 dark:text-gray-300';
+  if (line.startsWith('+')) return 'text-green-700 dark:text-green-300';
+  if (line.startsWith('-')) return 'text-red-700 dark:text-red-300';
+  return 'text-gray-800 dark:text-gray-100';
+};
+
+type DiffRenderLine = {
+  raw: string;
+  className: string;
+  jumpLine?: number;
+};
+
+const buildDiffRenderLines = (text: string): DiffRenderLine[] => {
+  const out: DiffRenderLine[] = [];
+  const lines = text.split('\n');
+  const hunkHeaderRe = /^@@\s+-([0-9]+)(?:,[0-9]+)?\s+\+([0-9]+)(?:,[0-9]+)?\s+@@/;
+
+  let oldLine = 0;
+  let newLine = 0;
+  let inHunk = false;
+
+  for (const raw of lines) {
+    const line = raw ?? '';
+    const hunk = line.match(hunkHeaderRe);
+    if (hunk) {
+      oldLine = Number(hunk[1] || 0);
+      newLine = Number(hunk[2] || 0);
+      inHunk = true;
+      out.push({ raw: line, className: diffLineClass(line) });
+      continue;
+    }
+
+    let jumpLine: number | undefined;
+    if (inHunk) {
+      if (line.startsWith('diff --git ')) {
+        inHunk = false;
+      } else if (line.startsWith(' ') || line === '') {
+        jumpLine = Math.max(1, newLine || oldLine || 1);
+        oldLine += 1;
+        newLine += 1;
+      } else if (line.startsWith('+') && !line.startsWith('+++')) {
+        jumpLine = Math.max(1, newLine || 1);
+        newLine += 1;
+      } else if (line.startsWith('-') && !line.startsWith('---')) {
+        jumpLine = Math.max(1, newLine || oldLine || 1);
+        oldLine += 1;
+      }
+    }
+
+    out.push({ raw: line, className: diffLineClass(line), jumpLine });
+  }
+
+  return out;
+};
+
+const DiffViewer: React.FC<{ text: string; wrap: boolean; onJumpToLine?: (line: number) => void }> = ({
+  text,
+  wrap,
+  onJumpToLine,
+}) => {
   const MAX_RICH_CHARS = 400_000;
   const MAX_RICH_LINES = 4000;
   const useRich = useMemo(() => {
@@ -436,7 +508,7 @@ const DiffViewer: React.FC<{ text: string; wrap: boolean }> = ({ text, wrap }) =
     return true;
   }, [text]);
 
-  const lines = useMemo(() => (useRich ? text.split('\n') : []), [text, useRich]);
+  const lines = useMemo(() => (useRich ? buildDiffRenderLines(text) : []), [text, useRich]);
   const cls = `max-h-[520px] overflow-auto rounded border bg-white p-2 text-xs font-mono text-gray-800 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-100 ${wrap ? 'whitespace-pre-wrap break-words' : 'whitespace-pre'}`;
 
   if (!useRich) {
@@ -447,25 +519,31 @@ const DiffViewer: React.FC<{ text: string; wrap: boolean }> = ({ text, wrap }) =
     );
   }
 
-  const lineClass = (line: string): string => {
-    if (line.startsWith('diff --git') || line.startsWith('index ') || line.startsWith('new file mode') || line.startsWith('deleted file mode') || line.startsWith('similarity index') || line.startsWith('rename from') || line.startsWith('rename to')) {
-      return 'text-gray-500 dark:text-gray-400';
-    }
-    if (line.startsWith('@@')) return 'text-blue-700 dark:text-blue-300';
-    if (line.startsWith('+++') || line.startsWith('---')) return 'text-gray-600 dark:text-gray-300';
-    if (line.startsWith('+')) return 'text-green-700 dark:text-green-300';
-    if (line.startsWith('-')) return 'text-red-700 dark:text-red-300';
-    return 'text-gray-800 dark:text-gray-100';
-  };
-
   return (
     <pre className={cls}>
-      {lines.map((line, idx) => (
-        <span key={idx} className={lineClass(line)}>
-          {line}
-          {'\n'}
-        </span>
-      ))}
+      {lines.map((line, idx) => {
+        const canJump = typeof line.jumpLine === 'number' && Boolean(onJumpToLine);
+        if (!canJump) {
+          return (
+            <span key={idx} className={line.className}>
+              {line.raw}
+              {'\n'}
+            </span>
+          );
+        }
+        return (
+          <button
+            key={idx}
+            type="button"
+            className={`block w-full p-0 text-left hover:bg-blue-50/80 dark:hover:bg-blue-900/20 ${line.className}`}
+            title={`跳转到文件第 ${line.jumpLine} 行`}
+            onClick={() => onJumpToLine?.(line.jumpLine!)}
+          >
+            {line.raw}
+            {'\n'}
+          </button>
+        );
+      })}
     </pre>
   );
 };
@@ -1069,15 +1147,25 @@ const ApplyPatchToolRunBlock: React.FC<{
 
 const TaskPatchSummaryCard: React.FC<{
   group: TaskPatchSummaryGroup;
-}> = ({ group }) => {
+  conversationId?: string;
+}> = ({ group, conversationId }) => {
   const canUseTauri = isTauri();
   const canLoad = Boolean(canUseTauri && group.repoRoot && group.ghostBefore && group.affectedPaths.length > 0);
   const canUndo = canLoad;
+  const sessionWorkstudioId = useSessionStore((state) => {
+    if (!conversationId) return null;
+    for (const s of state.sessions.values()) {
+      if (s.conversationId === conversationId) return s.workstudioId ?? null;
+    }
+    return null;
+  });
 
   const [isExpanded, setIsExpanded] = useState(true);
   const [diffLoading, setDiffLoading] = useState(false);
   const [diffError, setDiffError] = useState<string | null>(null);
   const [diffData, setDiffData] = useState<GitDiffCommitsResponse | null>(null);
+  const [activeFile, setActiveFile] = useState<string>('');
+  const [wrap, setWrap] = useState(true);
   const [refreshSeq, setRefreshSeq] = useState(0);
 
   const [undoBusy, setUndoBusy] = useState(false);
@@ -1132,6 +1220,96 @@ const TaskPatchSummaryCard: React.FC<{
     };
   }, [isExpanded, canLoad, group.key, group.ghostAfter, group.patchCount, refreshSeq]);
 
+  useEffect(() => {
+    const files = diffData?.files ?? [];
+    if (files.length === 0) {
+      if (activeFile) setActiveFile('');
+      return;
+    }
+    if (activeFile && !files.some((f) => f.path === activeFile)) {
+      setActiveFile('');
+    }
+  }, [diffData, activeFile]);
+
+  const diffByFile = useMemo(() => splitDiffByFile(diffData?.diff || ''), [diffData?.diff]);
+  const currentDiff = useMemo(() => {
+    if (!diffData?.diff) return '';
+    if (!activeFile) return '';
+    return diffByFile.get(activeFile) || '';
+  }, [diffData?.diff, diffByFile, activeFile]);
+
+  const activeFileLabel = useMemo(() => {
+    if (!activeFile || !diffData?.files?.length) return '';
+    const found = diffData.files.find((f) => f.path === activeFile);
+    if (!found) return activeFile;
+    if (found.status.startsWith('R') && found.oldPath) return `${found.oldPath} → ${found.path}`;
+    return found.path;
+  }, [diffData?.files, activeFile]);
+
+  const openFileInWorkstudio = useCallback(
+    async (filePath: string, line?: number | null) => {
+      if (!isTauri()) return;
+      try {
+        const [{ invoke }, { openOrFocusWorkstudioWindow }] = await Promise.all([
+          import('@tauri-apps/api/core'),
+          import('../../utils/viewWindow'),
+        ]);
+
+        let resolvedWorkstudioId = (sessionWorkstudioId ?? '').trim() || null;
+        let ws: Workstudio | null = null;
+
+        if (!resolvedWorkstudioId && conversationId) {
+          ws = await invoke<Workstudio>('ensure_workstudio_for_conversation', { conversationId });
+          resolvedWorkstudioId = ws.id;
+        }
+        if (!resolvedWorkstudioId) return;
+
+        if (!ws) {
+          try {
+            ws = await invoke<Workstudio | null>('get_workstudio', { workstudioId: resolvedWorkstudioId });
+          } catch {
+            ws = null;
+          }
+        }
+        if (!ws && conversationId) {
+          try {
+            ws = await invoke<Workstudio>('ensure_workstudio_for_conversation', { conversationId });
+            resolvedWorkstudioId = ws.id;
+          } catch {
+            ws = null;
+          }
+        }
+
+        const title = ws?.mainFolder ? `Workstudio: ${ws.mainFolder}` : 'Workstudio';
+        await openOrFocusWorkstudioWindow(title, {
+          workstudioId: resolvedWorkstudioId,
+          mainFolder: ws?.mainFolder ?? null,
+          filePath,
+          line: typeof line === 'number' && Number.isFinite(line) ? Math.max(1, Math.floor(line)) : undefined,
+        });
+      } catch (e) {
+        console.warn('task patch summary open file failed:', e);
+      }
+    },
+    [conversationId, sessionWorkstudioId]
+  );
+
+  const onClickFileRow = useCallback(
+    (path: string) => {
+      const nextActive = activeFile === path ? '' : path;
+      setActiveFile(nextActive);
+    },
+    [activeFile]
+  );
+
+  const onClickDiffLine = useCallback(
+    (line: number) => {
+      if (!activeFile) return;
+      void openFileInWorkstudio(activeFile, line);
+    },
+    [activeFile, openFileInWorkstudio]
+  );
+
   const doUndo = useCallback(async () => {
     if (!canUseTauri) return;
     if (!group.repoRoot || !group.ghostBefore || group.affectedPaths.length === 0) return;
@@ -1152,6 +1330,7 @@ const TaskPatchSummaryCard: React.FC<{
         },
       });
       setUndoMsg('已撤销。');
+      setActiveFile('');
       setDiffData(null);
       setDiffError(null);
       setRefreshSeq((v) => v + 1);
@@ -1205,24 +1384,57 @@ const TaskPatchSummaryCard: React.FC<{
           ) : diffError ? (
             <div className="px-4 py-3 text-xs text-red-700 dark:text-red-300">生成修改汇总失败：{diffError}</div>
           ) : diffData?.files?.length ? (
-            <div className="divide-y divide-gray-200 dark:divide-gray-800">
-              {diffData.files.map((f) => {
-                const plus = typeof f.added === 'number' ? f.added : 0;
-                const minus = typeof f.deleted === 'number' ? f.deleted : 0;
-                const label = f.status.startsWith('R') && f.oldPath ? `${f.oldPath} → ${f.path}` : f.path;
-                return (
-                  <div key={`${f.status}:${f.path}`} className="flex items-center justify-between gap-3 px-4 py-3">
-                    <div className="min-w-0 truncate font-mono text-sm font-semibold text-gray-900 dark:text-gray-100" title={label}>
-                      {label}
-                    </div>
-                    <div className="shrink-0 font-mono text-sm">
-                      <span className="text-green-700 dark:text-green-300">+{plus}</span>{' '}
-                      <span className="text-red-700 dark:text-red-300">-{minus}</span>
-                    </div>
+            <>
+              <div className="flex items-center justify-between gap-2 px-4 py-2 text-xs text-gray-600 dark:text-gray-300">
+                <span>点击文件名仅展开详情；点击下方具体 diff 行可跳转到 workspace</span>
+                <label className="inline-flex items-center gap-1">
+                  <input type="checkbox" checked={wrap} onChange={(e) => setWrap(e.target.checked)} />
+                  自动换行
+                </label>
+              </div>
+
+              <div className="divide-y divide-gray-200 dark:divide-gray-800">
+                {diffData.files.map((f) => {
+                  const plus = typeof f.added === 'number' ? f.added : 0;
+                  const minus = typeof f.deleted === 'number' ? f.deleted : 0;
+                  const label = f.status.startsWith('R') && f.oldPath ? `${f.oldPath} → ${f.path}` : f.path;
+                  const isActive = activeFile === f.path;
+                  return (
+                    <button
+                      key={`${f.status}:${f.path}`}
+                      type="button"
+                      onClick={() => void onClickFileRow(f.path)}
+                      className={`flex w-full items-center gap-3 px-4 py-3 text-left ${isActive ? 'bg-gray-50 dark:bg-gray-800/60' : 'hover:bg-gray-50 dark:hover:bg-gray-800/30'}`}
+                      title={label}
+                    >
+                      <div className="min-w-0 flex-1 truncate font-mono text-sm font-semibold text-gray-900 dark:text-gray-100">
+                        {label}
+                      </div>
+                      <div className="shrink-0 font-mono text-sm">
+                        <span className="text-green-700 dark:text-green-300">+{plus}</span>{' '}
+                        <span className="text-red-700 dark:text-red-300">-{minus}</span>
+                      </div>
+                      <span className="shrink-0 text-gray-400">{isActive ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {activeFile ? (
+                <div className="border-t border-gray-200 px-4 py-3 dark:border-gray-800">
+                  <div className="mb-2 truncate text-xs font-semibold text-gray-700 dark:text-gray-200" title={activeFileLabel || activeFile}>
+                    详情：{activeFileLabel || activeFile}
                   </div>
-                );
-              })}
-            </div>
+                  {currentDiff ? (
+                    <DiffViewer text={currentDiff} wrap={wrap} onJumpToLine={onClickDiffLine} />
+                  ) : (
+                    <div className="text-xs text-gray-600 dark:text-gray-300">
+                      当前文件暂无可展示的 diff（可能是二进制文件或仅元信息变化）。
+                    </div>
+                  )}
+                </div>
+              ) : null}
+            </>
           ) : (
             <div className="px-4 py-3 text-xs text-gray-600 dark:text-gray-300">无差异（已与快照一致）</div>
           )}
@@ -1232,14 +1444,18 @@ const TaskPatchSummaryCard: React.FC<{
   );
 };
 
-const TaskPatchSummary: React.FC<{ blocks: MessageBlock[]; isStreaming?: boolean }> = ({ blocks, isStreaming }) => {
+const TaskPatchSummary: React.FC<{ blocks: MessageBlock[]; isStreaming?: boolean; conversationId?: string }> = ({
+  blocks,
+  isStreaming,
+  conversationId,
+}) => {
   const groups = useMemo(() => buildTaskPatchSummaryGroups(blocks), [blocks]);
   const show = !Boolean(isStreaming) && groups.length > 0;
   if (!show) return null;
   return (
     <div className="mb-2">
       {groups.map((g) => (
-        <TaskPatchSummaryCard key={g.key} group={g} />
+        <TaskPatchSummaryCard key={g.key} group={g} conversationId={conversationId} />
       ))}
     </div>
   );
@@ -2837,7 +3053,7 @@ export const MessageBlocks: React.FC<{
         );
       })}
 
-	      <TaskPatchSummary blocks={blocks} isStreaming={isStreaming} />
+	      <TaskPatchSummary blocks={blocks} isStreaming={isStreaming} conversationId={conversationId} />
 
 	      {activeDebugTurn && (
 	        <DebugModal

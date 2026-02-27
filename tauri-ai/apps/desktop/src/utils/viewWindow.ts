@@ -396,6 +396,7 @@ export const openViewWindow = (
     column?: number;
     endLine?: number;
     endColumn?: number;
+    focus?: boolean;
     label?: string;
     window?: { x?: number; y?: number; width?: number; height?: number };
   }
@@ -497,6 +498,7 @@ export const openViewWindow = (
   const win = new WebviewWindow(label, {
     title: normalizedTitle,
     url,
+    focus: opts?.focus ?? true,
     width: Math.max(240, Math.floor(opts?.window?.width ?? 900)),
     height: Math.max(160, Math.floor(opts?.window?.height ?? 700)),
     ...(typeof opts?.window?.x === 'number' && typeof opts?.window?.y === 'number'
@@ -537,6 +539,7 @@ export const openOrFocusViewWindow = async (
     column?: number;
     endLine?: number;
     endColumn?: number;
+    focus?: boolean;
     label?: string;
     window?: { x?: number; y?: number; width?: number; height?: number };
   }
@@ -550,7 +553,9 @@ export const openOrFocusViewWindow = async (
         if (view === 'workstudio') {
           void existing.setTitle(normalizedTitle).catch(() => {});
         }
-        await existing.setFocus();
+        if (opts?.focus !== false) {
+          await existing.setFocus();
+        }
         return existing;
       }
     } catch {
@@ -652,6 +657,7 @@ export const openOrFocusViewWindow = async (
   const win = new WebviewWindow(label, {
     title: normalizedTitle,
     url,
+    focus: opts?.focus ?? true,
     width: Math.max(240, Math.floor(opts?.window?.width ?? 900)),
     height: Math.max(160, Math.floor(opts?.window?.height ?? 700)),
     ...(typeof opts?.window?.x === 'number' && typeof opts?.window?.y === 'number'

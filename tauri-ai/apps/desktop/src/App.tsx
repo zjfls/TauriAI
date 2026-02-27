@@ -355,6 +355,7 @@ function App() {
       const view = w.params.view;
       if (!view) continue;
       void openOrFocusViewWindow(view, w.title || view, {
+        focus: false,
         label: w.label,
         noDefaultSession: w.params.noDefaultSession,
         conversationId: w.params.conversationId ?? undefined,
