@@ -19,10 +19,14 @@ interface TerminalSessionState {
   sessions: Map<string, TerminalSessionEntry>;
 
   getSessionId: (scope: TerminalScope) => number | null;
-  ensureSession: (scope: TerminalScope, opts?: { workdir?: string | null }) => Promise<number | null>;
+  ensureSession: (
+    scope: TerminalScope,
+    opts?: { workdir?: string | null; initialSize?: { cols: number; rows: number } }
+  ) => Promise<number | null>;
   closeSession: (scope: TerminalScope) => Promise<boolean>;
 
   write: (scope: TerminalScope, chars: string) => Promise<void>;
+  resize: (scope: TerminalScope, size: { cols: number; rows: number }) => Promise<void>;
   readBase64: (
     scope: TerminalScope,
     opts: { timeoutMs: number; maxBytes: number }
@@ -47,9 +51,22 @@ export const useTerminalSessionStore = create<TerminalSessionState>((set, get) =
 
     const promise = (async (): Promise<number | null> => {
       try {
+        const cols =
+          typeof opts?.initialSize?.cols === 'number' && Number.isFinite(opts.initialSize.cols)
+            ? Math.max(1, Math.floor(opts.initialSize.cols))
+            : undefined;
+        const rows =
+          typeof opts?.initialSize?.rows === 'number' && Number.isFinite(opts.initialSize.rows)
+            ? Math.max(1, Math.floor(opts.initialSize.rows))
+            : undefined;
+        const isDark =
+          typeof document !== 'undefined' ? document.documentElement.classList.contains('dark') : undefined;
         const sid = await invoke<number>('terminal_create', {
           scope,
           workdir: (opts?.workdir ?? existing?.workdir ?? null) || undefined,
+          cols,
+          rows,
+          isDark,
         });
         const now = new Date().toISOString();
         set((state) => {
@@ -132,6 +149,31 @@ export const useTerminalSessionStore = create<TerminalSessionState>((set, get) =
       });
     } catch {
       // Session may have been invalidated (e.g., backend restart). Clear and allow re-create.
+      const key = scopeKey(scope);
+      set((state) => {
+        if (!state.sessions.has(key)) return {};
+        const next = new Map(state.sessions);
+        next.delete(key);
+        return { sessions: next };
+      });
+    }
+  },
+
+  resize: async (scope, size) => {
+    if (!isTauri()) return;
+    const sid = get().getSessionId(scope);
+    if (!sid) return;
+    const cols = Math.max(1, Math.floor(size.cols || 0));
+    const rows = Math.max(1, Math.floor(size.rows || 0));
+    try {
+      await invoke('terminal_resize', {
+        scope,
+        sessionId: sid,
+        cols,
+        rows,
+      });
+    } catch {
+      // Session gone/stale. Clear so next connect can create a new one.
       const key = scopeKey(scope);
       set((state) => {
         if (!state.sessions.has(key)) return {};

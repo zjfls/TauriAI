@@ -3,16 +3,19 @@ import { isTauri } from '@tauri-apps/api/core';
 import { Terminal as XTerm } from 'xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import 'xterm/css/xterm.css';
-import type { TerminalScope } from '../../types';
+import type { AnsiColorMode, TerminalScope } from '../../types';
 import { useTerminalSessionStore } from '../../stores/terminalSessionStore';
+import { useConfigStore } from '../../stores/configStore';
+import { resolveAnsiPalette } from '../../utils/ansi';
 
 const decodeBase64ToBytes = (base64: string) => Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
 
-const getTheme = () => {
+const getTheme = (ansiColorMode: AnsiColorMode = 'auto') => {
   const isDark = document.documentElement.classList.contains('dark');
+  const palette = resolveAnsiPalette(ansiColorMode, isDark ? 'dark' : 'light');
   // NOTE: xterm's default cursor color is close to white; in light mode that can become invisible.
   // Always set an explicit cursor color for contrast.
-  return isDark
+  const base = isDark
     ? {
         background: '#0b0f19',
         foreground: '#e5e7eb',
@@ -27,6 +30,26 @@ const getTheme = () => {
         cursorAccent: '#ffffff',
         selectionBackground: 'rgba(17, 24, 39, 0.18)',
       };
+
+  return {
+    ...base,
+    black: palette.normal[0],
+    red: palette.normal[1],
+    green: palette.normal[2],
+    yellow: palette.normal[3],
+    blue: palette.normal[4],
+    magenta: palette.normal[5],
+    cyan: palette.normal[6],
+    white: palette.normal[7],
+    brightBlack: palette.bright[0],
+    brightRed: palette.bright[1],
+    brightGreen: palette.bright[2],
+    brightYellow: palette.bright[3],
+    brightBlue: palette.bright[4],
+    brightMagenta: palette.bright[5],
+    brightCyan: palette.bright[6],
+    brightWhite: palette.bright[7],
+  };
 };
 
 const patchXtermRenderServiceDimensions = (term: XTerm) => {
@@ -137,6 +160,21 @@ export const TerminalSurface = React.forwardRef<TerminalSurfaceHandle, TerminalS
     const writeChainRef = useRef<Promise<void>>(Promise.resolve());
     const tickInFlightRef = useRef<boolean>(false);
     const tickPendingRef = useRef<boolean>(false);
+    const resizeTimerRef = useRef<number | null>(null);
+    const lastPtySizeRef = useRef<{ cols: number; rows: number } | null>(null);
+
+    const ansiColorMode = useConfigStore((s) => (s.config?.general?.ansiColorMode ?? 'auto') as AnsiColorMode);
+    const ansiColorModeRef = useRef<AnsiColorMode>(ansiColorMode);
+    useEffect(() => {
+      ansiColorModeRef.current = ansiColorMode;
+      const term = termRef.current;
+      if (!term) return;
+      try {
+        term.options.theme = getTheme(ansiColorModeRef.current);
+      } catch {
+        // ignore
+      }
+    }, [ansiColorMode]);
 
     // Important: `scope` is frequently passed as an inline object literal by parents.
     // If we depend on the object identity, React re-renders (e.g. chat streaming) would
@@ -177,8 +215,19 @@ export const TerminalSurface = React.forwardRef<TerminalSurfaceHandle, TerminalS
 
     const connect = useCallback(async (): Promise<number | null> => {
       manuallyDisconnectedRef.current = false;
-      const sid = await useTerminalSessionStore.getState().ensureSession(stableScope, { workdir });
+      const term = termRef.current;
+      const initialSize =
+        term && term.cols > 0 && term.rows > 0 ? { cols: term.cols, rows: term.rows } : undefined;
+      const sid = await useTerminalSessionStore
+        .getState()
+        .ensureSession(stableScope, { workdir, initialSize });
       schedule(0);
+      // Keep backend PTY size in sync with xterm so shells like PowerShell (PSReadLine)
+      // can render/calculate cursor positions correctly (especially on Windows).
+      if (sid && term && term.cols > 0 && term.rows > 0) {
+        lastPtySizeRef.current = { cols: term.cols, rows: term.rows };
+        void useTerminalSessionStore.getState().resize(stableScope, { cols: term.cols, rows: term.rows });
+      }
       return sid;
     }, [schedule, stableScope, workdir]);
 
@@ -227,15 +276,28 @@ export const TerminalSurface = React.forwardRef<TerminalSurfaceHandle, TerminalS
       const term = new XTerm({
         cursorBlink: true,
         scrollback: 5000,
-        convertEol: true,
+        // Windows ConPTY already uses CRLF; avoid double-converting and cursor drift.
+        convertEol: !(typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent)),
         fontSize: 12,
         fontFamily:
           'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
-        theme: getTheme(),
+        theme: getTheme(ansiColorModeRef.current),
       });
       const fit = new FitAddon();
       term.loadAddon(fit);
       let isOpened = false;
+
+      const scheduleResize = () => {
+        const t = termRef.current;
+        if (!t) return;
+        const cols = t.cols;
+        const rows = t.rows;
+        if (!cols || !rows) return;
+        const prev = lastPtySizeRef.current;
+        if (prev && prev.cols === cols && prev.rows === rows) return;
+        lastPtySizeRef.current = { cols, rows };
+        void useTerminalSessionStore.getState().resize(stableScope, { cols, rows });
+      };
 
       const tryOpenAndFit = () => {
         if (!containerRef.current) return;
@@ -260,6 +322,14 @@ export const TerminalSurface = React.forwardRef<TerminalSurfaceHandle, TerminalS
         try {
           if (term.element) {
             fit.fit();
+            // Sync backend PTY size after fit so the shell's idea of rows/cols matches xterm.
+            // Debounce to avoid spamming resize on rapid layout changes.
+            if (resizeTimerRef.current) window.clearTimeout(resizeTimerRef.current);
+            const gen = termGenRef.current;
+            resizeTimerRef.current = window.setTimeout(() => {
+              if (termGenRef.current !== gen) return;
+              scheduleResize();
+            }, 30);
           }
         } catch (e) {
           console.warn('xterm fit error on resize/mount:', e);
@@ -298,7 +368,7 @@ export const TerminalSurface = React.forwardRef<TerminalSurfaceHandle, TerminalS
         const term = termRef.current;
         if (!term) return;
         try {
-          term.options.theme = getTheme();
+          term.options.theme = getTheme(ansiColorModeRef.current);
         } catch {
           // ignore
         }
@@ -308,6 +378,10 @@ export const TerminalSurface = React.forwardRef<TerminalSurfaceHandle, TerminalS
       return () => {
         // Invalidate all pending callbacks (StrictMode will mount/unmount twice in dev).
         termGenRef.current += 1;
+        if (resizeTimerRef.current) {
+          window.clearTimeout(resizeTimerRef.current);
+          resizeTimerRef.current = null;
+        }
         if (fitOnceTimerRef.current) {
           window.clearTimeout(fitOnceTimerRef.current);
           fitOnceTimerRef.current = null;

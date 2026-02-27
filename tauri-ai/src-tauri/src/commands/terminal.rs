@@ -63,7 +63,7 @@ fn conv_key(scope: &TerminalScope) -> String {
     }
 }
 
-fn default_shell_command() -> Vec<String> {
+fn default_shell_command(is_dark: Option<bool>) -> Vec<String> {
     #[cfg(windows)]
     {
         // Windows UI terminal 固定走 PowerShell 体系（不再回退到 cmd）。
@@ -122,13 +122,26 @@ fn default_shell_command() -> Vec<String> {
         // - `chcp 65001` 影响原生控制台程序（GetConsoleOutputCP）
         // - `[Console]::OutputEncoding` 影响 PowerShell / native command 输出编码
         // - `$OutputEncoding` 影响 native command 管道编码
-        let init = "try { chcp 65001 | Out-Null } catch {}; try { [Console]::InputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new() } catch {}; $OutputEncoding = [Console]::OutputEncoding";
+        // PowerShell init script for the embedded UI terminal.
+        //
+        // Goals:
+        // - UTF-8 I/O to avoid mojibake.
+        // - Make input text more readable (use brighter colors).
+        let input_color = if is_dark.unwrap_or(false) { "White" } else { "Blue" };
+        let init = format!(
+            "try {{ chcp 65001 | Out-Null }} catch {{}}; \
+             try {{ [Console]::InputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new() }} catch {{}}; \
+             $OutputEncoding = [Console]::OutputEncoding; \
+             try {{ Import-Module PSReadLine -ErrorAction Stop }} catch {{}}; \
+             try {{ Set-PSReadLineOption -Colors @{{ Default='{c}'; Command='{c}'; Parameter='{c}'; String='{c}'; Number='{c}'; Operator='{c}'; Variable='{c}'; Type='{c}'; Member='{c}'; Keyword='{c}' }} }} catch {{}};",
+            c = input_color
+        );
         vec![
             shell,
             "-NoLogo".to_string(),
             "-NoExit".to_string(),
             "-Command".to_string(),
-            init.to_string(),
+            init,
         ]
     }
     #[cfg(not(windows))]
@@ -173,16 +186,25 @@ async fn ensure_session_owned(
 pub async fn terminal_create(
     scope: TerminalScope,
     workdir: Option<String>,
+    cols: Option<u16>,
+    rows: Option<u16>,
+    is_dark: Option<bool>,
     run_state: tauri::State<'_, Arc<RunState>>,
 ) -> Result<i32, String> {
     let conv = conv_key(&scope);
     let services = run_state.get_tool_services(&conv).await;
-    let cmd = default_shell_command();
+    let cmd = default_shell_command(is_dark);
     let dir = workdir.as_ref().map(PathBuf::from);
+    let size = portable_pty::PtySize {
+        cols: cols.unwrap_or(80).max(1),
+        rows: rows.unwrap_or(24).max(1),
+        pixel_width: 0,
+        pixel_height: 0,
+    };
 
     services
         .pty
-        .create_session(cmd, dir, &conv, "ui", PtySessionScope::Conversation)
+        .create_session(cmd, dir, &conv, "ui", PtySessionScope::Conversation, Some(size))
         .await
 }
 
@@ -208,6 +230,29 @@ pub async fn terminal_write(
     } else {
         Err("PTY writer 不可用".to_string())
     }
+}
+
+#[tauri::command]
+pub async fn terminal_resize(
+    scope: TerminalScope,
+    session_id: i32,
+    cols: u16,
+    rows: u16,
+    run_state: tauri::State<'_, Arc<RunState>>,
+) -> Result<(), String> {
+    let session = ensure_session_owned(&run_state, &scope, session_id).await?;
+    let guard = session.lock().await;
+    let cols = cols.max(1);
+    let rows = rows.max(1);
+    guard
+        ._master
+        .resize(portable_pty::PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|e| format!("resize pty 失败: {e}"))
 }
 
 #[tauri::command]

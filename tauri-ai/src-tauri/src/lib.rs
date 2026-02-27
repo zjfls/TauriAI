@@ -227,14 +227,6 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
         true,
         open_devtools_accelerator,
     )?;
-    #[cfg(debug_assertions)]
-    let unit_test_ghost = MenuItem::with_id(
-        app,
-        "unit_test_ghost",
-        "单元测试：显示 Ghost 窗口",
-        true,
-        Some("CmdOrCtrl+Shift+G"),
-    )?;
 
     // Find existing "File" submenu and insert at the top. If not found (e.g. Linux), create one.
     let mut file_submenu: Option<Submenu<R>> = None;
@@ -274,7 +266,7 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
 
     if let Some(view) = view_submenu {
         #[cfg(debug_assertions)]
-        view.insert_items(&[&unit_test_ghost, &open_devtools], 0)?;
+        view.insert_items(&[&open_devtools], 0)?;
         view.insert_items(
             &[
                 &open_practice,
@@ -299,7 +291,6 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
                 &open_web_tab,
                 &open_terminal_tab,
                 &view_separator,
-                &unit_test_ghost,
                 &open_devtools,
             ],
         )?;
@@ -421,8 +412,6 @@ fn run_desktop() {
     use crate::skills::watcher::{SkillsWatcher, SkillsWatcherState};
     use crate::storage::Database;
     use tauri::{Emitter, Manager, Url, WebviewUrl};
-    #[cfg(debug_assertions)]
-    use tauri::{PhysicalPosition, PhysicalSize};
     use tokio::sync::Mutex;
 
     println!("[Backend] TauriAI starting...");
@@ -615,120 +604,6 @@ fn run_desktop() {
                         });
                     });
                 }
-                "unit_test_ghost" => {
-                    // Debug-only: create (or reuse) exactly one ghost window and center it in main window.
-                    #[cfg(debug_assertions)]
-                    {
-                        let handle = app.clone();
-                        std::thread::spawn(move || {
-                            let handle2 = handle.clone();
-                            let _ = handle.run_on_main_thread(move || {
-                            const GHOST_LABEL: &str = "__tauriai_ghost__main";
-
-                            #[derive(Clone, serde::Serialize)]
-                            struct DragGhostUpdatePayload {
-                                title: String,
-                            }
-
-                            let main = match handle2.get_webview_window("main") {
-                                Some(w) => w,
-                                None => return,
-                            };
-
-                            let (main_pos, main_size) = (
-                                main.outer_position().ok(),
-                                main.outer_size().ok(),
-                            );
-
-                            let (ghost_w, ghost_h) = if let Some(size) = main_size {
-                                let w = (size.width as i32 / 5).max(240);
-                                let h = (size.height as i32 / 5).max(160);
-                                (w, h)
-                            } else {
-                                (420, 240)
-                            };
-
-                            let (x, y) = if let (Some(pos), Some(size)) = (main_pos, main_size) {
-                                (
-                                    pos.x + ((size.width as i32 - ghost_w) / 2),
-                                    pos.y + ((size.height as i32 - ghost_h) / 2),
-                                )
-                            } else {
-                                (80, 80)
-                            };
-
-                            // Reuse existing ghost window if present.
-                            if let Some(ghost) = handle2.get_webview_window(GHOST_LABEL) {
-                                let _ =
-                                    ghost.set_size(PhysicalSize::new(ghost_w as u32, ghost_h as u32));
-                                let _ = ghost.set_position(PhysicalPosition::new(x, y));
-                                let _ = ghost.show();
-                                let _ = ghost.set_focus();
-                                let _ = ghost.emit(
-                                    "drag-ghost:update",
-                                    DragGhostUpdatePayload {
-                                        title: "Unit Test Ghost (Menu)".to_string(),
-                                    },
-                                );
-                                return;
-                            }
-
-                            let webview_url = if cfg!(debug_assertions) {
-                                handle2
-                                    .config()
-                                    .build
-                                    .dev_url
-                                    .clone()
-                                    .and_then(|base| {
-                                        let base = base.as_str().trim_end_matches('/').to_string();
-                                        Url::parse(&format!(
-                                            "{base}/?view=drag-ghost&standalone=1&ghostTitle=Unit%20Test%20Ghost%20(Menu)"
-                                        ))
-                                        .ok()
-                                    })
-                                    .map(WebviewUrl::External)
-                                    .unwrap_or_else(|| {
-                                        WebviewUrl::App("index.html".into())
-                                    })
-                            } else {
-                                WebviewUrl::App("index.html".into())
-                            };
-
-                            let builder = tauri::WebviewWindowBuilder::new(
-                                &handle2,
-                                GHOST_LABEL.to_string(),
-                                webview_url,
-                            )
-                            .title("[GHOST] Unit Test")
-                            .decorations(true)
-                            .always_on_top(true)
-                            .skip_taskbar(true)
-                            .resizable(false)
-                            .inner_size(ghost_w as f64, ghost_h as f64);
-
-                            if let Ok(ghost) = builder.build() {
-                                // Use physical coordinates/sizes to avoid DPI scale-factor mismatches.
-                                let _ = ghost
-                                    .set_size(PhysicalSize::new(ghost_w as u32, ghost_h as u32));
-                                let _ = ghost.set_position(PhysicalPosition::new(x, y));
-                                let _ = ghost.show();
-                                let _ = ghost.set_focus();
-                                let _ = ghost.emit(
-                                    "drag-ghost:update",
-                                    DragGhostUpdatePayload {
-                                        title: "Unit Test Ghost (Menu)".to_string(),
-                                    },
-                                );
-                                #[cfg(debug_assertions)]
-                                println!(
-                                    "[unit_test_ghost] created and centered at ({}, {}) size=({}, {})",
-                                    x, y, ghost_w, ghost_h
-                                );
-                            }
-                            });
-                        });
-                    }
-                }
                 _ => {}
             }
         })
@@ -785,15 +660,17 @@ fn run_desktop() {
 				            save_workstudio_folder_analysis,
 				            workstudio_run_agent_stream,
 				            workstudio_abort_agent,
-			            // Workstudio terminal (UI)
+	            // Workstudio terminal (UI)
 		            workstudio_terminal_create,
 	            workstudio_terminal_write,
+	            workstudio_terminal_resize,
 	            workstudio_terminal_read,
 	            workstudio_terminal_read_base64,
 	            workstudio_terminal_close,
             // Unified terminal (UI)
             terminal_create,
             terminal_write,
+            terminal_resize,
             terminal_read,
             terminal_read_base64,
             terminal_close,

@@ -9,7 +9,8 @@ use std::sync::Arc;
 use crate::runtime::RunState;
 
 use super::terminal::{
-    terminal_close, terminal_create, terminal_read, terminal_read_base64, terminal_write,
+    terminal_close, terminal_create, terminal_read, terminal_read_base64, terminal_resize,
+    terminal_write,
     TerminalScope,
 };
 
@@ -17,11 +18,17 @@ use super::terminal::{
 pub async fn workstudio_terminal_create(
     workstudio_id: String,
     workdir: Option<String>,
+    cols: Option<u16>,
+    rows: Option<u16>,
+    is_dark: Option<bool>,
     run_state: tauri::State<'_, Arc<RunState>>,
 ) -> Result<i32, String> {
     terminal_create(
         TerminalScope::Workstudio { id: workstudio_id },
         workdir,
+        cols,
+        rows,
+        is_dark,
         run_state,
     )
     .await
@@ -38,6 +45,24 @@ pub async fn workstudio_terminal_write(
         TerminalScope::Workstudio { id: workstudio_id },
         session_id,
         chars,
+        run_state,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn workstudio_terminal_resize(
+    workstudio_id: String,
+    session_id: i32,
+    cols: u16,
+    rows: u16,
+    run_state: tauri::State<'_, Arc<RunState>>,
+) -> Result<(), String> {
+    terminal_resize(
+        TerminalScope::Workstudio { id: workstudio_id },
+        session_id,
+        cols,
+        rows,
         run_state,
     )
     .await

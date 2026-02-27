@@ -104,7 +104,8 @@ pub use run::{abort_run, retry_turn, run_task};
 pub use skills::{create_skill, list_skills};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use terminal::{
-    terminal_close, terminal_create, terminal_read, terminal_read_base64, terminal_write,
+    terminal_close, terminal_create, terminal_read, terminal_read_base64, terminal_resize,
+    terminal_write,
 };
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use tools::{close_pty_session, list_pty_sessions};
@@ -123,5 +124,5 @@ pub use workstudio_state::{get_workstudio_ui_state, set_workstudio_ui_state};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use workstudio_terminal::{
     workstudio_terminal_close, workstudio_terminal_create, workstudio_terminal_read,
-    workstudio_terminal_read_base64, workstudio_terminal_write,
+    workstudio_terminal_read_base64, workstudio_terminal_resize, workstudio_terminal_write,
 };

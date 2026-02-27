@@ -159,6 +159,7 @@ impl PtyService {
         conversation_id: &str,
         task_id: &str,
         scope: PtySessionScope,
+        initial_size: Option<portable_pty::PtySize>,
     ) -> Result<i32, String> {
         if command.is_empty() {
             return Err("pty command 为空".to_string());
@@ -173,13 +174,14 @@ impl PtyService {
         };
 
         let pty_system = portable_pty::native_pty_system();
+        let size = initial_size.unwrap_or(portable_pty::PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        });
         let pair = pty_system
-            .openpty(portable_pty::PtySize {
-                rows: 24,
-                cols: 80,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
+            .openpty(size)
             .map_err(|e| format!("openpty 失败: {e}"))?;
 
         let mut cmd = portable_pty::CommandBuilder::new(&command[0]);
