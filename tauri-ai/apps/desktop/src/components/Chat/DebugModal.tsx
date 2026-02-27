@@ -4,7 +4,7 @@
  */
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { X, ChevronDown, ChevronRight, Copy, Check, ChevronLeft } from 'lucide-react';
+import { X, ChevronDown, ChevronRight, Copy, Check, ChevronLeft, Maximize2 } from 'lucide-react';
 import type {
   DebugInfo,
   MessageBlock,
@@ -124,6 +124,10 @@ type StreamTerminationSummary = {
 
 type DebugModalPage = 'overview' | 'http_json' | 'http_text';
 type HttpDebugView = 'response' | 'request';
+type LargeTextViewerState = {
+  title: string;
+  text: string;
+};
 
 const maskSensitiveHeaders = (headers: Record<string, string>): Record<string, string> => {
   const masked: Record<string, string> = {};
@@ -365,6 +369,29 @@ const formatRequestBodyAsText = (body: unknown): string => {
   });
 
   return lines.join('\n').trimEnd();
+};
+
+const formatResponseBodyAsText = (body: unknown): string => {
+  if (typeof body === 'string') return toPrettyMaybeJson(body);
+  if (body === null || body === undefined) return '';
+  if (!isRecord(body)) return safeStringify(body);
+
+  const content = typeof body.content === 'string' ? body.content.trim() : '';
+  const thinking = typeof body.thinking === 'string' ? body.thinking.trim() : '';
+  const sections: string[] = [];
+
+  if (content) {
+    sections.push(content);
+  }
+  if (thinking) {
+    sections.push(`[thinking]\n${thinking}`);
+  }
+  if (sections.length > 0) {
+    return sections.join('\n\n');
+  }
+
+  const normalized = normalizeJsonLikeStrings(body);
+  return safeStringify(normalized, 2);
 };
 
 const maybeParseJsonContainerString = (raw: string): unknown | null => {
@@ -1093,11 +1120,13 @@ export const DebugModal: React.FC<DebugModalProps> = ({
   const [activeHttpView, setActiveHttpView] = useState<HttpDebugView>(
     messageRole === 'user' ? 'request' : 'response'
   );
+  const [largeTextViewer, setLargeTextViewer] = useState<LargeTextViewerState | null>(null);
 
   useEffect(() => {
     if (!isOpen) return;
     setActivePage('overview');
     setActiveHttpView(messageRole === 'user' ? 'request' : 'response');
+    setLargeTextViewer(null);
   }, [isOpen, messageRole]);
 
   useEffect(() => {
@@ -1217,6 +1246,22 @@ export const DebugModal: React.FC<DebugModalProps> = ({
     () => safeParseUrlParts(effectiveDebugInfo?.request?.url ?? ''),
     [effectiveDebugInfo?.request?.url]
   );
+  const requestHeadersText = useMemo(
+    () => headersToText(effectiveDebugInfo?.request?.headers),
+    [effectiveDebugInfo?.request?.headers]
+  );
+  const requestBodyText = useMemo(() => {
+    const text = formatRequestBodyAsText(effectiveDebugInfo?.request?.body).trim();
+    return text.length > 0 ? text : '(空请求体)';
+  }, [effectiveDebugInfo?.request?.body]);
+  const responseHeadersText = useMemo(
+    () => headersToText(effectiveDebugInfo?.response?.headers),
+    [effectiveDebugInfo?.response?.headers]
+  );
+  const responseBodyText = useMemo(() => {
+    const text = formatResponseBodyAsText(effectiveDebugInfo?.response?.body).trim();
+    return text.length > 0 ? text : '(空响应体)';
+  }, [effectiveDebugInfo?.response?.body]);
   const providerEndReason = useMemo<ProviderEndReason | null>(() => {
     const body = effectiveDebugInfo?.response?.body as any;
     if (!body || typeof body !== 'object') return null;
@@ -1450,15 +1495,8 @@ export const DebugModal: React.FC<DebugModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      {/* Backdrop */}
-      <div
-        className="absolute inset-0 bg-black/50"
-        onClick={onClose}
-      />
-
-      {/* Modal */}
-      <div className="relative w-full max-w-3xl max-h-[80vh] bg-white dark:bg-gray-900 rounded-xl shadow-2xl overflow-hidden">
+    <div className="fixed inset-0 z-50 pointer-events-none">
+      <div className="pointer-events-auto absolute left-1/2 top-14 -translate-x-1/2 w-full max-w-3xl max-h-[80vh] bg-white dark:bg-gray-900 rounded-xl shadow-2xl overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 dark:border-gray-700">
           <h2 className="text-lg font-semibold text-gray-800 dark:text-white">
@@ -2006,7 +2044,11 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                             </CollapsibleSection>
 
                             <CollapsibleSection title="请求体（JSON）" defaultExpanded>
-                              <JsonViewer data={effectiveDebugInfo.request.body} />
+                              <StructuredJsonTextViewer
+                                data={effectiveDebugInfo.request.body}
+                                maxHeightClassName="max-h-[50vh]"
+                                emptyText="(空请求体)"
+                              />
                             </CollapsibleSection>
                           </div>
                         </CollapsibleSection>
@@ -2036,7 +2078,11 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                           </CollapsibleSection>
 
                           <CollapsibleSection title="响应体（JSON）" defaultExpanded>
-                            <JsonViewer data={effectiveDebugInfo.response.body} />
+                            <StructuredJsonTextViewer
+                              data={effectiveDebugInfo.response.body}
+                              maxHeightClassName="max-h-[50vh]"
+                              emptyText="(空响应体)"
+                            />
                           </CollapsibleSection>
                         </div>
                       </CollapsibleSection>
@@ -2094,23 +2140,37 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                               ) : null}
                             </div>
 
-                            <CollapsibleSection title="请求头（文本）" defaultExpanded>
-                              <TextViewer
-                                text={headersToText(effectiveDebugInfo.request.headers)}
-                                maxHeightClassName="max-h-56"
-                              />
-                            </CollapsibleSection>
+                          <CollapsibleSection title="请求头（文本）" defaultExpanded>
+                            <TextViewer
+                              text={requestHeadersText}
+                              maxHeightClassName="max-h-56"
+                            />
+                          </CollapsibleSection>
 
-                            <CollapsibleSection title="请求体（文本）" defaultExpanded>
-                              <StructuredJsonTextViewer
-                                data={effectiveDebugInfo.request.body}
+                          <CollapsibleSection title="请求体（文本）" defaultExpanded>
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-end">
+                                <button
+                                  type="button"
+                                  className="inline-flex items-center gap-1 rounded-md border border-gray-200 px-2 py-1 text-[11px] font-medium text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                                  onClick={() =>
+                                    setLargeTextViewer({
+                                      title: 'HTTP 请求体（文本）',
+                                      text: requestBodyText,
+                                    })
+                                  }
+                                >
+                                  <Maximize2 size={12} />
+                                  大窗口查看
+                                </button>
+                              </div>
+                              <TextViewer
+                                text={requestBodyText}
                                 maxHeightClassName="max-h-[50vh]"
-                                emptyText={
-                                  formatRequestBodyAsText(effectiveDebugInfo.request.body).trim() ||
-                                  '(空请求体)'
-                                }
+                                containerClassName="bg-gray-50 dark:bg-gray-800/40 text-gray-800 dark:text-gray-200"
                               />
-                            </CollapsibleSection>
+                            </div>
+                          </CollapsibleSection>
                           </div>
                         </CollapsibleSection>
                       ) : (
@@ -2138,17 +2198,34 @@ export const DebugModal: React.FC<DebugModalProps> = ({
 
                           <CollapsibleSection title="响应头（文本）" defaultExpanded>
                             <TextViewer
-                              text={headersToText(effectiveDebugInfo.response.headers)}
+                              text={responseHeadersText}
                               maxHeightClassName="max-h-56"
                             />
                           </CollapsibleSection>
 
                           <CollapsibleSection title="响应体（文本）" defaultExpanded>
-                            <StructuredJsonTextViewer
-                              data={responseBodyForDisplay}
-                              maxHeightClassName="max-h-[50vh]"
-                              emptyText="(空响应体)"
-                            />
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-end">
+                                <button
+                                  type="button"
+                                  className="inline-flex items-center gap-1 rounded-md border border-gray-200 px-2 py-1 text-[11px] font-medium text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                                  onClick={() =>
+                                    setLargeTextViewer({
+                                      title: 'HTTP 响应体（文本）',
+                                      text: responseBodyText,
+                                    })
+                                  }
+                                >
+                                  <Maximize2 size={12} />
+                                  大窗口查看
+                                </button>
+                              </div>
+                              <TextViewer
+                                text={responseBodyText}
+                                maxHeightClassName="max-h-[50vh]"
+                                containerClassName="bg-gray-50 dark:bg-gray-800/40 text-gray-800 dark:text-gray-200"
+                              />
+                            </div>
                           </CollapsibleSection>
                         </div>
                       </CollapsibleSection>
@@ -2164,6 +2241,46 @@ export const DebugModal: React.FC<DebugModalProps> = ({
           </div>
         </div>
       </div>
+      {largeTextViewer && (
+        <div
+          className="pointer-events-auto absolute inset-0 z-[60] bg-black/50 flex items-center justify-center p-4"
+          onClick={() => setLargeTextViewer(null)}
+        >
+          <div
+            className="w-[min(95vw,1200px)] h-[min(92vh,920px)] bg-white dark:bg-gray-900 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700 overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+              <div className="text-sm font-semibold text-gray-800 dark:text-gray-100">
+                {largeTextViewer.title}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="rounded-md px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(largeTextViewer.text);
+                  }}
+                >
+                  复制
+                </button>
+                <button
+                  type="button"
+                  className="p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500"
+                  onClick={() => setLargeTextViewer(null)}
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+            <div className="h-[calc(100%-48px)] p-4 overflow-auto">
+              <pre className="min-h-full rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs whitespace-pre-wrap break-words text-gray-800 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-200">
+                {largeTextViewer.text}
+              </pre>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
