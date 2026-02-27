@@ -2925,6 +2925,9 @@ export const MessageBlocks: React.FC<{
       {visibleGroups.map((g, idx) => {
         const turnMeta = g.turnId ? turnMetaById.get(g.turnId) : undefined;
         const turnIndex = turnMeta?.turnIndex ?? g.turnIndex ?? idx + 1;
+        const contextTrim = turnMeta?.contextTrim;
+        const trimmedRemovedMessages = Math.max(0, contextTrim?.removedMessages ?? 0);
+        const hasContextTrimmed = Boolean(contextTrim && trimmedRemovedMessages > 0);
         const debugInfo = turnMeta?.debugInfo;
         // debugMode 只影响“采集”，不影响“查看历史里已经存在的 debug 数据”。
         const hasTurnStats = Boolean(turnMeta?.usage) || Boolean(turnMeta?.contextTrim);
@@ -2953,6 +2956,15 @@ export const MessageBlocks: React.FC<{
                   >
                     第 {turnIndex} 轮
                   </div>
+	                  {hasContextTrimmed ? (
+	                    <span
+	                      className="inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-200"
+	                      title={`本轮发生上下文裁剪：移除 ${trimmedRemovedMessages} 条消息，估算 tokens ${contextTrim?.estimatedTokensBefore ?? '-'} → ${contextTrim?.estimatedTokensAfter ?? '-'}`}
+	                    >
+	                      <AlertTriangle size={11} />
+	                      <span>已裁剪{trimmedRemovedMessages > 0 ? ` ${trimmedRemovedMessages}` : ''}</span>
+	                    </span>
+	                  ) : null}
 	                </div>
 	
 	                <div className="flex items-center gap-2">

@@ -235,23 +235,92 @@ pub fn estimate_prompt_tokens(messages: &[Message]) -> u32 {
     // - add per-message structural overhead
     let mut total = 0u32;
     for m in messages {
-        total = total.saturating_add(8); // message envelope overhead
+        total = total.saturating_add(estimate_message_tokens(m));
+    }
+    total
+}
 
-        total = total.saturating_add(approx_tokens_for_text(role_to_str(&m.role)));
-        total = total.saturating_add(approx_tokens_for_text(m.content.as_str()));
-        if let Some(t) = m.thinking.as_ref() {
-            total = total.saturating_add(approx_tokens_for_text(t.as_str()));
-        }
+fn estimate_message_tokens(message: &Message) -> u32 {
+    let mut total = 8u32; // message envelope overhead
 
-        if !m.content_parts.is_empty() {
-            if let Ok(s) = serde_json::to_string(&m.content_parts) {
-                total = total.saturating_add(approx_tokens_for_text(s.as_str()));
-            }
-        }
-        if let Some(meta) = m.meta.as_ref() {
-            total = total.saturating_add(estimate_prompt_meta_tokens(meta));
+    total = total.saturating_add(approx_tokens_for_text(role_to_str(&message.role)));
+    total = total.saturating_add(approx_tokens_for_text(message.content.as_str()));
+
+    if let Some(t) = message.thinking.as_ref() {
+        total = total.saturating_add(approx_tokens_for_text(t.as_str()));
+    }
+
+    if !message.content_parts.is_empty() {
+        if let Ok(s) = serde_json::to_string(&message.content_parts) {
+            total = total.saturating_add(approx_tokens_for_text(s.as_str()));
         }
     }
+
+    if let Some(meta) = message.meta.as_ref() {
+        total = total.saturating_add(estimate_prompt_meta_tokens(meta));
+    }
+
+    total
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TrimUnit {
+    start: usize,
+    end: usize,
+    estimated_tokens: u32,
+}
+
+fn build_turn_trim_units(messages: &[Message], message_tokens: &[u32]) -> (usize, Vec<TrimUnit>) {
+    let system_prefix_len = messages
+        .iter()
+        .take_while(|m| m.role == MessageRole::System)
+        .count();
+
+    let mut units: Vec<TrimUnit> = Vec::new();
+    let mut index = system_prefix_len;
+    while index < messages.len() {
+        let start = index;
+        index += 1;
+        while index < messages.len() && messages[index].role != MessageRole::User {
+            index += 1;
+        }
+
+        let estimated_tokens = message_tokens[start..index]
+            .iter()
+            .copied()
+            .fold(0u32, |acc, t| acc.saturating_add(t));
+
+        units.push(TrimUnit {
+            start,
+            end: index,
+            estimated_tokens,
+        });
+    }
+
+    (system_prefix_len, units)
+}
+
+fn estimate_prompt_meta_tokens(meta: &MessageMeta) -> u32 {
+    // 只估算“可能真正进入模型请求体”的 meta 字段，避免把 UI/审计元数据
+    // （例如 blocks/turns/usage/context_compaction）错误计入，导致过早 hard trim。
+    let mut total = 0u32;
+
+    if let Some(tool_call_id) = meta.tool_call_id.as_ref() {
+        // role=tool 时常见，通常会被转发给 provider。
+        total = total
+            .saturating_add(2)
+            .saturating_add(approx_tokens_for_text(tool_call_id.as_str()));
+    }
+
+    if let Some(tool_calls) = meta.tool_calls.as_ref() {
+        for call in tool_calls {
+            total = total.saturating_add(4); // per-call envelope
+            total = total.saturating_add(approx_tokens_for_text(call.id.as_str()));
+            total = total.saturating_add(approx_tokens_for_text(call.name.as_str()));
+            total = total.saturating_add(approx_tokens_for_text(call.arguments.as_str()));
+        }
+    }
+
     total
 }
 
@@ -286,22 +355,6 @@ fn approx_tokens_for_text(text: &str) -> u32 {
     u32::try_from(tokens.ceil() as i64).unwrap_or(u32::MAX)
 }
 
-fn estimate_prompt_meta_tokens(meta: &MessageMeta) -> u32 {
-    let mut total = 0u32;
-    if let Some(tool_call_id) = meta.tool_call_id.as_deref() {
-        total = total.saturating_add(approx_tokens_for_text(tool_call_id));
-        total = total.saturating_add(2);
-    }
-    if let Some(tool_calls) = meta.tool_calls.as_ref() {
-        if let Ok(s) = serde_json::to_string(tool_calls) {
-            total = total.saturating_add(approx_tokens_for_text(s.as_str()));
-            total = total.saturating_add(4);
-        }
-    }
-
-    total
-}
-
 pub fn hard_limit_tokens(context_length: u32, hard_limit_percent: u8) -> u32 {
     let pct = u32::from(hard_limit_percent.clamp(1, 99));
     context_length.saturating_mul(pct) / 100
@@ -312,14 +365,14 @@ pub fn auto_compact_threshold_tokens(context_length: u32, threshold_percent: u8)
     context_length.saturating_mul(pct) / 100
 }
 
-/// Trim the *runtime prompt* to fit into a hard limit by removing oldest non-system messages.
+/// Trim the *runtime prompt* to fit into a hard limit by removing oldest full turns.
 ///
 /// - Preserves all leading `system` messages.
-/// - Preserves the latest non-system message.
-/// - Preserves the latest `user` message (important for retry/replay flows where
-///   assistant/tool replay messages may appear after the user message).
+/// - Preserves turn atomicity: each removable unit is a whole `user -> assistant/tool*` chain.
+/// - Preserves the newest turn unit (active suffix) to avoid deleting in-flight context.
+/// - Never deletes only half of a request/response pair.
 pub fn trim_runtime_messages_to_hard_limit(
-    mut messages: Vec<Message>,
+    messages: Vec<Message>,
     hard_limit_tokens: u32,
     trim_target_tokens: u32,
 ) -> ContextTrimResult {
@@ -335,54 +388,49 @@ pub fn trim_runtime_messages_to_hard_limit(
     }
 
     let target_tokens = trim_target_tokens.min(hard_limit_tokens).max(1);
-    let first_non_system = messages
-        .iter()
-        .position(|m| m.role != MessageRole::System)
-        .unwrap_or(messages.len());
+    let message_tokens: Vec<u32> = messages.iter().map(estimate_message_tokens).collect();
+    let (system_prefix_len, units) = build_turn_trim_units(&messages, &message_tokens);
+    if units.is_empty() {
+        return ContextTrimResult {
+            trimmed_messages: messages,
+            removed_messages: 0,
+            estimated_tokens_before: estimated_before,
+            estimated_tokens_after: estimated_before,
+            hard_limit_tokens,
+        };
+    }
 
+    let protected_last_idx = units.len().saturating_sub(1);
+    let mut keep: Vec<bool> = vec![true; units.len()];
     let mut removed = 0usize;
-    loop {
-        let cur = estimate_prompt_tokens(&messages);
-        if cur <= target_tokens {
-            return ContextTrimResult {
-                trimmed_messages: messages,
-                removed_messages: removed,
-                estimated_tokens_before: estimated_before,
-                estimated_tokens_after: cur,
-                hard_limit_tokens,
-            };
+    let mut estimated_after = estimated_before;
+
+    for idx in 0..protected_last_idx {
+        if estimated_after <= target_tokens {
+            break;
         }
 
-        let latest_non_system_idx = messages.iter().rposition(|m| m.role != MessageRole::System);
-        let latest_user_idx = messages.iter().rposition(|m| m.role == MessageRole::User);
+        keep[idx] = false;
+        removed += units[idx].end.saturating_sub(units[idx].start);
+        estimated_after = estimated_after.saturating_sub(units[idx].estimated_tokens);
+    }
 
-        // Remove the oldest non-system message that is NOT protected.
-        let removable_idx = (first_non_system..messages.len()).find(|idx| {
-            if messages[*idx].role == MessageRole::System {
-                return false;
-            }
-            if Some(*idx) == latest_non_system_idx {
-                return false;
-            }
-            if Some(*idx) == latest_user_idx {
-                return false;
-            }
-            true
-        });
+    let mut trimmed_messages: Vec<Message> = Vec::with_capacity(messages.len().saturating_sub(removed));
+    trimmed_messages.extend(messages[..system_prefix_len].iter().cloned());
+    for (idx, unit) in units.iter().enumerate() {
+        if keep[idx] {
+            trimmed_messages.extend(messages[unit.start..unit.end].iter().cloned());
+        }
+    }
 
-        let Some(idx) = removable_idx else {
-            // Cannot trim further without dropping protected messages.
-            return ContextTrimResult {
-                trimmed_messages: messages,
-                removed_messages: removed,
-                estimated_tokens_before: estimated_before,
-                estimated_tokens_after: cur,
-                hard_limit_tokens,
-            };
-        };
-
-        messages.remove(idx);
-        removed += 1;
+    // 保险起见使用重算值（与逐条估算可能存在微小偏差时，以最终结果为准）。
+    estimated_after = estimate_prompt_tokens(&trimmed_messages);
+    ContextTrimResult {
+        trimmed_messages,
+        removed_messages: removed,
+        estimated_tokens_before: estimated_before,
+        estimated_tokens_after: estimated_after,
+        hard_limit_tokens,
     }
 }
 
@@ -486,6 +534,27 @@ mod tests {
     }
 
     #[test]
+    fn estimate_should_include_tool_call_meta() {
+        let baseline = mk_message(MessageRole::Assistant, "");
+        let mut with_tool_calls = baseline.clone();
+        with_tool_calls.meta = Some(MessageMeta {
+            tool_calls: Some(vec![crate::ai_client::ToolCall {
+                id: "call_123".to_string(),
+                name: "read_file".to_string(),
+                arguments: "{\"path\":\"a.txt\"}".to_string(),
+            }]),
+            ..Default::default()
+        });
+
+        let baseline_tokens = estimate_prompt_tokens(&[baseline]);
+        let with_meta_tokens = estimate_prompt_tokens(&[with_tool_calls]);
+        assert!(
+            with_meta_tokens > baseline_tokens,
+            "tool_call metadata should contribute to estimation"
+        );
+    }
+
+    #[test]
     fn trim_triggers_on_hard_limit_but_trims_to_target() {
         let messages = vec![
             mk_message(MessageRole::System, "system prompt"),
@@ -504,6 +573,39 @@ mod tests {
             result.estimated_tokens_after <= 300,
             "should trim to target watermark, after={}",
             result.estimated_tokens_after
+        );
+    }
+
+    #[test]
+    fn trim_removes_whole_turn_without_orphan_messages() {
+        let messages = vec![
+            mk_message(MessageRole::System, "system prompt"),
+            mk_message(MessageRole::User, &"u".repeat(2400)),
+            mk_message(MessageRole::Assistant, &"a".repeat(2200)),
+            mk_message(MessageRole::Tool, "tool_result_for_turn_1"),
+            mk_message(MessageRole::User, "latest user"),
+            mk_message(MessageRole::Assistant, "latest assistant"),
+        ];
+
+        let result = trim_runtime_messages_to_hard_limit(messages, 500, 300);
+        let roles: Vec<MessageRole> = result
+            .trimmed_messages
+            .iter()
+            .map(|m| m.role.clone())
+            .collect();
+
+        assert!(
+            !roles.contains(&MessageRole::Tool),
+            "turn-level trim must not leave tool-only orphan fragments"
+        );
+        assert_eq!(
+            roles,
+            vec![
+                MessageRole::System,
+                MessageRole::User,
+                MessageRole::Assistant,
+            ],
+            "old turn should be removed as a full unit; latest turn must remain intact"
         );
     }
 

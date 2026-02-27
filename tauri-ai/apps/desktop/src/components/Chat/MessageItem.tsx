@@ -278,6 +278,23 @@ export const MessageItem = React.memo(function MessageItem({
   const hasDebugInfo =
     Boolean(message.debugInfo) ||
     Boolean(message.turns?.some((t) => t.debugInfo || t.hasDebugInfo));
+  const trimmedTurnSummary = useMemo(() => {
+    const turns = message.turns ?? [];
+    let trimmedTurnCount = 0;
+    let removedMessagesTotal = 0;
+    for (const turn of turns) {
+      const trim = turn.contextTrim;
+      if (!trim) continue;
+      const removed = Math.max(0, trim.removedMessages ?? 0);
+      if (removed > 0) {
+        trimmedTurnCount += 1;
+        removedMessagesTotal += removed;
+      }
+    }
+    if (trimmedTurnCount <= 0) return null;
+    return { trimmedTurnCount, removedMessagesTotal };
+  }, [message.turns]);
+  const hasTrimmedTurns = Boolean(trimmedTurnSummary);
 
   const isUser = message.role === 'user';
   const isAssistant = message.role === 'assistant';
@@ -397,7 +414,7 @@ export const MessageItem = React.memo(function MessageItem({
           }`}
       >
         {/* Model name label for assistant messages */}
-        {isAssistant && (message.meta?.model || message.usage) && (
+        {isAssistant && (message.meta?.model || message.usage || hasTrimmedTurns) && (
           <div className="mb-1 text-xs text-gray-500 dark:text-gray-400">
             {message.meta?.model}
             {/* Token usage display: input/output/total */}
@@ -411,6 +428,17 @@ export const MessageItem = React.memo(function MessageItem({
                 {message.usage.cacheReadInputTokens ? ` (${message.usage.cacheReadInputTokens} cache read)` : ''}
               </span>
             )}
+            {trimmedTurnSummary ? (
+              <span className={message.meta?.model || (showUsage && message.usage) ? 'ml-2' : ''}>
+                <span
+                  className="inline-flex items-center rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-200"
+                  title={`有 ${trimmedTurnSummary.trimmedTurnCount} 轮发生上下文裁剪${trimmedTurnSummary.removedMessagesTotal > 0 ? `，共移除 ${trimmedTurnSummary.removedMessagesTotal} 条消息` : ''}`}
+                >
+                  裁剪×{trimmedTurnSummary.trimmedTurnCount}
+                  {trimmedTurnSummary.removedMessagesTotal > 0 ? ` / -${trimmedTurnSummary.removedMessagesTotal}条` : ''}
+                </span>
+              </span>
+            ) : null}
           </div>
         )}
 
