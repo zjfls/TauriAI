@@ -408,13 +408,37 @@ const maybeParseJsonContainerString = (raw: string): unknown | null => {
   }
 };
 
+const maybeParseJsonStringLiteral = (raw: string): string | null => {
+  const text = raw.trim();
+  if (text.length < 2) return null;
+  if (!text.startsWith('"') || !text.endsWith('"')) return null;
+  try {
+    const parsed = JSON.parse(text);
+    return typeof parsed === 'string' ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+
 const normalizeJsonLikeStrings = (value: unknown, depth: number = 0): unknown => {
   if (depth > 10) return value;
 
   if (typeof value === 'string') {
     const parsed = maybeParseJsonContainerString(value);
-    if (parsed === null) return value;
-    return normalizeJsonLikeStrings(parsed, depth + 1);
+    if (parsed !== null) {
+      return normalizeJsonLikeStrings(parsed, depth + 1);
+    }
+
+    const decoded = maybeParseJsonStringLiteral(value);
+    if (decoded !== null) {
+      const reparsed = maybeParseJsonContainerString(decoded);
+      if (reparsed !== null) {
+        return normalizeJsonLikeStrings(reparsed, depth + 1);
+      }
+      return decoded;
+    }
+
+    return value;
   }
 
   if (Array.isArray(value)) {
@@ -453,6 +477,15 @@ const shouldRenderStringAsTextBlock = (value: string, fieldName?: string): boole
   if (value.includes('\n')) return true;
   if (value.length > 140) return true;
   return isTextualFieldName(fieldName);
+};
+
+const normalizeStringForDisplay = (value: string): string => {
+  if (!value) return value;
+  if (!value.includes('\\n') && !value.includes('\\r')) return value;
+  return value
+    .replace(/\\r\\n/g, '\n')
+    .replace(/\\n/g, '\n')
+    .replace(/\\r/g, '\n');
 };
 
 const inlinePrimitiveText = (value: unknown): string => {
@@ -528,6 +561,7 @@ const StructuredJsonNode: React.FC<{
   }
 
   if (typeof value === 'string' && shouldRenderStringAsTextBlock(value, name)) {
+    const normalizedText = normalizeStringForDisplay(value);
     return (
       <div className="space-y-1">
         {name && (
@@ -536,7 +570,7 @@ const StructuredJsonNode: React.FC<{
           </div>
         )}
         <pre className="rounded border border-gray-200 bg-white/80 px-2 py-1 text-xs whitespace-pre-wrap break-words text-gray-800 dark:border-gray-700 dark:bg-black/20 dark:text-gray-100">
-          {value || '(空字符串)'}
+          {normalizedText || '(空字符串)'}
         </pre>
       </div>
     );
