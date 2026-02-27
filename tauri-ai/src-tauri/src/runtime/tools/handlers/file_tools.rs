@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -815,6 +816,7 @@ async fn run_rg_search(
     // Windows 下默认会弹出命令行窗口；rg 属于短命令高频调用，避免影响用户体验。
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
+    command.stdin(Stdio::null());
     command
         .arg("--files-with-matches")
         .arg("--sortr=modified")
