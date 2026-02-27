@@ -116,6 +116,7 @@ type StreamTerminationSummary = {
 };
 
 type DebugModalPage = 'overview' | 'http_json' | 'http_text';
+type HttpDebugView = 'response' | 'request';
 
 const maskSensitiveHeaders = (headers: Record<string, string>): Record<string, string> => {
   const masked: Record<string, string> = {};
@@ -879,11 +880,15 @@ export const DebugModal: React.FC<DebugModalProps> = ({
   );
   const [turnPage, setTurnPage] = useState(0);
   const [activePage, setActivePage] = useState<DebugModalPage>('overview');
+  const [activeHttpView, setActiveHttpView] = useState<HttpDebugView>(
+    messageRole === 'user' ? 'request' : 'response'
+  );
 
   useEffect(() => {
     if (!isOpen) return;
     setActivePage('overview');
-  }, [isOpen]);
+    setActiveHttpView(messageRole === 'user' ? 'request' : 'response');
+  }, [isOpen, messageRole]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -937,6 +942,67 @@ export const DebugModal: React.FC<DebugModalProps> = ({
     loadedForActive !== undefined ? loadedForActive : activeTurn?.debugInfo ?? debugInfo;
   const isLoadingDebug = Boolean(activeTurnId && loadingTurnId === activeTurnId);
   const httpStatus = effectiveDebugInfo?.response?.status ?? null;
+  const hasHttpResponse = Boolean(effectiveDebugInfo?.response);
+  const hasHttpRequest = Boolean(effectiveDebugInfo?.request);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    if (activeHttpView === 'response' && !hasHttpResponse && hasHttpRequest) {
+      setActiveHttpView('request');
+      return;
+    }
+    if (activeHttpView === 'request' && !hasHttpRequest && hasHttpResponse) {
+      setActiveHttpView('response');
+    }
+  }, [isOpen, activeHttpView, hasHttpResponse, hasHttpRequest]);
+
+  const httpViewTabs = useMemo(() => {
+    if (!hasHttpResponse && !hasHttpRequest) return null;
+    const responseDisabled = !hasHttpResponse;
+    const requestDisabled = !hasHttpRequest;
+
+    const activeClass = 'bg-gray-200 text-gray-900 dark:bg-gray-800 dark:text-gray-100';
+    const inactiveClass =
+      'bg-white text-gray-600 hover:bg-gray-50 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800';
+    const disabledClass =
+      'bg-white text-gray-300 dark:bg-gray-900 dark:text-gray-700 cursor-not-allowed';
+
+    return (
+      <div
+        className="inline-flex rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden"
+        title="切换 HTTP 请求/响应"
+      >
+        <button
+          type="button"
+          onClick={() => !responseDisabled && setActiveHttpView('response')}
+          disabled={responseDisabled}
+          className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+            responseDisabled
+              ? disabledClass
+              : activeHttpView === 'response'
+                ? activeClass
+                : inactiveClass
+          }`}
+        >
+          响应
+        </button>
+        <button
+          type="button"
+          onClick={() => !requestDisabled && setActiveHttpView('request')}
+          disabled={requestDisabled}
+          className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+            requestDisabled
+              ? disabledClass
+              : activeHttpView === 'request'
+                ? activeClass
+                : inactiveClass
+          }`}
+        >
+          请求
+        </button>
+      </div>
+    );
+  }, [activeHttpView, hasHttpResponse, hasHttpRequest]);
   const requestUrlParts = useMemo(
     () => safeParseUrlParts(effectiveDebugInfo?.request?.url ?? ''),
     [effectiveDebugInfo?.request?.url]
@@ -1582,9 +1648,39 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                     </p>
                   </div>
                 ) : (
-                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                    {/* Response first: avoid being pushed down by long request bodies */}
-                    {effectiveDebugInfo.response && (
+                  <div className="space-y-3">
+                    {httpViewTabs ? (
+                      <div className="flex items-center justify-end">{httpViewTabs}</div>
+                    ) : null}
+
+                    {activeHttpView === 'request' ? (
+                      effectiveDebugInfo.request ? (
+                        <CollapsibleSection title="HTTP 请求">
+                          <div className="space-y-4">
+                            <div className="flex items-center gap-2 text-sm">
+                              <span className="px-2 py-1 bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded font-medium">
+                                {effectiveDebugInfo.request.method}
+                              </span>
+                              <span className="text-gray-800 dark:text-gray-200 break-all">
+                                {effectiveDebugInfo.request.url}
+                              </span>
+                            </div>
+
+                            <CollapsibleSection title="请求头" defaultExpanded={false}>
+                              <HeadersViewer headers={effectiveDebugInfo.request.headers} />
+                            </CollapsibleSection>
+
+                            <CollapsibleSection title="请求体">
+                              <JsonViewer data={effectiveDebugInfo.request.body} />
+                            </CollapsibleSection>
+                          </div>
+                        </CollapsibleSection>
+                      ) : (
+                        <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-300">
+                          暂无 HTTP 请求调试信息
+                        </div>
+                      )
+                    ) : effectiveDebugInfo.response ? (
                       <CollapsibleSection title="HTTP 响应">
                         <div className="space-y-4">
                           <div className="flex items-center gap-2 text-sm">
@@ -1663,37 +1759,21 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                           </CollapsibleSection>
                         </div>
                       </CollapsibleSection>
-                    )}
-
-                    {effectiveDebugInfo.request && (
-                      <CollapsibleSection title="HTTP 请求">
-                        <div className="space-y-4">
-                          <div className="flex items-center gap-2 text-sm">
-                            <span className="px-2 py-1 bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded font-medium">
-                              {effectiveDebugInfo.request.method}
-                            </span>
-                            <span className="text-gray-800 dark:text-gray-200 break-all">
-                              {effectiveDebugInfo.request.url}
-                            </span>
-                          </div>
-
-                          <CollapsibleSection title="请求头" defaultExpanded={false}>
-                            <HeadersViewer headers={effectiveDebugInfo.request.headers} />
-                          </CollapsibleSection>
-
-                          <CollapsibleSection title="请求体">
-                            <JsonViewer data={effectiveDebugInfo.request.body} />
-                          </CollapsibleSection>
-                        </div>
-                      </CollapsibleSection>
+                    ) : (
+                      <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-300">
+                        暂无 HTTP 响应调试信息
+                      </div>
                     )}
                   </div>
                 )}
               </>
             ) : activePage === 'http_json' ? (
               <>
-                <div className="text-xs text-gray-500 dark:text-gray-400">
-                  这里展示 turn.debugInfo 里的 HTTP 请求/响应头与响应体的原始 JSON（文本），便于复制与排障。
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-xs text-gray-500 dark:text-gray-400">
+                    这里展示 turn.debugInfo 里的 HTTP 请求/响应头与响应体的原始 JSON（文本），便于复制与排障。
+                  </div>
+                  {httpViewTabs}
                 </div>
 
                 {!effectiveDebugInfo ? (
@@ -1708,8 +1788,35 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                     </p>
                   </div>
                 ) : (
-                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                    {effectiveDebugInfo.response ? (
+                  <div className="space-y-3">
+                    {activeHttpView === 'request' ? (
+                      effectiveDebugInfo.request ? (
+                        <CollapsibleSection title="HTTP 请求（JSON）" defaultExpanded>
+                          <div className="space-y-4">
+                            <div className="flex items-center gap-2 text-sm">
+                              <span className="px-2 py-1 bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded font-medium">
+                                {effectiveDebugInfo.request.method}
+                              </span>
+                              <span className="text-gray-800 dark:text-gray-200 break-all">
+                                {effectiveDebugInfo.request.url}
+                              </span>
+                            </div>
+
+                            <CollapsibleSection title="请求头（JSON）" defaultExpanded>
+                              <JsonViewer data={prepareHeadersForJson(effectiveDebugInfo.request.headers)} />
+                            </CollapsibleSection>
+
+                            <CollapsibleSection title="请求体（JSON）" defaultExpanded>
+                              <JsonViewer data={effectiveDebugInfo.request.body} />
+                            </CollapsibleSection>
+                          </div>
+                        </CollapsibleSection>
+                      ) : (
+                        <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-300">
+                          暂无 HTTP 请求调试信息
+                        </div>
+                      )
+                    ) : effectiveDebugInfo.response ? (
                       <CollapsibleSection title="HTTP 响应（JSON）" defaultExpanded>
                         <div className="space-y-4">
                           <div className="flex items-center gap-2 text-sm">
@@ -1739,40 +1846,16 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                         暂无 HTTP 响应调试信息
                       </div>
                     )}
-
-                    {effectiveDebugInfo.request ? (
-                      <CollapsibleSection title="HTTP 请求（JSON）" defaultExpanded={false}>
-                        <div className="space-y-4">
-                          <div className="flex items-center gap-2 text-sm">
-                            <span className="px-2 py-1 bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded font-medium">
-                              {effectiveDebugInfo.request.method}
-                            </span>
-                            <span className="text-gray-800 dark:text-gray-200 break-all">
-                              {effectiveDebugInfo.request.url}
-                            </span>
-                          </div>
-
-                          <CollapsibleSection title="请求头（JSON）" defaultExpanded>
-                            <JsonViewer data={prepareHeadersForJson(effectiveDebugInfo.request.headers)} />
-                          </CollapsibleSection>
-
-                          <CollapsibleSection title="请求体（JSON）" defaultExpanded>
-                            <JsonViewer data={effectiveDebugInfo.request.body} />
-                          </CollapsibleSection>
-                        </div>
-                      </CollapsibleSection>
-                    ) : (
-                      <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-300">
-                        暂无 HTTP 请求调试信息
-                      </div>
-                    )}
                   </div>
                 )}
               </>
             ) : (
               <>
-                <div className="text-xs text-gray-500 dark:text-gray-400">
-                  这里把 HTTP 请求/响应按可读文本渲染（headers 已脱敏）。请求体会尽量把 messages 展开成“对话 + 工具调用”格式，便于阅读历史上下文。
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-xs text-gray-500 dark:text-gray-400">
+                    这里把 HTTP 请求/响应按可读文本渲染（headers 已脱敏）。请求体会尽量把 messages 展开成“对话 + 工具调用”格式，便于阅读历史上下文。
+                  </div>
+                  {httpViewTabs}
                 </div>
 
                 {!effectiveDebugInfo ? (
@@ -1787,8 +1870,53 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                     </p>
                   </div>
                 ) : (
-                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                    {effectiveDebugInfo.response ? (
+                  <div className="space-y-3">
+                    {activeHttpView === 'request' ? (
+                      effectiveDebugInfo.request ? (
+                        <CollapsibleSection title="HTTP 请求（文本）" defaultExpanded>
+                          <div className="space-y-4">
+                            <div className="flex flex-wrap items-center gap-2 text-sm">
+                              {effectiveDebugInfo.request.method && (
+                                <Chip tone="blue">{effectiveDebugInfo.request.method}</Chip>
+                              )}
+                              {requestUrlParts ? (
+                                <>
+                                  <Chip tone="gray" title={requestUrlParts.host}>
+                                    host: {truncateMiddle(requestUrlParts.host, 26, 14)}
+                                  </Chip>
+                                  <Chip tone="gray" title={requestUrlParts.path}>
+                                    path: {truncateMiddle(requestUrlParts.path, 30, 18)}
+                                  </Chip>
+                                </>
+                              ) : effectiveDebugInfo.request.url ? (
+                                <Chip tone="gray" title={effectiveDebugInfo.request.url}>
+                                  url: {truncateMiddle(effectiveDebugInfo.request.url, 30, 22)}
+                                </Chip>
+                              ) : null}
+                            </div>
+
+                            <CollapsibleSection title="请求头（文本）" defaultExpanded>
+                              <TextViewer
+                                text={headersToText(effectiveDebugInfo.request.headers)}
+                                maxHeightClassName="max-h-56"
+                              />
+                            </CollapsibleSection>
+
+                            <CollapsibleSection title="请求体（文本）" defaultExpanded>
+                              <TextViewer
+                                text={formatRequestBodyAsText(effectiveDebugInfo.request.body)}
+                                maxHeightClassName="max-h-[50vh]"
+                                containerClassName="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200"
+                              />
+                            </CollapsibleSection>
+                          </div>
+                        </CollapsibleSection>
+                      ) : (
+                        <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-300">
+                          暂无 HTTP 请求调试信息
+                        </div>
+                      )
+                    ) : effectiveDebugInfo.response ? (
                       <CollapsibleSection title="HTTP 响应（文本）" defaultExpanded>
                         <div className="space-y-4">
                           {typeof effectiveDebugInfo.response.status === 'number' && (
@@ -1824,51 +1952,6 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                     ) : (
                       <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-300">
                         暂无 HTTP 响应调试信息
-                      </div>
-                    )}
-
-                    {effectiveDebugInfo.request ? (
-                      <CollapsibleSection title="HTTP 请求（文本）" defaultExpanded={false}>
-                        <div className="space-y-4">
-                          <div className="flex flex-wrap items-center gap-2 text-sm">
-                            {effectiveDebugInfo.request.method && (
-                              <Chip tone="blue">{effectiveDebugInfo.request.method}</Chip>
-                            )}
-                            {requestUrlParts ? (
-                              <>
-                                <Chip tone="gray" title={requestUrlParts.host}>
-                                  host: {truncateMiddle(requestUrlParts.host, 26, 14)}
-                                </Chip>
-                                <Chip tone="gray" title={requestUrlParts.path}>
-                                  path: {truncateMiddle(requestUrlParts.path, 30, 18)}
-                                </Chip>
-                              </>
-                            ) : effectiveDebugInfo.request.url ? (
-                              <Chip tone="gray" title={effectiveDebugInfo.request.url}>
-                                url: {truncateMiddle(effectiveDebugInfo.request.url, 30, 22)}
-                              </Chip>
-                            ) : null}
-                          </div>
-
-                          <CollapsibleSection title="请求头（文本）" defaultExpanded>
-                            <TextViewer
-                              text={headersToText(effectiveDebugInfo.request.headers)}
-                              maxHeightClassName="max-h-56"
-                            />
-                          </CollapsibleSection>
-
-                          <CollapsibleSection title="请求体（文本）" defaultExpanded>
-                            <TextViewer
-                              text={formatRequestBodyAsText(effectiveDebugInfo.request.body)}
-                              maxHeightClassName="max-h-[50vh]"
-                              containerClassName="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200"
-                            />
-                          </CollapsibleSection>
-                        </div>
-                      </CollapsibleSection>
-                    ) : (
-                      <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-300">
-                        暂无 HTTP 请求调试信息
                       </div>
                     )}
                   </div>

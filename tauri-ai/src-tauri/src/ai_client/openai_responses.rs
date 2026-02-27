@@ -1636,43 +1636,94 @@ impl AiClient for OpenAiResponsesClient {
                                 }
                             }
                             "error" => {
-                                let code = v.get("code").and_then(|c| c.as_str());
-                                let param = v.get("param").and_then(|p| p.as_str());
+                                // OpenAI Responses 的 error 事件通常是：
+                                // { "type": "error", "error": { "message": "...", "type": "...", "code": "...", "param": ... }, ... }
+                                // 也有一些网关会把字段拍平到顶层（message/code/param）。
+                                let error_obj = v.get("error");
+                                let code = v
+                                    .get("code")
+                                    .and_then(|c| c.as_str())
+                                    .or_else(|| {
+                                        error_obj
+                                            .and_then(|e| e.get("code"))
+                                            .and_then(|c| c.as_str())
+                                    })
+                                    .map(|s| s.to_string());
+                                let param = v
+                                    .get("param")
+                                    .and_then(|p| p.as_str())
+                                    .or_else(|| {
+                                        error_obj
+                                            .and_then(|e| e.get("param"))
+                                            .and_then(|p| p.as_str())
+                                    })
+                                    .map(|s| s.to_string());
+                                let error_type = error_obj
+                                    .and_then(|e| e.get("type"))
+                                    .and_then(|t| t.as_str())
+                                    .map(|s| s.to_string());
                                 let seq = v.get("sequence_number").and_then(|s| s.as_u64());
 
                                 let error_msg = v
                                     .get("message")
                                     .and_then(|m| m.as_str())
+                                    .or_else(|| {
+                                        error_obj
+                                            .and_then(|e| e.get("message"))
+                                            .and_then(|m| m.as_str())
+                                    })
+                                    .or_else(|| {
+                                        error_obj
+                                            .and_then(|e| e.get("error"))
+                                            .and_then(|e| e.get("message"))
+                                            .and_then(|m| m.as_str())
+                                    })
+                                    .or_else(|| error_obj.and_then(|e| e.as_str()))
                                     .map(|s| s.to_string())
                                     .unwrap_or_else(|| "Unknown error".to_string());
-                                let error_text = if let Some(code) = code {
-                                    format!("{error_msg}（code={code}）")
-                                } else {
+
+                                let mut tags: Vec<String> = Vec::new();
+                                if let Some(code) = code.as_deref() {
+                                    tags.push(format!("code={code}"));
+                                }
+                                if let Some(t) = error_type.as_deref() {
+                                    tags.push(format!("type={t}"));
+                                }
+                                if let Some(param) = param.as_deref() {
+                                    tags.push(format!("param={param}"));
+                                }
+                                let error_text = if tags.is_empty() {
                                     error_msg.clone()
+                                } else {
+                                    format!("{error_msg}（{}）", tags.join(", "))
                                 };
 
-                                let (ai_error, retryable) = match code {
+                                let classify = code.as_deref().or(error_type.as_deref());
+                                let (ai_error, retryable) = match classify {
                                     Some(c)
                                         if c.contains("rate_limit")
                                             || c.contains("rate_limit_exceeded") =>
                                     {
-                                        (AiError::RateLimited(error_msg.clone()), true)
+                                        (AiError::RateLimited(error_text.clone()), true)
                                     }
                                     Some(c)
                                         if c.contains("invalid_api_key")
                                             || c.contains("invalid_api")
                                             || c.contains("unauthorized") =>
                                     {
-                                        (AiError::AuthenticationFailed(error_msg.clone()), false)
+                                        (
+                                            AiError::AuthenticationFailed(error_text.clone()),
+                                            false,
+                                        )
                                     }
                                     Some(c)
                                         if c.contains("server_error")
                                             || c.contains("internal_error")
                                             || c.contains("temporarily_unavailable") =>
                                     {
-                                        (AiError::StreamError(error_msg.clone()), true)
+                                        (AiError::StreamError(error_text.clone()), true)
                                     }
-                                    _ => (AiError::StreamError(error_msg.clone()), false),
+                                    _ => (AiError::StreamError(error_text.clone()), false),
                                 };
 
                                 let debug_usage = final_usage.as_ref().map(|u| {
@@ -1689,8 +1740,9 @@ impl AiClient for OpenAiResponsesClient {
                                     "_streamError": error_text,
                                     "_streamErrorSummary": {
                                         "class": "provider_error",
-                                        "code": code,
-                                        "param": param,
+                                        "code": code.as_deref(),
+                                        "type": error_type.as_deref(),
+                                        "param": param.as_deref(),
                                         "sequenceNumber": seq,
                                         "retryable": retryable
                                     },
@@ -1700,9 +1752,10 @@ impl AiClient for OpenAiResponsesClient {
                                     },
                                     "_streamErrorEvent": {
                                         "type": "error",
-                                        "code": code,
+                                        "code": code.as_deref(),
+                                        "error_type": error_type.as_deref(),
                                         "message": error_msg,
-                                        "param": param,
+                                        "param": param.as_deref(),
                                         "sequence_number": seq
                                     },
                                     "output": [{

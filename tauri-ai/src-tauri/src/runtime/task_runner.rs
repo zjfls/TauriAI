@@ -1657,12 +1657,13 @@ impl<'a> TurnLoop<'a> {
                     });
 
                     if let Some(error) = max_turns_error {
+                        let error_display =
+                            decorate_user_error_with_origin(&error, turn_debug_info.as_ref());
                         let mut reply_content = content.clone();
                         if reply_content.trim().is_empty() {
                             reply_content = build_fallback_reply_markdown(
                                 "任务失败",
-                                &error,
-                                turn_debug_info.as_ref(),
+                                &error_display,
                             );
                             self.emitter.emit(RunEvent::BlockDelta {
                                 task_id: self.task_id.clone(),
@@ -1692,13 +1693,13 @@ impl<'a> TurnLoop<'a> {
                             block_id: "assistant_error".to_string(),
                             block_type: "error".to_string(),
                             format: Some("plain".to_string()),
-                            delta: error.clone(),
+                            delta: error_display.clone(),
                         });
                         blocks.push(MessageBlock::Error {
                             id: format!("{turn_id}:assistant_error"),
                             turn_id: Some(turn_id.clone()),
                             turn_index: Some(turn_index),
-                            text: error.clone(),
+                            text: error_display.clone(),
                         });
 
                         self.emitter.emit(RunEvent::TurnFinished {
@@ -2310,7 +2311,6 @@ impl<'a> TurnLoop<'a> {
                             &format!(
                                 "工具执行被中止：{reason}\n\n你可以点击“重试”或重新发送消息继续。"
                             ),
-                            turn_debug_info.as_ref(),
                         );
 
                         self.emitter.emit(RunEvent::BlockDelta {
@@ -2406,8 +2406,9 @@ impl<'a> TurnLoop<'a> {
                     debug_info,
                     usage,
                 } => {
+                    let error_display = decorate_user_error_with_origin(&error, debug_info.as_ref());
                     let reply_content = if content.trim().is_empty() {
-                        build_fallback_reply_markdown("任务失败", &error, debug_info.as_ref())
+                        build_fallback_reply_markdown("任务失败", &error_display)
                     } else {
                         content.clone()
                     };
@@ -2480,13 +2481,13 @@ impl<'a> TurnLoop<'a> {
                         block_id: "assistant_error".to_string(),
                         block_type: "error".to_string(),
                         format: Some("plain".to_string()),
-                        delta: error.clone(),
+                        delta: error_display.clone(),
                     });
                     blocks.push(MessageBlock::Error {
                         id: format!("{turn_id}:assistant_error"),
                         turn_id: Some(turn_id.clone()),
                         turn_index: Some(turn_index),
-                        text: error.clone(),
+                        text: error_display.clone(),
                     });
 
                     self.emitter.emit(RunEvent::TurnFinished {
@@ -2542,7 +2543,6 @@ impl<'a> TurnLoop<'a> {
                         build_fallback_reply_markdown(
                             "任务已中止",
                             "运行已被用户或系统中止。\n\n你可以点击“重试”或重新发送消息继续。",
-                            None,
                         )
                     } else {
                         content.clone()
@@ -3162,28 +3162,13 @@ fn decorate_user_error_with_origin(error: &str, debug_info: Option<&DebugInfoDat
     format!("{header}\n\n{error}")
 }
 
-fn format_debug_info_for_reply(debug_info: &DebugInfoData) -> String {
-    let redacted = redact_debug_info_for_store(debug_info);
-    serde_json::to_string_pretty(&redacted).unwrap_or_else(|_| "{}".to_string())
-}
-
-fn build_fallback_reply_markdown(
-    title: &str,
-    message: &str,
-    debug_info: Option<&DebugInfoData>,
-) -> String {
+fn build_fallback_reply_markdown(title: &str, message: &str) -> String {
     let mut out = String::new();
     out.push_str("### ");
     out.push_str(title);
     out.push_str("\n\n");
     out.push_str(message.trim());
     out.push('\n');
-
-    if let Some(di) = debug_info {
-        out.push_str("\n<details><summary>Debug（请求/响应，已脱敏）</summary>\n\n```json\n");
-        out.push_str(&format_debug_info_for_reply(di));
-        out.push_str("\n```\n\n</details>\n");
-    }
 
     out
 }
