@@ -38,7 +38,7 @@ use crate::runtime::context_manager::{
 };
 use crate::runtime::events::RunEvent;
 use crate::runtime::mcp::global_mcp_runtime;
-use crate::runtime::types::{TaskKind, TurnPhase, TurnStatus};
+use crate::runtime::types::{TaskKind, TurnContextTrimInfo, TurnPhase, TurnStatus};
 use crate::skills::loader::{
     index_by_name as index_skills_by_name, load_skills as load_skill_files,
 };
@@ -139,6 +139,10 @@ enum TaskOutcome {
 struct TurnLoop<'a> {
     client: Arc<dyn crate::ai_client::AiClient>,
     model_config: crate::models::ModelConfig,
+    /// Agent-level context management policy (trim/compact).
+    ctx_mgr: ContextManager,
+    /// Model context length (used for hard trim budgeting).
+    context_length: Option<u32>,
     tools: Option<Vec<ToolDefinition>>,
     allowed_tool_names: Option<HashSet<String>>,
     /// 工具编排器（权限/路由/gate/pty 会话等都在 tools 子系统内部处理）
@@ -1426,6 +1430,38 @@ impl<'a> TurnLoop<'a> {
                 phase: TurnPhase::Think,
             });
 
+            // Per-turn hard trimming: runtime_messages grows during multi-turn tool runs.
+            // Ensure each model call stays under the configured hard cap to avoid "context window exceeded".
+            let mut turn_context_trim: Option<TurnContextTrimInfo> = None;
+            if let Some(ctx_len) = self.context_length.filter(|v| *v > 0) {
+                let hard_pct = self.ctx_mgr.hard_limit_percent();
+                let hard_limit = hard_limit_tokens(ctx_len, hard_pct);
+
+                if self.ctx_mgr.should_trim() {
+                    let trim = trim_runtime_messages_to_hard_limit(
+                        std::mem::take(&mut self.runtime_messages),
+                        hard_limit,
+                    );
+                    turn_context_trim = Some(TurnContextTrimInfo {
+                        enabled: true,
+                        removed_messages: u32::try_from(trim.removed_messages).unwrap_or(u32::MAX),
+                        estimated_tokens_before: trim.estimated_tokens_before,
+                        estimated_tokens_after: trim.estimated_tokens_after,
+                        hard_limit_tokens: trim.hard_limit_tokens,
+                    });
+                    self.runtime_messages = trim.trimmed_messages;
+                } else {
+                    let estimated = estimate_prompt_tokens(&self.runtime_messages);
+                    turn_context_trim = Some(TurnContextTrimInfo {
+                        enabled: false,
+                        removed_messages: 0,
+                        estimated_tokens_before: estimated,
+                        estimated_tokens_after: estimated,
+                        hard_limit_tokens: hard_limit,
+                    });
+                }
+            }
+
             let turn_result = stream_one_turn(
                 self.client.clone(),
                 self.model_config.clone(),
@@ -1459,7 +1495,7 @@ impl<'a> TurnLoop<'a> {
                     } else {
                         None
                     };
-                    let turn_usage = if self.debug_mode { usage.clone() } else { None };
+                    let turn_usage = usage.clone();
                     let persisted_debug_info =
                         turn_debug_info.as_ref().map(redact_debug_info_for_store);
                     self.emitter.emit(RunEvent::TurnFinished {
@@ -1470,6 +1506,7 @@ impl<'a> TurnLoop<'a> {
                         assistant_message_id: Some(self.assistant_message_id.clone()),
                         debug_info: turn_debug_info,
                         usage: turn_usage,
+                        context_trim: turn_context_trim.clone(),
                         model: Some(self.model_config.model.clone()),
                     });
 
@@ -1500,6 +1537,7 @@ impl<'a> TurnLoop<'a> {
                         has_debug_info: None,
                         debug_info: persisted_debug_info,
                         usage: usage.clone(),
+                        context_trim: turn_context_trim.clone(),
                         model: Some(self.model_config.model.clone()),
                     });
 
@@ -1508,7 +1546,7 @@ impl<'a> TurnLoop<'a> {
                         content,
                         thinking,
                         debug_info: if self.debug_mode { debug_info } else { None },
-                        usage: if self.debug_mode { usage } else { None },
+                        usage,
                         blocks,
                         turns,
                     };
@@ -1528,7 +1566,7 @@ impl<'a> TurnLoop<'a> {
 
                     let persisted_usage = usage.clone();
                     let turn_debug_info = if self.debug_mode { debug_info } else { None };
-                    let turn_usage = if self.debug_mode { usage } else { None };
+                    let turn_usage = usage.clone();
                     let persisted_debug_info =
                         turn_debug_info.as_ref().map(redact_debug_info_for_store);
 
@@ -1671,6 +1709,7 @@ impl<'a> TurnLoop<'a> {
                             assistant_message_id: Some(self.assistant_message_id.clone()),
                             debug_info: turn_debug_info.clone(),
                             usage: turn_usage.clone(),
+                            context_trim: turn_context_trim.clone(),
                             model: Some(self.model_config.model.clone()),
                         });
 
@@ -1681,6 +1720,7 @@ impl<'a> TurnLoop<'a> {
                             has_debug_info: None,
                             debug_info: persisted_debug_info.clone(),
                             usage: persisted_usage,
+                            context_trim: turn_context_trim.clone(),
                             model: Some(self.model_config.model.clone()),
                         });
 
@@ -2306,6 +2346,7 @@ impl<'a> TurnLoop<'a> {
                             assistant_message_id: Some(self.assistant_message_id.clone()),
                             debug_info: turn_debug_info,
                             usage: turn_usage,
+                            context_trim: turn_context_trim.clone(),
                             model: Some(self.model_config.model.clone()),
                         });
                         turns.push(MessageTurn {
@@ -2315,6 +2356,7 @@ impl<'a> TurnLoop<'a> {
                             has_debug_info: None,
                             debug_info: persisted_debug_info.clone(),
                             usage: persisted_usage,
+                            context_trim: turn_context_trim.clone(),
                             model: Some(self.model_config.model.clone()),
                         });
                         return TaskOutcome::Aborted {
@@ -2340,6 +2382,7 @@ impl<'a> TurnLoop<'a> {
                         assistant_message_id: Some(self.assistant_message_id.clone()),
                         debug_info: turn_debug_info,
                         usage: turn_usage,
+                        context_trim: turn_context_trim.clone(),
                         model: Some(self.model_config.model.clone()),
                     });
 
@@ -2351,6 +2394,7 @@ impl<'a> TurnLoop<'a> {
                         has_debug_info: None,
                         debug_info: persisted_debug_info.clone(),
                         usage: persisted_usage,
+                        context_trim: turn_context_trim.clone(),
                         model: Some(self.model_config.model.clone()),
                     });
                     continue;
@@ -2385,7 +2429,7 @@ impl<'a> TurnLoop<'a> {
                     } else {
                         persisted_debug_info.clone()
                     };
-                    let turn_usage = if self.debug_mode { usage } else { None };
+                    let turn_usage = usage.clone();
 
                     if !thinking.trim().is_empty() {
                         blocks.push(MessageBlock::Thinking {
@@ -2453,6 +2497,7 @@ impl<'a> TurnLoop<'a> {
                         assistant_message_id: Some(self.assistant_message_id.clone()),
                         debug_info: turn_debug_info.clone(),
                         usage: turn_usage,
+                        context_trim: turn_context_trim.clone(),
                         model: Some(self.model_config.model.clone()),
                     });
 
@@ -2463,6 +2508,7 @@ impl<'a> TurnLoop<'a> {
                         has_debug_info: None,
                         debug_info: persisted_debug_info,
                         usage: persisted_usage,
+                        context_trim: turn_context_trim.clone(),
                         model: Some(self.model_config.model.clone()),
                     });
                     return TaskOutcome::Failed {
@@ -2489,6 +2535,7 @@ impl<'a> TurnLoop<'a> {
                         assistant_message_id: Some(self.assistant_message_id.clone()),
                         debug_info: None,
                         usage: None,
+                        context_trim: turn_context_trim.clone(),
                         model: Some(self.model_config.model.clone()),
                     });
                     let reply_content = if content.trim().is_empty() && thinking.trim().is_empty() {
@@ -2550,6 +2597,7 @@ impl<'a> TurnLoop<'a> {
                         has_debug_info: None,
                         debug_info: None,
                         usage: None,
+                        context_trim: turn_context_trim.clone(),
                         model: Some(self.model_config.model.clone()),
                     });
                     return TaskOutcome::Aborted {
@@ -4626,7 +4674,6 @@ async fn run_task_inner(
         // Auto compact (Codex-like): when prompt usage gets high, compact persisted history.
         let estimated_tokens = estimate_prompt_tokens(&runtime_messages);
         let hard_pct = ctx_mgr.hard_limit_percent();
-        let hard_limit = hard_limit_tokens(ctx_len, hard_pct);
         let threshold_pct = ctx_mgr
             .auto_compact_threshold_percent()
             .min(hard_pct.saturating_sub(1).max(1));
@@ -4729,16 +4776,13 @@ async fn run_task_inner(
             }
         }
 
-        // Hard trim the prompt for this request to avoid context window exceeded.
-        if ctx_mgr.should_trim() {
-            let trim = trim_runtime_messages_to_hard_limit(runtime_messages, hard_limit);
-            runtime_messages = trim.trimmed_messages;
-        }
     }
 
     let mut turn_loop = TurnLoop {
         client,
         model_config: model_config.clone(),
+        ctx_mgr: ctx_mgr.clone(),
+        context_length,
         tools,
         allowed_tool_names,
         tool_orchestrator,
@@ -5365,6 +5409,7 @@ async fn stream_one_turn(
     let mut tool_calls: Option<Vec<ToolCall>> = None;
     let mut emitted_any_delta = false;
     let mut turn_state: Option<String> = None;
+    let mut include_usage_override: Option<bool> = None;
 
     for attempt in 1..=max_attempts {
         let (token_tx, mut token_rx) = mpsc::channel::<StreamEvent>(100);
@@ -5408,6 +5453,7 @@ async fn stream_one_turn(
             // If the provider supports resume, it should stream a TurnState token (cursor/header).
             // Runtime will reuse it on reconnect to avoid duplicated output.
             resume_state: turn_state.clone(),
+            include_usage: include_usage_override,
         };
 
         let stream_handle = tokio::spawn(async move {
@@ -5425,34 +5471,38 @@ async fn stream_one_turn(
                 event = token_rx.recv() => {
                     match event {
                         Some(StreamEvent::Token(token)) => {
-                            emitted_any_delta = true;
                             token_chunk_count = token_chunk_count.saturating_add(1);
-                            push_delta_tail(&mut token_delta_tail, &token);
-                            full_content.push_str(&token);
-                            emitter.emit(RunEvent::BlockDelta {
-                                task_id: task_id.to_string(),
-                                turn_id: turn_id.to_string(),
-                                assistant_message_id: Some(assistant_message_id.to_string()),
-                                block_id: "assistant_text".to_string(),
-                                block_type: "text".to_string(),
-                                format: output_format.clone(),
-                                delta: token,
-                            });
+                            if !token.is_empty() {
+                                emitted_any_delta = true;
+                                push_delta_tail(&mut token_delta_tail, &token);
+                                full_content.push_str(&token);
+                                emitter.emit(RunEvent::BlockDelta {
+                                    task_id: task_id.to_string(),
+                                    turn_id: turn_id.to_string(),
+                                    assistant_message_id: Some(assistant_message_id.to_string()),
+                                    block_id: "assistant_text".to_string(),
+                                    block_type: "text".to_string(),
+                                    format: output_format.clone(),
+                                    delta: token,
+                                });
+                            }
                         }
                         Some(StreamEvent::Thinking(token)) => {
-                            emitted_any_delta = true;
                             thinking_chunk_count = thinking_chunk_count.saturating_add(1);
-                            push_delta_tail(&mut thinking_delta_tail, &token);
-                            full_thinking.push_str(&token);
-                            emitter.emit(RunEvent::BlockDelta {
-                                task_id: task_id.to_string(),
-                                turn_id: turn_id.to_string(),
-                                assistant_message_id: Some(assistant_message_id.to_string()),
-                                block_id: "assistant_thinking".to_string(),
-                                block_type: "thinking".to_string(),
-                                format: Some("plain".to_string()),
-                                delta: token,
-                            });
+                            if !token.is_empty() {
+                                emitted_any_delta = true;
+                                push_delta_tail(&mut thinking_delta_tail, &token);
+                                full_thinking.push_str(&token);
+                                emitter.emit(RunEvent::BlockDelta {
+                                    task_id: task_id.to_string(),
+                                    turn_id: turn_id.to_string(),
+                                    assistant_message_id: Some(assistant_message_id.to_string()),
+                                    block_id: "assistant_thinking".to_string(),
+                                    block_type: "thinking".to_string(),
+                                    format: Some("plain".to_string()),
+                                    delta: token,
+                                });
+                            }
                         }
                         Some(StreamEvent::WebSearch { id, status, action }) => {
                             emitted_any_delta = true;
@@ -5553,6 +5603,12 @@ async fn stream_one_turn(
         // - 旧逻辑会返回 TurnStreamResult::Final(content="")，进而被上层当作 TaskOutcome::Success，
         //   导致前端“无消息、无错误”。
         if stream_result.is_ok() && last_error.is_none() && full_content.trim().is_empty() {
+            if usage.as_ref().is_some_and(|u| u.completion_tokens > 0) {
+                // 某些 OpenAI-compatible 网关在 `stream_options.include_usage=true` 时会出现
+                // “有 usage 但正文 delta 为空”的兼容性问题；重试时禁用 include_usage 以提高成功率。
+                include_usage_override = Some(false);
+            }
+
             if let Some(di) = debug_info.as_mut() {
                 if di.error_origin.is_none() {
                     di.error_origin = Some(crate::ai_client::ErrorOrigin {
@@ -6029,6 +6085,96 @@ mod tests {
             TurnStreamResult::Final { content, .. } => {
                 assert_eq!(content, "hello");
             }
+            other => panic!("expected TurnStreamResult::Final, got: {other:?}"),
+        }
+    }
+
+    struct EmptyDeltaThenOkClient {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl crate::ai_client::AiClient for EmptyDeltaThenOkClient {
+        async fn chat(
+            &self,
+            _messages: Vec<crate::models::Message>,
+            _config: &crate::models::ModelConfig,
+            _tools: Option<Vec<crate::ai_client::ToolDefinition>>,
+        ) -> Result<String, crate::ai_client::AiError> {
+            Ok("ok".to_string())
+        }
+
+        async fn chat_stream(
+            &self,
+            _messages: Vec<crate::models::Message>,
+            _config: &crate::models::ModelConfig,
+            _tools: Option<Vec<crate::ai_client::ToolDefinition>>,
+            token_sender: mpsc::Sender<crate::ai_client::StreamEvent>,
+            options: crate::ai_client::StreamOptions,
+        ) -> Result<(), crate::ai_client::AiError> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                // First attempt: default include_usage (runtime may flip it on retry after empty stream).
+                assert_eq!(options.include_usage, None);
+
+                let _ = token_sender
+                    .send(crate::ai_client::StreamEvent::Token(String::new()))
+                    .await;
+                let _ = token_sender
+                    .send(crate::ai_client::StreamEvent::DoneWithDebug {
+                        content: String::new(),
+                        thinking: None,
+                        debug_info: None,
+                        usage: Some(crate::ai_client::TokenUsage {
+                            prompt_tokens: 1,
+                            completion_tokens: 33,
+                            total_tokens: 34,
+                            ..Default::default()
+                        }),
+                    })
+                    .await;
+                return Ok(());
+            }
+
+            // Second attempt: runtime should disable include_usage to avoid usage-only streams on some gateways.
+            assert_eq!(options.include_usage, Some(false));
+
+            let _ = token_sender
+                .send(crate::ai_client::StreamEvent::Token("ok".to_string()))
+                .await;
+            let _ = token_sender
+                .send(crate::ai_client::StreamEvent::Done("ok".to_string()))
+                .await;
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_one_turn_should_retry_when_only_empty_token_emitted() {
+        let client: Arc<dyn crate::ai_client::AiClient> = Arc::new(EmptyDeltaThenOkClient {
+            calls: AtomicUsize::new(0),
+        });
+        let mut emitter = NoopEmitter;
+        let (abort_tx, mut abort_rx) = mpsc::channel(1);
+        let _keep_abort = abort_tx;
+
+        let result = stream_one_turn(
+            client,
+            test_model_config(),
+            None,
+            vec![test_user_message()],
+            &mut emitter,
+            "task",
+            "turn",
+            "assistant",
+            None,
+            &mut abort_rx,
+            2,
+        )
+        .await;
+
+        match result {
+            TurnStreamResult::Final { content, .. } => assert_eq!(content, "ok"),
             other => panic!("expected TurnStreamResult::Final, got: {other:?}"),
         }
     }

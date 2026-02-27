@@ -11,6 +11,11 @@ pub struct StreamOptions {
     /// Provider-specific resume token/state used for stream reconnection.
     /// When set, the client may attach it to the next request (e.g. `x-codex-turn-state`).
     pub resume_state: Option<String>,
+    /// Provider-specific streaming options.
+    ///
+    /// - For OpenAI Chat Completions, this controls `stream_options.include_usage`.
+    /// - Other providers may ignore it.
+    pub include_usage: Option<bool>,
 }
 
 /// Tool definition (function-calling compatible)

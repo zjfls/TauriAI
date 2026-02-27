@@ -268,8 +268,8 @@ export interface ContextPolicyDisabled {
 export interface SimpleContextPolicy {
   type: 'simple';
   enabled?: boolean;
-  trimEnabled?: boolean;
-  hardLimitPercent?: number;
+  trimEnabled?: boolean; // enable hard trimming for runtime prompt
+  hardLimitPercent?: number; // hard cap (% of contextLength) for final prompt after trimming
 }
 
 export interface NormalCompactContextPolicy {
@@ -687,6 +687,17 @@ export interface TokenUsage {
 }
 
 /**
+ * Per-turn prompt hard-trim stats (backend runtime hard limit enforcement).
+ */
+export interface TurnContextTrimInfo {
+  enabled: boolean;
+  removedMessages: number;
+  estimatedTokensBefore: number;
+  estimatedTokensAfter: number;
+  hardLimitTokens: number;
+}
+
+/**
  * Multi-turn debug info (per model call)
  */
 export interface MessageTurn {
@@ -699,6 +710,7 @@ export interface MessageTurn {
   hasDebugInfo?: boolean;
   debugInfo?: DebugInfo;
   usage?: TokenUsage;
+  contextTrim?: TurnContextTrimInfo;
   model?: string;
 }
 
@@ -810,6 +822,7 @@ export type RunEventPayload =
     assistantMessageId?: string;
     debugInfo?: DebugInfo;
     usage?: TokenUsage;
+    contextTrim?: TurnContextTrimInfo;
     model?: string;
   }
   | {

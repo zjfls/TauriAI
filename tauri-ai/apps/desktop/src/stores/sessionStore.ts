@@ -3484,6 +3484,7 @@ export const initStreamListeners = async () => {
             status: existing?.status,
             debugInfo: existing?.debugInfo,
             usage: existing?.usage,
+            contextTrim: existing?.contextTrim,
             model: existing?.model,
           });
 
@@ -3515,6 +3516,7 @@ export const initStreamListeners = async () => {
             status: payload.status,
             debugInfo: payload.debugInfo ?? existing?.debugInfo,
             usage: payload.usage ?? existing?.usage,
+            contextTrim: payload.contextTrim ?? existing?.contextTrim,
             model: payload.model ?? existing?.model,
           });
 

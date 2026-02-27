@@ -2927,16 +2927,19 @@ export const MessageBlocks: React.FC<{
         const turnIndex = turnMeta?.turnIndex ?? g.turnIndex ?? idx + 1;
         const debugInfo = turnMeta?.debugInfo;
         // debugMode 只影响“采集”，不影响“查看历史里已经存在的 debug 数据”。
+        const hasTurnStats = Boolean(turnMeta?.usage) || Boolean(turnMeta?.contextTrim);
         const hasPersistedDebug = Boolean(debugInfo) || Boolean(turnMeta?.hasDebugInfo);
-        const canOpenDebug = hasPersistedDebug;
-        const debugButtonDisabled = !hasPersistedDebug;
+        const canOpenDebug = hasPersistedDebug || hasTurnStats;
+        const debugButtonDisabled = !canOpenDebug;
         const debugTitle = debugInfo
           ? '查看该轮请求/响应'
           : turnMeta?.hasDebugInfo
             ? '点击加载该轮调试信息'
-            : debugMode
-              ? '该轮暂无调试数据'
-              : '开启调试模式后可采集调试信息';
+            : hasTurnStats
+              ? '查看该轮统计（Token/裁剪）'
+              : debugMode
+                ? '该轮暂无调试数据'
+                : '开启调试模式后可采集调试信息';
         const deferHeavyForGroup = !isStreaming && (g.turnId ? g.turnId === latestTurnId : true);
 
 	        return (
