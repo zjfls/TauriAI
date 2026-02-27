@@ -283,7 +283,9 @@ pub fn auto_compact_threshold_tokens(context_length: u32, threshold_percent: u8)
 /// Trim the *runtime prompt* to fit into a hard limit by removing oldest non-system messages.
 ///
 /// - Preserves all leading `system` messages.
-/// - Preserves the last message (typically the current user message).
+/// - Preserves the latest non-system message.
+/// - Preserves the latest `user` message (important for retry/replay flows where
+///   assistant/tool replay messages may appear after the user message).
 pub fn trim_runtime_messages_to_hard_limit(
     mut messages: Vec<Message>,
     hard_limit_tokens: u32,
@@ -317,8 +319,25 @@ pub fn trim_runtime_messages_to_hard_limit(
             };
         }
 
-        // keep at least 1 non-system message (the latest)
-        if messages.len() <= first_non_system + 1 {
+        let latest_non_system_idx = messages.iter().rposition(|m| m.role != MessageRole::System);
+        let latest_user_idx = messages.iter().rposition(|m| m.role == MessageRole::User);
+
+        // Remove the oldest non-system message that is NOT protected.
+        let removable_idx = (first_non_system..messages.len()).find(|idx| {
+            if messages[*idx].role == MessageRole::System {
+                return false;
+            }
+            if Some(*idx) == latest_non_system_idx {
+                return false;
+            }
+            if Some(*idx) == latest_user_idx {
+                return false;
+            }
+            true
+        });
+
+        let Some(idx) = removable_idx else {
+            // Cannot trim further without dropping protected messages.
             return ContextTrimResult {
                 trimmed_messages: messages,
                 removed_messages: removed,
@@ -326,11 +345,71 @@ pub fn trim_runtime_messages_to_hard_limit(
                 estimated_tokens_after: cur,
                 hard_limit_tokens,
             };
-        }
+        };
 
-        // remove the oldest non-system message (right after system prefix)
-        messages.remove(first_non_system);
+        messages.remove(idx);
         removed += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::trim_runtime_messages_to_hard_limit;
+    use crate::models::{Message, MessageRole, MessageStatus};
+
+    fn mk_message(role: MessageRole, content: &str) -> Message {
+        Message {
+            id: uuid::Uuid::new_v4().to_string(),
+            conversation_id: "conv-test".to_string(),
+            role,
+            content: content.to_string(),
+            content_parts: Vec::new(),
+            thinking: None,
+            meta: None,
+            created_at: chrono::Utc::now(),
+            status: MessageStatus::Success,
+            error_message: None,
+        }
+    }
+
+    #[test]
+    fn trim_preserves_latest_user_when_assistant_tool_replay_follows() {
+        // Retry/replay-like ordering:
+        //   system -> user -> assistant/tool/... (replayed prior turns)
+        // With a very small hard limit, we still must keep that user message.
+        let messages = vec![
+            mk_message(MessageRole::System, "system prompt"),
+            mk_message(MessageRole::User, "please inspect the shadow map and do not modify code"),
+            mk_message(
+                MessageRole::Assistant,
+                "turn 1: planning and tool call metadata content that is fairly long",
+            ),
+            mk_message(
+                MessageRole::Tool,
+                "tool output for turn 1 that is also long enough to trigger trimming",
+            ),
+            mk_message(
+                MessageRole::Assistant,
+                "turn 2: more replay content after user message",
+            ),
+        ];
+
+        let result = trim_runtime_messages_to_hard_limit(messages, 1);
+
+        assert!(
+            result
+                .trimmed_messages
+                .iter()
+                .any(|m| m.role == MessageRole::User),
+            "latest user message must be preserved after trimming"
+        );
+        assert!(
+            result
+                .trimmed_messages
+                .iter()
+                .any(|m| m.role == MessageRole::Assistant),
+            "latest non-system message should still be preserved"
+        );
     }
 }
 

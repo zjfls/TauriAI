@@ -77,6 +77,13 @@ interface TextViewerProps {
   ansiColorMode?: AnsiColorMode;
 }
 
+interface StructuredJsonTextViewerProps {
+  data: unknown;
+  label?: string;
+  maxHeightClassName?: string;
+  emptyText?: string;
+}
+
 type SseUsage = {
   prompt_tokens: number;
   completion_tokens: number;
@@ -358,6 +365,162 @@ const formatRequestBodyAsText = (body: unknown): string => {
   });
 
   return lines.join('\n').trimEnd();
+};
+
+const maybeParseJsonContainerString = (raw: string): unknown | null => {
+  const text = raw.trim();
+  if (!text) return null;
+  const maybeContainer =
+    (text.startsWith('{') && text.endsWith('}')) ||
+    (text.startsWith('[') && text.endsWith(']'));
+  if (!maybeContainer) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+};
+
+const normalizeJsonLikeStrings = (value: unknown, depth: number = 0): unknown => {
+  if (depth > 10) return value;
+
+  if (typeof value === 'string') {
+    const parsed = maybeParseJsonContainerString(value);
+    if (parsed === null) return value;
+    return normalizeJsonLikeStrings(parsed, depth + 1);
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeJsonLikeStrings(item, depth + 1));
+  }
+
+  if (isRecord(value)) {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) {
+      out[k] = normalizeJsonLikeStrings(v, depth + 1);
+    }
+    return out;
+  }
+
+  return value;
+};
+
+const isTextualFieldName = (fieldName?: string): boolean => {
+  if (!fieldName) return false;
+  const k = fieldName.toLowerCase();
+  return (
+    k === 'text' ||
+    k.endsWith('_text') ||
+    k.includes('content') ||
+    k.includes('message') ||
+    k.includes('summary') ||
+    k.includes('thinking') ||
+    k.includes('reasoning') ||
+    k.includes('prompt') ||
+    k.includes('output')
+  );
+};
+
+const shouldRenderStringAsTextBlock = (value: string, fieldName?: string): boolean => {
+  if (value.length === 0) return true;
+  if (value.includes('\n')) return true;
+  if (value.length > 140) return true;
+  return isTextualFieldName(fieldName);
+};
+
+const inlinePrimitiveText = (value: unknown): string => {
+  if (value === null) return 'null';
+  if (value === undefined) return 'undefined';
+  if (typeof value === 'string') return `"${value}"`;
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+    return String(value);
+  }
+  return safeStringify(value);
+};
+
+const StructuredJsonNode: React.FC<{
+  value: unknown;
+  name?: string;
+  depth: number;
+  nodeKey: string;
+}> = ({ value, name, depth, nodeKey }) => {
+  const label = name ? <span className="font-medium text-gray-700 dark:text-gray-200">{name}: </span> : null;
+  const childIndent = depth === 0 ? '' : 'pl-3 border-l border-gray-200 dark:border-gray-700';
+
+  if (Array.isArray(value)) {
+    const summary = name ? `${name} [${value.length}]` : `Array [${value.length}]`;
+    return (
+      <details open={depth < 2} className="rounded border border-gray-200 bg-gray-50/70 dark:border-gray-700 dark:bg-gray-800/40">
+        <summary className="cursor-pointer select-none px-2 py-1 text-xs text-gray-700 dark:text-gray-200">
+          {summary}
+        </summary>
+        <div className={`space-y-2 px-2 pb-2 ${childIndent}`}>
+          {value.length === 0 ? (
+            <div className="text-xs text-gray-500 dark:text-gray-400">[]</div>
+          ) : (
+            value.map((item, idx) => (
+              <StructuredJsonNode
+                key={`${nodeKey}[${idx}]`}
+                value={item}
+                name={`[${idx}]`}
+                depth={depth + 1}
+                nodeKey={`${nodeKey}[${idx}]`}
+              />
+            ))
+          )}
+        </div>
+      </details>
+    );
+  }
+
+  if (isRecord(value)) {
+    const entries = Object.entries(value);
+    const summary = name ? `${name} {${entries.length}}` : `Object {${entries.length}}`;
+    return (
+      <details open={depth < 2} className="rounded border border-gray-200 bg-gray-50/70 dark:border-gray-700 dark:bg-gray-800/40">
+        <summary className="cursor-pointer select-none px-2 py-1 text-xs text-gray-700 dark:text-gray-200">
+          {summary}
+        </summary>
+        <div className={`space-y-2 px-2 pb-2 ${childIndent}`}>
+          {entries.length === 0 ? (
+            <div className="text-xs text-gray-500 dark:text-gray-400">{'{}'}</div>
+          ) : (
+            entries.map(([k, v]) => (
+              <StructuredJsonNode
+                key={`${nodeKey}.${k}`}
+                value={v}
+                name={k}
+                depth={depth + 1}
+                nodeKey={`${nodeKey}.${k}`}
+              />
+            ))
+          )}
+        </div>
+      </details>
+    );
+  }
+
+  if (typeof value === 'string' && shouldRenderStringAsTextBlock(value, name)) {
+    return (
+      <div className="space-y-1">
+        {name && (
+          <div className="text-xs">
+            {label}
+          </div>
+        )}
+        <pre className="rounded border border-gray-200 bg-white/80 px-2 py-1 text-xs whitespace-pre-wrap break-words text-gray-800 dark:border-gray-700 dark:bg-black/20 dark:text-gray-100">
+          {value || '(空字符串)'}
+        </pre>
+      </div>
+    );
+  }
+
+  return (
+    <div className="text-xs break-words text-gray-800 dark:text-gray-100">
+      {label}
+      <span className="font-mono">{inlinePrimitiveText(value)}</span>
+    </div>
+  );
 };
 
 type ChipTone = 'gray' | 'blue' | 'green' | 'yellow' | 'red' | 'purple';
@@ -682,6 +845,53 @@ const TextViewer: React.FC<TextViewerProps> = ({
             text
           )}
         </pre>
+        <button
+          onClick={handleCopy}
+          className="absolute top-2 right-2 p-1.5 rounded bg-gray-200 dark:bg-gray-700 opacity-0 group-hover:opacity-100 transition-opacity"
+          title="复制"
+        >
+          {copied ? (
+            <Check size={14} className="text-green-500" />
+          ) : (
+            <Copy size={14} className="text-gray-500 dark:text-gray-400" />
+          )}
+        </button>
+      </div>
+    </div>
+  );
+};
+
+const StructuredJsonTextViewer: React.FC<StructuredJsonTextViewerProps> = ({
+  data,
+  label,
+  maxHeightClassName = 'max-h-[50vh]',
+  emptyText = '(空内容)',
+}) => {
+  const [copied, setCopied] = useState(false);
+
+  const normalized = useMemo(() => normalizeJsonLikeStrings(data), [data]);
+  const hasValue = !(normalized === undefined || (typeof normalized === 'string' && normalized.trim().length === 0));
+  const displayValue = hasValue ? normalized : emptyText;
+  const copyValue = hasValue ? normalized : emptyText;
+  const copyText = typeof copyValue === 'string' ? copyValue : safeStringify(copyValue, 2);
+
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(copyText);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="relative">
+      {label && (
+        <div className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
+          {label}
+        </div>
+      )}
+      <div className="relative group rounded-lg border border-gray-200 bg-gray-50 p-2 dark:border-gray-700 dark:bg-gray-800/40">
+        <div className={`space-y-2 overflow-auto ${maxHeightClassName}`}>
+          <StructuredJsonNode value={displayValue} depth={0} nodeKey="root" />
+        </div>
         <button
           onClick={handleCopy}
           className="absolute top-2 right-2 p-1.5 rounded bg-gray-200 dark:bg-gray-700 opacity-0 group-hover:opacity-100 transition-opacity"
@@ -1269,17 +1479,6 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                 }`}
               >
                 概览
-              </button>
-              <button
-                type="button"
-                onClick={() => setActivePage('http_json')}
-                className={`px-3 py-1.5 text-xs font-medium transition-colors ${
-                  activePage === 'http_json'
-                    ? 'bg-gray-200 text-gray-900 dark:bg-gray-800 dark:text-gray-100'
-                    : 'bg-white text-gray-600 hover:bg-gray-50 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800'
-                }`}
-              >
-                HTTP JSON
               </button>
               <button
                 type="button"
@@ -1903,10 +2102,13 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                             </CollapsibleSection>
 
                             <CollapsibleSection title="请求体（文本）" defaultExpanded>
-                              <TextViewer
-                                text={formatRequestBodyAsText(effectiveDebugInfo.request.body)}
+                              <StructuredJsonTextViewer
+                                data={effectiveDebugInfo.request.body}
                                 maxHeightClassName="max-h-[50vh]"
-                                containerClassName="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200"
+                                emptyText={
+                                  formatRequestBodyAsText(effectiveDebugInfo.request.body).trim() ||
+                                  '(空请求体)'
+                                }
                               />
                             </CollapsibleSection>
                           </div>
@@ -1942,9 +2144,10 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                           </CollapsibleSection>
 
                           <CollapsibleSection title="响应体（文本）" defaultExpanded>
-                            <TextViewer
-                              text={toPrettyMaybeJson(responseBodyForDisplay)}
+                            <StructuredJsonTextViewer
+                              data={responseBodyForDisplay}
                               maxHeightClassName="max-h-[50vh]"
+                              emptyText="(空响应体)"
                             />
                           </CollapsibleSection>
                         </div>
