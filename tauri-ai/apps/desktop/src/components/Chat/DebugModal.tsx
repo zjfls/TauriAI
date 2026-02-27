@@ -688,6 +688,7 @@ export const DebugModal: React.FC<DebugModalProps> = ({
   const activeTurn = activeTurnId
     ? sortedTurns.find((t) => t.turnId === activeTurnId) ?? null
     : null;
+  const activeTurnTrim = activeTurn?.contextTrim ?? null;
   const activeTurnPos = useMemo(() => {
     if (!activeTurnId) return -1;
     return sortedTurns.findIndex((t) => t.turnId === activeTurnId);
@@ -1158,6 +1159,47 @@ export const DebugModal: React.FC<DebugModalProps> = ({
           <div className="overflow-auto max-h-[calc(80vh-80px-72px)] space-y-4 pr-1">
             {activePage === 'overview' ? (
               <>
+                {activeTurn && (
+                  <CollapsibleSection
+                    title="上下文裁剪"
+                    defaultExpanded={defaultExpandedForStreaming || (activeTurnTrim?.removedMessages ?? 0) > 0}
+                  >
+                    {activeTurnTrim ? (
+                      <div className="space-y-2">
+                        <div className="grid grid-cols-2 gap-2 text-xs">
+                          <div>
+                            <span className="text-gray-500 dark:text-gray-400">启用: </span>
+                            <span className="text-gray-800 dark:text-gray-200">
+                              {activeTurnTrim.enabled ? '是' : '否'}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-gray-500 dark:text-gray-400">删除消息: </span>
+                            <span className="text-gray-800 dark:text-gray-200">{activeTurnTrim.removedMessages}</span>
+                          </div>
+                          <div>
+                            <span className="text-gray-500 dark:text-gray-400">估算 tokens: </span>
+                            <span className="text-gray-800 dark:text-gray-200">
+                              {activeTurnTrim.estimatedTokensBefore} → {activeTurnTrim.estimatedTokensAfter}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-gray-500 dark:text-gray-400">hard limit: </span>
+                            <span className="text-gray-800 dark:text-gray-200">{activeTurnTrim.hardLimitTokens}</span>
+                          </div>
+                        </div>
+                        <p className="text-xs text-gray-500 dark:text-gray-400">
+                          注：tokens 为后端粗估（偏保守），用于避免 context window exceeded。
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="text-xs text-gray-500 dark:text-gray-400">
+                        本轮无裁剪统计（可能未配置 model 的 contextLength）
+                      </div>
+                    )}
+                  </CollapsibleSection>
+                )}
+
                 {thinkingText && (
                   <CollapsibleSection title="思考过程" defaultExpanded={defaultExpandedForStreaming}>
                     <TextViewer

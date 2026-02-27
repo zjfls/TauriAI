@@ -1224,17 +1224,36 @@ Guidelines:
       // Message tokens = total - base prompts (approximate)
       messageTokens = Math.max(0, totalContextTokens - baseTokens);
     } else {
-      // No usage data yet, estimate from messages that will actually be included in the next request.
-      const used = contextMessageGroups.used;
-      const contentTexts = used.map((m) => m.content).filter(Boolean);
-      messageTokens = estimateTokensForTexts(contentTexts);
-      if (contextMessageGroups.includeThinking) {
-        const thinkingTexts = used
-          .map((m) => m.thinking)
-          .filter((t): t is string => Boolean(t && t.trim()));
-        messageTokens += estimateTokensForTexts(thinkingTexts);
+      // During streaming multi-turn tasks, usage arrives via `turn_finished` events (streamingTurns)
+      // before the assistant message is finalized. Prefer that to keep the context window indicator
+      // updated per turn.
+      const latestStreamingUsage = (() => {
+        const turns = session?.streamingTurns;
+        if (!turns || turns.size === 0) return null;
+        let best: any | null = null;
+        for (const t of turns.values()) {
+          if (!t?.usage) continue;
+          if (!best || (t.turnIndex ?? 0) > (best.turnIndex ?? 0)) best = t;
+        }
+        return best?.usage ?? null;
+      })();
+
+      if (latestStreamingUsage) {
+        totalContextTokens = latestStreamingUsage.promptTokens;
+        messageTokens = Math.max(0, totalContextTokens - baseTokens);
+      } else {
+        // No usage data yet, estimate from messages that will actually be included in the next request.
+        const used = contextMessageGroups.used;
+        const contentTexts = used.map((m) => m.content).filter(Boolean);
+        messageTokens = estimateTokensForTexts(contentTexts);
+        if (contextMessageGroups.includeThinking) {
+          const thinkingTexts = used
+            .map((m) => m.thinking)
+            .filter((t): t is string => Boolean(t && t.trim()));
+          messageTokens += estimateTokensForTexts(thinkingTexts);
+        }
+        totalContextTokens = baseTokens + messageTokens;
       }
-      totalContextTokens = baseTokens + messageTokens;
     }
 
     const percentage = contextLength > 0 ? (totalContextTokens / contextLength) * 100 : 0;

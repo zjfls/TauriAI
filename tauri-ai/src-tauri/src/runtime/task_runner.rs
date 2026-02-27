@@ -38,7 +38,7 @@ use crate::runtime::context_manager::{
 };
 use crate::runtime::events::RunEvent;
 use crate::runtime::mcp::global_mcp_runtime;
-use crate::runtime::types::{TaskKind, TurnPhase, TurnStatus};
+use crate::runtime::types::{TaskKind, TurnContextTrimInfo, TurnPhase, TurnStatus};
 use crate::skills::loader::{
     index_by_name as index_skills_by_name, load_skills as load_skill_files,
 };
@@ -139,6 +139,10 @@ enum TaskOutcome {
 struct TurnLoop<'a> {
     client: Arc<dyn crate::ai_client::AiClient>,
     model_config: crate::models::ModelConfig,
+    /// Agent-level context management policy (trim/compact).
+    ctx_mgr: ContextManager,
+    /// Model context length (used for hard trim budgeting).
+    context_length: Option<u32>,
     tools: Option<Vec<ToolDefinition>>,
     allowed_tool_names: Option<HashSet<String>>,
     /// 工具编排器（权限/路由/gate/pty 会话等都在 tools 子系统内部处理）
@@ -1426,6 +1430,38 @@ impl<'a> TurnLoop<'a> {
                 phase: TurnPhase::Think,
             });
 
+            // Per-turn hard trimming: runtime_messages grows during multi-turn tool runs.
+            // Ensure each model call stays under the configured hard cap to avoid "context window exceeded".
+            let mut turn_context_trim: Option<TurnContextTrimInfo> = None;
+            if let Some(ctx_len) = self.context_length.filter(|v| *v > 0) {
+                let hard_pct = self.ctx_mgr.hard_limit_percent();
+                let hard_limit = hard_limit_tokens(ctx_len, hard_pct);
+
+                if self.ctx_mgr.should_trim() {
+                    let trim = trim_runtime_messages_to_hard_limit(
+                        std::mem::take(&mut self.runtime_messages),
+                        hard_limit,
+                    );
+                    turn_context_trim = Some(TurnContextTrimInfo {
+                        enabled: true,
+                        removed_messages: u32::try_from(trim.removed_messages).unwrap_or(u32::MAX),
+                        estimated_tokens_before: trim.estimated_tokens_before,
+                        estimated_tokens_after: trim.estimated_tokens_after,
+                        hard_limit_tokens: trim.hard_limit_tokens,
+                    });
+                    self.runtime_messages = trim.trimmed_messages;
+                } else {
+                    let estimated = estimate_prompt_tokens(&self.runtime_messages);
+                    turn_context_trim = Some(TurnContextTrimInfo {
+                        enabled: false,
+                        removed_messages: 0,
+                        estimated_tokens_before: estimated,
+                        estimated_tokens_after: estimated,
+                        hard_limit_tokens: hard_limit,
+                    });
+                }
+            }
+
             let turn_result = stream_one_turn(
                 self.client.clone(),
                 self.model_config.clone(),
@@ -1459,7 +1495,7 @@ impl<'a> TurnLoop<'a> {
                     } else {
                         None
                     };
-                    let turn_usage = if self.debug_mode { usage.clone() } else { None };
+                    let turn_usage = usage.clone();
                     let persisted_debug_info =
                         turn_debug_info.as_ref().map(redact_debug_info_for_store);
                     self.emitter.emit(RunEvent::TurnFinished {
@@ -1470,6 +1506,7 @@ impl<'a> TurnLoop<'a> {
                         assistant_message_id: Some(self.assistant_message_id.clone()),
                         debug_info: turn_debug_info,
                         usage: turn_usage,
+                        context_trim: turn_context_trim.clone(),
                         model: Some(self.model_config.model.clone()),
                     });
 
@@ -1500,6 +1537,7 @@ impl<'a> TurnLoop<'a> {
                         has_debug_info: None,
                         debug_info: persisted_debug_info,
                         usage: usage.clone(),
+                        context_trim: turn_context_trim.clone(),
                         model: Some(self.model_config.model.clone()),
                     });
 
@@ -1508,7 +1546,7 @@ impl<'a> TurnLoop<'a> {
                         content,
                         thinking,
                         debug_info: if self.debug_mode { debug_info } else { None },
-                        usage: if self.debug_mode { usage } else { None },
+                        usage,
                         blocks,
                         turns,
                     };
@@ -1528,7 +1566,7 @@ impl<'a> TurnLoop<'a> {
 
                     let persisted_usage = usage.clone();
                     let turn_debug_info = if self.debug_mode { debug_info } else { None };
-                    let turn_usage = if self.debug_mode { usage } else { None };
+                    let turn_usage = usage.clone();
                     let persisted_debug_info =
                         turn_debug_info.as_ref().map(redact_debug_info_for_store);
 
@@ -1671,6 +1709,7 @@ impl<'a> TurnLoop<'a> {
                             assistant_message_id: Some(self.assistant_message_id.clone()),
                             debug_info: turn_debug_info.clone(),
                             usage: turn_usage.clone(),
+                            context_trim: turn_context_trim.clone(),
                             model: Some(self.model_config.model.clone()),
                         });
 
@@ -1681,6 +1720,7 @@ impl<'a> TurnLoop<'a> {
                             has_debug_info: None,
                             debug_info: persisted_debug_info.clone(),
                             usage: persisted_usage,
+                            context_trim: turn_context_trim.clone(),
                             model: Some(self.model_config.model.clone()),
                         });
 
@@ -2306,6 +2346,7 @@ impl<'a> TurnLoop<'a> {
                             assistant_message_id: Some(self.assistant_message_id.clone()),
                             debug_info: turn_debug_info,
                             usage: turn_usage,
+                            context_trim: turn_context_trim.clone(),
                             model: Some(self.model_config.model.clone()),
                         });
                         turns.push(MessageTurn {
@@ -2315,6 +2356,7 @@ impl<'a> TurnLoop<'a> {
                             has_debug_info: None,
                             debug_info: persisted_debug_info.clone(),
                             usage: persisted_usage,
+                            context_trim: turn_context_trim.clone(),
                             model: Some(self.model_config.model.clone()),
                         });
                         return TaskOutcome::Aborted {
@@ -2340,6 +2382,7 @@ impl<'a> TurnLoop<'a> {
                         assistant_message_id: Some(self.assistant_message_id.clone()),
                         debug_info: turn_debug_info,
                         usage: turn_usage,
+                        context_trim: turn_context_trim.clone(),
                         model: Some(self.model_config.model.clone()),
                     });
 
@@ -2351,6 +2394,7 @@ impl<'a> TurnLoop<'a> {
                         has_debug_info: None,
                         debug_info: persisted_debug_info.clone(),
                         usage: persisted_usage,
+                        context_trim: turn_context_trim.clone(),
                         model: Some(self.model_config.model.clone()),
                     });
                     continue;
@@ -2385,7 +2429,7 @@ impl<'a> TurnLoop<'a> {
                     } else {
                         persisted_debug_info.clone()
                     };
-                    let turn_usage = if self.debug_mode { usage } else { None };
+                    let turn_usage = usage.clone();
 
                     if !thinking.trim().is_empty() {
                         blocks.push(MessageBlock::Thinking {
@@ -2453,6 +2497,7 @@ impl<'a> TurnLoop<'a> {
                         assistant_message_id: Some(self.assistant_message_id.clone()),
                         debug_info: turn_debug_info.clone(),
                         usage: turn_usage,
+                        context_trim: turn_context_trim.clone(),
                         model: Some(self.model_config.model.clone()),
                     });
 
@@ -2463,6 +2508,7 @@ impl<'a> TurnLoop<'a> {
                         has_debug_info: None,
                         debug_info: persisted_debug_info,
                         usage: persisted_usage,
+                        context_trim: turn_context_trim.clone(),
                         model: Some(self.model_config.model.clone()),
                     });
                     return TaskOutcome::Failed {
@@ -2489,6 +2535,7 @@ impl<'a> TurnLoop<'a> {
                         assistant_message_id: Some(self.assistant_message_id.clone()),
                         debug_info: None,
                         usage: None,
+                        context_trim: turn_context_trim.clone(),
                         model: Some(self.model_config.model.clone()),
                     });
                     let reply_content = if content.trim().is_empty() && thinking.trim().is_empty() {
@@ -2550,6 +2597,7 @@ impl<'a> TurnLoop<'a> {
                         has_debug_info: None,
                         debug_info: None,
                         usage: None,
+                        context_trim: turn_context_trim.clone(),
                         model: Some(self.model_config.model.clone()),
                     });
                     return TaskOutcome::Aborted {
@@ -4626,7 +4674,6 @@ async fn run_task_inner(
         // Auto compact (Codex-like): when prompt usage gets high, compact persisted history.
         let estimated_tokens = estimate_prompt_tokens(&runtime_messages);
         let hard_pct = ctx_mgr.hard_limit_percent();
-        let hard_limit = hard_limit_tokens(ctx_len, hard_pct);
         let threshold_pct = ctx_mgr
             .auto_compact_threshold_percent()
             .min(hard_pct.saturating_sub(1).max(1));
@@ -4729,16 +4776,13 @@ async fn run_task_inner(
             }
         }
 
-        // Hard trim the prompt for this request to avoid context window exceeded.
-        if ctx_mgr.should_trim() {
-            let trim = trim_runtime_messages_to_hard_limit(runtime_messages, hard_limit);
-            runtime_messages = trim.trimmed_messages;
-        }
     }
 
     let mut turn_loop = TurnLoop {
         client,
         model_config: model_config.clone(),
+        ctx_mgr: ctx_mgr.clone(),
+        context_length,
         tools,
         allowed_tool_names,
         tool_orchestrator,

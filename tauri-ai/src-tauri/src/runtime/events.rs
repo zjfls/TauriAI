@@ -2,7 +2,7 @@ use serde::Serialize;
 
 use crate::ai_client::{DebugInfoData, TokenUsage};
 
-use super::types::{PlannedTask, TaskKind, TurnPhase, TurnStatus};
+use super::types::{PlannedTask, TaskKind, TurnContextTrimInfo, TurnPhase, TurnStatus};
 
 /// 前后端统一的运行时事件通道名（替代旧的多 event name 方案）
 pub const RUN_EVENT_NAME: &str = "run:event";
@@ -73,6 +73,8 @@ pub enum RunEvent {
         debug_info: Option<DebugInfoData>,
         #[serde(skip_serializing_if = "Option::is_none")]
         usage: Option<TokenUsage>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        context_trim: Option<TurnContextTrimInfo>,
         #[serde(skip_serializing_if = "Option::is_none")]
         model: Option<String>,
     },

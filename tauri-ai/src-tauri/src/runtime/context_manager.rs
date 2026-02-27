@@ -53,6 +53,7 @@ impl ContextManager {
     pub fn hard_limit_percent(&self) -> u8 {
         match &self.policy {
             ContextPolicyConfig::NormalCompact(cfg) => cfg.hard_limit_percent.unwrap_or(90),
+            ContextPolicyConfig::Simple(cfg) => cfg.hard_limit_percent.unwrap_or(75),
             _ => 90,
         }
     }
@@ -70,6 +71,7 @@ impl ContextManager {
         match &self.policy {
             // 保持安全默认：即便关闭策略，也保留 hard trim（避免超窗）。
             ContextPolicyConfig::Disabled => true,
+            ContextPolicyConfig::Simple(cfg) => cfg.enabled && cfg.trim_enabled,
             ContextPolicyConfig::NormalCompact(cfg) => cfg.enabled && cfg.trim_enabled,
             ContextPolicyConfig::Custom { .. } => true,
         }
@@ -114,6 +116,7 @@ impl ContextManager {
     pub fn is_enabled(&self) -> bool {
         match &self.policy {
             ContextPolicyConfig::Disabled => false,
+            ContextPolicyConfig::Simple(cfg) => cfg.enabled,
             ContextPolicyConfig::NormalCompact(cfg) => cfg.enabled,
             ContextPolicyConfig::Custom { .. } => true,
         }

@@ -62,6 +62,22 @@ pub enum TurnPhase {
     Observe,
 }
 
+/// 每个 Turn 的上下文裁剪（hard trim）统计信息。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnContextTrimInfo {
+    /// 本轮是否启用裁剪（由 agent 的 contextPolicy 决定）。
+    pub enabled: bool,
+    /// 为了 fit hard limit，删除了多少条最旧的非 system 消息。
+    pub removed_messages: u32,
+    /// 裁剪前估算的 prompt token 数（粗估，偏保守）。
+    pub estimated_tokens_before: u32,
+    /// 裁剪后估算的 prompt token 数（粗估，偏保守）。
+    pub estimated_tokens_after: u32,
+    /// 本轮 hard limit token 上限（由 `contextLength * hardLimitPercent` 得到）。
+    pub hard_limit_tokens: u32,
+}
+
 /// Plan 中对 Task 的最小描述（用于 UI 展示与编排）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

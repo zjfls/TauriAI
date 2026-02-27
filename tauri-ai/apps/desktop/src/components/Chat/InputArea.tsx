@@ -3181,7 +3181,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
           </div>
           {/* Context usage indicator on the right */}
           {contextUsage && (
-            <ContextUsageIndicator usage={contextUsage} disabled={isGenerating} />
+            <ContextUsageIndicator usage={contextUsage} />
           )}
         </div>
       )}

@@ -367,6 +367,8 @@ pub struct MessageTurn {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<crate::ai_client::TokenUsage>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_trim: Option<crate::runtime::types::TurnContextTrimInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
 }
 
@@ -1196,6 +1198,9 @@ impl Default for Agent {
 pub enum ContextPolicyConfig {
     /// Disable all automatic context management (default).
     Disabled,
+    /// Simple trimming-only policy (no persisted compaction).
+    #[serde(rename_all = "camelCase")]
+    Simple(SimpleContextPolicyConfig),
     /// Codex-like compaction + hard trimming.
     #[serde(rename_all = "camelCase")]
     NormalCompact(NormalCompactPolicyConfig),
@@ -1211,6 +1216,27 @@ impl Default for ContextPolicyConfig {
     fn default() -> Self {
         Self::Disabled
     }
+}
+
+/// A lightweight "simple" policy: only hard trimming for runtime prompt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SimpleContextPolicyConfig {
+    /// Master switch for this policy.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Enable hard trimming for the *runtime prompt* to avoid context window exceeded.
+    ///
+    /// - This does NOT mutate persisted history.
+    /// - Disabling this may cause model requests to fail when the context gets too long.
+    #[serde(default = "default_true")]
+    pub trim_enabled: bool,
+
+    /// Hard cap in percent of model context length used for the final prompt (after trimming).
+    /// Default: 75 (%).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hard_limit_percent: Option<u8>,
 }
 
 /// A Codex-like "normal compact" policy.
