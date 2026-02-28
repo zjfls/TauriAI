@@ -5925,6 +5925,7 @@ mod tests {
             web_search_enabled: false,
             max_images: None,
             use_reasoning_effort: None,
+            force_responses_reasoning: false,
             retry_attempts: None,
             resume_partial_output: false,
             stream_include_usage: true,

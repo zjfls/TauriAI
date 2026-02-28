@@ -114,6 +114,15 @@ struct ThinkingConfig {
     thinking_type: String,
 }
 
+/// Response-style reasoning object (OpenAI-compatible chat/completions extensions)
+#[derive(Debug, Serialize)]
+struct ResponseStyleReasoningConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary: Option<String>,
+}
+
 /// Stream options for including usage in streaming responses
 #[derive(Debug, Serialize)]
 struct StreamOptions {
@@ -163,6 +172,9 @@ struct ChatCompletionRequest {
     /// Reasoning effort for OpenAI GPT-5 series (new)
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_effort: Option<String>,
+    /// OpenAI-compatible extension: response-style reasoning object
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<ResponseStyleReasoningConfig>,
 }
 
 /// OpenAI chat completion response (non-streaming)
@@ -493,6 +505,59 @@ fn should_include_reasoning_content(config: &ModelConfig) -> bool {
     matches!(config.thinking_level.as_deref(), Some(level) if level != "disabled")
 }
 
+fn map_reasoning_effort_for_chat(level: Option<&str>) -> Option<String> {
+    match level {
+        Some("disabled") => Some("none".to_string()),
+        Some("low") => Some("low".to_string()),
+        Some("medium") => Some("medium".to_string()),
+        Some("high") => Some("high".to_string()),
+        Some("xhigh") => Some("high".to_string()), // chat/completions compatibility fallback
+        _ => None,
+    }
+}
+
+fn build_chat_reasoning_mode(
+    config: &ModelConfig,
+) -> (
+    Option<ThinkingConfig>,
+    Option<String>,
+    Option<ResponseStyleReasoningConfig>,
+) {
+    // Build thinking/reasoning config based on thinking_level and use_reasoning_effort:
+    // - use_reasoning_effort=true => send `reasoning_effort` (default) OR response-style `reasoning`
+    // - otherwise => legacy `thinking`
+    if config.use_reasoning_effort.unwrap_or(false) {
+        let effort = map_reasoning_effort_for_chat(config.thinking_level.as_deref());
+        let force_response_style =
+            config.force_responses_reasoning && config.provider == "openai_compatible";
+        if force_response_style {
+            let reasoning = effort.as_ref().and_then(|e| {
+                if e == "none" {
+                    None
+                } else {
+                    Some(ResponseStyleReasoningConfig {
+                        effort: Some(e.clone()),
+                        summary: Some("concise".to_string()),
+                    })
+                }
+            });
+            (None, None, reasoning)
+        } else {
+            (None, effort, None)
+        }
+    } else {
+        let thinking_cfg = config.thinking_level.as_ref().map(|level| ThinkingConfig {
+            thinking_type: if level == "disabled" {
+                "disabled"
+            } else {
+                "enabled"
+            }
+            .to_string(),
+        });
+        (thinking_cfg, None, None)
+    }
+}
+
 fn strip_sse_data_prefix(line: &str) -> Option<&str> {
     // SSE spec allows both `data: ...` and `data:...` (optional single space after `:`).
     // Some proxies omit the space; be tolerant to avoid missing termination signals like `[DONE]`.
@@ -636,34 +701,7 @@ impl OpenAiBaseClient {
             }
         });
 
-        // Build thinking/reasoning config based on thinking_level and use_reasoning_effort:
-        // - If use_reasoning_effort is true: use reasoning_effort parameter (OpenAI GPT-5)
-        // - Otherwise: use thinking parameter (DeepSeek, legacy)
-        let (thinking, reasoning_effort) = if config.use_reasoning_effort.unwrap_or(false) {
-            // Use reasoning_effort parameter for OpenAI GPT-5 series
-            let effort = config.thinking_level.as_ref().and_then(|level| {
-                match level.as_str() {
-                    "disabled" => Some("none".to_string()),
-                    "low" => Some("low".to_string()),
-                    "medium" => Some("medium".to_string()),
-                    "high" => Some("high".to_string()),
-                    "xhigh" => Some("high".to_string()), // Chat Completions API doesn't support xhigh
-                    _ => None,
-                }
-            });
-            (None, effort)
-        } else {
-            // Use thinking parameter for DeepSeek and other models
-            let thinking_cfg = config.thinking_level.as_ref().map(|level| ThinkingConfig {
-                thinking_type: if level == "disabled" {
-                    "disabled"
-                } else {
-                    "enabled"
-                }
-                .to_string(),
-            });
-            (thinking_cfg, None)
-        };
+        let (thinking, reasoning_effort, reasoning) = build_chat_reasoning_mode(config);
 
         // Only send OpenAI-native `web_search_options` to the official OpenAI API client.
         // (Avoid passing unknown fields to OpenAI-compatible services that may 400.)
@@ -689,6 +727,7 @@ impl OpenAiBaseClient {
             stream_options: None,
             thinking,
             reasoning_effort,
+            reasoning,
         };
 
         let req = self
@@ -826,34 +865,7 @@ impl OpenAiBaseClient {
             }
         });
 
-        // Build thinking/reasoning config based on thinking_level and use_reasoning_effort:
-        // - If use_reasoning_effort is true: use reasoning_effort parameter (OpenAI GPT-5)
-        // - Otherwise: use thinking parameter (DeepSeek, legacy)
-        let (thinking, reasoning_effort) = if config.use_reasoning_effort.unwrap_or(false) {
-            // Use reasoning_effort parameter for OpenAI GPT-5 series
-            let effort = config.thinking_level.as_ref().and_then(|level| {
-                match level.as_str() {
-                    "disabled" => Some("none".to_string()),
-                    "low" => Some("low".to_string()),
-                    "medium" => Some("medium".to_string()),
-                    "high" => Some("high".to_string()),
-                    "xhigh" => Some("high".to_string()), // Chat Completions API doesn't support xhigh
-                    _ => None,
-                }
-            });
-            (None, effort)
-        } else {
-            // Use thinking parameter for DeepSeek and other models
-            let thinking_cfg = config.thinking_level.as_ref().map(|level| ThinkingConfig {
-                thinking_type: if level == "disabled" {
-                    "disabled"
-                } else {
-                    "enabled"
-                }
-                .to_string(),
-            });
-            (thinking_cfg, None)
-        };
+        let (thinking, reasoning_effort, reasoning) = build_chat_reasoning_mode(config);
 
         // Only send OpenAI-native `web_search_options` to the official OpenAI API client.
         let web_search_options = match self.system_role {
@@ -884,6 +896,7 @@ impl OpenAiBaseClient {
             },
             thinking,
             reasoning_effort,
+            reasoning,
         };
 
         let url = format!("{api_base}/chat/completions");
@@ -1535,8 +1548,76 @@ impl AiClient for OpenAiCompatibleClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{ContentPart, MessageRole, PdfMetadata, PdfPage};
+    use crate::models::{ContentPart, MessageRole, ModelParameters, PdfMetadata, PdfPage};
     use proptest::prelude::*;
+
+    fn make_test_model_config(provider: &str) -> ModelConfig {
+        ModelConfig {
+            id: "test-provider/test-model".to_string(),
+            name: "test-model".to_string(),
+            provider: provider.to_string(),
+            api_base: Some("https://example.com/v1".to_string()),
+            api_key: Some("test-key".to_string()),
+            model: "test-model".to_string(),
+            parameters: ModelParameters::default(),
+            thinking_level: None,
+            thinking_budget_tokens: None,
+            vision_enabled: false,
+            web_search_enabled: false,
+            max_images: None,
+            use_reasoning_effort: None,
+            force_responses_reasoning: false,
+            retry_attempts: None,
+            resume_partial_output: false,
+            stream_include_usage: true,
+            debug_sse: false,
+            reinject_reasoning_content: false,
+        }
+    }
+
+    #[test]
+    fn test_force_response_style_reasoning_for_openai_compatible_chat() {
+        let mut config = make_test_model_config("openai_compatible");
+        config.use_reasoning_effort = Some(true);
+        config.force_responses_reasoning = true;
+        config.thinking_level = Some("high".to_string());
+
+        let (thinking, reasoning_effort, reasoning) = build_chat_reasoning_mode(&config);
+
+        assert!(thinking.is_none());
+        assert!(reasoning_effort.is_none());
+        let reasoning = reasoning.expect("response-style reasoning should be set");
+        assert_eq!(reasoning.effort.as_deref(), Some("high"));
+        assert_eq!(reasoning.summary.as_deref(), Some("concise"));
+    }
+
+    #[test]
+    fn test_force_response_style_reasoning_does_not_affect_openai_provider() {
+        let mut config = make_test_model_config("openai");
+        config.use_reasoning_effort = Some(true);
+        config.force_responses_reasoning = true;
+        config.thinking_level = Some("high".to_string());
+
+        let (thinking, reasoning_effort, reasoning) = build_chat_reasoning_mode(&config);
+
+        assert!(thinking.is_none());
+        assert_eq!(reasoning_effort.as_deref(), Some("high"));
+        assert!(reasoning.is_none());
+    }
+
+    #[test]
+    fn test_force_response_style_reasoning_disabled_uses_reasoning_effort() {
+        let mut config = make_test_model_config("openai_compatible");
+        config.use_reasoning_effort = Some(true);
+        config.force_responses_reasoning = false;
+        config.thinking_level = Some("medium".to_string());
+
+        let (thinking, reasoning_effort, reasoning) = build_chat_reasoning_mode(&config);
+
+        assert!(thinking.is_none());
+        assert_eq!(reasoning_effort.as_deref(), Some("medium"));
+        assert!(reasoning.is_none());
+    }
 
     /// Strategy for generating arbitrary PdfPage
     fn arb_pdf_page() -> impl Strategy<Value = PdfPage> {
