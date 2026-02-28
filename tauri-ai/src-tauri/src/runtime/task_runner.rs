@@ -34,7 +34,7 @@ use crate::prompts::{
 };
 use crate::runtime::context_manager::{
     auto_compact_threshold_tokens, estimate_prompt_tokens, hard_limit_tokens, run_normal_compact,
-    trim_runtime_messages_to_hard_limit, ContextManager,
+    trim_runtime_messages_to_target_window, trim_target_tokens, ContextManager,
 };
 use crate::runtime::events::RunEvent;
 use crate::runtime::mcp::global_mcp_runtime;
@@ -1412,6 +1412,11 @@ impl<'a> TurnLoop<'a> {
         // NOTE: We only persist redacted per-turn DebugInfo to avoid leaking sensitive headers.
         let mut blocks: Vec<MessageBlock> = Vec::new();
         let mut turns: Vec<MessageTurn> = Vec::new();
+        struct TrimSnapshot {
+            kept_task_ids: HashSet<String>,
+            estimated_tokens_after: u32,
+        }
+        let mut last_trim_snapshot: Option<TrimSnapshot> = None;
 
         for step in 0..self.max_turns {
             let turn_index = self.start_turn_index.saturating_add(step);
@@ -1436,20 +1441,58 @@ impl<'a> TurnLoop<'a> {
             if let Some(ctx_len) = self.context_length.filter(|v| *v > 0) {
                 let hard_pct = self.ctx_mgr.hard_limit_percent();
                 let hard_limit = hard_limit_tokens(ctx_len, hard_pct);
+                let target_pct = self.ctx_mgr.trim_target_percent();
+                let trim_target = trim_target_tokens(ctx_len, target_pct, hard_limit);
 
                 if self.ctx_mgr.should_trim() {
-                    let trim = trim_runtime_messages_to_hard_limit(
+                    let trim = trim_runtime_messages_to_target_window(
                         std::mem::take(&mut self.runtime_messages),
                         hard_limit,
+                        trim_target,
                     );
+                    let current_kept_set: HashSet<String> =
+                        trim.kept_task_ids.iter().cloned().collect::<HashSet<_>>();
+                    let (trimmed_tasks_since_last, added_tasks_since_last, delta_tokens_since_last) =
+                        if let Some(prev) = last_trim_snapshot.as_ref() {
+                            let trimmed = prev
+                                .kept_task_ids
+                                .difference(&current_kept_set)
+                                .count();
+                            let added =
+                                current_kept_set.difference(&prev.kept_task_ids).count();
+                            (
+                                Some(u32::try_from(trimmed).unwrap_or(u32::MAX)),
+                                Some(u32::try_from(added).unwrap_or(u32::MAX)),
+                                Some(
+                                    i64::from(trim.estimated_tokens_after)
+                                        - i64::from(prev.estimated_tokens_after),
+                                ),
+                            )
+                        } else {
+                            (None, None, None)
+                        };
                     turn_context_trim = Some(TurnContextTrimInfo {
                         enabled: true,
                         removed_messages: u32::try_from(trim.removed_messages).unwrap_or(u32::MAX),
                         estimated_tokens_before: trim.estimated_tokens_before,
                         estimated_tokens_after: trim.estimated_tokens_after,
                         hard_limit_tokens: trim.hard_limit_tokens,
+                        trim_target_tokens: trim.trim_target_tokens,
+                        removed_tasks: u32::try_from(trim.removed_tasks).unwrap_or(u32::MAX),
+                        kept_tasks: u32::try_from(trim.kept_tasks).unwrap_or(u32::MAX),
+                        trimmed_tasks_since_last,
+                        added_tasks_since_last,
+                        delta_tokens_since_last,
+                        target_unreachable: Some(trim.target_unreachable),
                     });
                     self.runtime_messages = trim.trimmed_messages;
+                    last_trim_snapshot = Some(TrimSnapshot {
+                        kept_task_ids: current_kept_set,
+                        estimated_tokens_after: turn_context_trim
+                            .as_ref()
+                            .map(|v| v.estimated_tokens_after)
+                            .unwrap_or(0),
+                    });
                 } else {
                     let estimated = estimate_prompt_tokens(&self.runtime_messages);
                     turn_context_trim = Some(TurnContextTrimInfo {
@@ -1458,6 +1501,13 @@ impl<'a> TurnLoop<'a> {
                         estimated_tokens_before: estimated,
                         estimated_tokens_after: estimated,
                         hard_limit_tokens: hard_limit,
+                        trim_target_tokens: trim_target,
+                        removed_tasks: 0,
+                        kept_tasks: 0,
+                        trimmed_tasks_since_last: None,
+                        added_tasks_since_last: None,
+                        delta_tokens_since_last: None,
+                        target_unreachable: None,
                     });
                 }
             }

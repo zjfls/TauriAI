@@ -270,6 +270,7 @@ export interface SimpleContextPolicy {
   enabled?: boolean;
   trimEnabled?: boolean; // enable hard trimming for runtime prompt
   hardLimitPercent?: number; // hard cap (% of contextLength) for final prompt after trimming
+  trimTargetPercent?: number; // trim target (% of contextLength) after hard trim is triggered
 }
 
 export interface NormalCompactContextPolicy {
@@ -280,6 +281,7 @@ export interface NormalCompactContextPolicy {
   trimEnabled?: boolean; // enable hard trimming for runtime prompt
   autoCompactThresholdPercent?: number; // trigger threshold (% of contextLength)
   hardLimitPercent?: number; // hard cap (% of contextLength) for final prompt after trimming
+  trimTargetPercent?: number; // trim target (% of contextLength) after hard trim is triggered
   keepLastMessages?: number; // keep last N messages after compaction
   maxSummaryTokens?: number; // max output tokens for summary generation
   maxCompactInputMessages?: number; // best-effort cap of messages fed into compaction prompt
@@ -695,6 +697,13 @@ export interface TurnContextTrimInfo {
   estimatedTokensBefore: number;
   estimatedTokensAfter: number;
   hardLimitTokens: number;
+  trimTargetTokens: number;
+  removedTasks: number;
+  keptTasks: number;
+  trimmedTasksSinceLast?: number;
+  addedTasksSinceLast?: number;
+  deltaTokensSinceLast?: number;
+  targetUnreachable?: boolean;
 }
 
 /**

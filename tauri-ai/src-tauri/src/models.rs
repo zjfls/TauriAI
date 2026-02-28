@@ -1266,6 +1266,15 @@ pub struct SimplePolicyConfig {
     /// Default: 90 (%).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hard_limit_percent: Option<u8>,
+
+    /// Trim target in percent of model context length.
+    ///
+    /// When hard trim is triggered (`estimated > hard_limit_percent`), the runtime prompt
+    /// will be trimmed down towards this target.
+    ///
+    /// Default: 90 (%), i.e. same as hard limit for backward compatibility.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trim_target_percent: Option<u8>,
 }
 
 impl Default for SimplePolicyConfig {
@@ -1274,6 +1283,7 @@ impl Default for SimplePolicyConfig {
             enabled: true,
             trim_enabled: true,
             hard_limit_percent: Some(90),
+            trim_target_percent: Some(90),
         }
     }
 }
@@ -1313,6 +1323,15 @@ pub struct NormalCompactPolicyConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hard_limit_percent: Option<u8>,
 
+    /// Trim target in percent of model context length.
+    ///
+    /// When hard trim is triggered (`estimated > hard_limit_percent`), the runtime prompt
+    /// will be trimmed down towards this target.
+    ///
+    /// Default: same as hard limit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trim_target_percent: Option<u8>,
+
     /// After compaction, keep the last N messages (excluding the inserted summary).
     /// Default: 60.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1338,6 +1357,7 @@ impl Default for NormalCompactPolicyConfig {
             trim_enabled: true,
             auto_compact_threshold_percent: None,
             hard_limit_percent: None,
+            trim_target_percent: None,
             keep_last_messages: None,
             max_summary_tokens: None,
             max_compact_input_messages: None,
@@ -2185,6 +2205,10 @@ mod context_policy_tests {
                 assert!(cfg.trim_enabled);
                 // legacy config may not specify this field; runtime falls back to 90.
                 assert!(cfg.hard_limit_percent.is_none() || cfg.hard_limit_percent == Some(90));
+                // legacy config may not specify this field; runtime falls back to hard limit.
+                assert!(
+                    cfg.trim_target_percent.is_none() || cfg.trim_target_percent == Some(90)
+                );
             }
             _ => panic!("expected Simple variant"),
         }

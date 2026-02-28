@@ -36,6 +36,11 @@ pub struct ContextTrimResult {
     pub estimated_tokens_before: u32,
     pub estimated_tokens_after: u32,
     pub hard_limit_tokens: u32,
+    pub trim_target_tokens: u32,
+    pub removed_tasks: usize,
+    pub kept_tasks: usize,
+    pub kept_task_ids: Vec<String>,
+    pub target_unreachable: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -58,6 +63,16 @@ impl ContextManager {
             ContextPolicyConfig::NormalCompact(cfg) => cfg.hard_limit_percent.unwrap_or(90),
             _ => 90,
         }
+    }
+
+    pub fn trim_target_percent(&self) -> u8 {
+        let hard = self.hard_limit_percent().clamp(1, 99);
+        let raw = match &self.policy {
+            ContextPolicyConfig::Simple(cfg) => cfg.trim_target_percent.unwrap_or(hard),
+            ContextPolicyConfig::NormalCompact(cfg) => cfg.trim_target_percent.unwrap_or(hard),
+            _ => hard,
+        };
+        raw.clamp(1, hard)
     }
 
     pub fn auto_compact_threshold_percent(&self) -> u8 {
@@ -230,8 +245,14 @@ pub fn estimate_prompt_tokens(messages: &[Message]) -> u32 {
                 total = total.saturating_add(approx_tokens_for_text(s.as_str()));
             }
         }
+        // Keep estimator close to actual provider payload:
+        // only count meta fields that are typically sent to model APIs.
         if let Some(meta) = m.meta.as_ref() {
-            if let Ok(s) = serde_json::to_string(meta) {
+            let minimal = serde_json::json!({
+                "tool_call_id": meta.tool_call_id,
+                "tool_calls": meta.tool_calls,
+            });
+            if let Ok(s) = serde_json::to_string(&minimal) {
                 total = total.saturating_add(approx_tokens_for_text(s.as_str()));
             }
         }
@@ -280,17 +301,94 @@ pub fn auto_compact_threshold_tokens(context_length: u32, threshold_percent: u8)
     context_length.saturating_mul(pct) / 100
 }
 
-/// Trim the *runtime prompt* to fit into a hard limit by removing oldest non-system messages.
-///
-/// - Preserves all leading `system` messages.
-/// - Preserves the latest non-system message.
-/// - Preserves the latest `user` message (important for retry/replay flows where
-///   assistant/tool replay messages may appear after the user message).
-pub fn trim_runtime_messages_to_hard_limit(
-    mut messages: Vec<Message>,
+pub fn trim_target_tokens(
+    context_length: u32,
+    trim_target_percent: u8,
     hard_limit_tokens: u32,
+) -> u32 {
+    let pct = u32::from(trim_target_percent.clamp(1, 99));
+    let target = context_length.saturating_mul(pct) / 100;
+    target.max(1).min(hard_limit_tokens.max(1))
+}
+
+#[derive(Debug, Clone)]
+struct TaskSlice {
+    id: String,
+    indices: Vec<usize>,
+    tokens: u32,
+}
+
+fn build_task_slices(messages: &[Message], first_non_system: usize) -> Vec<TaskSlice> {
+    let mut slices: Vec<Vec<usize>> = Vec::new();
+    let mut current: Vec<usize> = Vec::new();
+
+    for idx in first_non_system..messages.len() {
+        let msg = &messages[idx];
+        if msg.role == MessageRole::User {
+            if !current.is_empty() {
+                slices.push(current);
+                current = Vec::new();
+            }
+            current.push(idx);
+        } else {
+            if current.is_empty() {
+                // Orphan assistant/tool message without a preceding user in current window.
+                current.push(idx);
+            } else {
+                current.push(idx);
+            }
+        }
+    }
+
+    if !current.is_empty() {
+        slices.push(current);
+    }
+
+    slices
+        .into_iter()
+        .enumerate()
+        .map(|(i, indices)| {
+            let id = indices
+                .first()
+                .and_then(|idx| messages.get(*idx))
+                .map(|m| m.id.clone())
+                .unwrap_or_else(|| format!("slice_{i}"));
+            let slice_messages = indices
+                .iter()
+                .filter_map(|idx| messages.get(*idx).cloned())
+                .collect::<Vec<_>>();
+            let tokens = estimate_prompt_tokens(&slice_messages);
+            TaskSlice {
+                id,
+                indices,
+                tokens,
+            }
+        })
+        .collect()
+}
+
+/// Trim the runtime prompt down to a target window when hard limit is exceeded.
+///
+/// Strategy:
+/// - Keep all leading `system` messages.
+/// - Build request/response task slices from non-system messages.
+/// - Select a contiguous window from newest to oldest until adding one more
+///   slice would exceed `trim_target_tokens`.
+/// - Always keep the newest slice (can represent an unfinished task).
+pub fn trim_runtime_messages_to_target_window(
+    messages: Vec<Message>,
+    hard_limit_tokens: u32,
+    trim_target_tokens: u32,
 ) -> ContextTrimResult {
     let estimated_before = estimate_prompt_tokens(&messages);
+    let first_non_system = messages
+        .iter()
+        .position(|m| m.role != MessageRole::System)
+        .unwrap_or(messages.len());
+    let slices = build_task_slices(&messages, first_non_system);
+    let all_task_ids = slices.iter().map(|s| s.id.clone()).collect::<Vec<_>>();
+    let target_tokens = trim_target_tokens.min(hard_limit_tokens.max(1)).max(1);
+
     if estimated_before <= hard_limit_tokens {
         return ContextTrimResult {
             trimmed_messages: messages,
@@ -298,63 +396,94 @@ pub fn trim_runtime_messages_to_hard_limit(
             estimated_tokens_before: estimated_before,
             estimated_tokens_after: estimated_before,
             hard_limit_tokens,
+            trim_target_tokens: target_tokens,
+            removed_tasks: 0,
+            kept_tasks: slices.len(),
+            kept_task_ids: all_task_ids,
+            target_unreachable: false,
         };
     }
 
-    let first_non_system = messages
-        .iter()
-        .position(|m| m.role != MessageRole::System)
-        .unwrap_or(messages.len());
+    if first_non_system >= messages.len() || slices.is_empty() {
+        return ContextTrimResult {
+            trimmed_messages: messages,
+            removed_messages: 0,
+            estimated_tokens_before: estimated_before,
+            estimated_tokens_after: estimated_before,
+            hard_limit_tokens,
+            trim_target_tokens: target_tokens,
+            removed_tasks: 0,
+            kept_tasks: 0,
+            kept_task_ids: Vec::new(),
+            target_unreachable: estimated_before > target_tokens,
+        };
+    }
 
-    let mut removed = 0usize;
-    loop {
-        let cur = estimate_prompt_tokens(&messages);
-        if cur <= hard_limit_tokens {
-            return ContextTrimResult {
-                trimmed_messages: messages,
-                removed_messages: removed,
-                estimated_tokens_before: estimated_before,
-                estimated_tokens_after: cur,
-                hard_limit_tokens,
-            };
+    let mut keep_mask = vec![false; slices.len()];
+    let system_tokens = estimate_prompt_tokens(&messages[..first_non_system]);
+    let mut selected_tokens = system_tokens;
+
+    for idx in (0..slices.len()).rev() {
+        if !keep_mask.iter().any(|v| *v) {
+            keep_mask[idx] = true;
+            selected_tokens = selected_tokens.saturating_add(slices[idx].tokens);
+            continue;
         }
 
-        let latest_non_system_idx = messages.iter().rposition(|m| m.role != MessageRole::System);
-        let latest_user_idx = messages.iter().rposition(|m| m.role == MessageRole::User);
-
-        // Remove the oldest non-system message that is NOT protected.
-        let removable_idx = (first_non_system..messages.len()).find(|idx| {
-            if messages[*idx].role == MessageRole::System {
-                return false;
-            }
-            if Some(*idx) == latest_non_system_idx {
-                return false;
-            }
-            if Some(*idx) == latest_user_idx {
-                return false;
-            }
-            true
-        });
-
-        let Some(idx) = removable_idx else {
-            // Cannot trim further without dropping protected messages.
-            return ContextTrimResult {
-                trimmed_messages: messages,
-                removed_messages: removed,
-                estimated_tokens_before: estimated_before,
-                estimated_tokens_after: cur,
-                hard_limit_tokens,
-            };
-        };
-
-        messages.remove(idx);
-        removed += 1;
+        let next = selected_tokens.saturating_add(slices[idx].tokens);
+        if next <= target_tokens {
+            keep_mask[idx] = true;
+            selected_tokens = next;
+        } else {
+            // Keep a contiguous recent window; once it would overflow, stop.
+            break;
+        }
     }
+
+    let mut trimmed_messages = messages[..first_non_system].to_vec();
+    let mut kept_task_ids: Vec<String> = Vec::new();
+    for (idx, slice) in slices.iter().enumerate() {
+        if keep_mask[idx] {
+            kept_task_ids.push(slice.id.clone());
+            for msg_idx in &slice.indices {
+                if let Some(m) = messages.get(*msg_idx) {
+                    trimmed_messages.push(m.clone());
+                }
+            }
+        }
+    }
+
+    let estimated_after = estimate_prompt_tokens(&trimmed_messages);
+    let removed_messages = messages.len().saturating_sub(trimmed_messages.len());
+    let kept_tasks = kept_task_ids.len();
+    let removed_tasks = slices.len().saturating_sub(kept_tasks);
+
+    ContextTrimResult {
+        trimmed_messages,
+        removed_messages,
+        estimated_tokens_before: estimated_before,
+        estimated_tokens_after: estimated_after,
+        hard_limit_tokens,
+        trim_target_tokens: target_tokens,
+        removed_tasks,
+        kept_tasks,
+        kept_task_ids,
+        target_unreachable: estimated_after > target_tokens,
+    }
+}
+
+/// Compatibility wrapper:
+/// trim down to hard limit when no dedicated target is provided.
+pub fn trim_runtime_messages_to_hard_limit(
+    messages: Vec<Message>,
+    hard_limit_tokens: u32,
+) -> ContextTrimResult {
+    trim_runtime_messages_to_target_window(messages, hard_limit_tokens, hard_limit_tokens)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::trim_runtime_messages_to_hard_limit;
+    use super::{estimate_prompt_tokens, trim_runtime_messages_to_hard_limit, trim_runtime_messages_to_target_window};
     use crate::models::{Message, MessageRole, MessageStatus};
 
     fn mk_message(role: MessageRole, content: &str) -> Message {
@@ -410,6 +539,61 @@ mod tests {
                 .any(|m| m.role == MessageRole::Assistant),
             "latest non-system message should still be preserved"
         );
+    }
+
+    #[test]
+    fn trim_target_keeps_contiguous_recent_task_window() {
+        let task1_user = mk_message(MessageRole::User, "task1 user");
+        let task1_assistant = mk_message(
+            MessageRole::Assistant,
+            "task1 assistant xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        );
+        let task2_user = mk_message(MessageRole::User, "task2 user");
+        let task2_assistant = mk_message(
+            MessageRole::Assistant,
+            "task2 assistant yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+        );
+        let task3_user = mk_message(MessageRole::User, "task3 user");
+        let task3_assistant = mk_message(
+            MessageRole::Assistant,
+            "task3 assistant zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+        );
+
+        let messages = vec![
+            mk_message(MessageRole::System, "system prompt"),
+            task1_user.clone(),
+            task1_assistant.clone(),
+            task2_user.clone(),
+            task2_assistant.clone(),
+            task3_user.clone(),
+            task3_assistant.clone(),
+        ];
+
+        let hard = estimate_prompt_tokens(&messages).saturating_sub(1);
+        let only_latest_two = vec![
+            mk_message(MessageRole::System, "system prompt"),
+            task2_user.clone(),
+            task2_assistant.clone(),
+            task3_user.clone(),
+            task3_assistant.clone(),
+        ];
+        let target = estimate_prompt_tokens(&only_latest_two);
+        let out = trim_runtime_messages_to_target_window(messages, hard, target);
+
+        let trimmed_ids = out
+            .trimmed_messages
+            .iter()
+            .map(|m| m.id.clone())
+            .collect::<Vec<_>>();
+        assert!(
+            !trimmed_ids.contains(&task1_user.id),
+            "oldest task should be trimmed first"
+        );
+        assert!(
+            trimmed_ids.contains(&task2_user.id) && trimmed_ids.contains(&task3_user.id),
+            "recent contiguous task window should be kept"
+        );
+        assert!(out.estimated_tokens_after <= target || out.target_unreachable);
     }
 }
 
