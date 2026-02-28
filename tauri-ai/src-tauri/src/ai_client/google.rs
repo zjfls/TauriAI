@@ -797,6 +797,7 @@ impl AiClient for GoogleClient {
                     observed_signal: None,
                     last_event_type: None,
                     chunk_count: Some(0),
+                    event_count: Some(0),
                     raw_event_tail: None,
                 }),
                 error_origin: Some(ErrorOrigin {
@@ -912,6 +913,7 @@ impl AiClient for GoogleClient {
                             observed_signal: None,
                             last_event_type: Some("transport_error".to_string()),
                             chunk_count: Some(chunk_count),
+                            event_count: Some(event_count),
                             raw_event_tail: if raw_event_tail.is_empty() {
                                 None
                             } else {
@@ -1121,6 +1123,7 @@ impl AiClient for GoogleClient {
                 observed_signal: None,
                 last_event_type: None,
                 chunk_count: Some(chunk_count),
+                event_count: Some(event_count),
                 raw_event_tail: if raw_event_tail.is_empty() {
                     None
                 } else {

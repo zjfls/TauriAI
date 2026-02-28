@@ -203,6 +203,12 @@ pub struct StreamTerminationInfo {
     /// Number of received stream chunks (for diagnostics).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chunk_count: Option<u32>,
+    /// Number of received protocol payload events (for diagnostics).
+    ///
+    /// - SSE providers: number of parsed `data:` payload lines.
+    /// - NDJSON providers: number of parsed JSON lines.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_count: Option<u32>,
     /// Tail of raw provider stream payloads (for diagnostics).
     /// For SSE providers, this is the `data:` payload after stripping the `data:` prefix.
     #[serde(skip_serializing_if = "Option::is_none")]

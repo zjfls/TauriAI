@@ -952,6 +952,7 @@ impl OpenAiBaseClient {
                     observed_signal: None,
                     last_event_type: None,
                     chunk_count: Some(0),
+                    event_count: Some(0),
                     raw_event_tail: None,
                 }),
                 error_origin: Some(ErrorOrigin {
@@ -1090,6 +1091,7 @@ impl OpenAiBaseClient {
                             observed_signal: None,
                             last_event_type: None,
                             chunk_count: Some(chunk_count),
+                            event_count: Some(event_count),
                             raw_event_tail: if raw_event_tail.is_empty() {
                                 None
                             } else {
@@ -1218,6 +1220,7 @@ impl OpenAiBaseClient {
                                 observed_signal: Some("[DONE]".to_string()),
                                 last_event_type: None,
                                 chunk_count: Some(chunk_count),
+                                event_count: Some(event_count),
                                 raw_event_tail: if raw_event_tail.is_empty() {
                                     None
                                 } else {
@@ -1472,6 +1475,7 @@ impl OpenAiBaseClient {
                 observed_signal: None,
                 last_event_type: None,
                 chunk_count: Some(chunk_count),
+                event_count: Some(event_count),
                 raw_event_tail: if raw_event_tail.is_empty() {
                     None
                 } else {

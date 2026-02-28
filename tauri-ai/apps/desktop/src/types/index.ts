@@ -893,6 +893,7 @@ export interface StreamTerminationInfo {
   observedSignal?: string;
   lastEventType?: string;
   chunkCount?: number;
+  eventCount?: number;
   rawEventTail?: string[];
 }
 

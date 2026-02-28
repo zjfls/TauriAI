@@ -258,6 +258,7 @@ impl AiClient for OllamaClient {
                     observed_signal: None,
                     last_event_type: None,
                     chunk_count: Some(0),
+                    event_count: Some(0),
                     raw_event_tail: None,
                 }),
                 error_origin: Some(ErrorOrigin {
@@ -349,6 +350,7 @@ impl AiClient for OllamaClient {
                             observed_signal: None,
                             last_event_type: Some("transport_error".to_string()),
                             chunk_count: Some(chunk_count),
+                            event_count: Some(line_count),
                             raw_event_tail: if raw_event_tail.is_empty() {
                                 None
                             } else {
@@ -427,6 +429,7 @@ impl AiClient for OllamaClient {
                                 observed_signal: Some("done=true".to_string()),
                                 last_event_type: Some("done".to_string()),
                                 chunk_count: Some(chunk_count),
+                                event_count: Some(line_count),
                                 raw_event_tail: if raw_event_tail.is_empty() {
                                     None
                                 } else {
@@ -488,6 +491,7 @@ impl AiClient for OllamaClient {
                 observed_signal: None,
                 last_event_type: Some("stream_eof".to_string()),
                 chunk_count: Some(chunk_count),
+                event_count: Some(line_count),
                 raw_event_tail: if raw_event_tail.is_empty() {
                     None
                 } else {

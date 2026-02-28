@@ -5596,29 +5596,35 @@ async fn stream_one_turn(
                 include_usage_override = Some(false);
             }
 
+            let origin_module = match model_config.provider.as_str() {
+                "openai" | "openai_compatible" => "ai_client/openai".to_string(),
+                "openai_responses" => "ai_client/openai_responses".to_string(),
+                "anthropic" => "ai_client/anthropic".to_string(),
+                "google" => "ai_client/google".to_string(),
+                "ollama" => "ai_client/ollama".to_string(),
+                other => format!("ai_client/{other}"),
+            };
+            let origin = crate::ai_client::ErrorOrigin {
+                layer: crate::ai_client::ErrorLayer::Content,
+                module: origin_module,
+                operation: Some("turn_stream:empty_content".to_string()),
+            };
+
             if let Some(di) = debug_info.as_mut() {
                 if di.error_origin.is_none() {
-                    di.error_origin = Some(crate::ai_client::ErrorOrigin {
-                        layer: crate::ai_client::ErrorLayer::Runtime,
-                        module: "runtime/task_runner".to_string(),
-                        operation: Some("turn_stream:empty_content".to_string()),
-                    });
+                    di.error_origin = Some(origin.clone());
                 }
             } else {
                 debug_info = Some(DebugInfoData {
                     request: None,
                     response: None,
                     stream_termination: None,
-                    error_origin: Some(crate::ai_client::ErrorOrigin {
-                        layer: crate::ai_client::ErrorLayer::Runtime,
-                        module: "runtime/task_runner".to_string(),
-                        operation: Some("turn_stream:empty_content".to_string()),
-                    }),
+                    error_origin: Some(origin),
                 });
             }
 
             let mut lines: Vec<String> = Vec::new();
-            lines.push("模型流结束但未返回任何内容".to_string());
+            lines.push("模型流结束但未解析到任何可见输出（token/tool_calls）".to_string());
             lines.push("".to_string());
             lines.push("上下文：".to_string());
             lines.push(format!("- provider: {}", model_config.provider));
@@ -5666,6 +5672,9 @@ async fn stream_one_turn(
                 if let Some(v) = term.chunk_count {
                     term_lines.push(format!("chunk_count={v}"));
                 }
+                if let Some(v) = term.event_count {
+                    term_lines.push(format!("event_count={v}"));
+                }
                 if !term_lines.is_empty() {
                     lines.push("".to_string());
                     lines.push(format!("- stream_termination: {}", term_lines.join(", ")));
@@ -5702,10 +5711,10 @@ async fn stream_one_turn(
                         .rev()
                         .collect();
                     lines.push(format!("- raw_event_tail_count: {}", raw_tail.len()));
-                    lines.push(format!(
-                        "- raw_event_tail_last: {}",
-                        serde_json::to_string(&sample).unwrap_or_else(|_| "[]".to_string())
-                    ));
+                    lines.push("- raw_event_tail_last:".to_string());
+                    for line in sample {
+                        lines.push(format!("  - {line}"));
+                    }
                 }
 
                 if term.protocol_complete == Some(false)
@@ -5716,6 +5725,48 @@ async fn stream_one_turn(
                     lines.push(
                         "说明：runtime_end_event 是本地结束事件；协议层是否发送了 response.completed/response.done/[DONE] 请以 stream_termination.protocol_complete/observed_signal 为准。".to_string()
                     );
+                }
+            }
+
+            // Best-effort hints: we saw protocol payloads, but none were parsed into visible deltas.
+            if let Some(raw_tail) = debug_info
+                .as_ref()
+                .and_then(|d| d.stream_termination.as_ref())
+                .and_then(|t| t.raw_event_tail.as_ref())
+                .filter(|t| !t.is_empty())
+            {
+                let has_tool_calls = raw_tail.iter().any(|l| l.contains("\"tool_calls\""));
+                let has_function_call = raw_tail
+                    .iter()
+                    .any(|l| l.contains("\"function_call\"") || l.contains("\"functionCall\""));
+                let has_content = raw_tail.iter().any(|l| l.contains("\"content\""));
+
+                let mut hints: Vec<String> = Vec::new();
+                if (has_tool_calls || has_function_call) && tool_call_event_count == 0 {
+                    hints.push(
+                        "流里疑似包含工具调用字段，但解析层未产出 tool_calls 事件；通常是网关的流式字段不兼容或解析未覆盖导致。"
+                            .to_string(),
+                    );
+                }
+                if !has_tool_calls
+                    && !has_function_call
+                    && !has_content
+                    && token_chunk_count == 0
+                    && thinking_chunk_count == 0
+                    && error_event_count == 0
+                {
+                    hints.push(
+                        "流里可能只有 role/usage/心跳等元数据，没有 content；也可能被网关截断/过滤。"
+                            .to_string(),
+                    );
+                }
+
+                if !hints.is_empty() {
+                    lines.push("".to_string());
+                    lines.push("可能原因：".to_string());
+                    for hint in hints {
+                        lines.push(format!("- {hint}"));
+                    }
                 }
             }
 
@@ -6043,7 +6094,7 @@ mod tests {
         match result {
             TurnStreamResult::Error { error, .. } => {
                 assert!(
-                    error.contains("模型流结束但未返回任何内容"),
+                    error.contains("模型流结束但未解析到任何可见输出"),
                     "unexpected error: {error}"
                 );
                 assert!(error.contains("上下文"), "missing context: {error}");

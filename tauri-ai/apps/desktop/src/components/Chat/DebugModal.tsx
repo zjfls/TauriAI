@@ -122,7 +122,7 @@ type LargeTextViewerState = {
   text: string;
   rawJson?: unknown;
 };
-type LargeViewerMode = 'text' | 'json' | 'structured';
+type LargeViewerMode = 'json' | 'structured';
 
 const maskSensitiveHeaders = (headers: Record<string, string>): Record<string, string> => {
   const masked: Record<string, string> = {};
@@ -740,6 +740,13 @@ const normalizeStreamTerminationInfo = (debugInfo: DebugInfo | null | undefined)
         ? (raw as any).chunk_count
         : undefined;
 
+  const eventCount =
+    typeof (raw as any).eventCount === 'number'
+      ? (raw as any).eventCount
+      : typeof (raw as any).event_count === 'number'
+        ? (raw as any).event_count
+        : undefined;
+
   return {
     protocolComplete,
     terminationSource: pickString((raw as any).terminationSource) ?? pickString((raw as any).termination_source),
@@ -748,6 +755,7 @@ const normalizeStreamTerminationInfo = (debugInfo: DebugInfo | null | undefined)
     observedSignal: pickString((raw as any).observedSignal) ?? pickString((raw as any).observed_signal),
     lastEventType: pickString((raw as any).lastEventType) ?? pickString((raw as any).last_event_type),
     chunkCount,
+    eventCount,
     rawEventTail: pickStringArray((raw as any).rawEventTail) ?? pickStringArray((raw as any).raw_event_tail),
   };
 };
@@ -766,12 +774,13 @@ const summarizeStreamTermination = (info: StreamTerminationInfo | null): StreamT
   const expected = info.expectedSignal || 'unknown';
   const observed = info.observedSignal || 'none';
   const chunkText = typeof info.chunkCount === 'number' ? `，chunks=${info.chunkCount}` : '';
-  const eventText = info.lastEventType ? `，last_event=${info.lastEventType}` : '';
+  const protocolEventText = typeof info.eventCount === 'number' ? `，events=${info.eventCount}` : '';
+  const lastEventText = info.lastEventType ? `，last_event=${info.lastEventType}` : '';
 
   if (info.protocolComplete === true) {
     return {
       label: '完整',
-      detail: `协议标记已确认（source=${source || 'protocol_signal'}，protocol=${protocol}，expected=${expected}，observed=${observed}${chunkText}${eventText}）`,
+      detail: `协议标记已确认（source=${source || 'protocol_signal'}，protocol=${protocol}，expected=${expected}，observed=${observed}${chunkText}${protocolEventText}${lastEventText}）`,
       tone: 'success',
     };
   }
@@ -779,35 +788,35 @@ const summarizeStreamTermination = (info: StreamTerminationInfo | null): StreamT
   if (source === 'eof_fallback') {
     return {
       label: 'EOF兜底',
-      detail: `未观察到显式协议完成标记（protocol=${protocol}，expected=${expected}，observed=${observed}${chunkText}${eventText}）`,
+      detail: `未观察到显式协议完成标记（protocol=${protocol}，expected=${expected}，observed=${observed}${chunkText}${protocolEventText}${lastEventText}）`,
       tone: 'warn',
     };
   }
   if (source === 'http_error') {
     return {
       label: 'HTTP错误',
-      detail: `HTTP 层失败导致流提前结束（protocol=${protocol}，expected=${expected}，observed=${observed}${chunkText}${eventText}）`,
+      detail: `HTTP 层失败导致流提前结束（protocol=${protocol}，expected=${expected}，observed=${observed}${chunkText}${protocolEventText}${lastEventText}）`,
       tone: 'error',
     };
   }
   if (source === 'aborted') {
     return {
       label: '已中止',
-      detail: `流被中止（protocol=${protocol}，expected=${expected}，observed=${observed}${chunkText}${eventText}）`,
+      detail: `流被中止（protocol=${protocol}，expected=${expected}，observed=${observed}${chunkText}${protocolEventText}${lastEventText}）`,
       tone: 'warn',
     };
   }
   if (info.protocolComplete === false) {
     return {
       label: '不完整',
-      detail: `协议终止未完整确认（source=${source || 'unknown'}，protocol=${protocol}，expected=${expected}，observed=${observed}${chunkText}${eventText}）`,
+      detail: `协议终止未完整确认（source=${source || 'unknown'}，protocol=${protocol}，expected=${expected}，observed=${observed}${chunkText}${protocolEventText}${lastEventText}）`,
       tone: 'warn',
     };
   }
 
   return {
     label: '未知',
-    detail: `终止信息不足以判定（source=${source || 'unknown'}，protocol=${protocol}，expected=${expected}，observed=${observed}${chunkText}${eventText}）`,
+    detail: `终止信息不足以判定（source=${source || 'unknown'}，protocol=${protocol}，expected=${expected}，observed=${observed}${chunkText}${protocolEventText}${lastEventText}）`,
     tone: 'neutral',
   };
 };
@@ -1004,19 +1013,19 @@ export const DebugModal: React.FC<DebugModalProps> = ({
     messageRole === 'user' ? 'request' : 'response'
   );
   const [largeTextViewer, setLargeTextViewer] = useState<LargeTextViewerState | null>(null);
-  const [largeViewerMode, setLargeViewerMode] = useState<LargeViewerMode>('text');
+  const [largeViewerMode, setLargeViewerMode] = useState<LargeViewerMode>('json');
 
   useEffect(() => {
     if (!isOpen) return;
     setActivePage('overview');
     setActiveHttpView(messageRole === 'user' ? 'request' : 'response');
     setLargeTextViewer(null);
-    setLargeViewerMode('text');
+    setLargeViewerMode('json');
   }, [isOpen, messageRole]);
 
   useEffect(() => {
     if (!largeTextViewer) return;
-    setLargeViewerMode('text');
+    setLargeViewerMode('json');
   }, [largeTextViewer]);
 
   useEffect(() => {
@@ -1433,9 +1442,8 @@ export const DebugModal: React.FC<DebugModalProps> = ({
   }, [largeTextViewer]);
 
   const largeViewerCopyText = useMemo(() => {
-    if (largeViewerMode === 'text') return largeViewerPlainText;
     return largeViewerJsonText ?? largeViewerPlainText;
-  }, [largeViewerMode, largeViewerPlainText, largeViewerJsonText]);
+  }, [largeViewerPlainText, largeViewerJsonText]);
 
   const hasTaskSummary =
     Boolean(
@@ -1937,28 +1945,11 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                 >
                   <button
                     type="button"
-                    onClick={() => setLargeViewerMode('text')}
+                    onClick={() => setLargeViewerMode('json')}
                     className={`px-2.5 py-1 text-xs font-medium transition-colors ${
-                      largeViewerMode === 'text'
+                      largeViewerMode === 'json'
                         ? 'bg-gray-200 text-gray-900 dark:bg-gray-800 dark:text-gray-100'
                         : 'bg-white text-gray-600 hover:bg-gray-50 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800'
-                    }`}
-                  >
-                    纯文本
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!largeViewerJsonText) return;
-                      setLargeViewerMode('json');
-                    }}
-                    disabled={!largeViewerJsonText}
-                    className={`px-2.5 py-1 text-xs font-medium transition-colors ${
-                      !largeViewerJsonText
-                        ? 'bg-white text-gray-300 dark:bg-gray-900 dark:text-gray-700 cursor-not-allowed'
-                        : largeViewerMode === 'json'
-                          ? 'bg-gray-200 text-gray-900 dark:bg-gray-800 dark:text-gray-100'
-                          : 'bg-white text-gray-600 hover:bg-gray-50 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800'
                     }`}
                   >
                     JSON
