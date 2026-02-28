@@ -605,6 +605,7 @@ mod tests {
                 id: "call_123".to_string(),
                 name: "read_file".to_string(),
                 arguments: "{\"path\":\"a.txt\"}".to_string(),
+                thought_signature: None,
             }]),
             ..Default::default()
         });

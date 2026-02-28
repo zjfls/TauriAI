@@ -245,6 +245,39 @@ fn build_assistant_context_content(
     }
 }
 
+fn extract_tool_call_thought_signature(meta: &Option<serde_json::Value>) -> Option<String> {
+    meta.as_ref()
+        .and_then(|m| m.get("thought_signature"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+fn build_tool_call_block_meta_for_call(call: &ToolCall) -> Option<serde_json::Value> {
+    call.thought_signature
+        .as_ref()
+        .map(|sig| serde_json::json!({ "thought_signature": sig }))
+}
+
+fn merge_tool_call_block_meta(
+    existing: &mut Option<serde_json::Value>,
+    patch: &serde_json::Value,
+) {
+    match existing {
+        Some(current) => {
+            if let (Some(dst), Some(src)) = (current.as_object_mut(), patch.as_object()) {
+                for (k, v) in src {
+                    dst.insert(k.clone(), v.clone());
+                }
+            } else {
+                *existing = Some(patch.clone());
+            }
+        }
+        None => {
+            *existing = Some(patch.clone());
+        }
+    }
+}
+
 fn block_turn_index(block: &MessageBlock) -> Option<u32> {
     match block {
         MessageBlock::Text { turn_index, .. }
@@ -293,11 +326,13 @@ fn replay_messages_from_blocks(
                 call_id,
                 name,
                 arguments,
+                meta,
                 ..
             } => entry.tool_calls.push(ToolCall {
                 id: call_id.clone(),
                 name: name.clone(),
                 arguments: arguments.clone(),
+                thought_signature: extract_tool_call_thought_signature(meta),
             }),
             MessageBlock::ToolResult { call_id, text, .. } => {
                 entry.tool_results.push((call_id.clone(), text.clone()))
@@ -1750,6 +1785,7 @@ impl<'a> TurnLoop<'a> {
                             id: id.clone(),
                             name: call.name,
                             arguments: call.arguments,
+                            thought_signature: call.thought_signature,
                         };
 
                         self.emitter.emit(RunEvent::BlockDelta {
@@ -1763,6 +1799,7 @@ impl<'a> TurnLoop<'a> {
                                 "id": call.id,
                                 "name": call.name,
                                 "arguments": call.arguments,
+                                "thoughtSignature": call.thought_signature,
                             })
                             .to_string(),
                         });
@@ -1774,7 +1811,7 @@ impl<'a> TurnLoop<'a> {
                             call_id: id.clone(),
                             name: call.name.clone(),
                             arguments: call.arguments.clone(),
-                            meta: None,
+                            meta: build_tool_call_block_meta_for_call(&call),
                         });
 
                         normalized_calls.push(call);
@@ -2312,7 +2349,7 @@ impl<'a> TurnLoop<'a> {
                                             } = b
                                             {
                                                 if call_id == &call.id {
-                                                    *m = Some(meta.clone());
+                                                    merge_tool_call_block_meta(m, meta);
                                                     break;
                                                 }
                                             }
@@ -2383,7 +2420,7 @@ impl<'a> TurnLoop<'a> {
                                 } = b
                                 {
                                     if call_id == &call.id {
-                                        *m = Some(meta.clone());
+                                        merge_tool_call_block_meta(m, meta);
                                         break;
                                     }
                                 }
@@ -2918,6 +2955,7 @@ fn expand_persisted_blocks_for_model_input(messages: Vec<Message>) -> Vec<Messag
                     call_id,
                     name,
                     arguments,
+                    meta,
                     turn_id,
                     turn_index,
                     ..
@@ -2927,6 +2965,7 @@ fn expand_persisted_blocks_for_model_input(messages: Vec<Message>) -> Vec<Messag
                         id: call_id.clone(),
                         name: name.clone(),
                         arguments: arguments.clone(),
+                        thought_signature: extract_tool_call_thought_signature(meta),
                     });
                 }
                 MessageBlock::ToolResult {
@@ -6918,5 +6957,57 @@ mod tests {
             Some("call_2")
         );
         assert_eq!(out[2].content, "ok");
+    }
+
+    #[test]
+    fn expand_persisted_blocks_should_preserve_tool_call_thought_signature() {
+        let assistant = crate::models::Message {
+            id: "a2".to_string(),
+            conversation_id: "c1".to_string(),
+            role: crate::models::MessageRole::Assistant,
+            content: "".to_string(),
+            content_parts: vec![],
+            thinking: None,
+            meta: Some(crate::models::MessageMeta {
+                blocks: Some(vec![
+                    crate::models::MessageBlock::ToolCall {
+                        id: "t1:tool_call:call_sig".to_string(),
+                        turn_id: Some("t1".to_string()),
+                        turn_index: Some(1),
+                        call_id: "call_sig".to_string(),
+                        name: "shell_command".to_string(),
+                        arguments: "{\"command\":\"pwd\"}".to_string(),
+                        meta: Some(serde_json::json!({
+                            "thought_signature": "sig_abc123"
+                        })),
+                    },
+                    crate::models::MessageBlock::ToolResult {
+                        id: "t1:tool_result:call_sig".to_string(),
+                        turn_id: Some("t1".to_string()),
+                        turn_index: Some(1),
+                        call_id: "call_sig".to_string(),
+                        text: "ok".to_string(),
+                    },
+                ]),
+                ..Default::default()
+            }),
+            created_at: chrono::Utc::now(),
+            status: crate::models::MessageStatus::Success,
+            error_message: None,
+        };
+
+        let out = expand_persisted_blocks_for_model_input(vec![assistant]);
+        assert_eq!(out.len(), 2);
+        let calls = out[0]
+            .meta
+            .as_ref()
+            .and_then(|m| m.tool_calls.as_ref())
+            .expect("missing tool calls");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].thought_signature.as_deref(),
+            Some("sig_abc123"),
+            "thought signature should survive block expansion"
+        );
     }
 }

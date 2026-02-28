@@ -509,6 +509,7 @@ fn normalize_tool_calls(calls: Vec<ToolCall>, round_index: u32) -> Vec<ToolCall>
             id,
             name: call.name,
             arguments: call.arguments,
+            thought_signature: call.thought_signature,
         });
     }
 

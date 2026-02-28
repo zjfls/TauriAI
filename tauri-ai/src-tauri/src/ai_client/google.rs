@@ -68,6 +68,11 @@ enum GeminiPart {
     FunctionCall {
         #[serde(rename = "functionCall")]
         function_call: GeminiFunctionCall,
+        #[serde(
+            rename = "thoughtSignature",
+            skip_serializing_if = "Option::is_none"
+        )]
+        thought_signature: Option<String>,
     },
     /// Tool/function response provided by the user/runtime
     FunctionResponse {
@@ -281,6 +286,9 @@ struct ResponsePart {
     /// If true, this part contains thought/reasoning content
     #[serde(default)]
     thought: bool,
+    /// Gemini thought signature that must be preserved on round-trip.
+    #[serde(default)]
+    thought_signature: Option<String>,
     /// Function call requested by the model (Gemini function calling)
     #[serde(default)]
     function_call: Option<GeminiFunctionCall>,
@@ -336,6 +344,7 @@ fn convert_messages(
 ) -> Vec<GeminiContent> {
     let mut result: Vec<GeminiContent> = Vec::new();
     let mut tool_name_by_id: HashMap<String, String> = HashMap::new();
+    let mut pending_tool_parts: Vec<GeminiPart> = Vec::new();
 
     let content_to_parts = |msg: &Message| -> Vec<GeminiPart> {
         if msg.has_multimodal_content() {
@@ -379,15 +388,27 @@ fn convert_messages(
         }
     };
 
+    let flush_pending_tool_parts =
+        |out: &mut Vec<GeminiContent>, pending: &mut Vec<GeminiPart>| {
+            if !pending.is_empty() {
+                out.push(GeminiContent {
+                    role: "user".to_string(),
+                    parts: std::mem::take(pending),
+                });
+            }
+        };
+
     for msg in messages.iter().filter(|m| m.role != MessageRole::System) {
         match msg.role {
             MessageRole::User => {
+                flush_pending_tool_parts(&mut result, &mut pending_tool_parts);
                 result.push(GeminiContent {
                     role: "user".to_string(),
                     parts: content_to_parts(msg),
                 });
             }
             MessageRole::Assistant => {
+                flush_pending_tool_parts(&mut result, &mut pending_tool_parts);
                 let mut parts = content_to_parts(msg);
 
                 if let Some(calls) = msg
@@ -405,6 +426,7 @@ fn convert_messages(
                                 name: call.name.clone(),
                                 args,
                             },
+                            thought_signature: call.thought_signature.clone(),
                         });
                     }
                 }
@@ -421,28 +443,46 @@ fn convert_messages(
                     .and_then(|m| m.tool_call_id.as_ref())
                     .cloned()
                     .unwrap_or_default();
-                let name = tool_name_by_id
-                    .get(&tool_call_id)
-                    .cloned()
-                    .unwrap_or_else(|| "unknown_tool".to_string());
+                let name = if tool_call_id.trim().is_empty() {
+                    None
+                } else {
+                    tool_name_by_id.get(&tool_call_id).cloned()
+                };
 
                 let response_value = serde_json::from_str::<serde_json::Value>(&msg.content)
                     .unwrap_or_else(|_| serde_json::json!({ "content": msg.content }));
 
-                result.push(GeminiContent {
-                    role: "user".to_string(),
-                    parts: vec![GeminiPart::FunctionResponse {
+                if let Some(name) = name {
+                    pending_tool_parts.push(GeminiPart::FunctionResponse {
                         function_response: GeminiFunctionResponse {
                             name,
                             response: response_value,
                         },
-                    }],
-                });
+                    });
+                } else {
+                    eprintln!(
+                        "[google][tool_result_fallback] missing_or_unpaired_tool_call_id message_id={} tool_call_id={}",
+                        msg.id,
+                        if tool_call_id.trim().is_empty() {
+                            "<empty>"
+                        } else {
+                            tool_call_id.as_str()
+                        }
+                    );
+                    flush_pending_tool_parts(&mut result, &mut pending_tool_parts);
+                    result.push(GeminiContent {
+                        role: "user".to_string(),
+                        parts: vec![GeminiPart::Text {
+                            text: msg.content.clone(),
+                        }],
+                    });
+                }
             }
             MessageRole::System => {}
         }
     }
 
+    flush_pending_tool_parts(&mut result, &mut pending_tool_parts);
     result
 }
 
@@ -1027,6 +1067,8 @@ impl AiClient for GoogleClient {
                                     if let Some(parts) = content.parts {
                                         for part in parts {
                                             if let Some(function_call) = part.function_call {
+                                                let thought_signature =
+                                                    part.thought_signature.clone();
                                                 let arguments =
                                                     serde_json::to_string(&function_call.args)
                                                         .unwrap_or_else(|_| "{}".to_string());
@@ -1034,6 +1076,7 @@ impl AiClient for GoogleClient {
                                                     id: String::new(),
                                                     name: function_call.name,
                                                     arguments,
+                                                    thought_signature,
                                                 });
                                                 continue;
                                             }
@@ -1157,6 +1200,7 @@ impl AiClient for GoogleClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::{MessageMeta, MessageStatus};
 
     #[test]
     fn test_google_client_creation() {
@@ -1169,5 +1213,126 @@ mod tests {
     fn test_google_client_default() {
         let client = GoogleClient::default();
         drop(client);
+    }
+
+    #[test]
+    fn test_convert_messages_groups_consecutive_tool_results() {
+        let calls = vec![
+            ToolCall {
+                id: "call_1".to_string(),
+                name: "shell_command".to_string(),
+                arguments: "{\"command\":\"pwd\"}".to_string(),
+                thought_signature: Some("sig_1".to_string()),
+            },
+            ToolCall {
+                id: "call_2".to_string(),
+                name: "list_dir".to_string(),
+                arguments: "{\"dir_path\":\".\"}".to_string(),
+                thought_signature: Some("sig_2".to_string()),
+            },
+        ];
+
+        let messages = vec![
+            Message {
+                id: "a1".to_string(),
+                conversation_id: "conv".to_string(),
+                role: MessageRole::Assistant,
+                content: String::new(),
+                content_parts: vec![],
+                thinking: None,
+                meta: Some(MessageMeta {
+                    tool_calls: Some(calls),
+                    ..Default::default()
+                }),
+                created_at: chrono::Utc::now(),
+                status: MessageStatus::Success,
+                error_message: None,
+            },
+            Message {
+                id: "t1".to_string(),
+                conversation_id: "conv".to_string(),
+                role: MessageRole::Tool,
+                content: "{\"ok\":1}".to_string(),
+                content_parts: vec![],
+                thinking: None,
+                meta: Some(MessageMeta {
+                    tool_call_id: Some("call_1".to_string()),
+                    ..Default::default()
+                }),
+                created_at: chrono::Utc::now(),
+                status: MessageStatus::Success,
+                error_message: None,
+            },
+            Message {
+                id: "t2".to_string(),
+                conversation_id: "conv".to_string(),
+                role: MessageRole::Tool,
+                content: "{\"ok\":2}".to_string(),
+                content_parts: vec![],
+                thinking: None,
+                meta: Some(MessageMeta {
+                    tool_call_id: Some("call_2".to_string()),
+                    ..Default::default()
+                }),
+                created_at: chrono::Utc::now(),
+                status: MessageStatus::Success,
+                error_message: None,
+            },
+        ];
+
+        let out = convert_messages(&messages, false, None);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].role, "model");
+        assert_eq!(out[1].role, "user");
+        assert_eq!(out[1].parts.len(), 2);
+
+        let mut sigs: Vec<String> = out[0]
+            .parts
+            .iter()
+            .filter_map(|p| match p {
+                GeminiPart::FunctionCall {
+                    thought_signature: Some(sig),
+                    ..
+                } => Some(sig.clone()),
+                _ => None,
+            })
+            .collect();
+        sigs.sort();
+        assert_eq!(sigs, vec!["sig_1".to_string(), "sig_2".to_string()]);
+
+        for part in &out[1].parts {
+            match part {
+                GeminiPart::FunctionResponse { .. } => {}
+                _ => panic!("expected function_response parts for grouped tool results"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_convert_messages_unpaired_tool_result_degrades_to_user_text() {
+        let messages = vec![Message {
+            id: "t1".to_string(),
+            conversation_id: "conv".to_string(),
+            role: MessageRole::Tool,
+            content: "raw output".to_string(),
+            content_parts: vec![],
+            thinking: None,
+            meta: Some(MessageMeta {
+                tool_call_id: Some("missing_call".to_string()),
+                ..Default::default()
+            }),
+            created_at: chrono::Utc::now(),
+            status: MessageStatus::Success,
+            error_message: None,
+        }];
+
+        let out = convert_messages(&messages, false, None);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].role, "user");
+        assert_eq!(out[0].parts.len(), 1);
+        match &out[0].parts[0] {
+            GeminiPart::Text { text } => assert_eq!(text, "raw output"),
+            _ => panic!("expected degraded user text"),
+        }
     }
 }

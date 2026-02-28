@@ -158,6 +158,7 @@ impl ToolOrchestrator {
                 id: call.id.clone(),
                 name: tool_name.to_string(),
                 arguments: serde_json::json!({ "input": patch_text }).to_string(),
+                thought_signature: call.thought_signature.clone(),
             };
 
             let applier = self.resolve_handler(tool_name)?;
@@ -334,6 +335,7 @@ mod tests {
             id: "call_1".to_string(),
             name: "shell_command".to_string(),
             arguments: serde_json::json!({ "command": patch }).to_string(),
+            thought_signature: None,
         };
         let (extracted, mode, kind) =
             ToolOrchestrator::maybe_extract_apply_patch_from_call(&call).expect("detect patch");
@@ -352,6 +354,7 @@ mod tests {
             id: "call_2".to_string(),
             name: "exec_command".to_string(),
             arguments: serde_json::json!({ "cmd": patch }).to_string(),
+            thought_signature: None,
         };
         let (extracted, mode, kind) =
             ToolOrchestrator::maybe_extract_apply_patch_from_call(&call).expect("detect patch");

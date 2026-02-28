@@ -317,35 +317,60 @@ fn convert_messages(
     max_images: Option<u32>,
 ) -> Vec<AnthropicMessage> {
     let mut result: Vec<AnthropicMessage> = Vec::new();
+    let filtered: Vec<&Message> = messages
+        .iter()
+        .filter(|m| m.role != MessageRole::System)
+        .collect();
+    let mut index: usize = 0;
 
-    for msg in messages.iter().filter(|m| m.role != MessageRole::System) {
+    while index < filtered.len() {
+        let msg = filtered[index];
+
+        // Anthropic requires tool_result blocks to be sent from `user`.
+        // Merge consecutive tool messages into one user message to keep block ordering compatible.
+        if msg.role == MessageRole::Tool {
+            let mut tool_blocks: Vec<AnthropicContentBlock> = Vec::new();
+            while index < filtered.len() && filtered[index].role == MessageRole::Tool {
+                let tool_msg = filtered[index];
+                let tool_use_id = tool_msg
+                    .meta
+                    .as_ref()
+                    .and_then(|m| m.tool_call_id.as_ref())
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
+
+                if let Some(tool_use_id) = tool_use_id {
+                    tool_blocks.push(AnthropicContentBlock::ToolResult {
+                        tool_use_id,
+                        content: tool_msg.content.clone(),
+                        is_error: None,
+                    });
+                } else if !tool_msg.content.is_empty() {
+                    // Fallback: avoid malformed `tool_result` with empty tool_use_id.
+                    tool_blocks.push(AnthropicContentBlock::Text {
+                        text: format!("TOOL_RESULT_WITHOUT_ID:\n{}", tool_msg.content),
+                    });
+                }
+
+                index += 1;
+            }
+
+            if !tool_blocks.is_empty() {
+                result.push(AnthropicMessage {
+                    role: "user".to_string(),
+                    content: AnthropicContent::Blocks(tool_blocks),
+                });
+            }
+            continue;
+        }
+
         let role = match msg.role {
             MessageRole::User => "user",
             MessageRole::Assistant => "assistant",
             MessageRole::System => "user", // filtered above
-            // Anthropic Messages API uses tool calling blocks instead of an OpenAI-style `tool` role.
-            MessageRole::Tool => "user",
+            MessageRole::Tool => "user",   // handled above
         };
-
-        // Tool outputs are represented as a `tool_result` block inside a user message.
-        if msg.role == MessageRole::Tool {
-            let tool_use_id = msg
-                .meta
-                .as_ref()
-                .and_then(|m| m.tool_call_id.as_ref())
-                .cloned()
-                .unwrap_or_default();
-
-            result.push(AnthropicMessage {
-                role: role.to_string(),
-                content: AnthropicContent::Blocks(vec![AnthropicContentBlock::ToolResult {
-                    tool_use_id,
-                    content: msg.content.clone(),
-                    is_error: None,
-                }]),
-            });
-            continue;
-        }
 
         let mut blocks: Vec<AnthropicContentBlock> = Vec::new();
 
@@ -429,6 +454,7 @@ fn convert_messages(
             role: role.to_string(),
             content,
         });
+        index += 1;
     }
 
     result
@@ -1010,6 +1036,7 @@ impl AiClient for AnthropicClient {
                                         id: in_progress.id,
                                         name: in_progress.name,
                                         arguments,
+                                        thought_signature: None,
                                     });
                                 }
                             }
@@ -1056,6 +1083,7 @@ impl AiClient for AnthropicClient {
                                         id: in_progress.id,
                                         name: in_progress.name,
                                         arguments,
+                                        thought_signature: None,
                                     });
                                 }
 
@@ -1223,6 +1251,7 @@ impl AiClient for AnthropicClient {
                 id: in_progress.id,
                 name: in_progress.name,
                 arguments,
+                thought_signature: None,
             });
         }
         let tool_calls_for_debug = if tool_calls.is_empty() {
@@ -1610,5 +1639,128 @@ mod tests {
         // System message should be filtered out
         assert_eq!(anthropic_messages.len(), 1);
         assert_eq!(anthropic_messages[0].role, "user");
+    }
+
+    #[test]
+    fn test_convert_messages_merges_consecutive_tool_results() {
+        let messages = vec![
+            Message {
+                id: "assistant-1".to_string(),
+                conversation_id: "conv1".to_string(),
+                role: MessageRole::Assistant,
+                content: "I'll run tools".to_string(),
+                content_parts: vec![],
+                thinking: None,
+                meta: Some(crate::models::MessageMeta {
+                    tool_calls: Some(vec![
+                        ToolCall {
+                            id: "call_1".to_string(),
+                            name: "shell_command".to_string(),
+                            arguments: "{\"command\":\"pwd\"}".to_string(),
+                            thought_signature: None,
+                        },
+                        ToolCall {
+                            id: "call_2".to_string(),
+                            name: "list_dir".to_string(),
+                            arguments: "{\"dir_path\":\".\"}".to_string(),
+                            thought_signature: None,
+                        },
+                    ]),
+                    ..Default::default()
+                }),
+                created_at: Utc::now(),
+                status: MessageStatus::Success,
+                error_message: None,
+            },
+            Message {
+                id: "tool-1".to_string(),
+                conversation_id: "conv1".to_string(),
+                role: MessageRole::Tool,
+                content: "tool result 1".to_string(),
+                content_parts: vec![],
+                thinking: None,
+                meta: Some(crate::models::MessageMeta {
+                    tool_call_id: Some("call_1".to_string()),
+                    ..Default::default()
+                }),
+                created_at: Utc::now(),
+                status: MessageStatus::Success,
+                error_message: None,
+            },
+            Message {
+                id: "tool-2".to_string(),
+                conversation_id: "conv1".to_string(),
+                role: MessageRole::Tool,
+                content: "tool result 2".to_string(),
+                content_parts: vec![],
+                thinking: None,
+                meta: Some(crate::models::MessageMeta {
+                    tool_call_id: Some("call_2".to_string()),
+                    ..Default::default()
+                }),
+                created_at: Utc::now(),
+                status: MessageStatus::Success,
+                error_message: None,
+            },
+        ];
+
+        let anthropic_messages = convert_messages(&messages, true, None);
+        assert_eq!(anthropic_messages.len(), 2);
+        assert_eq!(anthropic_messages[1].role, "user");
+
+        match &anthropic_messages[1].content {
+            AnthropicContent::Blocks(blocks) => {
+                assert_eq!(blocks.len(), 2);
+                match &blocks[0] {
+                    AnthropicContentBlock::ToolResult { tool_use_id, content, .. } => {
+                        assert_eq!(tool_use_id, "call_1");
+                        assert_eq!(content, "tool result 1");
+                    }
+                    _ => panic!("Expected first block to be tool_result"),
+                }
+                match &blocks[1] {
+                    AnthropicContentBlock::ToolResult { tool_use_id, content, .. } => {
+                        assert_eq!(tool_use_id, "call_2");
+                        assert_eq!(content, "tool result 2");
+                    }
+                    _ => panic!("Expected second block to be tool_result"),
+                }
+            }
+            _ => panic!("Expected merged tool results as blocks"),
+        }
+    }
+
+    #[test]
+    fn test_convert_messages_tool_result_without_id_falls_back_to_text() {
+        let messages = vec![Message {
+            id: "tool-1".to_string(),
+            conversation_id: "conv1".to_string(),
+            role: MessageRole::Tool,
+            content: "raw output".to_string(),
+            content_parts: vec![],
+            thinking: None,
+            meta: None,
+            created_at: Utc::now(),
+            status: MessageStatus::Success,
+            error_message: None,
+        }];
+
+        let anthropic_messages = convert_messages(&messages, true, None);
+        assert_eq!(anthropic_messages.len(), 1);
+        assert_eq!(anthropic_messages[0].role, "user");
+
+        match &anthropic_messages[0].content {
+            AnthropicContent::Blocks(blocks) => {
+                assert_eq!(blocks.len(), 1);
+                match &blocks[0] {
+                    AnthropicContentBlock::Text { text } => {
+                        assert!(text.contains("TOOL_RESULT_WITHOUT_ID"));
+                        assert!(text.contains("raw output"));
+                    }
+                    _ => panic!("Expected text fallback block"),
+                }
+            }
+            _ => panic!("Expected blocks content"),
+        }
     }
 }

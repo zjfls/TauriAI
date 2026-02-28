@@ -1357,6 +1357,7 @@ impl AiClient for OpenAiResponsesClient {
                                         id: call_id,
                                         name,
                                         arguments: draft.arguments.clone(),
+                                        thought_signature: None,
                                     });
                                 }
                             }
@@ -2052,6 +2053,7 @@ impl AiClient for OpenAiResponsesClient {
                                                 id: call_id,
                                                 name,
                                                 arguments: draft.arguments.clone(),
+                                                thought_signature: None,
                                             });
                                         }
                                     }
@@ -2161,6 +2163,7 @@ impl AiClient for OpenAiResponsesClient {
                         id: call_id,
                         name,
                         arguments: draft.arguments.clone(),
+                        thought_signature: None,
                     });
                 }
             }
@@ -2765,6 +2768,7 @@ mod tests {
             id: "call_123".to_string(),
             name: "echo".to_string(),
             arguments: r#"{"text":"hi"}"#.to_string(),
+            thought_signature: None,
         };
 
         let messages = vec![

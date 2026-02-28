@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 
 use super::traits::{
     AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, ErrorLayer, ErrorOrigin,
-    StreamEvent, StreamTerminationInfo, StreamTerminationSource, ToolDefinition,
+    StreamEvent, StreamTerminationInfo, StreamTerminationSource, ToolCall, ToolDefinition,
 };
 use super::utf8_stream::Utf8StreamDecoder;
 use super::{
@@ -43,6 +43,8 @@ impl Default for OllamaClient {
 struct OllamaMessage {
     role: String,
     content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_name: Option<String>,
 }
 
 /// Ollama chat API request
@@ -52,7 +54,24 @@ struct ChatRequest {
     messages: Vec<OllamaMessage>,
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<OllamaTool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     options: Option<OllamaOptions>,
+}
+
+#[derive(Debug, Serialize)]
+struct OllamaTool {
+    #[serde(rename = "type")]
+    tool_type: String,
+    function: OllamaToolFunction,
+}
+
+#[derive(Debug, Serialize)]
+struct OllamaToolFunction {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    parameters: serde_json::Value,
 }
 
 /// Ollama model options
@@ -75,6 +94,8 @@ struct ChatResponse {
 #[derive(Debug, Deserialize)]
 struct OllamaMessageResponse {
     content: String,
+    #[serde(default)]
+    tool_calls: Vec<OllamaToolCall>,
 }
 
 /// Ollama streaming response chunk
@@ -90,29 +111,98 @@ struct OllamaErrorResponse {
     error: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct OllamaToolCall {
+    function: OllamaToolCallFunction,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaToolCallFunction {
+    name: String,
+    arguments: serde_json::Value,
+}
+
+fn convert_tools(tools: Option<Vec<ToolDefinition>>) -> Option<Vec<OllamaTool>> {
+    tools.and_then(|defs| {
+        if defs.is_empty() {
+            None
+        } else {
+            Some(
+                defs.into_iter()
+                    .map(|t| OllamaTool {
+                        tool_type: "function".to_string(),
+                        function: OllamaToolFunction {
+                            name: t.name,
+                            description: t.description,
+                            parameters: t.parameters,
+                        },
+                    })
+                    .collect(),
+            )
+        }
+    })
+}
+
+fn normalize_ollama_arguments(arguments: &serde_json::Value) -> String {
+    match arguments {
+        serde_json::Value::String(s) => s.clone(),
+        v => serde_json::to_string(v).unwrap_or_else(|_| "{}".to_string()),
+    }
+}
+
+fn convert_ollama_tool_calls(raw_calls: &[OllamaToolCall], seed: u32) -> Vec<ToolCall> {
+    raw_calls
+        .iter()
+        .enumerate()
+        .map(|(i, call)| ToolCall {
+            id: format!("call_{}_{}", seed, i),
+            name: call.function.name.clone(),
+            arguments: normalize_ollama_arguments(&call.function.arguments),
+            thought_signature: None,
+        })
+        .collect()
+}
+
 fn convert_messages(messages: &[Message], system_prompt: Option<&str>) -> Vec<OllamaMessage> {
     let mut result = Vec::new();
+    let mut tool_name_by_id: HashMap<String, String> = HashMap::new();
 
     // Add system prompt if provided
     if let Some(prompt) = system_prompt {
         result.push(OllamaMessage {
             role: "system".to_string(),
             content: prompt.to_string(),
+            tool_name: None,
         });
     }
 
     // Convert messages
     for msg in messages {
+        if let Some(calls) = msg.meta.as_ref().and_then(|m| m.tool_calls.as_ref()) {
+            for call in calls {
+                tool_name_by_id.insert(call.id.clone(), call.name.clone());
+            }
+        }
+
         let role = match msg.role {
             MessageRole::User => "user",
             MessageRole::Assistant => "assistant",
             MessageRole::System => "system",
-            // Ollama chat format doesn't define a tool role; treat it as user text.
-            MessageRole::Tool => "user",
+            MessageRole::Tool => "tool",
+        };
+        let tool_name = if matches!(msg.role, MessageRole::Tool) {
+            msg.meta
+                .as_ref()
+                .and_then(|m| m.tool_call_id.as_ref())
+                .and_then(|id| tool_name_by_id.get(id))
+                .cloned()
+        } else {
+            None
         };
         result.push(OllamaMessage {
             role: role.to_string(),
             content: msg.content.clone(),
+            tool_name,
         });
     }
 
@@ -125,7 +215,7 @@ impl AiClient for OllamaClient {
         &self,
         messages: Vec<Message>,
         config: &ModelConfig,
-        _tools: Option<Vec<ToolDefinition>>,
+        tools: Option<Vec<ToolDefinition>>,
     ) -> Result<String, AiError> {
         let api_base = config
             .api_base
@@ -145,6 +235,7 @@ impl AiClient for OllamaClient {
             model: config.model.clone(),
             messages: ollama_messages,
             stream: false,
+            tools: convert_tools(tools),
             options: Some(options),
         };
 
@@ -186,7 +277,7 @@ impl AiClient for OllamaClient {
         &self,
         messages: Vec<Message>,
         config: &ModelConfig,
-        _tools: Option<Vec<ToolDefinition>>,
+        tools: Option<Vec<ToolDefinition>>,
         token_sender: mpsc::Sender<StreamEvent>,
         _options: super::StreamOptions,
     ) -> Result<(), AiError> {
@@ -208,6 +299,7 @@ impl AiClient for OllamaClient {
             model: config.model.clone(),
             messages: ollama_messages,
             stream: true,
+            tools: convert_tools(tools),
             options: Some(options),
         };
 
@@ -301,6 +393,7 @@ impl AiClient for OllamaClient {
         let mut line_count: u32 = 0;
         let mut last_line: Option<String> = None;
         let mut raw_event_tail: Vec<String> = Vec::new();
+        let mut tool_calls_to_emit: Option<Vec<ToolCall>> = None;
 
         while let Some(chunk_result) = stream.next().await {
             let chunk = match chunk_result {
@@ -402,6 +495,17 @@ impl AiClient for OllamaClient {
 
                 if let Ok(stream_response) = serde_json::from_str::<StreamResponse>(&line) {
                     if let Some(message) = stream_response.message {
+                        if !message.tool_calls.is_empty() {
+                            let calls =
+                                convert_ollama_tool_calls(&message.tool_calls, line_count);
+                            if !calls.is_empty() {
+                                if let Some(existing) = tool_calls_to_emit.as_mut() {
+                                    existing.extend(calls);
+                                } else {
+                                    tool_calls_to_emit = Some(calls);
+                                }
+                            }
+                        }
                         if !message.content.is_empty() {
                             full_content.push_str(&message.content);
                             let _ = token_sender.send(StreamEvent::Token(message.content)).await;
@@ -409,6 +513,10 @@ impl AiClient for OllamaClient {
                     }
 
                     if stream_response.done {
+                        let tool_calls_for_debug = tool_calls_to_emit.clone();
+                        if let Some(calls) = tool_calls_to_emit.take() {
+                            let _ = token_sender.send(StreamEvent::ToolCalls(calls)).await;
+                        }
                         let debug_info = DebugInfoData {
                             request: Some(debug_request.clone()),
                             response: Some(DebugResponseData {
@@ -420,7 +528,8 @@ impl AiClient for OllamaClient {
                                         "content": full_content.clone()
                                     },
                                     "done": true,
-                                    "thinking": serde_json::Value::Null
+                                    "thinking": serde_json::Value::Null,
+                                    "tool_calls": tool_calls_for_debug
                                 }),
                             }),
                             stream_termination: Some(StreamTerminationInfo {
@@ -460,12 +569,27 @@ impl AiClient for OllamaClient {
         if !tail.is_empty() {
             if let Ok(stream_response) = serde_json::from_str::<StreamResponse>(tail) {
                 if let Some(message) = stream_response.message {
+                    if !message.tool_calls.is_empty() {
+                        let calls = convert_ollama_tool_calls(&message.tool_calls, line_count);
+                        if !calls.is_empty() {
+                            if let Some(existing) = tool_calls_to_emit.as_mut() {
+                                existing.extend(calls);
+                            } else {
+                                tool_calls_to_emit = Some(calls);
+                            }
+                        }
+                    }
                     if !message.content.is_empty() {
                         full_content.push_str(&message.content);
                         let _ = token_sender.send(StreamEvent::Token(message.content)).await;
                     }
                 }
             }
+        }
+
+        let tool_calls_for_debug = tool_calls_to_emit.clone();
+        if let Some(calls) = tool_calls_to_emit.take() {
+            let _ = token_sender.send(StreamEvent::ToolCalls(calls)).await;
         }
 
         let debug_info = DebugInfoData {
@@ -480,6 +604,7 @@ impl AiClient for OllamaClient {
                     },
                     "done": true,
                     "thinking": serde_json::Value::Null,
+                    "tool_calls": tool_calls_for_debug,
                     "_ndjsonInfo": {
                         "note": "NDJSON stream ended without an explicit done=true line"
                     }
@@ -516,5 +641,94 @@ impl AiClient for OllamaClient {
             })
             .await;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{MessageMeta, MessageStatus};
+
+    #[test]
+    fn convert_tools_should_map_function_definitions() {
+        let defs = vec![ToolDefinition {
+            name: "shell_command".to_string(),
+            description: Some("run shell".to_string()),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "command": { "type": "string" }
+                },
+                "required": ["command"]
+            }),
+        }];
+        let out = convert_tools(Some(defs)).expect("tools should exist");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].tool_type, "function");
+        assert_eq!(out[0].function.name, "shell_command");
+    }
+
+    #[test]
+    fn convert_messages_should_keep_tool_role_and_tool_name() {
+        let messages = vec![
+            Message {
+                id: "a1".to_string(),
+                conversation_id: "conv".to_string(),
+                role: MessageRole::Assistant,
+                content: String::new(),
+                content_parts: vec![],
+                thinking: None,
+                meta: Some(MessageMeta {
+                    tool_calls: Some(vec![ToolCall {
+                        id: "call_1".to_string(),
+                        name: "shell_command".to_string(),
+                        arguments: "{\"command\":\"pwd\"}".to_string(),
+                        thought_signature: None,
+                    }]),
+                    ..Default::default()
+                }),
+                created_at: chrono::Utc::now(),
+                status: MessageStatus::Success,
+                error_message: None,
+            },
+            Message {
+                id: "t1".to_string(),
+                conversation_id: "conv".to_string(),
+                role: MessageRole::Tool,
+                content: "ok".to_string(),
+                content_parts: vec![],
+                thinking: None,
+                meta: Some(MessageMeta {
+                    tool_call_id: Some("call_1".to_string()),
+                    ..Default::default()
+                }),
+                created_at: chrono::Utc::now(),
+                status: MessageStatus::Success,
+                error_message: None,
+            },
+        ];
+
+        let out = convert_messages(&messages, None);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[1].role, "tool");
+        assert_eq!(out[1].tool_name.as_deref(), Some("shell_command"));
+    }
+
+    #[test]
+    fn convert_ollama_tool_calls_should_normalize_arguments() {
+        let raw = vec![OllamaToolCall {
+            function: OllamaToolCallFunction {
+                name: "list_dir".to_string(),
+                arguments: serde_json::json!({"dir_path": ".", "depth": 2}),
+            },
+        }];
+        let calls = convert_ollama_tool_calls(&raw, 7);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "call_7_0");
+        assert_eq!(calls[0].name, "list_dir");
+        let args: serde_json::Value =
+            serde_json::from_str(&calls[0].arguments).expect("arguments should be valid json");
+        assert_eq!(args["dir_path"], ".");
+        assert_eq!(args["depth"], 2);
     }
 }

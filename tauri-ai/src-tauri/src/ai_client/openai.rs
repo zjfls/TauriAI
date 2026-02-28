@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tokio::sync::mpsc;
 
 use super::content_converter::{content_part_to_blocks, ContentBlock};
@@ -372,6 +372,7 @@ fn convert_messages(
     reinject_reasoning_content: bool,
 ) -> Vec<OpenAiMessage> {
     let mut result = Vec::new();
+    let mut known_tool_call_ids: HashSet<String> = HashSet::new();
 
     // Add system prompt if provided and not empty
     if let Some(prompt) = system_prompt {
@@ -429,6 +430,37 @@ fn convert_messages(
             }
             _ => None,
         };
+
+        if let Some(calls) = tool_calls.as_ref() {
+            for call in calls {
+                if !call.id.trim().is_empty() {
+                    known_tool_call_ids.insert(call.id.clone());
+                }
+            }
+        }
+
+        if matches!(msg.role, MessageRole::Tool) {
+            let call_id = tool_call_id.clone().unwrap_or_default();
+            if call_id.trim().is_empty() || !known_tool_call_ids.contains(&call_id) {
+                eprintln!(
+                    "[openai][tool_result_fallback] missing_or_unpaired_tool_call_id message_id={} tool_call_id={}",
+                    msg.id,
+                    if call_id.trim().is_empty() {
+                        "<empty>"
+                    } else {
+                        call_id.as_str()
+                    }
+                );
+                result.push(OpenAiMessage {
+                    role: "user".to_string(),
+                    tool_call_id: None,
+                    tool_calls: None,
+                    reasoning_content: None,
+                    content: Some(OpenAiContent::Text(msg.content.clone())),
+                });
+                continue;
+            }
+        }
 
         // Check if message has multimodal content
         let content = if msg.has_multimodal_content() {
@@ -1212,6 +1244,7 @@ impl OpenAiBaseClient {
                                         id,
                                         name,
                                         arguments: acc.arguments,
+                                        thought_signature: None,
                                     });
                                 }
                             } else if let Some(name) = legacy_function_name.clone() {
@@ -1219,6 +1252,7 @@ impl OpenAiBaseClient {
                                     id: "call_0".to_string(),
                                     name,
                                     arguments: legacy_function_args.clone(),
+                                    thought_signature: None,
                                 });
                             }
 
@@ -1460,6 +1494,7 @@ impl OpenAiBaseClient {
                                                     id,
                                                     name,
                                                     arguments: acc.arguments,
+                                                    thought_signature: None,
                                                 });
                                             }
                                         } else if let Some(name) = legacy_function_name.clone() {
@@ -1467,6 +1502,7 @@ impl OpenAiBaseClient {
                                                 id: "call_0".to_string(),
                                                 name,
                                                 arguments: legacy_function_args.clone(),
+                                                thought_signature: None,
                                             });
                                         }
 
@@ -1661,7 +1697,9 @@ impl AiClient for OpenAiCompatibleClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{ContentPart, MessageRole, ModelParameters, PdfMetadata, PdfPage};
+    use crate::models::{
+        ContentPart, MessageMeta, MessageRole, MessageStatus, ModelParameters, PdfMetadata, PdfPage,
+    };
     use proptest::prelude::*;
 
     fn make_test_model_config(provider: &str) -> ModelConfig {
@@ -1731,6 +1769,81 @@ mod tests {
         assert!(thinking.is_none());
         assert_eq!(reasoning_effort.as_deref(), Some("medium"));
         assert!(reasoning.is_none());
+    }
+
+    #[test]
+    fn test_convert_messages_tool_output_without_matching_call_degrades_to_user_text() {
+        let messages = vec![Message {
+            id: "t1".to_string(),
+            conversation_id: "conv".to_string(),
+            role: MessageRole::Tool,
+            content: "OK".to_string(),
+            content_parts: vec![],
+            thinking: None,
+            meta: Some(MessageMeta {
+                tool_call_id: Some("call_missing".to_string()),
+                ..Default::default()
+            }),
+            created_at: chrono::Utc::now(),
+            status: MessageStatus::Success,
+            error_message: None,
+        }];
+
+        let out = convert_messages(&messages, None, SystemRole::System, false, false, false);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].role, "user");
+        assert!(out[0].tool_call_id.is_none());
+        assert!(matches!(
+            out[0].content,
+            Some(OpenAiContent::Text(ref s)) if s == "OK"
+        ));
+    }
+
+    #[test]
+    fn test_convert_messages_tool_output_with_matching_call_keeps_tool_role() {
+        let call = ToolCall {
+            id: "call_1".to_string(),
+            name: "shell_command".to_string(),
+            arguments: "{\"command\":\"pwd\"}".to_string(),
+            thought_signature: None,
+        };
+        let messages = vec![
+            Message {
+                id: "a1".to_string(),
+                conversation_id: "conv".to_string(),
+                role: MessageRole::Assistant,
+                content: String::new(),
+                content_parts: vec![],
+                thinking: None,
+                meta: Some(MessageMeta {
+                    tool_calls: Some(vec![call]),
+                    ..Default::default()
+                }),
+                created_at: chrono::Utc::now(),
+                status: MessageStatus::Success,
+                error_message: None,
+            },
+            Message {
+                id: "t1".to_string(),
+                conversation_id: "conv".to_string(),
+                role: MessageRole::Tool,
+                content: "done".to_string(),
+                content_parts: vec![],
+                thinking: None,
+                meta: Some(MessageMeta {
+                    tool_call_id: Some("call_1".to_string()),
+                    ..Default::default()
+                }),
+                created_at: chrono::Utc::now(),
+                status: MessageStatus::Success,
+                error_message: None,
+            },
+        ];
+
+        let out = convert_messages(&messages, None, SystemRole::System, false, false, false);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[1].role, "tool");
+        assert_eq!(out[1].tool_call_id.as_deref(), Some("call_1"));
     }
 
     /// Strategy for generating arbitrary PdfPage

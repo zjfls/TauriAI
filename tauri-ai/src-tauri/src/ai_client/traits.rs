@@ -38,6 +38,10 @@ pub struct ToolCall {
     pub name: String,
     /// JSON string arguments (OpenAI: `function.arguments`)
     pub arguments: String,
+    /// Provider-specific thought signature (Gemini).
+    /// Must be echoed back with function call context on subsequent turns when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thought_signature: Option<String>,
 }
 
 /// Errors that can occur during AI client operations
