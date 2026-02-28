@@ -515,8 +515,6 @@ interface DetailModalProps {
 }
 
 const DetailModal: React.FC<DetailModalProps> = ({ usage, isOpen, onClose }) => {
-  if (!isOpen) return null;
-
   const limitKnown = usage.limit > 0;
   const color = limitKnown
     ? getUsageColor(usage.percentage)
@@ -749,6 +747,8 @@ const DetailModal: React.FC<DetailModalProps> = ({ usage, isOpen, onClose }) => 
       </details>
     );
   };
+
+  if (!isOpen) return null;
 
   return (
     <>
