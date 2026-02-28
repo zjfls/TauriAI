@@ -2212,7 +2212,6 @@ const ToolResultBlock: React.FC<{
   autoCollapseEnabled?: boolean;
   autoCollapseSeq?: number;
 }> = ({ text, callId, isStreaming, onAbortTool, ansiRenderMode, ansiColorMode, defaultExpanded, autoCollapseEnabled, autoCollapseSeq }) => {
-  if (!text) return null;
   const toolStatus = useMemo(() => detectToolRunStatus(text), [text]);
   const tone = useMemo(() => {
     switch (toolStatus.kind) {
@@ -2256,6 +2255,8 @@ const ToolResultBlock: React.FC<{
     if (!autoCollapseEnabled) return;
     setIsExpanded(Boolean(resolvedDefaultExpanded));
   }, [autoCollapseSeq]);
+
+  if (!text) return null;
 
   return (
     <div className={`mb-2 rounded-lg border px-3 py-2 text-sm text-gray-800 dark:text-gray-100 ${tone.container}`}>
@@ -2671,8 +2672,8 @@ export const MessageBlocks: React.FC<{
   onAbortTool?: (callId: string) => void;
   assistantMessageId?: string;
   onRetryTurn?: (assistantMessageId: string, turnId: string) => void;
-}> = ({ blocks, conversationId, isStreaming, messageSource, turns, onAbortTool, assistantMessageId, onRetryTurn }) => {
-  if (!blocks || blocks.length === 0) return null;
+}> = ({ blocks: inputBlocks, conversationId, isStreaming, messageSource, turns, onAbortTool, assistantMessageId, onRetryTurn }) => {
+  const blocks = inputBlocks ?? [];
 
   const { config } = useConfigStore();
   const debugMode = config?.general?.debugMode ?? false;
@@ -2949,6 +2950,8 @@ export const MessageBlocks: React.FC<{
 
     return <UnknownBlock data={block.data} />;
   };
+
+  if (blocks.length === 0) return null;
 
   return (
     <>
