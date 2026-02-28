@@ -85,14 +85,6 @@ interface StructuredJsonTextViewerProps {
   emptyText?: string;
 }
 
-type SseUsage = {
-  prompt_tokens: number;
-  completion_tokens: number;
-  total_tokens: number;
-  cached_tokens?: number;
-  reasoning_tokens?: number;
-};
-
 type ProviderEndReasonKind =
   | 'stop'
   | 'length'
@@ -123,13 +115,14 @@ type StreamTerminationSummary = {
   tone: 'success' | 'warn' | 'error' | 'neutral';
 };
 
-type DebugModalPage = 'overview' | 'tools' | 'http_json' | 'http_text';
+type DebugModalPage = 'overview' | 'tools';
 type HttpDebugView = 'response' | 'request';
 type LargeTextViewerState = {
   title: string;
   text: string;
   rawJson?: unknown;
 };
+type LargeViewerMode = 'text' | 'json' | 'structured';
 
 const maskSensitiveHeaders = (headers: Record<string, string>): Record<string, string> => {
   const masked: Record<string, string> = {};
@@ -612,24 +605,6 @@ const Chip: React.FC<{ tone?: ChipTone; title?: string; children: React.ReactNod
   );
 };
 
-// Check if response body contains SSE info
-interface SseResponseBody {
-  _sseInfo?: {
-    chunkCount: number;
-    note: string;
-  };
-  content?: string;
-  thinking?: string | null;
-  tool_calls?: unknown;
-  tool_results?: unknown;
-  tool_runs?: unknown;
-  usage?: SseUsage | null;
-}
-
-const isSseResponseBody = (data: unknown): data is SseResponseBody => {
-  return typeof data === 'object' && data !== null && '_sseInfo' in data;
-};
-
 const normalizeProviderEndReasonKind = (raw: string, source: string): ProviderEndReason => {
   const lower = raw.trim().toLowerCase();
 
@@ -885,6 +860,7 @@ const TextViewer: React.FC<TextViewerProps> = ({
   ansiColorMode,
 }) => {
   const [copied, setCopied] = useState(false);
+  const actionPaddingRightClass = onOpenLarge ? 'pr-20' : 'pr-12';
 
   const handleCopy = async () => {
     await navigator.clipboard.writeText(text);
@@ -901,7 +877,7 @@ const TextViewer: React.FC<TextViewerProps> = ({
       )}
       <div className="relative group">
         <pre
-          className={`text-xs p-3 rounded-lg overflow-auto ${maxHeightClassName} whitespace-pre-wrap ${containerClassName}`}
+          className={`text-xs p-3 ${actionPaddingRightClass} rounded-lg overflow-auto ${maxHeightClassName} whitespace-pre-wrap ${containerClassName}`}
         >
           {renderAnsi ? (
             <AnsiText text={text} renderMode={ansiRenderMode} colorMode={ansiColorMode} />
@@ -983,147 +959,6 @@ const StructuredJsonTextViewer: React.FC<StructuredJsonTextViewerProps> = ({
   );
 };
 
-// Component to display SSE response in a more readable format
-interface SseResponseViewerProps {
-  data: SseResponseBody;
-}
-
-const SseResponseViewer: React.FC<SseResponseViewerProps> = ({ data }) => {
-  const [copied, setCopied] = useState(false);
-  const usage: SseUsage | null = data.usage ?? null;
-
-  const handleCopyContent = async () => {
-    await navigator.clipboard.writeText(data.content || '');
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
-  const renderUsageBlock: () => any = () => {
-    if (!usage) {
-      return (
-        <div className="p-3 bg-yellow-50 dark:bg-yellow-900/30 rounded-lg">
-          <div className="text-xs text-yellow-700 dark:text-yellow-300">
-            ⚠️ 服务方未返回 Token 用量信息
-          </div>
-        </div>
-      );
-    }
-
-    return (
-      <div className="p-3 bg-blue-50 dark:bg-blue-900/30 rounded-lg">
-        <div className="text-xs font-medium text-blue-700 dark:text-blue-300 mb-2">Token 用量</div>
-        <div className="grid grid-cols-3 gap-2 text-xs">
-          <div>
-            <span className="text-gray-500 dark:text-gray-400">输入: </span>
-            <span className="text-gray-800 dark:text-gray-200">{usage.prompt_tokens}</span>
-          </div>
-          <div>
-            <span className="text-gray-500 dark:text-gray-400">输出: </span>
-            <span className="text-gray-800 dark:text-gray-200">{usage.completion_tokens}</span>
-          </div>
-          <div>
-            <span className="text-gray-500 dark:text-gray-400">总计: </span>
-            <span className="text-gray-800 dark:text-gray-200">{usage.total_tokens}</span>
-          </div>
-          {usage.cached_tokens && (
-            <div>
-              <span className="text-gray-500 dark:text-gray-400">缓存: </span>
-              <span className="text-gray-800 dark:text-gray-200">{usage.cached_tokens}</span>
-            </div>
-          )}
-          {usage.reasoning_tokens && (
-            <div>
-              <span className="text-gray-500 dark:text-gray-400">推理: </span>
-              <span className="text-gray-800 dark:text-gray-200">{usage.reasoning_tokens}</span>
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  };
-
-  return (
-    <div className="space-y-4">
-      {/* SSE Info Badge */}
-      <div className="flex items-center gap-2">
-        <span className="px-2 py-1 bg-purple-100 dark:bg-purple-900 text-purple-700 dark:text-purple-300 rounded text-xs font-medium">
-          SSE Stream
-        </span>
-        <span className="text-xs text-gray-500 dark:text-gray-400">
-          {data._sseInfo?.chunkCount} chunks
-        </span>
-      </div>
-
-      {/* Usage Stats */}
-      {renderUsageBlock()}
-
-      {/* Thinking Content */}
-      {data.thinking && (
-        <div>
-          <div className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">思考内容</div>
-          <pre className="text-xs bg-purple-50 dark:bg-purple-900/30 p-3 rounded-lg overflow-auto max-h-32 text-purple-800 dark:text-purple-200 whitespace-pre-wrap">
-            {data.thinking}
-          </pre>
-        </div>
-      )}
-
-      {/* Tool Calls */}
-      {/* Tool Runs */}
-      {data.tool_runs && (
-        <div>
-          <div className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">工具执行</div>
-          <JsonViewer data={data.tool_runs} />
-        </div>
-      )}
-
-      {/* Main Content */}
-      <div className="relative">
-        <div className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">响应内容</div>
-        <div className="relative group">
-          <pre className="text-xs bg-gray-50 dark:bg-gray-800 p-3 rounded-lg overflow-auto max-h-64 text-gray-800 dark:text-gray-200 whitespace-pre-wrap">
-            {data.content || '(空)'}
-          </pre>
-          <button
-            onClick={handleCopyContent}
-            className="absolute top-2 right-2 p-1.5 rounded bg-gray-200 dark:bg-gray-700 opacity-0 group-hover:opacity-100 transition-opacity"
-            title="复制内容"
-          >
-            {copied ? (
-              <Check size={14} className="text-green-500" />
-            ) : (
-              <Copy size={14} className="text-gray-500 dark:text-gray-400" />
-            )}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-interface HeadersViewerProps {
-  headers: Record<string, string>;
-}
-
-const HeadersViewer: React.FC<HeadersViewerProps> = ({ headers }) => {
-  const maskedHeaders = maskSensitiveHeaders(headers);
-  const entries = Object.entries(maskedHeaders).sort(([a], [b]) => a.localeCompare(b));
-
-  return (
-    <div className="space-y-1">
-      {entries.map(([key, value]) => (
-        <div key={key} className="flex text-xs">
-          <span className="font-medium text-gray-600 dark:text-gray-400 w-40 shrink-0">
-            {key}:
-          </span>
-          <span className="text-gray-800 dark:text-gray-200 break-all">
-            {value}
-          </span>
-        </div>
-      ))}
-    </div>
-  );
-};
-
 export const DebugModal: React.FC<DebugModalProps> = ({
   isOpen,
   onClose,
@@ -1169,13 +1004,20 @@ export const DebugModal: React.FC<DebugModalProps> = ({
     messageRole === 'user' ? 'request' : 'response'
   );
   const [largeTextViewer, setLargeTextViewer] = useState<LargeTextViewerState | null>(null);
+  const [largeViewerMode, setLargeViewerMode] = useState<LargeViewerMode>('text');
 
   useEffect(() => {
     if (!isOpen) return;
     setActivePage('overview');
     setActiveHttpView(messageRole === 'user' ? 'request' : 'response');
     setLargeTextViewer(null);
+    setLargeViewerMode('text');
   }, [isOpen, messageRole]);
+
+  useEffect(() => {
+    if (!largeTextViewer) return;
+    setLargeViewerMode('text');
+  }, [largeTextViewer]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -1263,7 +1105,7 @@ export const DebugModal: React.FC<DebugModalProps> = ({
           onClick={() => {
             if (responseDisabled) return;
             setActiveHttpView('response');
-            if (activePage === 'tools') setActivePage('http_text');
+            if (activePage === 'tools') setActivePage('overview');
           }}
           disabled={responseDisabled}
           className={`px-3 py-1.5 text-xs font-medium transition-colors ${
@@ -1281,7 +1123,7 @@ export const DebugModal: React.FC<DebugModalProps> = ({
           onClick={() => {
             if (requestDisabled) return;
             setActiveHttpView('request');
-            if (activePage === 'tools') setActivePage('http_text');
+            if (activePage === 'tools') setActivePage('overview');
           }}
           disabled={requestDisabled}
           className={`px-3 py-1.5 text-xs font-medium transition-colors ${
@@ -1561,17 +1403,15 @@ export const DebugModal: React.FC<DebugModalProps> = ({
     return null;
   }, [largeTextViewer]);
 
-  const largeViewerDisplayText = useMemo(() => {
+  const largeViewerPlainText = useMemo(() => {
     if (!largeTextViewer) return '';
+    return normalizeStringForDisplay(largeTextViewer.text);
+  }, [largeTextViewer]);
 
-    if (largeViewerJsonData) {
-      return safeStringify(largeViewerJsonData, 2);
-    }
+  const largeViewerJsonText = useMemo(() => {
+    if (!largeTextViewer) return null;
 
     const fromRaw = largeTextViewer.rawJson;
-    if (typeof fromRaw === 'string') {
-      return normalizeStringForDisplay(fromRaw);
-    }
     if (fromRaw !== undefined && fromRaw !== null) {
       const normalized = normalizeJsonLikeStrings(fromRaw);
       if (typeof normalized === 'string') {
@@ -1580,8 +1420,22 @@ export const DebugModal: React.FC<DebugModalProps> = ({
       return safeStringify(normalized, 2);
     }
 
-    return normalizeStringForDisplay(largeTextViewer.text);
-  }, [largeTextViewer, largeViewerJsonData]);
+    const parsed = maybeParseJsonContainerString(largeTextViewer.text);
+    if (parsed !== null) {
+      const normalized = normalizeJsonLikeStrings(parsed);
+      if (typeof normalized === 'string') {
+        return normalizeStringForDisplay(normalized);
+      }
+      return safeStringify(normalized, 2);
+    }
+
+    return null;
+  }, [largeTextViewer]);
+
+  const largeViewerCopyText = useMemo(() => {
+    if (largeViewerMode === 'text') return largeViewerPlainText;
+    return largeViewerJsonText ?? largeViewerPlainText;
+  }, [largeViewerMode, largeViewerPlainText, largeViewerJsonText]);
 
   const hasTaskSummary =
     Boolean(
@@ -1606,34 +1460,6 @@ export const DebugModal: React.FC<DebugModalProps> = ({
             调试信息 - {messageRole === 'user' ? '请求' : messageRole === 'error' ? '错误' : '响应'}
           </h2>
           <div className="flex items-center gap-2">
-            <div
-              className="inline-flex rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden"
-              title="切换调试信息视图"
-            >
-              <button
-                type="button"
-                onClick={() => setActivePage('overview')}
-                className={`px-3 py-1.5 text-xs font-medium transition-colors ${
-                  activePage === 'overview'
-                    ? 'bg-gray-200 text-gray-900 dark:bg-gray-800 dark:text-gray-100'
-                    : 'bg-white text-gray-600 hover:bg-gray-50 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800'
-                }`}
-              >
-                概览
-              </button>
-              <button
-                type="button"
-                onClick={() => setActivePage('http_text')}
-                className={`px-3 py-1.5 text-xs font-medium transition-colors ${
-                  activePage === 'http_text'
-                    ? 'bg-gray-200 text-gray-900 dark:bg-gray-800 dark:text-gray-100'
-                    : 'bg-white text-gray-600 hover:bg-gray-50 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800'
-                }`}
-              >
-                HTTP 文本
-              </button>
-            </div>
-
             <button
               onClick={onClose}
               className="p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500"
@@ -1863,65 +1689,132 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                     </p>
                   </div>
                 ) : (
-                  <div className="space-y-3">
-                    {httpViewTabs ? (
-                      <div className="flex items-center justify-end">{httpViewTabs}</div>
-                    ) : null}
+                  <>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="text-xs text-gray-500 dark:text-gray-400">
+                        这里把 HTTP 请求/响应按可读文本渲染（headers 已脱敏）。请求体会尽量把 messages 展开成“对话 + 工具调用”格式，便于阅读历史上下文。
+                      </div>
+                      {httpViewTabs}
+                    </div>
 
-                    {activeHttpView === 'request' ? (
-                      effectiveDebugInfo.request ? (
-                        <CollapsibleSection title="HTTP 请求">
-                          <div className="space-y-4">
-                            <div className="flex items-center gap-2 text-sm">
-                              <span className="px-2 py-1 bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded font-medium">
-                                {effectiveDebugInfo.request.method}
-                              </span>
-                              <span className="text-gray-800 dark:text-gray-200 break-all">
-                                {effectiveDebugInfo.request.url}
-                              </span>
+                    <div className="space-y-3">
+                      {activeHttpView === 'request' ? (
+                        effectiveDebugInfo.request ? (
+                          <CollapsibleSection title="HTTP 请求（文本）" defaultExpanded>
+                            <div className="space-y-4">
+                              <div className="flex flex-wrap items-center gap-2 text-sm">
+                                {effectiveDebugInfo.request.method && (
+                                  <Chip tone="blue">{effectiveDebugInfo.request.method}</Chip>
+                                )}
+                                {requestUrlParts ? (
+                                  <>
+                                    <Chip tone="gray" title={requestUrlParts.host}>
+                                      host: {truncateMiddle(requestUrlParts.host, 26, 14)}
+                                    </Chip>
+                                    <Chip tone="gray" title={requestUrlParts.path}>
+                                      path: {truncateMiddle(requestUrlParts.path, 30, 18)}
+                                    </Chip>
+                                  </>
+                                ) : effectiveDebugInfo.request.url ? (
+                                  <Chip tone="gray" title={effectiveDebugInfo.request.url}>
+                                    url: {truncateMiddle(effectiveDebugInfo.request.url, 30, 22)}
+                                  </Chip>
+                                ) : null}
+                              </div>
+
+                              <CollapsibleSection title="请求头（文本）" defaultExpanded>
+                                <TextViewer
+                                  text={requestHeadersText}
+                                  maxHeightClassName="max-h-56"
+                                  onOpenLarge={() =>
+                                    setLargeTextViewer({
+                                      title: 'HTTP 请求头（文本）',
+                                      text: requestHeadersText,
+                                      rawJson: prepareHeadersForJson(effectiveDebugInfo.request?.headers ?? {}),
+                                    })
+                                  }
+                                />
+                              </CollapsibleSection>
+
+                              <CollapsibleSection title="请求体（文本）" defaultExpanded>
+                                <TextViewer
+                                  text={requestBodyText}
+                                  maxHeightClassName="max-h-[50vh]"
+                                  containerClassName="bg-gray-50 dark:bg-gray-800/40 text-gray-800 dark:text-gray-200"
+                                  onOpenLarge={() =>
+                                    setLargeTextViewer({
+                                      title: 'HTTP 请求体（文本）',
+                                      text: requestBodyText,
+                                      rawJson: effectiveDebugInfo.request?.body,
+                                    })
+                                  }
+                                />
+                              </CollapsibleSection>
                             </div>
+                          </CollapsibleSection>
+                        ) : (
+                          <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-300">
+                            暂无 HTTP 请求调试信息
+                          </div>
+                        )
+                      ) : effectiveDebugInfo.response ? (
+                        <CollapsibleSection title="HTTP 响应（文本）" defaultExpanded>
+                          <div className="space-y-4">
+                            {typeof effectiveDebugInfo.response.status === 'number' && (
+                              <div className="flex flex-wrap items-center gap-2 text-sm">
+                                <Chip
+                                  tone={
+                                    effectiveDebugInfo.response.status >= 200 &&
+                                    effectiveDebugInfo.response.status < 300
+                                      ? 'green'
+                                      : 'red'
+                                  }
+                                >
+                                  HTTP {effectiveDebugInfo.response.status}
+                                </Chip>
+                              </div>
+                            )}
 
-                            <CollapsibleSection title="请求头" defaultExpanded={false}>
-                              <HeadersViewer headers={effectiveDebugInfo.request.headers} />
+                            <CollapsibleSection title="响应头（文本）" defaultExpanded>
+                              <TextViewer
+                                text={responseHeadersText}
+                                maxHeightClassName="max-h-56"
+                                onOpenLarge={() =>
+                                  setLargeTextViewer({
+                                    title: 'HTTP 响应头（文本）',
+                                    text: responseHeadersText,
+                                    rawJson: prepareHeadersForJson(effectiveDebugInfo.response?.headers ?? {}),
+                                  })
+                                }
+                              />
                             </CollapsibleSection>
 
-                            <CollapsibleSection title="请求体">
-                              <JsonViewer data={effectiveDebugInfo.request.body} />
+                            <CollapsibleSection title="响应体（文本）" defaultExpanded>
+                              <TextViewer
+                                text={responseBodyText}
+                                maxHeightClassName="max-h-[50vh]"
+                                containerClassName="bg-gray-50 dark:bg-gray-800/40 text-gray-800 dark:text-gray-200"
+                                onOpenLarge={() =>
+                                  setLargeTextViewer({
+                                    title: 'HTTP 响应体（文本）',
+                                    text: responseBodyText,
+                                    rawJson: responseBodyForDisplay,
+                                  })
+                                }
+                              />
                             </CollapsibleSection>
                           </div>
                         </CollapsibleSection>
                       ) : (
                         <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-300">
-                          暂无 HTTP 请求调试信息
+                          暂无 HTTP 响应调试信息
                         </div>
-                      )
-                    ) : effectiveDebugInfo.response ? (
-                      <CollapsibleSection title="HTTP 响应">
-                        <div className="space-y-4">
-                          {Object.keys(effectiveDebugInfo.response.headers).length > 0 && (
-                            <CollapsibleSection title="响应头" defaultExpanded={false}>
-                              <HeadersViewer headers={effectiveDebugInfo.response.headers} />
-                            </CollapsibleSection>
-                          )}
-
-                          <CollapsibleSection title="响应体">
-                            {isSseResponseBody(responseBodyForDisplay) ? (
-                              <SseResponseViewer data={responseBodyForDisplay} />
-                            ) : (
-                              <JsonViewer data={responseBodyForDisplay} />
-                            )}
-                          </CollapsibleSection>
-                        </div>
-                      </CollapsibleSection>
-                    ) : (
-                      <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-300">
-                        暂无 HTTP 响应调试信息
-                      </div>
-                    )}
-                  </div>
+                      )}
+                    </div>
+                  </>
                 )}
               </>
-            ) : activePage === 'tools' ? (
+            ) : (
               <>
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="text-xs text-gray-500 dark:text-gray-400">
@@ -2020,219 +1913,6 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                   </div>
                 )}
               </>
-            ) : activePage === 'http_json' ? (
-              <>
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="text-xs text-gray-500 dark:text-gray-400">
-                    这里展示 turn.debugInfo 里的 HTTP 请求/响应头与响应体的原始 JSON（文本），便于复制与排障。
-                  </div>
-                  {httpViewTabs}
-                </div>
-
-                {!effectiveDebugInfo ? (
-                  <div className="text-center py-8 text-gray-500 dark:text-gray-400">
-                    <p>暂无调试信息</p>
-                    <p className="text-sm mt-2">
-                      {isLoadingDebug
-                        ? '请稍候…'
-                        : activeTurn?.hasDebugInfo
-                          ? '该轮已标记存在调试信息，但当前未能加载。'
-                          : '请确保在发送消息前开启调试模式。'}
-                    </p>
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    {activeHttpView === 'request' ? (
-                      effectiveDebugInfo.request ? (
-                        <CollapsibleSection title="HTTP 请求（JSON）" defaultExpanded>
-                          <div className="space-y-4">
-                            <div className="flex items-center gap-2 text-sm">
-                              <span className="px-2 py-1 bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded font-medium">
-                                {effectiveDebugInfo.request.method}
-                              </span>
-                              <span className="text-gray-800 dark:text-gray-200 break-all">
-                                {effectiveDebugInfo.request.url}
-                              </span>
-                            </div>
-
-                            <CollapsibleSection title="请求头（JSON）" defaultExpanded>
-                              <JsonViewer data={prepareHeadersForJson(effectiveDebugInfo.request.headers)} />
-                            </CollapsibleSection>
-
-                            <CollapsibleSection title="请求体（JSON）" defaultExpanded>
-                              <StructuredJsonTextViewer
-                                data={effectiveDebugInfo.request.body}
-                                maxHeightClassName="max-h-[50vh]"
-                                emptyText="(空请求体)"
-                              />
-                            </CollapsibleSection>
-                          </div>
-                        </CollapsibleSection>
-                      ) : (
-                        <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-300">
-                          暂无 HTTP 请求调试信息
-                        </div>
-                      )
-                    ) : effectiveDebugInfo.response ? (
-                      <CollapsibleSection title="HTTP 响应（JSON）" defaultExpanded>
-                        <div className="space-y-4">
-                          <div className="flex items-center gap-2 text-sm">
-                            <span
-                              className={`px-2 py-1 rounded font-medium ${
-                                effectiveDebugInfo.response.status >= 200 &&
-                                effectiveDebugInfo.response.status < 300
-                                  ? 'bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300'
-                                  : 'bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300'
-                              }`}
-                            >
-                              {effectiveDebugInfo.response.status}
-                            </span>
-                          </div>
-
-                          <CollapsibleSection title="响应头（JSON）" defaultExpanded>
-                            <JsonViewer data={prepareHeadersForJson(effectiveDebugInfo.response.headers)} />
-                          </CollapsibleSection>
-
-                          <CollapsibleSection title="响应体（JSON）" defaultExpanded>
-                            <StructuredJsonTextViewer
-                              data={effectiveDebugInfo.response.body}
-                              maxHeightClassName="max-h-[50vh]"
-                              emptyText="(空响应体)"
-                            />
-                          </CollapsibleSection>
-                        </div>
-                      </CollapsibleSection>
-                    ) : (
-                      <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-300">
-                        暂无 HTTP 响应调试信息
-                      </div>
-                    )}
-                  </div>
-                )}
-              </>
-            ) : (
-              <>
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="text-xs text-gray-500 dark:text-gray-400">
-                    这里把 HTTP 请求/响应按可读文本渲染（headers 已脱敏）。请求体会尽量把 messages 展开成“对话 + 工具调用”格式，便于阅读历史上下文。
-                  </div>
-                  {httpViewTabs}
-                </div>
-
-                {!effectiveDebugInfo ? (
-                  <div className="text-center py-8 text-gray-500 dark:text-gray-400">
-                    <p>暂无调试信息</p>
-                    <p className="text-sm mt-2">
-                      {isLoadingDebug
-                        ? '请稍候…'
-                        : activeTurn?.hasDebugInfo
-                          ? '该轮已标记存在调试信息，但当前未能加载。'
-                          : '请确保在发送消息前开启调试模式。'}
-                    </p>
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    {activeHttpView === 'request' ? (
-                      effectiveDebugInfo.request ? (
-                        <CollapsibleSection title="HTTP 请求（文本）" defaultExpanded>
-                          <div className="space-y-4">
-                            <div className="flex flex-wrap items-center gap-2 text-sm">
-                              {effectiveDebugInfo.request.method && (
-                                <Chip tone="blue">{effectiveDebugInfo.request.method}</Chip>
-                              )}
-                              {requestUrlParts ? (
-                                <>
-                                  <Chip tone="gray" title={requestUrlParts.host}>
-                                    host: {truncateMiddle(requestUrlParts.host, 26, 14)}
-                                  </Chip>
-                                  <Chip tone="gray" title={requestUrlParts.path}>
-                                    path: {truncateMiddle(requestUrlParts.path, 30, 18)}
-                                  </Chip>
-                                </>
-                              ) : effectiveDebugInfo.request.url ? (
-                                <Chip tone="gray" title={effectiveDebugInfo.request.url}>
-                                  url: {truncateMiddle(effectiveDebugInfo.request.url, 30, 22)}
-                                </Chip>
-                              ) : null}
-                            </div>
-
-                          <CollapsibleSection title="请求头（文本）" defaultExpanded>
-                            <TextViewer
-                              text={requestHeadersText}
-                              maxHeightClassName="max-h-56"
-                            />
-                          </CollapsibleSection>
-
-                          <CollapsibleSection title="请求体（文本）" defaultExpanded>
-                            <TextViewer
-                              text={requestBodyText}
-                              maxHeightClassName="max-h-[50vh]"
-                              containerClassName="bg-gray-50 dark:bg-gray-800/40 text-gray-800 dark:text-gray-200"
-                              onOpenLarge={() =>
-                                setLargeTextViewer({
-                                  title: 'HTTP 请求体（文本）',
-                                  text: requestBodyText,
-                                  rawJson: effectiveDebugInfo.request?.body,
-                                })
-                              }
-                            />
-                          </CollapsibleSection>
-                          </div>
-                        </CollapsibleSection>
-                      ) : (
-                        <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-300">
-                          暂无 HTTP 请求调试信息
-                        </div>
-                      )
-                    ) : effectiveDebugInfo.response ? (
-                      <CollapsibleSection title="HTTP 响应（文本）" defaultExpanded>
-                        <div className="space-y-4">
-                          {typeof effectiveDebugInfo.response.status === 'number' && (
-                            <div className="flex flex-wrap items-center gap-2 text-sm">
-                              <Chip
-                                tone={
-                                  effectiveDebugInfo.response.status >= 200 &&
-                                  effectiveDebugInfo.response.status < 300
-                                    ? 'green'
-                                    : 'red'
-                                }
-                              >
-                                HTTP {effectiveDebugInfo.response.status}
-                              </Chip>
-                            </div>
-                          )}
-
-                          <CollapsibleSection title="响应头（文本）" defaultExpanded>
-                            <TextViewer
-                              text={responseHeadersText}
-                              maxHeightClassName="max-h-56"
-                            />
-                          </CollapsibleSection>
-
-                          <CollapsibleSection title="响应体（文本）" defaultExpanded>
-                            <TextViewer
-                              text={responseBodyText}
-                              maxHeightClassName="max-h-[50vh]"
-                              containerClassName="bg-gray-50 dark:bg-gray-800/40 text-gray-800 dark:text-gray-200"
-                              onOpenLarge={() =>
-                                setLargeTextViewer({
-                                  title: 'HTTP 响应体（文本）',
-                                  text: responseBodyText,
-                                  rawJson: effectiveDebugInfo.response?.body,
-                                })
-                              }
-                            />
-                          </CollapsibleSection>
-                        </div>
-                      </CollapsibleSection>
-                    ) : (
-                      <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-300">
-                        暂无 HTTP 响应调试信息
-                      </div>
-                    )}
-                  </div>
-                )}
-              </>
             )}
           </div>
         </div>
@@ -2251,11 +1931,61 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                 {largeTextViewer.title}
               </div>
               <div className="flex items-center gap-2">
+                <div
+                  className="inline-flex rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden"
+                  title="切换查看方式"
+                >
+                  <button
+                    type="button"
+                    onClick={() => setLargeViewerMode('text')}
+                    className={`px-2.5 py-1 text-xs font-medium transition-colors ${
+                      largeViewerMode === 'text'
+                        ? 'bg-gray-200 text-gray-900 dark:bg-gray-800 dark:text-gray-100'
+                        : 'bg-white text-gray-600 hover:bg-gray-50 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800'
+                    }`}
+                  >
+                    纯文本
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!largeViewerJsonText) return;
+                      setLargeViewerMode('json');
+                    }}
+                    disabled={!largeViewerJsonText}
+                    className={`px-2.5 py-1 text-xs font-medium transition-colors ${
+                      !largeViewerJsonText
+                        ? 'bg-white text-gray-300 dark:bg-gray-900 dark:text-gray-700 cursor-not-allowed'
+                        : largeViewerMode === 'json'
+                          ? 'bg-gray-200 text-gray-900 dark:bg-gray-800 dark:text-gray-100'
+                          : 'bg-white text-gray-600 hover:bg-gray-50 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800'
+                    }`}
+                  >
+                    JSON
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!largeViewerJsonData) return;
+                      setLargeViewerMode('structured');
+                    }}
+                    disabled={!largeViewerJsonData}
+                    className={`px-2.5 py-1 text-xs font-medium transition-colors ${
+                      !largeViewerJsonData
+                        ? 'bg-white text-gray-300 dark:bg-gray-900 dark:text-gray-700 cursor-not-allowed'
+                        : largeViewerMode === 'structured'
+                          ? 'bg-gray-200 text-gray-900 dark:bg-gray-800 dark:text-gray-100'
+                          : 'bg-white text-gray-600 hover:bg-gray-50 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800'
+                    }`}
+                  >
+                    结构
+                  </button>
+                </div>
                 <button
                   type="button"
                   className="rounded-md px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
                   onClick={() => {
-                    void navigator.clipboard.writeText(largeViewerDisplayText);
+                    void navigator.clipboard.writeText(largeViewerCopyText);
                   }}
                 >
                   复制
@@ -2270,15 +2000,19 @@ export const DebugModal: React.FC<DebugModalProps> = ({
               </div>
             </div>
             <div className="h-[calc(100%-48px)] p-4 overflow-auto">
-              {largeViewerJsonData ? (
+              {largeViewerMode === 'structured' && largeViewerJsonData ? (
                 <StructuredJsonTextViewer
                   data={largeViewerJsonData}
                   maxHeightClassName="max-h-[calc(92vh-11rem)]"
                   emptyText="(空)"
                 />
+              ) : largeViewerMode === 'json' && largeViewerJsonText ? (
+                <pre className="min-h-full rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs whitespace-pre-wrap break-words text-gray-800 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-200">
+                  {largeViewerJsonText}
+                </pre>
               ) : (
                 <pre className="min-h-full rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs whitespace-pre-wrap break-words text-gray-800 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-200">
-                  {largeViewerDisplayText}
+                  {largeViewerPlainText}
                 </pre>
               )}
             </div>
