@@ -3,11 +3,13 @@ use std::error::Error as StdError;
 use std::io;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 
 const MAX_ERROR_TEXT_LEN: usize = 12_000;
 const MAX_SNIPPET_CHARS: usize = 1200;
 const DEFAULT_RAW_EVENT_TAIL_MAX_ITEMS: usize = 24;
 const DEFAULT_RAW_EVENT_TAIL_MAX_CHARS: usize = 1600;
+const DEFAULT_DEBUG_SSE_MAX_LINE_CHARS: usize = 1600;
 
 pub(crate) fn push_raw_event_tail(tail: &mut Vec<String>, raw: &str) {
     if raw.is_empty() {
@@ -31,6 +33,56 @@ pub(crate) fn push_raw_event_tail(tail: &mut Vec<String>, raw: &str) {
         let excess = tail.len() - DEFAULT_RAW_EVENT_TAIL_MAX_ITEMS;
         tail.drain(0..excess);
     }
+}
+
+pub(crate) fn format_sse_debug_lines(data: &str) -> Vec<String> {
+    let data = data.trim_end_matches('\r');
+    if data.is_empty() {
+        return Vec::new();
+    }
+
+    if data == "[DONE]" {
+        return vec![data.to_string()];
+    }
+
+    if let Ok(v) = serde_json::from_str::<JsonValue>(data) {
+        if let Ok(pretty) = serde_json::to_string_pretty(&v) {
+            return pretty
+                .lines()
+                .flat_map(|line| split_long_line(line, DEFAULT_DEBUG_SSE_MAX_LINE_CHARS))
+                .collect();
+        }
+    }
+
+    // Fallback: escape control characters so logs don't contain invisible newlines/tabs.
+    let escaped: String = data.chars().flat_map(|c| c.escape_default()).collect();
+    split_long_line(&escaped, DEFAULT_DEBUG_SSE_MAX_LINE_CHARS)
+}
+
+fn split_long_line(s: &str, max_chars: usize) -> Vec<String> {
+    if max_chars == 0 {
+        return vec![s.to_string()];
+    }
+
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut count: usize = 0;
+    for ch in s.chars() {
+        cur.push(ch);
+        count = count.saturating_add(1);
+        if count >= max_chars {
+            out.push(cur);
+            cur = String::new();
+            count = 0;
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    out
 }
 
 #[derive(Debug, Clone, Default)]

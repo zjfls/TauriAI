@@ -9,14 +9,14 @@ use tokio::sync::mpsc;
 
 use super::content_converter::{content_parts_to_blocks_with_limit, parse_data_url, ContentBlock};
 use super::traits::{
-    AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent,
-    ErrorLayer, ErrorOrigin, StreamTerminationInfo, StreamTerminationSource, TokenUsage, ToolCall,
+    AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, ErrorLayer, ErrorOrigin,
+    StreamEvent, StreamTerminationInfo, StreamTerminationSource, TokenUsage, ToolCall,
     ToolDefinition,
 };
 use super::utf8_stream::Utf8StreamDecoder;
 use super::{
-    format_reqwest_stream_error, summarize_reqwest_error, summarize_reqwest_stream_error,
-    push_raw_event_tail, StreamProtocolContext,
+    format_reqwest_stream_error, format_sse_debug_lines, push_raw_event_tail,
+    summarize_reqwest_error, summarize_reqwest_stream_error, StreamProtocolContext,
 };
 use crate::models::{Message, MessageRole, ModelConfig};
 
@@ -808,7 +808,9 @@ impl AiClient for GoogleClient {
             };
 
             // Send Error FIRST, then DoneWithDebug so the UI always has the debug context.
-            let _ = token_sender.send(StreamEvent::Error(error_msg.clone())).await;
+            let _ = token_sender
+                .send(StreamEvent::Error(error_msg.clone()))
+                .await;
             let _ = token_sender
                 .send(StreamEvent::DoneWithDebug {
                     content: String::new(),
@@ -965,7 +967,9 @@ impl AiClient for GoogleClient {
                         last_sse_data = Some(data.chars().take(1200).collect::<String>());
                     }
                     if config.debug_sse {
-                        eprintln!("[SSE][{}/{}] {}", config.provider, config.model, data);
+                        for line in format_sse_debug_lines(data) {
+                            eprintln!("[SSE][{}/{}] {}", config.provider, config.model, line);
+                        }
                     }
                     push_raw_event_tail(&mut raw_event_tail, data);
                     if data.trim().is_empty() {

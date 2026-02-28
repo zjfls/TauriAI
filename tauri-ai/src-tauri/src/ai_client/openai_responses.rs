@@ -30,14 +30,14 @@ use tokio::sync::mpsc;
 
 use super::content_converter::ContentBlock;
 use super::traits::{
-    AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent,
-    ErrorLayer, ErrorOrigin, StreamTerminationInfo, StreamTerminationSource, TokenUsage, ToolCall,
+    AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, ErrorLayer, ErrorOrigin,
+    StreamEvent, StreamTerminationInfo, StreamTerminationSource, TokenUsage, ToolCall,
     ToolDefinition,
 };
 use super::utf8_stream::Utf8StreamDecoder;
 use super::{
-    format_reqwest_stream_error, summarize_reqwest_error, summarize_reqwest_stream_error,
-    push_raw_event_tail, StreamProtocolContext,
+    format_reqwest_stream_error, format_sse_debug_lines, push_raw_event_tail,
+    summarize_reqwest_error, summarize_reqwest_stream_error, StreamProtocolContext,
 };
 use crate::models::{ImageDetail, Message, MessageRole, ModelConfig};
 use std::collections::{HashMap, HashSet};
@@ -324,7 +324,12 @@ fn format_openai_error_detail(status: u16, detail: &ErrorDetail) -> String {
     {
         meta.push(format!("type={t}"));
     }
-    if let Some(c) = detail.code.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(c) = detail
+        .code
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         meta.push(format!("code={c}"));
     }
     if let Some(p) = detail.param.as_ref() {
@@ -1121,9 +1126,7 @@ impl AiClient for OpenAiResponsesClient {
 
             if let Ok(error_response) = serde_json::from_str::<ErrorResponse>(&error_text) {
                 let msg = format_openai_error_detail(response_status, &error_response.error);
-                let _ = token_sender
-                    .send(StreamEvent::Error(msg.clone()))
-                    .await;
+                let _ = token_sender.send(StreamEvent::Error(msg.clone())).await;
                 let _ = token_sender
                     .send(StreamEvent::DoneWithDebug {
                         content: String::new(),
@@ -1334,7 +1337,9 @@ impl AiClient for OpenAiResponsesClient {
                         last_sse_data = Some(data.chars().take(1200).collect::<String>());
                     }
                     if config.debug_sse {
-                        eprintln!("[SSE][{}/{}] {}", config.provider, config.model, data);
+                        for line in format_sse_debug_lines(data) {
+                            eprintln!("[SSE][{}/{}] {}", config.provider, config.model, line);
+                        }
                     }
                     push_raw_event_tail(&mut raw_event_tail, data);
                     if data.trim() == "[DONE]" {
@@ -1714,10 +1719,7 @@ impl AiClient for OpenAiResponsesClient {
                                             || c.contains("invalid_api")
                                             || c.contains("unauthorized") =>
                                     {
-                                        (
-                                            AiError::AuthenticationFailed(error_text.clone()),
-                                            false,
-                                        )
+                                        (AiError::AuthenticationFailed(error_text.clone()), false)
                                     }
                                     Some(c)
                                         if c.contains("server_error")

@@ -13,14 +13,14 @@ use tokio::sync::mpsc;
 
 use super::content_converter::{content_part_to_blocks, ContentBlock};
 use super::traits::{
-    AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent,
-    ErrorLayer, ErrorOrigin, StreamTerminationInfo, StreamTerminationSource, TokenUsage, ToolCall,
+    AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, ErrorLayer, ErrorOrigin,
+    StreamEvent, StreamTerminationInfo, StreamTerminationSource, TokenUsage, ToolCall,
     ToolDefinition,
 };
 use super::utf8_stream::Utf8StreamDecoder;
 use super::{
-    format_reqwest_stream_error, summarize_reqwest_error, summarize_reqwest_stream_error,
-    push_raw_event_tail, StreamProtocolContext,
+    format_reqwest_stream_error, format_sse_debug_lines, push_raw_event_tail,
+    summarize_reqwest_error, summarize_reqwest_stream_error, StreamProtocolContext,
 };
 use crate::models::{ImageDetail, Message, MessageRole, ModelConfig};
 
@@ -322,7 +322,12 @@ fn format_openai_error_detail(status: u16, detail: &OpenAiErrorDetail) -> String
     {
         meta.push(format!("type={t}"));
     }
-    if let Some(c) = detail.code.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(c) = detail
+        .code
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         meta.push(format!("code={c}"));
     }
     if let Some(p) = detail.param.as_ref() {
@@ -929,7 +934,9 @@ impl OpenAiBaseClient {
             presence_penalty: config.parameters.presence_penalty,
             stream: true,
             stream_options: if include_usage {
-                Some(StreamOptions { include_usage: true })
+                Some(StreamOptions {
+                    include_usage: true,
+                })
             } else {
                 None
             },
@@ -1016,7 +1023,9 @@ impl OpenAiBaseClient {
                     }
                 });
 
-            let _ = token_sender.send(StreamEvent::Error(error_msg.clone())).await;
+            let _ = token_sender
+                .send(StreamEvent::Error(error_msg.clone()))
+                .await;
             let _ = token_sender
                 .send(StreamEvent::DoneWithDebug {
                     content: String::new(),
@@ -1183,7 +1192,9 @@ impl OpenAiBaseClient {
                         last_sse_data = Some(data.chars().take(1200).collect::<String>());
                     }
                     if config.debug_sse {
-                        eprintln!("[SSE][{}/{}] {}", config.provider, config.model, data);
+                        for line in format_sse_debug_lines(data) {
+                            eprintln!("[SSE][{}/{}] {}", config.provider, config.model, line);
+                        }
                     }
                     push_raw_event_tail(&mut raw_event_tail, data);
                     if data.trim() == "[DONE]" {
@@ -1315,7 +1326,8 @@ impl OpenAiBaseClient {
                                     // Fall back to a stable index derived from `id` (preferred) or array position.
                                     let mut idx = if let Some(index) = tc.index {
                                         let idx = index as usize;
-                                        next_tool_call_index = next_tool_call_index.max(idx.saturating_add(1));
+                                        next_tool_call_index =
+                                            next_tool_call_index.max(idx.saturating_add(1));
                                         idx
                                     } else if let Some(id) = tc.id.as_ref() {
                                         if let Some(existing) = tool_call_id_to_index.get(id) {
@@ -1338,14 +1350,16 @@ impl OpenAiBaseClient {
                                             tool_call_id_to_index.insert(id.clone(), idx)
                                         {
                                             if prev_idx != idx {
-                                                if let Some(prev) = tool_calls_accum.remove(&prev_idx) {
-                                                    let target = tool_calls_accum.entry(idx).or_insert_with(|| {
-                                                        ToolCallAccum {
+                                                if let Some(prev) =
+                                                    tool_calls_accum.remove(&prev_idx)
+                                                {
+                                                    let target = tool_calls_accum
+                                                        .entry(idx)
+                                                        .or_insert_with(|| ToolCallAccum {
                                                             id: None,
                                                             name: None,
                                                             arguments: String::new(),
-                                                        }
-                                                    });
+                                                        });
                                                     if target.id.is_none() {
                                                         target.id = prev.id;
                                                     }

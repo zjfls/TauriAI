@@ -24,6 +24,6 @@ pub use openai_responses::OpenAiResponsesClient;
 pub use traits::*;
 
 pub(crate) use error_utils::{
-    format_reqwest_stream_error, push_raw_event_tail, summarize_reqwest_error,
-    summarize_reqwest_stream_error, StreamProtocolContext,
+    format_reqwest_stream_error, format_sse_debug_lines, push_raw_event_tail,
+    summarize_reqwest_error, summarize_reqwest_stream_error, StreamProtocolContext,
 };
