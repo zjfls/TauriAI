@@ -1001,6 +1001,8 @@ impl OpenAiBaseClient {
         let mut full_thinking = String::new();
         let mut final_usage: Option<TokenUsage> = None;
         let mut tool_calls_accum: HashMap<usize, ToolCallAccum> = HashMap::new();
+        let mut tool_call_id_to_index: HashMap<String, usize> = HashMap::new();
+        let mut next_tool_call_index: usize = 0;
         let mut legacy_function_name: Option<String> = None;
         let mut legacy_function_args = String::new();
         let mut tool_calls_sent = false;
@@ -1265,9 +1267,62 @@ impl OpenAiBaseClient {
                         if let Some(choice) = stream_chunk.choices.first() {
                             // Handle tool_calls deltas
                             if let Some(deltas) = &choice.delta.tool_calls {
-                                for tc in deltas {
-                                    let Some(index) = tc.index else { continue };
-                                    let idx = index as usize;
+                                for (pos, tc) in deltas.iter().enumerate() {
+                                    // Some OpenAI-compatible gateways omit `index` in streaming tool_calls deltas.
+                                    // Fall back to a stable index derived from `id` (preferred) or array position.
+                                    let mut idx = if let Some(index) = tc.index {
+                                        let idx = index as usize;
+                                        next_tool_call_index = next_tool_call_index.max(idx.saturating_add(1));
+                                        idx
+                                    } else if let Some(id) = tc.id.as_ref() {
+                                        if let Some(existing) = tool_call_id_to_index.get(id) {
+                                            *existing
+                                        } else {
+                                            let mut candidate = next_tool_call_index;
+                                            while tool_calls_accum.contains_key(&candidate) {
+                                                candidate = candidate.saturating_add(1);
+                                            }
+                                            tool_call_id_to_index.insert(id.clone(), candidate);
+                                            next_tool_call_index = candidate.saturating_add(1);
+                                            candidate
+                                        }
+                                    } else {
+                                        pos
+                                    };
+
+                                    if let Some(id) = tc.id.as_ref() {
+                                        if let Some(prev_idx) =
+                                            tool_call_id_to_index.insert(id.clone(), idx)
+                                        {
+                                            if prev_idx != idx {
+                                                if let Some(prev) = tool_calls_accum.remove(&prev_idx) {
+                                                    let target = tool_calls_accum.entry(idx).or_insert_with(|| {
+                                                        ToolCallAccum {
+                                                            id: None,
+                                                            name: None,
+                                                            arguments: String::new(),
+                                                        }
+                                                    });
+                                                    if target.id.is_none() {
+                                                        target.id = prev.id;
+                                                    }
+                                                    if target.name.is_none() {
+                                                        target.name = prev.name;
+                                                    }
+                                                    if !prev.arguments.is_empty() {
+                                                        let mut merged = prev.arguments;
+                                                        merged.push_str(&target.arguments);
+                                                        target.arguments = merged;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // Ensure idx doesn't exceed usize::MAX (defensive; should never happen).
+                                    if idx == usize::MAX {
+                                        idx = pos;
+                                    }
 
                                     let entry = tool_calls_accum.entry(idx).or_insert_with(|| {
                                         ToolCallAccum {
