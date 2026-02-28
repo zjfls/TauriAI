@@ -661,6 +661,8 @@ const TextViewer: React.FC<TextViewerProps> = ({
 }) => {
   const [copied, setCopied] = useState(false);
   const actionPaddingRightClass = onOpenLarge ? 'pr-20' : 'pr-12';
+  // label 存在时，按钮放在内容框内部更自然；label 不存在时上移一点避免遮挡首行文本。
+  const actionTopClass = label ? 'top-2' : '-top-4';
 
   const handleCopy = async () => {
     await navigator.clipboard.writeText(text);
@@ -688,7 +690,7 @@ const TextViewer: React.FC<TextViewerProps> = ({
         <button
           type="button"
           onClick={() => onOpenLarge?.()}
-          className={`absolute top-2 right-10 p-1.5 rounded bg-gray-200 dark:bg-gray-700 transition-opacity ${
+          className={`absolute ${actionTopClass} right-10 p-1.5 rounded bg-gray-200 dark:bg-gray-700 transition-opacity ${
             onOpenLarge ? 'opacity-0 group-hover:opacity-100' : 'hidden'
           }`}
           title="大窗口查看"
@@ -698,7 +700,7 @@ const TextViewer: React.FC<TextViewerProps> = ({
         <button
           type="button"
           onClick={handleCopy}
-          className="absolute top-2 right-2 p-1.5 rounded bg-gray-200 dark:bg-gray-700 opacity-0 group-hover:opacity-100 transition-opacity"
+          className={`absolute ${actionTopClass} right-2 p-1.5 rounded bg-gray-200 dark:bg-gray-700 opacity-0 group-hover:opacity-100 transition-opacity`}
           title="复制"
         >
           {copied ? (
