@@ -96,6 +96,7 @@ pub async fn test_connection(
         web_search_enabled: false,  // Don't enable web search for connection test
         max_images: None,           // Not needed for connection test
         use_reasoning_effort: None, // Not needed for connection test
+        force_responses_reasoning: false,
         retry_attempts: None,
         resume_partial_output: false,
         stream_include_usage: true,

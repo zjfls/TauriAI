@@ -264,10 +264,6 @@ export const ProviderConfigForm: React.FC = () => {
   const handleTestConnection = async () => {
     const provider = providers.find(p => p.name === selectedProviderName);
     if (!provider) return;
-    const effectiveProviderType: ProviderType =
-      provider.forceResponsesReasoning && (provider.type === 'openai' || provider.type === 'openai_compatible')
-        ? 'openai_responses'
-        : provider.type;
     if (!testModelName) {
       setTestStatus('error');
       setTestMessage('请先选择要测试的模型');
@@ -276,7 +272,7 @@ export const ProviderConfigForm: React.FC = () => {
     setTestStatus('testing');
     try {
       const result = await testConnection(
-        effectiveProviderType,
+        provider.type,
         provider.apiBase,
         provider.apiKey,
         testModelName
@@ -549,24 +545,6 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
           />
         </div>
       </div>
-
-      {(provider.type === 'openai' || provider.type === 'openai_compatible') && (
-        <div className="space-y-1">
-          <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-            <input
-              type="checkbox"
-              checked={provider.forceResponsesReasoning ?? false}
-              onChange={(e) => onFieldChange('forceResponsesReasoning', e.target.checked)}
-              disabled={!isEditing}
-              className="rounded"
-            />
-            <span>强制 Responses Reasoning</span>
-          </label>
-          <p className="text-[11px] text-gray-500">
-            开启后该 Provider 将按 <code className="font-mono">openai_responses</code> 协议请求（使用 <code className="font-mono">reasoning.effort/summary</code>）。
-          </p>
-        </div>
-      )}
 
       {/* Models Section */}
       <div className="space-y-3">
@@ -850,6 +828,24 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
                                       <p className="mt-1 text-[11px] text-gray-500">
                                         默认开启：流式请求发送 <code className="font-mono">stream_options.include_usage=true</code>。
                                       </p>
+
+                                      {provider.type === 'openai_compatible' && (
+                                        <>
+                                          <label className="mt-2 flex items-center gap-2 text-xs">
+                                            <input
+                                              type="checkbox"
+                                              checked={provider.forceResponsesReasoning ?? false}
+                                              onChange={(e) => onFieldChange('forceResponsesReasoning', e.target.checked)}
+                                              disabled={!isEditing}
+                                              className="rounded"
+                                            />
+                                            <span className="text-gray-700 dark:text-gray-300">兼容协议强制 response-style reasoning（Provider）</span>
+                                          </label>
+                                          <p className="mt-1 text-[11px] text-gray-500">
+                                            Provider 级开关：仍使用 <code className="font-mono">chat/completions</code>，仅把推理参数改为 <code className="font-mono">reasoning.effort/summary</code>（不切换到 <code className="font-mono">openai_responses</code>）。
+                                          </p>
+                                        </>
+                                      )}
                                     </>
                                   )}
                                 </div>

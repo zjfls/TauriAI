@@ -1036,8 +1036,9 @@ pub struct Provider {
     /// Whether this provider is enabled
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Force OpenAI/OpenAI-compatible providers to use Responses API reasoning mode.
-    /// When enabled, client routing uses `openai_responses`.
+    /// For OpenAI-compatible Chat Completions:
+    /// force response-style reasoning object (e.g. `reasoning: { effort, summary }`)
+    /// instead of top-level `reasoning_effort`.
     #[serde(default, skip_serializing_if = "is_false")]
     pub force_responses_reasoning: bool,
     /// Models available from this provider
@@ -1068,23 +1069,6 @@ impl Default for Provider {
             enabled: true,
             force_responses_reasoning: false,
             models: Vec::new(),
-        }
-    }
-}
-
-impl Provider {
-    /// Effective client provider key used by ai_client::factory.
-    /// Allows OpenAI/OpenAI-compatible providers to be routed through Responses API.
-    pub fn effective_client_provider(&self) -> &'static str {
-        if self.force_responses_reasoning
-            && matches!(
-                self.provider_type,
-                ProviderType::Openai | ProviderType::OpenaiCompatible
-            )
-        {
-            ProviderType::OpenaiResponses.to_client_str()
-        } else {
-            self.provider_type.to_client_str()
         }
     }
 }
@@ -1495,6 +1479,10 @@ pub struct ModelConfig {
     /// Whether to use reasoning_effort parameter (for OpenAI GPT-5 series)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub use_reasoning_effort: Option<bool>,
+    /// OpenAI-compatible chat/completions:
+    /// force response-style reasoning object (reasoning.effort/summary).
+    #[serde(default)]
+    pub force_responses_reasoning: bool,
     /// Turn-level automatic retry attempts (default: 8 when unset).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_attempts: Option<u32>,

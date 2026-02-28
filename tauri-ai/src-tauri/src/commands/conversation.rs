@@ -948,7 +948,7 @@ pub async fn generate_title(
     let model_config = ModelConfig {
         id: format!("{}/{}", provider.name, model.name),
         name: model.name.clone(),
-        provider: provider.effective_client_provider().to_string(),
+        provider: provider.provider_type.to_client_str().to_string(),
         api_base: Some(provider.api_base.clone()),
         api_key: provider.api_key.clone(),
         model: model.name.clone(),
@@ -966,6 +966,7 @@ pub async fn generate_title(
         web_search_enabled: false,  // Don't enable web search for title generation
         max_images: None,           // Not needed for title generation
         use_reasoning_effort: None, // Not needed for title generation
+        force_responses_reasoning: provider.force_responses_reasoning,
         retry_attempts: None,
         resume_partial_output: false,
         stream_include_usage: true,
@@ -1079,6 +1080,7 @@ mod tests {
             web_search_enabled: false,
             max_images: None,
             use_reasoning_effort: None,
+            force_responses_reasoning: false,
             retry_attempts: None,
             resume_partial_output: false,
             stream_include_usage: true,

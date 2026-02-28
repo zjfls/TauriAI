@@ -220,7 +220,7 @@ export interface Provider {
   apiBase: string;
   apiKey?: string;
   enabled: boolean;
-  forceResponsesReasoning?: boolean; // Force OpenAI/OpenAI-compatible providers to use Responses API reasoning
+  forceResponsesReasoning?: boolean; // OpenAI-compatible chat/completions: force response-style reasoning object
   models: Model[];
 }
 

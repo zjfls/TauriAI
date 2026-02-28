@@ -41,23 +41,6 @@ describe('apiUtils', () => {
       expect(result).toBe('chat_completions');
     });
 
-    it('returns "responses" when provider enables forceResponsesReasoning', () => {
-      const providers: Provider[] = [
-        {
-          name: 'openai',
-          displayName: 'OpenAI',
-          type: 'openai',
-          apiBase: 'https://api.openai.com/v1',
-          enabled: true,
-          forceResponsesReasoning: true,
-          models: [],
-        },
-      ];
-
-      const result = getApiProtocol('openai/gpt-5', providers);
-      expect(result).toBe('responses');
-    });
-
     it('returns "chat_completions" for anthropic provider', () => {
       const providers: Provider[] = [
         {

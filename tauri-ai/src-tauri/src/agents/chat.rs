@@ -83,7 +83,7 @@ pub fn build_model_config(
     ModelConfig {
         id: format!("{}/{}", provider.name, model.name),
         name: model.name.clone(),
-        provider: provider.effective_client_provider().to_string(),
+        provider: provider.provider_type.to_client_str().to_string(),
         api_base: Some(provider.api_base.clone()),
         api_key: provider.api_key.clone(),
         model: model.name.clone(),
@@ -133,6 +133,7 @@ pub fn build_model_config(
         web_search_enabled: model.capabilities.web_search && web_search_enabled.unwrap_or(true),
         max_images: model.max_images,
         use_reasoning_effort: model.use_reasoning_effort,
+        force_responses_reasoning: provider.force_responses_reasoning,
         retry_attempts: model.retry_attempts,
         resume_partial_output: model.resume_partial_output,
         stream_include_usage: model.stream_include_usage,
