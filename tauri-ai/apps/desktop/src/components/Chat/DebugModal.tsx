@@ -9,6 +9,7 @@ import type {
   DebugInfo,
   MessageBlock,
   MessageTurn,
+  TokenUsage,
   AnsiColorMode,
   AnsiRenderMode,
   StreamTerminationInfo,
@@ -116,7 +117,7 @@ type StreamTerminationSummary = {
   tone: 'success' | 'warn' | 'error' | 'neutral';
 };
 
-type DebugModalPage = 'overview' | 'tools';
+type DebugModalPage = 'overview' | 'tools' | 'summary';
 type HttpDebugView = 'response' | 'request';
 type LargeTextViewerState = {
   title: string;
@@ -612,6 +613,159 @@ const summarizeStreamTermination = (info: StreamTerminationInfo | null): StreamT
   };
 };
 
+const toIntOrNull = (value: unknown): number | null => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.max(0, Math.floor(value));
+  }
+  if (typeof value === 'string') {
+    const parsed = Number(value.trim());
+    if (Number.isFinite(parsed)) return Math.max(0, Math.floor(parsed));
+  }
+  return null;
+};
+
+const extractTokenUsageFromAny = (raw: unknown): TokenUsage | null => {
+  if (!raw || typeof raw !== 'object') return null;
+  const usageObj = raw as Record<string, unknown>;
+
+  const promptTokens =
+    toIntOrNull(usageObj.promptTokens) ??
+    toIntOrNull(usageObj.prompt_tokens) ??
+    toIntOrNull(usageObj.inputTokens) ??
+    toIntOrNull(usageObj.input_tokens) ??
+    toIntOrNull(usageObj.promptTokenCount) ??
+    toIntOrNull(usageObj.prompt_token_count) ??
+    toIntOrNull(usageObj.inputTokenCount) ??
+    toIntOrNull(usageObj.input_token_count);
+  const completionTokens =
+    toIntOrNull(usageObj.completionTokens) ??
+    toIntOrNull(usageObj.completion_tokens) ??
+    toIntOrNull(usageObj.outputTokens) ??
+    toIntOrNull(usageObj.output_tokens) ??
+    toIntOrNull(usageObj.candidatesTokenCount) ??
+    toIntOrNull(usageObj.candidates_token_count);
+  const totalTokens =
+    toIntOrNull(usageObj.totalTokens) ??
+    toIntOrNull(usageObj.total_tokens) ??
+    toIntOrNull(usageObj.totalTokenCount) ??
+    toIntOrNull(usageObj.total_token_count);
+  const cachedTokens =
+    toIntOrNull(usageObj.cachedTokens) ??
+    toIntOrNull(usageObj.cached_tokens) ??
+    toIntOrNull(usageObj.cachedContentTokenCount) ??
+    toIntOrNull(usageObj.cached_content_token_count);
+  const reasoningTokens =
+    toIntOrNull(usageObj.reasoningTokens) ??
+    toIntOrNull(usageObj.reasoning_tokens) ??
+    toIntOrNull(usageObj.thoughtsTokenCount) ??
+    toIntOrNull(usageObj.thoughts_token_count);
+  const cacheCreationInputTokens =
+    toIntOrNull(usageObj.cacheCreationInputTokens) ??
+    toIntOrNull(usageObj.cache_creation_input_tokens);
+  const cacheReadInputTokens =
+    toIntOrNull(usageObj.cacheReadInputTokens) ??
+    toIntOrNull(usageObj.cache_read_input_tokens);
+
+  if (promptTokens === null && completionTokens === null && totalTokens === null) {
+    return null;
+  }
+
+  const normalizedPrompt = promptTokens ?? 0;
+  const normalizedCompletion = completionTokens ?? 0;
+  const normalizedTotal = totalTokens ?? normalizedPrompt + normalizedCompletion;
+
+  const usage: TokenUsage = {
+    promptTokens: normalizedPrompt,
+    completionTokens: normalizedCompletion,
+    totalTokens: normalizedTotal,
+  };
+
+  if (cachedTokens !== null) usage.cachedTokens = cachedTokens;
+  if (reasoningTokens !== null) usage.reasoningTokens = reasoningTokens;
+  if (cacheCreationInputTokens !== null) usage.cacheCreationInputTokens = cacheCreationInputTokens;
+  if (cacheReadInputTokens !== null) usage.cacheReadInputTokens = cacheReadInputTokens;
+
+  return usage;
+};
+
+const extractUsageFromDebugBody = (debugInfo: DebugInfo | null | undefined): TokenUsage | null => {
+  const body = debugInfo?.response?.body;
+  if (!body || typeof body !== 'object') return null;
+  const obj = body as Record<string, unknown>;
+
+  const candidates: unknown[] = [
+    obj.usage,
+    obj.usage_metadata,
+    obj.usageMetadata,
+    (obj.response as Record<string, unknown> | undefined)?.usage,
+    (obj.response as Record<string, unknown> | undefined)?.usage_metadata,
+    (obj.response as Record<string, unknown> | undefined)?.usageMetadata,
+  ];
+
+  for (const c of candidates) {
+    const parsed = extractTokenUsageFromAny(c);
+    if (parsed) return parsed;
+  }
+  return null;
+};
+
+const mergeTokenUsage = (usages: Array<TokenUsage | null | undefined>): TokenUsage | null => {
+  let prompt = 0;
+  let completion = 0;
+  let total = 0;
+  let cached = 0;
+  let reasoning = 0;
+  let cacheCreation = 0;
+  let cacheRead = 0;
+
+  let hasAny = false;
+  let hasCached = false;
+  let hasReasoning = false;
+  let hasCacheCreation = false;
+  let hasCacheRead = false;
+
+  for (const usage of usages) {
+    if (!usage) continue;
+    hasAny = true;
+    prompt += usage.promptTokens ?? 0;
+    completion += usage.completionTokens ?? 0;
+    total += usage.totalTokens ?? 0;
+    if (typeof usage.cachedTokens === 'number') {
+      cached += usage.cachedTokens;
+      hasCached = true;
+    }
+    if (typeof usage.reasoningTokens === 'number') {
+      reasoning += usage.reasoningTokens;
+      hasReasoning = true;
+    }
+    if (typeof usage.cacheCreationInputTokens === 'number') {
+      cacheCreation += usage.cacheCreationInputTokens;
+      hasCacheCreation = true;
+    }
+    if (typeof usage.cacheReadInputTokens === 'number') {
+      cacheRead += usage.cacheReadInputTokens;
+      hasCacheRead = true;
+    }
+  }
+
+  if (!hasAny) return null;
+  const merged: TokenUsage = {
+    promptTokens: prompt,
+    completionTokens: completion,
+    totalTokens: total,
+  };
+  if (hasCached) merged.cachedTokens = cached;
+  if (hasReasoning) merged.reasoningTokens = reasoning;
+  if (hasCacheCreation) merged.cacheCreationInputTokens = cacheCreation;
+  if (hasCacheRead) merged.cacheReadInputTokens = cacheRead;
+  return merged;
+};
+
+const formatCount = (value: number | null | undefined): string => {
+  if (typeof value !== 'number' || Number.isNaN(value)) return '-';
+  return value.toLocaleString();
+};
+
 const JsonViewer: React.FC<JsonViewerProps> = ({ data, label }) => {
   const [copied, setCopied] = useState(false);
   const jsonString = JSON.stringify(data, null, 2);
@@ -889,7 +1043,7 @@ export const DebugModal: React.FC<DebugModalProps> = ({
   }, [isOpen, activeHttpView, hasHttpResponse, hasHttpRequest]);
 
   const httpViewTabs = useMemo(() => {
-    if (!hasHttpResponse && !hasHttpRequest && activePage !== 'tools') return null;
+    if (!hasHttpResponse && !hasHttpRequest && activePage !== 'tools' && activePage !== 'summary') return null;
     const responseDisabled = !hasHttpResponse;
     const requestDisabled = !hasHttpRequest;
 
@@ -902,20 +1056,20 @@ export const DebugModal: React.FC<DebugModalProps> = ({
     return (
       <div
         className="inline-flex rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden"
-        title="切换 请求 / 响应 / 工具执行"
+        title="切换 请求 / 响应 / 工具执行 / 摘要"
       >
         <button
           type="button"
           onClick={() => {
             if (requestDisabled) return;
             setActiveHttpView('request');
-            if (activePage === 'tools') setActivePage('overview');
+            if (activePage !== 'overview') setActivePage('overview');
           }}
           disabled={requestDisabled}
           className={`px-3 py-1.5 text-xs font-medium transition-colors ${
             requestDisabled
               ? disabledClass
-              : activePage !== 'tools' && activeHttpView === 'request'
+              : activePage === 'overview' && activeHttpView === 'request'
                 ? activeClass
                 : inactiveClass
           }`}
@@ -927,13 +1081,13 @@ export const DebugModal: React.FC<DebugModalProps> = ({
           onClick={() => {
             if (responseDisabled) return;
             setActiveHttpView('response');
-            if (activePage === 'tools') setActivePage('overview');
+            if (activePage !== 'overview') setActivePage('overview');
           }}
           disabled={responseDisabled}
           className={`px-3 py-1.5 text-xs font-medium transition-colors ${
             responseDisabled
               ? disabledClass
-              : activePage !== 'tools' && activeHttpView === 'response'
+              : activePage === 'overview' && activeHttpView === 'response'
                 ? activeClass
                 : inactiveClass
           }`}
@@ -948,6 +1102,15 @@ export const DebugModal: React.FC<DebugModalProps> = ({
           }`}
         >
           工具执行
+        </button>
+        <button
+          type="button"
+          onClick={() => setActivePage('summary')}
+          className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+            activePage === 'summary' ? activeClass : inactiveClass
+          }`}
+        >
+          摘要
         </button>
       </div>
     );
@@ -1226,6 +1389,60 @@ export const DebugModal: React.FC<DebugModalProps> = ({
 
     return { runs, orphanResults };
   }, [toolCalls, toolResults]);
+  const usageFromDebugBody = useMemo(
+    () => extractUsageFromDebugBody(effectiveDebugInfo),
+    [effectiveDebugInfo]
+  );
+  const activeTurnUsage = useMemo(
+    () => activeTurn?.usage ?? usageFromDebugBody ?? null,
+    [activeTurn?.usage, usageFromDebugBody]
+  );
+  const allTurnsUsage = useMemo(
+    () => mergeTokenUsage(sortedTurns.map((t) => t.usage)),
+    [sortedTurns]
+  );
+  const usageSummaryJson = useMemo(() => {
+    const out: Record<string, unknown> = {
+      turn_count: sortedTurns.length,
+      active_turn_index: activeTurn?.turnIndex ?? null,
+      final_status: finalStatus ?? null,
+      http_status: typeof httpStatus === 'number' ? httpStatus : null,
+      model: activeTurn?.model ?? finalTurn?.model ?? null,
+      tool_call_count: toolCalls.length,
+      tool_result_count: toolResults.length,
+      web_search_count: webSearchBlocks.length,
+    };
+
+    if (activeTurnUsage) {
+      out.active_turn_usage = activeTurnUsage;
+    }
+    if (allTurnsUsage) {
+      out.all_turns_usage = allTurnsUsage;
+    }
+    if (streamTerminationInfo) {
+      out.stream_termination = {
+        protocol_complete: streamTerminationInfo.protocolComplete ?? null,
+        termination_source: streamTerminationInfo.terminationSource ?? null,
+        chunk_count: streamTerminationInfo.chunkCount ?? null,
+        event_count: streamTerminationInfo.eventCount ?? null,
+        last_event_type: streamTerminationInfo.lastEventType ?? null,
+      };
+    }
+    return out;
+  }, [
+    sortedTurns.length,
+    activeTurn?.turnIndex,
+    activeTurn?.model,
+    finalTurn?.model,
+    finalStatus,
+    httpStatus,
+    toolCalls.length,
+    toolResults.length,
+    webSearchBlocks.length,
+    activeTurnUsage,
+    allTurnsUsage,
+    streamTerminationInfo,
+  ]);
 
   const largeViewerJsonData = useMemo(() => {
     if (!largeTextViewer) return null;
@@ -1556,7 +1773,7 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                   </>
                 )}
               </>
-            ) : (
+            ) : activePage === 'tools' ? (
               <>
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="text-xs text-gray-500 dark:text-gray-400">
@@ -1654,6 +1871,92 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                     暂无工具执行信息
                   </div>
                 )}
+              </>
+            ) : (
+              <>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-xs text-gray-500 dark:text-gray-400">
+                    这里展示本轮核心统计摘要，包含 token 与执行规模信息。
+                  </div>
+                  {httpViewTabs}
+                </div>
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-800/40">
+                    <div className="mb-2 text-xs font-semibold text-gray-700 dark:text-gray-200">当前 Turn Token</div>
+                    <div className="grid grid-cols-3 gap-2">
+                      <div className="rounded border border-gray-200 bg-white px-2 py-2 dark:border-gray-700 dark:bg-gray-900/40">
+                        <div className="text-[11px] text-gray-500 dark:text-gray-400">Input</div>
+                        <div className="mt-0.5 text-sm font-semibold text-gray-800 dark:text-gray-100">
+                          {formatCount(activeTurnUsage?.promptTokens)}
+                        </div>
+                      </div>
+                      <div className="rounded border border-gray-200 bg-white px-2 py-2 dark:border-gray-700 dark:bg-gray-900/40">
+                        <div className="text-[11px] text-gray-500 dark:text-gray-400">Output</div>
+                        <div className="mt-0.5 text-sm font-semibold text-gray-800 dark:text-gray-100">
+                          {formatCount(activeTurnUsage?.completionTokens)}
+                        </div>
+                      </div>
+                      <div className="rounded border border-gray-200 bg-white px-2 py-2 dark:border-gray-700 dark:bg-gray-900/40">
+                        <div className="text-[11px] text-gray-500 dark:text-gray-400">Total</div>
+                        <div className="mt-0.5 text-sm font-semibold text-gray-800 dark:text-gray-100">
+                          {formatCount(activeTurnUsage?.totalTokens)}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+                      <div className="rounded border border-gray-200 bg-white px-2 py-1.5 dark:border-gray-700 dark:bg-gray-900/40">
+                        <span className="text-gray-500 dark:text-gray-400">Reasoning:</span>{' '}
+                        <span className="font-medium text-gray-800 dark:text-gray-100">{formatCount(activeTurnUsage?.reasoningTokens)}</span>
+                      </div>
+                      <div className="rounded border border-gray-200 bg-white px-2 py-1.5 dark:border-gray-700 dark:bg-gray-900/40">
+                        <span className="text-gray-500 dark:text-gray-400">Cached:</span>{' '}
+                        <span className="font-medium text-gray-800 dark:text-gray-100">{formatCount(activeTurnUsage?.cachedTokens)}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-800/40">
+                    <div className="mb-2 text-xs font-semibold text-gray-700 dark:text-gray-200">全部 Turn 汇总</div>
+                    <div className="grid grid-cols-3 gap-2">
+                      <div className="rounded border border-gray-200 bg-white px-2 py-2 dark:border-gray-700 dark:bg-gray-900/40">
+                        <div className="text-[11px] text-gray-500 dark:text-gray-400">Input</div>
+                        <div className="mt-0.5 text-sm font-semibold text-gray-800 dark:text-gray-100">
+                          {formatCount(allTurnsUsage?.promptTokens)}
+                        </div>
+                      </div>
+                      <div className="rounded border border-gray-200 bg-white px-2 py-2 dark:border-gray-700 dark:bg-gray-900/40">
+                        <div className="text-[11px] text-gray-500 dark:text-gray-400">Output</div>
+                        <div className="mt-0.5 text-sm font-semibold text-gray-800 dark:text-gray-100">
+                          {formatCount(allTurnsUsage?.completionTokens)}
+                        </div>
+                      </div>
+                      <div className="rounded border border-gray-200 bg-white px-2 py-2 dark:border-gray-700 dark:bg-gray-900/40">
+                        <div className="text-[11px] text-gray-500 dark:text-gray-400">Total</div>
+                        <div className="mt-0.5 text-sm font-semibold text-gray-800 dark:text-gray-100">
+                          {formatCount(allTurnsUsage?.totalTokens)}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+                      <div className="rounded border border-gray-200 bg-white px-2 py-1.5 dark:border-gray-700 dark:bg-gray-900/40">
+                        <span className="text-gray-500 dark:text-gray-400">Turn 数:</span>{' '}
+                        <span className="font-medium text-gray-800 dark:text-gray-100">{formatCount(sortedTurns.length)}</span>
+                      </div>
+                      <div className="rounded border border-gray-200 bg-white px-2 py-1.5 dark:border-gray-700 dark:bg-gray-900/40">
+                        <span className="text-gray-500 dark:text-gray-400">状态:</span>{' '}
+                        <span className="font-medium text-gray-800 dark:text-gray-100">{finalStatusTitle}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <CollapsibleSection title="摘要详情（JSON）" defaultExpanded>
+                  <StructuredJsonTextViewer
+                    data={usageSummaryJson}
+                    maxHeightClassName="max-h-[45vh]"
+                    emptyText="(空)"
+                  />
+                </CollapsibleSection>
               </>
             )}
           </div>
