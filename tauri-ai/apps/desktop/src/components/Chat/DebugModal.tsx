@@ -904,26 +904,8 @@ export const DebugModal: React.FC<DebugModalProps> = ({
     return (
       <div
         className="inline-flex rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden"
-        title="切换 响应 / 请求 / 工具执行"
+        title="切换 请求 / 响应 / 工具执行"
       >
-        <button
-          type="button"
-          onClick={() => {
-            if (responseDisabled) return;
-            setActiveHttpView('response');
-            if (activePage === 'tools') setActivePage('overview');
-          }}
-          disabled={responseDisabled}
-          className={`px-3 py-1.5 text-xs font-medium transition-colors ${
-            responseDisabled
-              ? disabledClass
-              : activePage !== 'tools' && activeHttpView === 'response'
-                ? activeClass
-                : inactiveClass
-          }`}
-        >
-          响应
-        </button>
         <button
           type="button"
           onClick={() => {
@@ -941,6 +923,24 @@ export const DebugModal: React.FC<DebugModalProps> = ({
           }`}
         >
           请求
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            if (responseDisabled) return;
+            setActiveHttpView('response');
+            if (activePage === 'tools') setActivePage('overview');
+          }}
+          disabled={responseDisabled}
+          className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+            responseDisabled
+              ? disabledClass
+              : activePage !== 'tools' && activeHttpView === 'response'
+                ? activeClass
+                : inactiveClass
+          }`}
+        >
+          响应
         </button>
         <button
           type="button"
