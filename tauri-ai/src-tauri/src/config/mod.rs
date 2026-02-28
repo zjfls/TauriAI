@@ -189,6 +189,7 @@ mod tests {
                 api_base: "https://api.example.com".to_string(),
                 api_key: Some("test-key".to_string()),
                 enabled: true,
+                force_responses_reasoning: false,
                 models: vec![Model {
                     name: "gpt-4".to_string(),
                     temperature: 0.5,
@@ -200,6 +201,7 @@ mod tests {
                     capabilities: crate::models::ModelCapabilities::default(),
                     retry_attempts: None,
                     resume_partial_output: false,
+                    stream_include_usage: true,
                     max_images: None,
                     thinking_budget_tokens: None,
                     use_reasoning_effort: None,

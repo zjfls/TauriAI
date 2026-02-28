@@ -968,6 +968,11 @@ pub struct Model {
     /// Default false to avoid duplicated output on providers that don't support resume.
     #[serde(default)]
     pub resume_partial_output: bool,
+    /// For OpenAI Chat Completions streaming:
+    /// controls whether to send `stream_options.include_usage`.
+    /// Default true.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub stream_include_usage: bool,
     /// Maximum number of images allowed (default: 10, only for vision models)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_images: Option<u32>,
@@ -1002,6 +1007,7 @@ impl Default for Model {
             capabilities: ModelCapabilities::default(),
             retry_attempts: None,
             resume_partial_output: false,
+            stream_include_usage: true,
             max_images: None,
             thinking_budget_tokens: None,
             use_reasoning_effort: None,
@@ -1030,6 +1036,10 @@ pub struct Provider {
     /// Whether this provider is enabled
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Force OpenAI/OpenAI-compatible providers to use Responses API reasoning mode.
+    /// When enabled, client routing uses `openai_responses`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub force_responses_reasoning: bool,
     /// Models available from this provider
     #[serde(default)]
     pub models: Vec<Model>,
@@ -1043,6 +1053,10 @@ fn is_true(v: &bool) -> bool {
     *v
 }
 
+fn is_false(v: &bool) -> bool {
+    !*v
+}
+
 impl Default for Provider {
     fn default() -> Self {
         Self {
@@ -1052,7 +1066,25 @@ impl Default for Provider {
             api_base: String::new(),
             api_key: None,
             enabled: true,
+            force_responses_reasoning: false,
             models: Vec::new(),
+        }
+    }
+}
+
+impl Provider {
+    /// Effective client provider key used by ai_client::factory.
+    /// Allows OpenAI/OpenAI-compatible providers to be routed through Responses API.
+    pub fn effective_client_provider(&self) -> &'static str {
+        if self.force_responses_reasoning
+            && matches!(
+                self.provider_type,
+                ProviderType::Openai | ProviderType::OpenaiCompatible
+            )
+        {
+            ProviderType::OpenaiResponses.to_client_str()
+        } else {
+            self.provider_type.to_client_str()
         }
     }
 }
@@ -1482,6 +1514,11 @@ pub struct ModelConfig {
     /// Default false to avoid duplicated output on providers that don't support resume.
     #[serde(default)]
     pub resume_partial_output: bool,
+    /// For OpenAI Chat Completions streaming:
+    /// controls whether to send `stream_options.include_usage`.
+    /// Default true.
+    #[serde(default = "default_true")]
+    pub stream_include_usage: bool,
     /// Debug: log raw SSE lines from providers (streaming only)
     #[serde(default)]
     pub debug_sse: bool,
@@ -2799,6 +2836,7 @@ impl AppConfig {
                     api_base,
                     api_key: model_config.api_key.clone(),
                     enabled: true,
+                    force_responses_reasoning: false,
                     models: Vec::new(),
                 }
             });
@@ -2815,6 +2853,7 @@ impl AppConfig {
                 capabilities: ModelCapabilities::default(),
                 retry_attempts: None,
                 resume_partial_output: model_config.resume_partial_output,
+                stream_include_usage: model_config.stream_include_usage,
                 max_images: None,
                 thinking_budget_tokens: None,
                 use_reasoning_effort: None,

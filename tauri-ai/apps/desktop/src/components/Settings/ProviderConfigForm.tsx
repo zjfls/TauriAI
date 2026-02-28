@@ -73,6 +73,7 @@ const defaultModel: Model = {
   maxTokens: 4096,
   topP: 1,
   topPEnabled: true,
+  streamIncludeUsage: true,
   capabilities: defaultCapabilities,
 };
 
@@ -83,6 +84,7 @@ const defaultProvider: Provider = {
   apiBase: '',
   apiKey: '',
   enabled: true,
+  forceResponsesReasoning: false,
   models: [],
 };
 
@@ -262,6 +264,10 @@ export const ProviderConfigForm: React.FC = () => {
   const handleTestConnection = async () => {
     const provider = providers.find(p => p.name === selectedProviderName);
     if (!provider) return;
+    const effectiveProviderType: ProviderType =
+      provider.forceResponsesReasoning && (provider.type === 'openai' || provider.type === 'openai_compatible')
+        ? 'openai_responses'
+        : provider.type;
     if (!testModelName) {
       setTestStatus('error');
       setTestMessage('请先选择要测试的模型');
@@ -270,7 +276,7 @@ export const ProviderConfigForm: React.FC = () => {
     setTestStatus('testing');
     try {
       const result = await testConnection(
-        provider.type,
+        effectiveProviderType,
         provider.apiBase,
         provider.apiKey,
         testModelName
@@ -299,6 +305,7 @@ export const ProviderConfigForm: React.FC = () => {
         temperature: 0.7,
         maxTokens: 4096,
         topP: 1,
+        streamIncludeUsage: true,
         contextLength: inferContextLength(name),
         capabilities: inferCapabilities(name),
       }));
@@ -542,6 +549,24 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
           />
         </div>
       </div>
+
+      {(provider.type === 'openai' || provider.type === 'openai_compatible') && (
+        <div className="space-y-1">
+          <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+            <input
+              type="checkbox"
+              checked={provider.forceResponsesReasoning ?? false}
+              onChange={(e) => onFieldChange('forceResponsesReasoning', e.target.checked)}
+              disabled={!isEditing}
+              className="rounded"
+            />
+            <span>强制 Responses Reasoning</span>
+          </label>
+          <p className="text-[11px] text-gray-500">
+            开启后该 Provider 将按 <code className="font-mono">openai_responses</code> 协议请求（使用 <code className="font-mono">reasoning.effort/summary</code>）。
+          </p>
+        </div>
+      )}
 
       {/* Models Section */}
       <div className="space-y-3">
@@ -807,6 +832,26 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
                                   <p className="mt-1 text-[11px] text-gray-500">
                                     默认关闭：仅当服务端支持并提供 TurnState 时才能重连续传；开启后允许在已输出部分内容后自动重连继续。
                                   </p>
+
+                                  {(provider.type === 'openai' || provider.type === 'openai_compatible') && (
+                                    <>
+                                      <label className="mt-2 flex items-center gap-2 text-xs">
+                                        <input
+                                          type="checkbox"
+                                          checked={model.streamIncludeUsage ?? true}
+                                          onChange={(e) =>
+                                            onUpdateModel(index, { ...model, streamIncludeUsage: e.target.checked })
+                                          }
+                                          disabled={!isEditing}
+                                          className="rounded"
+                                        />
+                                        <span className="text-gray-700 dark:text-gray-300">stream include_usage</span>
+                                      </label>
+                                      <p className="mt-1 text-[11px] text-gray-500">
+                                        默认开启：流式请求发送 <code className="font-mono">stream_options.include_usage=true</code>。
+                                      </p>
+                                    </>
+                                  )}
                                 </div>
 
                                 <div className="col-span-4">
