@@ -83,6 +83,7 @@ interface StructuredJsonTextViewerProps {
   label?: string;
   maxHeightClassName?: string;
   emptyText?: string;
+  onOpenLarge?: () => void;
 }
 
 type ProviderEndReasonKind =
@@ -122,7 +123,6 @@ type LargeTextViewerState = {
   text: string;
   rawJson?: unknown;
 };
-type LargeViewerMode = 'json' | 'structured';
 
 const maskSensitiveHeaders = (headers: Record<string, string>): Record<string, string> => {
   const masked: Record<string, string> = {};
@@ -204,189 +204,6 @@ const safeParseUrlParts = (rawUrl: string): { host: string; path: string } | nul
   } catch {
     return null;
   }
-};
-
-const toPrettyMaybeJson = (raw: unknown): string => {
-  const text = typeof raw === 'string' ? raw : safeStringify(raw);
-  if (!text) return '';
-  try {
-    return JSON.stringify(JSON.parse(text), null, 2);
-  } catch {
-    return text;
-  }
-};
-
-const truncateMiddle = (text: string, head: number = 28, tail: number = 28): string => {
-  const s = String(text ?? '');
-  const h = Math.max(0, head);
-  const t = Math.max(0, tail);
-  if (s.length <= h + t + 3) return s;
-  return `${s.slice(0, h)}...${s.slice(-t)}`;
-};
-
-const headersToText = (headers: Record<string, string> | null | undefined): string => {
-  const prepared = headers ? prepareHeadersForJson(headers) : {};
-  const entries = Object.entries(prepared);
-  if (entries.length === 0) return '(空)';
-  return entries.map(([k, v]) => `${k}: ${v}`).join('\n');
-};
-
-const formatMessageContentAsText = (content: unknown): string => {
-  if (content === null || content === undefined) return '';
-  if (typeof content === 'string') return content;
-
-  if (Array.isArray(content)) {
-    const parts: string[] = [];
-    for (const p of content) {
-      if (typeof p === 'string') {
-        if (p.trim()) parts.push(p);
-        continue;
-      }
-      if (!isRecord(p)) {
-        const s = safeStringify(p);
-        if (s.trim()) parts.push(s);
-        continue;
-      }
-
-      const type = typeof p.type === 'string' ? p.type : '';
-      if (type === 'text' && typeof p.text === 'string') {
-        if (p.text.trim()) parts.push(p.text);
-        continue;
-      }
-
-      // OpenAI-like: { type: "image_url", image_url: { url } }
-      if (type === 'image_url') {
-        const imageUrl = isRecord(p.image_url) && typeof p.image_url.url === 'string' ? p.image_url.url : null;
-        parts.push(imageUrl ? `[image] ${imageUrl}` : '[image]');
-        continue;
-      }
-
-      // Anthropic-like: { type: "image", source: { ... } }
-      if (type === 'image') {
-        parts.push('[image]');
-        continue;
-      }
-
-      // Fallback: known "text" field, otherwise stringify.
-      if (typeof p.text === 'string' && p.text.trim()) {
-        parts.push(p.text);
-        continue;
-      }
-      const s = safeStringify(p);
-      if (s.trim()) parts.push(s);
-    }
-    return parts.join('\n');
-  }
-
-  if (isRecord(content)) {
-    if (typeof content.text === 'string') return content.text;
-  }
-
-  return safeStringify(content);
-};
-
-const formatRequestBodyAsText = (body: unknown): string => {
-  if (typeof body === 'string') return toPrettyMaybeJson(body);
-  if (!isRecord(body)) return safeStringify(body);
-
-  const model = typeof body.model === 'string' ? body.model : null;
-  const stream = typeof body.stream === 'boolean' ? body.stream : null;
-  const messages = Array.isArray(body.messages) ? body.messages : null;
-  const tools = Array.isArray(body.tools) ? body.tools : null;
-
-  const header: string[] = [];
-  if (model) header.push(`model: ${model}`);
-  if (typeof stream === 'boolean') header.push(`stream: ${String(stream)}`);
-  if (messages) header.push(`messages: ${messages.length}`);
-  if (tools) header.push(`tools: ${tools.length}`);
-
-  if (!messages) {
-    return safeStringify(body);
-  }
-
-  const lines: string[] = [];
-  if (header.length > 0) {
-    lines.push(header.join(' | '));
-    lines.push('');
-  }
-
-  messages.forEach((mRaw, idx) => {
-    const m = isRecord(mRaw) ? mRaw : null;
-    const role = m && typeof m.role === 'string' ? m.role : 'unknown';
-    const name = m && typeof m.name === 'string' ? m.name : null;
-    const toolCallId = m && typeof m.tool_call_id === 'string' ? m.tool_call_id : null;
-    const titleBits = [
-      `[${idx}] ${role}`,
-      name ? `name=${name}` : null,
-      toolCallId ? `tool_call_id=${toolCallId}` : null,
-    ].filter(Boolean);
-    lines.push(`--- ${titleBits.join(' ')} ---`);
-
-    const contentText = m ? formatMessageContentAsText(m.content) : safeStringify(mRaw);
-    if (contentText.trim()) {
-      lines.push(contentText.trimEnd());
-    }
-
-    // tool_calls (OpenAI-like)
-    const toolCalls = m && Array.isArray(m.tool_calls) ? m.tool_calls : null;
-    if (toolCalls && toolCalls.length > 0) {
-      for (const tcRaw of toolCalls) {
-        const tc = isRecord(tcRaw) ? tcRaw : null;
-        const tcId = tc && typeof tc.id === 'string' ? tc.id : null;
-        const fn = tc && isRecord(tc.function) ? tc.function : null;
-        const fnName = fn && typeof fn.name === 'string' ? fn.name : null;
-        const fnArgs = fn ? fn.arguments : null;
-        const toolLine = [
-          '[tool_call]',
-          fnName ?? '(unknown)',
-          tcId ? `id=${tcId}` : null,
-        ].filter(Boolean);
-        lines.push(toolLine.join(' '));
-        if (fnArgs !== null && fnArgs !== undefined) {
-          lines.push(toPrettyMaybeJson(fnArgs).trimEnd());
-        }
-      }
-    }
-
-    // function_call (legacy)
-    const functionCall = m && isRecord(m.function_call) ? m.function_call : null;
-    if (functionCall) {
-      const fnName = typeof functionCall.name === 'string' ? functionCall.name : null;
-      const fnArgs = functionCall.arguments ?? null;
-      const toolLine = ['[function_call]', fnName ?? '(unknown)'].filter(Boolean);
-      lines.push(toolLine.join(' '));
-      if (fnArgs !== null && fnArgs !== undefined) {
-        lines.push(toPrettyMaybeJson(fnArgs).trimEnd());
-      }
-    }
-
-    lines.push('');
-  });
-
-  return lines.join('\n').trimEnd();
-};
-
-const formatResponseBodyAsText = (body: unknown): string => {
-  if (typeof body === 'string') return toPrettyMaybeJson(body);
-  if (body === null || body === undefined) return '';
-  if (!isRecord(body)) return safeStringify(body);
-
-  const content = typeof body.content === 'string' ? body.content.trim() : '';
-  const thinking = typeof body.thinking === 'string' ? body.thinking.trim() : '';
-  const sections: string[] = [];
-
-  if (content) {
-    sections.push(content);
-  }
-  if (thinking) {
-    sections.push(`[thinking]\n${thinking}`);
-  }
-  if (sections.length > 0) {
-    return sections.join('\n\n');
-  }
-
-  const normalized = normalizeJsonLikeStrings(body);
-  return safeStringify(normalized, 2);
 };
 
 const maybeParseJsonContainerString = (raw: string): unknown | null => {
@@ -576,32 +393,6 @@ const StructuredJsonNode: React.FC<{
       {label}
       <span className="font-mono">{inlinePrimitiveText(value)}</span>
     </div>
-  );
-};
-
-type ChipTone = 'gray' | 'blue' | 'green' | 'yellow' | 'red' | 'purple';
-
-const chipToneClass: Record<ChipTone, string> = {
-  gray: 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-200',
-  blue: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200',
-  green: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-200',
-  yellow: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-100',
-  red: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-200',
-  purple: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-200',
-};
-
-const Chip: React.FC<{ tone?: ChipTone; title?: string; children: React.ReactNode }> = ({
-  tone = 'gray',
-  title,
-  children,
-}) => {
-  return (
-    <span
-      className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${chipToneClass[tone]}`}
-      title={title}
-    >
-      {children}
-    </span>
   );
 };
 
@@ -926,6 +717,7 @@ const StructuredJsonTextViewer: React.FC<StructuredJsonTextViewerProps> = ({
   label,
   maxHeightClassName = 'max-h-[50vh]',
   emptyText = '(空内容)',
+  onOpenLarge,
 }) => {
   const [copied, setCopied] = useState(false);
 
@@ -934,6 +726,7 @@ const StructuredJsonTextViewer: React.FC<StructuredJsonTextViewerProps> = ({
   const displayValue = hasValue ? normalized : emptyText;
   const copyValue = hasValue ? normalized : emptyText;
   const copyText = typeof copyValue === 'string' ? copyValue : safeStringify(copyValue, 2);
+  const actionPaddingRightClass = onOpenLarge ? 'pr-20' : 'pr-12';
 
   const handleCopy = async () => {
     await navigator.clipboard.writeText(copyText);
@@ -949,10 +742,21 @@ const StructuredJsonTextViewer: React.FC<StructuredJsonTextViewerProps> = ({
         </div>
       )}
       <div className="relative group rounded-lg border border-gray-200 bg-gray-50 p-2 dark:border-gray-700 dark:bg-gray-800/40">
-        <div className={`space-y-2 overflow-auto ${maxHeightClassName}`}>
+        <div className={`space-y-2 overflow-auto ${maxHeightClassName} ${actionPaddingRightClass}`}>
           <StructuredJsonNode value={displayValue} depth={0} nodeKey="root" />
         </div>
         <button
+          type="button"
+          onClick={() => onOpenLarge?.()}
+          className={`absolute top-2 right-10 p-1.5 rounded bg-gray-200 dark:bg-gray-700 transition-opacity ${
+            onOpenLarge ? 'opacity-0 group-hover:opacity-100' : 'hidden'
+          }`}
+          title="大窗口查看"
+        >
+          <Maximize2 size={14} className="text-gray-500 dark:text-gray-400" />
+        </button>
+        <button
+          type="button"
           onClick={handleCopy}
           className="absolute top-2 right-2 p-1.5 rounded bg-gray-200 dark:bg-gray-700 opacity-0 group-hover:opacity-100 transition-opacity"
           title="复制"
@@ -1013,20 +817,13 @@ export const DebugModal: React.FC<DebugModalProps> = ({
     messageRole === 'user' ? 'request' : 'response'
   );
   const [largeTextViewer, setLargeTextViewer] = useState<LargeTextViewerState | null>(null);
-  const [largeViewerMode, setLargeViewerMode] = useState<LargeViewerMode>('json');
 
   useEffect(() => {
     if (!isOpen) return;
     setActivePage('overview');
     setActiveHttpView(messageRole === 'user' ? 'request' : 'response');
     setLargeTextViewer(null);
-    setLargeViewerMode('json');
   }, [isOpen, messageRole]);
-
-  useEffect(() => {
-    if (!largeTextViewer) return;
-    setLargeViewerMode('json');
-  }, [largeTextViewer]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -1161,22 +958,14 @@ export const DebugModal: React.FC<DebugModalProps> = ({
     () => safeParseUrlParts(effectiveDebugInfo?.request?.url ?? ''),
     [effectiveDebugInfo?.request?.url]
   );
-  const requestHeadersText = useMemo(
-    () => headersToText(effectiveDebugInfo?.request?.headers),
+  const requestHeadersJson = useMemo(
+    () => prepareHeadersForJson(effectiveDebugInfo?.request?.headers ?? {}),
     [effectiveDebugInfo?.request?.headers]
   );
-  const requestBodyText = useMemo(() => {
-    const text = formatRequestBodyAsText(effectiveDebugInfo?.request?.body).trim();
-    return text.length > 0 ? text : '(空请求体)';
-  }, [effectiveDebugInfo?.request?.body]);
-  const responseHeadersText = useMemo(
-    () => headersToText(effectiveDebugInfo?.response?.headers),
+  const responseHeadersJson = useMemo(
+    () => prepareHeadersForJson(effectiveDebugInfo?.response?.headers ?? {}),
     [effectiveDebugInfo?.response?.headers]
   );
-  const responseBodyText = useMemo(() => {
-    const text = formatResponseBodyAsText(effectiveDebugInfo?.response?.body).trim();
-    return text.length > 0 ? text : '(空响应体)';
-  }, [effectiveDebugInfo?.response?.body]);
   const providerEndReason = useMemo<ProviderEndReason | null>(() => {
     const body = effectiveDebugInfo?.response?.body as any;
     if (!body || typeof body !== 'object') return null;
@@ -1253,6 +1042,80 @@ export const DebugModal: React.FC<DebugModalProps> = ({
     errorMessage,
     effectiveDebugInfo,
     streamTerminationSummary.label,
+  ]);
+
+  const baseInfoJson = useMemo(() => {
+    const out: Record<string, unknown> = {};
+
+    if (finalStatus) {
+      out.final_status = finalStatus;
+      out.final_status_title = finalStatusTitle;
+    }
+
+    if (finalTurn) {
+      out.final_turn = {
+        turn_index: finalTurn.turnIndex,
+        turn_id: finalTurn.turnId,
+        status: finalTurn.status,
+        model: finalTurn.model ?? null,
+      };
+    }
+
+    if (providerEndReason) {
+      out.provider_finish_reason = {
+        raw: providerFinishReason,
+        kind: providerEndReason.kind,
+        zh: providerFinishReasonZh,
+        source: providerFinishReasonSource,
+      };
+    }
+
+    if (typeof httpStatus === 'number') {
+      out.http_status = httpStatus;
+    }
+
+    if (effectiveDebugInfo?.request) {
+      const req: Record<string, unknown> = {
+        method: effectiveDebugInfo.request.method ?? null,
+        url: effectiveDebugInfo.request.url ?? null,
+      };
+      if (requestUrlParts) {
+        req.host = requestUrlParts.host;
+        req.path = requestUrlParts.path;
+      }
+      out.request = req;
+    }
+
+    if (apiErrorInfo) out.api_error = apiErrorInfo;
+    if (streamTerminationInfo) out.stream_termination = streamTerminationInfo;
+    if (streamTerminationSummary) out.stream_termination_summary = streamTerminationSummary;
+    if (endReasonSummary) out.end_reason_summary = endReasonSummary;
+    if (errorMessage) out.error_message = errorMessage;
+
+    if (conversationId) out.conversationId = conversationId;
+    if (messageId) out.messageId = messageId;
+    if (activeTurnId) out.activeTurnId = activeTurnId;
+
+    return out;
+  }, [
+    finalStatus,
+    finalStatusTitle,
+    finalTurn,
+    providerEndReason,
+    providerFinishReason,
+    providerFinishReasonSource,
+    providerFinishReasonZh,
+    httpStatus,
+    effectiveDebugInfo?.request,
+    requestUrlParts,
+    apiErrorInfo,
+    streamTerminationInfo,
+    streamTerminationSummary,
+    endReasonSummary,
+    errorMessage,
+    conversationId,
+    messageId,
+    activeTurnId,
   ]);
 
   // Lazy-load per-turn debug info when needed (history initialization strips it by default).
@@ -1490,104 +1353,11 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                   errorMessage ||
                   conversationId ||
                   messageId) && (
-                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-700 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-200">
-                    <div className="flex flex-col gap-2">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="font-medium text-gray-600 dark:text-gray-300">结束原因</span>
-                        {finalStatus && (
-                          <Chip
-                            tone={
-                              finalStatus === 'success'
-                                ? 'green'
-                                : finalStatus === 'aborted'
-                                  ? 'yellow'
-                                  : finalStatus === 'failed'
-                                    ? 'red'
-                                    : 'gray'
-                            }
-                          >
-                            {finalStatusTitle}
-                          </Chip>
-                        )}
-                        {finalTurn && <Chip tone="gray">最后 Turn {finalTurn.turnIndex}</Chip>}
-                        {finalTurn?.model && <Chip tone="purple" title="model">{finalTurn.model}</Chip>}
-                        {providerFinishReason && (
-                          <Chip
-                            tone="gray"
-                            title={[providerFinishReasonZh, providerFinishReasonSource].filter(Boolean).join(' | ') || undefined}
-                          >
-                            finish_reason: {providerFinishReason}
-                          </Chip>
-                        )}
-                        {typeof httpStatus === 'number' && (
-                          <Chip tone={httpStatus >= 200 && httpStatus < 300 ? 'green' : 'red'}>
-                            HTTP {httpStatus}
-                          </Chip>
-                        )}
-                        {effectiveDebugInfo && (
-                          <Chip
-                            tone={
-                              streamTerminationSummary.tone === 'success'
-                                ? 'green'
-                                : streamTerminationSummary.tone === 'warn'
-                                  ? 'yellow'
-                                  : streamTerminationSummary.tone === 'error'
-                                    ? 'red'
-                                    : 'gray'
-                            }
-                            title={streamTerminationSummary.detail}
-                          >
-                            协议终止: {streamTerminationSummary.label}
-                          </Chip>
-                        )}
-                      </div>
-
-                      {effectiveDebugInfo?.request && (
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-medium text-gray-600 dark:text-gray-300">请求</span>
-                          {effectiveDebugInfo.request.method && (
-                            <Chip tone="blue">{effectiveDebugInfo.request.method}</Chip>
-                          )}
-                          {requestUrlParts ? (
-                            <>
-                              <Chip tone="gray" title={requestUrlParts.host}>
-                                host: {truncateMiddle(requestUrlParts.host, 24, 12)}
-                              </Chip>
-                              <Chip tone="gray" title={requestUrlParts.path}>
-                                path: {truncateMiddle(requestUrlParts.path, 28, 18)}
-                              </Chip>
-                            </>
-                          ) : effectiveDebugInfo.request.url ? (
-                            <Chip tone="gray" title={effectiveDebugInfo.request.url}>
-                              url: {truncateMiddle(effectiveDebugInfo.request.url, 26, 22)}
-                            </Chip>
-                          ) : null}
-                        </div>
-                      )}
-                    </div>
-                    {endReasonSummary && (
-                      <div className="mt-1 text-[11px] text-gray-600 dark:text-gray-300">
-                        {endReasonSummary}
-                      </div>
-                    )}
-                    {effectiveDebugInfo && (
-                      <div className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
-                        协议终止详情：{streamTerminationSummary.detail}
-                      </div>
-                    )}
-                    {errorMessage && (
-                      <div className="mt-2 rounded bg-red-50 px-2 py-1 text-red-700 dark:bg-red-900/20 dark:text-red-300">
-                        {errorMessage}
-                      </div>
-                    )}
-                    {(conversationId || messageId) && (
-                      <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-gray-500 dark:text-gray-400">
-                        {conversationId && <span>conversationId: {conversationId}</span>}
-                        {messageId && <span>messageId: {messageId}</span>}
-                        {finalTurn?.turnId && <span>turnId: {finalTurn.turnId}</span>}
-                      </div>
-                    )}
-                  </div>
+                  <StructuredJsonTextViewer
+                    data={baseInfoJson}
+                    maxHeightClassName="max-h-[45vh]"
+                    emptyText="(空)"
+                  />
                 )}
 
                 {sortedTurns.length > 1 && (
@@ -1700,7 +1470,7 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                   <>
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="text-xs text-gray-500 dark:text-gray-400">
-                        这里把 HTTP 请求/响应按可读文本渲染（headers 已脱敏）。请求体会尽量把 messages 展开成“对话 + 工具调用”格式，便于阅读历史上下文。
+                        这里展示本轮 HTTP 请求/响应的 JSON 调试信息（headers 已脱敏）。支持大窗口查看（仅结构化展示）。
                       </div>
                       {httpViewTabs}
                     </div>
@@ -1708,51 +1478,46 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                     <div className="space-y-3">
                       {activeHttpView === 'request' ? (
                         effectiveDebugInfo.request ? (
-                          <CollapsibleSection title="HTTP 请求（文本）" defaultExpanded>
+                          <CollapsibleSection title="HTTP 请求（JSON）" defaultExpanded>
                             <div className="space-y-4">
-                              <div className="flex flex-wrap items-center gap-2 text-sm">
-                                {effectiveDebugInfo.request.method && (
-                                  <Chip tone="blue">{effectiveDebugInfo.request.method}</Chip>
-                                )}
-                                {requestUrlParts ? (
-                                  <>
-                                    <Chip tone="gray" title={requestUrlParts.host}>
-                                      host: {truncateMiddle(requestUrlParts.host, 26, 14)}
-                                    </Chip>
-                                    <Chip tone="gray" title={requestUrlParts.path}>
-                                      path: {truncateMiddle(requestUrlParts.path, 30, 18)}
-                                    </Chip>
-                                  </>
-                                ) : effectiveDebugInfo.request.url ? (
-                                  <Chip tone="gray" title={effectiveDebugInfo.request.url}>
-                                    url: {truncateMiddle(effectiveDebugInfo.request.url, 30, 22)}
-                                  </Chip>
-                                ) : null}
-                              </div>
+                              <StructuredJsonTextViewer
+                                data={{
+                                  ...(effectiveDebugInfo.request.method
+                                    ? { method: effectiveDebugInfo.request.method }
+                                    : {}),
+                                  ...(effectiveDebugInfo.request.url ? { url: effectiveDebugInfo.request.url } : {}),
+                                  ...(requestUrlParts
+                                    ? { host: requestUrlParts.host, path: requestUrlParts.path }
+                                    : {}),
+                                }}
+                                maxHeightClassName="max-h-40"
+                                emptyText="(空)"
+                              />
 
-                              <CollapsibleSection title="请求头（文本）" defaultExpanded>
-                                <TextViewer
-                                  text={requestHeadersText}
+                              <CollapsibleSection title="请求头（JSON）" defaultExpanded>
+                                <StructuredJsonTextViewer
+                                  data={requestHeadersJson}
                                   maxHeightClassName="max-h-56"
+                                  emptyText="(空)"
                                   onOpenLarge={() =>
                                     setLargeTextViewer({
-                                      title: 'HTTP 请求头（文本）',
-                                      text: requestHeadersText,
-                                      rawJson: prepareHeadersForJson(effectiveDebugInfo.request?.headers ?? {}),
+                                      title: 'HTTP 请求头',
+                                      text: safeStringify(requestHeadersJson, 2),
+                                      rawJson: requestHeadersJson,
                                     })
                                   }
                                 />
                               </CollapsibleSection>
 
-                              <CollapsibleSection title="请求体（文本）" defaultExpanded>
-                                <TextViewer
-                                  text={requestBodyText}
+                              <CollapsibleSection title="请求体（JSON）" defaultExpanded>
+                                <StructuredJsonTextViewer
+                                  data={effectiveDebugInfo.request?.body ?? undefined}
                                   maxHeightClassName="max-h-[50vh]"
-                                  containerClassName="bg-gray-50 dark:bg-gray-800/40 text-gray-800 dark:text-gray-200"
+                                  emptyText="(空请求体)"
                                   onOpenLarge={() =>
                                     setLargeTextViewer({
-                                      title: 'HTTP 请求体（文本）',
-                                      text: requestBodyText,
+                                      title: 'HTTP 请求体',
+                                      text: safeStringify(effectiveDebugInfo.request?.body, 2),
                                       rawJson: effectiveDebugInfo.request?.body,
                                     })
                                   }
@@ -1766,46 +1531,40 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                           </div>
                         )
                       ) : effectiveDebugInfo.response ? (
-                        <CollapsibleSection title="HTTP 响应（文本）" defaultExpanded>
+                        <CollapsibleSection title="HTTP 响应（JSON）" defaultExpanded>
                           <div className="space-y-4">
                             {typeof effectiveDebugInfo.response.status === 'number' && (
-                              <div className="flex flex-wrap items-center gap-2 text-sm">
-                                <Chip
-                                  tone={
-                                    effectiveDebugInfo.response.status >= 200 &&
-                                    effectiveDebugInfo.response.status < 300
-                                      ? 'green'
-                                      : 'red'
-                                  }
-                                >
-                                  HTTP {effectiveDebugInfo.response.status}
-                                </Chip>
-                              </div>
+                              <StructuredJsonTextViewer
+                                data={{ status: effectiveDebugInfo.response.status }}
+                                maxHeightClassName="max-h-24"
+                                emptyText="(空)"
+                              />
                             )}
 
-                            <CollapsibleSection title="响应头（文本）" defaultExpanded>
-                              <TextViewer
-                                text={responseHeadersText}
+                            <CollapsibleSection title="响应头（JSON）" defaultExpanded>
+                              <StructuredJsonTextViewer
+                                data={responseHeadersJson}
                                 maxHeightClassName="max-h-56"
+                                emptyText="(空)"
                                 onOpenLarge={() =>
                                   setLargeTextViewer({
-                                    title: 'HTTP 响应头（文本）',
-                                    text: responseHeadersText,
-                                    rawJson: prepareHeadersForJson(effectiveDebugInfo.response?.headers ?? {}),
+                                    title: 'HTTP 响应头',
+                                    text: safeStringify(responseHeadersJson, 2),
+                                    rawJson: responseHeadersJson,
                                   })
                                 }
                               />
                             </CollapsibleSection>
 
-                            <CollapsibleSection title="响应体（文本）" defaultExpanded>
-                              <TextViewer
-                                text={responseBodyText}
+                            <CollapsibleSection title="响应体（JSON）" defaultExpanded>
+                              <StructuredJsonTextViewer
+                                data={responseBodyForDisplay ?? undefined}
                                 maxHeightClassName="max-h-[50vh]"
-                                containerClassName="bg-gray-50 dark:bg-gray-800/40 text-gray-800 dark:text-gray-200"
+                                emptyText="(空响应体)"
                                 onOpenLarge={() =>
                                   setLargeTextViewer({
-                                    title: 'HTTP 响应体（文本）',
-                                    text: responseBodyText,
+                                    title: 'HTTP 响应体',
+                                    text: safeStringify(responseBodyForDisplay, 2),
                                     rawJson: responseBodyForDisplay,
                                   })
                                 }
@@ -1939,39 +1698,6 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                 {largeTextViewer.title}
               </div>
               <div className="flex items-center gap-2">
-                <div
-                  className="inline-flex rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden"
-                  title="切换查看方式"
-                >
-                  <button
-                    type="button"
-                    onClick={() => setLargeViewerMode('json')}
-                    className={`px-2.5 py-1 text-xs font-medium transition-colors ${
-                      largeViewerMode === 'json'
-                        ? 'bg-gray-200 text-gray-900 dark:bg-gray-800 dark:text-gray-100'
-                        : 'bg-white text-gray-600 hover:bg-gray-50 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800'
-                    }`}
-                  >
-                    JSON
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!largeViewerJsonData) return;
-                      setLargeViewerMode('structured');
-                    }}
-                    disabled={!largeViewerJsonData}
-                    className={`px-2.5 py-1 text-xs font-medium transition-colors ${
-                      !largeViewerJsonData
-                        ? 'bg-white text-gray-300 dark:bg-gray-900 dark:text-gray-700 cursor-not-allowed'
-                        : largeViewerMode === 'structured'
-                          ? 'bg-gray-200 text-gray-900 dark:bg-gray-800 dark:text-gray-100'
-                          : 'bg-white text-gray-600 hover:bg-gray-50 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800'
-                    }`}
-                  >
-                    结构
-                  </button>
-                </div>
                 <button
                   type="button"
                   className="rounded-md px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
@@ -1991,16 +1717,12 @@ export const DebugModal: React.FC<DebugModalProps> = ({
               </div>
             </div>
             <div className="h-[calc(100%-48px)] p-4 overflow-auto">
-              {largeViewerMode === 'structured' && largeViewerJsonData ? (
+              {largeViewerJsonData ? (
                 <StructuredJsonTextViewer
                   data={largeViewerJsonData}
                   maxHeightClassName="max-h-[calc(92vh-11rem)]"
                   emptyText="(空)"
                 />
-              ) : largeViewerMode === 'json' && largeViewerJsonText ? (
-                <pre className="min-h-full rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs whitespace-pre-wrap break-words text-gray-800 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-200">
-                  {largeViewerJsonText}
-                </pre>
               ) : (
                 <pre className="min-h-full rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs whitespace-pre-wrap break-words text-gray-800 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-200">
                   {largeViewerPlainText}
