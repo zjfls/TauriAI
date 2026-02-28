@@ -162,6 +162,7 @@ export interface Model {
   // Advanced settings
   retryAttempts?: number; // Turn-level automatic retry attempts (default: 8)
   resumePartialOutput?: boolean; // Allow reconnecting after partial output (default: false)
+  streamIncludeUsage?: boolean; // OpenAI Chat Completions: send stream_options.include_usage (default: true)
   maxImages?: number;     // Maximum number of images allowed (default: 10, only for vision models)
   thinkingBudgetTokens?: number; // Anthropic extended thinking budget (>=1024 and < maxTokens)
   useReasoningEffort?: boolean; // Use reasoning_effort parameter for Chat Completions API (OpenAI GPT-5 series)
@@ -219,6 +220,7 @@ export interface Provider {
   apiBase: string;
   apiKey?: string;
   enabled: boolean;
+  forceResponsesReasoning?: boolean; // Force OpenAI/OpenAI-compatible providers to use Responses API reasoning
   models: Model[];
 }
 

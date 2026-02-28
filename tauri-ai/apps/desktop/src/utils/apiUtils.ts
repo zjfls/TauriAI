@@ -26,8 +26,13 @@ export function getApiProtocol(
   // Find the provider configuration
   const provider = providers.find(p => p.name === providerName);
 
-  // Check if provider uses responses API (OpenAI Responses or Google Gemini)
-  if (provider?.type === 'openai_responses' || provider?.type === 'google') {
+  // Check if provider uses responses API (OpenAI Responses / Google / forced responses reasoning)
+  if (
+    provider?.type === 'openai_responses' ||
+    provider?.type === 'google' ||
+    (provider?.forceResponsesReasoning &&
+      (provider.type === 'openai' || provider.type === 'openai_compatible'))
+  ) {
     return 'responses';
   }
 

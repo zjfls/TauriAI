@@ -258,7 +258,7 @@ fn build_model_config(
     Ok(ModelConfig {
         id: "mobile".to_string(),
         name: "mobile".to_string(),
-        provider: provider.provider_type.to_client_str().to_string(),
+        provider: provider.effective_client_provider().to_string(),
         api_base: Some(provider.api_base.clone()),
         api_key: provider.api_key.clone(),
         model: model.name.clone(),
@@ -275,6 +275,7 @@ fn build_model_config(
         use_reasoning_effort: model.use_reasoning_effort,
         retry_attempts: model.retry_attempts,
         resume_partial_output: model.resume_partial_output,
+        stream_include_usage: model.stream_include_usage,
         debug_sse: false,
         reinject_reasoning_content: model.reinject_reasoning_content,
     })

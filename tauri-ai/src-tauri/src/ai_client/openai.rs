@@ -863,6 +863,8 @@ impl OpenAiBaseClient {
             _ => None,
         };
 
+        let include_usage = options.include_usage.unwrap_or(config.stream_include_usage);
+
         let request = ChatCompletionRequest {
             model: config.model.clone(),
             messages: openai_messages,
@@ -875,9 +877,10 @@ impl OpenAiBaseClient {
             frequency_penalty: config.parameters.frequency_penalty,
             presence_penalty: config.parameters.presence_penalty,
             stream: true,
-            stream_options: match options.include_usage {
-                Some(false) => None,
-                Some(true) | None => Some(StreamOptions { include_usage: true }),
+            stream_options: if include_usage {
+                Some(StreamOptions { include_usage: true })
+            } else {
+                None
             },
             thinking,
             reasoning_effort,

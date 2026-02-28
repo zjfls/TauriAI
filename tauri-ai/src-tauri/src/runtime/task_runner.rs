@@ -5916,6 +5916,7 @@ mod tests {
             use_reasoning_effort: None,
             retry_attempts: None,
             resume_partial_output: false,
+            stream_include_usage: true,
             debug_sse: false,
             reinject_reasoning_content: false,
         }
