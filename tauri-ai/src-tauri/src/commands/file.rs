@@ -101,6 +101,81 @@ fn infer_mime_from_filename(filename: &str) -> Option<&'static str> {
     None
 }
 
+fn looks_like_utf8_text(bytes: &[u8]) -> bool {
+    if bytes.iter().any(|b| *b == 0) {
+        return false;
+    }
+    std::str::from_utf8(bytes).is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        infer_mime_from_filename, looks_like_utf8_text, read_local_file_base64, write_local_text_file,
+    };
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir() -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!("tauri_ai_file_cmd_tests_{unique}"))
+    }
+
+    #[test]
+    fn infer_mime_for_dotfile_without_extension_returns_none() {
+        assert_eq!(infer_mime_from_filename(".gitignore"), None);
+    }
+
+    #[test]
+    fn utf8_text_detection_works_for_text_and_binary() {
+        assert!(looks_like_utf8_text("hello\nworld".as_bytes()));
+        assert!(!looks_like_utf8_text(&[0x00, 0x41, 0x42]));
+        assert!(!looks_like_utf8_text(&[0xFF, 0xFE, 0xFD]));
+    }
+
+    #[tokio::test]
+    async fn read_unknown_extension_text_file_as_text_plain() {
+        let dir = unique_temp_dir();
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .expect("should create temp directory");
+        let file_path = dir.join(".gitignore");
+        tokio::fs::write(&file_path, "target/\n")
+            .await
+            .expect("should write temp file");
+
+        let result = read_local_file_base64(file_path.to_string_lossy().to_string()).await;
+        tokio::fs::remove_dir_all(&dir).await.ok();
+
+        let file = result.expect("should read unknown extension text file");
+        assert_eq!(file.mime, "text/plain");
+        assert_eq!(file.filename, ".gitignore");
+    }
+
+    #[tokio::test]
+    async fn write_unknown_extension_text_file() {
+        let dir = unique_temp_dir();
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .expect("should create temp directory");
+        let file_path = dir.join(".envrc");
+
+        write_local_text_file(file_path.to_string_lossy().to_string(), "echo ok\n".to_string())
+            .await
+            .expect("should write unknown extension text file");
+
+        let content = tokio::fs::read_to_string(&file_path)
+            .await
+            .expect("should read written file");
+        tokio::fs::remove_dir_all(&dir).await.ok();
+
+        assert_eq!(content, "echo ok\n");
+    }
+}
+
 fn max_size_for_mime(mime: &str) -> u64 {
     if mime == "application/pdf" {
         return MAX_PDF_BYTES;
@@ -147,6 +222,40 @@ pub async fn read_local_file_base64(path: String) -> Result<LocalFileBase64, Str
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "file".to_string());
+
+    if infer_mime_from_filename(&filename).is_none() {
+        let metadata = tokio::fs::metadata(file_path)
+            .await
+            .map_err(|e| format!("failed to read file metadata: {e}"))?;
+
+        if !metadata.is_file() {
+            return Err("only regular files are supported".to_string());
+        }
+
+        let size = metadata.len();
+        if size > MAX_TEXT_BYTES {
+            let max_mb = MAX_TEXT_BYTES / 1024 / 1024;
+            return Err(format!(
+                "file too large ({size} bytes), max allowed for text is {max_mb}MB"
+            ));
+        }
+
+        let bytes = tokio::fs::read(file_path)
+            .await
+            .map_err(|e| format!("failed to read file: {e}"))?;
+
+        if !looks_like_utf8_text(&bytes) {
+            return Err("unsupported file type (only images/text/PDF are supported)".to_string());
+        }
+
+        let base64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+        return Ok(LocalFileBase64 {
+            filename,
+            mime: "text/plain".to_string(),
+            base64,
+            size,
+        });
+    }
 
     let mime = infer_mime_from_filename(&filename)
         .ok_or_else(|| "不支持的文件类型（仅支持图片/文本/PDF）".to_string())?
@@ -258,6 +367,34 @@ pub async fn write_local_text_file(path: String, content: String) -> Result<(), 
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "file".to_string());
+
+    if infer_mime_from_filename(&filename).is_none() {
+        let size = content.as_bytes().len() as u64;
+        if size > MAX_TEXT_BYTES {
+            let max_mb = MAX_TEXT_BYTES / 1024 / 1024;
+            return Err(format!(
+                "content too large ({size} bytes), keep it under {max_mb}MB"
+            ));
+        }
+
+        if let Ok(meta) = fs::metadata(file_path).await {
+            if meta.is_dir() {
+                return Err("target is a directory and cannot be written as a file".to_string());
+            }
+        }
+
+        if let Some(parent) = file_path.parent() {
+            fs::create_dir_all(parent)
+                .await
+                .map_err(|e| format!("failed to create parent directory: {e}"))?;
+        }
+
+        fs::write(file_path, content)
+            .await
+            .map_err(|e| format!("failed to write file: {e}"))?;
+
+        return Ok(());
+    }
 
     let mime = infer_mime_from_filename(&filename)
         .ok_or_else(|| "不支持的文件类型（仅支持文本文件）".to_string())?;

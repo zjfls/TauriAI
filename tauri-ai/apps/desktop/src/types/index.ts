@@ -1698,6 +1698,9 @@ export interface AgentSession {
   streamingBlocks: MessageBlock[] | null;
   // Streaming turn metadata (per model call, multi-turn tasks)
   streamingTurns?: Map<string, MessageTurn>;
+  // When set, stream rendering should be inlined into the specified assistant bubble
+  // (used by turn-level retry to keep retries in the same bubble).
+  streamingAssistantMessageId?: string | null;
   isGenerating: boolean;              // Whether the session is generating a response
   error: string | null;               // Error message if any
 

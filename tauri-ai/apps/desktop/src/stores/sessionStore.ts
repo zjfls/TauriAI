@@ -1286,6 +1286,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           isGenerating: true,
           streamingBlocks: [],
           streamingTurns: new Map(),
+          streamingAssistantMessageId: null,
           error: null,
           lastActiveAt: new Date().toISOString(),
         });
@@ -1337,6 +1338,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             isGenerating: false,
             streamingBlocks: null,
             streamingTurns: undefined,
+            streamingAssistantMessageId: null,
           });
         }
         return { sessions: newSessions };
@@ -1450,6 +1452,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           isGenerating: true,
           streamingBlocks: [],
           streamingTurns: new Map(),
+          streamingAssistantMessageId: assistantMessageId,
           error: null,
           lastActiveAt: new Date().toISOString(),
         });
@@ -1838,6 +1841,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           messages: nextMessages,
           streamingBlocks: null,
           streamingTurns: undefined,
+          streamingAssistantMessageId: null,
           isGenerating: false,
           lastActiveAt: new Date().toISOString(),
         });
@@ -2080,6 +2084,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         isGenerating: false,
         streamingBlocks: null,
         streamingTurns: undefined,
+        streamingAssistantMessageId: null,
       });
 
       return { sessions: newSessions };

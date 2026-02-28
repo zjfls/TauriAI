@@ -316,6 +316,26 @@ function findCodeSnippetTokenAt(
   return null;
 }
 
+function normalizeSnippetLineRangeLabel(
+  label: string,
+  range?: { startLine: number; endLine: number; endColumn: number } | null
+): string {
+  if (!label || !range) return label;
+
+  const displayEndLine =
+    range.endLine > range.startLine && range.endColumn <= 1
+      ? range.endLine - 1
+      : range.endLine;
+  const normalizedDisplayEndLine = Math.max(range.startLine, displayEndLine);
+  const displayLineRange =
+    normalizedDisplayEndLine === range.startLine
+      ? `${range.startLine}`
+      : `${range.startLine}-${normalizedDisplayEndLine}`;
+
+  // Keep existing label prefix, only normalize a trailing ":<line>" or ":<start>-<end>" part.
+  return label.replace(/:\d+(?:-\d+)?$/, `:${displayLineRange}`);
+}
+
 function findActiveAtQuery(text: string, cursor: number): { start: number; query: string } | null {
   if (cursor < 0 || cursor > text.length) return null;
   const before = text.slice(0, cursor);
@@ -2740,6 +2760,10 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
 	          flushText(lastTextStart, start);
 	          const snippet = codeSnippetsById.get(id);
 	          if (snippet) {
+	            const normalizedSnippetLabel = normalizeSnippetLineRangeLabel(
+	              snippet.label,
+	              snippet.range
+	            );
 	            const titleParts: string[] = [];
 	            if (snippet.filePath) titleParts.push(snippet.filePath);
 	            if (snippet.range) {
@@ -2757,7 +2781,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
                     className="absolute inset-0 inline-flex items-center gap-1 px-2 text-xs text-emerald-700 dark:text-emerald-200 overflow-hidden whitespace-nowrap text-ellipsis pointer-events-none"
                     title={titleParts.join('\n')}
                   >
-                    {snippet.label}
+                    {normalizedSnippetLabel}
                   </span>
 	              </span>
 	            );

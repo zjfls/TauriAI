@@ -3493,10 +3493,6 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     [activeOutlineFilePath, updateOutlineFileViewState]
   );
 
-  useEffect(() => {
-    setExplorerSelectedFilePath(activeFilePathInFocusedPane);
-  }, [activeFilePathInFocusedPane]);
-
   const activeLanguageLspStateForOutline = useMemo(() => {
     const languageId = String(activeTextLanguageId ?? '').trim();
     if (!languageId) return 'not_started' as const;
@@ -4091,19 +4087,24 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     []
   );
 
-  type LinkTarget = {
-    workstudioId?: string | null;
-    mainFolder?: string | null;
-    filePath: string;
-    line?: number | null;
-    column?: number | null;
-    endLine?: number | null;
-    endColumn?: number | null;
-  };
+type LinkTarget = {
+  workstudioId?: string | null;
+  mainFolder?: string | null;
+  filePath: string;
+  line?: number | null;
+  column?: number | null;
+  endLine?: number | null;
+  endColumn?: number | null;
+};
+
+type OpenFromLinkErrorInfo = {
+  message: string;
+  details?: string;
+};
 
   const openLinkSeqRef = useRef(0);
   const openedFromUrlRef = useRef(false);
-  const [openFromLinkError, setOpenFromLinkError] = useState<string | null>(null);
+  const [openFromLinkError, setOpenFromLinkError] = useState<OpenFromLinkErrorInfo | null>(null);
   const [openFromLinkNotice, setOpenFromLinkNotice] = useState<string | null>(null);
   // 如果在 Workstudio UI state 尚未恢复完成时收到了 open_file 事件，先暂存，待就绪后再执行。
   const pendingOpenLinkRef = useRef<LinkTarget | null>(null);
@@ -4148,7 +4149,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   );
 
   const revealFileInExplorer = useCallback(
-    async (absFilePath: string, seq: number) => {
+    async (absFilePath: string, seq?: number) => {
       if (!ws) return;
       const normalizedFile = normalizeFsPath(absFilePath);
       if (!normalizedFile) return;
@@ -4209,7 +4210,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       })();
 
       for (const d of dirsToList) {
-        if (openLinkSeqRef.current !== seq) return;
+        if (typeof seq === 'number' && openLinkSeqRef.current !== seq) return;
         const already = entriesByDirRef.current[d];
         if (already) continue;
         if (loadingDirsRef.current[d]) continue;
@@ -4229,7 +4230,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
       let attempts = 20;
       const tick = () => {
-        if (openLinkSeqRef.current !== seq) return;
+        if (typeof seq === 'number' && openLinkSeqRef.current !== seq) return;
         const container = explorerContainerRef.current;
         if (!container) return;
 
@@ -4252,6 +4253,12 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     },
     [listDir, ws]
   );
+
+  useEffect(() => {
+    setExplorerSelectedFilePath(activeFilePathInFocusedPane);
+    if (!activeFilePathInFocusedPane) return;
+    void revealFileInExplorer(activeFilePathInFocusedPane);
+  }, [activeFilePathInFocusedPane, revealFileInExplorer]);
 
   const openLinkTarget = useCallback(async (target: LinkTarget, opts?: { paneId?: string | null }) => {
     const seq = openLinkSeqRef.current + 1;
@@ -4514,7 +4521,16 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           });
           if (typeof target.line === 'number' && target.line > 0) {
             const msg = `定位到行超时（${timeoutMs}ms）：${target.filePath}:${target.line}`;
-            setOpenFromLinkError(msg);
+            const details = [
+              `targetPath: ${target.filePath}`,
+              `resolvedPath: ${expectedPath}`,
+              `line: ${target.line}`,
+              `column: ${typeof target.column === 'number' ? target.column : '-'}`,
+              `paneId: ${paneId}`,
+              `timeoutMs: ${timeoutMs}`,
+              `visibility: ${typeof document !== 'undefined' ? document.visibilityState : 'unknown'}`,
+            ].join('\n');
+            setOpenFromLinkError({ message: msg, details });
             void showGlobalError('打开链接文件失败', msg);
           }
           return;
@@ -4589,11 +4605,23 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       } catch (fallbackError) {
         console.error('open file from link failed:', fallbackError);
         dbg('openLinkTarget:failed', { seq, error: String(fallbackError) });
-        const msg =
+        const primaryErrorMessage =
+          typeof error === 'string'
+            ? error
+            : (error as any)?.message ?? String(error);
+        const fallbackErrorMessage =
           typeof fallbackError === 'string'
             ? fallbackError
             : (fallbackError as any)?.message ?? '打开文件失败';
-        setOpenFromLinkError(msg);
+        const msg = fallbackErrorMessage || '打开文件失败';
+        const details = [
+          `targetPath: ${targetPath}`,
+          `resolvedPath: ${resolved}`,
+          `paneId: ${paneId}`,
+          `primaryError: ${primaryErrorMessage}`,
+          `fallbackError: ${fallbackErrorMessage}`,
+        ].join('\n');
+        setOpenFromLinkError({ message: msg, details });
         void showGlobalError('打开链接文件失败', msg, fallbackError);
       }
     }
@@ -8213,6 +8241,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           text: string;
           range: { startLine: number; startColumn: number; endLine: number; endColumn: number };
           labelPath: string;
+          displayLineRange: string;
         } | null => {
           const filePath = readActiveTabId();
           if (!filePath || filePath.startsWith(UNTITLED_PREFIX)) return null;
@@ -8230,16 +8259,29 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
             endLine: end.lineNumber,
             endColumn: end.column,
           };
+          // Monaco selection end position is exclusive.
+          // For chip labels, show an inclusive line span to avoid off-by-one confusion.
+          const displayEndLine =
+            range.endLine > range.startLine && range.endColumn <= 1
+              ? range.endLine - 1
+              : range.endLine;
+          const normalizedDisplayEndLine = Math.max(range.startLine, displayEndLine);
+          const displayLineRange =
+            normalizedDisplayEndLine === range.startLine
+              ? `${range.startLine}`
+              : `${range.startLine}-${normalizedDisplayEndLine}`;
           const languageId = String(model.getLanguageId?.() ?? '').trim() || 'plaintext';
           const labelPath = formatPathForSnippetLabel(filePath);
-          return { filePath, languageId, text, range, labelPath };
+          return { filePath, languageId, text, range, labelPath, displayLineRange };
         };
 
         // Monaco editor context menu actions (selection-based)
         editor.addAction({
           id: 'tauri-ai.addSelectionToChat',
           label: 'Add to chat',
+          keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.Enter],
           precondition: 'editorHasSelection',
+          keybindingContext: 'editorHasSelection',
           contextMenuGroupId: 'navigation',
           contextMenuOrder: 1.41,
           run: async () => {
@@ -8247,7 +8289,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
             if (!snap) return;
             const id = crypto.randomUUID();
             const token = `@{snippet:${id}}`;
-            const label = `片段 ${snap.labelPath}:${snap.range.startLine}-${snap.range.endLine}`;
+            const label = `片段 ${snap.labelPath}:${snap.displayLineRange}`;
             const snippet: CodeSnippetContentPart = {
               type: 'code_snippet',
               id,
@@ -8264,7 +8306,9 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         editor.addAction({
           id: 'tauri-ai.chatWithSelection',
           label: 'Chat with…',
+          keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyMod.Alt | monaco.KeyCode.Enter],
           precondition: 'editorHasSelection',
+          keybindingContext: 'editorHasSelection',
           contextMenuGroupId: 'navigation',
           contextMenuOrder: 1.42,
           run: async () => {
@@ -8276,7 +8320,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
               languageId: snap.languageId,
               text: snap.text,
               range: snap.range,
-              label: `选中 ${snap.labelPath}:${snap.range.startLine}-${snap.range.endLine}`,
+              label: `选中 ${snap.labelPath}:${snap.displayLineRange}`,
             });
           },
         });
@@ -12240,7 +12284,30 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           )}
           {openFromLinkError && (
             <div className="border-b border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-200">
-              打开链接文件失败：{openFromLinkError}
+              <div className="flex items-start gap-2">
+                <div className="min-w-0 flex-1">
+                  <div className="font-medium">打开链接文件失败：{openFromLinkError.message}</div>
+                  {openFromLinkError.details && (
+                    <details className="mt-1">
+                      <summary className="cursor-pointer select-none text-[11px] text-red-600 dark:text-red-300">
+                        详细信息
+                      </summary>
+                      <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded border border-red-200 bg-red-100/60 px-2 py-1 text-[11px] text-red-800 dark:border-red-900/60 dark:bg-red-900/40 dark:text-red-100">
+                        {openFromLinkError.details}
+                      </pre>
+                    </details>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  className="rounded border border-red-300 bg-red-100/80 px-2 py-0.5 text-[11px] text-red-700 hover:bg-red-200 dark:border-red-800 dark:bg-red-900/50 dark:text-red-100 dark:hover:bg-red-900/70"
+                  onClick={() => setOpenFromLinkError(null)}
+                  aria-label="关闭错误提示"
+                  title="关闭"
+                >
+                  关闭
+                </button>
+              </div>
             </div>
           )}
 

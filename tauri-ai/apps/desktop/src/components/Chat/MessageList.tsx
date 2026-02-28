@@ -34,6 +34,7 @@ interface MessageListProps {
   messages: Message[];
   streamingBlocks: MessageBlock[] | null;
   streamingTurns?: MessageTurn[];
+  streamingAssistantMessageId?: string | null;
   isGenerating: boolean;
   onAction: (action: Action) => void;
   onAbortTool?: (callId: string) => void;
@@ -73,6 +74,7 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>((
   messages,
   streamingBlocks,
   streamingTurns,
+  streamingAssistantMessageId,
   isGenerating: _isGenerating,
   onAction,
   onAbortTool,
@@ -403,6 +405,20 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>((
     () => (startIndex > 0 ? messages.slice(startIndex) : messages),
     [messages, startIndex]
   );
+
+  const normalizedStreamingAssistantMessageId = useMemo(() => {
+    if (typeof streamingAssistantMessageId !== 'string') return null;
+    const trimmed = streamingAssistantMessageId.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }, [streamingAssistantMessageId]);
+
+  const shouldInlineStreaming = useMemo(() => {
+    if (streamingBlocks === null) return false;
+    if (!normalizedStreamingAssistantMessageId) return false;
+    return visibleMessages.some(
+      (m) => m.id === normalizedStreamingAssistantMessageId && m.role === 'assistant'
+    );
+  }, [streamingBlocks, normalizedStreamingAssistantMessageId, visibleMessages]);
 
   useLayoutEffect(() => {
     const pending = pendingRestoreRef.current;
@@ -979,13 +995,29 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>((
       )}
 
       {/* Message list */}
-      {visibleMessages.map((message) => (
-        <MessageItem key={message.id} message={message} onAction={onAction} onAbortTool={onAbortTool} onRetryTurn={onRetryTurn} />
-      ))}
+      {visibleMessages.map((message) => {
+        const isInlineStreamingMessage =
+          shouldInlineStreaming &&
+          normalizedStreamingAssistantMessageId !== null &&
+          message.id === normalizedStreamingAssistantMessageId;
+
+        return (
+          <MessageItem
+            key={message.id}
+            message={message}
+            isStreaming={isInlineStreamingMessage}
+            streamingBlocks={isInlineStreamingMessage ? streamingBlocks : null}
+            streamingTurns={isInlineStreamingMessage ? streamingTurns : undefined}
+            onAction={onAction}
+            onAbortTool={onAbortTool}
+            onRetryTurn={onRetryTurn}
+          />
+        );
+      })}
 
        {/* Streaming message */}
-       {streamingBlocks !== null && (
-         <div className="group flex gap-3 py-3">
+       {streamingBlocks !== null && !shouldInlineStreaming && (
+          <div className="group flex gap-3 py-3">
           {/* AI Avatar */}
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300">
             <Bot size={18} />

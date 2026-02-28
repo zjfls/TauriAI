@@ -127,6 +127,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
   const queuedMessages = session?.queuedMessages ?? [];
   const streamingBlocks = session?.streamingBlocks ?? null;
   const streamingTurns = session?.streamingTurns ? Array.from(session.streamingTurns.values()) : undefined;
+  const streamingAssistantMessageId = session?.streamingAssistantMessageId ?? null;
   const isGenerating = session?.isGenerating ?? false;
   const conversationId = session?.conversationId ?? '';
   const agentName = session?.agentName ?? null;
@@ -1671,6 +1672,7 @@ Guidelines:
               messages={messages}
               streamingBlocks={streamingBlocks}
               streamingTurns={streamingTurns}
+              streamingAssistantMessageId={streamingAssistantMessageId}
               isGenerating={isGenerating}
               onAction={handleAction}
               onAbortTool={handleAbortTool}

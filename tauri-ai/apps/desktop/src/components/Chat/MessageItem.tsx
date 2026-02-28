@@ -6,7 +6,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { User, Bot, Bug, AlertCircle, RefreshCw, ZoomIn, X, File as FileIcon, Copy, Check } from 'lucide-react';
-import type { Message, Action, ContentPart } from '../../types';
+import type { Message, Action, ContentPart, MessageBlock, MessageTurn } from '../../types';
 import { DeferredMarkdown } from './DeferredMarkdown';
 import { MessageToolbar } from './MessageToolbar';
 import { buildMessageActions } from '../../utils/messageActionBuilder';
@@ -280,6 +280,8 @@ const ContentPartsRenderer: React.FC<ContentPartsRendererProps> = ({
 interface MessageItemProps {
   message: Message;
   isStreaming?: boolean;
+  streamingBlocks?: MessageBlock[] | null;
+  streamingTurns?: MessageTurn[];
   onAction: (action: Action) => void;
   onAbortTool?: (callId: string) => void;
   onRetryTurn?: (assistantMessageId: string, turnId: string) => void;
@@ -288,6 +290,8 @@ interface MessageItemProps {
 export const MessageItem = React.memo(function MessageItem({
   message,
   isStreaming = false,
+  streamingBlocks,
+  streamingTurns,
   onAction,
   onAbortTool,
   onRetryTurn,
@@ -333,24 +337,67 @@ export const MessageItem = React.memo(function MessageItem({
     () => (isAssistant ? getAssistantMessageBlocks(message) : []),
     [isAssistant, message]
   );
+  const renderedAssistantBlocks = useMemo(() => {
+    if (!isAssistant) return [];
+    if (!isStreaming || !streamingBlocks || streamingBlocks.length === 0) {
+      return assistantBlocks;
+    }
+
+    const byId = new Map<string, MessageBlock>();
+    const order: string[] = [];
+
+    for (const b of assistantBlocks) {
+      if (!b?.id) continue;
+      if (!byId.has(b.id)) order.push(b.id);
+      byId.set(b.id, b);
+    }
+
+    for (const b of streamingBlocks) {
+      if (!b?.id) continue;
+      if (!byId.has(b.id)) order.push(b.id);
+      byId.set(b.id, b);
+    }
+
+    return order
+      .map((id) => byId.get(id))
+      .filter((b): b is MessageBlock => Boolean(b));
+  }, [assistantBlocks, isAssistant, isStreaming, streamingBlocks]);
+  const renderedTurns = useMemo(() => {
+    const base = message.turns ?? [];
+    if (!isAssistant || !isStreaming || !streamingTurns || streamingTurns.length === 0) {
+      return base.length > 0 ? base : undefined;
+    }
+
+    const byId = new Map<string, MessageTurn>();
+    for (const t of base) {
+      byId.set(t.turnId, t);
+    }
+    for (const t of streamingTurns) {
+      byId.set(t.turnId, t);
+    }
+    const merged = Array.from(byId.values()).sort((a, b) => a.turnIndex - b.turnIndex);
+    return merged.length > 0 ? merged : undefined;
+  }, [isAssistant, isStreaming, message.turns, streamingTurns]);
   const assistantTextFromBlocks = useMemo(() => {
-    if (!isAssistant || assistantBlocks.length === 0) return '';
-    return assistantBlocks
+    if (!isAssistant || renderedAssistantBlocks.length === 0) return '';
+    return renderedAssistantBlocks
       .filter((b) => b.type === 'text')
       .map((b) => (typeof b.text === 'string' ? b.text : ''))
       .filter((t) => t.trim().length > 0)
       .join('\n\n');
-  }, [assistantBlocks, isAssistant]);
+  }, [isAssistant, renderedAssistantBlocks]);
   const initialTurnId = useMemo(() => {
-    const turns = message.turns ?? [];
+    const turns = renderedTurns ?? [];
     if (turns.length > 0) return turns[turns.length - 1]?.turnId ?? null;
-    const ids = assistantBlocks.map((b) => b.turnId).filter((v): v is string => typeof v === 'string' && v.length > 0);
+    const ids = renderedAssistantBlocks
+      .map((b) => b.turnId)
+      .filter((v): v is string => typeof v === 'string' && v.length > 0);
     return ids.length > 0 ? ids[ids.length - 1]! : null;
-  }, [assistantBlocks, message.turns]);
+  }, [renderedAssistantBlocks, renderedTurns]);
   const canOpenTaskEndDebug = taskEndDebugButton && (isAssistant || isError);
   const shouldPreferWideBubble =
     hasWideVisualFence(message.content) ||
-    assistantBlocks.some((b) => b.type === 'text' && hasWideVisualFence(b.text));
+    renderedAssistantBlocks.some((b) => b.type === 'text' && hasWideVisualFence(b.text));
   const copyPayload = useMemo(() => {
     const copyActionPayload = actions.find((a) => a.action_type === 'copy')?.payload;
     if (typeof copyActionPayload === 'string' && copyActionPayload.trim().length > 0) {
@@ -527,13 +574,13 @@ export const MessageItem = React.memo(function MessageItem({
         )}
 
         {/* Assistant blocks (extensible output) */}
-        {isAssistant && assistantBlocks.length > 0 ? (
+        {isAssistant && renderedAssistantBlocks.length > 0 ? (
           <div>
             <MessageBlocks
-              blocks={assistantBlocks}
+              blocks={renderedAssistantBlocks}
               conversationId={message.conversationId}
-              messageSource={message.source}
-              turns={message.turns}
+              messageSource={isStreaming ? 'live' : message.source}
+              turns={renderedTurns}
               onAbortTool={onAbortTool}
               assistantMessageId={message.id}
               onRetryTurn={onRetryTurn}
@@ -605,8 +652,8 @@ export const MessageItem = React.memo(function MessageItem({
           onClose={() => setShowDebugModal(false)}
           isStreaming={isStreaming}
           debugInfo={message.debugInfo || null}
-          turns={message.turns || null}
-          blocks={isAssistant ? assistantBlocks : message.blocks || null}
+          turns={renderedTurns || null}
+          blocks={isAssistant ? renderedAssistantBlocks : message.blocks || null}
           initialTurnId={initialTurnId}
           messageRole={isUser ? 'user' : 'assistant'}
           conversationId={message.conversationId}
