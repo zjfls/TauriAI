@@ -76,6 +76,24 @@ pub struct TurnContextTrimInfo {
     pub estimated_tokens_after: u32,
     /// 本轮 hard limit token 上限（由 `contextLength * hardLimitPercent` 得到）。
     pub hard_limit_tokens: u32,
+    /// 本轮 trim target token 目标（由 `contextLength * trimTargetPercent` 得到）。
+    pub trim_target_tokens: u32,
+    /// 删除的 task 组数量（按 request/response 语义分组）。
+    pub removed_tasks: u32,
+    /// 保留的 task 组数量（按 request/response 语义分组）。
+    pub kept_tasks: u32,
+    /// 与上一轮请求相比，本轮被移出的 task 数量。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trimmed_tasks_since_last: Option<u32>,
+    /// 与上一轮请求相比，本轮新增纳入的 task 数量。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub added_tasks_since_last: Option<u32>,
+    /// 与上一轮请求相比，估算 token 差值（after_current - after_previous）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delta_tokens_since_last: Option<i64>,
+    /// 是否由于粒度限制（必须保留最近 task/system）导致无法达到 trim target。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_unreachable: Option<bool>,
 }
 
 /// Plan 中对 Task 的最小描述（用于 UI 展示与编排）

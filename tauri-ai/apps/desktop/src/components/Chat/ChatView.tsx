@@ -15,7 +15,7 @@ import { useConfigStore } from '../../stores/configStore';
 import { MessageList, type MessageListHandle } from './MessageList';
 import { InputArea, type InputAreaHandle } from './InputArea';
 import { ToolSessionsPanel } from './ToolSessionsPanel';
-import { estimateTokens, estimateTokensForTexts } from '../../utils/tokenizer';
+import { estimateTokens } from '../../utils/tokenizer';
 import { getApiProtocol } from '../../utils/apiUtils';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import type {
@@ -1205,53 +1205,87 @@ Guidelines:
     // Base context usage (system prompt + format prompt + skills + mcp)
     const baseTokens = systemPromptTokens + formatPromptTokens + skillsTokens + mcpTokens;
 
-    // Calculate message tokens
-    let messageTokens = 0;
-    let totalContextTokens = baseTokens;
-
-    // Find the last message with usage data (avoid copying/reversing large arrays)
-    let lastMessageWithUsage: Message | null = null;
-    for (let i = messages.length - 1; i >= 0 && i >= messages.length - 80; i--) {
-      const m = messages[i];
-      if (m?.usage) {
-        lastMessageWithUsage = m;
-        break;
+    // Predict next-request prompt tokens (instead of reusing last-request usage).
+    const estimateMessagePromptTokens = (m: Message): number => {
+      let total = 8 + estimateTokens(String(m.role ?? ''));
+      total += estimateTokens(m.content || '');
+      if (contextMessageGroups.includeThinking && m.thinking && m.thinking.trim()) {
+        total += estimateTokens(m.thinking);
       }
-    }
-    if (lastMessageWithUsage?.usage) {
-      // promptTokens from API includes everything sent to the model
-      totalContextTokens = lastMessageWithUsage.usage.promptTokens;
-      // Message tokens = total - base prompts (approximate)
-      messageTokens = Math.max(0, totalContextTokens - baseTokens);
-    } else {
-      // During streaming multi-turn tasks, usage arrives via `turn_finished` events (streamingTurns)
-      // before the assistant message is finalized. Prefer that to keep the context window indicator
-      // updated per turn.
-      const latestStreamingUsage = (() => {
-        const turns = session?.streamingTurns;
-        if (!turns || turns.size === 0) return null;
-        let best: any | null = null;
-        for (const t of turns.values()) {
-          if (!t?.usage) continue;
-          if (!best || (t.turnIndex ?? 0) > (best.turnIndex ?? 0)) best = t;
-        }
-        return best?.usage ?? null;
-      })();
+      return total;
+    };
 
-      if (latestStreamingUsage) {
-        totalContextTokens = latestStreamingUsage.promptTokens;
-        messageTokens = Math.max(0, totalContextTokens - baseTokens);
-      } else {
-        // No usage data yet, estimate from messages that will actually be included in the next request.
-        const used = contextMessageGroups.used;
-        const contentTexts = used.map((m) => m.content).filter(Boolean);
-        messageTokens = estimateTokensForTexts(contentTexts);
-        if (contextMessageGroups.includeThinking) {
-          const thinkingTexts = used
-            .map((m) => m.thinking)
-            .filter((t): t is string => Boolean(t && t.trim()));
-          messageTokens += estimateTokensForTexts(thinkingTexts);
+    type TaskGroup = { messages: Message[]; tokens: number };
+    const buildTaskGroups = (used: Message[]): TaskGroup[] => {
+      const groups: TaskGroup[] = [];
+      let cur: Message[] = [];
+      for (const message of used) {
+        if (message.role === 'user') {
+          if (cur.length > 0) groups.push({ messages: cur, tokens: cur.reduce((acc, m) => acc + estimateMessagePromptTokens(m), 0) });
+          cur = [message];
+        } else {
+          if (cur.length === 0) cur = [message];
+          else cur.push(message);
         }
+      }
+      if (cur.length > 0) groups.push({ messages: cur, tokens: cur.reduce((acc, m) => acc + estimateMessagePromptTokens(m), 0) });
+      return groups;
+    };
+
+    const policy = (agent?.contextPolicy ?? { type: 'simple' }) as any;
+    const policyTypeRaw = String(policy?.type ?? 'simple').trim().toLowerCase();
+    const policyType = policyTypeRaw === 'disabled' ? 'simple' : policyTypeRaw;
+    const trimEnabled = (() => {
+      if (policyType === 'custom') return true;
+      return Boolean(policy?.enabled ?? true) && Boolean(policy?.trimEnabled ?? true);
+    })();
+    const hardLimitPercent = Math.max(1, Math.min(99, Number(policy?.hardLimitPercent ?? 90)));
+    const trimTargetPercent = Math.max(
+      1,
+      Math.min(hardLimitPercent, Number(policy?.trimTargetPercent ?? hardLimitPercent))
+    );
+
+    let effectiveGroups: ContextMessageGroups = contextMessageGroups;
+    let taskGroups = buildTaskGroups(contextMessageGroups.used);
+    let messageTokens = taskGroups.reduce((acc, g) => acc + g.tokens, 0);
+    let totalContextTokens = baseTokens + messageTokens;
+
+    if (trimEnabled && contextLength > 0) {
+      const hardLimitTokens = Math.max(1, Math.floor((contextLength * hardLimitPercent) / 100));
+      const trimTargetTokens = Math.max(
+        1,
+        Math.min(hardLimitTokens, Math.floor((contextLength * trimTargetPercent) / 100))
+      );
+
+      if (totalContextTokens > hardLimitTokens && taskGroups.length > 0) {
+        const keepMask = new Array<boolean>(taskGroups.length).fill(false);
+        let selected = baseTokens;
+        for (let i = taskGroups.length - 1; i >= 0; i--) {
+          if (!keepMask.some(Boolean)) {
+            keepMask[i] = true;
+            selected += taskGroups[i].tokens;
+            continue;
+          }
+          const next = selected + taskGroups[i].tokens;
+          if (next <= trimTargetTokens) {
+            keepMask[i] = true;
+            selected = next;
+          } else {
+            break;
+          }
+        }
+
+        const keptMessages = taskGroups
+          .flatMap((g, i) => (keepMask[i] ? g.messages : []));
+        const trimmedByToken = taskGroups
+          .flatMap((g, i) => (keepMask[i] ? [] : g.messages));
+        effectiveGroups = {
+          ...contextMessageGroups,
+          used: keptMessages,
+          trimmed: [...contextMessageGroups.trimmed, ...trimmedByToken],
+        };
+        taskGroups = buildTaskGroups(keptMessages);
+        messageTokens = taskGroups.reduce((acc, g) => acc + g.tokens, 0);
         totalContextTokens = baseTokens + messageTokens;
       }
     }
@@ -1263,7 +1297,7 @@ Guidelines:
       formatPrompt: formatPromptTokens,
       skills: skillsTokens,
       messages: messageTokens,
-      messageGroups: contextMessageGroups,
+      messageGroups: effectiveGroups,
       tools: 0,  // Future: tool definitions
       mcp: mcpTokens,
       systemPromptText: userSystemPrompt || undefined,

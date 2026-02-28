@@ -1818,6 +1818,42 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                               ansiColorMode={ansiColorMode}
                             />
                           </div>
+                          <div>
+                            <span className="text-gray-500 dark:text-gray-400">trim target: </span>
+                            <span className="text-gray-800 dark:text-gray-200">{activeTurnTrim.trimTargetTokens}</span>
+                          </div>
+                          <div>
+                            <span className="text-gray-500 dark:text-gray-400">任务组: </span>
+                            <span className="text-gray-800 dark:text-gray-200">
+                              保留 {activeTurnTrim.keptTasks} / 删除 {activeTurnTrim.removedTasks}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-gray-500 dark:text-gray-400">相对上轮任务变化: </span>
+                            <span className="text-gray-800 dark:text-gray-200">
+                              {typeof activeTurnTrim.trimmedTasksSinceLast === 'number'
+                                ? `- ${activeTurnTrim.trimmedTasksSinceLast}`
+                                : '-'}{' '}
+                              /{' '}
+                              {typeof activeTurnTrim.addedTasksSinceLast === 'number'
+                                ? `+ ${activeTurnTrim.addedTasksSinceLast}`
+                                : '-'}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-gray-500 dark:text-gray-400">相对上轮 token 变化: </span>
+                            <span className="text-gray-800 dark:text-gray-200">
+                              {typeof activeTurnTrim.deltaTokensSinceLast === 'number'
+                                ? activeTurnTrim.deltaTokensSinceLast
+                                : '-'}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-gray-500 dark:text-gray-400">目标不可达: </span>
+                            <span className="text-gray-800 dark:text-gray-200">
+                              {activeTurnTrim.targetUnreachable ? '是' : '否'}
+                            </span>
+                          </div>
                         </div>
                       );
                     })}
