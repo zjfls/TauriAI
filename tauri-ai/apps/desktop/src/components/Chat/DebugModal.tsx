@@ -815,15 +815,13 @@ export const DebugModal: React.FC<DebugModalProps> = ({
   );
   const [turnPage, setTurnPage] = useState(0);
   const [activePage, setActivePage] = useState<DebugModalPage>('overview');
-  const [activeHttpView, setActiveHttpView] = useState<HttpDebugView>(
-    messageRole === 'user' ? 'request' : 'response'
-  );
+  const [activeHttpView, setActiveHttpView] = useState<HttpDebugView>('request');
   const [largeTextViewer, setLargeTextViewer] = useState<LargeTextViewerState | null>(null);
 
   useEffect(() => {
     if (!isOpen) return;
     setActivePage('overview');
-    setActiveHttpView(messageRole === 'user' ? 'request' : 'response');
+    setActiveHttpView('request');
     setLargeTextViewer(null);
   }, [isOpen, messageRole]);
 
