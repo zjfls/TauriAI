@@ -777,7 +777,6 @@ const StructuredJsonTextViewer: React.FC<StructuredJsonTextViewerProps> = ({
 export const DebugModal: React.FC<DebugModalProps> = ({
   isOpen,
   onClose,
-  isStreaming,
   debugInfo,
   turns,
   blocks,
@@ -790,7 +789,6 @@ export const DebugModal: React.FC<DebugModalProps> = ({
   const { config } = useConfigStore();
   const ansiRenderMode = config?.general?.ansiRenderMode;
   const ansiColorMode = config?.general?.ansiColorMode;
-  const defaultExpandedForStreaming = Boolean(isStreaming);
 
   const sortedTurns = useMemo(
     () => (turns ?? []).slice().sort((a, b) => a.turnIndex - b.turnIndex),
@@ -1192,14 +1190,6 @@ export const DebugModal: React.FC<DebugModalProps> = ({
     return legacy.length > 0 ? legacy : allBlocks;
   }, [blocks, activeTurnId]);
 
-  const thinkingText = useMemo(() => {
-    const chunks = effectiveBlocks
-      .filter((b): b is Extract<MessageBlock, { type: 'thinking' }> => b.type === 'thinking')
-      .map((b) => b.text)
-      .filter((t) => typeof t === 'string' && t.trim().length > 0);
-    return chunks.length > 0 ? chunks.join('\n\n') : null;
-  }, [effectiveBlocks]);
-
   const toolCalls = useMemo(
     () =>
       effectiveBlocks.filter(
@@ -1429,16 +1419,6 @@ export const DebugModal: React.FC<DebugModalProps> = ({
           <div className="overflow-auto max-h-[calc(80vh-80px-72px)] space-y-4 pr-1">
             {activePage === 'overview' ? (
               <>
-                {thinkingText && (
-                  <CollapsibleSection title="思考过程" defaultExpanded={defaultExpandedForStreaming}>
-                    <TextViewer
-                      text={thinkingText}
-                      containerClassName="bg-purple-50 dark:bg-purple-900/30 text-purple-800 dark:text-purple-200"
-                      maxHeightClassName="max-h-64"
-                    />
-                  </CollapsibleSection>
-                )}
-
                 {!effectiveDebugInfo ? (
                   <div className="text-center py-8 text-gray-500 dark:text-gray-400">
                     <p>暂无调试信息</p>
