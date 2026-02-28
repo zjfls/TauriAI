@@ -962,10 +962,32 @@ export const DebugModal: React.FC<DebugModalProps> = ({
     () => prepareHeadersForJson(effectiveDebugInfo?.request?.headers ?? {}),
     [effectiveDebugInfo?.request?.headers]
   );
+  const requestHeadersJsonText = useMemo(() => {
+    const text = safeStringify(requestHeadersJson, 2);
+    return text.trim() ? text : '(空)';
+  }, [requestHeadersJson]);
+  const requestBodyJsonText = useMemo(() => {
+    const body = effectiveDebugInfo?.request?.body;
+    if (body === null || body === undefined) return '(空请求体)';
+    if (typeof body === 'string') return body.trim() ? body : '(空请求体)';
+    const text = safeStringify(body, 2);
+    return text.trim() ? text : '(空请求体)';
+  }, [effectiveDebugInfo?.request?.body]);
   const responseHeadersJson = useMemo(
     () => prepareHeadersForJson(effectiveDebugInfo?.response?.headers ?? {}),
     [effectiveDebugInfo?.response?.headers]
   );
+  const responseHeadersJsonText = useMemo(() => {
+    const text = safeStringify(responseHeadersJson, 2);
+    return text.trim() ? text : '(空)';
+  }, [responseHeadersJson]);
+  const responseBodyJsonText = useMemo(() => {
+    const body = effectiveDebugInfo?.response?.body;
+    if (body === null || body === undefined) return '(空响应体)';
+    if (typeof body === 'string') return body.trim() ? body : '(空响应体)';
+    const text = safeStringify(body, 2);
+    return text.trim() ? text : '(空响应体)';
+  }, [effectiveDebugInfo?.response?.body]);
   const providerEndReason = useMemo<ProviderEndReason | null>(() => {
     const body = effectiveDebugInfo?.response?.body as any;
     if (!body || typeof body !== 'object') return null;
@@ -1215,44 +1237,6 @@ export const DebugModal: React.FC<DebugModalProps> = ({
     return { runs, orphanResults };
   }, [toolCalls, toolResults]);
 
-  const responseBodyForDisplay = useMemo(() => {
-    const body = effectiveDebugInfo?.response?.body;
-    if (!body) return body;
-    if (toolResults.length === 0 && toolCalls.length === 0) return body;
-
-    const tool_runs = toolCalls.map((call) => {
-      let parsedArgs: unknown = call.arguments;
-      try {
-        parsedArgs = JSON.parse(call.arguments);
-      } catch {
-        // keep raw
-      }
-      return {
-        call_id: call.callId,
-        name: call.name,
-        arguments: parsedArgs,
-        result_text: toolResults.find((r) => r.callId === call.callId)?.text ?? null,
-      };
-    });
-
-    if (typeof body === 'object' && body !== null) {
-      // 为避免重复展示，这里只注入 tool_runs，并在展示用响应体里剔除 tool_calls/tool_results。
-      //（工具调用/输出已在 DebugModal 的“工具执行”区块成对展示）
-      const sanitized = { ...(body as Record<string, unknown>) };
-      delete sanitized.tool_calls;
-      delete sanitized.tool_results;
-      delete sanitized.tool_runs;
-      return {
-        ...sanitized,
-        ...(tool_runs.length > 0 ? { tool_runs } : {}),
-      };
-    }
-    return {
-      body,
-      ...(tool_runs.length > 0 ? { tool_runs } : {}),
-    };
-  }, [effectiveDebugInfo?.response?.body, toolResults, toolCalls]);
-
   const largeViewerJsonData = useMemo(() => {
     if (!largeTextViewer) return null;
 
@@ -1470,7 +1454,7 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                   <>
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="text-xs text-gray-500 dark:text-gray-400">
-                        这里展示本轮 HTTP 请求/响应的 JSON 调试信息（headers 已脱敏）。支持大窗口查看（仅结构化展示）。
+                        这里直接显示原始 JSON 调试信息（headers 已脱敏）。大窗口查看会用结构化方式展开浏览。
                       </div>
                       {httpViewTabs}
                     </div>
@@ -1495,14 +1479,13 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                               />
 
                               <CollapsibleSection title="请求头（JSON）" defaultExpanded>
-                                <StructuredJsonTextViewer
-                                  data={requestHeadersJson}
+                                <TextViewer
+                                  text={requestHeadersJsonText}
                                   maxHeightClassName="max-h-56"
-                                  emptyText="(空)"
                                   onOpenLarge={() =>
                                     setLargeTextViewer({
                                       title: 'HTTP 请求头',
-                                      text: safeStringify(requestHeadersJson, 2),
+                                      text: requestHeadersJsonText,
                                       rawJson: requestHeadersJson,
                                     })
                                   }
@@ -1510,14 +1493,13 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                               </CollapsibleSection>
 
                               <CollapsibleSection title="请求体（JSON）" defaultExpanded>
-                                <StructuredJsonTextViewer
-                                  data={effectiveDebugInfo.request?.body ?? undefined}
+                                <TextViewer
+                                  text={requestBodyJsonText}
                                   maxHeightClassName="max-h-[50vh]"
-                                  emptyText="(空请求体)"
                                   onOpenLarge={() =>
                                     setLargeTextViewer({
                                       title: 'HTTP 请求体',
-                                      text: safeStringify(effectiveDebugInfo.request?.body, 2),
+                                      text: requestBodyJsonText,
                                       rawJson: effectiveDebugInfo.request?.body,
                                     })
                                   }
@@ -1542,14 +1524,13 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                             )}
 
                             <CollapsibleSection title="响应头（JSON）" defaultExpanded>
-                              <StructuredJsonTextViewer
-                                data={responseHeadersJson}
+                              <TextViewer
+                                text={responseHeadersJsonText}
                                 maxHeightClassName="max-h-56"
-                                emptyText="(空)"
                                 onOpenLarge={() =>
                                   setLargeTextViewer({
                                     title: 'HTTP 响应头',
-                                    text: safeStringify(responseHeadersJson, 2),
+                                    text: responseHeadersJsonText,
                                     rawJson: responseHeadersJson,
                                   })
                                 }
@@ -1557,15 +1538,14 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                             </CollapsibleSection>
 
                             <CollapsibleSection title="响应体（JSON）" defaultExpanded>
-                              <StructuredJsonTextViewer
-                                data={responseBodyForDisplay ?? undefined}
+                              <TextViewer
+                                text={responseBodyJsonText}
                                 maxHeightClassName="max-h-[50vh]"
-                                emptyText="(空响应体)"
                                 onOpenLarge={() =>
                                   setLargeTextViewer({
                                     title: 'HTTP 响应体',
-                                    text: safeStringify(responseBodyForDisplay, 2),
-                                    rawJson: responseBodyForDisplay,
+                                    text: responseBodyJsonText,
+                                    rawJson: effectiveDebugInfo.response?.body,
                                   })
                                 }
                               />
