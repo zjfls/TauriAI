@@ -1513,16 +1513,15 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                           </div>
                         )
                       ) : effectiveDebugInfo.response ? (
-                        <CollapsibleSection title="HTTP 响应（JSON）" defaultExpanded>
+                        <CollapsibleSection
+                          title={
+                            typeof effectiveDebugInfo.response.status === 'number'
+                              ? `HTTP 响应（${effectiveDebugInfo.response.status}，JSON）`
+                              : 'HTTP 响应（JSON）'
+                          }
+                          defaultExpanded
+                        >
                           <div className="space-y-4">
-                            {typeof effectiveDebugInfo.response.status === 'number' && (
-                              <StructuredJsonTextViewer
-                                data={{ status: effectiveDebugInfo.response.status }}
-                                maxHeightClassName="max-h-24"
-                                emptyText="(空)"
-                              />
-                            )}
-
                             <CollapsibleSection title="响应头（JSON）" defaultExpanded>
                               <TextViewer
                                 text={responseHeadersJsonText}
