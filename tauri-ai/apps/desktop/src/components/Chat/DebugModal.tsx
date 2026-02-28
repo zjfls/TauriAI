@@ -1464,19 +1464,35 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                         effectiveDebugInfo.request ? (
                           <CollapsibleSection title="HTTP 请求（JSON）" defaultExpanded>
                             <div className="space-y-4">
-                              <StructuredJsonTextViewer
-                                data={{
-                                  ...(effectiveDebugInfo.request.method
-                                    ? { method: effectiveDebugInfo.request.method }
-                                    : {}),
-                                  ...(effectiveDebugInfo.request.url ? { url: effectiveDebugInfo.request.url } : {}),
-                                  ...(requestUrlParts
-                                    ? { host: requestUrlParts.host, path: requestUrlParts.path }
-                                    : {}),
-                                }}
-                                maxHeightClassName="max-h-40"
-                                emptyText="(空)"
-                              />
+                              <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-800 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-200">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  {effectiveDebugInfo.request.method?.trim() ? (
+                                    <span className="inline-flex items-center rounded bg-gray-200 px-2 py-0.5 font-mono text-[11px] text-gray-800 dark:bg-gray-700 dark:text-gray-100">
+                                      {effectiveDebugInfo.request.method.trim()}
+                                    </span>
+                                  ) : null}
+                                  {effectiveDebugInfo.request.url?.trim() ? (
+                                    <span className="font-mono break-all">{effectiveDebugInfo.request.url.trim()}</span>
+                                  ) : (
+                                    <span className="text-gray-500 dark:text-gray-400">(空 URL)</span>
+                                  )}
+                                </div>
+
+                                {requestUrlParts ? (
+                                  <div className="mt-2 grid grid-cols-1 gap-1 text-[11px] text-gray-600 dark:text-gray-400">
+                                    {requestUrlParts.host ? (
+                                      <div>
+                                        host: <span className="font-mono break-all">{requestUrlParts.host}</span>
+                                      </div>
+                                    ) : null}
+                                    {requestUrlParts.path ? (
+                                      <div>
+                                        path: <span className="font-mono break-all">{requestUrlParts.path}</span>
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                ) : null}
+                              </div>
 
                               <CollapsibleSection title="请求头（JSON）" defaultExpanded>
                                 <TextViewer
