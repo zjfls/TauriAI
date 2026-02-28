@@ -1041,6 +1041,10 @@ pub struct Provider {
     /// instead of top-level `reasoning_effort`.
     #[serde(default, skip_serializing_if = "is_false")]
     pub force_responses_reasoning: bool,
+    /// For Seasun (Xishanju) OpenAI-compatible gateways:
+    /// thinking switch uses `think: { type: "true" }` instead of `thinking: { type: ... }`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub seasun_thinking: bool,
     /// Models available from this provider
     #[serde(default)]
     pub models: Vec<Model>,
@@ -1068,6 +1072,7 @@ impl Default for Provider {
             api_key: None,
             enabled: true,
             force_responses_reasoning: false,
+            seasun_thinking: false,
             models: Vec::new(),
         }
     }
@@ -1495,6 +1500,9 @@ pub struct ModelConfig {
     /// force response-style reasoning object (reasoning.effort/summary).
     #[serde(default)]
     pub force_responses_reasoning: bool,
+    /// OpenAI-compatible (Seasun): use `think: { type: "true" }` as thinking switch.
+    #[serde(default)]
+    pub seasun_thinking: bool,
     /// Turn-level automatic retry attempts (default: 8 when unset).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_attempts: Option<u32>,
@@ -2825,6 +2833,7 @@ impl AppConfig {
                     api_key: model_config.api_key.clone(),
                     enabled: true,
                     force_responses_reasoning: false,
+                    seasun_thinking: false,
                     models: Vec::new(),
                 }
             });

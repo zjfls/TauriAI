@@ -114,6 +114,14 @@ struct ThinkingConfig {
     thinking_type: String,
 }
 
+/// Seasun (Xishanju) style thinking switch:
+/// `think: { type: "true" }`
+#[derive(Debug, Serialize)]
+struct SeasunThinkingConfig {
+    #[serde(rename = "type")]
+    thinking_type: String,
+}
+
 /// Response-style reasoning object (OpenAI-compatible chat/completions extensions)
 #[derive(Debug, Serialize)]
 struct ResponseStyleReasoningConfig {
@@ -169,6 +177,9 @@ struct ChatCompletionRequest {
     /// Thinking mode for DeepSeek models (legacy)
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<ThinkingConfig>,
+    /// Seasun (Xishanju) style thinking switch (OpenAI-compatible)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    think: Option<SeasunThinkingConfig>,
     /// Reasoning effort for OpenAI GPT-5 series (new)
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_effort: Option<String>,
@@ -558,6 +569,31 @@ fn build_chat_reasoning_mode(
     }
 }
 
+fn map_seasun_thinking(
+    config: &ModelConfig,
+    thinking: Option<ThinkingConfig>,
+) -> (Option<ThinkingConfig>, Option<SeasunThinkingConfig>) {
+    if config.provider != "openai_compatible" || !config.seasun_thinking {
+        return (thinking, None);
+    }
+
+    let Some(thinking_cfg) = thinking else {
+        return (None, None);
+    };
+
+    let enabled = thinking_cfg.thinking_type != "disabled";
+    (
+        None,
+        Some(SeasunThinkingConfig {
+            thinking_type: if enabled {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            },
+        }),
+    )
+}
+
 fn strip_sse_data_prefix(line: &str) -> Option<&str> {
     // SSE spec allows both `data: ...` and `data:...` (optional single space after `:`).
     // Some proxies omit the space; be tolerant to avoid missing termination signals like `[DONE]`.
@@ -702,6 +738,7 @@ impl OpenAiBaseClient {
         });
 
         let (thinking, reasoning_effort, reasoning) = build_chat_reasoning_mode(config);
+        let (thinking, think) = map_seasun_thinking(config, thinking);
 
         // Only send OpenAI-native `web_search_options` to the official OpenAI API client.
         // (Avoid passing unknown fields to OpenAI-compatible services that may 400.)
@@ -726,6 +763,7 @@ impl OpenAiBaseClient {
             stream: false,
             stream_options: None,
             thinking,
+            think,
             reasoning_effort,
             reasoning,
         };
@@ -866,6 +904,7 @@ impl OpenAiBaseClient {
         });
 
         let (thinking, reasoning_effort, reasoning) = build_chat_reasoning_mode(config);
+        let (thinking, think) = map_seasun_thinking(config, thinking);
 
         // Only send OpenAI-native `web_search_options` to the official OpenAI API client.
         let web_search_options = match self.system_role {
@@ -895,6 +934,7 @@ impl OpenAiBaseClient {
                 None
             },
             thinking,
+            think,
             reasoning_effort,
             reasoning,
         };
@@ -1626,6 +1666,7 @@ mod tests {
             max_images: None,
             use_reasoning_effort: None,
             force_responses_reasoning: false,
+            seasun_thinking: false,
             retry_attempts: None,
             resume_partial_output: false,
             stream_include_usage: true,

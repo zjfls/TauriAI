@@ -97,6 +97,7 @@ pub async fn test_connection(
         max_images: None,           // Not needed for connection test
         use_reasoning_effort: None, // Not needed for connection test
         force_responses_reasoning: false,
+        seasun_thinking: false,
         retry_attempts: None,
         resume_partial_output: false,
         stream_include_usage: true,

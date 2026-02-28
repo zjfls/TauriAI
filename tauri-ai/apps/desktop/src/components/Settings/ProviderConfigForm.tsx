@@ -85,6 +85,7 @@ const defaultProvider: Provider = {
   apiKey: '',
   enabled: true,
   forceResponsesReasoning: false,
+  seasunThinking: false,
   models: [],
 };
 
@@ -843,6 +844,20 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
                                           </label>
                                           <p className="mt-1 text-[11px] text-gray-500">
                                             Provider 级开关：仍使用 <code className="font-mono">chat/completions</code>，仅把推理参数改为 <code className="font-mono">reasoning.effort/summary</code>（不切换到 <code className="font-mono">openai_responses</code>）。
+                                          </p>
+
+                                          <label className="mt-2 flex items-center gap-2 text-xs">
+                                            <input
+                                              type="checkbox"
+                                              checked={provider.seasunThinking ?? false}
+                                              onChange={(e) => onFieldChange('seasunThinking', e.target.checked)}
+                                              disabled={!isEditing}
+                                              className="rounded"
+                                            />
+                                            <span className="text-gray-700 dark:text-gray-300">西山居 thinking 兼容（Provider）</span>
+                                          </label>
+                                          <p className="mt-1 text-[11px] text-gray-500">
+                                            Provider 级开关：当服务端用 <code className="font-mono">think: {'{ type: "true" }'}</code> 作为 thinking 开关时启用；开启后会把请求里的 <code className="font-mono">thinking</code> 字段替换为 <code className="font-mono">think</code>。
                                           </p>
                                         </>
                                       )}

@@ -967,6 +967,7 @@ pub async fn generate_title(
         max_images: None,           // Not needed for title generation
         use_reasoning_effort: None, // Not needed for title generation
         force_responses_reasoning: provider.force_responses_reasoning,
+        seasun_thinking: provider.seasun_thinking,
         retry_attempts: None,
         resume_partial_output: false,
         stream_include_usage: true,
@@ -1081,6 +1082,7 @@ mod tests {
             max_images: None,
             use_reasoning_effort: None,
             force_responses_reasoning: false,
+            seasun_thinking: false,
             retry_attempts: None,
             resume_partial_output: false,
             stream_include_usage: true,

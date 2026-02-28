@@ -5977,6 +5977,7 @@ mod tests {
             max_images: None,
             use_reasoning_effort: None,
             force_responses_reasoning: false,
+            seasun_thinking: false,
             retry_attempts: None,
             resume_partial_output: false,
             stream_include_usage: true,

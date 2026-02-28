@@ -190,6 +190,7 @@ mod tests {
                 api_key: Some("test-key".to_string()),
                 enabled: true,
                 force_responses_reasoning: false,
+                seasun_thinking: false,
                 models: vec![Model {
                     name: "gpt-4".to_string(),
                     temperature: 0.5,

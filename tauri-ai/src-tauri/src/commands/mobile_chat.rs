@@ -274,6 +274,7 @@ fn build_model_config(
         max_images: model.max_images.map(|v| v as u32),
         use_reasoning_effort: model.use_reasoning_effort,
         force_responses_reasoning: provider.force_responses_reasoning,
+        seasun_thinking: provider.seasun_thinking,
         retry_attempts: model.retry_attempts,
         resume_partial_output: model.resume_partial_output,
         stream_include_usage: model.stream_include_usage,

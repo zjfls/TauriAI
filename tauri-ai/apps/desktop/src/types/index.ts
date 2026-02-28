@@ -221,6 +221,7 @@ export interface Provider {
   apiKey?: string;
   enabled: boolean;
   forceResponsesReasoning?: boolean; // OpenAI-compatible chat/completions: force response-style reasoning object
+  seasunThinking?: boolean; // OpenAI-compatible (Seasun): use `think: { type: "true" }` as thinking switch
   models: Model[];
 }
 
