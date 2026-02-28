@@ -5431,9 +5431,13 @@ async fn stream_one_turn(
         let attempt_messages = messages.clone();
 
         let options = crate::ai_client::StreamOptions {
-            // If the provider supports resume, it should stream a TurnState token (cursor/header).
-            // Runtime will reuse it on reconnect to avoid duplicated output.
-            resume_state: turn_state.clone(),
+            // 仅在显式开启「断流后继续」时才使用 TurnState 续流。
+            // 关闭该开关时允许普通重试，但不会附带 resume_state。
+            resume_state: if resume_partial_output_enabled {
+                turn_state.clone()
+            } else {
+                None
+            },
             include_usage: include_usage_override,
         };
 
@@ -5510,9 +5514,11 @@ async fn stream_one_turn(
                             });
                         }
                         Some(StreamEvent::TurnState(state)) => {
-                            let trimmed = state.trim();
-                            if !trimmed.is_empty() {
-                                turn_state = Some(trimmed.to_string());
+                            if resume_partial_output_enabled {
+                                let trimmed = state.trim();
+                                if !trimmed.is_empty() {
+                                    turn_state = Some(trimmed.to_string());
+                                }
                             }
                         }
                         Some(StreamEvent::ToolCalls(calls)) => {
@@ -5802,13 +5808,13 @@ async fn stream_one_turn(
             let no_visible_output_yet = full_content.trim().is_empty();
             let can_reconnect_after_partial_output =
                 emitted_any_delta && resume_possible && resume_partial_output_enabled;
-            // 特殊兜底：即使没有开启 resume_partial_output，只要「还没产生任何可见输出」
-            // （token 输出为空/仅空白），也允许走断线重连逻辑。
+            // 特殊兜底：只要「还没产生任何可见输出」（token 输出为空/仅空白），
+            // 允许继续重试；当 resume_partial_output 关闭时，这里走的是“普通重试”（不带 resume_state）。
             //
             // 典型场景：流里只吐了 thinking / 状态事件（或响应被网关截断），最终没有任何输出文本。
-            // 这种情况下重连不会造成“重复可见内容”，因此应优先尝试用 TurnState(cursor) 续流恢复。
+            // 这种情况下重试不会造成“重复可见内容”。
             let can_reconnect_after_no_visible_output =
-                emitted_any_delta && resume_possible && no_visible_output_yet;
+                emitted_any_delta && no_visible_output_yet;
             let can_reconnect =
                 can_reconnect_after_partial_output || can_reconnect_after_no_visible_output;
             let can_retry = attempt < max_attempts
@@ -6349,6 +6355,7 @@ mod tests {
 
     struct ResumeAfterThinkingOnlyClient {
         calls: AtomicUsize,
+        expect_resume: bool,
     }
 
     #[async_trait]
@@ -6372,6 +6379,7 @@ mod tests {
         ) -> Result<(), crate::ai_client::AiError> {
             let n = self.calls.fetch_add(1, Ordering::SeqCst);
             if n == 0 {
+                assert!(options.resume_state.is_none());
                 let _ = token_sender
                     .send(crate::ai_client::StreamEvent::TurnState(
                         "state1".to_string(),
@@ -6393,7 +6401,11 @@ mod tests {
                 return Ok(());
             }
 
-            assert_eq!(options.resume_state.as_deref(), Some("state1"));
+            if self.expect_resume {
+                assert_eq!(options.resume_state.as_deref(), Some("state1"));
+            } else {
+                assert!(options.resume_state.is_none());
+            }
             let _ = token_sender
                 .send(crate::ai_client::StreamEvent::Token("ok".to_string()))
                 .await;
@@ -6405,9 +6417,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_one_turn_should_retry_and_resume_when_no_visible_output() {
+    async fn stream_one_turn_should_retry_with_resume_when_no_visible_output_enabled() {
         let client: Arc<dyn crate::ai_client::AiClient> = Arc::new(ResumeAfterThinkingOnlyClient {
             calls: AtomicUsize::new(0),
+            expect_resume: true,
+        });
+        let mut emitter = NoopEmitter;
+        let (abort_tx, mut abort_rx) = mpsc::channel(1);
+        let _keep_abort = abort_tx;
+
+        let mut config = test_model_config();
+        config.resume_partial_output = true;
+
+        let result = stream_one_turn(
+            client,
+            config,
+            None,
+            vec![test_user_message()],
+            &mut emitter,
+            "task",
+            "turn",
+            "assistant",
+            None,
+            &mut abort_rx,
+            2,
+        )
+        .await;
+
+        match result {
+            TurnStreamResult::Final { content, .. } => assert_eq!(content, "ok"),
+            other => panic!("expected TurnStreamResult::Final, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_one_turn_should_retry_without_resume_when_no_visible_output_disabled() {
+        let client: Arc<dyn crate::ai_client::AiClient> = Arc::new(ResumeAfterThinkingOnlyClient {
+            calls: AtomicUsize::new(0),
+            expect_resume: false,
         });
         let mut emitter = NoopEmitter;
         let (abort_tx, mut abort_rx) = mpsc::channel(1);
