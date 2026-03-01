@@ -303,6 +303,10 @@ export const SecurityConfigForm: React.FC = () => {
               placeholder="搜索策略..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
+              autoCorrect="off"
+              autoCapitalize="off"
+              autoComplete="off"
+              spellCheck={false}
               className="w-full rounded-lg border border-gray-300 bg-white py-2 pl-9 pr-3 text-sm dark:border-gray-600 dark:bg-gray-700"
             />
           </div>

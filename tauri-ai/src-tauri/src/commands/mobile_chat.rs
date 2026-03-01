@@ -1299,22 +1299,41 @@ pub async fn mobile_chat_stream_start(
                         let binding = match tool_bindings.get(call.name.as_str()).cloned() {
                             Some(b) => b,
                             None => {
+                                let tool_error = format!("TOOL_ERROR: 未知工具：{}", call.name);
                                 emit_mobile_stream_event(
                                     &app2,
                                     MobileChatStreamPayload {
                                         stream_id: stream_id2.clone(),
                                         conversation_id: conversation_id2.clone(),
                                         assistant_message_id: assistant_message_id2.clone(),
-                                        kind: "error".to_string(),
+                                        kind: "tool_result".to_string(),
                                         delta: None,
                                         content: None,
                                         thinking: None,
-                                        data: None,
-                                        error: Some(format!("未知工具：{}", call.name)),
+                                        data: Some(serde_json::json!({
+                                            "id": call_id,
+                                            "name": call_name,
+                                            "error": &tool_error,
+                                        })),
+                                        error: None,
                                     },
                                 );
-                                terminal = Some("error");
-                                break;
+                                model_messages.push(Message {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    conversation_id: conversation_id2.clone(),
+                                    role: MessageRole::Tool,
+                                    content: tool_error,
+                                    content_parts: Vec::new(),
+                                    thinking: None,
+                                    meta: Some(MessageMeta {
+                                        tool_call_id: Some(call.id.clone()),
+                                        ..Default::default()
+                                    }),
+                                    created_at: chrono::Utc::now(),
+                                    status: MessageStatus::Success,
+                                    error_message: None,
+                                });
+                                continue;
                             }
                         };
 
@@ -1322,22 +1341,41 @@ pub async fn mobile_chat_stream_start(
                             match serde_json::from_str(&call.arguments) {
                                 Ok(v) => v,
                                 Err(e) => {
+                                    let tool_error = format!("TOOL_ERROR: 解析 tool 参数失败：{e}");
                                     emit_mobile_stream_event(
                                         &app2,
                                         MobileChatStreamPayload {
                                             stream_id: stream_id2.clone(),
                                             conversation_id: conversation_id2.clone(),
                                             assistant_message_id: assistant_message_id2.clone(),
-                                            kind: "error".to_string(),
+                                            kind: "tool_result".to_string(),
                                             delta: None,
                                             content: None,
                                             thinking: None,
-                                            data: None,
-                                            error: Some(format!("解析 tool 参数失败：{e}")),
+                                            data: Some(serde_json::json!({
+                                                "id": call_id,
+                                                "name": call_name,
+                                                "error": &tool_error,
+                                            })),
+                                            error: None,
                                         },
                                     );
-                                    terminal = Some("error");
-                                    break;
+                                    model_messages.push(Message {
+                                        id: uuid::Uuid::new_v4().to_string(),
+                                        conversation_id: conversation_id2.clone(),
+                                        role: MessageRole::Tool,
+                                        content: tool_error,
+                                        content_parts: Vec::new(),
+                                        thinking: None,
+                                        meta: Some(MessageMeta {
+                                            tool_call_id: Some(call.id.clone()),
+                                            ..Default::default()
+                                        }),
+                                        created_at: chrono::Utc::now(),
+                                        status: MessageStatus::Success,
+                                        error_message: None,
+                                    });
+                                    continue;
                                 }
                             };
 
@@ -1352,22 +1390,41 @@ pub async fn mobile_chat_stream_start(
                         {
                             Ok(v) => v,
                             Err(e) => {
+                                let tool_error = format!("TOOL_ERROR: MCP tool 调用失败：{e}");
                                 emit_mobile_stream_event(
                                     &app2,
                                     MobileChatStreamPayload {
                                         stream_id: stream_id2.clone(),
                                         conversation_id: conversation_id2.clone(),
                                         assistant_message_id: assistant_message_id2.clone(),
-                                        kind: "error".to_string(),
+                                        kind: "tool_result".to_string(),
                                         delta: None,
                                         content: None,
                                         thinking: None,
-                                        data: None,
-                                        error: Some(format!("MCP tool 调用失败：{e}")),
+                                        data: Some(serde_json::json!({
+                                            "id": call_id,
+                                            "name": call_name,
+                                            "error": &tool_error,
+                                        })),
+                                        error: None,
                                     },
                                 );
-                                terminal = Some("error");
-                                break;
+                                model_messages.push(Message {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    conversation_id: conversation_id2.clone(),
+                                    role: MessageRole::Tool,
+                                    content: tool_error,
+                                    content_parts: Vec::new(),
+                                    thinking: None,
+                                    meta: Some(MessageMeta {
+                                        tool_call_id: Some(call.id.clone()),
+                                        ..Default::default()
+                                    }),
+                                    created_at: chrono::Utc::now(),
+                                    status: MessageStatus::Success,
+                                    error_message: None,
+                                });
+                                continue;
                             }
                         };
 
@@ -1414,10 +1471,6 @@ pub async fn mobile_chat_stream_start(
                             status: MessageStatus::Success,
                             error_message: None,
                         });
-                    }
-
-                    if terminal == Some("error") {
-                        break;
                     }
                     continue;
                 }

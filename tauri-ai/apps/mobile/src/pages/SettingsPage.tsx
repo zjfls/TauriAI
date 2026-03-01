@@ -1176,6 +1176,9 @@ export function SettingsPage() {
                       ),
                     )
                   }
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
                   placeholder="You are a helpful assistant..."
                 />
               </div>
@@ -1377,10 +1380,13 @@ export function SettingsPage() {
                             prev.map((x) =>
                               x.name === activeMcpServer.name
                                 ? { ...x, argsText: e.target.value }
-                                : x,
+                              : x,
                             ),
                           )
                         }
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        spellCheck={false}
                         placeholder="-y\n@modelcontextprotocol/server-filesystem\n/Users/me/projects"
                       />
                     </div>
@@ -1423,10 +1429,13 @@ export function SettingsPage() {
                             prev.map((x) =>
                               x.name === activeMcpServer.name
                                 ? { ...x, httpHeadersText: e.target.value }
-                                : x,
+                              : x,
                             ),
                           )
                         }
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        spellCheck={false}
                         placeholder="Authorization=Bearer xxx\nX-Client=tauri-ai"
                       />
 
@@ -1441,10 +1450,13 @@ export function SettingsPage() {
                             prev.map((x) =>
                               x.name === activeMcpServer.name
                                 ? { ...x, envHttpHeadersText: e.target.value }
-                                : x,
+                              : x,
                             ),
                           )
                         }
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        spellCheck={false}
                         placeholder="Authorization=MCP_AUTH"
                       />
                     </div>
