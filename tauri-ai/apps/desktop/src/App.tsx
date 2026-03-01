@@ -520,9 +520,9 @@ function App() {
    * The native menu event is emitted from Rust as `menu:open_file`.
    */
   useEffect(() => {
-    // Workstudio 窗口需要把“打开文件”路由到自己的编辑器，而不是切换到全局 DocumentView。
-    // 因此在 workstudio 视图（含 standalone 窗口）里跳过这里的监听（由 WorkstudioView 自己处理）。
-    if (isWorkstudioWindow) return;
+    // Workstudio 需要把“打开文件”路由到自己的编辑器，而不是切换到全局 DocumentView。
+    // 因此只在“非 workstudio 视图”监听这里的菜单事件（由 WorkstudioView 自己处理）。
+    if (isWorkstudioWindow || activeView === 'workstudio') return;
 
     let disposed = false;
     let unlisten: null | (() => void) = null;
@@ -587,7 +587,9 @@ function App() {
    * Create a new empty .tauri.richtxt document
    */
   useEffect(() => {
-    if (isWorkstudioWindow) return;
+    // Workstudio 视图由 WorkstudioView 处理“新建 .tauri.richtxt”，
+    // 这里仅在非 workstudio 视图下响应，避免主窗口与 Workstudio 同时创建。
+    if (isWorkstudioWindow || activeView === 'workstudio') return;
 
     let disposed = false;
     let unlisten: null | (() => void) = null;
@@ -629,6 +631,59 @@ function App() {
       })
       .catch(() => {
         // In non-Tauri environments, the listener may not be available.
+      });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [viewOverride, activeView, shouldInitChatRuntime]);
+
+  /**
+   * Menu: File -> New Text File
+   * Create a new empty .txt document
+   */
+  useEffect(() => {
+    if (isWorkstudioWindow || activeView === 'workstudio') return;
+
+    let disposed = false;
+    let unlisten: null | (() => void) = null;
+
+    void listen('menu:new_text', () => {
+      const re = /^Untitled-(\d+)\.txt$/i;
+      const docs = useDocumentStore.getState().documents;
+      let max = 0;
+      for (const d of docs) {
+        const m = re.exec(d.title);
+        if (!m) continue;
+        const n = Number(m[1]);
+        if (Number.isFinite(n)) max = Math.max(max, n);
+      }
+      const title = `Untitled-${max + 1}.txt`;
+
+      const docId = useDocumentStore.getState().openDocument({
+        title,
+        path: undefined,
+        kind: 'text',
+        content: '',
+      });
+
+      if (!shouldInitChatRuntime) {
+        useUIStore.getState().setActiveView('document');
+        return;
+      }
+
+      useWindowLayoutStore.getState().openTabInFocusedPane(docTabId(docId));
+      useUIStore.getState().setActiveView('chat');
+    })
+      .then((fn) => {
+        if (disposed) {
+          fn();
+          return;
+        }
+        unlisten = fn;
+      })
+      .catch(() => {
       });
 
     return () => {

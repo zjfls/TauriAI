@@ -107,7 +107,12 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
     let menu = Menu::default(app)?;
 
     // Prepare agent list for "新建会话（按 Agent）"
-    let mut enabled_agents: Vec<_> = config.agents.iter().filter(|a| a.enabled).collect();
+    // Exclude Workstudio/Workspace AI agents from main window "new conversation" menu.
+    let mut enabled_agents: Vec<_> = config
+        .agents
+        .iter()
+        .filter(|a| a.enabled && a.workstudio_enabled != Some(true))
+        .collect();
     // If configured default agent is missing/disabled, fall back to the first enabled agent.
     // Otherwise Ctrl/Cmd+T may not be bound to any menu item, making it look "not working".
     let configured_default = config.default_agent.trim();
@@ -138,6 +143,13 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
         "新建 .tauri.richtxt",
         true,
         Some("CmdOrCtrl+N"),
+    )?;
+    let new_text = MenuItem::with_id(
+        app,
+        "new_text",
+        "新建文本文件",
+        true,
+        None::<&str>,
     )?;
 
     // Session/app actions (moved from top-right toolbar to system menu bar)
@@ -242,10 +254,10 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
     }
 
     if let Some(file) = file_submenu {
-        file.insert_items(&[&new_richtxt, &open_file, &test_window, &separator], 0)?;
+        file.insert_items(&[&new_richtxt, &new_text, &open_file, &test_window, &separator], 0)?;
     } else {
         let file =
-            Submenu::with_items(app, "File", true, &[&new_richtxt, &open_file, &test_window])?;
+            Submenu::with_items(app, "File", true, &[&new_richtxt, &new_text, &open_file, &test_window])?;
         // On macOS, index 0 is the app menu. Insert after it.
         let pos = if cfg!(target_os = "macos") { 1 } else { 0 };
         menu.insert(&file, pos)?;
@@ -492,10 +504,10 @@ fn run_desktop() {
 	                        let _ = app.emit("menu:new_session_agent", agent_name);
 	                    }
 	                }
-	                "new_richtxt" => {
-	                    // Send event to create a new .tauri.richtxt file
-	                    let focused = app
-	                        .webview_windows()
+                "new_richtxt" => {
+                    // Send event to create a new .tauri.richtxt file
+                    let focused = app
+                        .webview_windows()
                         .into_values()
                         .find(|w| w.is_focused().unwrap_or(false));
 
@@ -503,6 +515,19 @@ fn run_desktop() {
                         let _ = window.emit("menu:new_richtxt", ());
                     } else {
                         let _ = app.emit("menu:new_richtxt", ());
+                    }
+                }
+                "new_text" => {
+                    // Send event to create a new plain text file
+                    let focused = app
+                        .webview_windows()
+                        .into_values()
+                        .find(|w| w.is_focused().unwrap_or(false));
+
+                    if let Some(window) = focused.or_else(|| app.get_webview_window("main")) {
+                        let _ = window.emit("menu:new_text", ());
+                    } else {
+                        let _ = app.emit("menu:new_text", ());
                     }
                 }
                 "open_file" => {

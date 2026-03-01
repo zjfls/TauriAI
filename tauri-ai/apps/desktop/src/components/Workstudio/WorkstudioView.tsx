@@ -41,6 +41,7 @@ import {
 import type {
   CodeSnippetContentPart,
   Conversation,
+  DebugInfo,
   LspServerStatus,
   MessageBlock,
   MessageTurn,
@@ -494,6 +495,18 @@ const nextUntitledRichTxtTitle = (files: OpenFile[]) => {
   return `Untitled-${max + 1}.tauri.richtxt`;
 };
 
+const nextUntitledTextTitle = (files: OpenFile[]) => {
+  const re = /^Untitled-(\d+)\.txt$/i;
+  let max = 0;
+  for (const f of files) {
+    const m = re.exec(f.title);
+    if (!m) continue;
+    const n = Number(m[1]);
+    if (Number.isFinite(n)) max = Math.max(max, n);
+  }
+  return `Untitled-${max + 1}.txt`;
+};
+
 const utf8Size = (text: string) => new TextEncoder().encode(text).length;
 
 const decodeBase64ToUtf8 = (base64: string) => {
@@ -517,6 +530,97 @@ const toErrorMessage = (err: unknown): string => {
   } catch {
     return String(err);
   }
+};
+
+const normalizeStreamTermination = (debugInfo?: DebugInfo | null): Record<string, unknown> | null => {
+  const raw = (debugInfo as any)?.streamTermination ?? (debugInfo as any)?.stream_termination;
+  if (!raw || typeof raw !== 'object') return null;
+  return raw as Record<string, unknown>;
+};
+
+const pickStringArray = (value: unknown): string[] => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => (typeof item === 'string' ? item : null))
+    .filter((item): item is string => Boolean(item && item.trim().length > 0));
+};
+
+const safeStringifyForDebug = (value: unknown): string | null => {
+  try {
+    if (typeof value === 'string') return value;
+    const text = JSON.stringify(value, null, 2);
+    return typeof text === 'string' && text.trim().length > 0 ? text : null;
+  } catch {
+    return null;
+  }
+};
+
+const buildProtocolDebugLines = (debugInfo?: DebugInfo | null): string[] => {
+  if (!debugInfo) return [];
+  const lines: string[] = [];
+  const requestMethod = (debugInfo.request?.method ?? '').trim();
+  const requestUrl = (debugInfo.request?.url ?? '').trim();
+  if (requestUrl) {
+    lines.push(`request=${requestMethod ? `${requestMethod} ` : ''}${requestUrl}`);
+  }
+  if (typeof debugInfo.response?.status === 'number') {
+    lines.push(`http_status=${debugInfo.response.status}`);
+  }
+  const responseBodyRaw = safeStringifyForDebug(debugInfo.response?.body);
+  if (responseBodyRaw) {
+    lines.push('raw_response_body:');
+    lines.push(...responseBodyRaw.split('\n'));
+  }
+
+  const term = normalizeStreamTermination(debugInfo);
+  if (!term) return lines;
+
+  const pickString = (value: unknown): string | null =>
+    typeof value === 'string' && value.trim() ? value.trim() : null;
+  const pickNumber = (value: unknown): number | null =>
+    typeof value === 'number' && Number.isFinite(value) ? value : null;
+  const pickBoolean = (value: unknown): boolean | null =>
+    typeof value === 'boolean' ? value : null;
+
+  const protocolComplete =
+    pickBoolean(term.protocolComplete) ?? pickBoolean((term as any).protocol_complete);
+  const terminationSource =
+    pickString(term.terminationSource) ?? pickString((term as any).termination_source);
+  const protocolKind = pickString(term.protocolKind) ?? pickString((term as any).protocol_kind);
+  const expectedSignal =
+    pickString(term.expectedSignal) ?? pickString((term as any).expected_signal);
+  const observedSignal =
+    pickString(term.observedSignal) ?? pickString((term as any).observed_signal);
+  const lastEventType =
+    pickString(term.lastEventType) ?? pickString((term as any).last_event_type);
+  const chunkCount = pickNumber(term.chunkCount) ?? pickNumber((term as any).chunk_count);
+  const eventCount = pickNumber(term.eventCount) ?? pickNumber((term as any).event_count);
+  const rawTail = (() => {
+    const camel = pickStringArray(term.rawEventTail);
+    if (camel.length > 0) return camel;
+    return pickStringArray((term as any).raw_event_tail);
+  })();
+
+  if (protocolComplete !== null) lines.push(`protocol_complete=${protocolComplete}`);
+  if (terminationSource) lines.push(`termination_source=${terminationSource}`);
+  if (protocolKind) lines.push(`protocol_kind=${protocolKind}`);
+  if (expectedSignal) lines.push(`expected_signal=${expectedSignal}`);
+  if (observedSignal) lines.push(`observed_signal=${observedSignal}`);
+  if (lastEventType) lines.push(`last_event_type=${lastEventType}`);
+  if (chunkCount !== null) lines.push(`chunk_count=${chunkCount}`);
+  if (eventCount !== null) lines.push(`event_count=${eventCount}`);
+  if (rawTail.length > 0) {
+    lines.push(`raw_event_tail_count=${rawTail.length}`);
+    lines.push('raw_event_tail:');
+    const maxRawLines = 200;
+    for (const item of rawTail.slice(0, maxRawLines)) {
+      lines.push(item);
+    }
+    if (rawTail.length > maxRawLines) {
+      lines.push(`... [truncated ${rawTail.length - maxRawLines} lines]`);
+    }
+  }
+  return lines;
 };
 
 const withTimeout = async <T,>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> => {
@@ -2615,16 +2719,40 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 		              cancelledFolderAnalysisBubbleIdsRef.current.delete(bubbleForCancel.id);
 		            }
 			            const errorMessage = isAbortedByUser ? '已中止' : payload.error || 'Unknown error';
+			            const errorTurnId = (payload.turnId ?? '').trim();
+			            const errorTurnIndex = errorTurnId ? getTurnIndex(conversationId, errorTurnId) : undefined;
+			            const protocolDebugLines = buildProtocolDebugLines(payload.debugInfo ?? null);
 			            setAiBubbles((prev) => {
 			              const next = prev.map((b) => {
 		                const matches =
 		                  (b.conversationId ?? '').trim() === conversationId || (mappedBubbleId && b.id === mappedBubbleId);
 		                if (!matches) return b;
 		                const bound = (b.conversationId ?? '').trim() === conversationId ? b : { ...b, conversationId };
+		                const turns = bound.turns ? bound.turns.slice() : [];
+		                if (errorTurnId) {
+		                  const idx = turns.findIndex((t) => t.turnId === errorTurnId);
+		                  const existing = idx >= 0 ? turns[idx] : undefined;
+		                  const nextTurn: MessageTurn = {
+		                    turnId: errorTurnId,
+		                    turnIndex: existing?.turnIndex ?? errorTurnIndex ?? 0,
+		                    status: 'failed',
+		                    hasDebugInfo:
+		                      Boolean(payload.debugInfo) ||
+		                      Boolean(existing?.hasDebugInfo) ||
+		                      Boolean(existing?.debugInfo),
+		                    debugInfo: payload.debugInfo ?? existing?.debugInfo,
+		                    usage: existing?.usage,
+		                    model: existing?.model,
+		                  };
+		                  if (idx === -1) turns.push(nextTurn);
+		                  else turns[idx] = nextTurn;
+		                }
 		                return {
 		                  ...bound,
 		                  status: 'error' as WorkstudioAiBubbleStatus,
 		                  error: errorMessage,
+		                  assistantMessageId: payload.assistantMessageId ?? bound.assistantMessageId,
+		                  turns: turns.length > 0 ? turns : bound.turns,
 		                };
 		              });
 			              aiBubblesRef.current = next;
@@ -2638,13 +2766,18 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 			                  [
 			                    `stage=run:event:error`,
 			                    `conversationId=${conversationId}`,
+			                    `turnId=${payload.turnId ?? ''}`,
 			                    `bubbleId=${bubbleForCancel?.id ?? mappedBubbleId ?? ''}`,
 			                    `workstudioId=${meta?.workstudioId ?? ''}`,
 			                    `folderPath=${meta?.folderPath ?? ''}`,
+			                    `assistantMessageId=${payload.assistantMessageId ?? ''}`,
 			                    `agent=${bubbleForCancel?.agentName ?? ''}`,
 			                    `modelRef=${bubbleForCancel?.modelRef ?? ''}`,
 			                    '',
 			                    errorMessage,
+			                    ...(protocolDebugLines.length > 0
+			                      ? ['', '协议层原始信息：', ...protocolDebugLines]
+			                      : []),
 			                  ].join('\n'),
 			                  new Error(errorMessage)
 			                );
@@ -2655,15 +2788,20 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 			                  [
 			                    `stage=run:event:error`,
 			                    `conversationId=${conversationId}`,
+			                    `turnId=${payload.turnId ?? ''}`,
 			                    `bubbleId=${bubbleForCancel?.id ?? mappedBubbleId ?? ''}`,
 			                    `workstudioId=${meta?.workstudioId ?? ''}`,
 			                    `filePath=${meta?.filePath ?? ''}`,
 			                    `symbolKey=${meta?.symbolKey ?? ''}`,
 			                    `symbol=${meta?.symbolName ?? ''} (${meta?.symbolKind ?? ''})`,
+			                    `assistantMessageId=${payload.assistantMessageId ?? ''}`,
 			                    `agent=${bubbleForCancel?.agentName ?? ''}`,
 			                    `modelRef=${bubbleForCancel?.modelRef ?? ''}`,
 			                    '',
 			                    errorMessage,
+			                    ...(protocolDebugLines.length > 0
+			                      ? ['', '协议层原始信息：', ...protocolDebugLines]
+			                      : []),
 			                  ].join('\n'),
 			                  new Error(errorMessage)
 			                );
@@ -7665,6 +7803,27 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     useWindowLayoutStore.getState().openTabInFocusedPane(id);
   }, []);
 
+  const createUntitledText = useCallback(() => {
+    const title = nextUntitledTextTitle(openFilesRef.current);
+    const id = `${UNTITLED_PREFIX}${title}`;
+    const content = '';
+
+    const next: OpenFile = {
+      id,
+      title,
+      path: id,
+      kind: 'text',
+      mime: 'text/plain',
+      size: utf8Size(content),
+      content,
+      originalContent: '',
+      dirty: true,
+    };
+
+    setOpenFiles((prev) => (prev.some((f) => f.id === id) ? prev : [...prev, next]));
+    useWindowLayoutStore.getState().openTabInFocusedPane(id);
+  }, []);
+
   const connectTerminal = useCallback(async () => {
     if (!terminalScope) return;
     await terminalSurfaceRef.current?.connect();
@@ -10242,6 +10401,31 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       unlisten?.();
     };
   }, [createUntitledRichTxt]);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listen('menu:new_text', () => {
+      try {
+        createUntitledText();
+      } catch (error) {
+        console.error('Workstudio new text file failed:', error);
+      }
+    })
+      .then((fn) => {
+        if (disposed) {
+          fn();
+          return;
+        }
+        unlisten = fn;
+      })
+      .catch(() => { });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [createUntitledText]);
 
   const renderDirNode = (dirPath: string, depth: number, opts?: { isRoot?: boolean; isMainRoot?: boolean }) => {
     const expanded = expandedDirs.has(dirPath);
