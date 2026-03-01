@@ -7391,14 +7391,14 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     [addCodeSnippetToMainChat, formatPathForSnippetLabel, showNavToast]
   );
 
-	  const deleteExplorerFile = useCallback(
-	    async (absPathRaw: string) => {
-	      const absPath = normalizeFsPath(String(absPathRaw ?? '').trim());
-	      if (!absPath) return;
-	      if (!ws) return;
+  const deleteExplorerFile = useCallback(
+    async (absPathRaw: string) => {
+      const absPath = normalizeFsPath(String(absPathRaw ?? '').trim());
+      if (!absPath) return;
+      if (!ws) return;
 
-	      const ok = await Promise.resolve(window.confirm(`确定要删除该文件吗？\n\n${absPath}`));
-	      if (!ok) return;
+      const ok = await Promise.resolve(window.confirm(`确定要删除该文件吗？\n\n${absPath}`));
+      if (!ok) return;
 
       try {
         await invoke('delete_local_path', {
@@ -7416,6 +7416,51 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       for (const id of toClose) closeFileTab(id);
 
       setExplorerSelectedFilePath((prev) => (prev === absPath ? null : prev));
+
+      const parent = absPath.split('/').slice(0, -1).join('/');
+      if (parent) {
+        void listDir(parent);
+      }
+    },
+    [closeFileTab, listDir, ws]
+  );
+
+  const deleteExplorerFolder = useCallback(
+    async (absPathRaw: string) => {
+      const absPath = normalizeFsPath(String(absPathRaw ?? '').trim());
+      if (!absPath) return;
+      if (!ws) return;
+
+      const ok = await Promise.resolve(
+        window.confirm(`确定要删除该文件夹吗？\n\n${absPath}\n\n该操作会递归删除该文件夹内的所有文件和子目录。`)
+      );
+      if (!ok) return;
+
+      try {
+        await invoke('delete_local_path', {
+          args: { path: absPath, recursive: true, allowedRoots: rootFoldersRef.current },
+        });
+      } catch (error) {
+        console.error('delete_local_path failed:', error);
+        return;
+      }
+
+      const folderPrefix = absPath.endsWith('/') ? absPath : `${absPath}/`;
+
+      // 删除文件夹后，关闭该目录及其子目录下已打开的文件 tab。
+      const toClose = openFilesRef.current
+        .filter((f) => {
+          const filePath = normalizeFsPath(f.path);
+          if (!filePath) return false;
+          return filePath === absPath || filePath.startsWith(folderPrefix);
+        })
+        .map((f) => f.id);
+      for (const id of toClose) closeFileTab(id);
+
+      setExplorerSelectedFilePath((prev) => {
+        if (!prev) return prev;
+        return prev === absPath || prev.startsWith(folderPrefix) ? null : prev;
+      });
 
       const parent = absPath.split('/').slice(0, -1).join('/');
       if (parent) {
@@ -11533,26 +11578,6 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                 <span className="whitespace-nowrap">{lspSummary.label}</span>
                 <ChevronDown size={12} className="opacity-70" />
               </button>
-              <button
-                type="button"
-                className={[
-                  'inline-flex items-center gap-2 rounded border px-2 py-1 text-xs',
-                  outlineOpen
-                    ? 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 dark:border-blue-700/60 dark:bg-blue-900/30 dark:text-blue-200 dark:hover:bg-blue-900/40'
-                    : 'border-gray-200 text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800',
-                ].join(' ')}
-                onClick={() => {
-                  setOutlineOpen((prev) => {
-                    const next = !prev;
-                    setLeftSidebarTab(next ? 'outline' : 'explorer');
-                    return next;
-                  });
-                }}
-                title={outlineOpen ? '隐藏 Outline' : '显示 Outline'}
-              >
-                <ListTree size={12} />
-                <span className="whitespace-nowrap">Outline{outlineItemCount > 0 ? `(${outlineItemCount})` : ''}</span>
-              </button>
               <div className="relative">
                 <button
                   type="button"
@@ -12761,6 +12786,17 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                 >
                   加入到 Chat
                 </button>
+              <button
+                type="button"
+                className="w-full px-3 py-2 text-left text-red-600 hover:bg-gray-100 dark:text-red-400 dark:hover:bg-gray-800"
+                onClick={() => {
+                  const folder = contextMenu.folder;
+                  setContextMenu(null);
+                  void deleteExplorerFolder(folder);
+                }}
+              >
+                删除文件夹
+              </button>
               <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
               {(() => {
                 const folderPath = contextMenu.folder;

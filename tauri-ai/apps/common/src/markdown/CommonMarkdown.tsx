@@ -14,6 +14,38 @@ interface ProtectedContent {
   blocks: Map<string, string>;
 }
 
+// 修复“表格被压平成一行”的常见错误：
+// 例如：
+// | A | B ||---|---|| 1 | 2 || 3 | 4 |
+// 会被修复为：
+// | A | B |
+// |---|---|
+// | 1 | 2 |
+// | 3 | 4 |
+//
+// 仅在“整行看起来像 GFM 表格且包含分隔行”时触发，避免影响普通文本中的 `||`。
+function repairFlattenedGfmTableRows(text: string): string {
+  if (!text || !text.includes("||")) return text;
+
+  const lines = text.split("\n");
+  let changed = false;
+
+  const repaired = lines.map((line) => {
+    if (!line.includes("||")) return line;
+    if (!line.trimStart().startsWith("|")) return line;
+    if (!/\|\s*:?-{3,}/.test(line)) return line;
+
+    const pipeCount = (line.match(/\|/g) ?? []).length;
+    if (pipeCount < 6) return line;
+
+    const next = line.replace(/\|\|/g, "|\n|");
+    if (next !== line) changed = true;
+    return next;
+  });
+
+  return changed ? repaired.join("\n") : text;
+}
+
 // Protect LaTeX / Mermaid / code blocks before DOMPurify processing.
 // This prevents DOMPurify from escaping < > & inside these expressions.
 // It also normalizes \[...\] and \(...\) to $$...$$ and $...$ so markdown won't eat the backslashes.
@@ -105,8 +137,9 @@ function restoreContent(content: string, blocks: Map<string, string>): string {
 
 export function preprocessMarkdown(content: string): string {
   const { text: protectedText, blocks } = protectContent(content ?? "");
+  const normalized = repairFlattenedGfmTableRows(protectedText);
 
-  const sanitized = DOMPurify.sanitize(protectedText, {
+  const sanitized = DOMPurify.sanitize(normalized, {
     ADD_TAGS: ["details", "summary", "kbd", "mark", "sub", "sup"],
     ADD_ATTR: ["open"],
   });
