@@ -504,6 +504,10 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
             onChange={(e) => setEditTitle(e.target.value)}
             onKeyDown={handleKeyDown}
             onClick={(e) => e.stopPropagation()}
+            autoCorrect="off"
+            autoCapitalize="off"
+            autoComplete="off"
+            spellCheck={false}
             className="w-full px-2 py-1 text-sm bg-white dark:bg-gray-700 border border-blue-300 dark:border-blue-600 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
             autoFocus
           />
@@ -688,6 +692,10 @@ const ConversationRow: React.FC<ConversationRowProps> = ({
             }}
             onBlur={commitRename}
             onClick={(e) => e.stopPropagation()}
+            autoCorrect="off"
+            autoCapitalize="off"
+            autoComplete="off"
+            spellCheck={false}
             className="w-full rounded border border-blue-300 bg-white px-2 py-1 text-sm outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-900 dark:border-blue-700"
             autoFocus
           />
@@ -1733,6 +1741,10 @@ export const HistoryPanel: React.FC = () => {
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
+                autoCorrect="off"
+                autoCapitalize="off"
+                autoComplete="off"
+                spellCheck={false}
                 placeholder="搜索标题 / 工作区 / 文件路径…"
                 className="w-full pl-8 pr-8 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-100 outline-none focus:ring-2 focus:ring-blue-500"
               />

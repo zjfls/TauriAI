@@ -135,6 +135,29 @@ enum TaskOutcome {
     },
 }
 
+fn count_prompt_task_groups(messages: &[Message]) -> u32 {
+    let mut groups = 0u32;
+    let mut seen_non_system = false;
+
+    for message in messages {
+        if !seen_non_system && message.role == MessageRole::System {
+            continue;
+        }
+
+        if !seen_non_system {
+            seen_non_system = true;
+            groups = groups.saturating_add(1);
+            continue;
+        }
+
+        if message.role == MessageRole::User {
+            groups = groups.saturating_add(1);
+        }
+    }
+
+    groups
+}
+
 /// TurnLoop：把 run_task 内部「按 Turn 迭代」的零碎逻辑集中到一个结构里，保持 run_task 干净。
 struct TurnLoop<'a> {
     client: Arc<dyn crate::ai_client::AiClient>,
@@ -1440,27 +1463,49 @@ impl<'a> TurnLoop<'a> {
                 let trim_target = hard_limit_tokens(ctx_len, trim_target_pct);
 
                 if self.ctx_mgr.should_trim() {
+                    let runtime_before_trim = std::mem::take(&mut self.runtime_messages);
+                    let task_groups_before = count_prompt_task_groups(&runtime_before_trim);
                     let trim = trim_runtime_messages_to_hard_limit(
-                        std::mem::take(&mut self.runtime_messages),
+                        runtime_before_trim,
                         hard_limit,
                         trim_target,
                     );
+                    let kept_tasks = count_prompt_task_groups(&trim.trimmed_messages);
+                    let removed_tasks = task_groups_before.saturating_sub(kept_tasks);
+                    let target_unreachable = trim.estimated_tokens_before > trim_target
+                        && trim.estimated_tokens_after > trim_target;
+
                     turn_context_trim = Some(TurnContextTrimInfo {
                         enabled: true,
                         removed_messages: u32::try_from(trim.removed_messages).unwrap_or(u32::MAX),
                         estimated_tokens_before: trim.estimated_tokens_before,
                         estimated_tokens_after: trim.estimated_tokens_after,
                         hard_limit_tokens: trim.hard_limit_tokens,
+                        trim_target_tokens: trim_target,
+                        removed_tasks,
+                        kept_tasks,
+                        trimmed_tasks_since_last: None,
+                        added_tasks_since_last: None,
+                        delta_tokens_since_last: None,
+                        target_unreachable: Some(target_unreachable),
                     });
                     self.runtime_messages = trim.trimmed_messages;
                 } else {
                     let estimated = estimate_prompt_tokens(&self.runtime_messages);
+                    let kept_tasks = count_prompt_task_groups(&self.runtime_messages);
                     turn_context_trim = Some(TurnContextTrimInfo {
                         enabled: false,
                         removed_messages: 0,
                         estimated_tokens_before: estimated,
                         estimated_tokens_after: estimated,
                         hard_limit_tokens: hard_limit,
+                        trim_target_tokens: trim_target,
+                        removed_tasks: 0,
+                        kept_tasks,
+                        trimmed_tasks_since_last: None,
+                        added_tasks_since_last: None,
+                        delta_tokens_since_last: None,
+                        target_unreachable: Some(false),
                     });
                 }
             }

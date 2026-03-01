@@ -149,6 +149,10 @@ export const ModelPickerModal: React.FC<ModelPickerModalProps> = ({
               placeholder="搜索模型 ID 或名称"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
+              autoCorrect="off"
+              autoCapitalize="off"
+              autoComplete="off"
+              spellCheck={false}
               className="w-full pl-9 pr-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm"
             />
           </div>

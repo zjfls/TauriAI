@@ -10664,6 +10664,10 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                 value={inlineChatComposer.question}
                 onChange={(e) => setInlineChatComposer((prev) => ({ ...prev, question: e.target.value }))}
                 rows={3}
+                autoCorrect="off"
+                autoCapitalize="off"
+                autoComplete="off"
+                spellCheck={false}
                 className="w-full resize-y rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none focus:ring-2 focus:ring-blue-500/40 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-100"
                 placeholder="例如：这段代码为什么会这样设计？可能的 bug 在哪？"
               />
@@ -12010,6 +12014,10 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                 ref={filePaletteInputRef}
                 value={filePaletteQuery}
                 onChange={(e) => setFilePaletteQuery(e.target.value)}
+                autoCorrect="off"
+                autoCapitalize="off"
+                autoComplete="off"
+                spellCheck={false}
                 placeholder="输入文件名或路径片段..."
                 className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
                 onKeyDown={(e) => {

@@ -181,6 +181,10 @@ export function ModelPickerModal({
               placeholder="搜索模型 ID 或名称"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
+              autoCapitalize="none"
+              autoCorrect="off"
+              autoComplete="off"
+              spellCheck={false}
               className="h-10 w-full rounded-md bg-white/5 border border-white/10 pl-9 pr-3 text-sm outline-none focus:border-indigo-400"
             />
           </div>
