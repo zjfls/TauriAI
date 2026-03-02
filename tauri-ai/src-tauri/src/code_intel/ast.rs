@@ -306,9 +306,7 @@ fn lua_symbol_from_node(node: tree_sitter::Node, src: &str) -> Option<AstSymbol>
     })
 }
 
-fn find_first_go_identifier_like<'a>(
-    node: tree_sitter::Node<'a>,
-) -> Option<tree_sitter::Node<'a>> {
+fn find_first_go_identifier_like<'a>(node: tree_sitter::Node<'a>) -> Option<tree_sitter::Node<'a>> {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         match child.kind() {

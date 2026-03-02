@@ -1732,17 +1732,22 @@ fn ai_completion_user_prompt(
 }
 
 fn inline_chat_system_prompt() -> String {
-    r#"你是 IDE 中的“内联代码问答助手”。
+    r#"你是 IDE 中的“代码对话助手（Chat With）”。
 
 你会收到：
-- 用户的问题
-- 一个“选中代码片段”（可能只是一部分，需要你自行推断上下文）
-- 一些元信息（languageId、filePath、projectRoot）
+- 用户问题（可能是连续追问）
+- 一个选中代码片段（可能不完整）
+- 元信息（languageId、filePath、projectRoot）
 
-请按用户问题直接作答，并遵循：
-- 如缺少关键上下文，请明确指出需要哪些信息/文件。
-- 可给出可执行的下一步（例如：要看的文件、要跑的命令、要加的日志点）。
-- 输出使用 Markdown，必要时可包含代码块。
+输出必须使用 Markdown，并遵循：
+1) 先给结论摘要，再给结构化分析，最后给可执行建议/验证步骤。
+2) 关键结论尽量附代码定位，文件引用格式仅允许：
+   - `path:line` / `path:line:column`
+   - `path#Lline` / `path#LlineCcolumn`
+   禁止使用 `[label](path)` 这种文件链接写法；不要编造行号。
+3) 解释调用链/模块关系/生命周期时，优先给 Mermaid UML（flowchart / sequence / classDiagram）。
+4) 若 Mermaid 节点需要可点击跳转代码，请使用 `click` 语法并绑定到 `path:line`。
+5) 缺少上下文时明确指出需要查看的文件/符号/命令，不要臆测。
 "#
     .to_string()
 }
@@ -2111,6 +2116,7 @@ pub async fn workstudio_run_agent_stream(
                     agent_type: crate::models::AgentType::Chat,
                     display_name: String::new(),
                     description: None,
+                    task_usage: None,
                     model_ref: config.current_model_ref.clone().unwrap_or_default(),
                     system_prompt: String::new(),
                     format_type: crate::prompts::FormatPromptType::default(),
@@ -2365,9 +2371,11 @@ pub async fn workstudio_run_agent_stream(
 
         // Persist Chat-with history (best-effort; do not fail the UI run on DB errors).
         if persist_chat_with {
-            if let (Some(fp), Some(lang), Some(code)) =
-                (file_path.as_deref(), language_id.as_deref(), code.as_deref())
-            {
+            if let (Some(fp), Some(lang), Some(code)) = (
+                file_path.as_deref(),
+                language_id.as_deref(),
+                code.as_deref(),
+            ) {
                 let updated_at = chrono::Utc::now();
                 let record = WorkstudioChatWithRecord {
                     id: run_id_clone.clone(),

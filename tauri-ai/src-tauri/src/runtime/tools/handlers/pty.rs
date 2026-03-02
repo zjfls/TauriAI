@@ -487,7 +487,14 @@ async fn exec_command_with_scope(
     let session_id = ctx
         .services
         .pty
-        .create_session(command, workdir, ctx.conversation_id, ctx.task_id, scope, None)
+        .create_session(
+            command,
+            workdir,
+            ctx.conversation_id,
+            ctx.task_id,
+            scope,
+            None,
+        )
         .await
         .map_err(ToolError::new)?;
 

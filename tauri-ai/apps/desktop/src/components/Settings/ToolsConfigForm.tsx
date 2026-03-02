@@ -15,9 +15,8 @@ const AVAILABLE_TOOLS = [
   { name: 'list_dir', label: '列目录', description: '列出目录结构（带缩进）' },
   { name: 'rg', label: 'rg', description: '按 pattern 搜索文件（ripgrep）' },
   { name: 'text_edit', label: '文本编辑', description: '抽象文本编辑能力：实现由模型的 textEditImplementation 选择（默认 apply_patch）' },
-  { name: 'shell_command', label: 'Shell 命令', description: '一次性执行命令' },
-  { name: 'exec_command', label: 'PTY 启动命令', description: '创建交互式会话' },
-  { name: 'write_stdin', label: 'PTY 写入输入', description: '向交互式会话写入 stdin' },
+  { name: 'agenttask', label: 'Agent 子任务', description: '抽象 Agent 子任务能力：实现由模型的 agentTaskImplementation 选择（in_process / subprocess）' },
+  { name: 'shell', label: 'Shell', description: '抽象 Shell 能力：实现由模型的 shellImplementation 选择（默认 shell_command）' },
 ] as const;
 
 const toggleInList = (list: string[], value: string) =>
@@ -339,6 +338,22 @@ export const ToolsConfigForm: React.FC = () => {
                             } else if (concreteEditTools.has(tool.name) && nextTools.includes(tool.name)) {
                               // 用户显式开启具体实现时，关闭抽象开关（更直觉：显式优先）。
                               nextTools = nextTools.filter((t) => t !== TEXT_EDIT);
+                            }
+
+                            // 抽象 shell：toolset 里只保留 `shell`，具体实现由“模型配置”决定。
+                            const SHELL = 'shell';
+                            const concreteShellTools = new Set([
+                              'shell_command',
+                              'exec_command',
+                              'write_stdin',
+                              'exec_command_persistent',
+                              'write_stdin_persistent',
+                            ]);
+
+                            if (nextTools.includes(SHELL)) {
+                              nextTools = nextTools.filter((t) => t === SHELL || !concreteShellTools.has(t));
+                            } else if (concreteShellTools.has(tool.name) && nextTools.includes(tool.name)) {
+                              nextTools = nextTools.filter((t) => t !== SHELL);
                             }
 
                             // apply_patch 工具互斥：一个 toolset 最多只能启用一个。

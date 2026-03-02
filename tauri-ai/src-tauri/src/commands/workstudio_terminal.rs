@@ -10,8 +10,7 @@ use crate::runtime::RunState;
 
 use super::terminal::{
     terminal_close, terminal_create, terminal_read, terminal_read_base64, terminal_resize,
-    terminal_write,
-    TerminalScope,
+    terminal_write, TerminalScope,
 };
 
 #[tauri::command]

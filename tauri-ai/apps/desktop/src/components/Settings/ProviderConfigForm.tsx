@@ -9,7 +9,15 @@ import { useConfigStore } from '../../stores/configStore';
 import { testConnection } from '../../services/configService';
 import { ModelPickerModal } from './ModelPickerModal';
 import { SecretInput } from './SecretInput';
-import type { Provider, Model, ProviderType, ModelCapabilities, TextEditImplementation } from '../../types';
+import type {
+  Provider,
+  Model,
+  ProviderType,
+  ModelCapabilities,
+  TextEditImplementation,
+  AgentTaskImplementation,
+  ShellImplementation,
+} from '../../types';
 
 // Helper to infer capabilities from model name (mirrors backend logic)
 const inferCapabilities = (modelName: string): ModelCapabilities => {
@@ -889,6 +897,52 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
                                   </select>
                                   <p className="mt-1 text-[11px] text-gray-500">
                                     仅当 toolset 开启 <code className="font-mono">text_edit</code>（抽象文本编辑）时生效。
+                                  </p>
+                                </div>
+
+                                <div className="col-span-4">
+                                  <label className="block text-xs text-gray-500">agenttask 实现</label>
+                                  <select
+                                    value={model.agentTaskImplementation ?? 'in_process'}
+                                    onChange={(e) => {
+                                      const next = e.target.value as AgentTaskImplementation;
+                                      onUpdateModel(index, {
+                                        ...model,
+                                        agentTaskImplementation: next === 'in_process' ? undefined : next,
+                                      });
+                                    }}
+                                    disabled={!isEditing}
+                                    className="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100"
+                                  >
+                                    <option value="in_process">in_process（默认）</option>
+                                    <option value="subprocess">subprocess（headless）</option>
+                                  </select>
+                                  <p className="mt-1 text-[11px] text-gray-500">
+                                    仅当 toolset 开启 <code className="font-mono">agenttask</code> 时生效；工具名始终为 <code className="font-mono">agenttask</code>。
+                                  </p>
+                                </div>
+
+                                <div className="col-span-4">
+                                  <label className="block text-xs text-gray-500">shell 实现</label>
+                                  <select
+                                    value={model.shellImplementation ?? 'shell_command'}
+                                    onChange={(e) => {
+                                      const next = e.target.value as ShellImplementation;
+                                      onUpdateModel(index, {
+                                        ...model,
+                                        shellImplementation: next === 'shell_command' ? undefined : next,
+                                      });
+                                    }}
+                                    disabled={!isEditing}
+                                    className="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100"
+                                  >
+                                    <option value="shell_command">shell_command（默认）</option>
+                                    <option value="pty">pty（exec_command + write_stdin）</option>
+                                    <option value="pty_persistent">pty_persistent（持久 PTY）</option>
+                                  </select>
+                                  <p className="mt-1 text-[11px] text-gray-500">
+                                    仅当 toolset 开启 <code className="font-mono">shell</code>（抽象 shell）时生效；
+                                    <code className="font-mono">pty_persistent</code> 还需要 toolset 开启“持久进程”。
                                   </p>
                                 </div>
 

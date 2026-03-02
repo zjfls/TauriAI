@@ -1283,10 +1283,7 @@ fn compute_replacements(
                 break;
             }
         }
-        let width = rows
-            .last()
-            .map(|(n, _)| n.to_string().len())
-            .unwrap_or(1);
+        let width = rows.last().map(|(n, _)| n.to_string().len()).unwrap_or(1);
         let mut out = String::new();
         for (idx, (n, line)) in rows.iter().enumerate() {
             if idx > 0 {
@@ -1297,7 +1294,11 @@ fn compute_replacements(
         out
     }
 
-    fn render_patch_preview(old_lines: &[String], new_lines: &[String], max_lines: usize) -> String {
+    fn render_patch_preview(
+        old_lines: &[String],
+        new_lines: &[String],
+        max_lines: usize,
+    ) -> String {
         let old_len = old_lines.len();
         let new_len = new_lines.len();
         let mut prefix = 0usize;
@@ -1420,13 +1421,13 @@ fn compute_replacements(
         fn normalise_no_trim(s: &str) -> String {
             s.chars()
                 .map(|c| match c {
-                    '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}' | '\u{2014}'
-                    | '\u{2015}' | '\u{2212}' => '-',
+                    '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}' | '\u{2014}' | '\u{2015}'
+                    | '\u{2212}' => '-',
                     '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' => '\'',
                     '\u{201C}' | '\u{201D}' | '\u{201E}' | '\u{201F}' => '"',
-                    '\u{00A0}' | '\u{2002}' | '\u{2003}' | '\u{2004}' | '\u{2005}'
-                    | '\u{2006}' | '\u{2007}' | '\u{2008}' | '\u{2009}' | '\u{200A}'
-                    | '\u{202F}' | '\u{205F}' | '\u{3000}' => ' ',
+                    '\u{00A0}' | '\u{2002}' | '\u{2003}' | '\u{2004}' | '\u{2005}' | '\u{2006}'
+                    | '\u{2007}' | '\u{2008}' | '\u{2009}' | '\u{200A}' | '\u{202F}'
+                    | '\u{205F}' | '\u{3000}' => ' ',
                     other => other,
                 })
                 .collect::<String>()
@@ -1441,7 +1442,10 @@ fn compute_replacements(
             }
 
             // 1) Exact
-            let exact = pat.iter().enumerate().all(|(i, p)| original_lines[idx + i] == *p);
+            let exact = pat
+                .iter()
+                .enumerate()
+                .all(|(i, p)| original_lines[idx + i] == *p);
             if exact {
                 return true;
             }
@@ -1455,9 +1459,9 @@ fn compute_replacements(
                 return true;
             }
 
-            pat.iter().enumerate().all(|(i, p)| {
-                normalise_no_trim(&original_lines[idx + i]) == normalise_no_trim(p)
-            })
+            pat.iter()
+                .enumerate()
+                .all(|(i, p)| normalise_no_trim(&original_lines[idx + i]) == normalise_no_trim(p))
         };
 
         // 当提供了严格锚定行（`@@ <exact line>`）时，优先尝试在“锚定后的当前游标位置”直接匹配。
@@ -1495,7 +1499,7 @@ fn compute_replacements(
                     SeekAmbiguityPolicy::RequireUniqueIfNoHint,
                 )?
             };
-            }
+        }
 
         if let Some(start_idx) = found {
             replacements.push((start_idx, pattern.len(), new_slice.to_vec()));
@@ -1534,17 +1538,16 @@ fn compute_replacements(
                 }
 
                 let mut prefix = 0usize;
-                let max_prefix = pattern.len().min(original_lines.len().saturating_sub(start_idx));
+                let max_prefix = pattern
+                    .len()
+                    .min(original_lines.len().saturating_sub(start_idx));
                 while prefix < max_prefix
                     && line_eq(&original_lines[start_idx + prefix], &pattern[prefix])
                 {
                     prefix += 1;
                 }
 
-                let dist = chunk
-                    .line_hint
-                    .map(|h| start_idx.abs_diff(h))
-                    .unwrap_or(0);
+                let dist = chunk.line_hint.map(|h| start_idx.abs_diff(h)).unwrap_or(0);
 
                 if prefix > best_prefix
                     || (prefix == best_prefix && dist < best_dist)
@@ -1648,10 +1651,10 @@ fn compute_replacements(
     Ok(replacements)
 }
 
-    fn apply_replacements(
-        mut lines: Vec<String>,
-        replacements: &[(usize, usize, Vec<String>)],
-    ) -> Vec<String> {
+fn apply_replacements(
+    mut lines: Vec<String>,
+    replacements: &[(usize, usize, Vec<String>)],
+) -> Vec<String> {
     for (start_idx, old_len, new_segment) in replacements.iter().rev() {
         let start_idx = *start_idx;
         let old_len = *old_len;
@@ -1666,30 +1669,30 @@ fn compute_replacements(
             lines.insert(start_idx + offset, new_line.clone());
         }
     }
-        lines
+    lines
 }
 
-    #[derive(Debug, Clone, Copy)]
-    enum SeekAmbiguityPolicy {
-        /// 多处命中时选择第一处（若提供了 line_hint，则选择最接近 hint 的那一处）。
-        ///
-        /// 用途：`@@ <锚定行>` 只负责推进搜索起点，允许锚定行在文件中出现多次。
-        FirstMatch,
-        /// 多处命中时要求唯一；但如果提供了 line_hint，则用 hint 消歧并选择最接近的一处。
-        ///
-        /// 用途：`old_lines`（context lines + `-` lines 组成的连续片段）一旦多处命中就有较大概率“改错地方”，
-        /// 因此默认拒绝并提示补充更多上下文行或更具体锚点。
-        RequireUniqueIfNoHint,
+#[derive(Debug, Clone, Copy)]
+enum SeekAmbiguityPolicy {
+    /// 多处命中时选择第一处（若提供了 line_hint，则选择最接近 hint 的那一处）。
+    ///
+    /// 用途：`@@ <锚定行>` 只负责推进搜索起点，允许锚定行在文件中出现多次。
+    FirstMatch,
+    /// 多处命中时要求唯一；但如果提供了 line_hint，则用 hint 消歧并选择最接近的一处。
+    ///
+    /// 用途：`old_lines`（context lines + `-` lines 组成的连续片段）一旦多处命中就有较大概率“改错地方”，
+    /// 因此默认拒绝并提示补充更多上下文行或更具体锚点。
+    RequireUniqueIfNoHint,
 }
 
-    fn seek_sequence(
-        lines: &[String],
-        pattern: &[String],
-        start: usize,
-        eof: bool,
-        hint: Option<usize>,
-        ambiguity_policy: SeekAmbiguityPolicy,
-    ) -> Result<Option<usize>, ToolError> {
+fn seek_sequence(
+    lines: &[String],
+    pattern: &[String],
+    start: usize,
+    eof: bool,
+    hint: Option<usize>,
+    ambiguity_policy: SeekAmbiguityPolicy,
+) -> Result<Option<usize>, ToolError> {
     if pattern.is_empty() {
         return Ok(Some(start));
     }

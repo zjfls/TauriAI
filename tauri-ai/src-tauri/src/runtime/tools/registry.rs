@@ -5,9 +5,11 @@ use async_trait::async_trait;
 use tokio::sync::Mutex;
 
 use crate::ai_client::ToolCall;
+use crate::models::AgentTaskImplementation;
 use crate::models::SandboxPolicy;
 use crate::runtime::emitter::RunEmitter;
 
+use super::handlers::agent_task::{AgentTaskInProcessTool, AgentTaskSubprocessTool};
 use super::handlers::apply_patch::{ApplyPatchTool, ApplyPatchUnifiedDiffTool};
 use super::handlers::builtin::{EchoTool, GetTimeTool};
 use super::handlers::file_tools::{ListDirTool, ReadFileTool, RgTool};
@@ -184,12 +186,36 @@ impl ToolRegistry {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct BuiltinHandlerOptions {
+    pub agent_task_implementation: AgentTaskImplementation,
+}
+
+impl Default for BuiltinHandlerOptions {
+    fn default() -> Self {
+        Self {
+            agent_task_implementation: AgentTaskImplementation::InProcess,
+        }
+    }
+}
+
 pub fn register_builtin_handlers(registry: &mut ToolRegistry) {
+    register_builtin_handlers_with_options(registry, BuiltinHandlerOptions::default());
+}
+
+pub fn register_builtin_handlers_with_options(
+    registry: &mut ToolRegistry,
+    options: BuiltinHandlerOptions,
+) {
     registry.register(Arc::new(EchoTool));
     registry.register(Arc::new(GetTimeTool));
     registry.register(Arc::new(ReadFileTool));
     registry.register(Arc::new(ListDirTool));
     registry.register(Arc::new(RgTool));
+    match options.agent_task_implementation {
+        AgentTaskImplementation::InProcess => registry.register(Arc::new(AgentTaskInProcessTool)),
+        AgentTaskImplementation::Subprocess => registry.register(Arc::new(AgentTaskSubprocessTool)),
+    }
     registry.register(Arc::new(ApplyPatchTool));
     registry.register(Arc::new(ApplyPatchUnifiedDiffTool));
     registry.register(Arc::new(WriteFileTool));

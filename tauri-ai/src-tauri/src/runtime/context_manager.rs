@@ -13,8 +13,8 @@ use tokio::sync::Mutex;
 use crate::ai_client::AiClient;
 use crate::errors::{AppErrorCode, SerializableError};
 use crate::models::{
-    ContextCompactionMeta, ContextPolicyConfig, Message, MessageMeta, MessageRole, MessageStatus,
-    ModelConfig, NormalCompactPolicyConfig,
+    ContentPart, ContextCompactionMeta, ContextPolicyConfig, Message, MessageMeta, MessageRole,
+    MessageStatus, ModelConfig, NormalCompactPolicyConfig,
 };
 use crate::storage::async_db;
 use crate::storage::Database;
@@ -244,16 +244,10 @@ fn estimate_message_tokens(message: &Message) -> u32 {
     let mut total = 8u32; // message envelope overhead
 
     total = total.saturating_add(approx_tokens_for_text(role_to_str(&message.role)));
-    total = total.saturating_add(approx_tokens_for_text(message.content.as_str()));
+    total = total.saturating_add(estimate_content_payload_tokens(message));
 
     if let Some(t) = message.thinking.as_ref() {
         total = total.saturating_add(approx_tokens_for_text(t.as_str()));
-    }
-
-    if !message.content_parts.is_empty() {
-        if let Ok(s) = serde_json::to_string(&message.content_parts) {
-            total = total.saturating_add(approx_tokens_for_text(s.as_str()));
-        }
     }
 
     if let Some(meta) = message.meta.as_ref() {
@@ -261,6 +255,74 @@ fn estimate_message_tokens(message: &Message) -> u32 {
     }
 
     total
+}
+
+fn estimate_content_payload_tokens(message: &Message) -> u32 {
+    let content_tokens = approx_tokens_for_text(message.content.as_str());
+    if message.content_parts.is_empty() {
+        return content_tokens;
+    }
+
+    let parts_tokens = serde_json::to_string(&message.content_parts)
+        .map(|s| approx_tokens_for_text(s.as_str()))
+        .unwrap_or(content_tokens);
+
+    if content_tokens == 0 {
+        return parts_tokens;
+    }
+
+    // `content` 与 `content_parts` 在多模态消息里常常语义重叠（尤其是 Text part）。
+    // 对于明显重叠的场景，避免重复计数导致过早裁剪。
+    let inline_text = extract_inline_text_from_parts(&message.content_parts);
+    if !inline_text.is_empty() {
+        let normalized_content = normalize_for_overlap_check(message.content.as_str());
+        let normalized_parts_text = normalize_for_overlap_check(inline_text.as_str());
+        if !normalized_content.is_empty()
+            && !normalized_parts_text.is_empty()
+            && (normalized_content == normalized_parts_text
+                || normalized_content.contains(normalized_parts_text.as_str())
+                || normalized_parts_text.contains(normalized_content.as_str()))
+        {
+            return content_tokens.max(parts_tokens);
+        }
+    }
+
+    content_tokens.saturating_add(parts_tokens)
+}
+
+fn extract_inline_text_from_parts(parts: &[ContentPart]) -> String {
+    let mut text = String::new();
+    for part in parts {
+        match part {
+            ContentPart::Text { text: t } => {
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str(t);
+            }
+            ContentPart::TextFile { content, .. } => {
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str(content);
+            }
+            ContentPart::CodeSnippet { text: t, .. } => {
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str(t);
+            }
+            _ => {}
+        }
+    }
+    text
+}
+
+fn normalize_for_overlap_check(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -415,7 +477,8 @@ pub fn trim_runtime_messages_to_hard_limit(
         estimated_after = estimated_after.saturating_sub(units[idx].estimated_tokens);
     }
 
-    let mut trimmed_messages: Vec<Message> = Vec::with_capacity(messages.len().saturating_sub(removed));
+    let mut trimmed_messages: Vec<Message> =
+        Vec::with_capacity(messages.len().saturating_sub(removed));
     trimmed_messages.extend(messages[..system_prefix_len].iter().cloned());
     for (idx, unit) in units.iter().enumerate() {
         if keep[idx] {
@@ -438,8 +501,8 @@ pub fn trim_runtime_messages_to_hard_limit(
 mod tests {
     use super::{estimate_prompt_tokens, trim_runtime_messages_to_hard_limit, ContextManager};
     use crate::models::{
-        ContextPolicyConfig, Message, MessageBlock, MessageMeta, MessageRole, MessageStatus,
-        NormalCompactPolicyConfig, SimplePolicyConfig,
+        ContentPart, ContextPolicyConfig, Message, MessageBlock, MessageMeta, MessageRole,
+        MessageStatus, NormalCompactPolicyConfig, SimplePolicyConfig,
     };
 
     fn mk_message(role: MessageRole, content: &str) -> Message {
@@ -551,6 +614,43 @@ mod tests {
         assert!(
             with_meta_tokens > baseline_tokens,
             "tool_call metadata should contribute to estimation"
+        );
+    }
+
+    #[test]
+    fn estimate_prompt_tokens_avoids_double_count_for_overlapping_text_parts() {
+        let mut plain = mk_message(MessageRole::User, "请分析这个函数的输入和输出");
+        let plain_est = estimate_prompt_tokens(&[plain.clone()]);
+
+        plain.content_parts = vec![ContentPart::Text {
+            text: "请分析这个函数的输入和输出".to_string(),
+        }];
+        let overlap_est = estimate_prompt_tokens(&[plain]);
+
+        assert!(
+            overlap_est <= plain_est + 24,
+            "overlapping content/content_parts should not be double counted: plain={}, overlap={}",
+            plain_est,
+            overlap_est
+        );
+    }
+
+    #[test]
+    fn estimate_prompt_tokens_counts_non_overlapping_content_and_parts() {
+        let mut message = mk_message(MessageRole::User, "请看图并指出异常");
+        let content_only = estimate_prompt_tokens(&[message.clone()]);
+
+        message.content_parts = vec![ContentPart::Image {
+            url: "https://example.com/diagram.png".to_string(),
+            detail: crate::models::ImageDetail::Auto,
+        }];
+        let mixed = estimate_prompt_tokens(&[message]);
+
+        assert!(
+            mixed > content_only,
+            "non-overlapping content + parts should both contribute: content_only={}, mixed={}",
+            content_only,
+            mixed
         );
     }
 

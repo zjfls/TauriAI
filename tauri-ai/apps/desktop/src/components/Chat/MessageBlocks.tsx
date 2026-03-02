@@ -17,6 +17,7 @@
    MessageBlock,
    MessageSource,
    MessageTurn,
+   TurnContextTrimInfo,
    Workstudio,
    WorkstudioSecurityConfig,
  } from '../../types';
@@ -1461,6 +1462,51 @@ const TaskPatchSummary: React.FC<{ blocks: MessageBlock[]; isStreaming?: boolean
   );
 };
 
+const TrimDetailValue: React.FC<{ value?: number | boolean | null }> = ({ value }) => {
+  if (value === undefined || value === null) {
+    return <span className="text-gray-400 dark:text-gray-500">-</span>;
+  }
+  if (typeof value === 'boolean') {
+    return <span>{value ? '是' : '否'}</span>;
+  }
+  return <span>{Number.isFinite(value) ? value.toLocaleString() : String(value)}</span>;
+};
+
+const TurnContextTrimDetailPanel: React.FC<{ trim: TurnContextTrimInfo }> = ({ trim }) => {
+  const rows: Array<{ label: string; value?: number | boolean | null }> = [
+    { label: '启用裁剪', value: trim.enabled },
+    { label: '移除消息', value: trim.removedMessages },
+    { label: '移除任务组', value: trim.removedTasks },
+    { label: '保留任务组', value: trim.keptTasks },
+    { label: '估算 Token（前）', value: trim.estimatedTokensBefore },
+    { label: '估算 Token（后）', value: trim.estimatedTokensAfter },
+    { label: 'Hard Limit', value: trim.hardLimitTokens },
+    { label: 'Trim Target', value: trim.trimTargetTokens },
+    { label: '相对上轮移除任务', value: trim.trimmedTasksSinceLast },
+    { label: '相对上轮新增任务', value: trim.addedTasksSinceLast },
+    { label: '相对上轮 Token 变化', value: trim.deltaTokensSinceLast },
+    { label: '目标不可达', value: trim.targetUnreachable },
+  ];
+
+  return (
+    <div className="mb-2 rounded border border-amber-200 bg-amber-50/60 px-3 py-2 text-[11px] text-amber-900 dark:border-amber-800/70 dark:bg-amber-950/30 dark:text-amber-100">
+      <div className="mb-1.5 text-[10px] font-semibold tracking-wide text-amber-700 dark:text-amber-300">
+        裁剪明细
+      </div>
+      <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+        {rows.map((row) => (
+          <React.Fragment key={row.label}>
+            <div className="text-amber-700 dark:text-amber-300">{row.label}</div>
+            <div className="text-right font-mono">
+              <TrimDetailValue value={row.value} />
+            </div>
+          </React.Fragment>
+        ))}
+      </div>
+    </div>
+  );
+};
+
 interface ThinkingBlockProps {
   text: string;
   isStreaming?: boolean;
@@ -2633,6 +2679,7 @@ export const MessageBlocks: React.FC<{
   const ansiRenderMode = config?.general?.ansiRenderMode;
   const ansiColorMode = config?.general?.ansiColorMode;
   const [activeDebugTurn, setActiveDebugTurn] = useState<MessageTurn | null>(null);
+  const [activeTrimDetailTurnId, setActiveTrimDetailTurnId] = useState<string | null>(null);
 
   const turnMetaById = useMemo(() => {
     const map = new Map<string, MessageTurn>();
@@ -2957,13 +3004,27 @@ export const MessageBlocks: React.FC<{
                     第 {turnIndex} 轮
                   </div>
 	                  {hasContextTrimmed ? (
-	                    <span
-	                      className="inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-200"
-	                      title={`本轮发生上下文裁剪：移除 ${trimmedRemovedMessages} 条消息，估算 tokens ${contextTrim?.estimatedTokensBefore ?? '-'} → ${contextTrim?.estimatedTokensAfter ?? '-'}`}
-	                    >
-	                      <AlertTriangle size={11} />
-	                      <span>已裁剪{trimmedRemovedMessages > 0 ? ` ${trimmedRemovedMessages}` : ''}</span>
-	                    </span>
+	                    <div className="inline-flex items-center gap-1">
+	                      <span
+	                        className="inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-200"
+	                        title={`本轮发生上下文裁剪：移除 ${trimmedRemovedMessages} 条消息，估算 tokens ${contextTrim?.estimatedTokensBefore ?? '-'} → ${contextTrim?.estimatedTokensAfter ?? '-'}`}
+	                      >
+	                        <AlertTriangle size={11} />
+	                        <span>已裁剪{trimmedRemovedMessages > 0 ? ` ${trimmedRemovedMessages}` : ''}</span>
+	                      </span>
+	                      <button
+	                        type="button"
+	                        onClick={() =>
+	                          setActiveTrimDetailTurnId((current) =>
+	                            current === g.turnId ? null : g.turnId || null
+	                          )
+	                        }
+	                        className="inline-flex items-center rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 hover:bg-amber-200 dark:bg-amber-900/50 dark:text-amber-200 dark:hover:bg-amber-900/70"
+	                        title="查看本轮裁剪明细"
+	                      >
+	                        明细
+	                      </button>
+	                    </div>
 	                  ) : null}
 	                </div>
 	
@@ -2996,6 +3057,10 @@ export const MessageBlocks: React.FC<{
 	                </div>
 	              </div>
 	            ) : null}
+
+            {hasContextTrimmed && contextTrim && activeTrimDetailTurnId === g.turnId ? (
+              <TurnContextTrimDetailPanel trim={contextTrim} />
+            ) : null}
 
             {g.blocks.map((block, blockIdx) => {
               if (block.type === 'tool_call') {

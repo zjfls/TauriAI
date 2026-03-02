@@ -208,6 +208,8 @@ mod tests {
                     use_reasoning_effort: None,
                     reinject_reasoning_content: false,
                     text_edit_implementation: None,
+                    agent_task_implementation: None,
+                    shell_implementation: None,
                 }],
             }],
             agents: vec![Agent {
@@ -216,6 +218,7 @@ mod tests {
                 agent_type: crate::models::AgentType::Chat,
                 display_name: "Test Agent".to_string(),
                 description: Some("A test agent".to_string()),
+                task_usage: None,
                 model_ref: "test-provider/gpt-4".to_string(),
                 system_prompt: "You are a helpful assistant.".to_string(),
                 format_type: FormatPromptType::Chat,

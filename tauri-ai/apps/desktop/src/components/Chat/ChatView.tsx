@@ -525,7 +525,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
     if (!agentName) return false;
     const agent = getAgent(agentName);
     const agentType = agent?.type ?? 'chat';
-    return agentType === 'tool' && (agent?.workspaceSupport ?? true);
+    return (agentType === 'tool' || agentType === 'task_agent') && (agent?.workspaceSupport ?? true);
   }, [agentName, getAgent]);
 
   const [workstudio, setWorkstudio] = useState<Workstudio | null>(null);

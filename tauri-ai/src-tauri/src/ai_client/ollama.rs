@@ -9,13 +9,13 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use super::traits::{
-    AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, StreamEvent,
-    ErrorLayer, ErrorOrigin, StreamTerminationInfo, StreamTerminationSource, ToolDefinition,
+    AiClient, AiError, DebugInfoData, DebugRequestData, DebugResponseData, ErrorLayer, ErrorOrigin,
+    StreamEvent, StreamTerminationInfo, StreamTerminationSource, ToolDefinition,
 };
 use super::utf8_stream::Utf8StreamDecoder;
 use super::{
-    format_reqwest_stream_error, summarize_reqwest_error, summarize_reqwest_stream_error,
-    push_raw_event_tail, StreamProtocolContext,
+    format_reqwest_stream_error, push_raw_event_tail, summarize_reqwest_error,
+    summarize_reqwest_stream_error, StreamProtocolContext,
 };
 use crate::models::{Message, MessageRole, ModelConfig};
 
@@ -274,7 +274,9 @@ impl AiClient for OllamaClient {
                 .unwrap_or_else(|| error_text.clone());
 
             // Send Error FIRST, then DoneWithDebug so the UI always has the debug context.
-            let _ = token_sender.send(StreamEvent::Error(error_msg.clone())).await;
+            let _ = token_sender
+                .send(StreamEvent::Error(error_msg.clone()))
+                .await;
             let _ = token_sender
                 .send(StreamEvent::DoneWithDebug {
                     content: String::new(),

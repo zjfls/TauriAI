@@ -28,7 +28,9 @@ export const resolveActiveWorkstudioMainFolder = async (): Promise<string | null
   if (!convId) return null;
 
   const agent = useConfigStore.getState().getAgent(session.agentName);
-  const workspaceEnabled = (agent?.type ?? 'chat') === 'tool' && (agent?.workspaceSupport ?? true);
+  const agentType = agent?.type ?? 'chat';
+  const workspaceEnabled =
+    (agentType === 'tool' || agentType === 'task_agent') && (agent?.workspaceSupport ?? true);
   if (!workspaceEnabled) return null;
 
   try {
@@ -39,4 +41,3 @@ export const resolveActiveWorkstudioMainFolder = async (): Promise<string | null
     return null;
   }
 };
-

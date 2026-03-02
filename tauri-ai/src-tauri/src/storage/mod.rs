@@ -495,12 +495,28 @@ impl Database {
 
     /// Create a new conversation
     pub fn create_conversation(&self, title: &str) -> Result<Conversation, StorageError> {
+        let id = uuid::Uuid::new_v4().to_string();
+        self.create_conversation_with_id(&id, title)
+    }
+
+    /// Create a new conversation with a caller-provided id.
+    pub fn create_conversation_with_id(
+        &self,
+        id: &str,
+        title: &str,
+    ) -> Result<Conversation, StorageError> {
+        let id = id.trim();
+        if id.is_empty() {
+            return Err(StorageError::Database(
+                "conversation id 不能为空".to_string(),
+            ));
+        }
+
         let conn = self
             .conn
             .lock()
             .map_err(|e| StorageError::Lock(e.to_string()))?;
 
-        let id = uuid::Uuid::new_v4().to_string();
         let now = Utc::now();
         let now_str = now.to_rfc3339();
 
@@ -511,7 +527,7 @@ impl Database {
         )?;
 
         Ok(Conversation {
-            id,
+            id: id.to_string(),
             title: title.to_string(),
             agent_name: None,
             model_ref: None,

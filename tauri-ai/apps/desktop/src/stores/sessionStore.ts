@@ -491,8 +491,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const thinkingMode = coerceThinkingModeForProtocol(undefined, apiProtocol, providerType);
 
     const agentType = agent?.type ?? 'chat';
-    const workspaceEnabled = agentType === 'tool' && (agent?.workspaceSupport ?? true);
-    const fallbackRunMode: RunMode = agentType === 'tool' ? 'agent' : 'chat';
+    const toolLikeAgent = agentType === 'tool' || agentType === 'task_agent';
+    const workspaceEnabled = toolLikeAgent && (agent?.workspaceSupport ?? true);
+    const fallbackRunMode: RunMode = toolLikeAgent ? 'agent' : 'chat';
     const runMode: RunMode = isRunMode(agent?.defaultRunMode) ? agent.defaultRunMode : fallbackRunMode;
 
     // Generate default title with timestamp: 新对话_MM-DD HH:mm
@@ -2608,7 +2609,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         const modelRef = persisted.modelRef || agent?.modelRef;
         const apiProtocol = modelRef && config ? getApiProtocol(modelRef, config.providers) : 'chat_completions';
         const providerType = modelRef && config ? getProviderType(modelRef, config.providers) : undefined;
-        const defaultRunMode: RunMode = (agent?.type ?? 'chat') === 'tool' ? 'agent' : 'chat';
+        const defaultRunMode: RunMode =
+          (agent?.type ?? 'chat') === 'tool' || (agent?.type ?? 'chat') === 'task_agent'
+            ? 'agent'
+            : 'chat';
         const runMode = persisted.runMode ?? defaultRunMode;
 
 		        const session: AgentSession = {
@@ -2846,8 +2850,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const providerType = modelRef && config ? getProviderType(modelRef, config.providers) : undefined;
 
     const agentType = agent?.type ?? 'chat';
-    const workspaceEnabled = agentType === 'tool' && (agent?.workspaceSupport ?? true);
-    const fallbackRunMode: RunMode = agentType === 'tool' ? 'agent' : 'chat';
+    const toolLikeAgent = agentType === 'tool' || agentType === 'task_agent';
+    const workspaceEnabled = toolLikeAgent && (agent?.workspaceSupport ?? true);
+    const fallbackRunMode: RunMode = toolLikeAgent ? 'agent' : 'chat';
     const agentDefaultRunMode: RunMode = isRunMode(agent?.defaultRunMode) ? agent.defaultRunMode : fallbackRunMode;
     const runMode: RunMode = opts?.runMode ?? (isRunMode(conversation?.runMode) ? conversation.runMode : agentDefaultRunMode);
 

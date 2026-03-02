@@ -143,6 +143,31 @@ type InlineChatSelection = {
   label: string;
 };
 
+type InlineChatThreadMessage = {
+  id: string;
+  role: 'user' | 'assistant';
+  markdown: string;
+  createdAt: string;
+  runId?: string;
+  status?: WorkstudioAiBubbleStatus;
+  thinking?: string;
+  toolCalls?: WorkstudioToolCallEntry[];
+  modelRef?: string;
+  latencyMs?: number;
+  error?: string;
+};
+
+const isSameInlineChatSelection = (a: InlineChatSelection | null, b: InlineChatSelection | null): boolean => {
+  if (!a || !b) return false;
+  return (
+    normalizeFsPath(a.filePath) === normalizeFsPath(b.filePath)
+    && a.range.startLine === b.range.startLine
+    && a.range.startColumn === b.range.startColumn
+    && a.range.endLine === b.range.endLine
+    && a.range.endColumn === b.range.endColumn
+  );
+};
+
 type WorkstudioAiBubbleKind = 'inline_chat' | 'symbol_analysis' | 'folder_analysis' | 'agent_run';
 
 // Streaming state machine for AI Bubbles
@@ -1379,12 +1404,39 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     open: boolean;
     selection: InlineChatSelection | null;
     question: string;
-  }>({ open: false, selection: null, question: '' });
+    messages: InlineChatThreadMessage[];
+    activeRunId: string | null;
+  }>({ open: false, selection: null, question: '', messages: [], activeRunId: null });
+  const inlineChatRunMessageIdRef = useRef<Map<string, string>>(new Map());
   const openInlineChatComposer = useCallback((selection: InlineChatSelection) => {
-    setInlineChatComposer({ open: true, selection, question: '' });
+    setInlineChatComposer((prev) => {
+      if (prev.activeRunId && !isSameInlineChatSelection(prev.selection, selection)) {
+        return { ...prev, open: true };
+      }
+      const sameSelection = isSameInlineChatSelection(prev.selection, selection);
+      if (sameSelection) {
+        return {
+          ...prev,
+          open: true,
+          selection,
+        };
+      }
+      return {
+        open: true,
+        selection,
+        question: '',
+        messages: [],
+        activeRunId: null,
+      };
+    });
   }, []);
   const closeInlineChatComposer = useCallback(() => {
     setInlineChatComposer((prev) => ({ ...prev, open: false }));
+  }, []);
+  useEffect(() => {
+    return () => {
+      inlineChatRunMessageIdRef.current.clear();
+    };
   }, []);
   const [aiBubbles, setAiBubbles] = useState<WorkstudioAiBubble[]>([]);
   const aiBubblesRef = useRef<WorkstudioAiBubble[]>([]);
@@ -1496,6 +1548,75 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           arguments?: string;
         }>('workstudio:agent:event', (ev) => {
           const { type: evType, run_id } = ev.payload;
+          const inlineAssistantMessageId = inlineChatRunMessageIdRef.current.get(run_id) ?? null;
+          if (inlineAssistantMessageId) {
+            setInlineChatComposer((prev) => {
+              const idx = prev.messages.findIndex((m) => m.id === inlineAssistantMessageId);
+              if (idx === -1) return prev;
+              const nextMessages = prev.messages.slice();
+              const current = nextMessages[idx];
+              switch (evType) {
+                case 'text_delta':
+                  nextMessages[idx] = {
+                    ...current,
+                    status: 'streaming',
+                    markdown: (current.markdown ?? '') + (ev.payload.delta ?? ''),
+                  };
+                  break;
+                case 'thinking_delta':
+                  nextMessages[idx] = {
+                    ...current,
+                    status: 'thinking',
+                    thinking: (current.thinking ?? '') + (ev.payload.delta ?? ''),
+                  };
+                  break;
+                case 'tool_call': {
+                  const entry: WorkstudioToolCallEntry = {
+                    id: ev.payload.id ?? crypto.randomUUID(),
+                    name: ev.payload.name ?? '',
+                    arguments: ev.payload.arguments ?? '',
+                  };
+                  nextMessages[idx] = {
+                    ...current,
+                    status: 'tool_calling',
+                    toolCalls: [...(current.toolCalls ?? []), entry],
+                  };
+                  break;
+                }
+                case 'done':
+                  inlineChatRunMessageIdRef.current.delete(run_id);
+                  nextMessages[idx] = {
+                    ...current,
+                    status: 'done',
+                    markdown: ev.payload.answer_md ?? current.markdown,
+                    modelRef: ev.payload.model_ref ?? current.modelRef,
+                    latencyMs: ev.payload.latency_ms ?? current.latencyMs,
+                  };
+                  break;
+                case 'error':
+                  inlineChatRunMessageIdRef.current.delete(run_id);
+                  nextMessages[idx] = {
+                    ...current,
+                    status: 'error',
+                    error: ev.payload.message ?? 'Unknown error',
+                    markdown:
+                      current.markdown && current.markdown.trim()
+                        ? current.markdown
+                        : `**错误**\n\n\`\`\`text\n${ev.payload.message ?? 'Unknown error'}\n\`\`\``,
+                  };
+                  break;
+                default:
+                  return prev;
+              }
+              const clearActiveRun =
+                (evType === 'done' || evType === 'error') && prev.activeRunId === run_id;
+              return {
+                ...prev,
+                messages: nextMessages,
+                activeRunId: clearActiveRun ? null : prev.activeRunId,
+              };
+            });
+          }
           setAiBubbles((prev) => prev.map((b) => {
             if (b.id !== run_id) return b;
             switch (evType) {
@@ -1554,7 +1675,47 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const submitInlineChat = useCallback(async () => {
     const selection = inlineChatComposer.selection;
     const question = inlineChatComposer.question.trim();
-    if (!selection || !question) return;
+    if (!selection || !question || inlineChatComposer.activeRunId) return;
+
+    const userMessageId = crypto.randomUUID();
+    const assistantMessageId = crypto.randomUUID();
+    const messageCreatedAt = new Date().toISOString();
+    const recentHistory = inlineChatComposer.messages
+      .slice(-8)
+      .map((m) => {
+        const role = m.role === 'user' ? '用户' : '助手';
+        const text = (m.markdown || m.error || '').trim();
+        if (!text) return '';
+        const clipped = text.length > 1600 ? `${text.slice(0, 1600)}\n…（已截断）` : text;
+        return `[${role}]\n${clipped}`;
+      })
+      .filter((v) => v.length > 0)
+      .join('\n\n');
+
+    const userInput = recentHistory
+      ? `请延续下面的历史对话语境回答。\n\n【历史对话】\n${recentHistory}\n\n【本轮问题】\n${question}`
+      : question;
+
+    setInlineChatComposer((prev) => ({
+      ...prev,
+      question: '',
+      messages: [
+        ...prev.messages,
+        {
+          id: userMessageId,
+          role: 'user',
+          markdown: question,
+          createdAt: messageCreatedAt,
+        },
+        {
+          id: assistantMessageId,
+          role: 'assistant',
+          markdown: '',
+          createdAt: messageCreatedAt,
+          status: 'connecting',
+        },
+      ],
+    }));
 
     const id = crypto.randomUUID();
     const name = question.length > 28 ? `${question.slice(0, 28)}…` : question;
@@ -1569,7 +1730,6 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       createdAt,
     };
     setAiBubbles((prev) => [...prev, bubble]);
-    closeInlineChatComposer();
 
     try {
       if (!isTauri()) throw new Error('Not running in Tauri');
@@ -1584,8 +1744,19 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           filePath: selection.filePath,
           selectionRange: selection.range,
           code: selection.text,
-          userInput: question,
+          userInput,
         },
+      });
+      inlineChatRunMessageIdRef.current.set(runId, assistantMessageId);
+      setInlineChatComposer((prev) => {
+        const nextMessages = prev.messages.map((m) =>
+          m.id === assistantMessageId ? { ...m, runId, status: 'connecting' as WorkstudioAiBubbleStatus } : m
+        );
+        return {
+          ...prev,
+          messages: nextMessages,
+          activeRunId: runId,
+        };
       });
       // Rename bubble id to run_id so the listener can correlate events
       setAiBubbles((prev) =>
@@ -1594,11 +1765,43 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       setAiViewerId((prev) => (prev === id ? runId : prev));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      setInlineChatComposer((prev) => {
+        const nextMessages = prev.messages.map((m) =>
+          m.id === assistantMessageId
+            ? {
+              ...m,
+              status: 'error' as WorkstudioAiBubbleStatus,
+              error: message,
+              markdown: `**错误**\n\n\`\`\`text\n${message}\n\`\`\``,
+            }
+            : m
+        );
+        return {
+          ...prev,
+          messages: nextMessages,
+          activeRunId: null,
+        };
+      });
       setAiBubbles((prev) =>
         prev.map((b) => (b.id === id ? { ...b, status: 'error', error: message } : b))
       );
     }
-  }, [closeInlineChatComposer, inlineChatComposer.question, inlineChatComposer.selection, chatWithAgentRef, workstudioId]);
+  }, [inlineChatComposer.activeRunId, inlineChatComposer.messages, inlineChatComposer.question, inlineChatComposer.selection, chatWithAgentRef, workstudioId]);
+
+  const clearInlineChatConversation = useCallback(() => {
+    if (inlineChatComposer.activeRunId) return;
+    setInlineChatComposer((prev) => ({
+      ...prev,
+      question: '',
+      messages: [],
+    }));
+  }, [inlineChatComposer.activeRunId]);
+
+  const abortInlineChatRun = useCallback(() => {
+    const runId = inlineChatComposer.activeRunId;
+    if (!runId || !isTauri()) return;
+    void invoke('workstudio_abort_agent', { runId }).catch(() => {});
+  }, [inlineChatComposer.activeRunId]);
 
   const terminalScope: TerminalScope | null = useMemo(() => {
     if (!workstudioId) return null;
@@ -10858,8 +11061,8 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 
       {inlineChatComposer.open && inlineChatComposer.selection && (
         <div className="fixed inset-0 z-[220] flex items-center justify-center bg-black/30 p-4">
-          <div className="w-full max-w-2xl rounded-xl border border-gray-200 bg-white p-4 shadow-xl dark:border-gray-800 dark:bg-gray-950">
-            <div className="flex items-start justify-between gap-3">
+          <div className="flex h-[calc(100vh-3rem)] w-full max-w-7xl flex-col rounded-xl border border-gray-200 bg-white shadow-xl dark:border-gray-800 dark:bg-gray-950">
+            <div className="flex shrink-0 items-start justify-between gap-3 border-b border-gray-100 p-4 dark:border-gray-800">
               <div className="min-w-0">
                 <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">Chat with</div>
                 <div className="mt-0.5 truncate text-[11px] text-gray-500 dark:text-gray-400">
@@ -10870,54 +11073,161 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                 type="button"
                 className="rounded p-1 text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
                 onClick={closeInlineChatComposer}
-                title="关闭"
+                title="关闭（保留会话）"
               >
                 <X size={16} />
               </button>
             </div>
 
-            <div className="mt-3">
-              <div className="mb-1 text-[11px] font-medium text-gray-600 dark:text-gray-300">选中代码</div>
-              <pre className="max-h-40 overflow-auto rounded-lg border border-gray-200 bg-gray-50 p-2 text-[11px] text-gray-800 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-100">
-                {(() => {
-                  const raw = inlineChatComposer.selection?.text ?? '';
-                  const limit = 2200;
-                  return raw.length > limit ? `${raw.slice(0, limit)}\n…（已截断）` : raw;
-                })()}
-              </pre>
-            </div>
+            <div className="min-h-0 flex flex-1 gap-4 p-4">
+              <div className="flex w-[34%] min-w-[260px] flex-col gap-2 rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-900/30">
+                <div className="text-[11px] font-semibold text-gray-700 dark:text-gray-200">选中代码</div>
+                <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words rounded border border-gray-200 bg-white p-2 text-[11px] text-gray-800 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-100">
+                  {(() => {
+                    const raw = inlineChatComposer.selection?.text ?? '';
+                    const limit = 5000;
+                    return raw.length > limit ? `${raw.slice(0, limit)}\n…（已截断）` : raw;
+                  })()}
+                </pre>
+                <div className="text-[11px] text-gray-500 dark:text-gray-400">
+                  回答将使用富文本渲染（Markdown / Mermaid / 代码链接）。
+                </div>
+              </div>
 
-            <div className="mt-3">
-              <div className="mb-1 text-[11px] font-medium text-gray-600 dark:text-gray-300">你的问题</div>
-              <textarea
-                value={inlineChatComposer.question}
-                onChange={(e) => setInlineChatComposer((prev) => ({ ...prev, question: e.target.value }))}
-                rows={3}
-                autoCorrect="off"
-                autoCapitalize="off"
-                autoComplete="off"
-                spellCheck={false}
-                className="w-full resize-y rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none focus:ring-2 focus:ring-blue-500/40 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-100"
-                placeholder="例如：这段代码为什么会这样设计？可能的 bug 在哪？"
-              />
-            </div>
+              <div className="flex min-w-0 flex-1 flex-col">
+                <div className="min-h-0 flex-1 space-y-3 overflow-y-auto rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-800 dark:bg-gray-950">
+                  {inlineChatComposer.messages.length === 0 ? (
+                    <div className="rounded-lg border border-dashed border-gray-200 bg-gray-50 px-3 py-4 text-xs text-gray-500 dark:border-gray-800 dark:bg-gray-900/30 dark:text-gray-400">
+                      请输入问题后发送。窗口会保留上下文，可连续追问。
+                    </div>
+                  ) : (
+                    inlineChatComposer.messages.map((msg) => {
+                      const isAssistant = msg.role === 'assistant';
+                      const isActive = Boolean(
+                        msg.status
+                        && ['connecting', 'thinking', 'streaming', 'tool_calling'].includes(msg.status)
+                      );
+                      return (
+                        <div
+                          key={msg.id}
+                          className={[
+                            'rounded-lg border px-3 py-2',
+                            isAssistant
+                              ? 'border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-950'
+                              : 'border-blue-100 bg-blue-50/50 dark:border-blue-900/40 dark:bg-blue-900/10',
+                          ].join(' ')}
+                        >
+                          <div className="mb-1 flex items-center justify-between gap-2">
+                            <div className="text-[11px] font-semibold text-gray-700 dark:text-gray-200">
+                              {isAssistant ? '助手' : '你'}
+                            </div>
+                            {isAssistant && msg.status && (
+                              <div className="inline-flex items-center gap-1 text-[11px] text-gray-500 dark:text-gray-400">
+                                {isActive && <Loader2 size={10} className="animate-spin" />}
+                                {describeWorkstudioAiBubbleStatus(msg.status)}
+                                {msg.modelRef ? ` · ${msg.modelRef}` : ''}
+                                {msg.latencyMs ? ` · ${msg.latencyMs}ms` : ''}
+                              </div>
+                            )}
+                          </div>
+                          {isAssistant ? (
+                            <>
+                              {msg.markdown ? (
+                                <DeferredMarkdown
+                                  content={msg.markdown}
+                                  conversationId={null}
+                                  workstudioId={workstudioId}
+                                  immediate={isActive}
+                                  minDelayMs={isActive ? 0 : 120}
+                                />
+                              ) : (
+                                <div className="text-xs text-gray-400 dark:text-gray-500">等待输出…</div>
+                              )}
+                              {msg.thinking && (
+                                <details className="mt-2">
+                                  <summary className="cursor-pointer text-[11px] text-purple-600 dark:text-purple-400">思考过程</summary>
+                                  <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded border border-purple-100 bg-purple-50/60 px-2 py-1.5 text-[11px] text-purple-900 dark:border-purple-900/40 dark:bg-purple-900/10 dark:text-purple-200">
+                                    {msg.thinking}
+                                  </pre>
+                                </details>
+                              )}
+                              {msg.toolCalls && msg.toolCalls.length > 0 && (
+                                <details className="mt-2">
+                                  <summary className="cursor-pointer text-[11px] text-amber-600 dark:text-amber-400">
+                                    工具调用（{msg.toolCalls.length}）
+                                  </summary>
+                                  <div className="mt-1 space-y-1.5">
+                                    {msg.toolCalls.map((tc) => (
+                                      <div key={tc.id} className="rounded border border-amber-200 bg-amber-50/60 px-2 py-1.5 dark:border-amber-900/40 dark:bg-amber-900/10">
+                                        <div className="text-[11px] font-semibold text-amber-700 dark:text-amber-300">{tc.name}</div>
+                                        <pre className="mt-0.5 whitespace-pre-wrap break-words text-[11px] text-amber-900 dark:text-amber-200">{tc.arguments}</pre>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </details>
+                              )}
+                            </>
+                          ) : (
+                            <div className="whitespace-pre-wrap break-words text-sm text-gray-900 dark:text-gray-100">
+                              {msg.markdown}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
 
-            <div className="mt-4 flex items-center justify-end gap-2">
-              <button
-                type="button"
-                className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-800 dark:text-gray-200 dark:hover:bg-gray-900/40"
-                onClick={closeInlineChatComposer}
-              >
-                取消
-              </button>
-              <button
-                type="button"
-                className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
-                disabled={!inlineChatComposer.question.trim()}
-                onClick={() => void submitInlineChat()}
-              >
-                发送
-              </button>
+                <div className="mt-3 rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-800 dark:bg-gray-950">
+                  <div className="mb-1 text-[11px] font-medium text-gray-600 dark:text-gray-300">继续提问</div>
+                  <textarea
+                    value={inlineChatComposer.question}
+                    onChange={(e) => setInlineChatComposer((prev) => ({ ...prev, question: e.target.value }))}
+                    rows={3}
+                    autoCorrect="off"
+                    autoCapitalize="off"
+                    autoComplete="off"
+                    spellCheck={false}
+                    onKeyDown={(e) => {
+                      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                        e.preventDefault();
+                        void submitInlineChat();
+                      }
+                    }}
+                    className="w-full resize-y rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none focus:ring-2 focus:ring-blue-500/40 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-100"
+                    placeholder="例如：这段代码为什么这样设计？业务调用路径是什么？"
+                  />
+                  <div className="mt-2 flex items-center justify-between gap-2">
+                    <div className="text-[11px] text-gray-400 dark:text-gray-500">⌘/Ctrl + Enter 发送</div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-800 dark:text-gray-200 dark:hover:bg-gray-900/40"
+                        disabled={Boolean(inlineChatComposer.activeRunId) || inlineChatComposer.messages.length === 0}
+                        onClick={clearInlineChatConversation}
+                      >
+                        清空会话
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-900/40 dark:text-red-300 dark:hover:bg-red-900/20"
+                        disabled={!inlineChatComposer.activeRunId}
+                        onClick={abortInlineChatRun}
+                      >
+                        中止
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+                        disabled={!inlineChatComposer.question.trim() || Boolean(inlineChatComposer.activeRunId)}
+                        onClick={() => void submitInlineChat()}
+                      >
+                        发送
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </div>

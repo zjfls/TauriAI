@@ -356,8 +356,7 @@ pub async fn undo_apply_patch(args: UndoApplyPatchArgs) -> Result<bool, String> 
     // - 直接 `git restore --source <ghost_before> -- <created>` 会报：
     //   `pathspec 'x' did not match any file(s) known to git`；
     // - 因此：先 restore 非 created 的 affected，再删除 created。
-    let created_set: std::collections::HashSet<&str> =
-        created.iter().map(|s| s.as_str()).collect();
+    let created_set: std::collections::HashSet<&str> = created.iter().map(|s| s.as_str()).collect();
     let restore_targets = affected
         .iter()
         .filter(|p| !created_set.contains(p.as_str()))

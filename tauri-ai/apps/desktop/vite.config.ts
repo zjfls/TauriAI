@@ -48,5 +48,51 @@ export default defineConfig(async () => ({
     // Keep desktop and mobile outputs separated for long-term maintainability.
     outDir: path.resolve(configDir, "../../dist/desktop"),
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return;
+
+          if (id.includes("/monaco-editor/") || id.includes("/@monaco-editor/")) {
+            return "vendor-monaco";
+          }
+          if (
+            id.includes("/xterm/") ||
+            id.includes("/@xterm/") ||
+            id.includes("/portable-pty/")
+          ) {
+            return "vendor-terminal";
+          }
+          if (
+            id.includes("/mermaid/") ||
+            id.includes("/mafs/") ||
+            id.includes("/katex/") ||
+            id.includes("/react-markdown/") ||
+            id.includes("/remark-") ||
+            id.includes("/rehype-")
+          ) {
+            return "vendor-markdown";
+          }
+          if (id.includes("/pdfjs-dist/")) {
+            return "vendor-pdf";
+          }
+          if (id.includes("/@tauri-apps/")) {
+            return "vendor-tauri";
+          }
+          if (id.includes("/react/") || id.includes("/react-dom/") || id.includes("/zustand/")) {
+            return "vendor-react";
+          }
+          if (
+            id.includes("/@dnd-kit/") ||
+            id.includes("/lucide-react/") ||
+            id.includes("/gpt-tokenizer/")
+          ) {
+            return "vendor-ui";
+          }
+
+          return "vendor-misc";
+        },
+      },
+    },
   },
 }));

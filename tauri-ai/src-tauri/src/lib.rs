@@ -144,13 +144,7 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
         true,
         Some("CmdOrCtrl+N"),
     )?;
-    let new_text = MenuItem::with_id(
-        app,
-        "new_text",
-        "新建文本文件",
-        true,
-        None::<&str>,
-    )?;
+    let new_text = MenuItem::with_id(app, "new_text", "新建文本文件", true, None::<&str>)?;
 
     // Session/app actions (moved from top-right toolbar to system menu bar)
     // 只保留“按 Agent 新建会话”，并把快捷键绑定到默认 Agent 的菜单项。
@@ -254,10 +248,23 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
     }
 
     if let Some(file) = file_submenu {
-        file.insert_items(&[&new_richtxt, &new_text, &open_file, &test_window, &separator], 0)?;
+        file.insert_items(
+            &[
+                &new_richtxt,
+                &new_text,
+                &open_file,
+                &test_window,
+                &separator,
+            ],
+            0,
+        )?;
     } else {
-        let file =
-            Submenu::with_items(app, "File", true, &[&new_richtxt, &new_text, &open_file, &test_window])?;
+        let file = Submenu::with_items(
+            app,
+            "File",
+            true,
+            &[&new_richtxt, &new_text, &open_file, &test_window],
+        )?;
         // On macOS, index 0 is the app menu. Insert after it.
         let pos = if cfg!(target_os = "macos") { 1 } else { 0 };
         menu.insert(&file, pos)?;

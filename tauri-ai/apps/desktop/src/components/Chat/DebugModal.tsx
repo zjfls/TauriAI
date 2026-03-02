@@ -111,6 +111,12 @@ type ApiErrorInfo = {
   status?: number;
 };
 
+type ErrorOriginInfo = {
+  layer?: string;
+  module?: string;
+  operation?: string;
+};
+
 type StreamTerminationSummary = {
   label: string;
   detail: string;
@@ -550,6 +556,24 @@ const normalizeStreamTerminationInfo = (debugInfo: DebugInfo | null | undefined)
     eventCount,
     rawEventTail: pickStringArray((raw as any).rawEventTail) ?? pickStringArray((raw as any).raw_event_tail),
   };
+};
+
+const normalizeErrorOriginInfo = (debugInfo: DebugInfo | null | undefined): ErrorOriginInfo | null => {
+  const raw = (debugInfo as any)?.errorOrigin ?? (debugInfo as any)?.error_origin;
+  if (!raw || typeof raw !== 'object') return null;
+
+  const pickString = (v: unknown): string | undefined => {
+    if (typeof v !== 'string') return undefined;
+    const t = v.trim();
+    return t.length > 0 ? t : undefined;
+  };
+
+  const layer = pickString((raw as any).layer);
+  const module = pickString((raw as any).module);
+  const operation = pickString((raw as any).operation);
+
+  if (!layer && !module && !operation) return null;
+  return { layer, module, operation };
 };
 
 const summarizeStreamTermination = (info: StreamTerminationInfo | null): StreamTerminationSummary => {
@@ -1180,6 +1204,10 @@ export const DebugModal: React.FC<DebugModalProps> = ({
     () => normalizeStreamTerminationInfo(effectiveDebugInfo),
     [effectiveDebugInfo]
   );
+  const errorOriginInfo = useMemo(
+    () => normalizeErrorOriginInfo(effectiveDebugInfo),
+    [effectiveDebugInfo]
+  );
   const streamTerminationSummary = useMemo(
     () => summarizeStreamTermination(streamTerminationInfo),
     [streamTerminationInfo]
@@ -1211,6 +1239,12 @@ export const DebugModal: React.FC<DebugModalProps> = ({
     if (typeof httpStatus === 'number') parts.push(`HTTP ${httpStatus}`);
     if (providerFinishReasonSource && providerFinishReason) parts.push(`来源 ${providerFinishReasonSource}`);
     if (effectiveDebugInfo) parts.push(`协议终止：${streamTerminationSummary.label}`);
+    if (errorOriginInfo) {
+      const layer = errorOriginInfo.layer ?? 'unknown';
+      const module = errorOriginInfo.module ?? 'unknown';
+      const operation = errorOriginInfo.operation ?? '<none>';
+      parts.push(`错误来源：${layer}/${module}/${operation}`);
+    }
 
     return parts.filter(Boolean).join('；') || null;
   }, [
@@ -1225,6 +1259,7 @@ export const DebugModal: React.FC<DebugModalProps> = ({
     errorMessage,
     effectiveDebugInfo,
     streamTerminationSummary.label,
+    errorOriginInfo,
   ]);
 
   const baseInfoJson = useMemo(() => {
@@ -1270,6 +1305,7 @@ export const DebugModal: React.FC<DebugModalProps> = ({
     }
 
     if (apiErrorInfo) out.api_error = apiErrorInfo;
+    if (errorOriginInfo) out.error_origin = errorOriginInfo;
     if (streamTerminationInfo) out.stream_termination = streamTerminationInfo;
     if (streamTerminationSummary) out.stream_termination_summary = streamTerminationSummary;
     if (endReasonSummary) out.end_reason_summary = endReasonSummary;
@@ -1292,6 +1328,7 @@ export const DebugModal: React.FC<DebugModalProps> = ({
     effectiveDebugInfo?.request,
     requestUrlParts,
     apiErrorInfo,
+    errorOriginInfo,
     streamTerminationInfo,
     streamTerminationSummary,
     endReasonSummary,
@@ -1817,42 +1854,6 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                               ansiRenderMode={ansiRenderMode}
                               ansiColorMode={ansiColorMode}
                             />
-                          </div>
-                          <div>
-                            <span className="text-gray-500 dark:text-gray-400">trim target: </span>
-                            <span className="text-gray-800 dark:text-gray-200">{activeTurnTrim.trimTargetTokens}</span>
-                          </div>
-                          <div>
-                            <span className="text-gray-500 dark:text-gray-400">任务组: </span>
-                            <span className="text-gray-800 dark:text-gray-200">
-                              保留 {activeTurnTrim.keptTasks} / 删除 {activeTurnTrim.removedTasks}
-                            </span>
-                          </div>
-                          <div>
-                            <span className="text-gray-500 dark:text-gray-400">相对上轮任务变化: </span>
-                            <span className="text-gray-800 dark:text-gray-200">
-                              {typeof activeTurnTrim.trimmedTasksSinceLast === 'number'
-                                ? `- ${activeTurnTrim.trimmedTasksSinceLast}`
-                                : '-'}{' '}
-                              /{' '}
-                              {typeof activeTurnTrim.addedTasksSinceLast === 'number'
-                                ? `+ ${activeTurnTrim.addedTasksSinceLast}`
-                                : '-'}
-                            </span>
-                          </div>
-                          <div>
-                            <span className="text-gray-500 dark:text-gray-400">相对上轮 token 变化: </span>
-                            <span className="text-gray-800 dark:text-gray-200">
-                              {typeof activeTurnTrim.deltaTokensSinceLast === 'number'
-                                ? activeTurnTrim.deltaTokensSinceLast
-                                : '-'}
-                            </span>
-                          </div>
-                          <div>
-                            <span className="text-gray-500 dark:text-gray-400">目标不可达: </span>
-                            <span className="text-gray-800 dark:text-gray-200">
-                              {activeTurnTrim.targetUnreachable ? '是' : '否'}
-                            </span>
                           </div>
                         </div>
                       );

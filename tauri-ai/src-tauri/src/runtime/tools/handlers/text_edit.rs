@@ -611,7 +611,8 @@ impl ToolHandler for WriteFileTool {
         let abs_path = resolve_edit_path(&base_dir, &args.file_path)?;
         let existed_before = abs_path.exists();
 
-        let allowed_roots = compute_allowed_roots(&base_dir, &ctx.sandbox_policy, &ctx.workspace_roots)?;
+        let allowed_roots =
+            compute_allowed_roots(&base_dir, &ctx.sandbox_policy, &ctx.workspace_roots)?;
         ensure_writable(&ctx.sandbox_policy, allowed_roots.as_ref(), &abs_path)?;
 
         let bytes = args.content.as_bytes().len() as u64;
@@ -623,9 +624,13 @@ impl ToolHandler for WriteFileTool {
         };
 
         // Git snapshot meta (best-effort): enables UI diff/undo similar to apply_patch.
-        let (git_ctx, mut git_meta) =
-            capture_git_snapshot_before(&base_dir, &affected_abs_paths, &created_abs_paths, "write_file")
-                .await;
+        let (git_ctx, mut git_meta) = capture_git_snapshot_before(
+            &base_dir,
+            &affected_abs_paths,
+            &created_abs_paths,
+            "write_file",
+        )
+        .await;
 
         if args.create_dirs {
             if let Some(parent) = abs_path.parent() {
@@ -711,26 +716,29 @@ impl ToolHandler for ReplaceStringTool {
         let base_dir = base_dir_from_ctx(ctx);
         let abs_path = resolve_edit_path(&base_dir, &args.file_path)?;
 
-        let allowed_roots = compute_allowed_roots(&base_dir, &ctx.sandbox_policy, &ctx.workspace_roots)?;
+        let allowed_roots =
+            compute_allowed_roots(&base_dir, &ctx.sandbox_policy, &ctx.workspace_roots)?;
         ensure_writable(&ctx.sandbox_policy, allowed_roots.as_ref(), &abs_path)?;
 
         let affected_abs_paths = vec![abs_path.clone()];
         let created_abs_paths: Vec<PathBuf> = Vec::new();
-        let (git_ctx, mut git_meta) =
-            capture_git_snapshot_before(&base_dir, &affected_abs_paths, &created_abs_paths, "replace_string")
-                .await;
+        let (git_ctx, mut git_meta) = capture_git_snapshot_before(
+            &base_dir,
+            &affected_abs_paths,
+            &created_abs_paths,
+            "replace_string",
+        )
+        .await;
 
-        let original = fs::read_to_string(&abs_path)
-            .await
-            .map_err(|e| {
-                ToolError::new(format!("读取文件失败: {e}")).with_meta(json!({
-                    "replaceString": {
-                        "baseDir": base_dir.display().to_string(),
-                        "path": abs_path.to_string_lossy().to_string(),
-                        "git": git_meta.clone()
-                    }
-                }))
-            })?;
+        let original = fs::read_to_string(&abs_path).await.map_err(|e| {
+            ToolError::new(format!("读取文件失败: {e}")).with_meta(json!({
+                "replaceString": {
+                    "baseDir": base_dir.display().to_string(),
+                    "path": abs_path.to_string_lossy().to_string(),
+                    "git": git_meta.clone()
+                }
+            }))
+        })?;
 
         let matches = original.match_indices(&args.old_string).count();
         if matches == 0 {

@@ -48,7 +48,7 @@ export type ActiveView =
 export type FormatPromptType = 'chat' | 'plain' | 'json' | 'none';
 
 // Agent type for extensible runtime behaviors
-export type AgentType = 'chat' | 'tool' | 'coding';
+export type AgentType = 'chat' | 'tool' | 'task_agent' | 'coding';
 
 // Run mode (input-level): chat / agent / agent full access
 export type RunMode = 'chat' | 'agent' | 'agent-custom' | 'agent-full-access';
@@ -147,6 +147,11 @@ export type TextEditImplementation =
   | 'apply_patch_unified_diff'
   | 'write_file_replace_string';
 
+/** Agent 子任务工具实现类型（agenttask） */
+export type AgentTaskImplementation = 'in_process' | 'subprocess';
+/** Shell 工具实现类型（由模型决定） */
+export type ShellImplementation = 'shell_command' | 'pty' | 'pty_persistent';
+
 /**
  * Model configuration (pure model parameters, no system prompt)
  */
@@ -169,6 +174,10 @@ export interface Model {
   reinjectReasoningContent?: boolean; // Kimi thinking: include historical reasoning_content in request (default: false)
   /** 文本编辑工具实现偏好（默认 apply_patch） */
   textEditImplementation?: TextEditImplementation;
+  /** Agent 子任务工具实现偏好（默认 in_process） */
+  agentTaskImplementation?: AgentTaskImplementation;
+  /** Shell 工具实现偏好（默认 shell_command） */
+  shellImplementation?: ShellImplementation;
 }
 
 /**
@@ -234,6 +243,8 @@ export interface Agent {
   type?: AgentType;       // Agent runtime type (default: 'chat')
   displayName: string;    // Display name
   description?: string;
+  /** TaskAgent 用法说明（仅 task_agent 使用） */
+  taskUsage?: string;
   modelRef: string;       // Format: "provider_name/model_name"
   systemPrompt: string;
   formatType: FormatPromptType;
@@ -249,7 +260,7 @@ export interface Agent {
   maxTurns?: number;      // Max turns per run/task (backend default: 10000)
   reinjectThinking?: boolean; // Whether to reinject thinking into next turn context (default: false)
   contextPolicy?: ContextPolicyConfig; // Optional context management policy (agent-level)
-  /** workstudio AI panel visibility (default: true for 'coding' agents) */
+  /** workstudio AI panel visibility (仅 UI 分组用途) */
   workstudioEnabled?: boolean;
   /**
    * System-provided agent — shown in Workstudio AI but cannot be deleted.
@@ -700,6 +711,13 @@ export interface TurnContextTrimInfo {
   estimatedTokensBefore: number;
   estimatedTokensAfter: number;
   hardLimitTokens: number;
+  trimTargetTokens?: number;
+  removedTasks?: number;
+  keptTasks?: number;
+  trimmedTasksSinceLast?: number;
+  addedTasksSinceLast?: number;
+  deltaTokensSinceLast?: number;
+  targetUnreachable?: boolean;
 }
 
 /**
@@ -898,6 +916,12 @@ export interface StreamTerminationInfo {
   rawEventTail?: string[];
 }
 
+export interface ErrorOriginInfo {
+  layer?: string;
+  module?: string;
+  operation?: string;
+}
+
 export interface DebugInfo {
   request?: {
     url: string;
@@ -913,6 +937,9 @@ export interface DebugInfo {
   streamTermination?: StreamTerminationInfo;
   // Backward-compatible read path for legacy snake_case payloads.
   stream_termination?: StreamTerminationInfo;
+  errorOrigin?: ErrorOriginInfo;
+  // Backward-compatible read path for legacy snake_case payloads.
+  error_origin?: ErrorOriginInfo;
 }
 
 /**

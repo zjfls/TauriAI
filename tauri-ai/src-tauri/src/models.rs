@@ -936,6 +936,42 @@ impl Default for TextEditImplementation {
     }
 }
 
+/// Shell 工具实现类型（由“模型”决定具体用哪一种 shell 能力）。
+///
+/// - `shell_command`：一次性 shell 命令（默认）
+/// - `pty`：临时 PTY（exec_command + write_stdin）
+/// - `pty_persistent`：持久 PTY（exec_command_persistent + write_stdin_persistent）
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ShellImplementation {
+    ShellCommand,
+    Pty,
+    PtyPersistent,
+}
+
+impl Default for ShellImplementation {
+    fn default() -> Self {
+        Self::ShellCommand
+    }
+}
+
+/// Agent 子任务工具实现类型（`agenttask`）。
+///
+/// - `in_process`：在当前进程内直接调用 AI client（轻量、低开销）
+/// - `subprocess`：通过 `tauri-ai-headless` 子进程执行（隔离性更好）
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentTaskImplementation {
+    InProcess,
+    Subprocess,
+}
+
+impl Default for AgentTaskImplementation {
+    fn default() -> Self {
+        Self::InProcess
+    }
+}
+
 /// Model configuration (pure model parameters, no system prompt)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -992,6 +1028,12 @@ pub struct Model {
     /// Text edit tool implementation preference for this model (default: apply_patch).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text_edit_implementation: Option<TextEditImplementation>,
+    /// Agent 子任务工具（agenttask）实现偏好（默认：in_process）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_task_implementation: Option<AgentTaskImplementation>,
+    /// Shell 工具实现偏好（默认：shell_command）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shell_implementation: Option<ShellImplementation>,
 }
 
 impl Default for Model {
@@ -1013,6 +1055,8 @@ impl Default for Model {
             use_reasoning_effort: None,
             reinject_reasoning_content: false,
             text_edit_implementation: None,
+            agent_task_implementation: None,
+            shell_implementation: None,
         }
     }
 }
@@ -1085,6 +1129,8 @@ pub enum AgentType {
     Chat,
     /// 工具型 Agent（function/tool calling loop）
     Tool,
+    /// 子任务 Agent（仅供 `agenttask` 工具调用）
+    TaskAgent,
 }
 
 impl Default for AgentType {
@@ -1101,6 +1147,7 @@ impl Serialize for AgentType {
         serializer.serialize_str(match self {
             Self::Chat => "chat",
             Self::Tool => "tool",
+            Self::TaskAgent => "task_agent",
         })
     }
 }
@@ -1113,8 +1160,9 @@ impl<'de> Deserialize<'de> for AgentType {
         let s = String::deserialize(deserializer)?;
         Ok(match s.as_str() {
             "tool" => Self::Tool,
+            "task_agent" | "taskagent" => Self::TaskAgent,
             // Backward-compat: map deprecated kinds.
-            "code" => Self::Tool,
+            "code" | "coding" => Self::Tool,
             "solution" => Self::Chat,
             _ => Self::Chat,
         })
@@ -1138,6 +1186,12 @@ pub struct Agent {
     /// Description of the agent
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// TaskAgent 用法说明（仅 `type=task_agent` 使用）。
+    ///
+    /// 用于告诉上层智能体：这个 TaskAgent 擅长什么任务、输入输出约定、调用边界。
+    /// 会在注册 `agenttask` 工具时作为“可用 TaskAgent 清单”的一部分注入系统提示词。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_usage: Option<String>,
     /// Model reference in format "provider_name/model_name"
     pub model_ref: String,
     /// System prompt for this agent
@@ -1149,7 +1203,7 @@ pub struct Agent {
     /// Default run mode for new/opened sessions.
     ///
     /// Semantics:
-    /// - None: auto (Tool => "agent"; Chat => "chat")
+    /// - None: auto (Tool/TaskAgent => "agent"; Chat => "chat")
     /// - Some(...): explicit override (e.g. "agent", "agent-custom", "agent-full-access")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_run_mode: Option<String>,
@@ -1174,7 +1228,7 @@ pub struct Agent {
     /// Whether to enable workspace/workstudio support for Tool agents.
     ///
     /// Semantics:
-    /// - None: use default (Tool => true; others => false)
+    /// - None: use default (Tool/TaskAgent => true; others => false)
     /// - Some(true/false): explicit override
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_support: Option<bool>,
@@ -1214,6 +1268,7 @@ impl Default for Agent {
             agent_type: AgentType::default(),
             display_name: String::new(),
             description: None,
+            task_usage: None,
             model_ref: String::new(),
             system_prompt: String::new(),
             format_type: FormatPromptType::default(),
@@ -2737,6 +2792,10 @@ impl AppConfig {
         if ensure_toolset_text_edit_normalized(self) {
             changed = true;
         }
+        // Toolsets: shell 工具统一收敛为抽象开关 `shell`（默认由模型选择 shell_command）。
+        if ensure_toolset_shell_normalized(self) {
+            changed = true;
+        }
 
         // Backward compatibility: symbol analysis used to reuse aiCompletion settings.
         // If existing config doesn't have symbolAnalysis, initialize it based on aiCompletion so
@@ -2856,6 +2915,8 @@ impl AppConfig {
                 use_reasoning_effort: None,
                 reinject_reasoning_content: false,
                 text_edit_implementation: None,
+                agent_task_implementation: None,
+                shell_implementation: None,
             });
 
             // Create agent from model's system prompt
@@ -2867,6 +2928,7 @@ impl AppConfig {
                 agent_type: AgentType::Chat,
                 display_name: model_config.name.clone(),
                 description: None,
+                task_usage: None,
                 model_ref,
                 system_prompt: model_config
                     .parameters
@@ -2945,6 +3007,7 @@ fn ensure_system_workspace_defaults(cfg: &mut AppConfig) -> bool {
     const AGENT_CHAT_WITH: &str = "__system_chat_with";
     const AGENT_SYMBOL_ANALYSIS: &str = "__system_symbol_analysis";
     const AGENT_FOLDER_ANALYSIS: &str = "__system_folder_analysis";
+    const AGENT_TASK_EXAMPLE: &str = "__system_taskagent_example";
 
     let mut changed = false;
 
@@ -2960,6 +3023,37 @@ fn ensure_system_workspace_defaults(cfg: &mut AppConfig) -> bool {
 - 再给结构化分析（分点/小标题均可）
 - 尽可能指出潜在问题与可执行改进建议
 - 当缺少关键上下文时，明确指出需要看的文件/关键搜索词，而不是臆测
+"#;
+
+    const LEGACY_CHAT_WITH_PROMPT: &str = r#"你是 IDE 中的“内联代码问答助手”。
+
+你会收到：
+- 用户的问题
+- 一个“选中代码片段”（可能只是一部分，需要你自行推断上下文）
+- 一些元信息（languageId、filePath、projectRoot）
+
+请按用户问题直接作答，并遵循：
+- 如缺少关键上下文，请明确指出需要哪些信息/文件。
+- 可给出可执行的下一步（例如：要看的文件、要跑的命令、要加的日志点）。
+- 输出使用 Markdown，必要时可包含代码块。
+"#;
+
+    const CHAT_WITH_PROMPT_V2: &str = r#"你是 IDE 中的“代码对话助手（Chat With）”。
+
+你会收到：
+- 用户问题（可能是连续追问）
+- 一个选中代码片段（可能不完整）
+- 元信息（languageId、filePath、projectRoot）
+
+输出必须使用 Markdown，并遵循：
+1) 先给结论摘要，再给结构化分析，最后给可执行建议/验证步骤。
+2) 关键结论尽量附代码定位，文件引用格式仅允许：
+   - `path:line` / `path:line:column`
+   - `path#Lline` / `path#LlineCcolumn`
+   禁止使用 `[label](path)` 这种文件链接写法；不要编造行号。
+3) 解释调用链/模块关系/生命周期时，优先给 Mermaid UML（flowchart / sequence / classDiagram）。
+4) 若 Mermaid 节点需要可点击跳转代码，请使用 `click` 语法并绑定到 `path:line`。
+5) 缺少上下文时明确指出需要查看的文件/符号/命令，不要臆测。
 "#;
 
     const SYMBOL_ANALYSIS_PROMPT_V2: &str = r#"你是 IDE 中的“代码符号分析助手”（Symbol Analysis）。
@@ -3019,6 +3113,21 @@ fn ensure_system_workspace_defaults(cfg: &mut AppConfig) -> bool {
 禁止使用 Markdown 链接语法引用文件（例如 `[label](path)`）；不要编造行号：拿不到行号时请先用 `rg`/打开文件定位，再输出引用。
 "#;
 
+    const TASK_AGENT_EXAMPLE_PROMPT_V1: &str = r#"你是一个 TaskAgent 示例，专门处理“边界清晰、输入明确”的子任务。
+
+工作方式：
+1) 先复述你理解到的子任务目标（1-2 句）。
+2) 必要时使用只读工具（read_file / rg / list_dir）补齐上下文，不要修改文件。
+3) 输出结构化结果：
+   - 结论摘要
+   - 关键依据（尽量附文件引用）
+   - 下一步建议（可执行）
+
+注意：
+- 当信息不足时，明确说出缺什么，不要臆测。
+- 保持简洁，优先可验证结论。
+"#;
+
     // 1) Toolset: safe read-only tools for Workstudio AI (no apply_patch / no exec).
     if !cfg.tools.toolsets.iter().any(|t| t.name == TOOLSET_NAME) {
         cfg.tools.toolsets.push(ToolSetConfig {
@@ -3068,6 +3177,12 @@ fn ensure_system_workspace_defaults(cfg: &mut AppConfig) -> bool {
                 if a.description.as_deref().unwrap_or("").trim().is_empty() {
                     a.description = Some(description.to_string());
                     changed = true;
+                }
+                if !matches!(a.agent_type, AgentType::TaskAgent) {
+                    if a.task_usage.is_some() {
+                        a.task_usage = None;
+                        changed = true;
+                    }
                 }
                 let normalize_prompt = |s: &str| s.replace("\r\n", "\n").trim().to_string();
                 let legacy = legacy_system_prompt.unwrap_or("");
@@ -3122,6 +3237,7 @@ fn ensure_system_workspace_defaults(cfg: &mut AppConfig) -> bool {
                     agent_type: AgentType::Tool,
                     display_name: display_name.to_string(),
                     description: Some(description.to_string()),
+                    task_usage: None,
                     model_ref: if current_model_ref.is_empty() {
                         String::new()
                     } else {
@@ -3173,19 +3289,8 @@ fn ensure_system_workspace_defaults(cfg: &mut AppConfig) -> bool {
         AGENT_CHAT_WITH,
         "代码对话（Chat With）",
         "对选中代码片段进行问答的内联对话服务",
-        r#"你是 IDE 中的“内联代码问答助手”。
-
-你会收到：
-- 用户的问题
-- 一个“选中代码片段”（可能只是一部分，需要你自行推断上下文）
-- 一些元信息（languageId、filePath、projectRoot）
-
-请按用户问题直接作答，并遵循：
-- 如缺少关键上下文，请明确指出需要哪些信息/文件。
-- 可给出可执行的下一步（例如：要看的文件、要跑的命令、要加的日志点）。
-- 输出使用 Markdown，必要时可包含代码块。
-"#,
-        None,
+        CHAT_WITH_PROMPT_V2,
+        Some(LEGACY_CHAT_WITH_PROMPT),
         Some(TOOLSET_NAME),
     );
 
@@ -3206,6 +3311,97 @@ fn ensure_system_workspace_defaults(cfg: &mut AppConfig) -> bool {
         None,
         Some(TOOLSET_NAME),
     );
+
+    // TaskAgent 示例：用于 `agenttask` 子任务链路验证（可作为默认兜底）。
+    match cfg.agents.iter_mut().find(|a| a.name == AGENT_TASK_EXAMPLE) {
+        Some(a) => {
+            if !a.enabled {
+                a.enabled = true;
+                changed = true;
+            }
+            if !matches!(a.agent_type, AgentType::TaskAgent) {
+                a.agent_type = AgentType::TaskAgent;
+                changed = true;
+            }
+            if a.display_name.trim().is_empty() {
+                a.display_name = "TaskAgent 示例".to_string();
+                changed = true;
+            }
+            if a.description.as_deref().unwrap_or("").trim().is_empty() {
+                a.description = Some("用于 `agenttask` 的示例子任务代理（只读分析）".to_string());
+                changed = true;
+            }
+            if a.task_usage.as_deref().unwrap_or("").trim().is_empty() {
+                a.task_usage = Some(
+                    "适用场景：边界清晰的只读分析子任务；输入建议包含目标、约束与期望输出结构。输出将给出结论、依据与下一步建议。"
+                        .to_string(),
+                );
+                changed = true;
+            }
+            if a.system_prompt.trim().is_empty() {
+                a.system_prompt = TASK_AGENT_EXAMPLE_PROMPT_V1.to_string();
+                changed = true;
+            }
+            if a.format_type == FormatPromptType::None {
+                a.format_type = FormatPromptType::Chat;
+                changed = true;
+            }
+            if a.default_run_mode
+                .as_deref()
+                .unwrap_or("")
+                .trim()
+                .is_empty()
+            {
+                a.default_run_mode = Some("agent".to_string());
+                changed = true;
+            }
+            if a.workspace_support.is_none() {
+                a.workspace_support = Some(true);
+                changed = true;
+            }
+            if a.model_ref.trim().is_empty() && !current_model_ref.is_empty() {
+                a.model_ref = current_model_ref.clone();
+                changed = true;
+            }
+            if a.toolset.as_deref().unwrap_or("").trim().is_empty() {
+                a.toolset = Some(TOOLSET_NAME.to_string());
+                changed = true;
+            }
+        }
+        None => {
+            cfg.agents.push(Agent {
+                name: AGENT_TASK_EXAMPLE.to_string(),
+                enabled: true,
+                agent_type: AgentType::TaskAgent,
+                display_name: "TaskAgent 示例".to_string(),
+                description: Some("用于 `agenttask` 的示例子任务代理（只读分析）".to_string()),
+                task_usage: Some(
+                    "适用场景：边界清晰的只读分析子任务；输入建议包含目标、约束与期望输出结构。输出将给出结论、依据与下一步建议。"
+                        .to_string(),
+                ),
+                model_ref: if current_model_ref.is_empty() {
+                    String::new()
+                } else {
+                    current_model_ref.clone()
+                },
+                system_prompt: TASK_AGENT_EXAMPLE_PROMPT_V1.to_string(),
+                format_type: FormatPromptType::Chat,
+                default_run_mode: Some("agent".to_string()),
+                toolset: Some(TOOLSET_NAME.to_string()),
+                mcp_set: None,
+                skill_set: None,
+                security_policy: None,
+                sandbox_policy: None,
+                approval_policy: None,
+                workspace_support: Some(true),
+                max_turns: None,
+                reinject_thinking: false,
+                context_policy: None,
+                workstudio_enabled: None,
+            });
+            changed = true;
+        }
+    }
 
     changed
 }
@@ -3257,6 +3453,72 @@ fn ensure_toolset_text_edit_normalized(cfg: &mut AppConfig) -> bool {
             let before = cleaned.clone();
             cleaned.retain(|t| !edit_tools.contains(&t.as_str()));
             let insert_at = first_edit_idx
+                .unwrap_or_else(|| cleaned.len())
+                .min(cleaned.len());
+            cleaned.insert(insert_at, MARKER.to_string());
+            if cleaned != before {
+                changed = true;
+            }
+        }
+
+        if cleaned != ts.tools {
+            ts.tools = cleaned;
+            changed = true;
+        }
+    }
+
+    changed
+}
+
+fn ensure_toolset_shell_normalized(cfg: &mut AppConfig) -> bool {
+    const MARKER: &str = "shell";
+    const SHELL_COMMAND: &str = "shell_command";
+    const EXEC_COMMAND: &str = "exec_command";
+    const WRITE_STDIN: &str = "write_stdin";
+    const EXEC_COMMAND_PERSISTENT: &str = "exec_command_persistent";
+    const WRITE_STDIN_PERSISTENT: &str = "write_stdin_persistent";
+
+    let mut changed = false;
+    for ts in &mut cfg.tools.toolsets {
+        if ts.tools.is_empty() {
+            continue;
+        }
+
+        // Trim + stable dedupe (preserve order).
+        let mut cleaned: Vec<String> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for raw in ts.tools.iter() {
+            let name = raw.trim();
+            if name.is_empty() {
+                changed = true;
+                continue;
+            }
+            if seen.insert(name.to_string()) {
+                cleaned.push(name.to_string());
+            } else {
+                changed = true;
+            }
+        }
+
+        // shell 工具统一收敛为抽象开关 `shell`：
+        // - 旧配置可能直接包含 shell_command / exec_command / write_stdin / *_persistent
+        // - 新配置只保留 `shell`，具体实现由“模型的 shellImplementation”选择
+        let shell_tools = [
+            MARKER,
+            SHELL_COMMAND,
+            EXEC_COMMAND,
+            WRITE_STDIN,
+            EXEC_COMMAND_PERSISTENT,
+            WRITE_STDIN_PERSISTENT,
+        ];
+        let first_shell_idx = cleaned
+            .iter()
+            .position(|t| shell_tools.contains(&t.as_str()));
+        let has_any_shell = first_shell_idx.is_some();
+        if has_any_shell {
+            let before = cleaned.clone();
+            cleaned.retain(|t| !shell_tools.contains(&t.as_str()));
+            let insert_at = first_shell_idx
                 .unwrap_or_else(|| cleaned.len())
                 .min(cleaned.len());
             cleaned.insert(insert_at, MARKER.to_string());

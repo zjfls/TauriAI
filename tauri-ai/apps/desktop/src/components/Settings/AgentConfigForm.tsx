@@ -24,6 +24,7 @@ const defaultAgent: Agent = {
   type: 'chat',
   displayName: '',
   description: '',
+  taskUsage: undefined,
   modelRef: '',
   systemPrompt: '',
   formatType: 'chat',
@@ -33,7 +34,7 @@ const defaultAgent: Agent = {
   workstudioEnabled: undefined,
 };
 
-type AgentCategory = 'chat' | 'workspace';
+type AgentCategory = 'chat' | 'workspace' | 'task';
 
 /**
  * Built-in non-deletable system agents for Workstudio AI.
@@ -76,17 +77,22 @@ const SYSTEM_WORKSPACE_AGENTS: Agent[] = [
     workspaceSupport: true,
     workstudioEnabled: true,
     modelRef: '',
-    systemPrompt: `你是 IDE 中的“内联代码问答助手”。
+    systemPrompt: `你是 IDE 中的“代码对话助手（Chat With）”。
 
 你会收到：
-- 用户的问题
-- 一个“选中代码片段”（可能只是一部分，需要你自行推断上下文）
-- 一些元信息（languageId、filePath、projectRoot）
+- 用户问题（可能是连续追问）
+- 一个选中代码片段（可能不完整）
+- 元信息（languageId、filePath、projectRoot）
 
-请按用户问题直接作答，并遵循：
-- 如缺少关键上下文，请明确指出需要哪些信息/文件。
-- 可给出可执行的下一步（例如：要看的文件、要跑的命令、要加的日志点）。
-- 输出使用 Markdown，必要时可包含代码块。
+输出必须使用 Markdown，并遵循：
+1) 先给结论摘要，再给结构化分析，最后给可执行建议/验证步骤。
+2) 关键结论尽量附代码定位，文件引用格式仅允许：
+   - \`path:line\` / \`path:line:column\`
+   - \`path#Lline\` / \`path#LlineCcolumn\`
+   禁止使用 \`[label](path)\` 这种文件链接写法；不要编造行号。
+3) 解释调用链/模块关系/生命周期时，优先给 Mermaid UML（flowchart / sequence / classDiagram）。
+4) 若 Mermaid 节点需要可点击跳转代码，请使用 \`click\` 语法并绑定到 \`path:line\`。
+5) 缺少上下文时明确指出需要查看的文件/符号/命令，不要臆测。
 `,
     formatType: 'chat',
   },
@@ -193,6 +199,7 @@ export const AgentConfigForm: React.FC = () => {
   const [agentCategory, setAgentCategory] = useState<AgentCategory>('chat');
   const [selectedAgentNameChat, setSelectedAgentNameChat] = useState<string | null>(null);
   const [selectedAgentNameWs, setSelectedAgentNameWs] = useState<string | null>(null);
+  const [selectedAgentNameTask, setSelectedAgentNameTask] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
 
   const agents = config?.agents || [];
@@ -204,8 +211,21 @@ export const AgentConfigForm: React.FC = () => {
 
   const isSystemWorkspaceAgentName = (name: string) => SYSTEM_WORKSPACE_AGENT_NAMES.has(name);
 
-  // Chat tab: exclude system Workstudio AI agents; keep the rest (including tool agents).
-  const chatAgents = agents.filter((a) => !isSystemWorkspaceAgentName(a.name) && a.workstudioEnabled !== true);
+  // Chat tab: non-workstudio + 非 TaskAgent
+  const chatAgents = agents.filter(
+    (a) =>
+      !isSystemWorkspaceAgentName(a.name) &&
+      a.workstudioEnabled !== true &&
+      a.type !== 'task_agent'
+  );
+
+  // Task tab: non-workstudio + task_agent
+  const taskAgents = agents.filter(
+    (a) =>
+      !isSystemWorkspaceAgentName(a.name) &&
+      a.workstudioEnabled !== true &&
+      a.type === 'task_agent'
+  );
 
   // Workstudio tab:
   // - System agents first (merged with saved overrides)
@@ -220,11 +240,46 @@ export const AgentConfigForm: React.FC = () => {
   );
   const workspaceAgents = [...systemWorkspaceAgents, ...userWorkspaceAgents];
 
-  const activeList = agentCategory === 'chat' ? chatAgents : workspaceAgents;
+  const activeList =
+    agentCategory === 'workspace'
+      ? workspaceAgents
+      : agentCategory === 'task'
+        ? taskAgents
+        : chatAgents;
 
+  const selectedAgentName =
+    agentCategory === 'workspace'
+      ? selectedAgentNameWs
+      : agentCategory === 'task'
+        ? selectedAgentNameTask
+        : selectedAgentNameChat;
+  const setSelectedAgentName =
+    agentCategory === 'workspace'
+      ? setSelectedAgentNameWs
+      : agentCategory === 'task'
+        ? setSelectedAgentNameTask
+        : setSelectedAgentNameChat;
 
-  const selectedAgentName = agentCategory === 'chat' ? selectedAgentNameChat : selectedAgentNameWs;
-  const setSelectedAgentName = agentCategory === 'chat' ? setSelectedAgentNameChat : setSelectedAgentNameWs;
+  const categoryMeta = {
+    chat: {
+      searchPlaceholder: '搜索聊天智能体...',
+      addButton: '添加智能体',
+      emptyTitle: '点击添加第一个聊天智能体',
+      createButton: '创建智能体',
+    },
+    workspace: {
+      searchPlaceholder: '搜索 Workstudio AI...',
+      addButton: '添加 Workstudio AI 智能体',
+      emptyTitle: '还没有 Workstudio AI 智能体',
+      createButton: '创建 Workstudio AI 智能体',
+    },
+    task: {
+      searchPlaceholder: '搜索 TaskAgent...',
+      addButton: '添加 TaskAgent',
+      emptyTitle: '还没有 TaskAgent',
+      createButton: '创建 TaskAgent',
+    },
+  } as const;
 
 
   const filteredAgents = activeList.filter(a =>
@@ -247,6 +302,13 @@ export const AgentConfigForm: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceAgents.length, selectedAgentNameWs]);
 
+  useEffect(() => {
+    if (taskAgents.length > 0 && !selectedAgentNameTask) {
+      setSelectedAgentNameTask(taskAgents[0].name);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskAgents.length, selectedAgentNameTask]);
+
   const handleSelectAgent = (name: string) => {
     setSelectedAgentName(name);
   };
@@ -266,10 +328,16 @@ export const AgentConfigForm: React.FC = () => {
       ...defaultAgent,
       name,
       displayName: name,
-      // Workstudio AI agents default to tool type + workspaceSupport
       ...(agentCategory === 'workspace'
         ? { type: 'tool' as AgentType, workspaceSupport: true, workstudioEnabled: true }
-        : {}),
+        : agentCategory === 'task'
+          ? {
+              type: 'task_agent' as AgentType,
+              workspaceSupport: true,
+              workstudioEnabled: false,
+              taskUsage: '适用场景：\n输入约定：\n输出约定：\n边界约束：',
+            }
+          : {}),
     };
 
     saveConfigDebounced({
@@ -298,8 +366,21 @@ export const AgentConfigForm: React.FC = () => {
     if (agentCategory === 'workspace') {
       const nextSystem = systemWorkspaceAgents[0]?.name ?? SYSTEM_WORKSPACE_AGENTS[0]?.name ?? null;
       setSelectedAgentNameWs(nextSystem);
+    } else if (agentCategory === 'task') {
+      const nextTask = nextAgents.filter(
+        (a) =>
+          !isSystemWorkspaceAgentName(a.name) &&
+          a.workstudioEnabled !== true &&
+          a.type === 'task_agent'
+      );
+      setSelectedAgentNameTask(nextTask[0]?.name ?? null);
     } else {
-      const nextChat = nextAgents.filter((a) => !isSystemWorkspaceAgentName(a.name) && a.workstudioEnabled !== true);
+      const nextChat = nextAgents.filter(
+        (a) =>
+          !isSystemWorkspaceAgentName(a.name) &&
+          a.workstudioEnabled !== true &&
+          a.type !== 'task_agent'
+      );
       setSelectedAgentNameChat(nextChat[0]?.name ?? null);
     }
   };
@@ -334,6 +415,15 @@ export const AgentConfigForm: React.FC = () => {
       systemRole: undefined,
       ...(agentCategory === 'workspace'
         ? { type: 'tool' as AgentType, workspaceSupport: true, workstudioEnabled: true }
+        : agentCategory === 'task'
+          ? {
+              type: 'task_agent' as AgentType,
+              workspaceSupport: true,
+              workstudioEnabled: false,
+              taskUsage:
+                agent.taskUsage ??
+                '适用场景：\n输入约定：\n输出约定：\n边界约束：',
+            }
         : {}),
     };
 
@@ -359,6 +449,7 @@ export const AgentConfigForm: React.FC = () => {
         {([
           { id: 'chat' as AgentCategory, label: '聊天智能体', count: chatAgents.length },
           { id: 'workspace' as AgentCategory, label: 'Workstudio AI', count: workspaceAgents.length },
+          { id: 'task' as AgentCategory, label: 'TaskAgent', count: taskAgents.length },
 
         ] as const).map((tab) => (
           <button
@@ -389,7 +480,7 @@ export const AgentConfigForm: React.FC = () => {
               <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
               <input
                 type="text"
-                placeholder={agentCategory === 'workspace' ? '搜索 Workstudio AI...' : '搜索聊天智能体...'}
+                placeholder={categoryMeta[agentCategory].searchPlaceholder}
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 autoCorrect="off"
@@ -456,7 +547,7 @@ export const AgentConfigForm: React.FC = () => {
             className="mt-3 flex items-center justify-center gap-2 w-full py-2 rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 text-gray-500 hover:border-blue-500 hover:text-blue-500 transition-colors"
           >
             <Plus size={16} />
-            <span className="text-sm">{agentCategory === 'workspace' ? '添加 Workstudio AI 智能体' : '添加智能体'}</span>
+            <span className="text-sm">{categoryMeta[agentCategory].addButton}</span>
           </button>
           {agentCategory === 'workspace' && (
             <p className="mt-2 text-[11px] leading-4 text-center text-gray-400 dark:text-gray-500 px-2">
@@ -500,9 +591,7 @@ export const AgentConfigForm: React.FC = () => {
             <div className="flex flex-col items-center justify-center h-64 gap-3 text-gray-500">
               <p>
                 {activeList.length === 0
-                  ? agentCategory === 'workspace'
-                    ? '还没有 Workstudio AI 智能体'
-                    : '点击添加第一个聊天智能体'
+                  ? categoryMeta[agentCategory].emptyTitle
                   : '选择一个智能体'}
               </p>
               {activeList.length === 0 && (
@@ -512,7 +601,7 @@ export const AgentConfigForm: React.FC = () => {
                   className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 text-white text-sm hover:bg-blue-700"
                 >
                   <Plus size={14} />
-                  {agentCategory === 'workspace' ? '创建 Workstudio AI 智能体' : '创建智能体'}
+                  {categoryMeta[agentCategory].createButton}
                 </button>
               )}
             </div>
@@ -560,14 +649,17 @@ const AgentForm: React.FC<AgentFormProps> = ({
   onSetDefault,
   onFieldChange,
 }) => {
-  const supportsToolset = agent.type === 'tool';
+  const isToolLikeAgent = agent.type === 'tool' || agent.type === 'task_agent';
+  const isTaskAgent = agent.type === 'task_agent';
+  const supportsToolset = isToolLikeAgent;
   const agentTypeOptions: { value: AgentType; label: string }[] = [
     { value: 'chat', label: 'Chat' },
     { value: 'tool', label: '工具' },
+    { value: 'task_agent', label: 'TaskAgent（仅 agenttask）' },
   ];
 
   const effectiveType: AgentType = (agent.type ?? 'chat') as AgentType;
-  const effectiveWorkspaceSupport = supportsToolset ? (agent.workspaceSupport ?? true) : false;
+  const effectiveWorkspaceSupport = isToolLikeAgent ? (agent.workspaceSupport ?? true) : false;
 
   const effectiveToolsetOptions = (() => {
     if (!agent.toolset) return toolsetOptions;
@@ -821,7 +913,12 @@ const AgentForm: React.FC<AgentFormProps> = ({
               onChange={(e) => {
                 const nextType = e.target.value as AgentType;
                 onFieldChange('type', nextType);
-                if (nextType !== 'tool') {
+                if (nextType !== 'task_agent') {
+                  onFieldChange('taskUsage', undefined);
+                } else if (!agent.taskUsage || !agent.taskUsage.trim()) {
+                  onFieldChange('taskUsage', '适用场景：\n输入约定：\n输出约定：\n边界约束：');
+                }
+                if (nextType !== 'tool' && nextType !== 'task_agent') {
                   onFieldChange('toolset', undefined);
                   onFieldChange('workspaceSupport', undefined);
                 }
@@ -873,7 +970,7 @@ const AgentForm: React.FC<AgentFormProps> = ({
             disabled={!isEditing}
             className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800"
           >
-            <option value="">（自动：Tool→Agent，Chat→Chat）</option>
+            <option value="">（自动：Tool/TaskAgent→Agent，Chat→Chat）</option>
             {runModeOptions.map((opt) => (
               <option key={opt.value} value={opt.value}>
                 {opt.label}
@@ -881,7 +978,7 @@ const AgentForm: React.FC<AgentFormProps> = ({
             ))}
           </select>
           <p className="text-xs text-gray-500">
-            新建对话/打开历史时：若对话本身未保存 runMode，则使用此默认值。
+            新建对话/打开历史时：若对话本身未保存 runMode，则使用此默认值（Tool/TaskAgent 默认 Agent）。
           </p>
         </div>
 
@@ -1075,6 +1172,25 @@ const AgentForm: React.FC<AgentFormProps> = ({
             className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800"
           />
         </div>
+
+        {isTaskAgent && (
+          <div className="space-y-1">
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+              TaskAgent 用法说明
+            </label>
+            <textarea
+              value={agent.taskUsage || ''}
+              onChange={(e) => onFieldChange('taskUsage', e.target.value || undefined)}
+              disabled={!isEditing}
+              placeholder="例如：适用场景、输入约定、输出约定、边界约束。该内容会注入到 agenttask 的可用 TaskAgent 清单里。"
+              rows={4}
+              className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800 resize-y"
+            />
+            <p className="text-xs text-gray-500">
+              仅 TaskAgent 使用。用于告诉上层智能体“何时调用这个 TaskAgent、应如何组织输入、期望什么输出”。
+            </p>
+          </div>
+        )}
 
         <div className="space-y-1">
           <div className="flex items-center justify-between">

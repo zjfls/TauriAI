@@ -48,9 +48,12 @@ use crate::storage::Database;
 use crate::workstudio_security::read_workstudio_security_config;
 
 use super::approvals::ApprovalDecision;
-use super::emitter::RunEmitter;
+use super::emitter::{RunEmitter, RunEventCallback};
 use super::run_state::RunState;
-use super::tools::registry::{register_builtin_handlers, ToolRegistry};
+use super::tools::handlers::agent_task::AGENT_TASK_TOOL_NAME;
+use super::tools::registry::{
+    register_builtin_handlers_with_options, BuiltinHandlerOptions, ToolRegistry,
+};
 use super::tools::{
     tool_specs_to_definitions, ToolOrchestrator, ToolOrchestratorConfig, ToolServices,
 };
@@ -521,6 +524,7 @@ fn compute_system_prompt_cache_key(
     enable_write_file_replace_string_tool_prompt: bool,
     enable_local_web_search_tool: bool,
     enable_mcp_resource_tool_prompt: bool,
+    task_agent_tool_prompt: Option<&str>,
     enabled_skills: &[SkillEntry],
     py: PythonAvailability,
 ) -> String {
@@ -529,7 +533,7 @@ fn compute_system_prompt_cache_key(
     let mut h = Sha1::new();
     // NOTE: Cache key must include any prompt text that can affect the actual HTTP request.
     // Bump this version whenever the cache inputs change.
-    h.update(b"v7\n");
+    h.update(b"v8\n");
     h.update(agent.name.as_bytes());
     h.update(b"\n");
     h.update(agent.system_prompt.as_bytes());
@@ -570,6 +574,13 @@ fn compute_system_prompt_cache_key(
     h.update(format!("py:{}/{}\n", py.has_python, py.has_python3).as_bytes());
     h.update(format!("local_web_search:{enable_local_web_search_tool}\n").as_bytes());
     h.update(format!("mcp_resource_prompt:{enable_mcp_resource_tool_prompt}\n").as_bytes());
+    h.update(b"task_agent_prompt\n");
+    if let Some(prompt) = task_agent_tool_prompt {
+        h.update(prompt.as_bytes());
+    } else {
+        h.update(b"<none>");
+    }
+    h.update(b"\n");
 
     // Skills section only depends on metadata (not contents).
     h.update(b"skills\n");
@@ -801,6 +812,77 @@ fn inject_web_search_tool_prompt(messages: &mut Vec<Message>, conversation_id: &
 
 fn inject_mcp_resource_tool_prompt(messages: &mut Vec<Message>, conversation_id: &str) {
     let content = MCP_RESOURCE_TOOL_PROMPT.trim().to_string();
+    if content.is_empty() {
+        return;
+    }
+    let insert_at = messages
+        .iter()
+        .take_while(|m| m.role == MessageRole::System)
+        .count();
+    messages.insert(
+        insert_at,
+        Message {
+            id: uuid::Uuid::new_v4().to_string(),
+            conversation_id: conversation_id.to_string(),
+            role: MessageRole::System,
+            content,
+            content_parts: Vec::new(),
+            thinking: None,
+            meta: None,
+            created_at: chrono::Utc::now(),
+            status: MessageStatus::Success,
+            error_message: None,
+        },
+    );
+}
+
+fn render_task_agent_tool_prompt(config: &crate::models::AppConfig) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    lines.push("## agenttask 可用 TaskAgent".to_string());
+    lines.push(
+        "调用 `agenttask` 时只能使用 `type=task_agent` 的智能体。请根据“TaskAgent 用法说明（taskUsage）”选择最匹配的一项。"
+            .to_string(),
+    );
+
+    let mut task_agents: Vec<&crate::models::Agent> = config
+        .agents
+        .iter()
+        .filter(|a| a.enabled && matches!(a.agent_type, AgentType::TaskAgent))
+        .collect();
+    task_agents.sort_by(|a, b| a.name.cmp(&b.name));
+
+    if task_agents.is_empty() {
+        lines.push("当前没有可用 TaskAgent，请不要调用 `agenttask`。".to_string());
+        return lines.join("\n");
+    }
+
+    lines.push("可用列表：".to_string());
+    for agent in task_agents {
+        let display_name = agent.display_name.trim();
+        let task_usage = agent.task_usage.as_deref().unwrap_or("").trim();
+        let description = agent.description.as_deref().unwrap_or("").trim();
+        let raw_summary = if !task_usage.is_empty() {
+            task_usage.to_string()
+        } else if !description.is_empty() {
+            description.to_string()
+        } else if !display_name.is_empty() {
+            display_name.to_string()
+        } else {
+            "（未配置 taskUsage）".to_string()
+        };
+        let summary = raw_summary.split_whitespace().collect::<Vec<_>>().join(" ");
+        lines.push(format!("- `{}`：{}", agent.name.trim(), summary));
+    }
+
+    lines.join("\n")
+}
+
+fn inject_task_agent_tool_prompt(
+    messages: &mut Vec<Message>,
+    conversation_id: &str,
+    task_agent_prompt: &str,
+) {
+    let content = task_agent_prompt.trim().to_string();
     if content.is_empty() {
         return;
     }
@@ -3235,12 +3317,44 @@ pub async fn run_task(
 ) -> Result<(), SerializableError> {
     let conversation_id = input.conversation_id.clone();
 
-    let result = run_task_inner(app, input, db, config_manager, run_state.clone()).await;
+    let result = run_task_inner(
+        Some(app),
+        None,
+        input,
+        db,
+        config_manager,
+        run_state.clone(),
+    )
+    .await;
 
     // 统一收尾：无论成功/失败/异常，都确保 run_state 与 abort sender 被清理，避免并发状态错乱。
     run_state.finish_run(&conversation_id).await;
     cleanup_abort_sender(&run_state, &conversation_id).await;
 
+    result
+}
+
+pub async fn run_task_with_event_callback(
+    input: RunTaskInput,
+    db: Arc<Mutex<Database>>,
+    config_manager: Arc<ConfigManager>,
+    run_state: Arc<RunState>,
+    event_callback: RunEventCallback,
+) -> Result<(), SerializableError> {
+    let conversation_id = input.conversation_id.clone();
+
+    let result = run_task_inner(
+        None,
+        Some(event_callback),
+        input,
+        db,
+        config_manager,
+        run_state.clone(),
+    )
+    .await;
+
+    run_state.finish_run(&conversation_id).await;
+    cleanup_abort_sender(&run_state, &conversation_id).await;
     result
 }
 
@@ -3556,7 +3670,8 @@ pub async fn retry_turn(
     }
 
     let result = run_task_inner(
-        app,
+        Some(app),
+        None,
         RunTaskInput {
             conversation_id,
             message_id: None,
@@ -3584,7 +3699,8 @@ pub async fn retry_turn(
 }
 
 async fn run_task_inner(
-    app: AppHandle,
+    app: Option<AppHandle>,
+    event_callback: Option<RunEventCallback>,
     mut input: RunTaskInput,
     db: Arc<Mutex<Database>>,
     config_manager: Arc<ConfigManager>,
@@ -3609,7 +3725,20 @@ async fn run_task_inner(
         .as_deref()
         .is_some_and(|s| !s.trim().is_empty());
 
-    let mut emitter = RunEmitter::new(app.clone(), input.conversation_id.clone(), run_id.clone());
+    let mut emitter = if let Some(app_handle) = app.as_ref() {
+        RunEmitter::new(
+            app_handle.clone(),
+            input.conversation_id.clone(),
+            run_id.clone(),
+        )
+    } else if let Some(callback) = event_callback {
+        RunEmitter::new_with_callback(input.conversation_id.clone(), run_id.clone(), callback)
+    } else {
+        return Err(AppErrorCode::UnknownError(
+            "run_task_inner 缺少事件发射目标（AppHandle/Callback）".to_string(),
+        )
+        .into());
+    };
 
     let resolved = resolve_chat_model(
         &config,
@@ -3629,7 +3758,8 @@ async fn run_task_inner(
     let force_full_access = requested_mode == "agent-full-access";
     let use_custom_security = requested_mode == "agent-custom";
     // Tools can also be enabled in chat mode (read-only sandbox by default).
-    let tools_enabled = matches!(runtime_agent_type, AgentType::Tool) || chat_mode;
+    let tools_enabled =
+        matches!(runtime_agent_type, AgentType::Tool | AgentType::TaskAgent) || chat_mode;
 
     if !provider.enabled {
         return Err(AppErrorCode::AiServiceError(format!(
@@ -3766,7 +3896,7 @@ async fn run_task_inner(
         })
         .collect::<Vec<_>>();
     let base_messages = match runtime_agent_type {
-        AgentType::Tool => match provider.provider_type {
+        AgentType::Tool | AgentType::TaskAgent => match provider.provider_type {
             crate::models::ProviderType::Openai
             | crate::models::ProviderType::OpenaiCompatible
             | crate::models::ProviderType::OpenaiResponses
@@ -3928,7 +4058,7 @@ async fn run_task_inner(
     emitter.emit(RunEvent::TaskStarted {
         task_id: task_id.clone(),
         task_kind: match runtime_agent_type {
-            AgentType::Tool => TaskKind::Tool,
+            AgentType::Tool | AgentType::TaskAgent => TaskKind::Tool,
             AgentType::Chat => TaskKind::Chat,
         },
         title: None,
@@ -4049,7 +4179,135 @@ async fn run_task_inner(
             }
         }
 
+        // shell 工具选择（Toolset + Model）：
+        //
+        // - UI/toolset 里可以开启一个抽象的 `shell` 能力；
+        // - 具体采用哪种实现由“模型配置”决定（默认 shell_command）：
+        //   1) shell_command
+        //   2) pty（exec_command + write_stdin）
+        //   3) pty_persistent（exec_command_persistent + write_stdin_persistent）
+        //
+        // 选择逻辑（严格按用户定义）：
+        // 1) 先看 toolset 是否开启了 shell 工具（`shell` 或显式包含相关工具）
+        // 2) 再按模型的实现类型挑选，并只暴露“最终选择的那一套实现”给模型，避免混用导致不稳定
+        fn resolve_shell_tools_in_allow_list(
+            tool_names: &mut Vec<String>,
+            preferred: crate::models::ShellImplementation,
+            allow_persistent_pty: bool,
+        ) {
+            use crate::models::ShellImplementation;
+
+            const SHELL: &str = "shell";
+            const SHELL_COMMAND: &str = "shell_command";
+            const EXEC_COMMAND: &str = "exec_command";
+            const WRITE_STDIN: &str = "write_stdin";
+            const EXEC_COMMAND_PERSISTENT: &str = "exec_command_persistent";
+            const WRITE_STDIN_PERSISTENT: &str = "write_stdin_persistent";
+            const SHELL_TOKENS: [&str; 6] = [
+                SHELL,
+                SHELL_COMMAND,
+                EXEC_COMMAND,
+                WRITE_STDIN,
+                EXEC_COMMAND_PERSISTENT,
+                WRITE_STDIN_PERSISTENT,
+            ];
+
+            let first_idx = tool_names
+                .iter()
+                .position(|t| SHELL_TOKENS.contains(&t.as_str()));
+            let has_marker = tool_names.iter().any(|t| t == SHELL);
+
+            let has_shell_command = tool_names.iter().any(|t| t == SHELL_COMMAND);
+            let has_pty = tool_names.iter().any(|t| t == EXEC_COMMAND)
+                && tool_names.iter().any(|t| t == WRITE_STDIN);
+            let has_pty_persistent = tool_names.iter().any(|t| t == EXEC_COMMAND_PERSISTENT)
+                && tool_names.iter().any(|t| t == WRITE_STDIN_PERSISTENT);
+
+            let mut allow_shell_command = has_shell_command;
+            let mut allow_pty = has_pty;
+            let mut allow_pty_persistent = has_pty_persistent;
+
+            // 抽象开关：认为三种实现都“可用”（由模型偏好决定具体落到哪一个）。
+            if has_marker {
+                allow_shell_command = true;
+                allow_pty = true;
+                allow_pty_persistent = true;
+            }
+
+            // persistent 模式与常规 PTY 互斥（orchestrator 会隐藏非 persistent PTY）。
+            if allow_persistent_pty {
+                allow_pty = false;
+            } else {
+                allow_pty_persistent = false;
+            }
+
+            if !allow_shell_command && !allow_pty && !allow_pty_persistent {
+                return;
+            }
+
+            let chosen = match preferred {
+                ShellImplementation::ShellCommand => {
+                    if allow_shell_command {
+                        Some(ShellImplementation::ShellCommand)
+                    } else if allow_pty {
+                        Some(ShellImplementation::Pty)
+                    } else if allow_pty_persistent {
+                        Some(ShellImplementation::PtyPersistent)
+                    } else {
+                        None
+                    }
+                }
+                ShellImplementation::Pty => {
+                    if allow_pty {
+                        Some(ShellImplementation::Pty)
+                    } else if allow_pty_persistent {
+                        Some(ShellImplementation::PtyPersistent)
+                    } else if allow_shell_command {
+                        Some(ShellImplementation::ShellCommand)
+                    } else {
+                        None
+                    }
+                }
+                ShellImplementation::PtyPersistent => {
+                    if allow_pty_persistent {
+                        Some(ShellImplementation::PtyPersistent)
+                    } else if allow_pty {
+                        Some(ShellImplementation::Pty)
+                    } else if allow_shell_command {
+                        Some(ShellImplementation::ShellCommand)
+                    } else {
+                        None
+                    }
+                }
+            };
+
+            let Some(chosen) = chosen else {
+                return;
+            };
+
+            tool_names.retain(|t| !SHELL_TOKENS.contains(&t.as_str()));
+            let insert_at = first_idx
+                .unwrap_or_else(|| tool_names.len())
+                .min(tool_names.len());
+
+            match chosen {
+                ShellImplementation::ShellCommand => {
+                    tool_names.insert(insert_at, SHELL_COMMAND.to_string());
+                }
+                ShellImplementation::Pty => {
+                    tool_names.insert(insert_at, EXEC_COMMAND.to_string());
+                    tool_names.insert(insert_at + 1, WRITE_STDIN.to_string());
+                }
+                ShellImplementation::PtyPersistent => {
+                    tool_names.insert(insert_at, EXEC_COMMAND_PERSISTENT.to_string());
+                    tool_names.insert(insert_at + 1, WRITE_STDIN_PERSISTENT.to_string());
+                }
+            }
+        }
+
         let preferred_text_edit = model.text_edit_implementation.clone().unwrap_or_default();
+        let preferred_agent_task = model.agent_task_implementation.clone().unwrap_or_default();
+        let preferred_shell = model.shell_implementation.clone().unwrap_or_default();
 
         // ToolSet：Agent 可以绑定不同工具集合。
         // - 若未绑定 toolset：默认只暴露 `web_search`（若本次 run 启用了 web_search），避免把本地工具“默认”下发给模型。
@@ -4065,6 +4323,11 @@ async fn run_task_inner(
                 Some(ts) => {
                     let mut tools = ts.tools.clone();
                     resolve_text_edit_tools_in_allow_list(&mut tools, preferred_text_edit.clone());
+                    resolve_shell_tools_in_allow_list(
+                        &mut tools,
+                        preferred_shell.clone(),
+                        ts.persistance_shell_enhance,
+                    );
                     super::tools::spec::ToolSet::allow_list(name, tools)
                 }
                 .with_persistance_shell_enhance(ts.persistance_shell_enhance),
@@ -4095,7 +4358,12 @@ async fn run_task_inner(
 
         // Registry：每个 run 构建一次（便于按 agent/mcp set 动态注入工具）。
         let mut registry = ToolRegistry::new();
-        register_builtin_handlers(&mut registry);
+        register_builtin_handlers_with_options(
+            &mut registry,
+            BuiltinHandlerOptions {
+                agent_task_implementation: preferred_agent_task,
+            },
+        );
 
         // MCP tools：按 agent 绑定的 MCP Set 进行注入（工具名：mcp__{server}__{tool}）。
         let mut mcp_tool_names: Vec<String> = Vec::new();
@@ -4462,6 +4730,11 @@ async fn run_task_inner(
     let enable_write_file_replace_string_tool_prompt = enable_write_file_replace_string_tool_prompt
         && !enable_apply_patch_tool_prompt
         && !enable_apply_patch_unified_diff_tool_prompt;
+    let task_agent_tool_prompt = allowed_tool_names.as_ref().and_then(|names| {
+        names
+            .contains(AGENT_TASK_TOOL_NAME)
+            .then(|| render_task_agent_tool_prompt(&config))
+    });
 
     // 4) TurnLoop：max_turns 统一以配置为准（agent.max_turns），未配置则使用全局默认值。
     let default_max_turns: u32 = 10_000;
@@ -4476,9 +4749,8 @@ async fn run_task_inner(
     let repo_skills_dir = {
         // Prefer bundled resources: `resources/skills/` -> `<resource_dir>/skills`
         let from_resources = app
-            .path()
-            .resource_dir()
-            .ok()
+            .as_ref()
+            .and_then(|app_handle| app_handle.path().resource_dir().ok())
             .map(|p| p.join("skills"))
             .filter(|p| p.is_dir());
         if from_resources.is_some() {
@@ -4561,6 +4833,7 @@ async fn run_task_inner(
         enable_write_file_replace_string_tool_prompt,
         enable_local_web_search_tool,
         enable_mcp_resource_tool_prompt,
+        task_agent_tool_prompt.as_deref(),
         &enabled_skills_meta,
         py,
     );
@@ -4636,6 +4909,9 @@ async fn run_task_inner(
         }
         if enable_mcp_resource_tool_prompt {
             inject_mcp_resource_tool_prompt(&mut messages, &input.conversation_id);
+        }
+        if let Some(task_agent_prompt) = task_agent_tool_prompt.as_deref() {
+            inject_task_agent_tool_prompt(&mut messages, &input.conversation_id, task_agent_prompt);
         }
 
         if let Some(merged_prompt) =
@@ -4764,16 +5040,20 @@ async fn run_task_inner(
                             .collect::<Vec<_>>();
 
                         let refreshed_base_messages = match runtime_agent_type {
-                            AgentType::Tool => match provider.provider_type {
-                                crate::models::ProviderType::Openai
-                                | crate::models::ProviderType::OpenaiCompatible
-                                | crate::models::ProviderType::OpenaiResponses
-                                | crate::models::ProviderType::Anthropic
-                                | crate::models::ProviderType::Google => {
-                                    expand_persisted_blocks_for_model_input(refreshed_base_messages)
+                            AgentType::Tool | AgentType::TaskAgent => {
+                                match provider.provider_type {
+                                    crate::models::ProviderType::Openai
+                                    | crate::models::ProviderType::OpenaiCompatible
+                                    | crate::models::ProviderType::OpenaiResponses
+                                    | crate::models::ProviderType::Anthropic
+                                    | crate::models::ProviderType::Google => {
+                                        expand_persisted_blocks_for_model_input(
+                                            refreshed_base_messages,
+                                        )
+                                    }
+                                    _ => append_tool_trace_for_model_input(refreshed_base_messages),
                                 }
-                                _ => append_tool_trace_for_model_input(refreshed_base_messages),
-                            },
+                            }
                             _ => append_tool_trace_for_model_input(refreshed_base_messages),
                         };
 
@@ -5858,8 +6138,7 @@ async fn stream_one_turn(
             //
             // 典型场景：流里只吐了 thinking / 状态事件（或响应被网关截断），最终没有任何输出文本。
             // 这种情况下重试不会造成“重复可见内容”。
-            let can_reconnect_after_no_visible_output =
-                emitted_any_delta && no_visible_output_yet;
+            let can_reconnect_after_no_visible_output = emitted_any_delta && no_visible_output_yet;
             let can_reconnect =
                 can_reconnect_after_partial_output || can_reconnect_after_no_visible_output;
             let can_retry = attempt < max_attempts

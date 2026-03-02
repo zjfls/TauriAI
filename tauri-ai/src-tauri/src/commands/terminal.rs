@@ -127,7 +127,11 @@ fn default_shell_command(is_dark: Option<bool>) -> Vec<String> {
         // Goals:
         // - UTF-8 I/O to avoid mojibake.
         // - Make input text more readable (use brighter colors).
-        let input_color = if is_dark.unwrap_or(false) { "White" } else { "Blue" };
+        let input_color = if is_dark.unwrap_or(false) {
+            "White"
+        } else {
+            "Blue"
+        };
         let init = format!(
             "try {{ chcp 65001 | Out-Null }} catch {{}}; \
              try {{ [Console]::InputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new() }} catch {{}}; \
@@ -204,7 +208,14 @@ pub async fn terminal_create(
 
     services
         .pty
-        .create_session(cmd, dir, &conv, "ui", PtySessionScope::Conversation, Some(size))
+        .create_session(
+            cmd,
+            dir,
+            &conv,
+            "ui",
+            PtySessionScope::Conversation,
+            Some(size),
+        )
         .await
 }
 
