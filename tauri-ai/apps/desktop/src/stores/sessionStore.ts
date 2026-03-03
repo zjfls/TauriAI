@@ -37,6 +37,7 @@ import {
   closeCurrentWindow,
   dockConversationToWindow,
   emitToWindowLabel,
+  getViewWindowParams,
   type ChatDockPlacement,
   type WorkspaceDockRequestPayload,
 } from '../utils/viewWindow';
@@ -60,9 +61,7 @@ let draftPersistTimeout: ReturnType<typeof setTimeout> | null = null;
 
 const isStandaloneWindow = (): boolean => {
   try {
-    if (typeof window === 'undefined') return false;
-    const params = new URLSearchParams(window.location.search);
-    return params.get('standalone') === '1';
+    return getViewWindowParams().standalone;
   } catch {
     return false;
   }

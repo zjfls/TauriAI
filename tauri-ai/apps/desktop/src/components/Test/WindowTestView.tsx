@@ -2,11 +2,12 @@ import React, { useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { WebviewWindow, getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import type { Workstudio } from '../../types';
+import { getViewWindowParams } from '../../utils/viewWindow';
 
 export const WindowTestView: React.FC = () => {
-  const params = useMemo(() => new URLSearchParams(window.location.search), []);
-  const view = params.get('view') || '(none)';
-  const standalone = params.get('standalone') || '(none)';
+  const windowParams = useMemo(() => getViewWindowParams(), []);
+  const view = windowParams.view || '(none)';
+  const standalone = windowParams.standalone ? '1' : '(none)';
   const [workstudioLoading, setWorkstudioLoading] = useState(false);
   const [lastEvent, setLastEvent] = useState<string>('');
 
@@ -68,7 +69,8 @@ export const WindowTestView: React.FC = () => {
             type="button"
             onClick={() => {
               const label = `view-window_test-${Date.now()}`;
-              openWindowWithDiagnostics(label, 'Window Test', '/index.html?view=window_test&standalone=1');
+              const url = `/index.html#${new URLSearchParams({ view: 'window_test', standalone: '1' }).toString()}`;
+              openWindowWithDiagnostics(label, 'Window Test', url);
             }}
             className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
           >
@@ -82,10 +84,15 @@ export const WindowTestView: React.FC = () => {
               try {
                 const ws = await invoke<Workstudio>('create_workstudio');
                 const label = `view-workstudio-${ws.id}`;
+                const url = `/index.html#${new URLSearchParams({
+                  view: 'workstudio',
+                  standalone: '1',
+                  workstudioId: ws.id,
+                }).toString()}`;
                 openWindowWithDiagnostics(
                   label,
                   `Workstudio: ${ws.mainFolder}`,
-                  `/index.html?view=workstudio&standalone=1&workstudioId=${encodeURIComponent(ws.id)}`
+                  url
                 );
               } finally {
                 setWorkstudioLoading(false);

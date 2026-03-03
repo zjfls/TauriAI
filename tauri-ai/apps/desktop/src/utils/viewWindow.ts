@@ -334,24 +334,31 @@ export const getViewWindowParams = (): ViewWindowParams => {
     // ignore
   }
 
-  const params = new URLSearchParams(window.location.search);
-  const view = params.get('view') as ActiveView | null;
-  const standalone = params.get('standalone') === '1';
-  const noDefaultSession = params.get('noDefaultSession') === '1';
-  const conversationId = params.get('conversationId');
-  const runMode = parseRunMode(params.get('runMode'));
-  const agentName = params.get('agentName');
-  const documentPath = params.get('documentPath');
-  const workstudioId = params.get('workstudioId');
-  const webUrl = params.get('webUrl');
-  const webTitle = params.get('webTitle');
-  const terminalWorkdir = params.get('terminalWorkdir');
-  const terminalTitle = params.get('terminalTitle');
-  const filePath = params.get('filePath');
-  const lineRaw = params.get('line');
-  const columnRaw = params.get('column');
-  const endLineRaw = params.get('endLine');
-  const endColumnRaw = params.get('endColumn');
+  const searchParams = new URLSearchParams(window.location.search);
+  const hashParams = (() => {
+    const raw = (window.location.hash ?? '').trim();
+    if (!raw) return new URLSearchParams();
+    return new URLSearchParams(raw.startsWith('#') ? raw.slice(1) : raw);
+  })();
+  const get = (key: string): string | null => searchParams.get(key) ?? hashParams.get(key);
+
+  const view = get('view') as ActiveView | null;
+  const standalone = get('standalone') === '1';
+  const noDefaultSession = get('noDefaultSession') === '1';
+  const conversationId = get('conversationId');
+  const runMode = parseRunMode(get('runMode'));
+  const agentName = get('agentName');
+  const documentPath = get('documentPath');
+  const workstudioId = get('workstudioId');
+  const webUrl = get('webUrl');
+  const webTitle = get('webTitle');
+  const terminalWorkdir = get('terminalWorkdir');
+  const terminalTitle = get('terminalTitle');
+  const filePath = get('filePath');
+  const lineRaw = get('line');
+  const columnRaw = get('column');
+  const endLineRaw = get('endLine');
+  const endColumnRaw = get('endColumn');
   const line = lineRaw ? Number(lineRaw) : null;
   const column = columnRaw ? Number(columnRaw) : null;
   const endLine = endLineRaw ? Number(endLineRaw) : null;
@@ -453,7 +460,7 @@ export const openViewWindow = (
   }
   // 注意：在 Tauri production（asset protocol）下，`/?query` 可能不会稳定映射到 `index.html`，
   // 导致“新窗口白屏/无内容”。显式使用 `index.html` 更稳。
-  const url = `/index.html?${params.toString()}`;
+  const url = `/index.html#${params.toString()}`;
 
   try {
     upsertWindowRecord({
@@ -612,7 +619,7 @@ export const openOrFocusViewWindow = async (
     params.set('endColumn', String(opts.endColumn));
   }
   // 注意：同 openViewWindow，显式指向 `index.html` 避免 production 下 `/?query` 白屏。
-  const url = `/index.html?${params.toString()}`;
+  const url = `/index.html#${params.toString()}`;
 
   try {
     upsertWindowRecord({

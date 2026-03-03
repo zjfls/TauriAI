@@ -9,6 +9,8 @@ const configDir = path.dirname(fileURLToPath(import.meta.url));
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
+  // Tauri production uses a custom protocol origin; relative base is the most robust across schemes.
+  base: "./",
   // Ensure Vite resolves `index.html`, `public/`, PostCSS/Tailwind config relative to this app.
   root: configDir,
 
