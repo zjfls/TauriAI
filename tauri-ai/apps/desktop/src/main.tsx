@@ -184,3 +184,9 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     </ErrorBoundary>
   </React.StrictMode>,
 );
+
+try {
+  document.getElementById('tauriai-boot')?.remove();
+} catch {
+  // ignore
+}

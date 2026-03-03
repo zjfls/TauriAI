@@ -9,6 +9,67 @@
 </head>
 
 <body>
+  <div id="tauriai-boot" style="position:fixed;left:8px;top:8px;z-index:2147483647;max-width:calc(100vw - 16px);padding:6px 8px;border-radius:8px;background:rgba(255,255,255,0.92);border:1px solid rgba(0,0,0,0.12);color:#111;font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,\"Liberation Mono\",\"Courier New\",monospace;white-space:pre-wrap;word-break:break-word;">
+    正在加载…
+  </div>
+  <script>
+    (function () {
+      var el = document.getElementById('tauriai-boot');
+      if (!el) return;
+
+      var set = function (msg) {
+        try {
+          el.textContent = String(msg || '');
+        } catch (e) {
+          // ignore
+        }
+      };
+
+      var shorten = function (v) {
+        try {
+          if (typeof v === 'string') return v;
+          if (v && typeof v.message === 'string') return v.message;
+          return String(v);
+        } catch (e) {
+          return '(unprintable)';
+        }
+      };
+
+      // Capture resource-load and runtime errors early (useful for white-screen diagnostics in production builds).
+      window.addEventListener('error', function (event) {
+        try {
+          var target = event && event.target;
+          var tag = target && target.tagName ? String(target.tagName) : '';
+          if (tag) {
+            var src = target.src || target.href;
+            if (src) {
+              set('资源加载失败: ' + src);
+              return;
+            }
+          }
+
+          if (event && event.message) {
+            set('JS 错误: ' + event.message);
+            return;
+          }
+          if (event && event.error) {
+            set('JS 错误: ' + shorten(event.error));
+            return;
+          }
+        } catch (e) {
+          // ignore
+        }
+      }, true);
+
+      window.addEventListener('unhandledrejection', function (event) {
+        try {
+          set('未处理的 Promise 拒绝: ' + shorten(event && event.reason));
+        } catch (e) {
+          // ignore
+        }
+      });
+    })();
+  </script>
   <div id="root"></div>
   <script type="module" src="/src/main.tsx"></script>
 </body>
