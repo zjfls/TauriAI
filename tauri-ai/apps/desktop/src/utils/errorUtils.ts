@@ -1,5 +1,22 @@
+type ConfigStoreStateSnapshot = {
+    config?: {
+        strictErrorMode?: boolean;
+    } | null;
+} | null;
 
-import { useConfigStore } from '../stores/configStore';
+let configStateGetter: (() => ConfigStoreStateSnapshot) | null = null;
+
+export const registerConfigStateGetter = (getter: (() => ConfigStoreStateSnapshot) | null) => {
+    configStateGetter = getter;
+};
+
+const getConfigStateSafe = (): ConfigStoreStateSnapshot => {
+    try {
+        return configStateGetter?.() ?? null;
+    } catch {
+        return null;
+    }
+};
 
 // 记录当前处于激活状态的弹窗数量
 let activeDialogCount = 0;
@@ -85,8 +102,8 @@ export async function tauriInvoke<T>(command: string, args?: InvokeArgs): Promis
         return await coreInvoke<T>(command, args);
     } catch (err: unknown) {
         // 检查全局设定：是否开启了“严格报错模式覆盖”
-        const state = useConfigStore.getState();
-        const isStrictMode = state.config?.strictErrorMode === true;
+        const state = getConfigStateSafe();
+        const isStrictMode = state?.config?.strictErrorMode === true;
 
         if (isStrictMode) {
             const errorText = typeof err === 'string' ? err : err instanceof Error ? err.message : JSON.stringify(err);

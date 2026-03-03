@@ -66,6 +66,9 @@ export type WorkspaceDockAckPayload = {
 type PhysicalRect = { x: number; y: number; width: number; height: number };
 type PhysicalPoint = { x: number; y: number };
 
+const VIEW_PARAMS_STORAGE_KEY_PREFIX = 'tauri-ai:view-window-params:v1:';
+const makeViewParamsStorageKey = (label: string) => `${VIEW_PARAMS_STORAGE_KEY_PREFIX}${label}`;
+
 const pointInRect = (p: { x: number; y: number }, r: PhysicalRect) => {
   return p.x >= r.x && p.y >= r.y && p.x <= r.x + r.width && p.y <= r.y + r.height;
 };
@@ -282,6 +285,65 @@ export interface ViewWindowParams {
   endColumn?: number | null;
 }
 
+const coerceViewWindowParams = (p: Partial<ViewWindowParams>): ViewWindowParams => {
+  return {
+    view: (p.view ?? null) as ActiveView | null,
+    standalone: Boolean(p.standalone),
+    noDefaultSession: Boolean(p.noDefaultSession),
+    conversationId: p.conversationId ?? null,
+    runMode: p.runMode ?? null,
+    agentName: p.agentName ?? null,
+    documentPath: p.documentPath ?? null,
+    workstudioId: p.workstudioId ?? null,
+    webUrl: p.webUrl ?? null,
+    webTitle: p.webTitle ?? null,
+    terminalWorkdir: p.terminalWorkdir ?? null,
+    terminalTitle: p.terminalTitle ?? null,
+    filePath: p.filePath ?? null,
+    line: typeof p.line === 'number' && Number.isFinite(p.line) ? p.line : null,
+    column: typeof p.column === 'number' && Number.isFinite(p.column) ? p.column : null,
+    endLine: typeof p.endLine === 'number' && Number.isFinite(p.endLine) ? p.endLine : null,
+    endColumn: typeof p.endColumn === 'number' && Number.isFinite(p.endColumn) ? p.endColumn : null,
+  };
+};
+
+const stageViewParamsForWindowLabel = (label: string, params: ViewWindowParams) => {
+  try {
+    if (typeof window === 'undefined') return;
+    const key = makeViewParamsStorageKey(label);
+    window.localStorage.setItem(key, JSON.stringify({ ts: Date.now(), params }));
+  } catch {
+    // ignore
+  }
+};
+
+const consumeStagedViewParamsForCurrentWindow = (): ViewWindowParams | null => {
+  try {
+    if (typeof window === 'undefined') return null;
+    const label = getCurrentWebviewWindow().label;
+    if (!label) return null;
+
+    const key = makeViewParamsStorageKey(label);
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return null;
+
+    // Consume once to avoid stale params if the same label is later re-used.
+    window.localStorage.removeItem(key);
+
+    const parsed = JSON.parse(raw) as any;
+    const p =
+      parsed?.params && typeof parsed.params === 'object'
+        ? (parsed.params as Partial<ViewWindowParams>)
+        : null;
+    if (!p) return null;
+    return coerceViewWindowParams(p);
+  } catch {
+    return null;
+  }
+};
+
+let cachedViewWindowParams: ViewWindowParams | undefined;
+
 export const getViewWindowParams = (): ViewWindowParams => {
   if (typeof window === 'undefined') {
     return {
@@ -305,33 +367,24 @@ export const getViewWindowParams = (): ViewWindowParams => {
     };
   }
 
+  if (cachedViewWindowParams !== undefined) return cachedViewWindowParams;
+
   // 优先读取后端窗口创建时注入的参数（避免 production 下依赖 query 路由）。
   try {
     const injected = (window as any).__TAURIAI_VIEW_PARAMS__ as unknown;
     if (injected && typeof injected === 'object') {
-      const p = injected as Partial<ViewWindowParams>;
-      return {
-        view: (p.view ?? null) as ActiveView | null,
-        standalone: Boolean(p.standalone),
-        noDefaultSession: Boolean(p.noDefaultSession),
-        conversationId: p.conversationId ?? null,
-        runMode: p.runMode ?? null,
-        agentName: p.agentName ?? null,
-        documentPath: p.documentPath ?? null,
-        workstudioId: p.workstudioId ?? null,
-        webUrl: p.webUrl ?? null,
-        webTitle: p.webTitle ?? null,
-        terminalWorkdir: p.terminalWorkdir ?? null,
-        terminalTitle: p.terminalTitle ?? null,
-        filePath: p.filePath ?? null,
-        line: typeof p.line === 'number' && Number.isFinite(p.line) ? p.line : null,
-        column: typeof p.column === 'number' && Number.isFinite(p.column) ? p.column : null,
-        endLine: typeof p.endLine === 'number' && Number.isFinite(p.endLine) ? p.endLine : null,
-        endColumn: typeof p.endColumn === 'number' && Number.isFinite(p.endColumn) ? p.endColumn : null,
-      };
+      const out = coerceViewWindowParams(injected as Partial<ViewWindowParams>);
+      cachedViewWindowParams = out;
+      return out;
     }
   } catch {
     // ignore
+  }
+
+  const staged = consumeStagedViewParamsForCurrentWindow();
+  if (staged) {
+    cachedViewWindowParams = staged;
+    return staged;
   }
 
   const searchParams = new URLSearchParams(window.location.search);
@@ -363,7 +416,7 @@ export const getViewWindowParams = (): ViewWindowParams => {
   const column = columnRaw ? Number(columnRaw) : null;
   const endLine = endLineRaw ? Number(endLineRaw) : null;
   const endColumn = endColumnRaw ? Number(endColumnRaw) : null;
-  return {
+  const out: ViewWindowParams = {
     view,
     standalone,
     noDefaultSession,
@@ -382,6 +435,8 @@ export const getViewWindowParams = (): ViewWindowParams => {
     endLine: Number.isFinite(endLine) ? endLine : null,
     endColumn: Number.isFinite(endColumn) ? endColumn : null,
   };
+  cachedViewWindowParams = out;
+  return out;
 };
 
 export const openViewWindow = (
@@ -410,81 +465,36 @@ export const openViewWindow = (
 ) => {
   const normalizedTitle = view === 'workstudio' ? normalizeWorkstudioWindowTitle(title) : title;
   const label = opts?.label ?? `view-${view}-${Date.now()}`;
-  const params = new URLSearchParams();
-  params.set('view', view);
-  params.set('standalone', '1');
-  if (opts?.noDefaultSession) {
-    params.set('noDefaultSession', '1');
-  }
-  if (opts?.conversationId) {
-    params.set('conversationId', opts.conversationId);
-  }
-  if (opts?.runMode) {
-    params.set('runMode', opts.runMode);
-  }
-  if (opts?.agentName) {
-    params.set('agentName', opts.agentName);
-  }
-  if (opts?.documentPath) {
-    params.set('documentPath', opts.documentPath);
-  }
-  if (opts?.workstudioId) {
-    params.set('workstudioId', opts.workstudioId);
-  }
-  if (opts?.webUrl) {
-    params.set('webUrl', opts.webUrl);
-  }
-  if (opts?.webTitle) {
-    params.set('webTitle', opts.webTitle);
-  }
-  if (opts?.terminalWorkdir) {
-    params.set('terminalWorkdir', opts.terminalWorkdir);
-  }
-  if (opts?.terminalTitle) {
-    params.set('terminalTitle', opts.terminalTitle);
-  }
-  if (opts?.filePath) {
-    params.set('filePath', opts.filePath);
-  }
-  if (typeof opts?.line === 'number') {
-    params.set('line', String(opts.line));
-  }
-  if (typeof opts?.column === 'number') {
-    params.set('column', String(opts.column));
-  }
-  if (typeof opts?.endLine === 'number') {
-    params.set('endLine', String(opts.endLine));
-  }
-  if (typeof opts?.endColumn === 'number') {
-    params.set('endColumn', String(opts.endColumn));
-  }
   // 注意：在 Tauri production（asset protocol）下，`/?query` 可能不会稳定映射到 `index.html`，
   // 导致“新窗口白屏/无内容”。显式使用 `index.html` 更稳。
-  const url = `/index.html#${params.toString()}`;
+  const viewParams: ViewWindowParams = {
+    view,
+    standalone: true,
+    noDefaultSession: Boolean(opts?.noDefaultSession),
+    conversationId: opts?.conversationId ?? null,
+    runMode: opts?.runMode ?? null,
+    agentName: opts?.agentName ?? null,
+    documentPath: opts?.documentPath ?? null,
+    workstudioId: opts?.workstudioId ?? null,
+    webUrl: opts?.webUrl ?? null,
+    webTitle: opts?.webTitle ?? null,
+    terminalWorkdir: opts?.terminalWorkdir ?? null,
+    terminalTitle: opts?.terminalTitle ?? null,
+    filePath: opts?.filePath ?? null,
+    line: typeof opts?.line === 'number' ? opts.line : null,
+    column: typeof opts?.column === 'number' ? opts.column : null,
+    endLine: typeof opts?.endLine === 'number' ? opts.endLine : null,
+    endColumn: typeof opts?.endColumn === 'number' ? opts.endColumn : null,
+  };
+
+  stageViewParamsForWindowLabel(label, viewParams);
+  const url = 'index.html';
 
   try {
     upsertWindowRecord({
       label,
       title: normalizedTitle,
-      params: {
-        view,
-        standalone: true,
-        noDefaultSession: Boolean(opts?.noDefaultSession),
-        conversationId: opts?.conversationId ?? null,
-        runMode: opts?.runMode ?? null,
-        agentName: opts?.agentName ?? null,
-        documentPath: opts?.documentPath ?? null,
-        workstudioId: opts?.workstudioId ?? null,
-        webUrl: opts?.webUrl ?? null,
-        webTitle: opts?.webTitle ?? null,
-        terminalWorkdir: opts?.terminalWorkdir ?? null,
-        terminalTitle: opts?.terminalTitle ?? null,
-        filePath: opts?.filePath ?? null,
-        line: typeof opts?.line === 'number' ? opts.line : null,
-        column: typeof opts?.column === 'number' ? opts.column : null,
-        endLine: typeof opts?.endLine === 'number' ? opts.endLine : null,
-        endColumn: typeof opts?.endColumn === 'number' ? opts.endColumn : null,
-      },
+      params: viewParams,
       bounds:
         typeof opts?.window?.x === 'number' &&
         typeof opts?.window?.y === 'number' &&
@@ -570,80 +580,35 @@ export const openOrFocusViewWindow = async (
     }
   }
 
-  const params = new URLSearchParams();
-  params.set('view', view);
-  params.set('standalone', '1');
-  if (opts?.noDefaultSession) {
-    params.set('noDefaultSession', '1');
-  }
-  if (opts?.conversationId) {
-    params.set('conversationId', opts.conversationId);
-  }
-  if (opts?.runMode) {
-    params.set('runMode', opts.runMode);
-  }
-  if (opts?.agentName) {
-    params.set('agentName', opts.agentName);
-  }
-  if (opts?.documentPath) {
-    params.set('documentPath', opts.documentPath);
-  }
-  if (opts?.workstudioId) {
-    params.set('workstudioId', opts.workstudioId);
-  }
-  if (opts?.webUrl) {
-    params.set('webUrl', opts.webUrl);
-  }
-  if (opts?.webTitle) {
-    params.set('webTitle', opts.webTitle);
-  }
-  if (opts?.terminalWorkdir) {
-    params.set('terminalWorkdir', opts.terminalWorkdir);
-  }
-  if (opts?.terminalTitle) {
-    params.set('terminalTitle', opts.terminalTitle);
-  }
-  if (opts?.filePath) {
-    params.set('filePath', opts.filePath);
-  }
-  if (typeof opts?.line === 'number') {
-    params.set('line', String(opts.line));
-  }
-  if (typeof opts?.column === 'number') {
-    params.set('column', String(opts.column));
-  }
-  if (typeof opts?.endLine === 'number') {
-    params.set('endLine', String(opts.endLine));
-  }
-  if (typeof opts?.endColumn === 'number') {
-    params.set('endColumn', String(opts.endColumn));
-  }
   // 注意：同 openViewWindow，显式指向 `index.html` 避免 production 下 `/?query` 白屏。
-  const url = `/index.html#${params.toString()}`;
+  const viewParams: ViewWindowParams = {
+    view,
+    standalone: true,
+    noDefaultSession: Boolean(opts?.noDefaultSession),
+    conversationId: opts?.conversationId ?? null,
+    runMode: opts?.runMode ?? null,
+    agentName: opts?.agentName ?? null,
+    documentPath: opts?.documentPath ?? null,
+    workstudioId: opts?.workstudioId ?? null,
+    webUrl: opts?.webUrl ?? null,
+    webTitle: opts?.webTitle ?? null,
+    terminalWorkdir: opts?.terminalWorkdir ?? null,
+    terminalTitle: opts?.terminalTitle ?? null,
+    filePath: opts?.filePath ?? null,
+    line: typeof opts?.line === 'number' ? opts.line : null,
+    column: typeof opts?.column === 'number' ? opts.column : null,
+    endLine: typeof opts?.endLine === 'number' ? opts.endLine : null,
+    endColumn: typeof opts?.endColumn === 'number' ? opts.endColumn : null,
+  };
+
+  stageViewParamsForWindowLabel(label, viewParams);
+  const url = 'index.html';
 
   try {
     upsertWindowRecord({
       label,
       title: normalizedTitle,
-      params: {
-        view,
-        standalone: true,
-        noDefaultSession: Boolean(opts?.noDefaultSession),
-        conversationId: opts?.conversationId ?? null,
-        runMode: opts?.runMode ?? null,
-        agentName: opts?.agentName ?? null,
-        documentPath: opts?.documentPath ?? null,
-        workstudioId: opts?.workstudioId ?? null,
-        webUrl: opts?.webUrl ?? null,
-        webTitle: opts?.webTitle ?? null,
-        terminalWorkdir: opts?.terminalWorkdir ?? null,
-        terminalTitle: opts?.terminalTitle ?? null,
-        filePath: opts?.filePath ?? null,
-        line: typeof opts?.line === 'number' ? opts.line : null,
-        column: typeof opts?.column === 'number' ? opts.column : null,
-        endLine: typeof opts?.endLine === 'number' ? opts.endLine : null,
-        endColumn: typeof opts?.endColumn === 'number' ? opts.endColumn : null,
-      },
+      params: viewParams,
       bounds:
         typeof opts?.window?.x === 'number' &&
         typeof opts?.window?.y === 'number' &&

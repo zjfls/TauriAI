@@ -35,6 +35,21 @@
         }
       };
 
+      var envInfo = function () {
+        try {
+          var href = window.location && window.location.href ? String(window.location.href) : '';
+          var baseURI = document && document.baseURI ? String(document.baseURI) : '';
+          var ua = navigator && navigator.userAgent ? String(navigator.userAgent) : '';
+          var out = [];
+          if (href) out.push('href: ' + href);
+          if (baseURI && baseURI !== href) out.push('baseURI: ' + baseURI);
+          if (ua) out.push('ua: ' + ua);
+          return out.join('\n');
+        } catch (e) {
+          return '';
+        }
+      };
+
       // Capture resource-load and runtime errors early (useful for white-screen diagnostics in production builds).
       window.addEventListener('error', function (event) {
         try {
@@ -43,19 +58,45 @@
           if (tag) {
             var src = target.src || target.href;
             if (src) {
-              set('资源加载失败: ' + src);
+              var lines = [];
+              lines.push('资源加载失败: ' + src);
+              var info = envInfo();
+              if (info) lines.push(info);
+              set(lines.join('\n'));
               return;
             }
           }
 
-          if (event && event.message) {
-            set('JS 错误: ' + event.message);
-            return;
+          var message = event && event.message ? String(event.message) : '';
+          var filename = event && event.filename ? String(event.filename) : '';
+          var lineno = event && typeof event.lineno === 'number' ? event.lineno : null;
+          var colno = event && typeof event.colno === 'number' ? event.colno : null;
+          var err = event && event.error ? event.error : null;
+
+          var lines2 = [];
+          if (message) {
+            lines2.push('JS 错误: ' + message);
+          } else if (err) {
+            lines2.push('JS 错误: ' + shorten(err));
+          } else {
+            lines2.push('JS 错误: (unknown)');
           }
-          if (event && event.error) {
-            set('JS 错误: ' + shorten(event.error));
-            return;
+
+          if (filename) lines2.push('file: ' + filename);
+          if (lineno !== null || colno !== null) {
+            lines2.push('loc: ' + String(lineno || 0) + ':' + String(colno || 0));
           }
+
+          try {
+            var stack = err && err.stack ? String(err.stack) : '';
+            if (stack) lines2.push('stack:\n' + stack);
+          } catch (e) {
+            // ignore
+          }
+
+          var info2 = envInfo();
+          if (info2) lines2.push(info2);
+          set(lines2.join('\n'));
         } catch (e) {
           // ignore
         }
@@ -63,7 +104,18 @@
 
       window.addEventListener('unhandledrejection', function (event) {
         try {
-          set('未处理的 Promise 拒绝: ' + shorten(event && event.reason));
+          var reason = event && event.reason;
+          var lines = [];
+          lines.push('未处理的 Promise 拒绝: ' + shorten(reason));
+          try {
+            var stack = reason && reason.stack ? String(reason.stack) : '';
+            if (stack) lines.push('stack:\n' + stack);
+          } catch (e) {
+            // ignore
+          }
+          var info = envInfo();
+          if (info) lines.push(info);
+          set(lines.join('\n'));
         } catch (e) {
           // ignore
         }

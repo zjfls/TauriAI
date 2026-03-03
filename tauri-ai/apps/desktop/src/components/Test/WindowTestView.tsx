@@ -1,8 +1,8 @@
 import React, { useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { WebviewWindow, getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import type { Workstudio } from '../../types';
-import { getViewWindowParams } from '../../utils/viewWindow';
+import { getViewWindowParams, openViewWindow } from '../../utils/viewWindow';
 
 export const WindowTestView: React.FC = () => {
   const windowParams = useMemo(() => getViewWindowParams(), []);
@@ -19,15 +19,15 @@ export const WindowTestView: React.FC = () => {
     }
   }, []);
 
-  const openWindowWithDiagnostics = (label: string, title: string, url: string) => {
-    setLastEvent(`creating window: label=${label} url=${url}`);
+  const openWindowWithDiagnostics = (
+    label: string,
+    title: string,
+    create: () => ReturnType<typeof openViewWindow> | null
+  ) => {
+    setLastEvent(`creating window: label=${label} title=${title}`);
     try {
-      const win = new WebviewWindow(label, {
-        title,
-        url,
-        width: 900,
-        height: 700,
-      });
+      const win = create();
+      if (!win) return null;
 
       // These events are the most reliable way to learn *why* creation failed.
       // See https://tauri.app/reference/javascript/api/namespaces/webviewwindow/
@@ -35,7 +35,7 @@ export const WindowTestView: React.FC = () => {
         setLastEvent(`created: label=${label}`);
       });
       win.once('tauri://error', (e) => {
-        setLastEvent(`error: label=${label} payload=${JSON.stringify(e.payload)}`);
+        setLastEvent(`error: label=${label} payload=${JSON.stringify((e as any)?.payload)}`);
       });
 
       return win;
@@ -69,8 +69,9 @@ export const WindowTestView: React.FC = () => {
             type="button"
             onClick={() => {
               const label = `view-window_test-${Date.now()}`;
-              const url = `/index.html#${new URLSearchParams({ view: 'window_test', standalone: '1' }).toString()}`;
-              openWindowWithDiagnostics(label, 'Window Test', url);
+              openWindowWithDiagnostics(label, 'Window Test', () =>
+                openViewWindow('window_test', 'Window Test', { label, window: { width: 900, height: 700 } })
+              );
             }}
             className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
           >
@@ -84,15 +85,12 @@ export const WindowTestView: React.FC = () => {
               try {
                 const ws = await invoke<Workstudio>('create_workstudio');
                 const label = `view-workstudio-${ws.id}`;
-                const url = `/index.html#${new URLSearchParams({
-                  view: 'workstudio',
-                  standalone: '1',
-                  workstudioId: ws.id,
-                }).toString()}`;
-                openWindowWithDiagnostics(
-                  label,
-                  `Workstudio: ${ws.mainFolder}`,
-                  url
+                openWindowWithDiagnostics(label, `Workstudio: ${ws.mainFolder}`, () =>
+                  openViewWindow('workstudio', `Workstudio: ${ws.mainFolder}`, {
+                    label,
+                    workstudioId: ws.id,
+                    window: { width: 900, height: 700 },
+                  })
                 );
               } finally {
                 setWorkstudioLoading(false);

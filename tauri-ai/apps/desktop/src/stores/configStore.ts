@@ -4,7 +4,7 @@
  */
 
 import { create } from 'zustand';
-import { tauriInvoke as invoke } from '../utils/errorUtils';
+import { registerConfigStateGetter, tauriInvoke as invoke } from '../utils/errorUtils';
 import type { AppConfig, Provider, Model, Agent } from '../types';
 import { useUIStore } from './uiStore';
 
@@ -336,6 +336,13 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
     return options;
   },
 }));
+
+// Provide config snapshot to errorUtils without creating circular imports in production bundles.
+try {
+  registerConfigStateGetter(() => useConfigStore.getState() as any);
+} catch {
+  // ignore
+}
 
 // -----------------------------------------------------------------------------
 // Debug: config store update storm detector (DEV only)

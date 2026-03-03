@@ -47,6 +47,9 @@ export default defineConfig(async () => ({
   },
 
   build: {
+    // Tauri production runs from a custom local origin (tauri.localhost). Disable Vite's modulepreload
+    // helper to avoid circular chunk imports that can trigger TDZ ("Cannot access 'x' before initialization").
+    modulePreload: false,
     // Keep desktop and mobile outputs separated for long-term maintainability.
     outDir: path.resolve(configDir, "../../dist/desktop"),
     emptyOutDir: true,
@@ -65,24 +68,11 @@ export default defineConfig(async () => ({
           ) {
             return "vendor-terminal";
           }
-          if (
-            id.includes("/mermaid/") ||
-            id.includes("/mafs/") ||
-            id.includes("/katex/") ||
-            id.includes("/react-markdown/") ||
-            id.includes("/remark-") ||
-            id.includes("/rehype-")
-          ) {
-            return "vendor-markdown";
-          }
           if (id.includes("/pdfjs-dist/")) {
             return "vendor-pdf";
           }
           if (id.includes("/@tauri-apps/")) {
             return "vendor-tauri";
-          }
-          if (id.includes("/react/") || id.includes("/react-dom/") || id.includes("/zustand/")) {
-            return "vendor-react";
           }
           if (
             id.includes("/@dnd-kit/") ||
