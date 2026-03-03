@@ -21,8 +21,8 @@ use crate::code_intel::types::{LspLaunchConfig, LspServerStatus};
 use crate::config::ConfigManager;
 use crate::models::{
     AppConfig, CodeSnippetRange, Message, MessageRole, MessageStatus, Workstudio,
-    WorkstudioChatWithRecord, WorkstudioFolderAnalysis, WorkstudioFolderAnalysisSummary,
-    WorkstudioSymbolAnalysis, WorkstudioSymbolAnalysisSummary,
+    WorkstudioChatWithFileSummary, WorkstudioChatWithRecord, WorkstudioFolderAnalysis,
+    WorkstudioFolderAnalysisSummary, WorkstudioSymbolAnalysis, WorkstudioSymbolAnalysisSummary,
 };
 use crate::storage::async_db;
 use crate::storage::Database;
@@ -1407,6 +1407,66 @@ pub async fn delete_workstudio_chat_with_records_for_file(
         db.inner(),
         "delete_workstudio_chat_with_records_for_file",
         |db| db.delete_workstudio_chat_with_records_for_file(ws_id, file_path),
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListWorkstudioChatWithFileSummariesArgs {
+    pub workstudio_id: String,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[tauri::command]
+pub async fn list_workstudio_chat_with_file_summaries(
+    args: ListWorkstudioChatWithFileSummariesArgs,
+    db: tauri::State<'_, Arc<Mutex<Database>>>,
+) -> Result<Vec<WorkstudioChatWithFileSummary>, String> {
+    let ws_id = args.workstudio_id.trim();
+    let limit = args.limit.unwrap_or(5000) as usize;
+
+    if ws_id.is_empty() {
+        return Err("workstudioId 为空".to_string());
+    }
+
+    async_db::with_db(
+        db.inner(),
+        "list_workstudio_chat_with_file_summaries",
+        |db| db.list_workstudio_chat_with_file_summaries(ws_id, limit),
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteWorkstudioChatWithRecordArgs {
+    pub workstudio_id: String,
+    pub id: String,
+}
+
+#[tauri::command]
+pub async fn delete_workstudio_chat_with_record(
+    args: DeleteWorkstudioChatWithRecordArgs,
+    db: tauri::State<'_, Arc<Mutex<Database>>>,
+) -> Result<(), String> {
+    let ws_id = args.workstudio_id.trim();
+    let id = args.id.trim();
+
+    if ws_id.is_empty() {
+        return Err("workstudioId 为空".to_string());
+    }
+    if id.is_empty() {
+        return Err("id 为空".to_string());
+    }
+
+    async_db::with_db(
+        db.inner(),
+        "delete_workstudio_chat_with_record",
+        |db| db.delete_workstudio_chat_with_record(ws_id, id),
     )
     .await
     .map_err(|e| e.to_string())

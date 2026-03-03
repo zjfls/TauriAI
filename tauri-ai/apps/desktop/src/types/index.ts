@@ -37,6 +37,7 @@ export type ActiveView =
   | 'practice'
   | 'settings'
   | 'document'
+  | 'json_analyzer'
   | 'workstudio'
   | 'web'
   | 'terminal'
@@ -1126,6 +1127,15 @@ export interface WorkstudioChatWithRecord {
   thinking?: string;
   latencyMs?: number;
   createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Lightweight summary for "Chat with" records grouped by file (used by Explorer markers).
+ */
+export interface WorkstudioChatWithFileSummary {
+  filePath: string;
+  recordCount: number;
   updatedAt: string;
 }
 

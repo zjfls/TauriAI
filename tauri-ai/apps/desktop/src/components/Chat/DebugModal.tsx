@@ -17,6 +17,7 @@ import type {
 import { useConfigStore } from '../../stores/configStore';
 import { getTurnDebugInfo } from '../../services/conversationService';
 import { AnsiText } from './AnsiText';
+import { JsonView } from '../Json/JsonView';
 
 interface DebugModalProps {
   isOpen: boolean;
@@ -2029,15 +2030,11 @@ export const DebugModal: React.FC<DebugModalProps> = ({
                 >
                   <X size={18} />
                 </button>
-              </div>
             </div>
-            <div className="h-[calc(100%-48px)] p-4 overflow-auto">
+          </div>
+            <div className="h-[calc(100%-48px)] p-4 overflow-hidden">
               {largeViewerJsonData ? (
-                <StructuredJsonTextViewer
-                  data={largeViewerJsonData}
-                  maxHeightClassName="max-h-[calc(92vh-11rem)]"
-                  emptyText="(空)"
-                />
+                <JsonView text={largeViewerJsonText ?? safeStringify(largeViewerJsonData, 2)} readOnly />
               ) : (
                 <pre className="min-h-full rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs whitespace-pre-wrap break-words text-gray-800 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-200">
                   {largeViewerPlainText}

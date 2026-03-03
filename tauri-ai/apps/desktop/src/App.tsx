@@ -14,6 +14,7 @@ import { StandaloneLayout } from './components/Layout/StandaloneLayout';
 import { GlobalErrorModal } from './components/GlobalErrorModal';
 import { WorkstudioView } from './components/Workstudio/WorkstudioView';
 import { DragGhostView } from './components/DragGhost/DragGhostView';
+import { JsonAnalyzerView } from './components/Json/JsonAnalyzerView';
 import { useConfigStore } from './stores/configStore';
 import { useConversationStore } from './stores/conversationStore';
 import { useSessionStore, initStreamListeners } from './stores/sessionStore';
@@ -26,7 +27,7 @@ import { chatTabId, docTabId, terminalTabId, webTabId } from './stores/workspace
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { getViewDefinition } from './views/registry';
 import { ChatViewContainer } from './views/ChatViewContainer';
-import { getViewWindowParams, openOrFocusViewWindow } from './utils/viewWindow';
+import { computePopoutWindowBoundsAtCursor, getViewWindowParams, openOrFocusViewWindow, openViewWindow } from './utils/viewWindow';
 import { resolveActiveWorkstudioMainFolder } from './utils/terminalWorkdir';
 import { getCurrentWindowLabelSafe, removeWindowPresence, writeWindowPresence } from './utils/windowPresence';
 import type { CodeSnippetContentPart, WorkspaceMentionChip, Workstudio } from './types';
@@ -63,8 +64,9 @@ function App() {
   // Standalone non-chat views should not start/restore chat sessions or stream listeners.
   // Otherwise opening a "文本/导图" window can create or mutate chat sessions unexpectedly.
   const isWorkstudioWindow = viewOverride === 'workstudio';
+  const isJsonAnalyzerWindow = viewOverride === 'json_analyzer';
   const isDragGhostWindow = viewOverride === 'drag-ghost' || isGhostLabel;
-  const shouldInitChatRuntime = !isWorkstudioWindow && !isDragGhostWindow;
+  const shouldInitChatRuntime = !isWorkstudioWindow && !isJsonAnalyzerWindow && !isDragGhostWindow;
 
   // Standalone Workstudio window: ensure native window title contains "Workstudio".
   // This avoids macOS Window menu showing the default HTML <title> ("Tauri + React + Typescript")
@@ -520,9 +522,9 @@ function App() {
    * The native menu event is emitted from Rust as `menu:open_file`.
    */
   useEffect(() => {
-    // Workstudio 需要把“打开文件”路由到自己的编辑器，而不是切换到全局 DocumentView。
-    // 因此只在“非 workstudio 视图”监听这里的菜单事件（由 WorkstudioView 自己处理）。
-    if (isWorkstudioWindow || activeView === 'workstudio') return;
+    // Workstudio 窗口需要把“打开文件”路由到自己的编辑器，而不是切换到全局 DocumentView。
+    // 因此在 workstudio 视图（含 standalone 窗口）里跳过这里的监听（由 WorkstudioView 自己处理）。
+    if (isWorkstudioWindow || isJsonAnalyzerWindow || activeView === 'workstudio') return;
 
     let disposed = false;
     let unlisten: null | (() => void) = null;
@@ -583,13 +585,53 @@ function App() {
   }, [viewOverride, activeView, shouldInitChatRuntime]);
 
   /**
+   * Menu: File -> New JSON 分析窗口
+   */
+  useEffect(() => {
+    if (!isTauri()) return;
+
+    let disposed = false;
+    let unlisten: null | (() => void) = null;
+
+    void listen('menu:new_json_analyzer', () => {
+      void (async () => {
+        const bounds = await computePopoutWindowBoundsAtCursor({
+          minWidth: 760,
+          minHeight: 520,
+          fallbackWidth: 1100,
+          fallbackHeight: 780,
+        }).catch(() => null);
+
+        if (disposed) return;
+
+        openViewWindow('json_analyzer', 'JSON 分析', {
+          window: bounds ?? undefined,
+        });
+      })().catch((e) => console.error('menu:new_json_analyzer failed:', e));
+    })
+      .then((fn) => {
+        if (disposed) {
+          fn();
+          return;
+        }
+        unlisten = fn;
+      })
+      .catch(() => {});
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  /**
    * Menu: File -> New .tauri.richtxt
    * Create a new empty .tauri.richtxt document
    */
   useEffect(() => {
     // Workstudio 视图由 WorkstudioView 处理“新建 .tauri.richtxt”，
     // 这里仅在非 workstudio 视图下响应，避免主窗口与 Workstudio 同时创建。
-    if (isWorkstudioWindow || activeView === 'workstudio') return;
+    if (isWorkstudioWindow || isJsonAnalyzerWindow || activeView === 'workstudio') return;
 
     let disposed = false;
     let unlisten: null | (() => void) = null;
@@ -1277,6 +1319,11 @@ function App() {
       return;
     }
 
+    if (viewOverride === 'json_analyzer') {
+      if (activeView !== 'json_analyzer') setActiveView('json_analyzer');
+      return;
+    }
+
     if (activeView !== 'chat') setActiveView('chat');
   }, [viewOverride, activeView, setActiveView]);
 
@@ -1314,6 +1361,15 @@ function App() {
     return (
       <StandaloneLayout title="Workstudio">
         <WorkstudioView workstudioId={workstudioIdOverride} />
+        <GlobalErrorModal />
+      </StandaloneLayout>
+    );
+  }
+
+  if (isJsonAnalyzerWindow) {
+    return (
+      <StandaloneLayout title="JSON 分析">
+        <JsonAnalyzerView />
         <GlobalErrorModal />
       </StandaloneLayout>
     );

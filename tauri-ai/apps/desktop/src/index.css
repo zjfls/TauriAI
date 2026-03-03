@@ -18,3 +18,14 @@ details > *:not(summary) {
 .dark .mermaid text {
   fill: #e0e0e0 !important;
 }
+
+/* Monaco decorations (Workstudio Chat with markers) */
+.monaco-editor .tauri-ai-chatwith-line {
+  background: rgba(34, 197, 94, 0.12);
+}
+.dark .monaco-editor .tauri-ai-chatwith-line {
+  background: rgba(34, 197, 94, 0.18);
+}
+.monaco-editor .tauri-ai-chatwith-gutter {
+  border-left: 3px solid rgba(34, 197, 94, 0.9);
+}

@@ -4,6 +4,7 @@ import type {
   AstSymbol,
   LspDetectServerResult,
   LspServerStatus,
+  WorkstudioChatWithFileSummary,
   WorkstudioChatWithRecord,
   WorkstudioFolderAnalysis,
   WorkstudioFolderAnalysisSummary,
@@ -362,6 +363,11 @@ export type WorkstudioChatWithFileKey = {
   limit?: number;
 };
 
+export type WorkstudioChatWithFileSummariesArgs = {
+  workstudioId: string;
+  limit?: number;
+};
+
 export const listWorkstudioChatWithRecordsForFile = async (
   args: WorkstudioChatWithFileKey
 ): Promise<WorkstudioChatWithRecord[]> => {
@@ -371,6 +377,15 @@ export const listWorkstudioChatWithRecordsForFile = async (
   return invoke<WorkstudioChatWithRecord[]>('list_workstudio_chat_with_records_for_file', { args });
 };
 
+export const listWorkstudioChatWithFileSummaries = async (
+  args: WorkstudioChatWithFileSummariesArgs
+): Promise<WorkstudioChatWithFileSummary[]> => {
+  if (!isTauri()) {
+    throw new Error('Not running in Tauri');
+  }
+  return invoke<WorkstudioChatWithFileSummary[]>('list_workstudio_chat_with_file_summaries', { args });
+};
+
 export const deleteWorkstudioChatWithRecordsForFile = async (
   args: Omit<WorkstudioChatWithFileKey, 'limit'>
 ): Promise<void> => {
@@ -378,4 +393,11 @@ export const deleteWorkstudioChatWithRecordsForFile = async (
     throw new Error('Not running in Tauri');
   }
   await invoke<void>('delete_workstudio_chat_with_records_for_file', { args });
+};
+
+export const deleteWorkstudioChatWithRecord = async (args: { workstudioId: string; id: string }): Promise<void> => {
+  if (!isTauri()) {
+    throw new Error('Not running in Tauri');
+  }
+  await invoke<void>('delete_workstudio_chat_with_record', { args });
 };

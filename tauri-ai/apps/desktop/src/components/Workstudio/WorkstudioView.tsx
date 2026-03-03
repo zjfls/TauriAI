@@ -5,6 +5,7 @@ import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialo
 import { openPath, revealItemInDir } from '@tauri-apps/plugin-opener';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import Editor, { type OnMount } from '@monaco-editor/react';
+import type * as Monaco from 'monaco-editor';
 import {
   DndContext,
   DragOverlay,
@@ -49,6 +50,7 @@ import type {
   TerminalScope,
   ThinkingLevel,
 	  WorkstudioChatWithRecord,
+	  WorkstudioChatWithFileSummary,
 	  Workstudio,
 	  WorkstudioFolderAnalysis,
 	  WorkstudioFolderAnalysisSummary,
@@ -68,9 +70,11 @@ import {
 		  getWorkstudioFolderAnalysis,
 		  getWorkstudioSymbolAnalysis,
 		  listWorkstudioFolderAnalysisSummaries,
+		  listWorkstudioChatWithFileSummaries,
 		  listWorkstudioChatWithRecordsForFile,
 		  listWorkstudioSymbolAnalysisKeysForFile,
 		  listWorkstudioSymbolAnalysisSummariesForFile,
+		  deleteWorkstudioChatWithRecord,
 		  saveWorkstudioFolderAnalysis,
 		  saveWorkstudioSymbolAnalysis,
 		  lspDetectServer,
@@ -189,6 +193,13 @@ type WorkstudioToolCallEntry = {
   result?: string;
 };
 
+type WorkstudioInlineChatMeta = {
+  workstudioId: string;
+  languageId: string;
+  filePath: string;
+  range: OutlineRange;
+};
+
 type WorkstudioSymbolAnalysisMeta = {
   workstudioId: string;
   languageId: string;
@@ -230,6 +241,8 @@ type WorkstudioAiBubble = {
   turns?: MessageTurn[];
   /** Name of the agent that produced this bubble */
   agentName?: string;
+  /** Optional meta for persisting inline chat results */
+  inlineChatMeta?: WorkstudioInlineChatMeta;
   /** Optional meta for persisting symbol analysis results */
   analysisMeta?: WorkstudioSymbolAnalysisMeta;
   /** Optional meta for persisting folder analysis results */
@@ -758,6 +771,97 @@ const toMonacoModelPath = (fsPath: string) => {
   }
 
   return normalized;
+};
+
+const normalizeChatWithSnippetForMatch = (text: string): string => {
+  const raw = String(text ?? '').replace(/\r\n/g, '\n');
+  const lines = raw.split('\n').map((l) => l.replace(/[ \t]+$/g, ''));
+  let start = 0;
+  while (start < lines.length && lines[start]!.trim() === '') start += 1;
+  let end = lines.length;
+  while (end > start && lines[end - 1]!.trim() === '') end -= 1;
+  return lines.slice(start, end).join('\n');
+};
+
+const chatWithQuestionToTitle = (question: string): string => {
+  const raw = String(question ?? '').trim();
+  if (!raw) return 'Chat with';
+  const first = raw.split('\n')[0] ?? raw;
+  return first.length > 80 ? `${first.slice(0, 80)}…` : first;
+};
+
+const tryLocateChatWithRecordStartLineInModel = (
+  model: Monaco.editor.ITextModel,
+  record: WorkstudioChatWithRecord
+): number | null => {
+  const needle = normalizeChatWithSnippetForMatch(record.code ?? '');
+  if (!needle || needle.trim() === '') return null;
+
+  const clampLine = (line: number): number => Math.max(1, Math.min(line, model.getLineCount()));
+  const clampColumn = (lineNumber: number, column: number): number => {
+    const maxCol = model.getLineMaxColumn(lineNumber);
+    return Math.max(1, Math.min(column, maxCol));
+  };
+
+  const anchorStartLine = record.range?.startLine ?? null;
+
+  // 1) Strong match: stored range still matches the same snippet.
+  if (record.range) {
+    const sl = clampLine(record.range.startLine);
+    const el = clampLine(record.range.endLine);
+    const sc = clampColumn(sl, record.range.startColumn);
+    const ec = clampColumn(el, record.range.endColumn);
+    const textAtRange = model.getValueInRange({
+      startLineNumber: sl,
+      startColumn: sc,
+      endLineNumber: el,
+      endColumn: ec,
+    });
+    if (normalizeChatWithSnippetForMatch(textAtRange) === needle) return sl;
+  }
+
+  // 2) Search for an exact snippet match.
+  const matches = model.findMatches(needle, false, false, true, null, false, 50);
+  if (matches && matches.length > 0) {
+    if (anchorStartLine && anchorStartLine > 0) {
+      let best = matches[0]!;
+      let bestScore = Math.abs(best.range.startLineNumber - anchorStartLine);
+      for (const m of matches) {
+        const score = Math.abs(m.range.startLineNumber - anchorStartLine);
+        if (score < bestScore) {
+          best = m;
+          bestScore = score;
+          if (score === 0) break;
+        }
+      }
+      return best.range.startLineNumber;
+    }
+    return matches[0]!.range.startLineNumber;
+  }
+
+  // 3) Fallback: try the raw snippet (only normalize line endings).
+  const raw = String(record.code ?? '').replace(/\r\n/g, '\n');
+  if (raw && raw !== needle) {
+    const matches2 = model.findMatches(raw, false, false, true, null, false, 50);
+    if (matches2 && matches2.length > 0) {
+      if (anchorStartLine && anchorStartLine > 0) {
+        let best = matches2[0]!;
+        let bestScore = Math.abs(best.range.startLineNumber - anchorStartLine);
+        for (const m of matches2) {
+          const score = Math.abs(m.range.startLineNumber - anchorStartLine);
+          if (score < bestScore) {
+            best = m;
+            bestScore = score;
+            if (score === 0) break;
+          }
+        }
+        return best.range.startLineNumber;
+      }
+      return matches2[0]!.range.startLineNumber;
+    }
+  }
+
+  return null;
 };
 
 const fileKindFor = (path: string, mime: string): OpenFile['kind'] => {
@@ -1433,11 +1537,22 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const closeInlineChatComposer = useCallback(() => {
     setInlineChatComposer((prev) => ({ ...prev, open: false }));
   }, []);
+
   useEffect(() => {
     return () => {
       inlineChatRunMessageIdRef.current.clear();
     };
   }, []);
+
+  const [chatWithHistoryViewer, setChatWithHistoryViewer] = useState<{
+    open: boolean;
+    filePath: string;
+    filterLine: number | null;
+    records: WorkstudioChatWithRecord[];
+    selectedId: string | null;
+    loading: boolean;
+    error: string | null;
+  } | null>(null);
   const [aiBubbles, setAiBubbles] = useState<WorkstudioAiBubble[]>([]);
   const aiBubblesRef = useRef<WorkstudioAiBubble[]>([]);
   const activeSymbolAnalysisKeysRef = useRef<Set<string>>(new Set());
@@ -1617,6 +1732,29 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
               };
             });
           }
+
+          if (evType === 'done') {
+            const bubble = aiBubblesRef.current.find((b) => b.id === run_id) ?? null;
+            const meta = bubble?.kind === 'inline_chat' ? (bubble.inlineChatMeta ?? null) : null;
+            if (meta && meta.workstudioId) {
+              const fp = normalizeFsPath(meta.filePath) || meta.filePath;
+              if (fp) {
+                const cacheKey = `${meta.workstudioId}::${fp}`;
+                setChatWithFileSummaryCache((prev) => {
+                  const existing = prev[cacheKey] ?? null;
+                  const nextCount = (existing?.recordCount ?? 0) + 1;
+                  const next: WorkstudioChatWithFileSummary = {
+                    filePath: fp,
+                    recordCount: nextCount,
+                    updatedAt: new Date().toISOString(),
+                  };
+                  return { ...prev, [cacheKey]: next };
+                });
+                setChatWithMarkerEpoch((v) => v + 1);
+              }
+            }
+          }
+
           setAiBubbles((prev) => prev.map((b) => {
             if (b.id !== run_id) return b;
             switch (evType) {
@@ -1727,6 +1865,14 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       subtitle: selection.label,
       prompt: question,
       status: 'connecting',
+      inlineChatMeta: workstudioId
+        ? {
+            workstudioId,
+            languageId: selection.languageId,
+            filePath: selection.filePath,
+            range: selection.range,
+          }
+        : undefined,
       createdAt,
     };
     setAiBubbles((prev) => [...prev, bubble]);
@@ -2076,6 +2222,213 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     folderAnalysisSummaryCacheRef.current = folderAnalysisSummaryCache;
   }, [folderAnalysisSummaryCache]);
 
+  const [chatWithFileSummaryCache, setChatWithFileSummaryCache] = useState<
+    Record<string, WorkstudioChatWithFileSummary | null>
+  >({});
+  const chatWithFileSummaryCacheRef = useRef<Record<string, WorkstudioChatWithFileSummary | null>>({});
+  useEffect(() => {
+    chatWithFileSummaryCacheRef.current = chatWithFileSummaryCache;
+  }, [chatWithFileSummaryCache]);
+  const chatWithMarkerIndexByModelKeyRef = useRef<
+    Map<string, { filePath: string; byLine: Map<number, string[]> }>
+  >(new Map());
+  const chatWithDecorationIdsByPaneRef = useRef<Map<string, string[]>>(new Map());
+  const chatWithMarkerRefreshSeqByPaneRef = useRef<Map<string, number>>(new Map());
+  const chatWithInvalidDeleteAttemptedRef = useRef<Set<string>>(new Set());
+  const [chatWithMarkerEpoch, setChatWithMarkerEpoch] = useState(0);
+
+  const getActiveTabIdForPane = useCallback((paneId: string): string | null => {
+    const state = useWindowLayoutStore.getState();
+    const pane = state.panes.find((p) => p.id === paneId) ?? null;
+    if (!pane) return null;
+    const active =
+      pane.activeTabId && pane.tabIds.includes(pane.activeTabId) ? pane.activeTabId : (pane.tabIds[0] ?? null);
+    return active ?? null;
+  }, []);
+
+  const clearChatWithMarkersForPane = useCallback((paneId: string) => {
+    const editor = editorByPaneRef.current.get(paneId) ?? null;
+    if (!editor) return;
+    const prev = chatWithDecorationIdsByPaneRef.current.get(paneId) ?? [];
+    if (prev.length === 0) return;
+    try {
+      const next = editor.deltaDecorations(prev, []);
+      chatWithDecorationIdsByPaneRef.current.set(paneId, next);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const refreshChatWithMarkersForPane = useCallback(
+    async (paneId: string) => {
+      if (!isTauri()) return;
+      if (!workstudioId) return;
+      const editor = editorByPaneRef.current.get(paneId) ?? null;
+      const monaco = monacoRef.current;
+      if (!editor || !monaco) return;
+
+      const model = editor.getModel();
+      const modelKey = model?.uri?.toString?.() ?? null;
+      const tabId = getActiveTabIdForPane(paneId);
+      const filePath = tabId ? (normalizeFsPath(tabId) || tabId) : null;
+
+      const prevDecorationIds = chatWithDecorationIdsByPaneRef.current.get(paneId) ?? [];
+      if (!model || !modelKey || !filePath || !isAbsoluteFsPath(filePath) || isUntitledPath(filePath)) {
+        clearChatWithMarkersForPane(paneId);
+        if (modelKey) chatWithMarkerIndexByModelKeyRef.current.delete(modelKey);
+        return;
+      }
+
+      const seq = (chatWithMarkerRefreshSeqByPaneRef.current.get(paneId) ?? 0) + 1;
+      chatWithMarkerRefreshSeqByPaneRef.current.set(paneId, seq);
+
+      let records: WorkstudioChatWithRecord[] = [];
+      try {
+        records = await listWorkstudioChatWithRecordsForFile({
+          workstudioId,
+          filePath,
+          limit: 500,
+        });
+      } catch (err) {
+        console.warn('[Workstudio][ChatWith] listWorkstudioChatWithRecordsForFile failed:', err);
+        return;
+      }
+
+      if ((chatWithMarkerRefreshSeqByPaneRef.current.get(paneId) ?? 0) !== seq) return;
+      const currentModel = editor.getModel();
+      const currentModelKey = currentModel?.uri?.toString?.() ?? null;
+      if (!currentModel || !currentModelKey || currentModelKey !== modelKey) return;
+
+      if (!records || records.length === 0) {
+        clearChatWithMarkersForPane(paneId);
+        chatWithMarkerIndexByModelKeyRef.current.delete(modelKey);
+        return;
+      }
+
+      const located: Array<{ rec: WorkstudioChatWithRecord; startLine: number }> = [];
+      const invalidCandidates: WorkstudioChatWithRecord[] = [];
+      for (const rec of records) {
+        const startLine = tryLocateChatWithRecordStartLineInModel(currentModel, rec);
+        if (!startLine || startLine <= 0) {
+          invalidCandidates.push(rec);
+          continue;
+        }
+        located.push({ rec, startLine });
+      }
+
+      // 失效记录：代码块无法定位（可能已被修改/删除），自动从数据库清理。
+      if (invalidCandidates.length > 0) {
+        const deleteIds = invalidCandidates
+          .map((r) => String(r.id ?? '').trim())
+          .filter((id) => Boolean(id) && !chatWithInvalidDeleteAttemptedRef.current.has(id));
+
+        if (deleteIds.length > 0) {
+          for (const id of deleteIds) chatWithInvalidDeleteAttemptedRef.current.add(id);
+
+          const deletedIds: string[] = [];
+          for (const id of deleteIds) {
+            try {
+              await deleteWorkstudioChatWithRecord({ workstudioId, id });
+              deletedIds.push(id);
+            } catch (err) {
+              console.warn('[Workstudio][ChatWith] deleteWorkstudioChatWithRecord failed:', err);
+            }
+          }
+
+          if (deletedIds.length > 0) {
+            const cacheKey = `${workstudioId}::${normalizeFsPath(filePath) || filePath}`;
+            setChatWithFileSummaryCache((prev) => {
+              const existing = prev[cacheKey] ?? null;
+              if (!existing) return prev;
+              const nextCount = Math.max(0, (existing.recordCount ?? 0) - deletedIds.length);
+              const next: WorkstudioChatWithFileSummary | null =
+                nextCount <= 0 ? null : { ...existing, recordCount: nextCount, updatedAt: new Date().toISOString() };
+              return { ...prev, [cacheKey]: next };
+            });
+
+            setChatWithHistoryViewer((prev) => {
+              if (!prev) return prev;
+              const prevPath = normalizeFsPath(prev.filePath) || prev.filePath;
+              const fp = normalizeFsPath(filePath) || filePath;
+              if (prevPath !== fp) return prev;
+              const deletedSet = new Set(deletedIds);
+              const nextRecords = prev.records.filter((r) => !deletedSet.has(r.id));
+              if (nextRecords.length === 0) return null;
+              const nextSelectedId =
+                prev.selectedId && nextRecords.some((r) => r.id === prev.selectedId) ? prev.selectedId : (nextRecords[0]?.id ?? null);
+              return { ...prev, records: nextRecords, selectedId: nextSelectedId };
+            });
+
+            showNavToast(`已清理 ${deletedIds.length} 条失效 Chat with 记录`);
+          }
+        }
+      }
+
+      // 删除失效记录期间可能发生切换：再次校验当前 pane/model 是否仍然一致。
+      if ((chatWithMarkerRefreshSeqByPaneRef.current.get(paneId) ?? 0) !== seq) return;
+      const modelAfterCleanup = editor.getModel();
+      const modelKeyAfterCleanup = modelAfterCleanup?.uri?.toString?.() ?? null;
+      if (!modelAfterCleanup || !modelKeyAfterCleanup || modelKeyAfterCleanup !== modelKey) return;
+
+      const byLine = new Map<number, string[]>();
+      const titlesById = new Map<string, string>();
+      for (const { rec, startLine } of located) {
+        const markerLine = Math.max(1, startLine - 1);
+        const existing = byLine.get(markerLine);
+        if (existing) existing.push(rec.id);
+        else byLine.set(markerLine, [rec.id]);
+        titlesById.set(rec.id, chatWithQuestionToTitle(rec.question));
+      }
+
+      const decorations: Monaco.editor.IModelDeltaDecoration[] = [];
+      for (const [markerLine, ids] of byLine.entries()) {
+        const count = ids.length;
+        const samples = ids.slice(0, 4).map((id) => titlesById.get(id) ?? 'Chat with');
+        const hover = [
+          `**Chat with 记录** (${count} 条)`,
+          '',
+          ...samples.map((t) => `- ${t}`),
+          samples.length < count ? `- …（还有 ${count - samples.length} 条）` : '',
+          '',
+          '点击左侧标记可查看记录列表',
+        ]
+          .filter(Boolean)
+          .join('\n');
+
+        decorations.push({
+          range: new monaco.Range(markerLine, 1, markerLine, 1),
+          options: {
+            isWholeLine: true,
+            className: 'tauri-ai-chatwith-line',
+            linesDecorationsClassName: 'tauri-ai-chatwith-gutter',
+            hoverMessage: [{ value: hover }],
+          },
+        });
+      }
+
+      try {
+        const nextIds = editor.deltaDecorations(prevDecorationIds, decorations);
+        chatWithDecorationIdsByPaneRef.current.set(paneId, nextIds);
+        if (byLine.size > 0) {
+          chatWithMarkerIndexByModelKeyRef.current.set(modelKey, { filePath, byLine });
+        } else {
+          chatWithMarkerIndexByModelKeyRef.current.delete(modelKey);
+        }
+      } catch (err) {
+        console.warn('[Workstudio][ChatWith] apply decorations failed:', err);
+      }
+    },
+    [clearChatWithMarkersForPane, getActiveTabIdForPane, showNavToast, workstudioId]
+  );
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    if (!workstudioId) return;
+    for (const paneId of editorByPaneRef.current.keys()) {
+      void refreshChatWithMarkersForPane(paneId);
+    }
+  }, [chatWithMarkerEpoch, refreshChatWithMarkersForPane, workstudioId]);
+
   const prefetchedSymbolAnalysisStatusByFileRef = useRef<Map<string, string>>(new Map());
   // 当用户点击“刷新 Outline”时：强制刷新分析状态，并检查/清理冗余的 DB 记录（需用户确认）。
   const pendingOutlineAnalysisRefreshByFileRef = useRef<Set<string>>(new Set());
@@ -2087,6 +2440,12 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     setFolderAnalysisCache({});
     setFolderAnalysisExistsCache({});
     setFolderAnalysisSummaryCache({});
+    setChatWithFileSummaryCache({});
+    chatWithMarkerIndexByModelKeyRef.current.clear();
+    chatWithDecorationIdsByPaneRef.current.clear();
+    chatWithMarkerRefreshSeqByPaneRef.current.clear();
+    chatWithInvalidDeleteAttemptedRef.current.clear();
+    setChatWithMarkerEpoch((v) => v + 1);
     prefetchedSymbolAnalysisStatusByFileRef.current.clear();
     pendingOutlineAnalysisRefreshByFileRef.current.clear();
   }, [ws?.id]);
@@ -4952,6 +5311,14 @@ type OpenFromLinkErrorInfo = {
     [workstudioId]
   );
 
+  const makeChatWithFileCacheKey = useCallback(
+    (filePathRaw: string) => {
+      const fp = normalizeFsPath(String(filePathRaw ?? '').trim());
+      return `${workstudioId ?? ''}::${fp}`;
+    },
+    [workstudioId]
+  );
+
 		  const ensureSymbolAnalysis = useCallback(
 		    async (filePath: string, symbolKey: string): Promise<WorkstudioSymbolAnalysis | null> => {
 		      if (!workstudioId) return null;
@@ -5060,6 +5427,34 @@ type OpenFromLinkErrorInfo = {
 		      cancelled = true;
 		    };
 		  }, [makeFolderAnalysisCacheKey, workstudioId, ws?.id]);
+
+		  // Explorer: prefetch "Chat with" record summaries (file-level markers) on workstudio open.
+		  useEffect(() => {
+		    if (!workstudioId) return;
+		    if (!isTauri()) return;
+		    const wsId = workstudioId;
+		    let cancelled = false;
+		    void (async () => {
+		      try {
+		        const rows = await listWorkstudioChatWithFileSummaries({ workstudioId: wsId });
+		        if (cancelled) return;
+		        const nextSummaries: Record<string, WorkstudioChatWithFileSummary | null> = {};
+		        for (const raw of rows ?? []) {
+		          const filePath = normalizeFsPath(String((raw as any)?.filePath ?? '').trim());
+		          if (!filePath) continue;
+		          const cacheKey = makeChatWithFileCacheKey(filePath);
+		          nextSummaries[cacheKey] = { ...(raw as any), filePath } as WorkstudioChatWithFileSummary;
+		        }
+		        setChatWithFileSummaryCache(nextSummaries);
+		        setChatWithMarkerEpoch((v) => v + 1);
+		      } catch (err) {
+		        console.warn('[Workstudio][Explorer] listWorkstudioChatWithFileSummaries failed:', err);
+		      }
+		    })();
+		    return () => {
+		      cancelled = true;
+		    };
+		  }, [makeChatWithFileCacheKey, workstudioId, ws?.id]);
 
 			  // Outline: proactively refresh analysis status for the active file on page open / file switch.
 			  // This avoids "right click to refresh" UX.
@@ -7034,84 +7429,6 @@ type OpenFromLinkErrorInfo = {
     [toWorkstudioRelativePath]
   );
 
-  const buildWorkstudioChatWithHistoryRichTextDoc = useCallback(
-    (filePath: string, records: WorkstudioChatWithRecord[]): string => {
-      const generatedAt = new Date().toISOString();
-      const relPath = toWorkstudioRelativePath(filePath);
-      const displayName = basename(relPath) || relPath || basename(filePath) || 'File';
-
-      const lines: string[] = [];
-      lines.push(
-        `<!-- tauri.richtxt v1 | kind=workstudio_chat_with_history | generatedAt=${generatedAt} | filePath=${relPath} -->`
-      );
-      lines.push('');
-      lines.push(`# Chat with 记录：${displayName}`);
-      lines.push('');
-      lines.push(`- 生成时间：\`${generatedAt}\``);
-      lines.push(`- 文件：\`${relPath}\``);
-      lines.push(`- 条数：\`${records.length}\``);
-      lines.push('');
-      lines.push('---');
-      lines.push('');
-
-      for (const rec of records) {
-        const when = String(rec.createdAt || rec.updatedAt || generatedAt).trim() || generatedAt;
-        const rangeLabel = rec.range
-          ? `${rec.range.startLine}:${rec.range.startColumn}-${rec.range.endLine}:${rec.range.endColumn}`
-          : '';
-        const title = (() => {
-          const raw = String(rec.question ?? '').trim();
-          if (!raw) return 'Chat with';
-          const first = raw.split('\n')[0] ?? raw;
-          return first.length > 80 ? `${first.slice(0, 80)}…` : first;
-        })();
-
-        lines.push(`## ${title}`);
-        lines.push('');
-        lines.push(`- 时间：\`${when}\``);
-        if (rangeLabel) lines.push(`- 选区：\`${rangeLabel}\``);
-        if (rec.agentName) lines.push(`- Agent：\`${rec.agentName}\``);
-        if (rec.modelRef) lines.push(`- 模型：\`${rec.modelRef}\``);
-        if (typeof rec.latencyMs === 'number') lines.push(`- 延迟：\`${rec.latencyMs}ms\``);
-        lines.push('');
-
-        lines.push('### 问题');
-        lines.push('');
-        lines.push(String(rec.question ?? '').trim());
-        lines.push('');
-
-        lines.push('### 选区代码');
-        lines.push('');
-        const lang = String(rec.languageId || 'text').trim() || 'text';
-        lines.push(`\`\`\`${lang}`);
-        lines.push(String(rec.code ?? '').replace(/\s+$/, ''));
-        lines.push('```');
-        lines.push('');
-
-        lines.push('### 回答');
-        lines.push('');
-        lines.push(String(rec.answerMd ?? '').trim());
-
-        const thinking = String(rec.thinking ?? '').trim();
-        if (thinking) {
-          lines.push('');
-          lines.push('### Thinking');
-          lines.push('');
-          lines.push('```text');
-          lines.push(thinking);
-          lines.push('```');
-        }
-
-        lines.push('');
-        lines.push('---');
-        lines.push('');
-      }
-
-      return lines.join('\\n').trim() + '\\n';
-    },
-    [toWorkstudioRelativePath]
-  );
-
   const openVirtualRichTextFile = useCallback((title: string, content: string) => {
     const id = crypto.randomUUID();
     const tabTitle = title.length > 48 ? `${title.slice(0, 48)}…` : title;
@@ -7136,10 +7453,24 @@ type OpenFromLinkErrorInfo = {
 
 
   const viewExplorerFileChatWithHistory = useCallback(
-    async (absFilePathRaw: string) => {
+    async (absFilePathRaw: string, opts?: { filterLine?: number | null }) => {
       if (!workstudioId) return;
       const normalizedPath = normalizeFsPath(absFilePathRaw) || absFilePathRaw;
       if (!normalizedPath) return;
+      const filterLine =
+        typeof opts?.filterLine === 'number' && Number.isFinite(opts.filterLine) && opts.filterLine > 0
+          ? Math.floor(opts.filterLine)
+          : null;
+
+      setChatWithHistoryViewer({
+        open: true,
+        filePath: normalizedPath,
+        filterLine,
+        records: [],
+        selectedId: null,
+        loading: true,
+        error: null,
+      });
 
       try {
         const records = await listWorkstudioChatWithRecordsForFile({
@@ -7148,27 +7479,99 @@ type OpenFromLinkErrorInfo = {
           limit: 200,
         });
         if (!records || records.length === 0) {
+          setChatWithHistoryViewer(null);
           showNavToast('暂无 Chat with 记录');
           return;
         }
 
-        const relPath = toWorkstudioRelativePath(normalizedPath);
-        const nameBase = `Chat with：${basename(relPath) || relPath || basename(normalizedPath) || 'File'}`;
-        const name = nameBase.length > 32 ? `${nameBase.slice(0, 32)}…` : nameBase;
-        const content = buildWorkstudioChatWithHistoryRichTextDoc(normalizedPath, records);
-        openVirtualRichTextFile(name, content);
+        const selectedId = (() => {
+          if (!filterLine) return records[0]?.id ?? null;
+          let bestId: string | null = null;
+          let bestScore: number | null = null;
+          for (const rec of records) {
+            const startLine = rec.range?.startLine ?? null;
+            if (!startLine || startLine <= 0) continue;
+            const markerLine = Math.max(1, startLine - 1);
+            const score = Math.abs(markerLine - filterLine);
+            if (bestScore === null || score < bestScore) {
+              bestScore = score;
+              bestId = rec.id;
+              if (score === 0) break;
+            }
+          }
+          return bestId ?? (records[0]?.id ?? null);
+        })();
+
+        setChatWithHistoryViewer({
+          open: true,
+          filePath: normalizedPath,
+          filterLine,
+          records,
+          selectedId,
+          loading: false,
+          error: null,
+        });
+        setChatWithMarkerEpoch((v) => v + 1);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        setChatWithHistoryViewer((prev) =>
+          prev
+            ? {
+                ...prev,
+                loading: false,
+                error: message || '读取 Chat with 记录失败',
+              }
+            : prev
+        );
         showNavToast(message || '读取 Chat with 记录失败');
       }
     },
-    [
-      buildWorkstudioChatWithHistoryRichTextDoc,
-      openVirtualRichTextFile,
-      showNavToast,
-      toWorkstudioRelativePath,
-      workstudioId,
-    ]
+    [showNavToast, workstudioId]
+  );
+
+  const closeChatWithHistoryViewer = useCallback(() => {
+    setChatWithHistoryViewer(null);
+  }, []);
+
+  const selectChatWithHistoryRecord = useCallback((id: string) => {
+    setChatWithHistoryViewer((prev) => (prev ? { ...prev, selectedId: id } : prev));
+  }, []);
+
+  const deleteChatWithHistoryRecord = useCallback(
+    async (filePath: string, id: string) => {
+      if (!workstudioId) return;
+      const ok = await Promise.resolve(window.confirm('确定删除这条 Chat with 记录吗？'));
+      if (!ok) return;
+
+      try {
+        await deleteWorkstudioChatWithRecord({ workstudioId, id });
+
+        setChatWithHistoryViewer((prev) => {
+          if (!prev) return prev;
+          const nextRecords = prev.records.filter((r) => r.id !== id);
+          if (nextRecords.length === 0) return null;
+          const nextSelectedId = prev.selectedId === id ? (nextRecords[0]?.id ?? null) : prev.selectedId;
+          return { ...prev, records: nextRecords, selectedId: nextSelectedId };
+        });
+
+        const cacheKey = makeChatWithFileCacheKey(filePath);
+        setChatWithFileSummaryCache((prev) => {
+          const existing = prev[cacheKey] ?? null;
+          if (!existing) return prev;
+          const nextCount = Math.max(0, (existing.recordCount ?? 0) - 1);
+          const next: WorkstudioChatWithFileSummary | null =
+            nextCount <= 0 ? null : { ...existing, recordCount: nextCount, updatedAt: new Date().toISOString() };
+          return { ...prev, [cacheKey]: next };
+        });
+
+        setChatWithMarkerEpoch((v) => v + 1);
+        showNavToast('已删除 Chat with 记录');
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        showNavToast(message || '删除 Chat with 记录失败');
+      }
+    },
+    [makeChatWithFileCacheKey, showNavToast, workstudioId]
   );
 
   const viewOutlineSymbolAnalysis = useCallback(
@@ -8215,14 +8618,51 @@ type OpenFromLinkErrorInfo = {
           editorByPaneRef.current.delete(paneId);
           lastNavLocationRef.current.delete(paneId);
           pendingNavRecordRef.current.delete(paneId);
+          chatWithDecorationIdsByPaneRef.current.delete(paneId);
+          chatWithMarkerRefreshSeqByPaneRef.current.delete(paneId);
+          try {
+            const modelKey = editor.getModel()?.uri?.toString?.() ?? null;
+            if (modelKey) chatWithMarkerIndexByModelKeyRef.current.delete(modelKey);
+          } catch {
+            // ignore
+          }
         });
 
         editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
           const fileId = useWindowLayoutStore.getState().panes.find((p) => p.id === paneId)?.activeTabId ?? null;
           if (!fileId) return;
-          void saveFile(fileId, editor);
+          void (async () => {
+            await saveFile(fileId, editor);
+            await refreshChatWithMarkersForPane(paneId);
+          })();
         });
         editor.onDidFocusEditorWidget(() => useWindowLayoutStore.getState().setFocusedPane(paneId));
+        editor.onDidChangeModel(() => {
+          void refreshChatWithMarkersForPane(paneId);
+        });
+        editor.onMouseDown((ev) => {
+          try {
+            const pos = ev.target.position;
+            if (!pos) return;
+            const modelKey = editor.getModel()?.uri?.toString?.() ?? null;
+            if (!modelKey) return;
+            const idx = chatWithMarkerIndexByModelKeyRef.current.get(modelKey) ?? null;
+            if (!idx) return;
+            const ids = idx.byLine.get(pos.lineNumber) ?? null;
+            if (!ids || ids.length === 0) return;
+            const t = ev.target.type;
+            const isGutter =
+              t === monaco.editor.MouseTargetType.GUTTER_LINE_DECORATIONS ||
+              t === monaco.editor.MouseTargetType.GUTTER_LINE_NUMBERS ||
+              t === monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN;
+            if (!isGutter) return;
+            void viewExplorerFileChatWithHistory(idx.filePath, { filterLine: pos.lineNumber });
+          } catch {
+            // ignore
+          }
+        });
+
+        void refreshChatWithMarkersForPane(paneId);
 
         const readActiveTabId = (): string | null => {
           const state = useWindowLayoutStore.getState();
@@ -8455,7 +8895,9 @@ type OpenFromLinkErrorInfo = {
       lspAutoConfigStatus,
       openInlineChatComposer,
       openLinkTarget,
+      refreshChatWithMarkersForPane,
       saveFile,
+      viewExplorerFileChatWithHistory,
       ws?.id,
     ]
   );
@@ -10809,11 +11251,15 @@ type OpenFromLinkErrorInfo = {
             ) : (
               entries.map((entry) => {
                 if (entry.isDir) {
-                  return renderDirNode(entry.path, depth + 1);
+                return renderDirNode(entry.path, depth + 1);
                 }
                 const normalizedEntryPath = normalizeFsPath(entry.path);
                 const isActive =
                   Boolean(normalizedEntryPath) && explorerSelectedFilePath === normalizedEntryPath;
+                const chatWithCacheKey = makeChatWithFileCacheKey(normalizedEntryPath || entry.path);
+                const chatWithSummary = chatWithFileSummaryCache[chatWithCacheKey] ?? null;
+                const chatWithCount = Math.max(0, Number(chatWithSummary?.recordCount ?? 0) || 0);
+                const hasChatWith = chatWithCount > 0;
                 return (
                   <button
                     key={entry.path}
@@ -10835,6 +11281,12 @@ type OpenFromLinkErrorInfo = {
                     title={normalizedEntryPath || entry.path}
                   >
                     <FileText size={13} />
+                    {hasChatWith && (
+                      <span
+                        className="inline-block h-2 w-2 rounded-full bg-emerald-500 dark:bg-emerald-400"
+                        title={`Chat with 记录：${chatWithCount} 条`}
+                      />
+                    )}
                     <span className="truncate">{entry.name}</span>
                   </button>
                 );
@@ -11271,6 +11723,200 @@ type OpenFromLinkErrorInfo = {
                     </div>
                   </div>
                 </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {chatWithHistoryViewer && chatWithHistoryViewer.open && (
+        <div className="fixed inset-0 z-[225] flex items-center justify-center bg-black/35 p-4">
+          <div className="flex h-[calc(100vh-2rem)] w-full max-w-7xl flex-col rounded-xl border border-gray-200 bg-white shadow-xl dark:border-gray-800 dark:bg-gray-950">
+            {/* Header */}
+            <div className="flex shrink-0 items-start justify-between gap-3 border-b border-gray-100 p-4 dark:border-gray-800">
+              <div className="min-w-0">
+                <div className="truncate text-sm font-semibold text-gray-900 dark:text-gray-100">Chat with 记录</div>
+                <div className="mt-0.5 truncate text-[11px] text-gray-500 dark:text-gray-400">
+                  {toWorkstudioRelativePath(chatWithHistoryViewer.filePath)}
+                  {chatWithHistoryViewer.filterLine ? ` · 标记行 L${chatWithHistoryViewer.filterLine}` : ''}
+                  {chatWithHistoryViewer.records.length > 0 ? ` · ${chatWithHistoryViewer.records.length} 条` : ''}
+                </div>
+              </div>
+              <button
+                type="button"
+                className="rounded p-1 text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+                onClick={closeChatWithHistoryViewer}
+                title="关闭"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="min-h-0 flex flex-1 overflow-hidden">
+              {/* List */}
+              <div className="flex w-[320px] shrink-0 flex-col border-r border-gray-100 dark:border-gray-800">
+                <div className="border-b border-gray-100 px-3 py-2 text-[11px] text-gray-600 dark:border-gray-800 dark:text-gray-300">
+                  {chatWithHistoryViewer.loading ? (
+                    <span className="flex items-center gap-1">
+                      <Loader2 size={12} className="animate-spin" /> 读取中…
+                    </span>
+                  ) : chatWithHistoryViewer.error ? (
+                    <span className="text-red-600 dark:text-red-300">{chatWithHistoryViewer.error}</span>
+                  ) : (
+                    <span>点击左侧记录查看详情</span>
+                  )}
+                </div>
+                <div className="min-h-0 flex-1 overflow-auto p-2">
+                  {chatWithHistoryViewer.loading && chatWithHistoryViewer.records.length === 0 && (
+                    <div className="px-2 py-3 text-xs text-gray-500 dark:text-gray-400">读取中…</div>
+                  )}
+                  {!chatWithHistoryViewer.loading && chatWithHistoryViewer.records.length === 0 && (
+                    <div className="px-2 py-3 text-xs text-gray-500 dark:text-gray-400">暂无记录</div>
+                  )}
+                  {chatWithHistoryViewer.records.map((rec) => {
+                    const selected = rec.id === chatWithHistoryViewer.selectedId;
+                    const title = (() => {
+                      const raw = String(rec.question ?? '').trim();
+                      if (!raw) return 'Chat with';
+                      const first = raw.split('\n')[0] ?? raw;
+                      return first.length > 60 ? `${first.slice(0, 60)}…` : first;
+                    })();
+                    const rangeLabel = rec.range ? `L${rec.range.startLine}-${rec.range.endLine}` : '';
+                    const when = rec.createdAt ? new Date(rec.createdAt).toLocaleString() : '';
+                    return (
+                      <button
+                        key={rec.id}
+                        type="button"
+                        className={[
+                          'w-full rounded-lg border px-2 py-2 text-left',
+                          selected
+                            ? 'border-blue-200 bg-blue-50 dark:border-blue-800/40 dark:bg-blue-900/10'
+                            : 'border-transparent hover:bg-gray-50 dark:hover:bg-gray-900/30',
+                        ].join(' ')}
+                        onClick={() => selectChatWithHistoryRecord(rec.id)}
+                        title={title}
+                      >
+                        <div className="truncate text-xs font-semibold text-gray-900 dark:text-gray-100">{title}</div>
+                        <div className="mt-0.5 flex items-center gap-2 truncate text-[10px] text-gray-500 dark:text-gray-400">
+                          {rangeLabel && (
+                            <span className="rounded bg-gray-100 px-1 py-0.5 text-[10px] text-gray-700 dark:bg-gray-800 dark:text-gray-200">
+                              {rangeLabel}
+                            </span>
+                          )}
+                          {when && <span className="truncate">{when}</span>}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Details */}
+              <div className="min-h-0 flex-1 overflow-auto p-4">
+                {(() => {
+                  const rec =
+                    chatWithHistoryViewer.records.find((r) => r.id === chatWithHistoryViewer.selectedId) ??
+                    chatWithHistoryViewer.records[0] ??
+                    null;
+                  if (!rec) {
+                    return (
+                      <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-600 dark:border-gray-800 dark:bg-gray-900/20 dark:text-gray-300">
+                        暂无记录
+                      </div>
+                    );
+                  }
+
+                  const title = (() => {
+                    const raw = String(rec.question ?? '').trim();
+                    if (!raw) return 'Chat with';
+                    const first = raw.split('\n')[0] ?? raw;
+                    return first.length > 80 ? `${first.slice(0, 80)}…` : first;
+                  })();
+                  const when = rec.createdAt ? new Date(rec.createdAt).toLocaleString() : '';
+                  const rangeLabel = rec.range
+                    ? `${rec.range.startLine}:${rec.range.startColumn}-${rec.range.endLine}:${rec.range.endColumn}`
+                    : '';
+
+                  return (
+                    <div className="space-y-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-semibold text-gray-900 dark:text-gray-100">{title}</div>
+                          <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-gray-500 dark:text-gray-400">
+                            {when && <span>{when}</span>}
+                            {rangeLabel && <span>· {rangeLabel}</span>}
+                            {rec.agentName && (
+                              <span className="rounded bg-blue-50 px-1 text-blue-600 dark:bg-blue-900/30 dark:text-blue-300">
+                                {rec.agentName}
+                              </span>
+                            )}
+                            {rec.modelRef && (
+                              <span className="rounded bg-gray-100 px-1 text-gray-700 dark:bg-gray-800 dark:text-gray-200">
+                                {rec.modelRef}
+                              </span>
+                            )}
+                            {typeof rec.latencyMs === 'number' && <span>· {rec.latencyMs}ms</span>}
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-2">
+                          <button
+                            type="button"
+                            className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-800 dark:text-gray-200 dark:hover:bg-gray-900/40"
+                            onClick={() => {
+                              const fp = normalizeFsPath(rec.filePath) || rec.filePath;
+                              const lineNumber = rec.range?.startLine ?? null;
+                              const column = rec.range?.startColumn ?? 1;
+                              closeChatWithHistoryViewer();
+                              if (lineNumber && lineNumber > 0) {
+                                void navigateToLocation({ tabId: fp, line: lineNumber, column });
+                              } else {
+                                void openFileAtPath(fp);
+                              }
+                            }}
+                            title="关闭并定位到代码"
+                          >
+                            定位到代码
+                          </button>
+                          <button
+                            type="button"
+                            className="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50 dark:border-red-800/50 dark:text-red-300 dark:hover:bg-red-900/10"
+                            onClick={() => void deleteChatWithHistoryRecord(chatWithHistoryViewer.filePath, rec.id)}
+                            title="删除该记录"
+                          >
+                            删除
+                          </button>
+                        </div>
+                      </div>
+
+                      <div>
+                        <div className="mb-1 text-[11px] font-medium text-gray-600 dark:text-gray-300">问题</div>
+                        <pre className="whitespace-pre-wrap break-words rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-[12px] text-gray-800 dark:border-gray-800 dark:bg-gray-900/30 dark:text-gray-100">
+                          {String(rec.question ?? '').trim()}
+                        </pre>
+                      </div>
+
+                      <div>
+                        <div className="mb-1 text-[11px] font-medium text-gray-600 dark:text-gray-300">选区代码</div>
+                        <pre className="max-h-64 overflow-auto whitespace-pre rounded-lg border border-gray-200 bg-gray-50 p-2 text-[11px] text-gray-800 dark:border-gray-800 dark:bg-gray-900/30 dark:text-gray-100 font-mono">
+                          {String(rec.code ?? '').replace(/\s+$/, '')}
+                        </pre>
+                      </div>
+
+                      <div>
+                        <div className="mb-1 text-[11px] font-medium text-gray-600 dark:text-gray-300">回答</div>
+                        <div className="rounded-lg border border-gray-200 bg-white px-3 py-2 dark:border-gray-800 dark:bg-gray-950">
+                          <DeferredMarkdown
+                            content={String(rec.answerMd ?? '').trim()}
+                            conversationId={null}
+                            workstudioId={workstudioId ?? undefined}
+                            minDelayMs={80}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             </div>
           </div>

@@ -17,8 +17,9 @@ use thiserror::Error;
 use crate::models::WorkstudioUiState;
 use crate::models::{
     CodeSnippetRange, ContentPart, Conversation, Message, MessageRole, Workstudio,
-    WorkstudioChatWithRecord, WorkstudioFolderAnalysis, WorkstudioFolderAnalysisSummary,
-    WorkstudioSymbolAnalysis, WorkstudioSymbolAnalysisSummary, WorkstudioSymbolDiagnosisCounts,
+    WorkstudioChatWithFileSummary, WorkstudioChatWithRecord, WorkstudioFolderAnalysis,
+    WorkstudioFolderAnalysisSummary, WorkstudioSymbolAnalysis, WorkstudioSymbolAnalysisSummary,
+    WorkstudioSymbolDiagnosisCounts,
 };
 
 pub mod async_db;
@@ -3061,6 +3062,45 @@ impl Database {
         Ok(rows)
     }
 
+    pub fn list_workstudio_chat_with_file_summaries(
+        &self,
+        workstudio_id: &str,
+        limit: usize,
+    ) -> Result<Vec<WorkstudioChatWithFileSummary>, StorageError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Lock(e.to_string()))?;
+
+        let limit = limit.clamp(1, 50_000) as i64;
+        let mut stmt = conn.prepare(
+            "SELECT
+                file_path,
+                COUNT(*) as record_count,
+                MAX(updated_at) as updated_at
+             FROM workstudio_chat_with_records
+             WHERE workstudio_id = ?1
+             GROUP BY file_path
+             ORDER BY updated_at DESC
+             LIMIT ?2",
+        )?;
+
+        let rows = stmt
+            .query_map(params![workstudio_id, limit], |r| {
+                let updated_at_str: String = r.get(2)?;
+                Ok(WorkstudioChatWithFileSummary {
+                    file_path: r.get(0)?,
+                    record_count: r.get::<_, i64>(1)?.max(0) as u32,
+                    updated_at: DateTime::parse_from_rfc3339(&updated_at_str)
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .unwrap_or_else(|_| Utc::now()),
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(rows)
+    }
+
     pub fn delete_workstudio_chat_with_records_for_file(
         &self,
         workstudio_id: &str,
@@ -3075,6 +3115,24 @@ impl Database {
             "DELETE FROM workstudio_chat_with_records
              WHERE workstudio_id = ?1 AND file_path = ?2",
             params![workstudio_id, file_path],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_workstudio_chat_with_record(
+        &self,
+        workstudio_id: &str,
+        id: &str,
+    ) -> Result<(), StorageError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Lock(e.to_string()))?;
+
+        conn.execute(
+            "DELETE FROM workstudio_chat_with_records
+             WHERE workstudio_id = ?1 AND id = ?2",
+            params![workstudio_id, id],
         )?;
         Ok(())
     }

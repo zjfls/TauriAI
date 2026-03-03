@@ -835,6 +835,15 @@ pub struct WorkstudioChatWithRecord {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Lightweight summary for "Chat with" records grouped by file (used by Explorer markers).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkstudioChatWithFileSummary {
+    pub file_path: String,
+    pub record_count: u32,
+    pub updated_at: DateTime<Utc>,
+}
+
 // ============================================================================
 // New Provider-Model-Agent Architecture
 // ====================================================== ======================

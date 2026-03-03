@@ -1,11 +1,12 @@
 import React from 'react';
-import { MessageSquare, History, Settings, FileText, LayoutPanelLeft, ExternalLink, Globe, Terminal, NotebookPen } from 'lucide-react';
+import { MessageSquare, History, Settings, FileText, LayoutPanelLeft, ExternalLink, Globe, Terminal, NotebookPen, Braces } from 'lucide-react';
 import type { ActiveView } from '../types';
 import { ChatViewContainer } from './ChatViewContainer';
 import { HistoryPanel } from '../components/History/HistoryPanel';
 import { PracticeView } from '../components/Practice/PracticeView';
 import { SettingsView } from '../components/Settings/SettingsView';
 import { DocumentView } from '../components/Documents/DocumentView';
+import { JsonAnalyzerView } from '../components/Json/JsonAnalyzerView';
 import { WorkstudioView } from '../components/Workstudio/WorkstudioView';
 import { WebView } from '../components/Web/WebView';
 import { TerminalView } from '../components/Terminal/TerminalView';
@@ -61,6 +62,14 @@ export const VIEW_DEFINITIONS: ViewDefinition[] = [
     title: '文档',
     icon: <FileText size={20} />,
     render: () => <DocumentView />,
+    inSidebar: false,
+  },
+  {
+    id: 'json_analyzer',
+    label: 'JSON',
+    title: 'JSON 分析',
+    icon: <Braces size={20} />,
+    render: () => <JsonAnalyzerView />,
     inSidebar: false,
   },
   {

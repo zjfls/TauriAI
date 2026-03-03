@@ -146,6 +146,9 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
     )?;
     let new_text = MenuItem::with_id(app, "new_text", "新建文本文件", true, None::<&str>)?;
 
+    let new_json_analyzer =
+        MenuItem::with_id(app, "new_json_analyzer", "新建 JSON 分析窗口", true, None::<&str>)?;
+
     // Session/app actions (moved from top-right toolbar to system menu bar)
     // 只保留“按 Agent 新建会话”，并把快捷键绑定到默认 Agent 的菜单项。
     let new_session_by_agent: Submenu<R> = if has_agents {
@@ -252,6 +255,7 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
             &[
                 &new_richtxt,
                 &new_text,
+                &new_json_analyzer,
                 &open_file,
                 &test_window,
                 &separator,
@@ -263,7 +267,7 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
             app,
             "File",
             true,
-            &[&new_richtxt, &new_text, &open_file, &test_window],
+            &[&new_richtxt, &new_text, &new_json_analyzer, &open_file, &test_window],
         )?;
         // On macOS, index 0 is the app menu. Insert after it.
         let pos = if cfg!(target_os = "macos") { 1 } else { 0 };
@@ -464,16 +468,18 @@ fn run_desktop() {
                         if !w.is_focused().unwrap_or(false) {
                             return false;
                         }
-                        let label = w.label();
-                        // 避免把菜单事件发给不初始化 chat runtime 的窗口：
-                        // - drag ghost window（__tauriai_ghost__*）
-                        // - workstudio window（view-workstudio*）
-                        //
-                        // 注意：`workspace-*` 是“可聊天的工作区窗口”（standalone workspace container），
-                        // 需要接收菜单事件（例如新建会话）。因此不要在这里排除它。
-                        !label.starts_with("__tauriai_ghost__")
-                            && !label.starts_with("view-workstudio")
-                    });
+                         let label = w.label();
+                         // 避免把菜单事件发给不初始化 chat runtime 的窗口：
+                         // - drag ghost window（__tauriai_ghost__*）
+                         // - workstudio window（view-workstudio*）
+                         // - json analyzer window（view-json_analyzer*）
+                         //
+                         // 注意：`workspace-*` 是“可聊天的工作区窗口”（standalone workspace container），
+                         // 需要接收菜单事件（例如新建会话）。因此不要在这里排除它。
+                         !label.starts_with("__tauriai_ghost__")
+                             && !label.starts_with("view-workstudio")
+                             && !label.starts_with("view-json_analyzer")
+                     });
 
                 focused.or_else(|| app.get_webview_window("main"))
             };
@@ -535,6 +541,20 @@ fn run_desktop() {
                         let _ = window.emit("menu:new_text", ());
                     } else {
                         let _ = app.emit("menu:new_text", ());
+                    }
+                }
+                "new_json_analyzer" => {
+                    // Send event to create a new JSON analyzer window (handled by frontend).
+                    // 只发送给聚焦窗口（fallback 到 main），避免 app.emit 广播导致多窗口同时打开。
+                    let focused = app
+                        .webview_windows()
+                        .into_values()
+                        .find(|w| w.is_focused().unwrap_or(false));
+
+                    if let Some(window) = focused.or_else(|| app.get_webview_window("main")) {
+                        let _ = window.emit("menu:new_json_analyzer", ());
+                    } else {
+                        let _ = app.emit("menu:new_json_analyzer", ());
                     }
                 }
                 "open_file" => {
@@ -691,6 +711,8 @@ fn run_desktop() {
 				            delete_workstudio_folder_analysis,
 				            save_workstudio_folder_analysis,
 				            list_workstudio_chat_with_records_for_file,
+				            list_workstudio_chat_with_file_summaries,
+				            delete_workstudio_chat_with_record,
 				            delete_workstudio_chat_with_records_for_file,
 				            workstudio_run_agent_stream,
 				            workstudio_abort_agent,
