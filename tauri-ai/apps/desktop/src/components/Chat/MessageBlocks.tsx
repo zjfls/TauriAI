@@ -1474,10 +1474,9 @@ const TrimDetailValue: React.FC<{ value?: number | boolean | null }> = ({ value 
 
 const TurnContextTrimDetailPanel: React.FC<{ trim: TurnContextTrimInfo }> = ({ trim }) => {
   const rows: Array<{ label: string; value?: number | boolean | null }> = [
-    { label: '启用裁剪', value: trim.enabled },
-    { label: '移除消息', value: trim.removedMessages },
-    { label: '移除任务组', value: trim.removedTasks },
-    { label: '保留任务组', value: trim.keptTasks },
+    { label: '移除基础消息（条）', value: trim.removedMessages },
+    { label: '移除 React 任务组', value: trim.removedTasks },
+    { label: '保留 React 任务组', value: trim.keptTasks },
     { label: '估算 Token（前）', value: trim.estimatedTokensBefore },
     { label: '估算 Token（后）', value: trim.estimatedTokensAfter },
     { label: 'Hard Limit', value: trim.hardLimitTokens },
@@ -3010,10 +3009,10 @@ export const MessageBlocks: React.FC<{
 	                    <div className="inline-flex items-center gap-1">
 	                      <span
 	                        className="inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-200"
-	                        title={`本轮发生上下文裁剪：移除 ${trimmedRemovedMessages} 条消息，估算 tokens ${contextTrim?.estimatedTokensBefore ?? '-'} → ${contextTrim?.estimatedTokensAfter ?? '-'}`}
+	                        title={`本轮发生上下文裁剪：移除 ${trimmedRemovedMessages} 条基础消息，估算 tokens ${contextTrim?.estimatedTokensBefore ?? '-'} → ${contextTrim?.estimatedTokensAfter ?? '-'}`}
 	                      >
 	                        <AlertTriangle size={11} />
-	                        <span>已裁剪{trimmedRemovedMessages > 0 ? ` ${trimmedRemovedMessages}` : ''}</span>
+	                        <span>已裁剪 {trimmedRemovedMessages} 条基础消息</span>
 	                      </span>
 	                      <button
 	                        type="button"
