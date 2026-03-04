@@ -263,9 +263,7 @@ fn estimate_content_payload_tokens(message: &Message) -> u32 {
         return content_tokens;
     }
 
-    let parts_tokens = serde_json::to_string(&message.content_parts)
-        .map(|s| approx_tokens_for_text(s.as_str()))
-        .unwrap_or(content_tokens);
+    let parts_tokens = estimate_content_parts_tokens(&message.content_parts);
 
     if content_tokens == 0 {
         return parts_tokens;
@@ -288,6 +286,123 @@ fn estimate_content_payload_tokens(message: &Message) -> u32 {
     }
 
     content_tokens.saturating_add(parts_tokens)
+}
+
+fn estimate_content_parts_tokens(parts: &[ContentPart]) -> u32 {
+    let mut total = 0u32;
+
+    for part in parts {
+        let part_tokens = match part {
+            ContentPart::Text { text } => approx_tokens_for_text(text.as_str()),
+            ContentPart::TextFile { filename, content } => approx_tokens_for_text(filename.as_str())
+                .saturating_add(approx_tokens_for_text(content.as_str())),
+            ContentPart::FileRef { path, label } => approx_tokens_for_text(path.as_str())
+                .saturating_add(
+                    label
+                        .as_ref()
+                        .map(|s| approx_tokens_for_text(s.as_str()))
+                        .unwrap_or(0),
+                ),
+            ContentPart::CodeSnippet {
+                label,
+                text,
+                language_id,
+                file_path,
+                range,
+                ..
+            } => {
+                let mut t = approx_tokens_for_text(label.as_str())
+                    .saturating_add(approx_tokens_for_text(text.as_str()));
+                if let Some(v) = language_id.as_ref() {
+                    t = t.saturating_add(approx_tokens_for_text(v.as_str()));
+                }
+                if let Some(v) = file_path.as_ref() {
+                    t = t.saturating_add(approx_tokens_for_text(v.as_str()));
+                }
+                if range.is_some() {
+                    // Small, fixed overhead for the range envelope (line/col ints).
+                    t = t.saturating_add(16);
+                }
+                t
+            }
+            ContentPart::Image { url, detail } => estimate_image_part_tokens(url.as_str(), detail),
+            ContentPart::PdfDocument {
+                filename,
+                pages,
+                metadata,
+                ..
+            } => estimate_pdf_part_tokens(filename.as_str(), pages, metadata.as_ref()),
+        };
+
+        total = total.saturating_add(part_tokens);
+    }
+
+    total
+}
+
+fn estimate_image_part_tokens(url: &str, detail: &crate::models::ImageDetail) -> u32 {
+    // NOTE: Do NOT estimate by data URL length. For vision models, the base64 transport payload
+    // is not tokenized as text; counting it causes massive over-estimation and unnecessary trims.
+    //
+    // We use a conservative, fixed budget per image and a tiny overhead for the URL envelope.
+    // This keeps the estimator safe while avoiding catastrophic inflation on large base64 inputs.
+    let base = match detail {
+        crate::models::ImageDetail::Low => 1_024,
+        crate::models::ImageDetail::Auto => 2_048,
+        crate::models::ImageDetail::High => 4_096,
+    };
+
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return base;
+    }
+
+    let url_overhead = if trimmed.starts_with("data:") {
+        // Just count a small header/envelope overhead for data URLs.
+        64
+    } else {
+        // Remote/file URLs: count the URL text, but cap it to avoid pathological cases.
+        approx_tokens_for_text(trimmed).min(256)
+    };
+
+    base.saturating_add(url_overhead)
+}
+
+fn estimate_pdf_part_tokens(
+    filename: &str,
+    pages: &[crate::models::PdfPage],
+    metadata: Option<&crate::models::PdfMetadata>,
+) -> u32 {
+    let mut total = 0u32;
+    total = total.saturating_add(approx_tokens_for_text(filename));
+
+    if let Some(meta) = metadata {
+        for v in [
+            meta.title.as_ref(),
+            meta.author.as_ref(),
+            meta.created_at.as_ref(),
+            meta.producer.as_ref(),
+            meta.subject.as_ref(),
+            meta.keywords.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            total = total.saturating_add(approx_tokens_for_text(v.as_str()));
+        }
+    }
+
+    // A PDF page is typically presented as extracted text + a page image (vision).
+    // Count the text and a fixed vision budget per page image (do NOT count base64 length).
+    for page in pages {
+        total = total.saturating_add(approx_tokens_for_text(page.text.as_str()));
+        total = total.saturating_add(estimate_image_part_tokens(
+            page.image.as_str(),
+            &crate::models::ImageDetail::High,
+        ));
+    }
+
+    total
 }
 
 fn extract_inline_text_from_parts(parts: &[ContentPart]) -> String {
@@ -662,6 +777,42 @@ mod tests {
             "non-overlapping content + parts should both contribute: content_only={}, mixed={}",
             content_only,
             mixed
+        );
+    }
+
+    #[test]
+    fn estimate_prompt_tokens_does_not_blow_up_on_large_image_data_url() {
+        let mut message = mk_message(MessageRole::User, "看图");
+        message.content_parts = vec![ContentPart::Image {
+            url: format!("data:image/png;base64,{}", "a".repeat(400_000)),
+            detail: crate::models::ImageDetail::High,
+        }];
+
+        let est = estimate_prompt_tokens(&[message]);
+        assert!(
+            est < 20_000,
+            "image data URL should not be estimated by base64 length: est={est}"
+        );
+    }
+
+    #[test]
+    fn estimate_prompt_tokens_does_not_blow_up_on_large_pdf_page_images() {
+        let mut message = mk_message(MessageRole::User, "请看 PDF");
+        message.content_parts = vec![ContentPart::PdfDocument {
+            filename: "doc.pdf".to_string(),
+            pages: vec![crate::models::PdfPage {
+                page_number: 1,
+                text: "hello".to_string(),
+                image: format!("data:image/png;base64,{}", "b".repeat(400_000)),
+            }],
+            total_pages: 1,
+            metadata: None,
+        }];
+
+        let est = estimate_prompt_tokens(&[message]);
+        assert!(
+            est < 30_000,
+            "pdf page images should not be estimated by base64 length: est={est}"
         );
     }
 
