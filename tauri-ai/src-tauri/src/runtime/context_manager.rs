@@ -462,32 +462,42 @@ pub fn trim_runtime_messages_to_hard_limit(
         };
     }
 
-    let protected_last_idx = units.len().saturating_sub(1);
-    let mut keep: Vec<bool> = vec![true; units.len()];
-    let mut removed = 0usize;
-    let mut estimated_after = estimated_before;
+    // Keep-based trimming strategy (easier to reason about in UI/debugging):
+    // 1) Always keep leading system prefix.
+    // 2) Start from the newest unit (active suffix) and keep backwards.
+    // 3) Stop when adding one more older unit would exceed `trim_target_tokens`.
+    let system_prefix_tokens = message_tokens[..system_prefix_len]
+        .iter()
+        .copied()
+        .fold(0u32, |acc, t| acc.saturating_add(t));
 
-    for idx in 0..protected_last_idx {
-        if estimated_after <= target_tokens {
+    let mut keep_from_unit_idx = units.len().saturating_sub(1);
+    let mut selected_tokens =
+        system_prefix_tokens.saturating_add(units[keep_from_unit_idx].estimated_tokens);
+
+    // Try to include older units without exceeding the target watermark.
+    for idx in (0..keep_from_unit_idx).rev() {
+        let next = selected_tokens.saturating_add(units[idx].estimated_tokens);
+        if next <= target_tokens {
+            keep_from_unit_idx = idx;
+            selected_tokens = next;
+        } else {
             break;
         }
-
-        keep[idx] = false;
-        removed += units[idx].end.saturating_sub(units[idx].start);
-        estimated_after = estimated_after.saturating_sub(units[idx].estimated_tokens);
     }
 
-    let mut trimmed_messages: Vec<Message> =
-        Vec::with_capacity(messages.len().saturating_sub(removed));
+    let keep_start = units[keep_from_unit_idx].start;
+    let keep_end = units[units.len().saturating_sub(1)].end;
+    let removed = keep_start.saturating_sub(system_prefix_len);
+
+    let mut trimmed_messages: Vec<Message> = Vec::with_capacity(
+        system_prefix_len.saturating_add(keep_end.saturating_sub(keep_start)),
+    );
     trimmed_messages.extend(messages[..system_prefix_len].iter().cloned());
-    for (idx, unit) in units.iter().enumerate() {
-        if keep[idx] {
-            trimmed_messages.extend(messages[unit.start..unit.end].iter().cloned());
-        }
-    }
+    trimmed_messages.extend(messages[keep_start..keep_end].iter().cloned());
 
     // 保险起见使用重算值（与逐条估算可能存在微小偏差时，以最终结果为准）。
-    estimated_after = estimate_prompt_tokens(&trimmed_messages);
+    let estimated_after = estimate_prompt_tokens(&trimmed_messages);
     ContextTrimResult {
         trimmed_messages,
         removed_messages: removed,
