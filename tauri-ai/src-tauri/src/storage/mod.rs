@@ -189,6 +189,7 @@ impl Database {
                 thinking_mode TEXT,
                 run_mode TEXT,
                 workstudio_id TEXT,
+                prompt_cutoff_message_id TEXT,
                 primary_path TEXT,
                 primary_path_kind TEXT,
                 primary_path_pref TEXT,
@@ -219,6 +220,10 @@ impl Database {
         let _ = conn.execute("ALTER TABLE conversations ADD COLUMN run_mode TEXT", []);
         let _ = conn.execute(
             "ALTER TABLE conversations ADD COLUMN workstudio_id TEXT",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE conversations ADD COLUMN prompt_cutoff_message_id TEXT",
             [],
         );
         let _ = conn.execute("ALTER TABLE conversations ADD COLUMN primary_path TEXT", []);
@@ -537,6 +542,7 @@ impl Database {
             thinking_mode: None,
             run_mode: None,
             workstudio_id: None,
+            prompt_cutoff_message_id: None,
             message_count: None,
             turn_count: None,
             last_message_at: None,
@@ -915,6 +921,7 @@ impl Database {
             thinking_mode: source.thinking_mode,
             run_mode: source.run_mode,
             workstudio_id,
+            prompt_cutoff_message_id: source.prompt_cutoff_message_id,
             message_count: None,
             turn_count: None,
             last_message_at: None,
@@ -952,6 +959,7 @@ impl Database {
                c.thinking_mode,
                c.run_mode,
                c.workstudio_id,
+               c.prompt_cutoff_message_id,
                c.primary_path,
                c.primary_path_kind,
                c.primary_path_pref,
@@ -982,16 +990,17 @@ impl Database {
                 let thinking_mode_str: Option<String> = row.get(6)?;
                 let run_mode: Option<String> = row.get(7)?;
                 let workstudio_id: Option<String> = row.get(8)?;
-                let primary_path: Option<String> = row.get(9)?;
-                let primary_path_kind: Option<String> = row.get(10)?;
-                let primary_path_pref: Option<String> = row.get(11)?;
-                let active_files_str: Option<String> = row.get(12)?;
-                let active_files_updated_at_str: Option<String> = row.get(13)?;
-                let created_at_str: String = row.get(14)?;
-                let updated_at_str: String = row.get(15)?;
-                let last_message_at_str: Option<String> = row.get(16)?;
-                let message_count_i64: i64 = row.get(17)?;
-                let turn_count_i64_opt: Option<i64> = row.get(18)?;
+                let prompt_cutoff_message_id: Option<String> = row.get(9)?;
+                let primary_path: Option<String> = row.get(10)?;
+                let primary_path_kind: Option<String> = row.get(11)?;
+                let primary_path_pref: Option<String> = row.get(12)?;
+                let active_files_str: Option<String> = row.get(13)?;
+                let active_files_updated_at_str: Option<String> = row.get(14)?;
+                let created_at_str: String = row.get(15)?;
+                let updated_at_str: String = row.get(16)?;
+                let last_message_at_str: Option<String> = row.get(17)?;
+                let message_count_i64: i64 = row.get(18)?;
+                let turn_count_i64_opt: Option<i64> = row.get(19)?;
 
                 let thinking_mode: Option<serde_json::Value> = thinking_mode_str
                     .as_deref()
@@ -1021,6 +1030,7 @@ impl Database {
                     thinking_mode,
                     run_mode,
                     workstudio_id,
+                    prompt_cutoff_message_id,
                     message_count: u32::try_from(message_count_i64).ok(),
                     turn_count: turn_count_i64_opt
                         .and_then(|v| u32::try_from(v).ok())
@@ -1052,7 +1062,7 @@ impl Database {
             .map_err(|e| StorageError::Lock(e.to_string()))?;
 
         let mut stmt = conn.prepare(
-            "SELECT id, title, agent_name, model_ref, system_prompt, system_prompt_cache_key, thinking_mode, run_mode, workstudio_id, primary_path, primary_path_kind, primary_path_pref, active_files, active_files_updated_at, created_at, updated_at 
+            "SELECT id, title, agent_name, model_ref, system_prompt, system_prompt_cache_key, thinking_mode, run_mode, workstudio_id, prompt_cutoff_message_id, primary_path, primary_path_kind, primary_path_pref, active_files, active_files_updated_at, created_at, updated_at 
              FROM conversations 
              WHERE id = ?1",
         )?;
@@ -1065,13 +1075,14 @@ impl Database {
             let thinking_mode_str: Option<String> = row.get(6)?;
             let run_mode: Option<String> = row.get(7)?;
             let workstudio_id: Option<String> = row.get(8)?;
-            let primary_path: Option<String> = row.get(9)?;
-            let primary_path_kind: Option<String> = row.get(10)?;
-            let primary_path_pref: Option<String> = row.get(11)?;
-            let active_files_str: Option<String> = row.get(12)?;
-            let active_files_updated_at_str: Option<String> = row.get(13)?;
-            let created_at_str: String = row.get(14)?;
-            let updated_at_str: String = row.get(15)?;
+            let prompt_cutoff_message_id: Option<String> = row.get(9)?;
+            let primary_path: Option<String> = row.get(10)?;
+            let primary_path_kind: Option<String> = row.get(11)?;
+            let primary_path_pref: Option<String> = row.get(12)?;
+            let active_files_str: Option<String> = row.get(13)?;
+            let active_files_updated_at_str: Option<String> = row.get(14)?;
+            let created_at_str: String = row.get(15)?;
+            let updated_at_str: String = row.get(16)?;
 
             let thinking_mode: Option<serde_json::Value> = thinking_mode_str
                 .as_deref()
@@ -1096,6 +1107,7 @@ impl Database {
                 thinking_mode,
                 run_mode,
                 workstudio_id,
+                prompt_cutoff_message_id,
                 message_count: None,
                 turn_count: None,
                 last_message_at: None,
@@ -1178,6 +1190,106 @@ impl Database {
                 id
             ],
         )?;
+
+        Ok(())
+    }
+
+    /// Update the persisted prompt-view cutoff message id (hard trim watermark).
+    ///
+    /// Semantics:
+    /// - This does NOT delete messages; it only changes what we include in the runtime prompt view.
+    /// - Cutoff is monotonic-forward: once moved to a newer message, it won't be moved back by default.
+    pub fn update_conversation_prompt_cutoff_message_id(
+        &self,
+        conversation_id: &str,
+        cutoff_message_id: Option<&str>,
+    ) -> Result<(), StorageError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Lock(e.to_string()))?;
+
+        let conversation_id = conversation_id.trim();
+        if conversation_id.is_empty() {
+            return Err(StorageError::Database("conversation_id 为空".to_string()));
+        }
+
+        let now = Utc::now().to_rfc3339();
+
+        // Clearing is always allowed.
+        let Some(new_id) = cutoff_message_id.map(|v| v.trim()).filter(|v| !v.is_empty()) else {
+            let rows = conn.execute(
+                "UPDATE conversations
+                 SET prompt_cutoff_message_id = NULL,
+                     updated_at = ?1
+                 WHERE id = ?2",
+                params![now, conversation_id],
+            )?;
+            if rows == 0 {
+                return Err(StorageError::NotFound(format!(
+                    "Conversation {conversation_id} not found"
+                )));
+            }
+            return Ok(());
+        };
+
+        // Load existing cutoff id (if any).
+        let existing_id: Option<String> = conn
+            .query_row(
+                "SELECT prompt_cutoff_message_id FROM conversations WHERE id = ?1",
+                params![conversation_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+
+        if existing_id.as_deref() == Some(new_id) {
+            return Ok(());
+        }
+
+        // Monotonic-forward guard: only move cutoff to a newer message (by created_at) if we can compare.
+        if let Some(old_id) = existing_id.as_deref().filter(|v| !v.trim().is_empty()) {
+            let old_time: Option<String> = conn
+                .query_row(
+                    "SELECT created_at FROM messages WHERE id = ?1",
+                    params![old_id],
+                    |row| row.get(0),
+                )
+                .ok();
+            let new_time: Option<String> = conn
+                .query_row(
+                    "SELECT created_at FROM messages WHERE id = ?1",
+                    params![new_id],
+                    |row| row.get(0),
+                )
+                .ok();
+
+            if let (Some(old_time), Some(new_time)) = (old_time.as_deref(), new_time.as_deref())
+            {
+                if let (Ok(old_dt), Ok(new_dt)) = (
+                    DateTime::parse_from_rfc3339(old_time),
+                    DateTime::parse_from_rfc3339(new_time),
+                ) {
+                    let old_dt = old_dt.with_timezone(&Utc);
+                    let new_dt = new_dt.with_timezone(&Utc);
+                    if new_dt <= old_dt {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
+        let rows = conn.execute(
+            "UPDATE conversations
+             SET prompt_cutoff_message_id = ?1,
+                 updated_at = ?2
+             WHERE id = ?3",
+            params![new_id, now, conversation_id],
+        )?;
+        if rows == 0 {
+            return Err(StorageError::NotFound(format!(
+                "Conversation {conversation_id} not found"
+            )));
+        }
 
         Ok(())
     }

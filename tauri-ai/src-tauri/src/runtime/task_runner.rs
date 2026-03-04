@@ -191,6 +191,8 @@ struct TurnLoop<'a> {
     trusted_commands: Vec<crate::models::TrustedCommandConfig>,
     /// Per-conversation approval cache (for "approve for session").
     approval_store: Arc<Mutex<super::approvals::ApprovalStore>>,
+    /// Persisted conversation state (used for prompt-view cutoff / compaction markers).
+    db: Arc<Mutex<Database>>,
     run_state: Arc<RunState>,
     runtime_messages: Vec<Message>,
     conversation_id: String,
@@ -1591,6 +1593,31 @@ impl<'a> TurnLoop<'a> {
                     let removed_tasks = task_groups_before.saturating_sub(kept_tasks);
                     let target_unreachable = trim.estimated_tokens_before > trim_target
                         && trim.estimated_tokens_after > trim_target;
+
+                    // Persist prompt-view cutoff (best-effort): after a hard trim removes old turns,
+                    // remember the earliest kept user message so the next user request won't
+                    // re-introduce already-trimmed history into runtime_messages.
+                    if trim.removed_messages > 0 {
+                        if let Some(cutoff_id) = trim
+                            .trimmed_messages
+                            .iter()
+                            .find(|m| m.role == MessageRole::User)
+                            .map(|m| m.id.clone())
+                        {
+                            let conversation_id = self.conversation_id.clone();
+                            let _ = async_db::with_db(
+                                &self.db,
+                                "run_task:update_prompt_cutoff_message_id",
+                                |db| {
+                                    db.update_conversation_prompt_cutoff_message_id(
+                                        &conversation_id,
+                                        Some(cutoff_id.as_str()),
+                                    )
+                                },
+                            )
+                            .await;
+                        }
+                    }
 
                     turn_context_trim = Some(TurnContextTrimInfo {
                         enabled: true,
@@ -3831,7 +3858,7 @@ async fn run_task_inner(
     // 1) 生成用户消息 + 构建基础上下文
     // - 正常 run_task：落库用户消息（Pending），并取 Success + 本次用户消息作为 base_messages
     // - retry_turn：直接使用预构建 base_messages（不新增用户消息）
-    let (user_message_id_for_status_update, base_messages) = if let Some(prebuilt) =
+    let (user_message_id_for_status_update, mut base_messages) = if let Some(prebuilt) =
         input.base_messages_override.take()
     {
         (None, prebuilt)
@@ -3875,35 +3902,48 @@ async fn run_task_inner(
 
         (Some(user_message.id), base_messages)
     };
-    let cached_system_prompt: Option<(String, String)> = {
-        let conv = async_db::with_db(
-            &db,
-            "run_task:get_conversation_for_cached_system_prompt",
-            |db| db.get_conversation(&input.conversation_id),
-        )
-        .await
-        .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
+    let conversation = async_db::with_db(
+        &db,
+        "run_task:get_conversation_for_cached_system_prompt",
+        |db| db.get_conversation(&input.conversation_id),
+    )
+    .await
+    .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
 
-        conv.and_then(|c| {
-            let prompt = c.system_prompt.and_then(|s| {
-                let trimmed = s.trim();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(s)
-                }
-            })?;
-            let key = c.system_prompt_cache_key.and_then(|s| {
-                let trimmed = s.trim();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(s)
-                }
-            })?;
-            Some((prompt, key))
-        })
-    };
+    // Apply persisted prompt-view cutoff (hard trim watermark) for normal run_task flows.
+    // retry_turn/base_messages_override should keep the prebuilt snapshot intact.
+    if user_message_id_for_status_update.is_some() {
+        if let Some(cutoff_id) = conversation
+            .as_ref()
+            .and_then(|c| c.prompt_cutoff_message_id.as_deref())
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            if let Some(pos) = base_messages.iter().position(|m| m.id == cutoff_id) {
+                base_messages.drain(0..pos);
+            }
+        }
+    }
+
+    let cached_system_prompt: Option<(String, String)> = conversation.as_ref().and_then(|c| {
+        let prompt = c.system_prompt.as_ref().and_then(|s| {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(s.clone())
+            }
+        })?;
+        let key = c.system_prompt_cache_key.as_ref().and_then(|s| {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(s.clone())
+            }
+        })?;
+        Some((prompt, key))
+    });
     // 默认：新任务开始时不传历史 reasoning_content（thinking），避免跨任务污染与上下文爆炸（DeepSeek 等）。
     // 但 Moonshot Kimi thinking 模型在启用 thinking 时要求把 `reasoning_content` 保留在上下文中。
     // 这里提供 model 级开关：`reinject_reasoning_content=true` 时才保留历史 thinking。
@@ -5140,6 +5180,7 @@ async fn run_task_inner(
         security_policy_name,
         trusted_commands,
         approval_store,
+        db: db.clone(),
         run_state: run_state.clone(),
         runtime_messages,
         conversation_id: input.conversation_id.clone(),

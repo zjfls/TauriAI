@@ -487,6 +487,15 @@ pub struct Conversation {
     /// Optional workstudio binding (many conversations can map to one workstudio).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workstudio_id: Option<String>,
+    /// Prompt-view hard trim cutoff (persisted).
+    ///
+    /// 说明：
+    /// - hard trim 会在超出 hard limit 时删掉最老的整轮（按 user 边界分组）。
+    /// - 为了避免“下一次请求又把刚裁掉的旧轮次重新塞回 prompt，导致统计/行为跳变”，
+    ///   这里记录本对话的“prompt 视图起点”（最早保留的 user message id）。
+    /// - UI 仍然保留完整历史；该字段只影响发送给模型的 runtime prompt 视图。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_cutoff_message_id: Option<String>,
     /// Conversation message count (denormalized for list display).
     ///
     /// 说明：
