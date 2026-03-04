@@ -1473,10 +1473,15 @@ const TrimDetailValue: React.FC<{ value?: number | boolean | null }> = ({ value 
 };
 
 const TurnContextTrimDetailPanel: React.FC<{ trim: TurnContextTrimInfo }> = ({ trim }) => {
+  const groupsBefore =
+    typeof trim.removedTasks === 'number' && typeof trim.keptTasks === 'number'
+      ? Math.max(0, trim.removedTasks) + Math.max(0, trim.keptTasks)
+      : undefined;
   const rows: Array<{ label: string; value?: number | boolean | null }> = [
     { label: '移除基础消息（条）', value: trim.removedMessages },
-    { label: '移除 React 任务组', value: trim.removedTasks },
-    { label: '保留 React 任务组', value: trim.keptTasks },
+    { label: '裁剪前消息组', value: groupsBefore },
+    { label: '移除消息组', value: trim.removedTasks },
+    { label: '裁剪后消息组', value: trim.keptTasks },
     { label: '估算 Token（前）', value: trim.estimatedTokensBefore },
     { label: '估算 Token（后）', value: trim.estimatedTokensAfter },
     { label: 'Hard Limit', value: trim.hardLimitTokens },
