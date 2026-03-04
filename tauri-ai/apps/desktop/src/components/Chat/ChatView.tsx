@@ -64,6 +64,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
 		    moveQueuedMessage,
 		    removeQueuedMessage,
 		    updateQueuedMessageContent,
+        acknowledgeUnreadCompletion,
 			    setSessionRunMode,
 				    setSessionThinkingMode,
 				    setSessionDraftContent,
@@ -82,6 +83,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
 		      moveQueuedMessage: state.moveQueuedMessage,
 			      removeQueuedMessage: state.removeQueuedMessage,
 			      updateQueuedMessageContent: state.updateQueuedMessageContent,
+            acknowledgeUnreadCompletion: state.acknowledgeUnreadCompletion,
 			      setSessionRunMode: state.setSessionRunMode,
 				      setSessionThinkingMode: state.setSessionThinkingMode,
 				      setSessionDraftContent: state.setSessionDraftContent,
@@ -131,6 +133,12 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
   const isGenerating = session?.isGenerating ?? false;
   const conversationId = session?.conversationId ?? '';
   const agentName = session?.agentName ?? null;
+
+  const maybeAcknowledgeUnreadCompletion = useCallback(() => {
+    if (!sessionId) return;
+    if (!session?.hasUnreadCompletion) return;
+    acknowledgeUnreadCompletion(sessionId);
+  }, [acknowledgeUnreadCompletion, session?.hasUnreadCompletion, sessionId]);
 
   // 目录：文本提取与缩略
   const messageToOutlineText = useCallback((m: Message): string => {
@@ -1251,12 +1259,12 @@ Guidelines:
     let messageTokens = taskGroups.reduce((acc, g) => acc + g.tokens, 0);
     let totalContextTokens = baseTokens + messageTokens;
 
-    if (trimEnabled && contextLength > 0) {
-      const hardLimitTokens = Math.max(1, Math.floor((contextLength * hardLimitPercent) / 100));
-      const trimTargetTokens = Math.max(
-        1,
-        Math.min(hardLimitTokens, Math.floor((contextLength * trimTargetPercent) / 100))
-      );
+	    if (trimEnabled && contextLength > 0) {
+	      const hardLimitTokens = Math.max(1, Math.floor((contextLength * hardLimitPercent) / 100));
+	      const trimTargetTokens = Math.max(
+	        1,
+	        Math.min(hardLimitTokens, Math.floor((contextLength * trimTargetPercent) / 100))
+	      );
 
       if (totalContextTokens > hardLimitTokens && taskGroups.length > 0) {
         const keepMask = new Array<boolean>(taskGroups.length).fill(false);
@@ -1289,23 +1297,41 @@ Guidelines:
         messageTokens = taskGroups.reduce((acc, g) => acc + g.tokens, 0);
         totalContextTokens = baseTokens + messageTokens;
       }
-    }
+	    }
 
-    const percentage = contextLength > 0 ? (totalContextTokens / contextLength) * 100 : 0;
+	    const percentage = contextLength > 0 ? (totalContextTokens / contextLength) * 100 : 0;
 
-    return {
-      systemPrompt: systemPromptTokens,
-      formatPrompt: formatPromptTokens,
-      skills: skillsTokens,
-      messages: messageTokens,
-      messageGroups: effectiveGroups,
-      tools: 0,  // Future: tool definitions
-      mcp: mcpTokens,
-      systemPromptText: userSystemPrompt || undefined,
-      formatPromptText: formatPromptText || undefined,
-      skillsSectionText: skillsSectionText || undefined,
-      skillsInjectedText: skillsInjectedText || undefined,
-      mcpPromptText: mcpPromptText || undefined,
+	    // Use the latest server-returned usage as the "accurate total" reference.
+	    // This reflects the last completed request (not the next predicted request).
+	    const actualUsage = (() => {
+	      for (let i = messages.length - 1; i >= 0; i--) {
+	        const m = messages[i];
+	        if (m?.usage) return m.usage;
+	        const turns = m?.turns;
+	        if (Array.isArray(turns) && turns.length > 0) {
+	          for (let j = turns.length - 1; j >= 0; j--) {
+	            const u = turns[j]?.usage;
+	            if (u) return u;
+	          }
+	        }
+	      }
+	      return undefined;
+	    })();
+
+	    return {
+	      systemPrompt: systemPromptTokens,
+	      formatPrompt: formatPromptTokens,
+	      skills: skillsTokens,
+	      messages: messageTokens,
+	      messageGroups: effectiveGroups,
+	      tools: 0,  // Future: tool definitions
+	      mcp: mcpTokens,
+	      actualUsage,
+	      systemPromptText: userSystemPrompt || undefined,
+	      formatPromptText: formatPromptText || undefined,
+	      skillsSectionText: skillsSectionText || undefined,
+	      skillsInjectedText: skillsInjectedText || undefined,
+	      mcpPromptText: mcpPromptText || undefined,
       total: totalContextTokens,
       limit: contextLength,
       percentage: Math.min(percentage, 100),
@@ -1526,7 +1552,12 @@ Guidelines:
   );
 
   return (
-    <div className="flex h-full flex-col overflow-hidden">
+    <div
+      className="flex h-full flex-col overflow-hidden"
+      onPointerDownCapture={maybeAcknowledgeUnreadCompletion}
+      onWheelCapture={maybeAcknowledgeUnreadCompletion}
+      onKeyDownCapture={maybeAcknowledgeUnreadCompletion}
+    >
       {(persistanceShellEnhance || workspaceEnabled || (canExportChat && session)) && (
         <div className="flex items-center justify-between gap-3 border-b border-gray-100 px-4 py-2 text-xs text-gray-500 dark:border-gray-800 dark:text-gray-400">
           <div className="flex min-w-0 items-center gap-2">

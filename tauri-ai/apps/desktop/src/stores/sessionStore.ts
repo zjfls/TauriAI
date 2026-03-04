@@ -240,6 +240,8 @@ export interface SessionState {
   /** 把一个会话（conversation）停靠/移入另一个窗口（作为 tab 或分屏），成功后关闭本窗口该 tab */
   dockSessionToWindow: (sessionId: string, targetWindowLabel: string, placement?: ChatDockPlacement) => Promise<void>;
   switchSession: (sessionId: string) => void;
+  /** 将会话的“新结果红点”标记为已读（仅在用户实际交互后调用） */
+  acknowledgeUnreadCompletion: (sessionId: string) => void;
   closeOtherSessions: (keepSessionId: string) => void;
   closeSessionsToLeft: (sessionId: string) => void;
   closeSessionsToRight: (sessionId: string) => void;
@@ -533,27 +535,29 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
     }
 
-	    const session: AgentSession = {
-	      id: sessionId,
-	      agentName,
-	      title: defaultTitle,
-      modelRef,
-      conversationId: conversation.id,
-      workstudioId: resolvedWorkstudioId,
-      apiType: apiProtocol, // 当前会话协议（不再做“首条消息锁定”）
-      runMode,
-		      thinkingMode,
-		      draftContent: '',
-		      draftWorkspaceMentions: [],
-		      draftCodeSnippets: [],
-		      messages: [],
-		      queuedMessages: [],
-	      streamingBlocks: null,
-      isGenerating: false,
-      error: null,
-      createdAt: now,
-      lastActiveAt: now,
-    };
+		    const session: AgentSession = {
+		      id: sessionId,
+		      agentName,
+		      title: defaultTitle,
+	      modelRef,
+	      conversationId: conversation.id,
+	      workstudioId: resolvedWorkstudioId,
+	      apiType: apiProtocol, // 当前会话协议（不再做“首条消息锁定”）
+	      runMode,
+			      thinkingMode,
+			      draftContent: '',
+			      draftWorkspaceMentions: [],
+			      draftCodeSnippets: [],
+			      messages: [],
+			      queuedMessages: [],
+		      streamingBlocks: null,
+	      isGenerating: false,
+	      error: null,
+	      hasUnreadCompletion: false,
+	      unreadCompletionMessageId: null,
+	      createdAt: now,
+	      lastActiveAt: now,
+	    };
 
     set((state) => {
       const newSessions = new Map(state.sessions);
@@ -794,6 +798,21 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         deltaMs: Number((afterSaveAt - startedAt).toFixed(1)),
         saveMs: Number((afterSaveAt - beforeSaveAt).toFixed(1)),
       },
+    });
+  },
+
+  acknowledgeUnreadCompletion: (sessionId: string) => {
+    set((state) => {
+      const session = state.sessions.get(sessionId);
+      if (!session) return {};
+      if (!session.hasUnreadCompletion) return {};
+      const newSessions = new Map(state.sessions);
+      newSessions.set(sessionId, {
+        ...session,
+        hasUnreadCompletion: false,
+        unreadCompletionMessageId: null,
+      });
+      return { sessions: newSessions };
     });
   },
 
@@ -1767,15 +1786,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       createdAt: new Date().toISOString(),
     };
 
-    set((state) => {
-      const newSessions = new Map(state.sessions);
-      const currentSession = newSessions.get(sessionId);
-      if (currentSession) {
-        // Find the last pending user message and mark as success
-        const updatedMessages = [...currentSession.messages];
-        for (let i = updatedMessages.length - 1; i >= 0; i--) {
-          if (updatedMessages[i].role === 'user' && updatedMessages[i].status === 'pending') {
-            updatedMessages[i] = { ...updatedMessages[i], status: 'success' };
+	    set((state) => {
+	      const newSessions = new Map(state.sessions);
+	      const currentSession = newSessions.get(sessionId);
+	      if (currentSession) {
+	        const isActiveNow = state.activeSessionId === sessionId;
+	        const hasUnreadCompletion = !isActiveNow;
+	        // Find the last pending user message and mark as success
+	        const updatedMessages = [...currentSession.messages];
+	        for (let i = updatedMessages.length - 1; i >= 0; i--) {
+	          if (updatedMessages[i].role === 'user' && updatedMessages[i].status === 'pending') {
+	            updatedMessages[i] = { ...updatedMessages[i], status: 'success' };
             break;
           }
         }
@@ -1835,18 +1856,20 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             })()
             : [...updatedMessages, mergedAssistant];
 
-        newSessions.set(sessionId, {
-          ...currentSession,
-          messages: nextMessages,
-          streamingBlocks: null,
-          streamingTurns: undefined,
-          streamingAssistantMessageId: null,
-          isGenerating: false,
-          lastActiveAt: new Date().toISOString(),
-        });
-      }
-      return { sessions: newSessions };
-    });
+	        newSessions.set(sessionId, {
+	          ...currentSession,
+	          messages: nextMessages,
+	          streamingBlocks: null,
+	          streamingTurns: undefined,
+	          streamingAssistantMessageId: null,
+	          isGenerating: false,
+	          lastActiveAt: new Date().toISOString(),
+	          hasUnreadCompletion,
+	          unreadCompletionMessageId: hasUnreadCompletion ? resolvedAssistantMessageId : null,
+	        });
+	      }
+	      return { sessions: newSessions };
+	    });
 
     clearTurnIndexesForSession(sessionId);
 
@@ -1930,10 +1953,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return ordered;
     })();
 
-    set((state) => {
-      const newSessions = new Map(state.sessions);
-      const currentSession = newSessions.get(sessionId);
-      if (!currentSession) return {};
+	    set((state) => {
+	      const newSessions = new Map(state.sessions);
+	      const currentSession = newSessions.get(sessionId);
+	      if (!currentSession) return {};
+	      const isActiveNow = state.activeSessionId === sessionId;
+	      const hasUnreadCompletion = !isActiveNow;
 
       const updatedMessages = [...currentSession.messages];
       for (let i = updatedMessages.length - 1; i >= 0; i--) {
@@ -2076,15 +2101,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           })()
           : [...updatedMessages, mergedAssistant];
 
-      newSessions.set(sessionId, {
-        ...currentSession,
-        messages: nextMessages,
-        error,
-        isGenerating: false,
-        streamingBlocks: null,
-        streamingTurns: undefined,
-        streamingAssistantMessageId: null,
-      });
+	      newSessions.set(sessionId, {
+	        ...currentSession,
+	        messages: nextMessages,
+	        error,
+	        isGenerating: false,
+	        streamingBlocks: null,
+	        streamingTurns: undefined,
+	        streamingAssistantMessageId: null,
+	        hasUnreadCompletion,
+	        unreadCompletionMessageId: hasUnreadCompletion ? resolvedAssistantMessageId : null,
+	      });
 
       return { sessions: newSessions };
     });
@@ -2619,38 +2646,40 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             : 'chat';
         const runMode = persisted.runMode ?? defaultRunMode;
 
-		        const session: AgentSession = {
-		          id: persisted.id,
-		          agentName,
-		          title,
-		          modelRef,
-		          conversationId: persisted.conversationId,
-		          workstudioId: persisted.workstudioId ?? convWorkstudioId,
-		          apiType: apiProtocol,
-		          runMode,
-		          thinkingMode: coerceThinkingModeForProtocol(persisted.thinkingMode, apiProtocol, providerType),
-		          webSearchProvider: persisted.webSearchProvider,
-		          draftContent: persisted.draftContent ?? '',
-		          draftWorkspaceMentions: Array.isArray(persisted.draftWorkspaceMentions)
-		            ? persisted.draftWorkspaceMentions
-		                .map((m) => ({
-		                  id: String((m as any)?.id ?? '').trim(),
-		                  absPath: String((m as any)?.absPath ?? '').trim(),
-		                  label: String((m as any)?.label ?? '').trim(),
-		                }))
-		                .filter((m) => m.id && m.absPath)
-		            : [],
-		          draftCodeSnippets: Array.isArray(persisted.draftCodeSnippets)
-		            ? persisted.draftCodeSnippets.filter((s) => s?.type === 'code_snippet')
-		            : [],
-		          messages,
-	          queuedMessages: [],
-	          streamingBlocks: null,
-	          isGenerating: false,
-	          error: null,
-	          createdAt: persisted.createdAt,
-	          lastActiveAt: persisted.lastActiveAt,
-	        };
+			        const session: AgentSession = {
+			          id: persisted.id,
+			          agentName,
+			          title,
+			          modelRef,
+			          conversationId: persisted.conversationId,
+			          workstudioId: persisted.workstudioId ?? convWorkstudioId,
+			          apiType: apiProtocol,
+			          runMode,
+			          thinkingMode: coerceThinkingModeForProtocol(persisted.thinkingMode, apiProtocol, providerType),
+			          webSearchProvider: persisted.webSearchProvider,
+			          draftContent: persisted.draftContent ?? '',
+			          draftWorkspaceMentions: Array.isArray(persisted.draftWorkspaceMentions)
+			            ? persisted.draftWorkspaceMentions
+			                .map((m) => ({
+			                  id: String((m as any)?.id ?? '').trim(),
+			                  absPath: String((m as any)?.absPath ?? '').trim(),
+			                  label: String((m as any)?.label ?? '').trim(),
+			                }))
+			                .filter((m) => m.id && m.absPath)
+			            : [],
+			          draftCodeSnippets: Array.isArray(persisted.draftCodeSnippets)
+			            ? persisted.draftCodeSnippets.filter((s) => s?.type === 'code_snippet')
+			            : [],
+			          messages,
+		          queuedMessages: [],
+		          streamingBlocks: null,
+		          isGenerating: false,
+		          error: null,
+		          hasUnreadCompletion: false,
+		          unreadCompletionMessageId: null,
+		          createdAt: persisted.createdAt,
+		          lastActiveAt: persisted.lastActiveAt,
+		        };
 
         newSessions.set(session.id, session);
       }
@@ -2923,25 +2952,27 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         .catch(() => {});
     }
 
-    const session: AgentSession = {
-      id: sessionId,
-      agentName,
-      title: conversation?.title || '新对话',
-      modelRef,
-      conversationId,
-      workstudioId: resolvedWorkstudioId,
-      apiType: apiProtocol,
-      runMode,
-      thinkingMode: coerceThinkingModeForProtocol(conversation?.thinkingMode, apiProtocol, providerType),
-      draftContent: '',
-      messages,
-      queuedMessages: [],
-      streamingBlocks: null,
-      isGenerating: false,
-      error: null,
-      createdAt: now,
-      lastActiveAt: now,
-    };
+	    const session: AgentSession = {
+	      id: sessionId,
+	      agentName,
+	      title: conversation?.title || '新对话',
+	      modelRef,
+	      conversationId,
+	      workstudioId: resolvedWorkstudioId,
+	      apiType: apiProtocol,
+	      runMode,
+	      thinkingMode: coerceThinkingModeForProtocol(conversation?.thinkingMode, apiProtocol, providerType),
+	      draftContent: '',
+	      messages,
+	      queuedMessages: [],
+	      streamingBlocks: null,
+	      isGenerating: false,
+	      error: null,
+	      hasUnreadCompletion: false,
+	      unreadCompletionMessageId: null,
+	      createdAt: now,
+	      lastActiveAt: now,
+	    };
 
     markChatOpenProfile('sessionStore:setState(start)', { conversationId, meta: { sessionId } });
     set((state) => {

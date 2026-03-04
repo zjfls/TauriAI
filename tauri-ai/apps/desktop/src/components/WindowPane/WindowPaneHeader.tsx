@@ -146,10 +146,10 @@ const SortableTabBase: React.FC<SortableTabProps> = ({
     }
   }, [draftTitle, tab]);
 
-  return (
-    <div
-      ref={setNodeRef}
-      style={style}
+	  return (
+	    <div
+	      ref={setNodeRef}
+	      style={style}
       data-workspace-tab-id={tab.id}
       onClick={() => onSelect(tab.id)}
       onContextMenu={(event) => onContextMenu(tab.id, event)}
@@ -167,13 +167,19 @@ const SortableTabBase: React.FC<SortableTabProps> = ({
           : 'border-transparent text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800',
       ].join(' ')}
       title={tab.title}
-      {...attributes}
-      {...listeners}
-    >
-      <span className="flex-shrink-0">{icon}</span>
+	      {...attributes}
+	      {...listeners}
+	    >
+	      {tab.kind === 'chat' && tab.session.hasUnreadCompletion ? (
+	        <span
+	          className="pointer-events-none absolute right-1.5 top-1.5 h-2.5 w-2.5 rounded-full bg-red-500 shadow ring-2 ring-white dark:ring-gray-900"
+	          title="有新结果"
+	        />
+	      ) : null}
+	      <span className="flex-shrink-0">{icon}</span>
 
-      {isRenaming && tab.kind === 'chat' ? (
-        <input
+	      {isRenaming && tab.kind === 'chat' ? (
+	        <input
           ref={renameInputRef}
           value={draftTitle}
           onChange={(e) => setDraftTitle(e.target.value)}

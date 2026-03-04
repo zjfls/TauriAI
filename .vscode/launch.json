@@ -1,0 +1,70 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "attach",
+            "name": "Attach: Select from Process List",
+            "pid": "${command:pickProcess}"
+        },
+        {
+            "name": "Debug unit tests in library 'tauri_ai_lib'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test"
+                ]
+            }
+        },
+        {
+            "name": "Debug executable 'tauri-ai'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "run",
+                    "--bin=tauri-ai"
+                ]
+            },
+            "args": []
+        },
+        {
+            "name": "Debug unit tests in executable 'tauri-ai'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--bin=tauri-ai"
+                ]
+            }
+        },
+        {
+            "name": "Debug executable 'tauri-ai-headless'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "run",
+                    "--bin=tauri-ai-headless"
+                ]
+            },
+            "args": []
+        },
+        {
+            "name": "Debug unit tests in executable 'tauri-ai-headless'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--bin=tauri-ai-headless"
+                ]
+            }
+        }
+    ]
+}

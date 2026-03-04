@@ -181,11 +181,10 @@ export const JsonAnalyzerView: React.FC = () => {
       <div className="flex-1 overflow-hidden p-3">
         <div className="h-full rounded-lg border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900">
           <div className="h-full p-3">
-            <JsonView text={text} onTextChange={setText} readOnly={false} defaultMode="vscode" />
+            <JsonView text={text} onTextChange={setText} readOnly={false} defaultMode="structured" />
           </div>
         </div>
       </div>
     </div>
   );
 };
-

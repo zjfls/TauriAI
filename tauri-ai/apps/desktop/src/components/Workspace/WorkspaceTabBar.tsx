@@ -228,6 +228,12 @@ const SortableWorkspaceTab: React.FC<{
       {...attributes}
       {...listeners}
     >
+      {item.kind === 'chat' && item.session?.hasUnreadCompletion ? (
+        <span
+          className="pointer-events-none absolute right-1.5 top-1.5 h-2.5 w-2.5 rounded-full bg-red-500 shadow ring-2 ring-white dark:ring-gray-900"
+          title="有新结果"
+        />
+      ) : null}
       {icon}
       <span className="flex-1 min-w-0 pr-5 text-sm font-medium truncate flex items-center gap-1">
         {item.title}

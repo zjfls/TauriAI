@@ -496,6 +496,7 @@ const TooltipContent: React.FC<{ usage: ContextUsageBreakdown }> = ({ usage }) =
   const color = limitKnown
     ? getUsageColor(usage.percentage)
     : { stroke: '#9ca3af', text: 'text-gray-500', bg: 'bg-gray-400' };
+  const actual = usage.actualUsage;
 
   return (
     <div className="min-w-[180px] p-2 text-xs">
@@ -504,6 +505,13 @@ const TooltipContent: React.FC<{ usage: ContextUsageBreakdown }> = ({ usage }) =
       <div className="mt-1 text-gray-500 dark:text-gray-400">
         {formatTokens(usage.total)} / {limitKnown ? formatTokens(usage.limit) : '未知'} tokens
       </div>
+      {actual ? (
+        <div className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
+          实际 in:{formatTokens(actual.promptTokens)} out:{formatTokens(actual.completionTokens)} total:{formatTokens(
+            actual.totalTokens
+          )}
+        </div>
+      ) : null}
     </div>
   );
 };
@@ -516,8 +524,19 @@ interface DetailModalProps {
 
 const DetailModal: React.FC<DetailModalProps> = ({ usage, isOpen, onClose }) => {
   const limitKnown = usage.limit > 0;
+  const actual = usage.actualUsage;
+  const actualPromptTokens = actual?.promptTokens;
+  const actualCompletionTokens = actual?.completionTokens;
+  const actualTotalTokens = actual?.totalTokens;
+
+  const actualPromptPct =
+    limitKnown && typeof actualPromptTokens === 'number' ? (actualPromptTokens / usage.limit) * 100 : null;
+  const estimatedPromptTokens = usage.total;
+  const estimatedPromptPct = usage.percentage;
+
+  const displayPct = limitKnown ? (actualPromptPct ?? estimatedPromptPct) : 0;
   const color = limitKnown
-    ? getUsageColor(usage.percentage)
+    ? getUsageColor(displayPct)
     : { stroke: '#9ca3af', text: 'text-gray-500', bg: 'bg-gray-400' };
 
   type Detail = { key: string; label: string; text: string; tokens: number; percent: number };
@@ -751,11 +770,11 @@ const DetailModal: React.FC<DetailModalProps> = ({ usage, isOpen, onClose }) => 
   if (!isOpen) return null;
 
   return (
-    <>
-      <div className="fixed inset-0 bg-black/20 z-40" onClick={onClose} />
-      <div className="absolute bottom-full right-0 mb-2 z-50 w-96 max-h-[70vh] overflow-auto rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-800">
-        <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3 dark:border-gray-700">
-          <h3 className="font-medium text-gray-900 dark:text-gray-100">Context 详情</h3>
+	    <>
+	      <div className="fixed inset-0 bg-black/20 z-40" onClick={onClose} />
+	      <div className="absolute bottom-full right-0 mb-2 z-50 w-96 max-h-[70vh] overflow-auto rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-800">
+	        <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3 dark:border-gray-700">
+	          <h3 className="font-medium text-gray-900 dark:text-gray-100">Context 详情</h3>
           <button
             onClick={onClose}
             className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300"
@@ -764,22 +783,44 @@ const DetailModal: React.FC<DetailModalProps> = ({ usage, isOpen, onClose }) => 
           </button>
         </div>
 
-        <div className="px-4 py-3 border-b border-gray-100 dark:border-gray-700">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-sm text-gray-600 dark:text-gray-400">总使用量</span>
-            <span className={`text-lg font-bold ${color.text}`}>{limitKnown ? `${usage.percentage.toFixed(1)}%` : '—'}</span>
-          </div>
-          <div className="h-2 w-full rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
-            <div
-              className={`h-full rounded-full transition-all duration-300 ${color.bg}`}
-              style={{ width: `${limitKnown ? Math.min(usage.percentage, 100) : 0}%` }}
-            />
-          </div>
-          <div className="flex justify-between mt-1 text-xs text-gray-500 dark:text-gray-400">
-            <span>{formatTokens(usage.total)} tokens</span>
-            <span>{limitKnown ? `${formatTokens(usage.limit)} 上限` : '上限未知'}</span>
-          </div>
-        </div>
+	        <div className="px-4 py-3 border-b border-gray-100 dark:border-gray-700">
+	          <div className="flex items-center justify-between mb-2">
+	            <span className="text-sm text-gray-600 dark:text-gray-400">总使用量（prompt）</span>
+	            <div className="text-right">
+	              <div className={`text-lg font-bold ${color.text}`}>
+	                {limitKnown ? `${displayPct.toFixed(1)}%` : '—'}
+	              </div>
+	              {actualPromptPct !== null ? (
+	                <div className="text-[11px] text-gray-500 dark:text-gray-400">
+	                  估算 {estimatedPromptPct.toFixed(1)}%
+	                </div>
+	              ) : null}
+	            </div>
+	          </div>
+	          <div className="h-2 w-full rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
+	            <div
+	              className={`h-full rounded-full transition-all duration-300 ${color.bg}`}
+	              style={{ width: `${limitKnown ? Math.min(displayPct, 100) : 0}%` }}
+	            />
+	          </div>
+	          <div className="mt-1 space-y-0.5 text-xs text-gray-500 dark:text-gray-400">
+	            {actual ? (
+	              <div>
+	                实际 in:{formatTokens(actualPromptTokens ?? 0)} out:{formatTokens(actualCompletionTokens ?? 0)} total:
+	                {formatTokens(actualTotalTokens ?? (actualPromptTokens ?? 0) + (actualCompletionTokens ?? 0))}
+	              </div>
+	            ) : (
+	              <div>实际：暂无（服务端未返回 usage）</div>
+	            )}
+	            <div>
+	              估算 prompt：{formatTokens(estimatedPromptTokens)}（用于“使用明细”分项）
+	              {actual && typeof actualPromptTokens === 'number'
+	                ? `｜差值 ${formatTokens(estimatedPromptTokens - actualPromptTokens)}`
+	                : ''}
+	            </div>
+	            <div>{limitKnown ? `${formatTokens(usage.limit)} 上限` : '上限未知'}</div>
+	          </div>
+	        </div>
 
         <div className="px-4 py-3">
           <div className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2">使用明细</div>

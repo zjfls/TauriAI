@@ -5,7 +5,7 @@ import { AlertTriangle, ChevronDown, ChevronRight } from 'lucide-react';
 import { getNodeValue, parseTree, type Node as JsonAstNode, type ParseError } from 'jsonc-parser';
 import { setupMonaco } from '../../utils/monaco';
 
-export type JsonViewMode = 'object' | 'vscode';
+export type JsonViewMode = 'object' | 'structured';
 
 export interface JsonViewProps {
   text: string;
@@ -226,9 +226,12 @@ type OutlineItem = {
   id: string;
   label: string;
   kind: 'object' | 'array' | 'leaf';
-  selectOffset: number;
-  selectLength: number;
+  rangeOffset: number;
+  rangeLength: number;
+  selectionOffset: number;
+  selectionLength: number;
   count?: number;
+  preview?: string;
   children?: OutlineItem[];
 };
 
@@ -238,13 +241,49 @@ const pickPropertyKey = (prop: JsonAstNode): string => {
   return typeof raw === 'string' && raw.trim() ? raw : '(unknown)';
 };
 
+const pickNodeRange = (node: JsonAstNode | null | undefined): { offset: number; length: number } | null => {
+  if (!node) return null;
+  const offset = (node as any)?.offset;
+  const length = (node as any)?.length;
+  if (typeof offset !== 'number' || typeof length !== 'number') return null;
+  return { offset, length };
+};
+
 const pickPropertyValueNode = (prop: JsonAstNode): JsonAstNode | null => {
   const v = prop.children?.[1] ?? null;
   return v && typeof (v as any).offset === 'number' && typeof (v as any).length === 'number' ? v : null;
 };
 
-const buildOutline = (node: JsonAstNode, id: string, label: string): OutlineItem => {
+const summarizeValuePreview = (node: JsonAstNode, maxLen = 80): string => {
+  const raw = getNodeValue(node);
+  if (raw === null) return 'null';
+  if (raw === undefined) return 'undefined';
+  if (typeof raw === 'boolean' || typeof raw === 'number' || typeof raw === 'bigint') return String(raw);
+  if (typeof raw === 'string') {
+    const oneLine = normalizeStringForDisplay(raw).replace(/\s+/g, ' ').trim();
+    const clipped = oneLine.length > maxLen ? `${oneLine.slice(0, maxLen)}…` : oneLine;
+    return clipped ? `"${clipped.replace(/"/g, '\\"')}"` : '""';
+  }
+  return '';
+};
+
+const buildOutline = (
+  node: JsonAstNode,
+  id: string,
+  label: string,
+  opts?: {
+    range?: { offset: number; length: number };
+    selection?: { offset: number; length: number };
+    preview?: string;
+  }
+): OutlineItem => {
   const kind: OutlineItem['kind'] = node.type === 'object' ? 'object' : node.type === 'array' ? 'array' : 'leaf';
+  const rangeOffset = opts?.range?.offset ?? node.offset;
+  const rangeLength = opts?.range?.length ?? node.length;
+  const selectionOffset = opts?.selection?.offset ?? node.offset;
+  const selectionLength =
+    opts?.selection?.length ??
+    (kind === 'leaf' ? Math.max(1, Math.min(node.length, 16)) : Math.max(1, Math.min(node.length, 1)));
 
   if (node.type === 'object') {
     const props = node.children ?? [];
@@ -252,17 +291,28 @@ const buildOutline = (node: JsonAstNode, id: string, label: string): OutlineItem
       .filter((p) => p.type === 'property')
       .map((p) => {
         const key = pickPropertyKey(p);
+        const keyNode = p.children?.[0] ?? null;
+        const keyRange = pickNodeRange(keyNode);
         const valueNode = pickPropertyValueNode(p) ?? p;
+        const propRange = pickNodeRange(p);
         const childId = id ? `${id}.${key}` : key;
-        return buildOutline(valueNode, childId, key);
+        const preview =
+          valueNode.type === 'object' || valueNode.type === 'array' ? undefined : summarizeValuePreview(valueNode);
+        return buildOutline(valueNode, childId, key, {
+          range: propRange ?? undefined,
+          selection: keyRange ?? undefined,
+          preview,
+        });
       });
 
     return {
       id,
       label,
       kind,
-      selectOffset: node.offset,
-      selectLength: node.length,
+      rangeOffset,
+      rangeLength,
+      selectionOffset,
+      selectionLength,
       count: children.length,
       children,
     };
@@ -273,15 +323,21 @@ const buildOutline = (node: JsonAstNode, id: string, label: string): OutlineItem
     const children = items.map((child, idx) => {
       const childId = `${id}[${idx}]`;
       const childLabel = `[${idx}]`;
-      return buildOutline(child, childId, childLabel);
+      const preview =
+        child.type === 'object' || child.type === 'array' ? undefined : summarizeValuePreview(child);
+      return buildOutline(child, childId, childLabel, {
+        preview,
+      });
     });
 
     return {
       id,
       label,
       kind,
-      selectOffset: node.offset,
-      selectLength: node.length,
+      rangeOffset,
+      rangeLength,
+      selectionOffset,
+      selectionLength,
       count: children.length,
       children,
     };
@@ -291,8 +347,11 @@ const buildOutline = (node: JsonAstNode, id: string, label: string): OutlineItem
     id,
     label,
     kind,
-    selectOffset: node.offset,
-    selectLength: node.length,
+    rangeOffset,
+    rangeLength,
+    selectionOffset,
+    selectionLength,
+    preview: opts?.preview,
   };
 };
 
@@ -314,6 +373,7 @@ const OutlineTree: React.FC<{
           ? ` {${item.count}}`
           : ''
       : '';
+  const previewText = item.preview ? `: ${item.preview}` : '';
 
   if (!hasChildren) {
     return (
@@ -328,7 +388,8 @@ const OutlineTree: React.FC<{
         }`}
         title={item.id}
       >
-        {item.label}
+        <span>{item.label}</span>
+        {previewText ? <span className="opacity-70">{previewText}</span> : null}
       </button>
     );
   }
@@ -397,6 +458,14 @@ export const JsonView: React.FC<JsonViewProps> = ({
   useEffect(() => setMode(defaultMode), [defaultMode]);
 
   const rawEditorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
+  const rawEditorCursorSubRef = useRef<Monaco.IDisposable | null>(null);
+  const modeRef = useRef<JsonViewMode>(mode);
+  const outlineRootRef = useRef<OutlineItem | null>(null);
+  const selectedOutlineIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    modeRef.current = mode;
+  }, [mode]);
 
   const { root, errors, value } = useMemo(() => {
     const errs: ParseError[] = [];
@@ -407,19 +476,19 @@ export const JsonView: React.FC<JsonViewProps> = ({
 
   const normalizedValue = useMemo(() => normalizeJsonLikeStrings(value), [value]);
 
-  const prettyText = useMemo(() => {
-    if (!root || errors.length > 0) return text;
-    const formatted = safeStringify(value, 2);
-    return formatted.trim() ? formatted : text;
-  }, [errors.length, root, text, value]);
-
   const outlineRoot = useMemo(() => {
     if (!root || errors.length > 0) return null;
-    const label = root.type === 'array' ? 'root' : root.type === 'object' ? 'root' : 'root';
+    const label = root.type === 'array' ? 'Array' : root.type === 'object' ? 'Object' : 'root';
     return buildOutline(root, 'root', label);
   }, [errors.length, root]);
 
   const [selectedOutlineId, setSelectedOutlineId] = useState<string | null>(null);
+  useEffect(() => {
+    outlineRootRef.current = outlineRoot;
+  }, [outlineRoot]);
+  useEffect(() => {
+    selectedOutlineIdRef.current = selectedOutlineId;
+  }, [selectedOutlineId]);
   useEffect(() => {
     // 内容变化时清空选中，避免 offset 失效导致跳转怪异
     setSelectedOutlineId(null);
@@ -428,10 +497,41 @@ export const JsonView: React.FC<JsonViewProps> = ({
   const handleRawMount = useCallback<OnMount>((editor, monaco) => {
     setupMonaco(monaco);
     rawEditorRef.current = editor as unknown as Monaco.editor.IStandaloneCodeEditor;
-  }, []);
 
-  const handlePrettyMount = useCallback<OnMount>((_editor, monaco) => {
-    setupMonaco(monaco);
+    rawEditorCursorSubRef.current?.dispose();
+    rawEditorCursorSubRef.current = (editor as unknown as Monaco.editor.IStandaloneCodeEditor).onDidChangeCursorSelection(() => {
+      if (modeRef.current !== 'structured') return;
+      const outline = outlineRootRef.current;
+      if (!outline) return;
+      const model = (editor as unknown as Monaco.editor.IStandaloneCodeEditor).getModel();
+      const sel = (editor as unknown as Monaco.editor.IStandaloneCodeEditor).getSelection();
+      if (!model || !sel) return;
+
+      const offset = model.getOffsetAt({ lineNumber: sel.startLineNumber, column: sel.startColumn });
+
+      const pickDeepest = (item: OutlineItem, needle: number): OutlineItem | null => {
+        const start = item.rangeOffset;
+        const end = item.rangeOffset + item.rangeLength;
+        if (needle < start || needle > end) return null;
+        const children = item.children ?? [];
+        for (const c of children) {
+          const hit = pickDeepest(c, needle);
+          if (hit) return hit;
+        }
+        return item;
+      };
+
+      const hit = pickDeepest(outline, offset);
+      if (hit && hit.id !== selectedOutlineIdRef.current) {
+        setSelectedOutlineId(hit.id);
+      }
+    });
+  }, []);
+  useEffect(() => {
+    return () => {
+      rawEditorCursorSubRef.current?.dispose();
+      rawEditorCursorSubRef.current = null;
+    };
   }, []);
 
   const selectRawRange = useCallback((offset: number, length: number) => {
@@ -458,7 +558,7 @@ export const JsonView: React.FC<JsonViewProps> = ({
   const onSelectOutline = useCallback(
     (item: OutlineItem) => {
       setSelectedOutlineId(item.id);
-      selectRawRange(item.selectOffset, item.selectLength);
+      selectRawRange(item.selectionOffset, item.selectionLength);
     },
     [selectRawRange]
   );
@@ -479,19 +579,19 @@ export const JsonView: React.FC<JsonViewProps> = ({
             className={`px-3 py-1.5 text-xs font-medium transition-colors ${
               mode === 'object' ? activeClass : inactiveClass
             }`}
-            title="对象 + 可读文本"
+            title="结构化对象视图"
           >
             对象
           </button>
           <button
             type="button"
-            onClick={() => setMode('vscode')}
+            onClick={() => setMode('structured')}
             className={`px-3 py-1.5 text-xs font-medium transition-colors ${
-              mode === 'vscode' ? activeClass : inactiveClass
+              mode === 'structured' ? activeClass : inactiveClass
             }`}
-            title="VSCode 风格导航 + 原始文本"
+            title="Structured JSON（导航 + 文本联动）"
           >
-            VSCode
+            Structured JSON
           </button>
         </div>
 
@@ -502,72 +602,53 @@ export const JsonView: React.FC<JsonViewProps> = ({
           </div>
         ) : (
           <div className="text-xs text-gray-500 dark:text-gray-400">
-            左侧用于导航；右侧用于查看文本（可复制/可选中）。
+            {mode === 'structured'
+              ? '左侧用于导航；点击后右侧会跳转并选中对应文本。'
+              : '结构化展开（该视图不显示文本面板）。'}
           </div>
         )}
       </div>
 
       <div className="flex-1 overflow-hidden">
         {mode === 'object' ? (
-          <div className="grid h-full grid-cols-1 gap-3 lg:grid-cols-2">
-            <div className="h-full overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900">
-              <div className="flex items-center justify-between border-b border-gray-200 px-3 py-2 text-xs text-gray-600 dark:border-gray-700 dark:text-gray-300">
-                <div className="font-medium">JSON 对象（展开结构 + 可读文本）</div>
-              </div>
-              <div className="h-[calc(100%-36px)] overflow-auto p-3">
-                {root && errors.length === 0 && (isRecord(normalizedValue) || Array.isArray(normalizedValue)) ? (
-                  <div className="space-y-2">
-                    <StructuredJsonNode value={normalizedValue} depth={0} nodeKey="root" />
-                  </div>
-                ) : (
-                  <div className="text-xs text-gray-500 dark:text-gray-400">
-                    {text.trim() ? '不是有效的 JSON 对象/数组。' : '暂无内容。'}
-                  </div>
-                )}
-              </div>
+          <div className="h-full overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900">
+            <div className="flex items-center justify-between border-b border-gray-200 px-3 py-2 text-xs text-gray-600 dark:border-gray-700 dark:text-gray-300">
+              <div className="font-medium">JSON 对象（结构化展开）</div>
             </div>
-
-            <div className="h-full overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900">
-              <div className="flex items-center justify-between border-b border-gray-200 px-3 py-2 text-xs text-gray-600 dark:border-gray-700 dark:text-gray-300">
-                <div className="font-medium">可读文本（格式化）</div>
-              </div>
-              <div className="h-[calc(100%-36px)] overflow-hidden">
-                <Editor
-                  height="100%"
-                  theme={
-                    typeof document !== 'undefined' && document.documentElement.classList.contains('dark')
-                      ? 'vs-dark'
-                      : 'vs'
-                  }
-                  value={prettyText}
-                  language="json"
-                  beforeMount={setupMonaco}
-                  onMount={handlePrettyMount}
-                  options={{
-                    readOnly: true,
-                    fontSize: 12,
-                    minimap: { enabled: false },
-                    wordWrap: 'on',
-                    scrollBeyondLastLine: false,
-                    automaticLayout: true,
-                    lineNumbers: 'on',
-                    renderWhitespace: 'selection',
-                    tabSize: 2,
-                  }}
-                />
-              </div>
+            <div className="h-[calc(100%-36px)] overflow-auto p-3">
+              {root && errors.length === 0 && (isRecord(normalizedValue) || Array.isArray(normalizedValue)) ? (
+                <div className="space-y-2">
+                  <StructuredJsonNode value={normalizedValue} depth={0} nodeKey="root" />
+                </div>
+              ) : (
+                <div className="text-xs text-gray-500 dark:text-gray-400">
+                  {text.trim() ? '不是有效的 JSON 对象/数组。' : '暂无内容。'}
+                </div>
+              )}
             </div>
           </div>
         ) : (
           <div className="grid h-full grid-cols-1 gap-3 lg:grid-cols-[340px_1fr]">
             <div className="h-full overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900">
               <div className="flex items-center justify-between border-b border-gray-200 px-3 py-2 text-xs text-gray-600 dark:border-gray-700 dark:text-gray-300">
-                <div className="font-medium">导航</div>
+                <div className="font-medium">结构</div>
               </div>
               <div className="h-[calc(100%-36px)] overflow-auto p-2">
                 {outlineRoot ? (
                   <div className="space-y-1">
-                    <OutlineTree item={outlineRoot} depth={0} selectedId={selectedOutlineId} onSelect={onSelectOutline} />
+                    {outlineRoot.children && outlineRoot.children.length > 0 ? (
+                      outlineRoot.children.map((child) => (
+                        <OutlineTree
+                          key={child.id}
+                          item={child}
+                          depth={0}
+                          selectedId={selectedOutlineId}
+                          onSelect={onSelectOutline}
+                        />
+                      ))
+                    ) : (
+                      <OutlineTree item={outlineRoot} depth={0} selectedId={selectedOutlineId} onSelect={onSelectOutline} />
+                    )}
                   </div>
                 ) : (
                   <div className="p-2 text-xs text-gray-500 dark:text-gray-400">
@@ -579,7 +660,7 @@ export const JsonView: React.FC<JsonViewProps> = ({
 
             <div className="h-full overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900">
               <div className="flex items-center justify-between border-b border-gray-200 px-3 py-2 text-xs text-gray-600 dark:border-gray-700 dark:text-gray-300">
-                <div className="font-medium">原始文本</div>
+                <div className="font-medium">文本</div>
               </div>
               <div className="h-[calc(100%-36px)] overflow-hidden">
                 <Editor

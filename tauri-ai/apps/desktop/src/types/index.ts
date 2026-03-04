@@ -193,6 +193,13 @@ export interface ContextUsageBreakdown {
   skills?: number;          // Skills prompt tokens (from SKILL.md)
   /** 仅用于 UI 详情展示：本次将计入上下文的消息分组（与后端裁剪规则对齐） */
   messageGroups?: ContextMessageGroups;
+  /**
+   * 真实 token 用量（来自服务端返回的 usage）。
+   *
+   * 注意：这是“上一轮已发出请求”的统计；ContextUsageBreakdown 的分项仍为估算值，
+   * 用于解释构成与做对比，而不是保证分项加总严格等于 usage.promptTokens。
+   */
+  actualUsage?: TokenUsage;
   // Optional preview texts for the context detail modal
   systemPromptText?: string;
   formatPromptText?: string;
@@ -1713,6 +1720,13 @@ export interface AgentSession {
   streamingAssistantMessageId?: string | null;
   isGenerating: boolean;              // Whether the session is generating a response
   error: string | null;               // Error message if any
+  /**
+   * UI-only: whether this session has a newly completed result the user hasn't viewed yet.
+   * Used for prominent markers (e.g. red dot) on tabs/history items.
+   */
+  hasUnreadCompletion?: boolean;
+  /** UI-only: latest assistant message id that triggered unread completion marker. */
+  unreadCompletionMessageId?: string | null;
 
   // Metadata
   createdAt: string;                  // ISO timestamp of session creation
