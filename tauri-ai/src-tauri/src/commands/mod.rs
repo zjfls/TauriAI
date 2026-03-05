@@ -97,7 +97,7 @@ pub use mobile_chat::{
     mobile_chat, mobile_chat_stream_cancel, mobile_chat_stream_start, mobile_generate_title,
 };
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-pub use prompts::get_format_prompt;
+pub use prompts::{get_format_prompt, get_system_prompt, render_skills_section};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use run::respond_approval;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]

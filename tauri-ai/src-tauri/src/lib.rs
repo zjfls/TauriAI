@@ -791,6 +791,8 @@ fn run_desktop() {
             create_skill,
             // Prompt commands
             get_format_prompt,
+            get_system_prompt,
+            render_skills_section,
             // Git tools (diff/undo for apply_patch)
             git_diff_commits,
             git_diff_ghost_worktree,

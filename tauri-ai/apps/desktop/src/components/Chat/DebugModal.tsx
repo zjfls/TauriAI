@@ -956,6 +956,7 @@ const StructuredJsonTextViewer: React.FC<StructuredJsonTextViewerProps> = ({
 export const DebugModal: React.FC<DebugModalProps> = ({
   isOpen,
   onClose,
+  isStreaming,
   debugInfo,
   turns,
   blocks,
@@ -997,10 +998,10 @@ export const DebugModal: React.FC<DebugModalProps> = ({
 
   useEffect(() => {
     if (!isOpen) return;
-    setActivePage('overview');
+    setActivePage(isStreaming ? 'tools' : 'overview');
     setActiveHttpView('request');
     setLargeTextViewer(null);
-  }, [isOpen, messageRole]);
+  }, [isOpen, messageRole, isStreaming]);
 
   useEffect(() => {
     if (!isOpen) return;

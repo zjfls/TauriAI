@@ -944,54 +944,6 @@ fn inject_task_agent_tool_prompt(
     );
 }
 
-fn render_skills_section(skills: &[SkillEntry]) -> Option<String> {
-    if skills.is_empty() {
-        return None;
-    }
-
-    // 对齐 Codex：总是注入“可用 Skills 列表 + 使用说明”，但只在用户显式 mention skill 时，
-    // 才把对应 SKILL.md 正文注入（避免默认把所有 skill 正文塞进上下文导致 token 爆炸）。
-    let mut lines: Vec<String> = Vec::new();
-    lines.push("## Skills（技能）".to_string());
-    lines.push("Skill 是一组需要遵循的本地指令，存放在 `SKILL.md` 文件中。下面列出本次会话可用的 skills。每条包含：名称、描述、文件路径（方便你在需要时打开 `SKILL.md` 阅读完整说明）。".to_string());
-    lines.push("### 可用 skills".to_string());
-    for skill in skills {
-        let path_str = skill.meta.path.replace('\\', "/");
-        lines.push(format!(
-            "- {name}: {description} (file: {path_str})",
-            name = skill.meta.name,
-            description = skill.meta.description
-        ));
-    }
-    lines.push("### 如何使用 skills".to_string());
-    lines.push("- 发现（Discovery）：上面的列表就是本次会话可用的 skills（名称 + 描述 + 文件路径）。Skill 正文在对应路径的 `SKILL.md` 中。".to_string());
-    lines.push("- 触发规则（Trigger rules）：当用户点名某个 skill（用 `$SkillName` 或纯文本提到）或任务明显匹配某个 skill 的描述时，你必须在该轮使用对应 skill。一次消息提到多个 skill 时，要全部使用；除非用户再次提到，否则不要把 skill 规则跨轮“默认携带”。".to_string());
-    lines.push("- 缺失/不可用（Missing/blocked）：如果用户提到的 skill 不在列表里，或路径无法读取，需要简要说明并采用最佳兜底方案继续。".to_string());
-    lines.push("- 使用方法（渐进披露 / progressive disclosure）：".to_string());
-    lines.push(
-        "  1) 决定要使用某个 skill 后，打开它的 `SKILL.md`，只读到足够执行工作流为止。".to_string(),
-    );
-    lines.push("  2) 如果 `SKILL.md` 指向额外目录（如 `references/`），只加载本次请求需要的文件，不要批量加载全部内容。".to_string());
-    lines.push(
-        "  3) 如果存在 `scripts/`，优先运行或修改脚本，而不是手打/复述大段代码。".to_string(),
-    );
-    lines.push("  4) 如果存在 `assets/` 或模板，优先复用，而不是从零重建。".to_string());
-    lines.push("- 协调与编排（Coordination and sequencing）：".to_string());
-    lines.push(
-        "  - 多个 skills 同时适用时，选择覆盖任务所需的最小集合，并说明使用顺序。".to_string(),
-    );
-    lines.push("  - 简短说明你在用哪些 skill 以及原因；如果跳过了一个看起来明显相关的 skill，也要说明原因。".to_string());
-    lines.push("- 上下文卫生（Context hygiene）：".to_string());
-    lines.push("  - 保持上下文精简：能总结就不要整段粘贴，只在必要时加载额外文件。".to_string());
-    lines.push(
-        "  - 避免过度追链：除非被阻塞，否则优先只打开 `SKILL.md` 直接链接/提到的文件。".to_string(),
-    );
-    lines.push("  - 存在多种变体（框架/提供商/领域）时，只选择与当前任务最相关的参考文件，并说明你的选择依据。".to_string());
-    lines.push("- 安全与兜底（Safety and fallback）：如果某个 skill 无法干净应用（缺文件、指令不清、环境阻塞等），说明问题并切换到次优但可执行的方案继续。".to_string());
-
-    Some(lines.join("\n"))
-}
-
 fn normalize_path_for_compare(path: &str) -> String {
     let p = path.replace('\\', "/").trim_end_matches('/').to_string();
     if cfg!(windows) {
@@ -1102,25 +1054,6 @@ fn find_skill_mentions(
         }
     }
     matches
-}
-
-fn build_skill_prompt_block(skills: &[SkillEntry]) -> String {
-    let mut out = String::new();
-    for s in skills {
-        out.push_str("<skill>\n");
-        out.push_str("<name>");
-        out.push_str(&s.meta.name);
-        out.push_str("</name>\n");
-        out.push_str("<path>");
-        out.push_str(&s.meta.path);
-        out.push_str("</path>\n");
-        out.push_str(&s.contents);
-        if !s.contents.ends_with('\n') {
-            out.push('\n');
-        }
-        out.push_str("</skill>\n\n");
-    }
-    out
 }
 
 fn select_enabled_skills(
@@ -4948,7 +4881,7 @@ async fn run_task_inner(
         }
 
         if !enabled_skills_meta.is_empty() {
-            if let Some(section) = render_skills_section(&enabled_skills_meta) {
+            if let Some(section) = crate::prompts::render_skills_section(&enabled_skills_meta) {
                 let insert_at = messages
                     .iter()
                     .take_while(|m| m.role == MessageRole::System)
@@ -5034,7 +4967,7 @@ async fn run_task_inner(
                 .filter(|s| mentioned_names.contains(&s.meta.name))
                 .collect();
             if !mentioned_full.is_empty() {
-                let block = build_skill_prompt_block(&mentioned_full);
+                let block = crate::prompts::build_skill_prompt_block(&mentioned_full);
                 if let Some(first) = runtime_messages.first_mut() {
                     if first.role == MessageRole::System {
                         first.content.push_str("\n\n");

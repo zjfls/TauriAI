@@ -1790,8 +1790,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 	      const newSessions = new Map(state.sessions);
 	      const currentSession = newSessions.get(sessionId);
 	      if (currentSession) {
-	        const isActiveNow = state.activeSessionId === sessionId;
-	        const hasUnreadCompletion = !isActiveNow;
+	        const hasUnreadCompletion = true;
 	        // Find the last pending user message and mark as success
 	        const updatedMessages = [...currentSession.messages];
 	        for (let i = updatedMessages.length - 1; i >= 0; i--) {
@@ -1957,8 +1956,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 	      const newSessions = new Map(state.sessions);
 	      const currentSession = newSessions.get(sessionId);
 	      if (!currentSession) return {};
-	      const isActiveNow = state.activeSessionId === sessionId;
-	      const hasUnreadCompletion = !isActiveNow;
+	      const hasUnreadCompletion = true;
 
       const updatedMessages = [...currentSession.messages];
       for (let i = updatedMessages.length - 1; i >= 0; i--) {

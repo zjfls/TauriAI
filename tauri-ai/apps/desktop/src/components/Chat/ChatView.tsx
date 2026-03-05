@@ -28,6 +28,7 @@ import type {
   PtySessionInfo,
   Workstudio,
   Agent,
+  SkillMetadata,
   SkillEntry,
   SkillLoadOutcome,
   SandboxPolicy,
@@ -41,6 +42,7 @@ import { openOrFocusWorkstudioWindow } from '../../utils/viewWindow';
 import { WorkstudioSecurityModal } from './WorkstudioSecurityModal';
 import type { WebSearchProvider } from './WebSearchToggle';
 import { ChatOutlinePanel, type ChatOutlineItem } from './ChatOutlinePanel';
+import { stripAnsi } from '../../utils/stripAnsi';
 
 interface ChatViewProps {
   sessionId: string | null;
@@ -318,6 +320,30 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
       cancelled = true;
     };
   }, [activeFormatType]);
+
+  const [mcpResourceToolPromptTextFromBackend, setMcpResourceToolPromptTextFromBackend] = useState<string>('');
+  useEffect(() => {
+    let cancelled = false;
+
+    const run = async () => {
+      if (!isTauri()) {
+        setMcpResourceToolPromptTextFromBackend('');
+        return;
+      }
+
+      try {
+        const res = await invoke<string>('get_system_prompt', { promptType: 'mcp_resource_tool' });
+        if (!cancelled) setMcpResourceToolPromptTextFromBackend(res ?? '');
+      } catch {
+        if (!cancelled) setMcpResourceToolPromptTextFromBackend('');
+      }
+    };
+
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Get current model's context length based on session's model or agent's default
   const resolvedModelRef = session?.modelRef || agentForSession?.modelRef || null;
@@ -929,65 +955,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
     }
   }, [conversationId, isGenerating, refreshToolSessions, persistanceShellEnhance]);
 
-  // Format prompt fallback: 真正的格式提示词以 `src-tauri/src/prompts.rs` 为准。
-  // 这里不再复制完整内容，避免前后端漂移；非 Tauri 环境下仅用于 UI 估算/展示的兜底。
-  const FORMAT_PROMPT_CHAT = '';
-  /*
-
-## 输出格式规范
-
-### 基础格式（Markdown）
-- 标题：# ## ###
-- 列表：- 或 1. 2. 3.
-- 强调：**粗体** *斜体* ~~删除线~~
-- 代码：\`行内代码\` 或用三个反引号包裹代码块
-- 链接：[文本](url)
-- 引用：> 引用内容
-
-### 表格（GFM格式，前后空行，单|分隔）
-| A | B |
-|---|---|
-| 1 | 2 |
-
-### 数学公式（LaTeX）
-- 行内公式用单个 $ 包裹，如 $E = mc^2$
-- 块级公式用 $$ 包裹，前后需空行
-
-### 图表（Mermaid）
-使用 mermaid 作为语言标记的代码块，支持 flowchart、sequence、gantt 等图表类型。
-
-### 特殊元素（HTML 标签）
-- 折叠内容：<details><summary>标题</summary>内容</details>
-- 键盘按键：<kbd>Ctrl</kbd>
-- 高亮文本：<mark>重点</mark>
-- 上下标：H<sub>2</sub>O、x<sup>2</sup>
-
-### 文件引用（可点击跳转）
-- 引用文件时请使用行内代码包裹，如：`path/to/file.ts`、`src/app.ts:42`、`b/server/index.js#L10`
-- 可接受格式：
-  - `路径:行` 或 `路径:行:列`（1-based）
-  - `路径#L行` 或 `路径#L行C列`（1-based）
-- 允许相对路径或绝对路径（Windows 示例：`C:\repo\project\main.rs:12:5`）
-- 优先使用相对主工作区根目录的相对路径（包含子目录），避免只写文件名（例如避免 `events.rs:96`）
-- 不要使用 `file://` / `vscode://` 等 URI；请直接输出可解析的文件路径
-- 支持“范围行号”用于选中（例如 `:10-20` / `#L10-L20`）；只需定位时优先给出起始行即可
-  */
-
-  // MCP resource helper prompt (same as MCP_RESOURCE_TOOL_PROMPT in backend)
-  const MCP_RESOURCE_TOOL_PROMPT = `
-
-## MCP (Model Context Protocol)
-
-If MCP tools are available in the current tool list, you can use them to fetch additional context:
-
-- \`list_mcp_resources\`: Lists resources provided by MCP servers.
-- \`list_mcp_resource_templates\`: Lists parameterized resource templates.
-- \`read_mcp_resource\`: Reads a specific resource from an MCP server.
-
-Guidelines:
-- Prefer MCP resources over web search when the information is available via MCP.
-- Use \`list_mcp_resources\` / \`list_mcp_resource_templates\` to discover what's available before reading.
-`;
+  // 系统级提示词统一以 `src-tauri/src/prompts.rs` 为准；前端需要时通过 Tauri command 获取，避免两份数据漂移。
 
   // Skills catalog (for context usage estimation & tooltip)
   const [skillOutcome, setSkillOutcome] = useState<SkillLoadOutcome | null>(null);
@@ -1036,6 +1004,56 @@ Guidelines:
     };
   }, [agentName, getAgent, workstudio?.mainFolder]);
 
+  const enabledSkillMetasForPrompt = useMemo((): SkillMetadata[] => {
+    const agent = agentName ? getAgent(agentName) : null;
+    const skillSetName = agent?.skillSet;
+    if (!skillSetName || !config?.skills?.sets?.length || !skillOutcome?.skills?.length) return [];
+
+    const set = config.skills.sets.find((s) => s.name === skillSetName);
+    if (!set || !(set.enabled ?? true)) return [];
+
+    const disabledGlobal = new Set(config.skills.disabledSkills ?? []);
+    const disabledSet = new Set(set.disabledSkills ?? []);
+    const setSkills = set.skills ?? [];
+    const enabledNames =
+      setSkills.length === 0 && set.name === '标准skill集'
+        ? skillOutcome.skills
+            .map((s) => s.meta.name)
+            .filter((n) => !disabledGlobal.has(n) && !disabledSet.has(n))
+        : setSkills.filter((n) => !disabledGlobal.has(n) && !disabledSet.has(n));
+
+    const byName = new Map(skillOutcome.skills.map((s) => [s.meta.name, s.meta] as const));
+    return enabledNames.map((n) => byName.get(n)).filter(Boolean) as SkillMetadata[];
+  }, [agentName, getAgent, config, skillOutcome]);
+
+  const [skillsSectionTextFromBackend, setSkillsSectionTextFromBackend] = useState<string>('');
+  useEffect(() => {
+    let cancelled = false;
+
+    const run = async () => {
+      if (!isTauri()) {
+        setSkillsSectionTextFromBackend('');
+        return;
+      }
+      if (!enabledSkillMetasForPrompt.length) {
+        setSkillsSectionTextFromBackend('');
+        return;
+      }
+
+      try {
+        const res = await invoke<string | null>('render_skills_section', { skills: enabledSkillMetasForPrompt });
+        if (!cancelled) setSkillsSectionTextFromBackend(res ?? '');
+      } catch {
+        if (!cancelled) setSkillsSectionTextFromBackend('');
+      }
+    };
+
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [enabledSkillMetasForPrompt]);
+
   // Calculate context usage breakdown (async compute; avoid blocking initial render)
   const computeContextUsage = useCallback((): ContextUsageBreakdown | null => {
     if (!session) return null;
@@ -1055,107 +1073,13 @@ Guidelines:
     if (formatType !== 'none' && formatPromptTextFromBackend) {
       formatPromptText = formatPromptTextFromBackend;
       formatPromptTokens = estimateTokens(formatPromptTextFromBackend);
-    } else if (formatType === 'chat') {
-      formatPromptText = FORMAT_PROMPT_CHAT;
-      formatPromptTokens = estimateTokens(FORMAT_PROMPT_CHAT);
-    } else if (formatType === 'plain') {
-      formatPromptText = '\n\n请使用纯文本格式回复，不要使用 Markdown 或其他格式。';
-      formatPromptTokens = estimateTokens(formatPromptText);
-    } else if (formatType === 'json') {
-      formatPromptText = '\n\n请以 JSON 格式返回结果。';
-      formatPromptTokens = estimateTokens(formatPromptText);
     }
     // 'none' type has no format prompt
 
-    // Skills tokens (Codex-like):
-    // - Always inject the skills list/how-to section when a skill set is bound
-    // - Only inject SKILL.md bodies when the user explicitly mentions "$skill-name"
-    let skillsSectionText = '';
-    let skillsInjectedText = '';
-    let skillsTokens = 0;
-
-    const skillSetName = agent?.skillSet;
-    if (skillSetName && config?.skills?.sets?.length && skillOutcome?.skills?.length) {
-      const set = config.skills.sets.find((s) => s.name === skillSetName);
-      if (set && (set.enabled ?? true)) {
-        const disabledGlobal = new Set(config.skills.disabledSkills ?? []);
-        const disabledSet = new Set(set.disabledSkills ?? []);
-        const setSkills = set.skills ?? [];
-        const enabledNames =
-          setSkills.length === 0 && set.name === '标准skill集'
-            ? skillOutcome.skills
-                .map((s) => s.meta.name)
-                .filter((n) => !disabledGlobal.has(n) && !disabledSet.has(n))
-            : setSkills.filter((n) => !disabledGlobal.has(n) && !disabledSet.has(n));
-        const byName = new Map(skillOutcome.skills.map((s) => [s.meta.name, s]));
-        const availableSkills = enabledNames.map((n) => byName.get(n)).filter(Boolean) as SkillEntry[];
-
-        if (availableSkills.length > 0) {
-          const lines: string[] = [];
-          lines.push('## 技能（Skills）');
-          lines.push(
-            'Skill 是一组“可复用的本地指令”，存放在 `SKILL.md` 文件中。下面是本次会话可用的技能列表；每条包含名称、描述与文件路径，便于你打开查看完整说明。'
-          );
-          lines.push('### 可用技能');
-          for (const skill of availableSkills) {
-            const pathStr = skill.meta.path.replace(/\\/g, '/');
-            lines.push(`- ${skill.meta.name}：${skill.meta.description}（文件：${pathStr}）`);
-          }
-          lines.push('### 使用规则');
-          lines.push(
-            '- 发现：以上列表是本次会话可用的技能（名称 + 描述 + 文件路径）。技能正文存放在对应路径下。'
-          );
-          lines.push(
-            '- 触发规则：如果用户点名某个技能（用 `$SkillName` 或直接写技能名），或任务明显匹配上方技能描述，则本轮必须使用该技能；多次提及则同时使用；除非再次被提及，否则不要跨轮沿用技能。'
-          );
-          lines.push(
-            '- 缺失/不可读：如果被点名的技能不在列表里或其路径无法读取，请简短说明，并用最佳替代方案继续。'
-          );
-          lines.push('- 如何使用技能（渐进式展开）：');
-          lines.push('  1) 决定要用某个技能后，先打开它的 `SKILL.md`，只阅读到足以执行流程为止。');
-          lines.push(
-            '  2) 如果 `SKILL.md` 指向了额外目录（如 `references/`），只加载本次请求需要的具体文件，不要一次性全部加载。'
-          );
-          lines.push('  3) 如果有 `scripts/`，优先运行或修改脚本，而不是在聊天里手敲大段代码。');
-          lines.push('  4) 如果有 `assets/` 或模板，优先复用，不要从零重造。');
-          lines.push('- 协调与顺序：');
-          lines.push(
-            '  - 如果多个技能都适用，选择能覆盖需求的最小集合，并说明使用顺序。'
-          );
-          lines.push(
-            '  - 简短说明你使用了哪些技能以及原因（一句话即可）；如果跳过了明显的技能，也要说明原因。'
-          );
-          lines.push('- 上下文卫生：');
-          lines.push('  - 控制上下文体积：长内容尽量总结；只在需要时加载额外文件。');
-          lines.push('  - 避免深度追引用：优先只打开 `SKILL.md` 直接链接的文件，除非遇到阻塞。');
-          lines.push('  - 如存在多种变体（框架/提供商/领域），只选择最相关的参考文件，并说明选择理由。');
-          lines.push(
-            '- 安全与兜底：如果某个技能无法干净应用（缺文件/指令不清等），说明问题，选用次优方案继续推进。'
-          );
-          skillsSectionText = lines.join('\n');
-
-          let lastUserText = '';
-          for (let i = messages.length - 1; i >= 0; i--) {
-            const m = messages[i];
-            if (m?.role === 'user') {
-              lastUserText = m.content || '';
-              break;
-            }
-          }
-          const mentioned = availableSkills.filter((s) => lastUserText.includes(`$${s.meta.name}`));
-          if (mentioned.length > 0) {
-            skillsInjectedText = mentioned
-              .map((s) => {
-                const body = s.contents.endsWith('\n') ? s.contents : `${s.contents}\n`;
-                return `<skill>\n<name>${s.meta.name}</name>\n<path>${s.meta.path}</path>\n${body}</skill>\n\n`;
-              })
-              .join('');
-          }
-
-          skillsTokens = estimateTokens(skillsSectionText) + estimateTokens(skillsInjectedText);
-        }
-      }
-    }
+    // Skills prompt tokens (injected by backend)
+    const skillsSectionText = skillsSectionTextFromBackend || '';
+    const skillsInjectedText = '';
+    const skillsTokens = skillsSectionText ? estimateTokens(skillsSectionText) : 0;
 
     // MCP prompt tokens (Codex-like MCP resource helpers)
     const hasFullNetworkAccess = (policy: SandboxPolicy): boolean => {
@@ -1204,7 +1128,7 @@ Guidelines:
           });
 
           if (hasEffectiveServer) {
-            mcpPromptText = MCP_RESOURCE_TOOL_PROMPT.trim();
+            mcpPromptText = (mcpResourceToolPromptTextFromBackend || '').trim();
             mcpTokens = estimateTokens(mcpPromptText);
           }
         }
@@ -1214,13 +1138,109 @@ Guidelines:
     // Base context usage (system prompt + format prompt + skills + mcp)
     const baseTokens = systemPromptTokens + formatPromptTokens + skillsTokens + mcpTokens;
 
+    const getTextFromBlocks = (blocks: MessageBlock[] | undefined): string => {
+      if (!blocks || blocks.length === 0) return '';
+      const texts: string[] = [];
+      for (const b of blocks) {
+        if (!b || typeof b !== 'object') continue;
+        if (b.type === 'text' && typeof (b as any).text === 'string' && (b as any).text.trim()) {
+          texts.push((b as any).text);
+        }
+      }
+      return texts.join('\n\n');
+    };
+
+    const sanitizeToolTextForModel = (text: string): string => {
+      if (!text) return '';
+      const trimmed = text.trim();
+      if (!trimmed) return '';
+
+      // Best-effort align with backend `sanitize_tool_text_for_model`:
+      // - Strip ANSI codes in known string fields when the payload is JSON.
+      // - Fallback to plain ANSI stripping for raw text.
+      const maybeJsonContainer =
+        trimmed.length <= 400_000 &&
+        ((trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+          (trimmed.startsWith('[') && trimmed.endsWith(']')));
+      if (maybeJsonContainer) {
+        try {
+          const v = JSON.parse(trimmed);
+          if (v && typeof v === 'object' && !Array.isArray(v)) {
+            for (const key of ['output', 'stdout', 'stderr', 'text', 'result']) {
+              const cur = (v as any)[key];
+              if (typeof cur === 'string') {
+                (v as any)[key] = stripAnsi(cur);
+              }
+            }
+            return JSON.stringify(v);
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      return stripAnsi(trimmed);
+    };
+
+    const estimateToolTraceTokens = (blocks: MessageBlock[] | undefined): number => {
+      if (!blocks || blocks.length === 0) return 0;
+      let tokens = 0;
+      for (const b of blocks) {
+        if (!b || typeof b !== 'object') continue;
+        if (b.type === 'tool_call') {
+          const callId = String((b as any).callId ?? '').trim();
+          const name = String((b as any).name ?? '').trim();
+          const args = String((b as any).arguments ?? '').trim();
+          const turn = typeof (b as any).turnIndex === 'number' ? (b as any).turnIndex : 0;
+          tokens += estimateTokens(`[tool_call] turn=${turn} id=${callId} name=${name} args=`);
+          tokens += estimateTokens(args);
+        } else if (b.type === 'tool_result') {
+          const callId = String((b as any).callId ?? '').trim();
+          const rawText = String((b as any).text ?? '');
+          const cleaned = sanitizeToolTextForModel(rawText);
+          const turn = typeof (b as any).turnIndex === 'number' ? (b as any).turnIndex : 0;
+          tokens += estimateTokens(`[tool_result] turn=${turn} id=${callId} text=`);
+          tokens += estimateTokens(cleaned);
+        } else if (b.type === 'web_search') {
+          const callId = String((b as any).callId ?? '').trim();
+          const status = String((b as any).status ?? '').trim();
+          const turn = typeof (b as any).turnIndex === 'number' ? (b as any).turnIndex : 0;
+          const action = (b as any).action;
+          const actionStr = (() => {
+            if (action === null || action === undefined) return 'null';
+            try {
+              return JSON.stringify(action);
+            } catch {
+              return String(action);
+            }
+          })();
+          tokens += estimateTokens(`[web_search] turn=${turn} id=${callId} status=${status} action=`);
+          tokens += estimateTokens(actionStr);
+        }
+      }
+      return tokens;
+    };
+
     // Predict next-request prompt tokens (instead of reusing last-request usage).
     const estimateMessagePromptTokens = (m: Message): number => {
       let total = 8 + estimateTokens(String(m.role ?? ''));
-      total += estimateTokens(m.content || '');
+
+      const content = (() => {
+        const direct = typeof m.content === 'string' ? m.content : '';
+        if (direct.trim()) return direct;
+        // Some providers may deliver visible text only via blocks (fullContent empty).
+        return getTextFromBlocks(m.blocks);
+      })();
+      total += estimateTokens(content);
+
       if (contextMessageGroups.includeThinking && m.thinking && m.thinking.trim()) {
         total += estimateTokens(m.thinking);
       }
+
+      // Backend prompt-view includes tool calls/results (either expanded into tool-role messages
+      // or appended as [tool_trace]). Our message list doesn't include tool-role messages, so
+      // we add an approximate token cost from persisted blocks to keep estimation close to actual usage.
+      total += estimateToolTraceTokens(m.blocks);
       return total;
     };
 
@@ -1336,7 +1356,17 @@ Guidelines:
       limit: contextLength,
       percentage: Math.min(percentage, 100),
     };
-  }, [currentModel, messages, session, getAgent, config, skillOutcome, workstudio?.mainFolder, formatPromptTextFromBackend, contextMessageGroups]);
+  }, [
+    currentModel,
+    messages,
+    session,
+    getAgent,
+    config,
+    formatPromptTextFromBackend,
+    skillsSectionTextFromBackend,
+    mcpResourceToolPromptTextFromBackend,
+    contextMessageGroups,
+  ]);
 
   // 消息加载由 setCurrentConversation 负责，这里不再调用 loadMessages
   // 这样创建新对话时不会触发 loadMessages，避免竞态条件

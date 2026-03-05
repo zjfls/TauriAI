@@ -2,6 +2,8 @@
 //!
 //! Contains format prompts and utilities for prompt composition.
 
+use crate::skills::{SkillEntry, SkillMetadata};
+
 /// Format prompt for rich text rendering in chat view
 /// Includes Markdown, LaTeX, Mermaid, and HTML tag guidelines
 pub const CHAT_FORMAT_PROMPT: &str = r#"
@@ -431,6 +433,124 @@ Guidelines:
 - Use `list_mcp_resources` / `list_mcp_resource_templates` to discover what's available before reading.
 "#;
 
+/// Codex-like "Skills list + how-to" system section.
+///
+/// This is injected whenever a skill set is bound (metadata only). Full `SKILL.md` bodies are
+/// intentionally injected separately (only when the user explicitly mentions a skill), to avoid
+/// default token explosion.
+pub fn render_skills_section(skills: &[SkillEntry]) -> Option<String> {
+    if skills.is_empty() {
+        return None;
+    }
+
+    let mut lines: Vec<String> = Vec::new();
+    lines.push("## Skills（技能）".to_string());
+    lines.push("Skill 是一组需要遵循的本地指令，存放在 `SKILL.md` 文件中。下面列出本次会话可用的 skills。每条包含：名称、描述、文件路径（方便你在需要时打开 `SKILL.md` 阅读完整说明）。".to_string());
+    lines.push("### 可用 skills".to_string());
+    for skill in skills {
+        let path_str = skill.meta.path.replace('\\', "/");
+        lines.push(format!(
+            "- {name}: {description} (file: {path_str})",
+            name = skill.meta.name,
+            description = skill.meta.description
+        ));
+    }
+    lines.push("### 如何使用 skills".to_string());
+    lines.push("- 发现（Discovery）：上面的列表就是本次会话可用的 skills（名称 + 描述 + 文件路径）。Skill 正文在对应路径的 `SKILL.md` 中。".to_string());
+    lines.push("- 触发规则（Trigger rules）：当用户点名某个 skill（用 `$SkillName` 或纯文本提到）或任务明显匹配某个 skill 的描述时，你必须在该轮使用对应 skill。一次消息提到多个 skill 时，要全部使用；除非用户再次提到，否则不要把 skill 规则跨轮“默认携带”。".to_string());
+    lines.push("- 缺失/不可用（Missing/blocked）：如果用户提到的 skill 不在列表里，或路径无法读取，需要简要说明并采用最佳兜底方案继续。".to_string());
+    lines.push("- 使用方法（渐进披露 / progressive disclosure）：".to_string());
+    lines.push(
+        "  1) 决定要使用某个 skill 后，打开它的 `SKILL.md`，只读到足够执行工作流为止。".to_string(),
+    );
+    lines.push("  2) 如果 `SKILL.md` 指向额外目录（如 `references/`），只加载本次请求需要的文件，不要批量加载全部内容。".to_string());
+    lines.push(
+        "  3) 如果存在 `scripts/`，优先运行或修改脚本，而不是手打/复述大段代码。".to_string(),
+    );
+    lines.push("  4) 如果存在 `assets/` 或模板，优先复用，而不是从零重建。".to_string());
+    lines.push("- 协调与编排（Coordination and sequencing）：".to_string());
+    lines.push(
+        "  - 多个 skills 同时适用时，选择覆盖任务所需的最小集合，并说明使用顺序。".to_string(),
+    );
+    lines.push("  - 简短说明你在用哪些 skill 以及原因；如果跳过了一个看起来明显相关的 skill，也要说明原因。".to_string());
+    lines.push("- 上下文卫生（Context hygiene）：".to_string());
+    lines.push("  - 保持上下文精简：能总结就不要整段粘贴，只在必要时加载额外文件。".to_string());
+    lines.push(
+        "  - 避免过度追链：除非被阻塞，否则优先只打开 `SKILL.md` 直接链接/提到的文件。".to_string(),
+    );
+    lines.push("  - 存在多种变体（框架/提供商/领域）时，只选择与当前任务最相关的参考文件，并说明你的选择依据。".to_string());
+    lines.push("- 安全与兜底（Safety and fallback）：如果某个 skill 无法干净应用（缺文件、指令不清、环境阻塞等），说明问题并切换到次优但可执行的方案继续。".to_string());
+
+    Some(lines.join("\n"))
+}
+
+/// Same as [`render_skills_section`] but accepts metadata directly (for frontend display/estimation).
+pub fn render_skills_section_from_meta(skills: &[SkillMetadata]) -> Option<String> {
+    if skills.is_empty() {
+        return None;
+    }
+
+    let mut lines: Vec<String> = Vec::new();
+    lines.push("## Skills（技能）".to_string());
+    lines.push("Skill 是一组需要遵循的本地指令，存放在 `SKILL.md` 文件中。下面列出本次会话可用的 skills。每条包含：名称、描述、文件路径（方便你在需要时打开 `SKILL.md` 阅读完整说明）。".to_string());
+    lines.push("### 可用 skills".to_string());
+    for skill in skills {
+        let path_str = skill.path.replace('\\', "/");
+        lines.push(format!(
+            "- {name}: {description} (file: {path_str})",
+            name = skill.name,
+            description = skill.description
+        ));
+    }
+    lines.push("### 如何使用 skills".to_string());
+    lines.push("- 发现（Discovery）：上面的列表就是本次会话可用的 skills（名称 + 描述 + 文件路径）。Skill 正文在对应路径的 `SKILL.md` 中。".to_string());
+    lines.push("- 触发规则（Trigger rules）：当用户点名某个 skill（用 `$SkillName` 或纯文本提到）或任务明显匹配某个 skill 的描述时，你必须在该轮使用对应 skill。一次消息提到多个 skill 时，要全部使用；除非用户再次提到，否则不要把 skill 规则跨轮“默认携带”。".to_string());
+    lines.push("- 缺失/不可用（Missing/blocked）：如果用户提到的 skill 不在列表里，或路径无法读取，需要简要说明并采用最佳兜底方案继续。".to_string());
+    lines.push("- 使用方法（渐进披露 / progressive disclosure）：".to_string());
+    lines.push(
+        "  1) 决定要使用某个 skill 后，打开它的 `SKILL.md`，只读到足够执行工作流为止。".to_string(),
+    );
+    lines.push("  2) 如果 `SKILL.md` 指向额外目录（如 `references/`），只加载本次请求需要的文件，不要批量加载全部内容。".to_string());
+    lines.push(
+        "  3) 如果存在 `scripts/`，优先运行或修改脚本，而不是手打/复述大段代码。".to_string(),
+    );
+    lines.push("  4) 如果存在 `assets/` 或模板，优先复用，而不是从零重建。".to_string());
+    lines.push("- 协调与编排（Coordination and sequencing）：".to_string());
+    lines.push(
+        "  - 多个 skills 同时适用时，选择覆盖任务所需的最小集合，并说明使用顺序。".to_string(),
+    );
+    lines.push("  - 简短说明你在用哪些 skill 以及原因；如果跳过了一个看起来明显相关的 skill，也要说明原因。".to_string());
+    lines.push("- 上下文卫生（Context hygiene）：".to_string());
+    lines.push("  - 保持上下文精简：能总结就不要整段粘贴，只在必要时加载额外文件。".to_string());
+    lines.push(
+        "  - 避免过度追链：除非被阻塞，否则优先只打开 `SKILL.md` 直接链接/提到的文件。".to_string(),
+    );
+    lines.push("  - 存在多种变体（框架/提供商/领域）时，只选择与当前任务最相关的参考文件，并说明你的选择依据。".to_string());
+    lines.push("- 安全与兜底（Safety and fallback）：如果某个 skill 无法干净应用（缺文件、指令不清、环境阻塞等），说明问题并切换到次优但可执行的方案继续。".to_string());
+
+    Some(lines.join("\n"))
+}
+
+/// Wrap mentioned `SKILL.md` bodies into `<skill>...</skill>` blocks (Codex-like).
+pub fn build_skill_prompt_block(skills: &[SkillEntry]) -> String {
+    let mut out = String::new();
+    for s in skills {
+        out.push_str("<skill>\n");
+        out.push_str("<name>");
+        out.push_str(&s.meta.name);
+        out.push_str("</name>\n");
+        out.push_str("<path>");
+        out.push_str(&s.meta.path);
+        out.push_str("</path>\n");
+        out.push_str(&s.contents);
+        if !s.contents.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str("</skill>\n\n");
+    }
+    out
+}
+
 /// System prompt for Codex-like context compaction ("normal compact").
 ///
 /// The user message will contain a plain text transcript. The assistant should produce a concise
@@ -523,6 +643,37 @@ impl FormatPromptType {
             Self::Plain => Some("\n\n请使用纯文本格式回复，不要使用 Markdown 或其他格式。"),
             Self::Json => Some("\n\n请以 JSON 格式返回结果。"),
             Self::None => None,
+        }
+    }
+}
+
+/// System-level prompt templates that are injected as separate system messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemPromptType {
+    WebSearchTool,
+    McpResourceTool,
+    WorkstudioGuide,
+    PersistentProcess,
+    ApplyPatchTool,
+    ApplyPatchUnifiedDiffTool,
+    WriteFileReplaceStringTool,
+    NormalCompact,
+    Python3Fallback,
+}
+
+impl SystemPromptType {
+    pub fn get_prompt(&self) -> &'static str {
+        match self {
+            Self::WebSearchTool => WEB_SEARCH_TOOL_PROMPT,
+            Self::McpResourceTool => MCP_RESOURCE_TOOL_PROMPT,
+            Self::WorkstudioGuide => WORKSTUDIO_PROMPT_GUIDE,
+            Self::PersistentProcess => PERSISTENT_PROCESS_PROMPT,
+            Self::ApplyPatchTool => APPLY_PATCH_TOOL_PROMPT,
+            Self::ApplyPatchUnifiedDiffTool => APPLY_PATCH_UNIFIED_DIFF_TOOL_PROMPT,
+            Self::WriteFileReplaceStringTool => WRITE_FILE_REPLACE_STRING_TOOL_PROMPT,
+            Self::NormalCompact => NORMAL_COMPACT_PROMPT,
+            Self::Python3Fallback => PYTHON3_FALLBACK_PROMPT,
         }
     }
 }
