@@ -29,7 +29,6 @@ import type {
   Workstudio,
   Agent,
   SkillMetadata,
-  SkillEntry,
   SkillLoadOutcome,
   SandboxPolicy,
   SecurityPolicyConfig,
