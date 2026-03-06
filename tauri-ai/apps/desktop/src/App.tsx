@@ -4,7 +4,7 @@
  * Requirements: 2.1-2.6, 5.1, 5.2, 9.1-9.5
  */
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
@@ -23,12 +23,19 @@ import { useWebTabStore } from './stores/webTabStore';
 import { useTerminalTabStore } from './stores/terminalTabStore';
 import { useUIStore } from './stores/uiStore';
 import { useWindowLayoutStore } from './stores/windowLayoutStore';
-import { chatTabId, docTabId, terminalTabId, webTabId } from './stores/workspaceTabStore';
+import { chatTabId, docTabId, parseWorkspaceTabId, terminalTabId, webTabId } from './stores/workspaceTabStore';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { getViewDefinition } from './views/registry';
 import { ChatViewContainer } from './views/ChatViewContainer';
 import { computePopoutWindowBoundsAtCursor, getViewWindowParams, openOrFocusViewWindow, openViewWindow } from './utils/viewWindow';
 import { resolveActiveWorkstudioMainFolder } from './utils/terminalWorkdir';
+import {
+  normalizeChatWindowTitle,
+  normalizeWorkstudioWindowTitle,
+  resolveWindowBrandKind,
+  stripChatWindowTitlePrefix,
+  stripWorkstudioWindowTitlePrefix,
+} from './utils/windowBranding';
 import { getCurrentWindowLabelSafe, removeWindowPresence, writeWindowPresence } from './utils/windowPresence';
 import type { CodeSnippetContentPart, WorkspaceMentionChip, Workstudio } from './types';
 import {
@@ -78,7 +85,7 @@ function App() {
     const win = getCurrentWebviewWindow();
 
     const setTitleSafe = async (title: string) => {
-      const t = (title ?? '').trim() || 'Workstudio';
+      const t = normalizeWorkstudioWindowTitle(title);
       try {
         document.title = t;
       } catch {
@@ -96,17 +103,10 @@ function App() {
       const currentTitle = await win.title().catch(() => '');
       if (disposed) return;
 
-      const hasWorkstudioPrefix = /^workstudio\b/i.test((currentTitle ?? '').trim());
-      if (!hasWorkstudioPrefix) {
-        await setTitleSafe('Workstudio');
-        if (disposed) return;
-      } else {
-        // Ensure document title is aligned; native title is already ok.
-        await setTitleSafe(currentTitle);
-        if (disposed) return;
-        // If the title already contains a path, skip the DB roundtrip.
-        if (/^workstudio:\s*.+/i.test((currentTitle ?? '').trim())) return;
-      }
+      const currentBaseTitle = stripWorkstudioWindowTitlePrefix(currentTitle);
+      await setTitleSafe(currentBaseTitle || 'Workstudio');
+      if (disposed) return;
+      if (currentBaseTitle) return;
 
       if (!workstudioId) return;
 
@@ -115,7 +115,7 @@ function App() {
         if (disposed) return;
         const mainFolder = (ws?.mainFolder ?? '').trim();
         if (!mainFolder) return;
-        await setTitleSafe(`Workstudio: ${mainFolder}`);
+        await setTitleSafe(mainFolder);
       } catch {
         // ignore
       }
@@ -130,6 +130,88 @@ function App() {
   const restoreSessionState = useSessionStore((state) => state.restoreSessionState);
   const createSession = useSessionStore((state) => state.createSession);
   const openHistoricalConversation = useSessionStore((state) => state.openHistoricalConversation);
+  const sessions = useSessionStore((state) => state.sessions);
+  const documents = useDocumentStore((state) => state.documents);
+  const webTabs = useWebTabStore((state) => state.tabs);
+  const terminalTabs = useTerminalTabStore((state) => state.tabs);
+  const panes = useWindowLayoutStore((state) => state.panes);
+  const focusedPaneId = useWindowLayoutStore((state) => state.focusedPaneId);
+
+  const currentVisibleWindowTitle = useMemo(() => {
+    const focusedPane = panes.find((pane) => pane.id === focusedPaneId) ?? panes[0] ?? null;
+    const activeTabId = focusedPane?.activeTabId ?? focusedPane?.tabIds[0] ?? null;
+    if (!activeTabId) return '';
+
+    const parsed = parseWorkspaceTabId(activeTabId as any);
+    if (parsed.kind === 'chat') {
+      return parsed.sessionId ? sessions.get(parsed.sessionId)?.title ?? '' : '';
+    }
+    if (parsed.kind === 'document') {
+      return parsed.documentId ? documents.find((doc) => doc.id === parsed.documentId)?.title ?? '' : '';
+    }
+    if (parsed.kind === 'web') {
+      return parsed.webTabId ? webTabs.find((tab) => tab.id === parsed.webTabId)?.title ?? '' : '';
+    }
+    return parsed.terminalTabId ? terminalTabs.find((tab) => tab.id === parsed.terminalTabId)?.title ?? '' : '';
+  }, [documents, focusedPaneId, panes, sessions, terminalTabs, webTabs]);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    if (isWorkstudioWindow || isJsonAnalyzerWindow || isDragGhostWindow) return;
+
+    const brandKind = resolveWindowBrandKind(viewOverride, currentWindowLabel);
+    if (brandKind !== 'chat') return;
+
+    let disposed = false;
+    const win = getCurrentWebviewWindow();
+
+    const syncTitle = async () => {
+      const nativeTitle = await win.title().catch(() => '');
+      if (disposed) return;
+
+      const baseTitle =
+        (currentVisibleWindowTitle ?? '').trim() ||
+        stripChatWindowTitlePrefix(nativeTitle) ||
+        stripChatWindowTitlePrefix(document.title) ||
+        'TauriAI';
+
+      const nextTitle = normalizeChatWindowTitle(baseTitle);
+      try {
+        document.title = nextTitle;
+      } catch {
+        // ignore
+      }
+      try {
+        await win.setTitle(nextTitle);
+      } catch {
+        // ignore
+      }
+      try {
+        upsertWindowRecord({
+          label: currentWindowLabel,
+          title: nextTitle,
+          params: windowParams,
+          bounds: null,
+        });
+      } catch {
+        // ignore
+      }
+    };
+
+    void syncTitle();
+
+    return () => {
+      disposed = true;
+    };
+  }, [
+    currentVisibleWindowTitle,
+    currentWindowLabel,
+    isDragGhostWindow,
+    isJsonAnalyzerWindow,
+    isWorkstudioWindow,
+    viewOverride,
+    windowParams,
+  ]);
 
   // Track if session initialization has been done to prevent duplicate execution
   const sessionInitialized = useRef(false);

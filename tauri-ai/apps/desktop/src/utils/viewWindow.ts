@@ -4,6 +4,7 @@ import { cursorPosition } from '@tauri-apps/api/window';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import type { ActiveView, RunMode } from '../types';
 import { upsertWindowRecord } from './windowLayout';
+import { normalizeChatWindowTitle, normalizeWorkstudioWindowTitle } from './windowBranding';
 
 type WorkstudioOpenPayload = {
   requestId?: string | null;
@@ -79,13 +80,10 @@ const isWorkstudioViewWindowLabel = (label: string): boolean => {
   return v.startsWith('view-workstudio-') || v.startsWith('view-workstudio-dir-');
 };
 
-const normalizeWorkstudioWindowTitle = (title: string): string => {
-  const raw = (title ?? '').trim();
-  if (!raw) return 'Workstudio';
-  if (/^workstudio\b/i.test(raw)) {
-    return raw.replace(/^workstudio\b/i, 'Workstudio');
-  }
-  return `Workstudio: ${raw}`;
+const normalizeWindowTitleForView = (view: ActiveView, title: string): string => {
+  if (view === 'workstudio') return normalizeWorkstudioWindowTitle(title);
+  if (view === 'chat') return normalizeChatWindowTitle(title);
+  return title;
 };
 
 const isOpenFileDebugEnabled = () => {
@@ -463,7 +461,7 @@ export const openViewWindow = (
     window?: { x?: number; y?: number; width?: number; height?: number };
   }
 ) => {
-  const normalizedTitle = view === 'workstudio' ? normalizeWorkstudioWindowTitle(title) : title;
+  const normalizedTitle = normalizeWindowTitleForView(view, title);
   const label = opts?.label ?? `view-${view}-${Date.now()}`;
   // 注意：在 Tauri production（asset protocol）下，`/?query` 可能不会稳定映射到 `index.html`，
   // 导致“新窗口白屏/无内容”。显式使用 `index.html` 更稳。
@@ -561,13 +559,13 @@ export const openOrFocusViewWindow = async (
     window?: { x?: number; y?: number; width?: number; height?: number };
   }
 ) => {
-  const normalizedTitle = view === 'workstudio' ? normalizeWorkstudioWindowTitle(title) : title;
+  const normalizedTitle = normalizeWindowTitleForView(view, title);
   const label = opts?.label ?? `view-${view}-${Date.now()}`;
   if (opts?.label) {
     try {
       const existing = await WebviewWindow.getByLabel(label);
       if (existing) {
-        if (view === 'workstudio') {
+        if (view === 'workstudio' || view === 'chat') {
           void existing.setTitle(normalizedTitle).catch(() => {});
         }
         if (opts?.focus !== false) {
@@ -698,11 +696,7 @@ export const openOrFocusWorkstudioWindow = async (
   const normalizedTitle = (() => {
     const t = (title ?? '').trim();
     const mainFolder = (opts.mainFolder ?? '').trim();
-    const base = normalizeWorkstudioWindowTitle(t);
-    if (mainFolder && base === 'Workstudio') {
-      return `Workstudio: ${mainFolder}`;
-    }
-    return base;
+    return mainFolder && !t ? normalizeWorkstudioWindowTitle(mainFolder) : normalizeWorkstudioWindowTitle(t);
   })();
 
   const label = (() => {
