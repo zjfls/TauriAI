@@ -569,6 +569,7 @@ function App() {
       .catch(() => { });
 
     void listen('menu:open_settings', () => {
+      console.log('[Shortcut][menu] menu:open_settings received in App; switching to settings view');
       useUIStore.getState().setActiveView('settings');
     })
       .then((fn) => {

@@ -100,6 +100,7 @@ import { attachMonacoAiCompletionBridge } from '../../utils/monacoAiCompletionBr
 import { showGlobalError } from '../../utils/errorUtils';
 import { TerminalSurface, type TerminalSurfaceHandle } from '../Terminal/TerminalSurface';
 import { DeferredMarkdown } from '../Chat/DeferredMarkdown';
+import { useWorkstudioFsSync } from './useWorkstudioFsSync';
 
 type DirEntry = {
   name: string;
@@ -119,6 +120,9 @@ type OpenFile = {
   dirty?: boolean;
   dataUrl?: string; // for image preview
   base64?: string;  // raw bytes (for binary/pdf preview or external open)
+  externalChanged?: boolean;
+  missingOnDisk?: boolean;
+  lastKnownDiskMtimeMs?: number | null;
 };
 
 type NavLocation = {
@@ -1501,6 +1505,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const outlineScrollSaveTimerRef = useRef<number | null>(null);
   const openFilesRef = useRef<OpenFile[]>([]);
   const openingPathsRef = useRef<Set<string>>(new Set());
+  const externalApplyPathsRef = useRef<Set<string>>(new Set());
   const filePaletteInputRef = useRef<HTMLInputElement | null>(null);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const terminalSurfaceRef = useRef<TerminalSurfaceHandle | null>(null);
@@ -4217,6 +4222,21 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     rootFoldersRef.current = rootFolders;
   }, [rootFolders]);
 
+  const { reloadOpenFileFromDisk, keepLocalVersion, markPendingLocalWrite } = useWorkstudioFsSync({
+    workstudioId,
+    rootFolders,
+    openFiles,
+    setOpenFiles,
+    monacoRef,
+    editorByPaneRef,
+    externalApplyPathsRef,
+    normalizeFsPath,
+    toMonacoModelPath,
+    decodeBase64ToUtf8,
+    fileKindFor,
+    isUntitledPath,
+  });
+
   const loadWorkstudio = useCallback(async (id: string) => {
     const seq = (loadWorkstudioSeqRef.current += 1);
     setWsError(null);
@@ -4434,6 +4454,9 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           dirty: false,
           dataUrl: kind === 'image' ? `data:${file.mime};base64,${file.base64}` : undefined,
           base64: file.base64,
+          externalChanged: false,
+          missingOnDisk: false,
+          lastKnownDiskMtimeMs: null,
         };
         setOpenFiles((prev) => (prev.some((f) => f.id === id) ? prev : [...prev, next]));
         state.openTabInFocusedPane(id);
@@ -7974,6 +7997,56 @@ type OpenFromLinkErrorInfo = {
     [closeTabInLayout]
   );
 
+  const renderDiskSyncBanner = useCallback(
+    (file: OpenFile) => {
+      if (!file.externalChanged && !file.missingOnDisk) return null;
+      const message = file.missingOnDisk
+        ? file.dirty
+          ? '磁盘上的文件已不存在，当前标签保留了你的未保存内容。'
+          : '磁盘上的文件已不存在，请确认是否关闭标签或等待文件恢复。'
+        : file.dirty
+          ? '磁盘上的文件已更新，当前标签保留了你的未保存修改。'
+          : '磁盘上的文件已更新。';
+
+      return (
+        <div className="flex items-center justify-between gap-3 border-b border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-200">
+          <div className="flex min-w-0 items-center gap-2">
+            <AlertTriangle size={14} className="shrink-0" />
+            <span className="truncate">{message}</span>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              className="rounded border border-amber-300 px-2 py-1 text-[11px] hover:bg-amber-100 dark:border-amber-800 dark:hover:bg-amber-900/50"
+              onClick={() => void reloadOpenFileFromDisk(file.path)}
+            >
+              从磁盘重载
+            </button>
+            {file.externalChanged && file.dirty && !file.missingOnDisk ? (
+              <button
+                type="button"
+                className="rounded border border-amber-300 px-2 py-1 text-[11px] hover:bg-amber-100 dark:border-amber-800 dark:hover:bg-amber-900/50"
+                onClick={() => keepLocalVersion(file.id)}
+              >
+                保留本地修改
+              </button>
+            ) : null}
+            {file.missingOnDisk ? (
+              <button
+                type="button"
+                className="rounded border border-amber-300 px-2 py-1 text-[11px] hover:bg-amber-100 dark:border-amber-800 dark:hover:bg-amber-900/50"
+                onClick={() => closeFileTab(file.id)}
+              >
+                关闭标签
+              </button>
+            ) : null}
+          </div>
+        </div>
+      );
+    },
+    [closeFileTab, keepLocalVersion, reloadOpenFileFromDisk]
+  );
+
   const formatPathForChatRef = useCallback(
     (absPathRaw: string, kind: 'file' | 'folder') => {
       const absPath = normalizeFsPath(String(absPathRaw ?? '').trim());
@@ -8347,6 +8420,7 @@ type OpenFromLinkErrorInfo = {
           if (!normalizedPath) return;
 
           await invoke('write_local_text_file', { path: normalizedPath, content: latest });
+          markPendingLocalWrite(normalizedPath);
           try {
             const wsId = ws?.id ?? null;
             const languageId = languageForPath(normalizedPath);
@@ -8383,6 +8457,8 @@ type OpenFromLinkErrorInfo = {
                       content: latest,
                       originalContent: latest,
                       dirty: false,
+                      externalChanged: false,
+                      missingOnDisk: false,
                     }
                     : f
                 );
@@ -8401,6 +8477,8 @@ type OpenFromLinkErrorInfo = {
                   content: latest,
                   originalContent: latest,
                   dirty: false,
+                  externalChanged: false,
+                  missingOnDisk: false,
                 }
                 : f
             );
@@ -8420,10 +8498,19 @@ type OpenFromLinkErrorInfo = {
         }
 
         await invoke('write_local_text_file', { path: file.path, content: latest });
+        markPendingLocalWrite(file.path);
         setOpenFiles((prev) =>
           prev.map((f) =>
             f.id === file.id
-              ? { ...f, content: latest, originalContent: latest, dirty: false, size: utf8Size(latest) }
+              ? {
+                ...f,
+                content: latest,
+                originalContent: latest,
+                dirty: false,
+                size: utf8Size(latest),
+                externalChanged: false,
+                missingOnDisk: false,
+              }
               : f
           )
         );
@@ -8492,6 +8579,9 @@ type OpenFromLinkErrorInfo = {
       content,
       originalContent: '',
       dirty: true,
+      externalChanged: false,
+      missingOnDisk: false,
+      lastKnownDiskMtimeMs: null,
     };
 
     setOpenFiles((prev) => (prev.some((f) => f.id === id) ? prev : [...prev, next]));
@@ -8513,6 +8603,9 @@ type OpenFromLinkErrorInfo = {
       content,
       originalContent: '',
       dirty: true,
+      externalChanged: false,
+      missingOnDisk: false,
+      lastKnownDiskMtimeMs: null,
     };
 
     setOpenFiles((prev) => (prev.some((f) => f.id === id) ? prev : [...prev, next]));
@@ -10338,6 +10431,9 @@ type OpenFromLinkErrorInfo = {
                 dirty: false,
                 dataUrl: kind === 'image' ? `data:${file.mime};base64,${file.base64}` : undefined,
                 base64: file.base64,
+                externalChanged: false,
+                missingOnDisk: false,
+                lastKnownDiskMtimeMs: null,
               };
               return next;
             } catch {
@@ -13023,7 +13119,7 @@ type OpenFromLinkErrorInfo = {
                                     const file = openFiles.find((f) => f.id === fileId);
                                     if (!file) return null;
                                     const active = file.id === activeFileId;
-                                    const title = `${file.title}${file.dirty ? ' *' : ''}`;
+                                    const title = `${file.title}${file.dirty ? ' *' : ''}${file.externalChanged || file.missingOnDisk ? ' !' : ''}`;
 	                                    return (
 		                                      <SortableTab
 		                                        key={`${pane.id}:${file.id}`}
@@ -13071,63 +13167,72 @@ type OpenFromLinkErrorInfo = {
                             <div ref={registerPaneBodyRef(pane.id)} className="min-h-0 flex-1 overflow-hidden">
                               {activeFile ? (
                                 activeFile.kind === 'text' ? (
-                                  <div className="h-full min-h-0 w-full" onWheelCapture={onEditorWheelCapture}>
-                                    <Editor
-                                      path={toMonacoModelPath(activeFile.path)}
-                                      language={languageForPath(activeFile.path)}
-                                      value={activeFile.content ?? ''}
-                                      // Configure MonacoEnvironment workers before the editor initializes.
-                                      // Otherwise Monaco may route TS/JS language-service requests to the simple editor worker,
-                                      // leading to errors like: "Missing requestHandler or method: getQuickInfoAtPosition".
-                                      beforeMount={setupMonaco}
-                                      onMount={handleEditorMountForPane(pane.id)}
-                                      onChange={(value) => {
-                                        if (typeof value !== 'string') return;
-                                        const nextValue = value;
-                                        setOpenFiles((prev) =>
-                                          prev.map((file) =>
-                                            file.id === activeFile.id
-                                              ? {
-                                                ...file,
-                                                content: nextValue,
-                                                dirty: nextValue !== (file.originalContent ?? ''),
-                                              }
-                                              : file
-                                          )
-                                        );
-                                      }}
-                                      theme={editorTheme}
-                                      options={{
-                                        minimap: { enabled: false },
-                                        codeLens: false,
-                                        suggest: {
-                                          showWords: codeIntelligenceConfig?.monacoWordSuggestionsEnabled !== false,
-                                        },
-                                        wordBasedSuggestions:
-                                          codeIntelligenceConfig?.monacoWordSuggestionsEnabled === false
-                                            ? 'off'
-                                            : 'matchingDocuments',
-                                        wordBasedSuggestionsOnlySameLanguage: true,
-                                        inlineSuggest: { enabled: true },
-                                        fontSize: editorFontSize,
-                                        fontFamily:
-                                          'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
-                                        lineNumbers: 'on',
-                                        wordWrap: 'on',
-                                        renderWhitespace: 'selection',
-                                        automaticLayout: true,
-                                        scrollBeyondLastLine: false,
-                                      }}
-                                    />
+                                  <div className="flex h-full min-h-0 w-full flex-col" onWheelCapture={onEditorWheelCapture}>
+                                    {renderDiskSyncBanner(activeFile)}
+                                    <div className="min-h-0 flex-1">
+                                      <Editor
+                                        path={toMonacoModelPath(activeFile.path)}
+                                        language={languageForPath(activeFile.path)}
+                                        value={activeFile.content ?? ''}
+                                        // Configure MonacoEnvironment workers before the editor initializes.
+                                        // Otherwise Monaco may route TS/JS language-service requests to the simple editor worker,
+                                        // leading to errors like: "Missing requestHandler or method: getQuickInfoAtPosition".
+                                        beforeMount={setupMonaco}
+                                        onMount={handleEditorMountForPane(pane.id)}
+                                        onChange={(value) => {
+                                          if (typeof value !== 'string') return;
+                                          if (externalApplyPathsRef.current.has(activeFile.id)) return;
+                                          const nextValue = value;
+                                          setOpenFiles((prev) =>
+                                            prev.map((file) =>
+                                              file.id === activeFile.id
+                                                ? {
+                                                  ...file,
+                                                  content: nextValue,
+                                                  dirty: nextValue !== (file.originalContent ?? ''),
+                                                  externalChanged: false,
+                                                }
+                                                : file
+                                            )
+                                          );
+                                        }}
+                                        theme={editorTheme}
+                                        options={{
+                                          minimap: { enabled: false },
+                                          codeLens: false,
+                                          suggest: {
+                                            showWords: codeIntelligenceConfig?.monacoWordSuggestionsEnabled !== false,
+                                          },
+                                          wordBasedSuggestions:
+                                            codeIntelligenceConfig?.monacoWordSuggestionsEnabled === false
+                                              ? 'off'
+                                              : 'matchingDocuments',
+                                          wordBasedSuggestionsOnlySameLanguage: true,
+                                          inlineSuggest: { enabled: true },
+                                          fontSize: editorFontSize,
+                                          fontFamily:
+                                            'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+                                          lineNumbers: 'on',
+                                          wordWrap: 'on',
+                                          renderWhitespace: 'selection',
+                                          automaticLayout: true,
+                                          scrollBeyondLastLine: false,
+                                        }}
+                                      />
+                                    </div>
                                   </div>
                                 ) : activeFile.kind === 'markdown' ? (
-                                  <div className="h-full min-h-0 w-full overflow-auto bg-white p-6 dark:bg-gray-950">
-                                    <div className="mx-auto max-w-4xl">
-                                      <MarkdownRenderer content={activeFile.content ?? ''} workstudioId={workstudioId ?? undefined} />
+                                  <div className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-white dark:bg-gray-950">
+                                    {renderDiskSyncBanner(activeFile)}
+                                    <div className="min-h-0 flex-1 overflow-auto p-6">
+                                      <div className="mx-auto max-w-4xl">
+                                        <MarkdownRenderer content={activeFile.content ?? ''} workstudioId={workstudioId ?? undefined} />
+                                      </div>
                                     </div>
                                   </div>
                                 ) : (
                                   <div className="flex h-full flex-col gap-3 p-4">
+                                    {renderDiskSyncBanner(activeFile)}
                                     <div className="flex items-center justify-between">
                                       <div className="min-w-0">
                                         <div className="truncate text-sm font-medium text-gray-800 dark:text-gray-100">

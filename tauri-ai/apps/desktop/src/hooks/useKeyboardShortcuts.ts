@@ -90,9 +90,13 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
     const isNativeMenuAuthoritative = isTauri();
     for (const action of SHORTCUT_ACTIONS) {
       if (!isActionInScope(action.id)) continue;
-      // 在 Tauri 桌面端：`session.new` 默认由系统菜单 accelerator 处理，避免与前端 keydown 双触发导致创建两次会话。
-      // 同理：`app.openSettings` 由系统菜单 accelerator（Ctrl/Cmd+,）处理，避免双路径重复触发。
-      if (isNativeMenuAuthoritative && (action.id === 'session.new' || action.id === 'app.openSettings')) {
+      // 在 Tauri 桌面端：这些动作由系统菜单 accelerator 处理，避免与前端 keydown 双触发。
+      if (isNativeMenuAuthoritative && (
+        action.id === 'session.new'
+        || action.id === 'app.openSettings'
+        || action.id === 'app.openHistory'
+        || action.id === 'app.openDevtools'
+      )) {
         continue;
       }
       const binding = getEffectiveBinding(action.id);
@@ -318,6 +322,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
     async (actionId: string): Promise<boolean> => {
       switch (actionId) {
         case 'app.openSettings': {
+          console.log('[Shortcut][frontend] app.openSettings executing via keydown path');
           useUIStore.getState().setActiveView('settings');
           return true;
         }
@@ -517,10 +522,16 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
       return;
     }
 
-    // Tauri 桌面端：`session.new` 默认由系统菜单 accelerator 处理。
-    // 如果这里也处理，会导致重复触发（例如 Cmd/Ctrl+T 新建两次会话）。
-    // 同理：`app.openSettings` 默认由系统菜单 accelerator 处理（例如 Ctrl/Cmd+,），避免重复触发。
-    if (isTauri() && (actionId === 'session.new' || actionId === 'app.openSettings')) {
+    // Tauri 桌面端：这些动作默认由系统菜单 accelerator 处理，避免重复触发。
+    if (isTauri() && (
+      actionId === 'session.new'
+      || actionId === 'app.openSettings'
+      || actionId === 'app.openHistory'
+      || actionId === 'app.openDevtools'
+    )) {
+      if (actionId === 'app.openSettings') {
+        console.log('[Shortcut][frontend] app.openSettings matched in keydown path, but skipped because Tauri menu is authoritative');
+      }
       return;
     }
 

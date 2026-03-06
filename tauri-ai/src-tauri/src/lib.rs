@@ -22,6 +22,7 @@ pub mod tray;
 pub mod workstudio_security;
 
 use std::sync::Arc;
+use std::str::FromStr;
 
 use config::ConfigManager;
 
@@ -102,6 +103,98 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
 ) -> tauri::Result<tauri::menu::Menu<R>> {
     use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu};
 
+    fn configured_shortcut<'a>(
+        config: &'a crate::models::AppConfig,
+        action_id: &str,
+        default_mac: &'a str,
+        default_windows: &'a str,
+    ) -> Option<String> {
+        let platform_map = if cfg!(target_os = "macos") {
+            &config.general.keyboard_shortcuts.mac
+        } else {
+            &config.general.keyboard_shortcuts.windows
+        };
+        let raw = platform_map
+            .get(action_id)
+            .map(String::as_str)
+            .unwrap_or_else(|| if cfg!(target_os = "macos") { default_mac } else { default_windows })
+            .trim();
+
+        if raw.is_empty() {
+            return None;
+        }
+
+        normalize_menu_accelerator(raw)
+    }
+
+    fn normalize_menu_accelerator(raw: &str) -> Option<String> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        let mut mods: Vec<&'static str> = Vec::new();
+        let mut key = String::new();
+        for part in trimmed.split('+').map(str::trim).filter(|p| !p.is_empty()) {
+            match part.to_ascii_lowercase().as_str() {
+                "cmd" | "command" | "meta" | "super" | "⌘" => mods.push("Cmd"),
+                "ctrl" | "control" | "⌃" => mods.push("Ctrl"),
+                "cmdorctrl" | "cmdorcontrol" | "commandorcontrol" | "commandorctrl" => {
+                    mods.push("CmdOrCtrl")
+                }
+                "alt" | "option" | "opt" | "⌥" => mods.push("Alt"),
+                "shift" | "⇧" => mods.push("Shift"),
+                "esc" | "escape" => key = "Escape".to_string(),
+                "return" | "enter" => key = "Enter".to_string(),
+                "space" | "spacebar" => key = "Space".to_string(),
+                "backspace" => key = "Backspace".to_string(),
+                "delete" | "del" => key = "Delete".to_string(),
+                "left" => key = "Left".to_string(),
+                "right" => key = "Right".to_string(),
+                "up" => key = "Up".to_string(),
+                "down" => key = "Down".to_string(),
+                "comma" => key = ",".to_string(),
+                "period" => key = ".".to_string(),
+                "minus" | "_" | "–" | "－" => key = "-".to_string(),
+                "equal" => key = "=".to_string(),
+                other => key = part.to_string().replace("Option", "Alt"),
+            }
+        }
+
+        if key.is_empty() {
+            return None;
+        }
+
+        let mut normalized_parts: Vec<String> = Vec::new();
+        let has_cmd_or_ctrl = mods.iter().any(|m| *m == "CmdOrCtrl");
+        let has_cmd = mods.iter().any(|m| *m == "Cmd");
+        let has_ctrl = mods.iter().any(|m| *m == "Ctrl");
+        if has_cmd_or_ctrl {
+            normalized_parts.push("CmdOrCtrl".to_string());
+        } else {
+            if has_cmd {
+                normalized_parts.push("Cmd".to_string());
+            }
+            if has_ctrl {
+                normalized_parts.push("Ctrl".to_string());
+            }
+        }
+        if mods.iter().any(|m| *m == "Alt") {
+            normalized_parts.push("Alt".to_string());
+        }
+        if mods.iter().any(|m| *m == "Shift") {
+            normalized_parts.push("Shift".to_string());
+        }
+        normalized_parts.push(key);
+
+        let candidate = normalized_parts.join("+");
+        if muda::accelerator::Accelerator::from_str(&candidate).is_ok() {
+            Some(candidate)
+        } else {
+            None
+        }
+    }
+
     // Start from Tauri's default menu (macOS has one by default).
     // Then inject our entries into File/View/Session submenus.
     let menu = Menu::default(app)?;
@@ -151,6 +244,11 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
 
     // Session/app actions (moved from top-right toolbar to system menu bar)
     // 只保留“按 Agent 新建会话”，并把快捷键绑定到默认 Agent 的菜单项。
+    let new_session_shortcut = configured_shortcut(config, "session.new", "Cmd+T", "Ctrl+T");
+    let open_settings_shortcut = configured_shortcut(config, "app.openSettings", "Cmd+,", "Ctrl+,");
+    let open_history_shortcut = configured_shortcut(config, "app.openHistory", "Cmd+Y", "Ctrl+Shift+H");
+    let open_devtools_shortcut = configured_shortcut(config, "app.openDevtools", "Cmd+Option+I", "Ctrl+Shift+I");
+
     let new_session_by_agent: Submenu<R> = if has_agents {
         let mut items: Vec<MenuItem<R>> = Vec::new();
         for agent in &enabled_agents {
@@ -162,7 +260,7 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
             let encoded = urlencoding::encode(&agent.name);
             let id = format!("new_session_agent:{encoded}");
             let accelerator = if is_default {
-                Some("CmdOrCtrl+T")
+                new_session_shortcut.as_deref()
             } else {
                 None::<&str>
             };
@@ -183,7 +281,7 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
     };
 
     let open_settings =
-        MenuItem::with_id(app, "open_settings", "设置…", true, Some("CmdOrCtrl+,"))?;
+        MenuItem::with_id(app, "open_settings", "设置…", true, open_settings_shortcut.as_deref())?;
     let open_practice = MenuItem::with_id(app, "open_practice", "练习", true, None::<&str>)?;
     let view_settings_separator = PredefinedMenuItem::separator(app)?;
 
@@ -197,13 +295,8 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
     )?;
 
     // View: switch main content view (history, chat, etc.)
-    let open_history_accelerator: Option<&str> = if cfg!(target_os = "macos") {
-        Some("Cmd+Y")
-    } else {
-        Some("Ctrl+Shift+H")
-    };
     let open_history =
-        MenuItem::with_id(app, "open_history", "历史", true, open_history_accelerator)?;
+        MenuItem::with_id(app, "open_history", "历史", true, open_history_shortcut.as_deref())?;
     let session_history_separator = PredefinedMenuItem::separator(app)?;
 
     // View: open web/terminal as tabs inside the workspace (not standalone windows).
@@ -223,18 +316,12 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
     )?;
     let view_separator = PredefinedMenuItem::separator(app)?;
     #[cfg(debug_assertions)]
-    let open_devtools_accelerator: Option<&str> = if cfg!(target_os = "macos") {
-        Some("Cmd+Alt+I")
-    } else {
-        Some("Ctrl+Shift+I")
-    };
-    #[cfg(debug_assertions)]
     let open_devtools = MenuItem::with_id(
         app,
         "open_devtools",
         "打开开发者工具",
         true,
-        open_devtools_accelerator,
+        open_devtools_shortcut.as_deref(),
     )?;
 
     // Find existing "File" submenu and insert at the top. If not found (e.g. Linux), create one.
@@ -386,10 +473,14 @@ pub(crate) struct DesktopMenuSyncState(pub(crate) std::sync::Mutex<Option<String
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub(crate) fn desktop_menu_signature(config: &crate::models::AppConfig) -> String {
     // Keep in sync with the behavior of `build_desktop_menu`:
-    // - enabled agents only
+    // - enabled non-workstudio agents only
     // - default agent (or first enabled fallback)
     // - default agent moved to the top
-    let mut enabled_agents: Vec<_> = config.agents.iter().filter(|a| a.enabled).collect();
+    let mut enabled_agents: Vec<_> = config
+        .agents
+        .iter()
+        .filter(|a| a.enabled && a.workstudio_enabled != Some(true))
+        .collect();
 
     let configured_default = config.default_agent.trim();
     let default_exists = !configured_default.is_empty()
@@ -415,8 +506,28 @@ pub(crate) fn desktop_menu_signature(config: &crate::models::AppConfig) -> Strin
         }
     }
 
-    let mut sig = String::from("v1|default=");
+    let shortcut_platform_map = if cfg!(target_os = "macos") {
+        &config.general.keyboard_shortcuts.mac
+    } else {
+        &config.general.keyboard_shortcuts.windows
+    };
+
+    let mut sig = String::from("v2|default=");
     sig.push_str(effective_default_agent);
+    sig.push('|');
+    for key in [
+        "session.new",
+        "app.openSettings",
+        "app.openHistory",
+        "app.openDevtools",
+    ] {
+        sig.push_str(key);
+        sig.push('=');
+        if let Some(value) = shortcut_platform_map.get(key) {
+            sig.push_str(value);
+        }
+        sig.push(';');
+    }
     sig.push('|');
     for a in enabled_agents {
         sig.push_str(&a.name);
@@ -487,8 +598,13 @@ fn run_desktop() {
             match event.id().as_ref() {
                 "open_settings" => {
                     if let Some(window) = pick_menu_target() {
+                        println!(
+                            "[Shortcut][menu] open_settings triggered; target_window={}",
+                            window.label()
+                        );
                         let _ = window.emit("menu:open_settings", ());
                     } else {
+	                        println!("[Shortcut][menu] open_settings triggered; target_window=<broadcast>");
 	                        let _ = app.emit("menu:open_settings", ());
 	                    }
 	                }
@@ -683,6 +799,9 @@ fn run_desktop() {
             resolve_workstudio_file_target,
             workstudio_find_files,
             workstudio_main_folder_has_real_content,
+            workstudio_fs_sync_watch,
+            workstudio_fs_unwatch,
+            get_local_file_snapshots,
             // Code intelligence (LSP)
             lsp_ensure_server,
             lsp_notify,
@@ -826,6 +945,11 @@ fn run_desktop() {
 
             // Skills watcher for realtime refresh
             app.manage(SkillsWatcherState(SkillsWatcher::new(app.handle().clone())));
+
+            // Workstudio file watcher for external disk changes
+            app.manage(WorkstudioFsWatcherState(WorkstudioFsWatcher::new(
+                app.handle().clone(),
+            )));
 
             // Code intelligence: LSP manager (stdio JSON-RPC)
             app.manage(Arc::new(crate::code_intel::lsp::LspManager::new(

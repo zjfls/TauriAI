@@ -39,6 +39,8 @@ mod window_control;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod workstudio;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
+mod workstudio_fs;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod workstudio_security;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod workstudio_state;
@@ -119,6 +121,11 @@ pub use workstudio::{
     remove_workstudio_folder, resolve_workstudio_file_target, set_workstudio_main_folder,
     workstudio_find_files,
     workstudio_main_folder_has_real_content,
+};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub use workstudio_fs::{
+    get_local_file_snapshots, workstudio_fs_sync_watch, workstudio_fs_unwatch,
+    WorkstudioFsWatcher, WorkstudioFsWatcherState,
 };
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use workstudio_security::{get_workstudio_security_config, set_workstudio_security_config};

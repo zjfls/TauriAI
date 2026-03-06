@@ -47,6 +47,8 @@ const KEY_ALIASES: Record<string, string> = {
 
 // Prefer KeyboardEvent.code for certain punctuation keys so shortcuts remain stable across keyboard layouts.
 const KEY_CODE_ALIASES: Record<string, string> = {
+  Comma: ',',
+  Period: '.',
   Minus: '-',
   NumpadSubtract: '-',
   // Zoom-in defaults typically use "Ctrl/Cmd + =" (with Shift producing "+") so we canonicalize to "=".
