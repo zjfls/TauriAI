@@ -21,6 +21,8 @@
     "core:window:allow-outer-size",
     "core:window:allow-cursor-position",
     "core:window:allow-set-focus",
+    "core:window:allow-set-icon",
+    "core:window:allow-set-overlay-icon",
     "core:window:allow-set-title",
     "core:webview:allow-create-webview-window",
     "core:webview:allow-get-all-webviews",

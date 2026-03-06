@@ -31,8 +31,12 @@ fn should_skip_walk_entry(entry: &walkdir::DirEntry) -> bool {
         return false;
     }
     let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+    should_skip_walk_dir_name(name.as_str())
+}
+
+fn should_skip_walk_dir_name(name: &str) -> bool {
     matches!(
-        name.as_str(),
+        name,
         ".git"
             | "node_modules"
             | "target"
@@ -45,6 +49,8 @@ fn should_skip_walk_entry(entry: &walkdir::DirEntry) -> bool {
             | ".vscode"
             | ".turbo"
             | ".next"
+            | ".tmp"
+            | "tmp"
     )
 }
 
@@ -297,4 +303,21 @@ pub async fn workstudio_find_files(
 
     out.sort();
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_skip_walk_dir_name;
+
+    #[test]
+    fn skips_tmp_directories_for_mentions_search() {
+        assert!(should_skip_walk_dir_name("tmp"));
+        assert!(should_skip_walk_dir_name(".tmp"));
+    }
+
+    #[test]
+    fn keeps_normal_source_directories_searchable() {
+        assert!(!should_skip_walk_dir_name("src"));
+        assert!(!should_skip_walk_dir_name("components"));
+    }
 }

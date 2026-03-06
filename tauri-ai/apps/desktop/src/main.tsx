@@ -34,7 +34,22 @@ void (async () => {
       32,
       32
     );
-    await getCurrentWindow().setIcon(icon);
+
+    const currentWindow = getCurrentWindow();
+
+    try {
+      await currentWindow.setIcon(icon);
+    } catch {
+      // ignore: best-effort branding
+    }
+
+    if (/\bWindows\b/i.test(window.navigator.userAgent)) {
+      try {
+        await currentWindow.setOverlayIcon(icon);
+      } catch {
+        // ignore: best-effort branding
+      }
+    }
   } catch {
     // ignore: best-effort branding
   }
