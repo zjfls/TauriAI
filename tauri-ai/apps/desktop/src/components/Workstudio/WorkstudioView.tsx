@@ -399,7 +399,7 @@ const PaneDropZone: React.FC<{ paneId: string; children: React.ReactNode }> = ({
 	      onMouseLeave={onMouseLeave}
 	      data-workstudio-tab-id={id}
 		      className={[
-		        'group flex items-center gap-2 rounded px-2 py-1 text-xs',
+		        'group flex h-7 items-center gap-0.5 rounded-sm px-1.5 py-0 text-[15px] leading-5',
 		        active
 		          ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
 		          : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800',
@@ -408,9 +408,9 @@ const PaneDropZone: React.FC<{ paneId: string; children: React.ReactNode }> = ({
 		      {...attributes}
 		      {...listeners}
 		    >
-		      <span className="max-w-[180px] truncate" title={tooltip || title}>{title}</span>
+		      <span className="max-w-[132px] truncate" title={tooltip || title}>{title}</span>
 	      <span
-	        className="rounded p-0.5 text-gray-400 hover:bg-gray-200 hover:text-gray-700 dark:hover:bg-gray-700 dark:hover:text-gray-200"
+	        className="rounded p-px text-gray-400 hover:bg-gray-200 hover:text-gray-700 dark:hover:bg-gray-700 dark:hover:text-gray-200"
 	        onClick={(event) => {
 	          event.stopPropagation();
           onClose();
@@ -418,7 +418,7 @@ const PaneDropZone: React.FC<{ paneId: string; children: React.ReactNode }> = ({
         role="button"
         aria-label="close"
       >
-        <X size={12} />
+        <X size={9} />
       </span>
     </button>
   );
@@ -5381,10 +5381,6 @@ type OpenFromLinkErrorInfo = {
     ]
   );
 
-  const activeBreadcrumbFileSegments = useMemo(
-    () => splitFsPathForBreadcrumb(activeFilePathInFocusedPane ?? '', rootFolders),
-    [activeFilePathInFocusedPane, rootFolders]
-  );
   const activeBreadcrumbSymbolPath = useMemo(
     () => (outlineActiveKey ? findOutlinePathByKey(outlineItems, outlineActiveKey) ?? [] : []),
     [outlineActiveKey, outlineItems]
@@ -12850,70 +12846,14 @@ type OpenFromLinkErrorInfo = {
                 </button>
               </div>
 
-              <div className="min-w-0 flex-1 text-xs text-gray-600 dark:text-gray-300">
-                {activeBreadcrumbFileSegments.length > 0 ? (
-                  <div
-                    className="flex min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap"
-                    title={activeBreadcrumbTitle || undefined}
-                  >
-                    {activeBreadcrumbFileSegments.map((segment, idx) => (
-                      <React.Fragment key={`file:${idx}:${segment}`}>
-                        {idx > 0 && <ChevronRight size={12} className="shrink-0 text-gray-400" />}
-                        <span
-                          className={[
-                            'max-w-[180px] shrink truncate rounded px-1 py-0.5',
-                            idx === activeBreadcrumbFileSegments.length - 1 && activeBreadcrumbSymbolPath.length === 0
-                              ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
-                              : 'text-gray-600 dark:text-gray-300',
-                          ].join(' ')}
-                        >
-                          {segment}
-                        </span>
-                      </React.Fragment>
-                    ))}
-                    {activeBreadcrumbSymbolPath.map((item) => (
-                      <React.Fragment key={`symbol:${item.key}`}>
-                        <ChevronRight size={12} className="shrink-0 text-gray-400" />
-                        <button
-                          type="button"
-                          className={[
-                            'max-w-[180px] shrink truncate rounded px-1 py-0.5 text-left transition-colors',
-                            item.key === outlineActiveKey
-                              ? 'bg-blue-50 text-blue-700 hover:bg-blue-100 dark:bg-blue-900/30 dark:text-blue-200 dark:hover:bg-blue-900/40'
-                              : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800',
-                          ].join(' ')}
-                          onClick={() => jumpToOutlineItem(item)}
-                          title={`${item.name}（${normalizeOutlineKind(item.kind)}）${item.detail ? ` · ${item.detail}` : ''}`}
-                        >
-                          {item.name}
-                        </button>
-                      </React.Fragment>
-                    ))}
-                    {activeTextFileInFocusedPane && outlineLoading && activeBreadcrumbSymbolPath.length === 0 && (
-                      <span className="ml-1 shrink-0 rounded border border-gray-200 px-1.5 py-0.5 text-[11px] text-gray-500 dark:border-gray-700 dark:text-gray-400">
-                        符号解析中…
-                      </span>
-                    )}
-                    {activeTextFileInFocusedPane && outlineError && (
-                      <span className="ml-1 max-w-[220px] truncate text-[11px] text-red-600 dark:text-red-300" title={outlineError}>
-                        {outlineError}
-                      </span>
-                    )}
-                  </div>
-                ) : (
-                  <>
-                    窗格: {resolvedPanes.length}{' '}
-                    <span className="text-gray-400">
-                      （聚焦 {Math.max(1, resolvedPanes.findIndex((p) => p.id === resolvedFocusedPaneId) + 1)}）
-                    </span>
-                  </>
-                )}
+              <div className="min-w-0 text-xs text-gray-600 dark:text-gray-300">
+                窗格: {resolvedPanes.length}{' '}
+                <span className="text-gray-400">
+                  （聚焦 {Math.max(1, resolvedPanes.findIndex((p) => p.id === resolvedFocusedPaneId) + 1)}）
+                </span>
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <div className="hidden text-xs text-gray-500 dark:text-gray-400 xl:block">
-                窗格: {resolvedPanes.length}（聚焦 {Math.max(1, resolvedPanes.findIndex((p) => p.id === resolvedFocusedPaneId) + 1)}）
-              </div>
               <button
                 ref={lspStatusButtonRef}
                 type="button"
@@ -13146,6 +13086,11 @@ type OpenFromLinkErrorInfo = {
                     const activeFile = activeFileId ? openFiles.find((f) => f.id === activeFileId) ?? null : null;
                     const isFocused = pane.id === resolvedFocusedPaneId;
                     const leftPaneId = idx > 0 ? resolvedPanes[idx - 1]!.id : null;
+                    const paneFilePath = activeFile ? normalizeFsPath(activeFile.path) : '';
+                    const paneBreadcrumbFileSegments = activeFile ? splitFsPathForBreadcrumb(activeFile.path, rootFolders) : [];
+                    const paneShowsActiveSymbolPath = Boolean(isFocused && paneFilePath && activeOutlineFilePath && paneFilePath === activeOutlineFilePath);
+                    const paneBreadcrumbSymbolPath = paneShowsActiveSymbolPath ? activeBreadcrumbSymbolPath : [];
+                    const paneBreadcrumbTitle = paneShowsActiveSymbolPath && activeBreadcrumbTitle ? activeBreadcrumbTitle : paneFilePath;
                     return (
                       <React.Fragment key={pane.id}>
                         {idx > 0 && leftPaneId && (
@@ -13167,7 +13112,7 @@ type OpenFromLinkErrorInfo = {
                           <PaneDropZone paneId={pane.id}>
                             <div
                               ref={registerPaneTabStripRef(pane.id)}
-                              className="flex items-center gap-1 overflow-x-auto border-b border-gray-200 bg-white px-2 py-1 dark:border-gray-800 dark:bg-gray-950"
+                              className="flex items-center gap-0.5 overflow-x-auto border-b border-gray-200 bg-white px-1.5 py-[2px] dark:border-gray-800 dark:bg-gray-950"
                             >
                               <SortableContext items={pane.tabIds} strategy={horizontalListSortingStrategy}>
                                 {pane.tabIds.length === 0 ? (
@@ -13209,11 +13154,11 @@ type OpenFromLinkErrorInfo = {
                                 )}
                               </SortableContext>
 
-                              <div className="ml-auto flex items-center gap-2 px-1">
+                              <div className="ml-auto flex items-center gap-1 pl-1">
                                 <button
                                   type="button"
                                   disabled={resolvedPanes.length <= 1}
-                                  className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 disabled:opacity-60 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                                  className="inline-flex h-6 items-center rounded border border-gray-200 px-1.5 text-[10px] text-gray-600 hover:bg-gray-100 disabled:opacity-60 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
                                   onClick={() => closePaneAndMerge(pane.id)}
                                   title="关闭窗格"
                                 >
@@ -13222,6 +13167,56 @@ type OpenFromLinkErrorInfo = {
                               </div>
                             </div>
 
+                            {paneBreadcrumbFileSegments.length > 0 && (
+                              <div
+                                className="flex items-center gap-1 overflow-x-auto border-b border-gray-200 bg-gray-50/80 px-2 py-1 text-[11px] text-gray-600 dark:border-gray-800 dark:bg-gray-950/70 dark:text-gray-300"
+                                title={paneBreadcrumbTitle || undefined}
+                              >
+                                {paneBreadcrumbFileSegments.map((segment, idx) => (
+                                  <React.Fragment key={`${pane.id}:file:${idx}:${segment}`}>
+                                    {idx > 0 && <ChevronRight size={11} className="shrink-0 text-gray-400" />}
+                                    <span
+                                      className={[
+                                        'max-w-[160px] shrink truncate rounded px-1 py-0.5',
+                                        idx === paneBreadcrumbFileSegments.length - 1 && paneBreadcrumbSymbolPath.length === 0
+                                          ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
+                                          : 'text-gray-600 dark:text-gray-300',
+                                      ].join(' ')}
+                                    >
+                                      {segment}
+                                    </span>
+                                  </React.Fragment>
+                                ))}
+                                {paneBreadcrumbSymbolPath.map((item) => (
+                                  <React.Fragment key={`${pane.id}:symbol:${item.key}`}>
+                                    <ChevronRight size={11} className="shrink-0 text-gray-400" />
+                                    <button
+                                      type="button"
+                                      className={[
+                                        'max-w-[160px] shrink truncate rounded px-1 py-0.5 text-left transition-colors',
+                                        item.key === outlineActiveKey
+                                          ? 'bg-blue-50 text-blue-700 hover:bg-blue-100 dark:bg-blue-900/30 dark:text-blue-200 dark:hover:bg-blue-900/40'
+                                          : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800',
+                                      ].join(' ')}
+                                      onClick={() => jumpToOutlineItem(item)}
+                                      title={`${item.name}（${normalizeOutlineKind(item.kind)}）${item.detail ? ` · ${item.detail}` : ''}`}
+                                    >
+                                      {item.name}
+                                    </button>
+                                  </React.Fragment>
+                                ))}
+                                {paneShowsActiveSymbolPath && outlineLoading && paneBreadcrumbSymbolPath.length === 0 && (
+                                  <span className="ml-1 shrink-0 rounded border border-gray-200 px-1 py-0.5 text-[10px] text-gray-500 dark:border-gray-700 dark:text-gray-400">
+                                    符号解析中…
+                                  </span>
+                                )}
+                                {paneShowsActiveSymbolPath && outlineError && (
+                                  <span className="ml-1 max-w-[220px] truncate text-[10px] text-red-600 dark:text-red-300" title={outlineError}>
+                                    {outlineError}
+                                  </span>
+                                )}
+                              </div>
+                            )}
                             <div ref={registerPaneBodyRef(pane.id)} className="min-h-0 flex-1 overflow-hidden">
                               {activeFile ? (
                                 activeFile.kind === 'text' ? (
@@ -14562,7 +14557,7 @@ type OpenFromLinkErrorInfo = {
                 title="关闭面板"
                 aria-label="关闭面板"
               >
-                <X size={12} />
+                <X size={9} />
               </button>
             </div>
           </div>
