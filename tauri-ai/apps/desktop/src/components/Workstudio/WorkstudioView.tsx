@@ -4456,6 +4456,13 @@ type LinkTarget = {
   endColumn?: number | null;
 };
 
+type ResolveWorkstudioFileTargetResult = {
+  resolvedPath: string;
+  strategy: string;
+  usedSearch: boolean;
+  displayPath: string;
+};
+
 type OpenFromLinkErrorInfo = {
   message: string;
   details?: string;
@@ -4653,27 +4660,62 @@ type OpenFromLinkErrorInfo = {
       /^[A-Za-z]:\//.test(normalizedTargetPath) ||
       normalizedTargetPath.startsWith('/') ||
       normalizedTargetPath.startsWith('//');
-    if (!isAbs && !ws?.mainFolder) return;
+    const activeTabId = paneId ? getActiveTabIdForPane(paneId) : null;
+    const activeFilePath =
+      activeTabId && isAbsoluteFsPath(activeTabId) && !isUntitledPath(activeTabId)
+        ? normalizeFsPath(activeTabId)
+        : null;
 
-    const resolved = (() => {
-      if (isAbs) return normalizedTargetPath;
-      const base = normalizeFsPath(ws?.mainFolder ?? '');
-      if (!base) return null;
+    let resolvedInfo: ResolveWorkstudioFileTargetResult;
+    try {
+      resolvedInfo = await invoke<ResolveWorkstudioFileTargetResult>('resolve_workstudio_file_target', {
+        args: {
+          workstudioId: ws.id,
+          targetPath,
+          activeFilePath,
+          limit: 50,
+        },
+      });
+    } catch (error) {
+      dbg('openLinkTarget:resolve_failed', {
+        seq,
+        targetPath,
+        normalizedTargetPath,
+        activeFilePath,
+        isAbs,
+        error: String(error),
+      });
+      const msg =
+        typeof error === 'string'
+          ? error
+          : (error as { message?: string })?.message ?? '打开链接文件失败';
+      const details = [
+        `targetPath: ${targetPath}`,
+        `normalizedTargetPath: ${normalizedTargetPath}`,
+        `activeFilePath: ${activeFilePath ?? '-'}`,
+        `paneId: ${paneId}`,
+        `resolveError: ${msg}`,
+      ].join('\n');
+      setOpenFromLinkError({ message: msg, details });
+      void showGlobalError('打开链接文件失败', msg, error);
+      return;
+    }
 
-      let rel = targetPath.replace(/[\\/]+/g, '/');
-      rel = rel.replace(/^\.\/+/, '').replace(/^\/+/, '');
-      if (rel.startsWith('a/') || rel.startsWith('b/')) rel = rel.slice(2);
+    const resolved = normalizeFsPath(resolvedInfo.resolvedPath);
+    const openNotice = resolvedInfo.usedSearch
+      ? `已按工作区搜索结果打开：${resolvedInfo.displayPath}（原引用：${targetPath}）`
+      : null;
 
-      const wsBaseName = basename(base);
-      if (wsBaseName && rel.toLowerCase().startsWith(`${wsBaseName.toLowerCase()}/`)) {
-        rel = rel.slice(wsBaseName.length + 1);
-      }
-
-      return normalizeFsPath(`${base}/${rel}`);
-    })();
-    if (!resolved) return;
-
-    dbg('openLinkTarget:resolved', { seq, resolved, isAbs, mainFolder: ws?.mainFolder ?? null });
+    dbg('openLinkTarget:resolved', {
+      seq,
+      resolved,
+      isAbs,
+      activeFilePath,
+      strategy: resolvedInfo.strategy,
+      usedSearch: resolvedInfo.usedSearch,
+      displayPath: resolvedInfo.displayPath,
+      mainFolder: ws?.mainFolder ?? null,
+    });
 
     // 仅在“同一文件内跳转到指定行”时记录历史（跨文件跳转由 openFileAtPath 记录，避免重复入栈）。
     const prevLocationForHistory =
@@ -4908,83 +4950,57 @@ type OpenFromLinkErrorInfo = {
     setOpenFromLinkNotice(null);
     try {
       const openedId = await openFileAtPath(resolved, { paneId });
-      dbg('openLinkTarget:file_opened', { seq, openedId, resolved, paneId });
+      dbg('openLinkTarget:file_opened', {
+        seq,
+        openedId,
+        resolved,
+        paneId,
+        strategy: resolvedInfo.strategy,
+        usedSearch: resolvedInfo.usedSearch,
+      });
       if (openLinkSeqRef.current === seq && shouldRecordSameFileJump && prevLocationForHistory) {
         commitNavBackEntry(paneId, prevLocationForHistory);
       }
+      if (openLinkSeqRef.current === seq) {
+        setOpenFromLinkNotice(openNotice);
+      }
       void revealFileInExplorer(resolved, seq);
       await applyWithWait(openedId, resolved);
-      dbg('openLinkTarget:done', { seq, openedId, resolved, paneId });
+      dbg('openLinkTarget:done', {
+        seq,
+        openedId,
+        resolved,
+        paneId,
+        strategy: resolvedInfo.strategy,
+        usedSearch: resolvedInfo.usedSearch,
+      });
       return;
     } catch (error) {
-      dbg('openLinkTarget:primary_error', { seq, error: String(error), resolved, paneId, isAbs });
-      try {
-        if (!ws?.id || isAbs) throw error;
-
-        const needle = targetPath.replace(/[\\/]+/g, '/');
-        const basenameOnly = needle.split('/').pop() ?? needle;
-        const candidates = await invoke<string[]>('workstudio_find_files', {
-          args: { workstudioId: ws.id, query: basenameOnly, limit: 50 },
-        });
-
-        const pickBest = () => {
-          if (!Array.isArray(candidates) || candidates.length === 0) return null;
-          if (needle.includes('/')) {
-            const tail = `/${needle}`.toLowerCase();
-            const exactTail = candidates.find((p) => p.replace(/[\\/]+/g, '/').toLowerCase().endsWith(tail));
-            if (exactTail) return exactTail;
-          }
-          const byBase = candidates.find((p) => {
-            const base = p.replace(/[\\/]+/g, '/').split('/').pop() ?? '';
-            return base.toLowerCase() === basenameOnly.toLowerCase();
-          });
-          return byBase ?? candidates[0] ?? null;
-        };
-
-        const best = pickBest();
-        if (!best) throw error;
-
-        const openedId = await openFileAtPath(best, { paneId });
-        try {
-          const bestNormalized = normalizeFsPath(best);
-          const base = normalizeFsPath(ws?.mainFolder ?? '');
-          const display =
-            base && (bestNormalized === base || bestNormalized.startsWith(`${base}/`))
-              ? (bestNormalized.slice(base.length).replace(/^\/+/, '') || basename(bestNormalized))
-              : bestNormalized;
-          setOpenFromLinkNotice(`已使用兜底（按文件名搜索）打开：${display}（原引用：${targetPath}）`);
-        } catch {
-          setOpenFromLinkNotice(`已使用兜底（按文件名搜索）打开文件（原引用：${targetPath}）`);
-        }
-        dbg('openLinkTarget:fallback_file_opened', { seq, openedId, best, paneId });
-        void revealFileInExplorer(best, seq);
-        await applyWithWait(openedId, normalizeFsPath(best));
-        dbg('openLinkTarget:fallback_done', { seq, openedId, best, paneId });
-        return;
-      } catch (fallbackError) {
-        console.error('open file from link failed:', fallbackError);
-        dbg('openLinkTarget:failed', { seq, error: String(fallbackError) });
-        const primaryErrorMessage =
-          typeof error === 'string'
-            ? error
-            : (error as any)?.message ?? String(error);
-        const fallbackErrorMessage =
-          typeof fallbackError === 'string'
-            ? fallbackError
-            : (fallbackError as any)?.message ?? '打开文件失败';
-        const msg = fallbackErrorMessage || '打开文件失败';
-        const details = [
-          `targetPath: ${targetPath}`,
-          `resolvedPath: ${resolved}`,
-          `paneId: ${paneId}`,
-          `primaryError: ${primaryErrorMessage}`,
-          `fallbackError: ${fallbackErrorMessage}`,
-        ].join('\n');
-        setOpenFromLinkError({ message: msg, details });
-        void showGlobalError('打开链接文件失败', msg, fallbackError);
-      }
+      console.error('open file from link failed:', error);
+      dbg('openLinkTarget:failed', {
+        seq,
+        error: String(error),
+        resolved,
+        paneId,
+        strategy: resolvedInfo.strategy,
+        usedSearch: resolvedInfo.usedSearch,
+      });
+      const msg =
+        typeof error === 'string'
+          ? error
+          : (error as { message?: string })?.message ?? '打开文件失败';
+      const details = [
+        `targetPath: ${targetPath}`,
+        `resolvedPath: ${resolved}`,
+        `strategy: ${resolvedInfo.strategy}`,
+        `usedSearch: ${resolvedInfo.usedSearch}`,
+        `paneId: ${paneId}`,
+        `error: ${msg}`,
+      ].join('\n');
+      setOpenFromLinkError({ message: msg, details });
+      void showGlobalError('????????', msg, error);
     }
-  }, [dbg, openFileAtPath, revealFileInExplorer, uiStateRestored, workstudioId, ws]);
+  }, [dbg, getActiveTabIdForPane, openFileAtPath, revealFileInExplorer, uiStateRestored, workstudioId, ws]);
 
   const canNavigateBack = useMemo(() => {
     const paneId = resolvedFocusedPaneId;
