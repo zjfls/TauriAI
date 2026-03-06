@@ -78,7 +78,8 @@ x^2
   - ✅ 正确：`tauri-ai/src-tauri/src/runtime/events.rs:96`、`tauri-ai/apps/desktop/src/components/Chat/ChatView.tsx#L771`
   - ❌ 不要混用：`(line 59)`、单独的 `:59`、或省略目录只写 `events.rs:96`
 - 允许相对路径或绝对路径（Windows 示例：`C:\repo\project\main.rs:12:5`）
-- **优先使用相对主工作区根目录的相对路径（包含子目录）**，不要只写文件名（例如避免 `events.rs:96`）
+- **优先使用相对主工作区根目录（Workstudio 主文件夹）的相对路径（包含子目录）**，不要只写文件名（例如避免 `events.rs:96`）
+- 如果仓库中存在嵌套子项目/子工程，不要把路径缩短成“相对子项目根目录”的写法；若主工作区根目录是仓库根，则应写 `tauri-ai/apps/desktop/src/main.tsx`，不要写 `apps/desktop/src/main.tsx`
 - 如果你只知道文件名：先用工具在工作区内搜索定位到唯一文件，再输出完整相对路径后引用
 - 不要使用 `file://` / `vscode://` 等 URI；不要对路径做 URL 编码；请直接输出可解析的文件路径
 - 支持“范围行号”用于选中（例如 `:10-20` / `#L10-L20`）；只需定位时优先给出起始行即可
@@ -611,7 +612,9 @@ pub const WORKSTUDIO_PROMPT_GUIDE: &str = r#"
 
 ### 文件夹与工程识别
 
-- 你可以假设主文件夹是本次任务的“工程根目录/工作根目录”。
+- 主文件夹是本次任务的“路径解析根目录 / 默认 workdir”；它不一定等于离当前文件最近的子项目根目录、包根目录或单个语言工程根目录。
+- 当你输出**可点击文件引用**或传给工具的文件路径时，统一以主文件夹为基准；若代码位于嵌套子项目中，必须保留该子项目的目录前缀。
+- 例如：当主文件夹是仓库根目录，而实际代码位于 `tauri-ai/` 子项目时，应写 `tauri-ai/apps/desktop/src/hooks/useKeyboardShortcuts.ts`，不要写 `apps/desktop/src/hooks/useKeyboardShortcuts.ts`。
 - 如果用户提供了额外文件夹，优先在主文件夹中进行构建/运行/搜索；需要跨文件夹操作时再扩展。
 "#;
 

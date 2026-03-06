@@ -3069,6 +3069,8 @@ fn ensure_system_workspace_defaults(cfg: &mut AppConfig) -> bool {
    - `path:line` / `path:line:column`
    - `path#Lline` / `path#LlineCcolumn`
    禁止使用 `[label](path)` 这种文件链接写法；不要编造行号。
+   - 所有 `path` 都必须相对 `projectRoot` 输出；如果仓库里还有嵌套子项目，不能省略外层目录前缀。
+   - 例如：若 `projectRoot` 是仓库根目录，而代码位于 `tauri-ai/` 子项目中，应写 `tauri-ai/apps/desktop/src/hooks/useKeyboardShortcuts.ts:46`，不要写 `apps/desktop/src/hooks/useKeyboardShortcuts.ts:46`。
 3) 解释调用链/模块关系/生命周期时，优先给 Mermaid UML（flowchart / sequence / classDiagram）。
 4) 若 Mermaid 节点需要可点击跳转代码，请使用 `click` 语法并绑定到 `path:line`。
 5) 缺少上下文时明确指出需要查看的文件/符号/命令，不要臆测。
@@ -3094,6 +3096,8 @@ fn ensure_system_workspace_defaults(cfg: &mut AppConfig) -> bool {
 - `相对路径:行` 或 `相对路径:行:列`
 - `相对路径#L行` 或 `相对路径#L行C列`
 禁止使用 Markdown 链接语法引用文件（例如 `[label](path)`）；不要编造行号：拿不到行号时请先用 `rg`/打开文件定位，再输出引用。
+- 所有路径都必须相对 `projectRoot` 或主工作区根目录输出；若仓库中存在嵌套子项目，必须保留最外层子目录前缀。
+- 例如：若主工作区根目录是仓库根，而代码位于 `tauri-ai/` 子项目，应写 `tauri-ai/apps/desktop/src/hooks/useKeyboardShortcuts.ts:46`，不要写 `apps/desktop/src/hooks/useKeyboardShortcuts.ts:46`。
 
 ### 分析策略（按符号类型自适应）
 1) 若符号是大型类型/容器（class/struct/trait/enum/module…）：

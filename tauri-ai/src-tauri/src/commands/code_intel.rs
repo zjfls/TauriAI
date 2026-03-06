@@ -1805,6 +1805,8 @@ fn inline_chat_system_prompt() -> String {
    - `path:line` / `path:line:column`
    - `path#Lline` / `path#LlineCcolumn`
    禁止使用 `[label](path)` 这种文件链接写法；不要编造行号。
+   - 所有 `path` 都必须相对 `projectRoot` 输出；如果仓库里还有嵌套子项目，不能省略外层目录前缀。
+   - 例如：若 `projectRoot` 是仓库根目录，而代码位于 `tauri-ai/` 子项目中，应写 `tauri-ai/apps/desktop/src/hooks/useKeyboardShortcuts.ts:46`，不要写 `apps/desktop/src/hooks/useKeyboardShortcuts.ts:46`。
 3) 解释调用链/模块关系/生命周期时，优先给 Mermaid UML（flowchart / sequence / classDiagram）。
 4) 若 Mermaid 节点需要可点击跳转代码，请使用 `click` 语法并绑定到 `path:line`。
 5) 缺少上下文时明确指出需要查看的文件/符号/命令，不要臆测。
@@ -1824,6 +1826,12 @@ fn inline_chat_user_prompt(
     out.push_str(&format!("languageId: {language_id}\n"));
     out.push_str(&format!("filePath: {file_path}\n"));
     out.push_str(&format!("projectRoot: {project_root}\n"));
+    out.push_str(
+        "fileReferenceRule: 所有文件引用都必须相对 projectRoot；如果仓库内存在嵌套子项目，请保留最外层子目录前缀，不要擅自改成相对子项目根目录的写法。\n",
+    );
+    out.push_str(
+        "fileReferenceExample: 正确 `tauri-ai/apps/desktop/src/hooks/useKeyboardShortcuts.ts:46`；错误 `apps/desktop/src/hooks/useKeyboardShortcuts.ts:46`。\n",
+    );
     out.push('\n');
     out.push_str("问题：\n");
     out.push_str(question);
@@ -1878,6 +1886,7 @@ fn symbol_analysis_system_prompt() -> String {
   - ✅ 示例：`tauri-ai/src-tauri/src/prompts.rs:123`、`tauri-ai/apps/desktop/src/components/Chat/ChatView.tsx#L771`
   - ❌ 禁止：`(line 59)`、单独写 `:59`、或只写 `prompts.rs:123`（缺目录）
 - 优先使用“相对主工作区根目录的相对路径（包含子目录）”；只有在必要时才使用绝对路径（Windows 示例：`C:\repo\project\main.rs:12:5`）。
+- 若仓库中存在嵌套子项目，路径仍必须相对 `projectRoot` 输出，不要缩成相对子项目根目录；例如应写 `tauri-ai/apps/desktop/src/hooks/useKeyboardShortcuts.ts:46`，不要写 `apps/desktop/src/hooks/useKeyboardShortcuts.ts:46`。
 - 拿不到行号时不要猜：先用工具或上下文定位到行号，再输出引用。
 - 如需引用一段范围（可选）：`path#L10-L20` 或 `path:10-20`。
 
@@ -1933,6 +1942,12 @@ fn symbol_analysis_user_prompt(
     if include_project_context {
         out.push_str(&format!("filePath: {file_path}\n"));
         out.push_str(&format!("projectRoot: {project_root}\n"));
+        out.push_str(
+            "fileReferenceRule: 所有文件引用都必须相对 projectRoot；如果仓库内存在嵌套子项目，请保留最外层子目录前缀，不要擅自改成相对子项目根目录的写法。\n",
+        );
+        out.push_str(
+            "fileReferenceExample: 正确 `tauri-ai/apps/desktop/src/hooks/useKeyboardShortcuts.ts:46`；错误 `apps/desktop/src/hooks/useKeyboardShortcuts.ts:46`。\n",
+        );
     }
     out.push_str(&format!("symbolName: {symbol_name}\n"));
     out.push_str(&format!("symbolKind: {symbol_kind}\n"));
