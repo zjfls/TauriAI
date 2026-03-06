@@ -3697,6 +3697,999 @@ pub async fn retry_turn(
     result
 }
 
+#[derive(Default)]
+struct ToolingBuildResult {
+    tool_orchestrator: Option<ToolOrchestrator>,
+    tools: Option<Vec<ToolDefinition>>,
+    allowed_tool_names: Option<HashSet<String>>,
+    allow_persistent_pty: bool,
+    enable_local_web_search_tool: bool,
+    enable_mcp_resource_tool_prompt: bool,
+    enable_apply_patch_tool_prompt: bool,
+    enable_apply_patch_unified_diff_tool_prompt: bool,
+    enable_write_file_replace_string_tool_prompt: bool,
+    task_agent_tool_prompt: Option<String>,
+}
+
+fn resolve_text_edit_tools_in_allow_list(
+    tool_names: &mut Vec<String>,
+    preferred: crate::models::TextEditImplementation,
+) {
+    use crate::models::TextEditImplementation;
+
+    const TEXT_EDIT: &str = "text_edit";
+    const APPLY_PATCH: &str = "apply_patch";
+    const UNIFIED: &str = "apply_patch_unified_diff";
+    const WRITE_FILE: &str = "write_file";
+    const REPLACE_STRING: &str = "replace_string";
+    const EDIT_TOKENS: [&str; 5] = [TEXT_EDIT, APPLY_PATCH, UNIFIED, WRITE_FILE, REPLACE_STRING];
+
+    let first_idx = tool_names
+        .iter()
+        .position(|t| EDIT_TOKENS.contains(&t.as_str()));
+    let has_marker = tool_names.iter().any(|t| t == TEXT_EDIT);
+    let has_apply_patch = tool_names.iter().any(|t| t == APPLY_PATCH);
+    let has_unified = tool_names.iter().any(|t| t == UNIFIED);
+    let has_write_file = tool_names.iter().any(|t| t == WRITE_FILE);
+    let has_replace_string = tool_names.iter().any(|t| t == REPLACE_STRING);
+    let has_write_replace = has_write_file && has_replace_string;
+
+    let mut allow_apply_patch = has_apply_patch;
+    let mut allow_unified = has_unified;
+    let mut allow_write_replace = has_write_replace;
+    if has_marker {
+        allow_apply_patch = true;
+        allow_unified = true;
+        allow_write_replace = true;
+    }
+    if !allow_apply_patch && !allow_unified && !allow_write_replace {
+        return;
+    }
+
+    let chosen = match preferred {
+        TextEditImplementation::ApplyPatch if allow_apply_patch => {
+            Some(TextEditImplementation::ApplyPatch)
+        }
+        TextEditImplementation::ApplyPatchUnifiedDiff if allow_unified => {
+            Some(TextEditImplementation::ApplyPatchUnifiedDiff)
+        }
+        TextEditImplementation::WriteFileReplaceString if allow_write_replace => {
+            Some(TextEditImplementation::WriteFileReplaceString)
+        }
+        _ => {
+            if allow_apply_patch {
+                Some(TextEditImplementation::ApplyPatch)
+            } else if allow_unified {
+                Some(TextEditImplementation::ApplyPatchUnifiedDiff)
+            } else if allow_write_replace {
+                Some(TextEditImplementation::WriteFileReplaceString)
+            } else {
+                None
+            }
+        }
+    };
+    let Some(chosen) = chosen else {
+        return;
+    };
+
+    tool_names.retain(|t| !EDIT_TOKENS.contains(&t.as_str()));
+    let insert_at = first_idx
+        .unwrap_or_else(|| tool_names.len())
+        .min(tool_names.len());
+    match chosen {
+        TextEditImplementation::ApplyPatch => {
+            tool_names.insert(insert_at, APPLY_PATCH.to_string());
+        }
+        TextEditImplementation::ApplyPatchUnifiedDiff => {
+            tool_names.insert(insert_at, UNIFIED.to_string());
+        }
+        TextEditImplementation::WriteFileReplaceString => {
+            tool_names.insert(insert_at, WRITE_FILE.to_string());
+            tool_names.insert(insert_at + 1, REPLACE_STRING.to_string());
+        }
+    }
+}
+
+fn resolve_shell_tools_in_allow_list(
+    tool_names: &mut Vec<String>,
+    preferred: crate::models::ShellImplementation,
+    allow_persistent_pty: bool,
+) {
+    use crate::models::ShellImplementation;
+
+    const SHELL: &str = "shell";
+    const SHELL_COMMAND: &str = "shell_command";
+    const EXEC_COMMAND: &str = "exec_command";
+    const WRITE_STDIN: &str = "write_stdin";
+    const EXEC_COMMAND_PERSISTENT: &str = "exec_command_persistent";
+    const WRITE_STDIN_PERSISTENT: &str = "write_stdin_persistent";
+    const SHELL_TOKENS: [&str; 6] = [
+        SHELL,
+        SHELL_COMMAND,
+        EXEC_COMMAND,
+        WRITE_STDIN,
+        EXEC_COMMAND_PERSISTENT,
+        WRITE_STDIN_PERSISTENT,
+    ];
+
+    let first_idx = tool_names
+        .iter()
+        .position(|t| SHELL_TOKENS.contains(&t.as_str()));
+    let has_marker = tool_names.iter().any(|t| t == SHELL);
+    let has_shell_command = tool_names.iter().any(|t| t == SHELL_COMMAND);
+    let has_pty =
+        tool_names.iter().any(|t| t == EXEC_COMMAND) && tool_names.iter().any(|t| t == WRITE_STDIN);
+    let has_pty_persistent = tool_names.iter().any(|t| t == EXEC_COMMAND_PERSISTENT)
+        && tool_names.iter().any(|t| t == WRITE_STDIN_PERSISTENT);
+
+    let mut allow_shell_command = has_shell_command;
+    let mut allow_pty = has_pty;
+    let mut allow_pty_persistent = has_pty_persistent;
+    if has_marker {
+        allow_shell_command = true;
+        allow_pty = true;
+        allow_pty_persistent = true;
+    }
+    if allow_persistent_pty {
+        allow_pty = false;
+    } else {
+        allow_pty_persistent = false;
+    }
+    if !allow_shell_command && !allow_pty && !allow_pty_persistent {
+        return;
+    }
+
+    let chosen = match preferred {
+        ShellImplementation::ShellCommand => {
+            if allow_shell_command {
+                Some(ShellImplementation::ShellCommand)
+            } else if allow_pty {
+                Some(ShellImplementation::Pty)
+            } else if allow_pty_persistent {
+                Some(ShellImplementation::PtyPersistent)
+            } else {
+                None
+            }
+        }
+        ShellImplementation::Pty => {
+            if allow_pty {
+                Some(ShellImplementation::Pty)
+            } else if allow_pty_persistent {
+                Some(ShellImplementation::PtyPersistent)
+            } else if allow_shell_command {
+                Some(ShellImplementation::ShellCommand)
+            } else {
+                None
+            }
+        }
+        ShellImplementation::PtyPersistent => {
+            if allow_pty_persistent {
+                Some(ShellImplementation::PtyPersistent)
+            } else if allow_pty {
+                Some(ShellImplementation::Pty)
+            } else if allow_shell_command {
+                Some(ShellImplementation::ShellCommand)
+            } else {
+                None
+            }
+        }
+    };
+    let Some(chosen) = chosen else {
+        return;
+    };
+
+    tool_names.retain(|t| !SHELL_TOKENS.contains(&t.as_str()));
+    let insert_at = first_idx
+        .unwrap_or_else(|| tool_names.len())
+        .min(tool_names.len());
+    match chosen {
+        ShellImplementation::ShellCommand => {
+            tool_names.insert(insert_at, SHELL_COMMAND.to_string());
+        }
+        ShellImplementation::Pty => {
+            tool_names.insert(insert_at, EXEC_COMMAND.to_string());
+            tool_names.insert(insert_at + 1, WRITE_STDIN.to_string());
+        }
+        ShellImplementation::PtyPersistent => {
+            tool_names.insert(insert_at, EXEC_COMMAND_PERSISTENT.to_string());
+            tool_names.insert(insert_at + 1, WRITE_STDIN_PERSISTENT.to_string());
+        }
+    }
+}
+async fn build_tooling_for_run(
+    tools_enabled: bool,
+    config: &crate::models::AppConfig,
+    agent: &crate::models::Agent,
+    model: &crate::models::Model,
+    sandbox_policy: &crate::models::SandboxPolicy,
+    chat_mode: bool,
+    input_content: &str,
+    web_search_provider: Option<&str>,
+) -> Result<ToolingBuildResult, SerializableError> {
+    if !tools_enabled {
+        return Ok(ToolingBuildResult::default());
+    }
+
+    let preferred_text_edit = model.text_edit_implementation.clone().unwrap_or_default();
+    let preferred_agent_task = model.agent_task_implementation.clone().unwrap_or_default();
+    let preferred_shell = model.shell_implementation.clone().unwrap_or_default();
+
+    let mut toolset = match agent.toolset.as_deref().filter(|s| !s.trim().is_empty()) {
+        Some(name) => match config.tools.toolsets.iter().find(|t| t.name == name) {
+            Some(ts) => {
+                let mut tools = ts.tools.clone();
+                resolve_text_edit_tools_in_allow_list(&mut tools, preferred_text_edit);
+                resolve_shell_tools_in_allow_list(
+                    &mut tools,
+                    preferred_shell,
+                    ts.persistance_shell_enhance,
+                );
+                super::tools::spec::ToolSet::allow_list(name, tools)
+                    .with_persistance_shell_enhance(ts.persistance_shell_enhance)
+            }
+            None => super::tools::spec::ToolSet::deny_all(name),
+        },
+        None => super::tools::spec::ToolSet::allow_list("__unbound__", Vec::new()),
+    };
+
+    let allow_shell_exec = true;
+    let allow_pty_exec =
+        !chat_mode && !matches!(sandbox_policy, crate::models::SandboxPolicy::ReadOnly);
+    let allow_file_write =
+        !chat_mode && !matches!(sandbox_policy, crate::models::SandboxPolicy::ReadOnly);
+    let allow_mcp_exec = sandbox_policy.has_full_network_access();
+    let permission_policy: Arc<dyn super::tools::permissions::ToolPermissionPolicy> =
+        Arc::new(super::tools::permissions::BasicToolPermissionPolicy {
+            allow_shell_exec,
+            allow_pty_exec,
+            allow_file_write,
+            allow_mcp_exec,
+        });
+
+    let allow_persistent_pty = toolset.persistance_shell_enhance;
+    let mut registry = ToolRegistry::new();
+    register_builtin_handlers_with_options(
+        &mut registry,
+        BuiltinHandlerOptions {
+            agent_task_implementation: preferred_agent_task,
+        },
+    );
+
+    let mut mcp_tool_names: Vec<String> = Vec::new();
+    let mut mcp_resource_tool_names: Vec<String> = Vec::new();
+    let mut enable_mcp_resource_tool_prompt = false;
+
+    if allow_mcp_exec {
+        let tool_mentions = crate::mentions::extract_tool_mentions(input_content);
+        let mut requested_servers_lower: HashSet<String> = HashSet::new();
+        for name in &tool_mentions.plain_names {
+            requested_servers_lower.insert(name.to_ascii_lowercase());
+        }
+        for path in &tool_mentions.paths {
+            match crate::mentions::tool_kind_for_path(path) {
+                crate::mentions::ToolMentionKind::Mcp => {
+                    if let Some(id) = crate::mentions::mcp_id_from_path(path) {
+                        requested_servers_lower.insert(id.to_ascii_lowercase());
+                    }
+                }
+                crate::mentions::ToolMentionKind::App => {
+                    if let Some(id) = crate::mentions::app_id_from_path(path) {
+                        requested_servers_lower.insert(id.to_ascii_lowercase());
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if let Some(set_name) = agent.mcp_set.as_deref().filter(|s| !s.trim().is_empty()) {
+            let server_map: HashMap<String, crate::models::McpServerConfig> = config
+                .mcp
+                .servers
+                .iter()
+                .map(|e| (e.name.clone(), e.config.clone()))
+                .collect();
+
+            if let Some(mcp_set) = config.mcp.sets.iter().find(|s| s.name == set_name) {
+                let available_in_set_lower: HashSet<String> = mcp_set
+                    .servers
+                    .iter()
+                    .filter(|s| s.enabled)
+                    .map(|s| s.server.to_ascii_lowercase())
+                    .collect();
+                let requested_in_set_lower: HashSet<String> = requested_servers_lower
+                    .intersection(&available_in_set_lower)
+                    .cloned()
+                    .collect();
+                let filter_by_mention = !requested_in_set_lower.is_empty();
+
+                let mut effective_servers: HashMap<String, crate::models::McpServerConfig> =
+                    HashMap::new();
+                for set_server in &mcp_set.servers {
+                    if !set_server.enabled {
+                        continue;
+                    }
+                    if filter_by_mention
+                        && !requested_in_set_lower.contains(&set_server.server.to_ascii_lowercase())
+                    {
+                        continue;
+                    }
+                    let Some(server_cfg) = server_map.get(&set_server.server) else {
+                        continue;
+                    };
+                    if !server_cfg.enabled {
+                        continue;
+                    }
+                    effective_servers.insert(set_server.server.clone(), server_cfg.clone());
+
+                    let tools = match global_mcp_runtime()
+                        .list_tools_cached(&set_server.server, server_cfg)
+                        .await
+                    {
+                        Ok(t) => t,
+                        Err(err) => {
+                            eprintln!("[MCP] list_tools failed server={} err={}", set_server.server, err);
+                            continue;
+                        }
+                    };
+                    let mut tools = tools;
+                    if !set_server.enabled_tools.is_empty() {
+                        let allow: std::collections::HashSet<&str> =
+                            set_server.enabled_tools.iter().map(|s| s.as_str()).collect();
+                        tools.retain(|t| allow.contains(t.name.as_ref()));
+                    }
+                    if !set_server.disabled_tools.is_empty() {
+                        let deny: std::collections::HashSet<&str> =
+                            set_server.disabled_tools.iter().map(|s| s.as_str()).collect();
+                        tools.retain(|t| !deny.contains(t.name.as_ref()));
+                    }
+
+                    for tool in tools {
+                        let tool_name = tool.name.as_ref().to_string();
+                        let qualified = qualify_mcp_tool_name(&set_server.server, &tool_name);
+                        mcp_tool_names.push(qualified.clone());
+                        registry.register(Arc::new(
+                            crate::runtime::tools::handlers::mcp::McpToolHandler {
+                                qualified_name: qualified,
+                                server_name: set_server.server.clone(),
+                                tool_name,
+                                tool,
+                                server_config: server_cfg.clone(),
+                            },
+                        ));
+                    }
+                }
+
+                if !effective_servers.is_empty() {
+                    let servers = Arc::new(effective_servers);
+                    registry.register(Arc::new(
+                        crate::runtime::tools::handlers::mcp_resource::ListMcpResourcesTool {
+                            servers: Arc::clone(&servers),
+                        },
+                    ));
+                    registry.register(Arc::new(
+                        crate::runtime::tools::handlers::mcp_resource::ListMcpResourceTemplatesTool {
+                            servers: Arc::clone(&servers),
+                        },
+                    ));
+                    registry.register(Arc::new(
+                        crate::runtime::tools::handlers::mcp_resource::ReadMcpResourceTool {
+                            servers,
+                        },
+                    ));
+                    mcp_resource_tool_names.push("list_mcp_resources".to_string());
+                    mcp_resource_tool_names.push("list_mcp_resource_templates".to_string());
+                    mcp_resource_tool_names.push("read_mcp_resource".to_string());
+                    enable_mcp_resource_tool_prompt = true;
+                }
+            }
+        } else if !requested_servers_lower.is_empty() {
+            let server_map: HashMap<String, crate::models::McpServerConfig> = config
+                .mcp
+                .servers
+                .iter()
+                .map(|e| (e.name.clone(), e.config.clone()))
+                .collect();
+            let mut effective_servers: HashMap<String, crate::models::McpServerConfig> =
+                HashMap::new();
+            let enabled_server_names_lower: HashSet<String> = server_map
+                .iter()
+                .filter_map(|(name, cfg)| cfg.enabled.then_some(name.to_ascii_lowercase()))
+                .collect();
+            let requested_enabled_lower: HashSet<String> = requested_servers_lower
+                .intersection(&enabled_server_names_lower)
+                .cloned()
+                .collect();
+            if !requested_enabled_lower.is_empty() {
+                for (server_name, server_cfg) in &server_map {
+                    if !server_cfg.enabled {
+                        continue;
+                    }
+                    if !requested_enabled_lower.contains(&server_name.to_ascii_lowercase()) {
+                        continue;
+                    }
+                    effective_servers.insert(server_name.clone(), server_cfg.clone());
+
+                    let tools = match global_mcp_runtime()
+                        .list_tools_cached(server_name, server_cfg)
+                        .await
+                    {
+                        Ok(t) => t,
+                        Err(err) => {
+                            eprintln!("[MCP] list_tools failed server={} err={}", server_name, err);
+                            continue;
+                        }
+                    };
+
+                    for tool in tools {
+                        let tool_name = tool.name.as_ref().to_string();
+                        let qualified = qualify_mcp_tool_name(server_name, &tool_name);
+                        mcp_tool_names.push(qualified.clone());
+                        registry.register(Arc::new(
+                            crate::runtime::tools::handlers::mcp::McpToolHandler {
+                                qualified_name: qualified,
+                                server_name: server_name.clone(),
+                                tool_name,
+                                tool,
+                                server_config: server_cfg.clone(),
+                            },
+                        ));
+                    }
+                }
+                if !effective_servers.is_empty() {
+                    let servers = Arc::new(effective_servers);
+                    registry.register(Arc::new(
+                        crate::runtime::tools::handlers::mcp_resource::ListMcpResourcesTool {
+                            servers: Arc::clone(&servers),
+                        },
+                    ));
+                    registry.register(Arc::new(
+                        crate::runtime::tools::handlers::mcp_resource::ListMcpResourceTemplatesTool {
+                            servers: Arc::clone(&servers),
+                        },
+                    ));
+                    registry.register(Arc::new(
+                        crate::runtime::tools::handlers::mcp_resource::ReadMcpResourceTool {
+                            servers,
+                        },
+                    ));
+                    mcp_resource_tool_names.push("list_mcp_resources".to_string());
+                    mcp_resource_tool_names.push("list_mcp_resource_templates".to_string());
+                    mcp_resource_tool_names.push("read_mcp_resource".to_string());
+                    enable_mcp_resource_tool_prompt = true;
+                }
+            }
+        }
+    }
+
+    let ws_cfg = &config.general.web_search_tool;
+    let selected_provider = web_search_provider.and_then(|provider| match provider {
+        "tavily" => Some(crate::models::WebSearchProvider::Tavily),
+        "google" => Some(crate::models::WebSearchProvider::Google),
+        "brave" => Some(crate::models::WebSearchProvider::Brave),
+        _ => None,
+    });
+    let (provider_enabled, has_key) = if let Some(provider) = selected_provider {
+        let enabled = match provider {
+            crate::models::WebSearchProvider::Tavily => ws_cfg.tavily_enabled,
+            crate::models::WebSearchProvider::Brave => ws_cfg.brave_enabled,
+            crate::models::WebSearchProvider::Google => ws_cfg.google_enabled,
+        };
+        let has_key = match provider {
+            crate::models::WebSearchProvider::Tavily => ws_cfg
+                .tavily_api_key
+                .as_ref()
+                .is_some_and(|key| !key.trim().is_empty()),
+            crate::models::WebSearchProvider::Brave => ws_cfg
+                .brave_api_key
+                .as_ref()
+                .is_some_and(|key| !key.trim().is_empty()),
+            crate::models::WebSearchProvider::Google => {
+                ws_cfg
+                    .google_api_key
+                    .as_ref()
+                    .is_some_and(|key| !key.trim().is_empty())
+                    && ws_cfg
+                        .google_cx
+                        .as_ref()
+                        .is_some_and(|key| !key.trim().is_empty())
+            }
+        };
+        (enabled, has_key)
+    } else {
+        (false, false)
+    };
+
+    let enable_local_web_search_tool = selected_provider.is_some() && provider_enabled && has_key;
+    if enable_local_web_search_tool {
+        registry.register(Arc::new(
+            crate::runtime::tools::handlers::web_search::WebSearchTool {
+                settings: ws_cfg.clone(),
+                provider_override: selected_provider,
+            },
+        ));
+        if matches!(toolset.mode, super::tools::spec::ToolSetMode::AllowList)
+            && !toolset.tools.iter().any(|tool| tool == "web_search")
+        {
+            toolset.tools.push("web_search".to_string());
+        }
+    }
+
+    if matches!(toolset.mode, super::tools::spec::ToolSetMode::AllowList)
+        && (!mcp_tool_names.is_empty() || !mcp_resource_tool_names.is_empty())
+    {
+        toolset.tools.extend(mcp_tool_names);
+        toolset.tools.extend(mcp_resource_tool_names);
+    }
+
+    let orchestrator = ToolOrchestrator::new(
+        Arc::new(registry),
+        ToolOrchestratorConfig {
+            toolset,
+            permission_policy,
+        },
+    );
+    let specs = orchestrator.tool_specs_for_model();
+    let allowed_tool_names: HashSet<String> = specs.iter().map(|spec| spec.name.clone()).collect();
+    let tools = tool_specs_to_definitions(&specs);
+
+    let enable_apply_patch_tool_prompt = allowed_tool_names.contains("apply_patch");
+    let enable_apply_patch_unified_diff_tool_prompt =
+        allowed_tool_names.contains("apply_patch_unified_diff");
+    let enable_write_file_replace_string_tool_prompt =
+        allowed_tool_names.contains("write_file") || allowed_tool_names.contains("replace_string");
+    let (enable_apply_patch_tool_prompt, enable_apply_patch_unified_diff_tool_prompt) =
+        match (
+            enable_apply_patch_tool_prompt,
+            enable_apply_patch_unified_diff_tool_prompt,
+        ) {
+            (true, true) => (true, false),
+            other => other,
+        };
+    let enable_write_file_replace_string_tool_prompt =
+        enable_write_file_replace_string_tool_prompt
+            && !enable_apply_patch_tool_prompt
+            && !enable_apply_patch_unified_diff_tool_prompt;
+    let task_agent_tool_prompt = allowed_tool_names
+        .contains(AGENT_TASK_TOOL_NAME)
+        .then(|| render_task_agent_tool_prompt(config));
+
+    Ok(ToolingBuildResult {
+        tool_orchestrator: Some(orchestrator),
+        tools: Some(tools),
+        allowed_tool_names: Some(allowed_tool_names),
+        allow_persistent_pty,
+        enable_local_web_search_tool,
+        enable_mcp_resource_tool_prompt,
+        enable_apply_patch_tool_prompt,
+        enable_apply_patch_unified_diff_tool_prompt,
+        enable_write_file_replace_string_tool_prompt,
+        task_agent_tool_prompt,
+    })
+}
+
+fn should_persist_assistant_message(
+    reuse_assistant_message_id: bool,
+    content: &str,
+    thinking: &str,
+    blocks: &[MessageBlock],
+    turns: &[MessageTurn],
+) -> bool {
+    reuse_assistant_message_id
+        || !content.is_empty()
+        || !thinking.is_empty()
+        || !blocks.is_empty()
+        || !turns.is_empty()
+}
+
+fn non_empty_text(value: &str) -> Option<String> {
+    if value.trim().is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn build_message_db_fields(
+    message: &Message,
+    allow_fallback: bool,
+) -> Result<crate::storage::MessageDbFields, SerializableError> {
+    match crate::storage::MessageDbFields::from_message(message) {
+        Ok(fields) => Ok(fields),
+        Err(_) if allow_fallback => Ok(crate::storage::MessageDbFields {
+            role: "assistant",
+            status: match &message.status {
+                MessageStatus::Pending => "pending",
+                MessageStatus::Success => "success",
+                MessageStatus::Failed => "failed",
+            },
+            created_at: message.created_at.to_rfc3339(),
+            content_parts_json: None,
+            meta_json: None,
+        }),
+        Err(err) => Err(AppErrorCode::UnknownError(err.to_string()).into()),
+    }
+}
+async fn persist_assistant_message(
+    db: &Arc<Mutex<Database>>,
+    conversation_id: &str,
+    assistant_message_id: &str,
+    model_name: &str,
+    content: &str,
+    thinking: &str,
+    status: MessageStatus,
+    error_message: Option<String>,
+    usage_for_meta: Option<TokenUsage>,
+    blocks: Vec<MessageBlock>,
+    turns: Vec<MessageTurn>,
+    reuse_assistant_message_id: bool,
+    trace_get_existing: &'static str,
+    trace_persist: &'static str,
+    allow_fallback_fields: bool,
+) -> Result<(), SerializableError> {
+    let existing: Option<Message> = if reuse_assistant_message_id {
+        async_db::read_message(db, trace_get_existing, conversation_id, assistant_message_id)
+            .await
+            .ok()
+    } else {
+        None
+    };
+    let has_existing = existing.is_some();
+
+    let (merged_blocks, merged_turns) = if let Some(existing) = existing.as_ref() {
+        let prefix_meta = existing.meta.as_ref();
+        let prefix_blocks = prefix_meta.and_then(|meta| meta.blocks.clone());
+        let prefix_turns = prefix_meta.and_then(|meta| meta.turns.clone());
+        (
+            merge_message_blocks(prefix_blocks, blocks),
+            merge_message_turns(prefix_turns, turns),
+        )
+    } else {
+        (blocks, turns)
+    };
+
+    let assistant_message = Message {
+        id: assistant_message_id.to_string(),
+        conversation_id: conversation_id.to_string(),
+        role: MessageRole::Assistant,
+        content: content.to_string(),
+        content_parts: Vec::new(),
+        thinking: non_empty_text(thinking),
+        meta: Some(MessageMeta {
+            model: Some(model_name.to_string()),
+            blocks: if merged_blocks.is_empty() {
+                None
+            } else {
+                Some(merged_blocks)
+            },
+            turns: if merged_turns.is_empty() {
+                None
+            } else {
+                Some(merged_turns)
+            },
+            usage: usage_for_meta,
+            ..Default::default()
+        }),
+        created_at: chrono::Utc::now(),
+        status,
+        error_message,
+    };
+
+    let assistant_fields = build_message_db_fields(&assistant_message, allow_fallback_fields)?;
+    async_db::with_db(db, trace_persist, |db| {
+        if reuse_assistant_message_id && has_existing {
+            db.update_message_with_fields(&assistant_message, &assistant_fields)
+        } else {
+            db.add_message_with_fields(conversation_id, &assistant_message, &assistant_fields)
+        }
+    })
+    .await
+    .map_err(|err| AppErrorCode::UnknownError(err.to_string()))?;
+    Ok(())
+}
+
+async fn update_user_message_status_silently(
+    db: &Arc<Mutex<Database>>,
+    trace_context: &'static str,
+    message_id: Option<&str>,
+    status: MessageStatus,
+    error_message: Option<String>,
+) {
+    if let Some(id) = message_id {
+        let _ = async_db::with_db(db, trace_context, |db| {
+            db.update_message_status(id, status.clone(), error_message.clone())
+        })
+        .await;
+    }
+}
+
+async fn finalize_task_outcome(
+    outcome: TaskOutcome,
+    db: Arc<Mutex<Database>>,
+    emitter: &mut RunEmitter,
+    conversation_id: &str,
+    user_message_id_for_status_update: Option<&str>,
+    reuse_assistant_message_id: bool,
+    task_id: String,
+    assistant_message_id: String,
+    output_format: Option<String>,
+    model_name: String,
+) -> Result<(), SerializableError> {
+    match outcome {
+        TaskOutcome::Failed {
+            turn_id,
+            error,
+            debug_info,
+            content,
+            thinking,
+            blocks,
+            turns,
+        } => {
+            let error = decorate_user_error_with_origin(&error, debug_info.as_ref());
+            update_user_message_status_silently(
+                &db,
+                "run_task:failed:update_user_status",
+                user_message_id_for_status_update,
+                MessageStatus::Failed,
+                Some(error.clone()),
+            )
+            .await;
+
+            if should_persist_assistant_message(
+                reuse_assistant_message_id,
+                &content,
+                &thinking,
+                &blocks,
+                &turns,
+            ) {
+                let usage_for_meta = turns.iter().rev().find_map(|turn| turn.usage.clone());
+                let _ = persist_assistant_message(
+                    &db,
+                    conversation_id,
+                    &assistant_message_id,
+                    &model_name,
+                    &content,
+                    &thinking,
+                    MessageStatus::Failed,
+                    Some(error.clone()),
+                    usage_for_meta,
+                    blocks,
+                    turns,
+                    reuse_assistant_message_id,
+                    "run_task:failed:get_existing_assistant",
+                    "run_task:failed:persist_assistant",
+                    true,
+                )
+                .await;
+            }
+
+            emitter.emit(RunEvent::Error {
+                task_id: Some(task_id),
+                turn_id: Some(turn_id),
+                assistant_message_id: Some(assistant_message_id),
+                error,
+                debug_info,
+            });
+            Ok(())
+        }
+        TaskOutcome::Success {
+            last_turn_id,
+            content,
+            thinking,
+            debug_info,
+            usage,
+            blocks,
+            turns,
+        } => {
+            update_user_message_status_silently(
+                &db,
+                "run_task:success:update_user_status",
+                user_message_id_for_status_update,
+                MessageStatus::Success,
+                None,
+            )
+            .await;
+
+            if should_persist_assistant_message(
+                reuse_assistant_message_id,
+                &content,
+                &thinking,
+                &blocks,
+                &turns,
+            ) {
+                let usage_for_meta = usage
+                    .clone()
+                    .or_else(|| turns.iter().rev().find_map(|turn| turn.usage.clone()));
+                persist_assistant_message(
+                    &db,
+                    conversation_id,
+                    &assistant_message_id,
+                    &model_name,
+                    &content,
+                    &thinking,
+                    MessageStatus::Success,
+                    None,
+                    usage_for_meta,
+                    blocks,
+                    turns,
+                    reuse_assistant_message_id,
+                    "run_task:success:get_existing_assistant",
+                    "run_task:success:persist_assistant",
+                    false,
+                )
+                .await?;
+            }
+
+            emitter.emit(RunEvent::Done {
+                task_id,
+                turn_id: last_turn_id,
+                assistant_message_id: Some(assistant_message_id),
+                full_content: content,
+                format: output_format,
+                thinking: non_empty_text(&thinking),
+                debug_info,
+                usage,
+                model: Some(model_name),
+            });
+            Ok(())
+        }
+        TaskOutcome::Aborted {
+            last_turn_id,
+            content,
+            thinking,
+            blocks,
+            turns,
+        } => {
+            update_user_message_status_silently(
+                &db,
+                "run_task:aborted:update_user_status",
+                user_message_id_for_status_update,
+                MessageStatus::Success,
+                None,
+            )
+            .await;
+
+            if should_persist_assistant_message(
+                reuse_assistant_message_id,
+                &content,
+                &thinking,
+                &blocks,
+                &turns,
+            ) {
+                let usage_for_meta = turns.iter().rev().find_map(|turn| turn.usage.clone());
+                persist_assistant_message(
+                    &db,
+                    conversation_id,
+                    &assistant_message_id,
+                    &model_name,
+                    &content,
+                    &thinking,
+                    MessageStatus::Success,
+                    None,
+                    usage_for_meta,
+                    blocks,
+                    turns,
+                    reuse_assistant_message_id,
+                    "run_task:aborted:get_existing_assistant",
+                    "run_task:aborted:persist_assistant",
+                    false,
+                )
+                .await?;
+            }
+
+            emitter.emit(RunEvent::Done {
+                task_id,
+                turn_id: last_turn_id,
+                assistant_message_id: Some(assistant_message_id),
+                full_content: content,
+                format: output_format,
+                thinking: non_empty_text(&thinking),
+                debug_info: None,
+                usage: None,
+                model: Some(model_name),
+            });
+            Ok(())
+        }
+    }
+}
+
+
+
+struct SkillResolution {
+    app_skills_dir: Option<std::path::PathBuf>,
+    repo_skills_dir: Option<std::path::PathBuf>,
+    workstudio_skills_dir: Option<std::path::PathBuf>,
+    enabled_skills_meta: Vec<SkillEntry>,
+}
+
+fn resolve_skill_context(
+    config_manager: &ConfigManager,
+    app: Option<&AppHandle>,
+    workstudio: Option<&crate::models::Workstudio>,
+    config: &crate::models::AppConfig,
+    agent: &crate::models::Agent,
+) -> SkillResolution {
+    let app_skills_dir = config_manager
+        .config_path()
+        .parent()
+        .map(|path| path.join("skills"));
+    let repo_skills_dir = {
+        let from_resources = app
+            .and_then(|app_handle| app_handle.path().resource_dir().ok())
+            .map(|path| path.join("skills"))
+            .filter(|path| path.is_dir());
+        if from_resources.is_some() {
+            from_resources
+        } else {
+            let from_manifest = option_env!("CARGO_MANIFEST_DIR").and_then(|manifest_dir| {
+                let manifest = std::path::PathBuf::from(manifest_dir);
+                if let Some(parent) = manifest.parent() {
+                    let path = parent.join("skills");
+                    if path.is_dir() {
+                        return Some(path);
+                    }
+                }
+                if let Some(grand) = manifest.parent().and_then(|path| path.parent()) {
+                    let path = grand.join("tauri-ai").join("skills");
+                    if path.is_dir() {
+                        return Some(path);
+                    }
+                    let fallback = grand.join("skills");
+                    if fallback.is_dir() {
+                        return Some(fallback);
+                    }
+                }
+                None
+            });
+            if from_manifest.is_some() {
+                from_manifest
+            } else {
+                let try_from_ancestors = |base: &std::path::Path| -> Option<std::path::PathBuf> {
+                    for dir in base.ancestors().take(8) {
+                        let path = dir.join("tauri-ai").join("skills");
+                        if path.is_dir() {
+                            return Some(path);
+                        }
+                        let fallback = dir.join("skills");
+                        if fallback.is_dir() {
+                            return Some(fallback);
+                        }
+                    }
+                    None
+                };
+                let from_exe = std::env::current_exe()
+                    .ok()
+                    .and_then(|exe| exe.parent().and_then(try_from_ancestors));
+                if from_exe.is_some() {
+                    from_exe
+                } else {
+                    std::env::current_dir()
+                        .ok()
+                        .and_then(|cwd| try_from_ancestors(&cwd))
+                }
+            }
+        }
+    };
+    let workstudio_skills_dir = workstudio
+        .map(|ws| std::path::PathBuf::from(&ws.main_folder).join("skills"))
+        .filter(|path| path.is_dir());
+    let enabled_skills_meta = select_enabled_skills(
+        config,
+        agent,
+        app_skills_dir.as_deref(),
+        repo_skills_dir.as_deref(),
+        workstudio_skills_dir.as_deref(),
+        false,
+    );
+
+    SkillResolution {
+        app_skills_dir,
+        repo_skills_dir,
+        workstudio_skills_dir,
+        enabled_skills_meta,
+    }
+}
+
+
 async fn run_task_inner(
     app: Option<AppHandle>,
     event_callback: Option<RunEventCallback>,
@@ -4084,669 +5077,28 @@ async fn run_task_inner(
     // 工具系统是否启用：由本次输入的运行模式/AgentType 决定，而不是全局开关。
     // - Chat：允许工具调用，但在更严格的沙盒策略下运行（例如禁止写文件）
     // - Agent：按 toolset + 安全策略暴露/执行
-    let mut allow_persistent_pty = false;
-    let mut enable_local_web_search_tool = false;
-    let mut enable_mcp_resource_tool_prompt = false;
-
-    let (tool_orchestrator, tools, allowed_tool_names) = if !tools_enabled {
-        (None, None, None)
-    } else {
-        // 文本编辑工具选择（Toolset + Model）：
-        //
-        // - UI/toolset 里可以开启一个抽象的 `text_edit` 能力；
-        // - 具体采用哪种实现由“模型配置”决定（默认 apply_patch）：
-        //   1) apply_patch
-        //   2) apply_patch_unified_diff
-        //   3) write_file + replace_string
-        //
-        // 选择逻辑（严格按用户定义）：
-        // 1) 先看 toolset 是否开启了文本编辑工具（`text_edit` 或显式包含相关工具）
-        // 2) 再按模型的实现类型挑选，并只暴露“最终选择的那一种实现”给模型，避免混用导致不稳定
-        fn resolve_text_edit_tools_in_allow_list(
-            tool_names: &mut Vec<String>,
-            preferred: crate::models::TextEditImplementation,
-        ) {
-            use crate::models::TextEditImplementation;
-
-            const TEXT_EDIT: &str = "text_edit";
-            const APPLY_PATCH: &str = "apply_patch";
-            const UNIFIED: &str = "apply_patch_unified_diff";
-            const WRITE_FILE: &str = "write_file";
-            const REPLACE_STRING: &str = "replace_string";
-            const EDIT_TOKENS: [&str; 5] =
-                [TEXT_EDIT, APPLY_PATCH, UNIFIED, WRITE_FILE, REPLACE_STRING];
-
-            let first_idx = tool_names
-                .iter()
-                .position(|t| EDIT_TOKENS.contains(&t.as_str()));
-            let has_marker = tool_names.iter().any(|t| t == TEXT_EDIT);
-
-            let has_apply_patch = tool_names.iter().any(|t| t == APPLY_PATCH);
-            let has_unified = tool_names.iter().any(|t| t == UNIFIED);
-            let has_write_file = tool_names.iter().any(|t| t == WRITE_FILE);
-            let has_replace_string = tool_names.iter().any(|t| t == REPLACE_STRING);
-            let has_write_replace = has_write_file && has_replace_string;
-
-            let mut allow_apply_patch = has_apply_patch;
-            let mut allow_unified = has_unified;
-            let mut allow_write_replace = has_write_replace;
-
-            // 抽象开关：认为三种实现都“可用”（由模型偏好决定具体落到哪一个）。
-            if has_marker {
-                allow_apply_patch = true;
-                allow_unified = true;
-                allow_write_replace = true;
-            }
-
-            // 没有任何“完整实现”可选时，保持原样（例如只启用了 write_file，但没有 replace_string）。
-            if !allow_apply_patch && !allow_unified && !allow_write_replace {
-                return;
-            }
-
-            let chosen = match preferred {
-                TextEditImplementation::ApplyPatch if allow_apply_patch => {
-                    Some(TextEditImplementation::ApplyPatch)
-                }
-                TextEditImplementation::ApplyPatchUnifiedDiff if allow_unified => {
-                    Some(TextEditImplementation::ApplyPatchUnifiedDiff)
-                }
-                TextEditImplementation::WriteFileReplaceString if allow_write_replace => {
-                    Some(TextEditImplementation::WriteFileReplaceString)
-                }
-                _ => {
-                    // Fallback order: apply_patch > unified > write_file+replace_string
-                    if allow_apply_patch {
-                        Some(TextEditImplementation::ApplyPatch)
-                    } else if allow_unified {
-                        Some(TextEditImplementation::ApplyPatchUnifiedDiff)
-                    } else if allow_write_replace {
-                        Some(TextEditImplementation::WriteFileReplaceString)
-                    } else {
-                        None
-                    }
-                }
-            };
-
-            let Some(chosen) = chosen else {
-                return;
-            };
-
-            // 只暴露最终选择的那一套文本编辑工具，避免模型混用。
-            tool_names.retain(|t| !EDIT_TOKENS.contains(&t.as_str()));
-            let insert_at = first_idx
-                .unwrap_or_else(|| tool_names.len())
-                .min(tool_names.len());
-
-            match chosen {
-                TextEditImplementation::ApplyPatch => {
-                    tool_names.insert(insert_at, APPLY_PATCH.to_string());
-                }
-                TextEditImplementation::ApplyPatchUnifiedDiff => {
-                    tool_names.insert(insert_at, UNIFIED.to_string());
-                }
-                TextEditImplementation::WriteFileReplaceString => {
-                    tool_names.insert(insert_at, WRITE_FILE.to_string());
-                    tool_names.insert(insert_at + 1, REPLACE_STRING.to_string());
-                }
-            }
-        }
-
-        // shell 工具选择（Toolset + Model）：
-        //
-        // - UI/toolset 里可以开启一个抽象的 `shell` 能力；
-        // - 具体采用哪种实现由“模型配置”决定（默认 shell_command）：
-        //   1) shell_command
-        //   2) pty（exec_command + write_stdin）
-        //   3) pty_persistent（exec_command_persistent + write_stdin_persistent）
-        //
-        // 选择逻辑（严格按用户定义）：
-        // 1) 先看 toolset 是否开启了 shell 工具（`shell` 或显式包含相关工具）
-        // 2) 再按模型的实现类型挑选，并只暴露“最终选择的那一套实现”给模型，避免混用导致不稳定
-        fn resolve_shell_tools_in_allow_list(
-            tool_names: &mut Vec<String>,
-            preferred: crate::models::ShellImplementation,
-            allow_persistent_pty: bool,
-        ) {
-            use crate::models::ShellImplementation;
-
-            const SHELL: &str = "shell";
-            const SHELL_COMMAND: &str = "shell_command";
-            const EXEC_COMMAND: &str = "exec_command";
-            const WRITE_STDIN: &str = "write_stdin";
-            const EXEC_COMMAND_PERSISTENT: &str = "exec_command_persistent";
-            const WRITE_STDIN_PERSISTENT: &str = "write_stdin_persistent";
-            const SHELL_TOKENS: [&str; 6] = [
-                SHELL,
-                SHELL_COMMAND,
-                EXEC_COMMAND,
-                WRITE_STDIN,
-                EXEC_COMMAND_PERSISTENT,
-                WRITE_STDIN_PERSISTENT,
-            ];
-
-            let first_idx = tool_names
-                .iter()
-                .position(|t| SHELL_TOKENS.contains(&t.as_str()));
-            let has_marker = tool_names.iter().any(|t| t == SHELL);
-
-            let has_shell_command = tool_names.iter().any(|t| t == SHELL_COMMAND);
-            let has_pty = tool_names.iter().any(|t| t == EXEC_COMMAND)
-                && tool_names.iter().any(|t| t == WRITE_STDIN);
-            let has_pty_persistent = tool_names.iter().any(|t| t == EXEC_COMMAND_PERSISTENT)
-                && tool_names.iter().any(|t| t == WRITE_STDIN_PERSISTENT);
-
-            let mut allow_shell_command = has_shell_command;
-            let mut allow_pty = has_pty;
-            let mut allow_pty_persistent = has_pty_persistent;
-
-            // 抽象开关：认为三种实现都“可用”（由模型偏好决定具体落到哪一个）。
-            if has_marker {
-                allow_shell_command = true;
-                allow_pty = true;
-                allow_pty_persistent = true;
-            }
-
-            // persistent 模式与常规 PTY 互斥（orchestrator 会隐藏非 persistent PTY）。
-            if allow_persistent_pty {
-                allow_pty = false;
-            } else {
-                allow_pty_persistent = false;
-            }
-
-            if !allow_shell_command && !allow_pty && !allow_pty_persistent {
-                return;
-            }
-
-            let chosen = match preferred {
-                ShellImplementation::ShellCommand => {
-                    if allow_shell_command {
-                        Some(ShellImplementation::ShellCommand)
-                    } else if allow_pty {
-                        Some(ShellImplementation::Pty)
-                    } else if allow_pty_persistent {
-                        Some(ShellImplementation::PtyPersistent)
-                    } else {
-                        None
-                    }
-                }
-                ShellImplementation::Pty => {
-                    if allow_pty {
-                        Some(ShellImplementation::Pty)
-                    } else if allow_pty_persistent {
-                        Some(ShellImplementation::PtyPersistent)
-                    } else if allow_shell_command {
-                        Some(ShellImplementation::ShellCommand)
-                    } else {
-                        None
-                    }
-                }
-                ShellImplementation::PtyPersistent => {
-                    if allow_pty_persistent {
-                        Some(ShellImplementation::PtyPersistent)
-                    } else if allow_pty {
-                        Some(ShellImplementation::Pty)
-                    } else if allow_shell_command {
-                        Some(ShellImplementation::ShellCommand)
-                    } else {
-                        None
-                    }
-                }
-            };
-
-            let Some(chosen) = chosen else {
-                return;
-            };
-
-            tool_names.retain(|t| !SHELL_TOKENS.contains(&t.as_str()));
-            let insert_at = first_idx
-                .unwrap_or_else(|| tool_names.len())
-                .min(tool_names.len());
-
-            match chosen {
-                ShellImplementation::ShellCommand => {
-                    tool_names.insert(insert_at, SHELL_COMMAND.to_string());
-                }
-                ShellImplementation::Pty => {
-                    tool_names.insert(insert_at, EXEC_COMMAND.to_string());
-                    tool_names.insert(insert_at + 1, WRITE_STDIN.to_string());
-                }
-                ShellImplementation::PtyPersistent => {
-                    tool_names.insert(insert_at, EXEC_COMMAND_PERSISTENT.to_string());
-                    tool_names.insert(insert_at + 1, WRITE_STDIN_PERSISTENT.to_string());
-                }
-            }
-        }
-
-        let preferred_text_edit = model.text_edit_implementation.clone().unwrap_or_default();
-        let preferred_agent_task = model.agent_task_implementation.clone().unwrap_or_default();
-        let preferred_shell = model.shell_implementation.clone().unwrap_or_default();
-
-        // ToolSet：Agent 可以绑定不同工具集合。
-        // - 若未绑定 toolset：默认只暴露 `web_search`（若本次 run 启用了 web_search），避免把本地工具“默认”下发给模型。
-        //   真实执行层仍会再按 sandbox_policy 做权限校验（防止前端/模型绕过）。
-        let _toolset_is_unbound = agent
-            .toolset
-            .as_deref()
-            .map(|s| s.trim().is_empty())
-            .unwrap_or(true);
-
-        let mut toolset = match agent.toolset.as_deref().filter(|s| !s.trim().is_empty()) {
-            Some(name) => match config.tools.toolsets.iter().find(|t| t.name == name) {
-                Some(ts) => {
-                    let mut tools = ts.tools.clone();
-                    resolve_text_edit_tools_in_allow_list(&mut tools, preferred_text_edit.clone());
-                    resolve_shell_tools_in_allow_list(
-                        &mut tools,
-                        preferred_shell.clone(),
-                        ts.persistance_shell_enhance,
-                    );
-                    super::tools::spec::ToolSet::allow_list(name, tools)
-                }
-                .with_persistance_shell_enhance(ts.persistance_shell_enhance),
-                // 安全优先：引用了不存在的 toolset 时，默认 deny_all，避免“悄悄变成 allow_all”
-                None => super::tools::spec::ToolSet::deny_all(name),
-            },
-            None => super::tools::spec::ToolSet::allow_list("__unbound__", Vec::new()),
-        };
-
-        // 权限策略：不再使用全局开关；改为由安全策略（sandbox_policy）决定是否暴露高危工具。
-        // 实际执行时仍会在工具层再次按 sandbox_policy 做强校验（例如 read-only 拒绝写入/PTY 等）。
-        let allow_shell_exec = true;
-        // Chat mode: don't allow high-risk local execution by default; keep behavior conservative.
-        let allow_pty_exec =
-            !chat_mode && !matches!(sandbox_policy, crate::models::SandboxPolicy::ReadOnly);
-        let allow_file_write =
-            !chat_mode && !matches!(sandbox_policy, crate::models::SandboxPolicy::ReadOnly);
-        let allow_mcp_exec = sandbox_policy.has_full_network_access();
-        let permission_policy: Arc<dyn super::tools::permissions::ToolPermissionPolicy> =
-            Arc::new(super::tools::permissions::BasicToolPermissionPolicy {
-                allow_shell_exec,
-                allow_pty_exec,
-                allow_file_write,
-                allow_mcp_exec,
-            });
-
-        allow_persistent_pty = toolset.persistance_shell_enhance;
-
-        // Registry：每个 run 构建一次（便于按 agent/mcp set 动态注入工具）。
-        let mut registry = ToolRegistry::new();
-        register_builtin_handlers_with_options(
-            &mut registry,
-            BuiltinHandlerOptions {
-                agent_task_implementation: preferred_agent_task,
-            },
-        );
-
-        // MCP tools：按 agent 绑定的 MCP Set 进行注入（工具名：mcp__{server}__{tool}）。
-        let mut mcp_tool_names: Vec<String> = Vec::new();
-        let mut mcp_resource_tool_names: Vec<String> = Vec::new();
-        if allow_mcp_exec {
-            // Codex-like `$` mention support:
-            // - If the user explicitly mentions one or more MCP servers in this message,
-            //   only inject tools from those servers.
-            // - Mention forms:
-            //   - `$server-name` (plain mention)
-            //   - `[$server-name](mcp://server-name)` (explicit path mention)
-            //   - `[$server-name](app://server-name)` (alias; keeps parity with Codex's `app://` links)
-            let tool_mentions = crate::mentions::extract_tool_mentions(&input.content);
-            let mut requested_servers_lower: HashSet<String> = HashSet::new();
-            for name in &tool_mentions.plain_names {
-                requested_servers_lower.insert(name.to_ascii_lowercase());
-            }
-            for path in &tool_mentions.paths {
-                match crate::mentions::tool_kind_for_path(path) {
-                    crate::mentions::ToolMentionKind::Mcp => {
-                        if let Some(id) = crate::mentions::mcp_id_from_path(path) {
-                            requested_servers_lower.insert(id.to_ascii_lowercase());
-                        }
-                    }
-                    crate::mentions::ToolMentionKind::App => {
-                        if let Some(id) = crate::mentions::app_id_from_path(path) {
-                            requested_servers_lower.insert(id.to_ascii_lowercase());
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            if let Some(set_name) = agent.mcp_set.as_deref().filter(|s| !s.trim().is_empty()) {
-                let server_map: HashMap<String, crate::models::McpServerConfig> = config
-                    .mcp
-                    .servers
-                    .iter()
-                    .map(|e| (e.name.clone(), e.config.clone()))
-                    .collect();
-
-                if let Some(mcp_set) = config.mcp.sets.iter().find(|s| s.name == set_name) {
-                    // Only enable "mention filtering" when the user mentioned at least one *valid*
-                    // server in this set. This avoids accidentally disabling MCP when the user
-                    // mentioned a `$skill`.
-                    let available_in_set_lower: HashSet<String> = mcp_set
-                        .servers
-                        .iter()
-                        .filter(|s| s.enabled)
-                        .map(|s| s.server.to_ascii_lowercase())
-                        .collect();
-                    let requested_in_set_lower: HashSet<String> = requested_servers_lower
-                        .intersection(&available_in_set_lower)
-                        .cloned()
-                        .collect();
-                    let filter_by_mention = !requested_in_set_lower.is_empty();
-
-                    let mut effective_servers: HashMap<String, crate::models::McpServerConfig> =
-                        HashMap::new();
-                    for set_server in &mcp_set.servers {
-                        if !set_server.enabled {
-                            continue;
-                        }
-                        if filter_by_mention
-                            && !requested_in_set_lower
-                                .contains(&set_server.server.to_ascii_lowercase())
-                        {
-                            continue;
-                        }
-                        let Some(server_cfg) = server_map.get(&set_server.server) else {
-                            continue;
-                        };
-                        if !server_cfg.enabled {
-                            continue;
-                        }
-                        effective_servers.insert(set_server.server.clone(), server_cfg.clone());
-
-                        let tools = match global_mcp_runtime()
-                            .list_tools_cached(&set_server.server, server_cfg)
-                            .await
-                        {
-                            Ok(t) => t,
-                            Err(err) => {
-                                eprintln!(
-                                    "[MCP] 列工具失败: server={} err={}",
-                                    set_server.server, err
-                                );
-                                continue;
-                            }
-                        };
-
-                        let mut tools = tools;
-                        // Apply MCP Set per-server tool filters on top of server config filters.
-                        if !set_server.enabled_tools.is_empty() {
-                            let allow: std::collections::HashSet<&str> = set_server
-                                .enabled_tools
-                                .iter()
-                                .map(|s| s.as_str())
-                                .collect();
-                            tools.retain(|t| allow.contains(t.name.as_ref()));
-                        }
-                        if !set_server.disabled_tools.is_empty() {
-                            let deny: std::collections::HashSet<&str> = set_server
-                                .disabled_tools
-                                .iter()
-                                .map(|s| s.as_str())
-                                .collect();
-                            tools.retain(|t| !deny.contains(t.name.as_ref()));
-                        }
-
-                        for tool in tools {
-                            let tool_name = tool.name.as_ref().to_string();
-                            let qualified = qualify_mcp_tool_name(&set_server.server, &tool_name);
-                            mcp_tool_names.push(qualified.clone());
-                            registry.register(Arc::new(
-                                crate::runtime::tools::handlers::mcp::McpToolHandler {
-                                    qualified_name: qualified,
-                                    server_name: set_server.server.clone(),
-                                    tool_name,
-                                    tool,
-                                    server_config: server_cfg.clone(),
-                                },
-                            ));
-                        }
-                    }
-
-                    // Codex-like MCP resource helpers (list/read resources) for the effective MCP server set.
-                    if !effective_servers.is_empty() {
-                        let servers = Arc::new(effective_servers);
-                        registry.register(Arc::new(
-                            crate::runtime::tools::handlers::mcp_resource::ListMcpResourcesTool {
-                                servers: Arc::clone(&servers),
-                            },
-                        ));
-                        registry.register(Arc::new(
-                            crate::runtime::tools::handlers::mcp_resource::ListMcpResourceTemplatesTool {
-                                servers: Arc::clone(&servers),
-                            },
-                        ));
-                        registry.register(Arc::new(
-                            crate::runtime::tools::handlers::mcp_resource::ReadMcpResourceTool {
-                                servers,
-                            },
-                        ));
-
-                        mcp_resource_tool_names.push("list_mcp_resources".to_string());
-                        mcp_resource_tool_names.push("list_mcp_resource_templates".to_string());
-                        mcp_resource_tool_names.push("read_mcp_resource".to_string());
-                        enable_mcp_resource_tool_prompt = true;
-                    }
-                }
-            } else if !requested_servers_lower.is_empty() {
-                // No MCP set binding: allow explicit per-message selection by `$server` mention.
-                // This mirrors Codex's "mention to enable" gating while keeping our existing
-                // per-agent binding model as the default.
-                let server_map: HashMap<String, crate::models::McpServerConfig> = config
-                    .mcp
-                    .servers
-                    .iter()
-                    .map(|e| (e.name.clone(), e.config.clone()))
-                    .collect();
-
-                let mut effective_servers: HashMap<String, crate::models::McpServerConfig> =
-                    HashMap::new();
-                // Only consider valid server mentions; ignore unrelated `$...` tokens.
-                let enabled_server_names_lower: HashSet<String> = server_map
-                    .iter()
-                    .filter_map(|(name, cfg)| cfg.enabled.then_some(name.to_ascii_lowercase()))
-                    .collect();
-                let requested_enabled_lower: HashSet<String> = requested_servers_lower
-                    .intersection(&enabled_server_names_lower)
-                    .cloned()
-                    .collect();
-                if requested_enabled_lower.is_empty() {
-                    // No valid server mentioned; skip MCP injection.
-                    // (The agent is unbound, so there is no default server set to fall back to.)
-                    // Note: do not treat `$skill` as server selection.
-                    //
-                    // Keep this branch conservative: we only enable MCP when explicitly requested.
-                    //
-                    // - If you want to use MCP without mentioning servers each time, bind an MCP Set on the agent.
-                    //
-                    // This matches Codex's spirit.
-                    //
-                    // (Also prevents startup overhead by avoiding list_tools calls.)
-                    //
-                    // Return to tool building.
-                    //
-                    // (No-op)
-                } else {
-                    for (server_name, server_cfg) in &server_map {
-                        if !server_cfg.enabled {
-                            continue;
-                        }
-                        if !requested_enabled_lower.contains(&server_name.to_ascii_lowercase()) {
-                            continue;
-                        }
-                        effective_servers.insert(server_name.clone(), server_cfg.clone());
-
-                        let tools = match global_mcp_runtime()
-                            .list_tools_cached(server_name, server_cfg)
-                            .await
-                        {
-                            Ok(t) => t,
-                            Err(err) => {
-                                eprintln!("[MCP] 列工具失败: server={} err={}", server_name, err);
-                                continue;
-                            }
-                        };
-
-                        for tool in tools {
-                            let tool_name = tool.name.as_ref().to_string();
-                            let qualified = qualify_mcp_tool_name(server_name, &tool_name);
-                            mcp_tool_names.push(qualified.clone());
-                            registry.register(Arc::new(
-                                crate::runtime::tools::handlers::mcp::McpToolHandler {
-                                    qualified_name: qualified,
-                                    server_name: server_name.clone(),
-                                    tool_name,
-                                    tool,
-                                    server_config: server_cfg.clone(),
-                                },
-                            ));
-                        }
-                    }
-
-                    if !effective_servers.is_empty() {
-                        let servers = Arc::new(effective_servers);
-                        registry.register(Arc::new(
-                            crate::runtime::tools::handlers::mcp_resource::ListMcpResourcesTool {
-                                servers: Arc::clone(&servers),
-                            },
-                        ));
-                        registry.register(Arc::new(
-                        crate::runtime::tools::handlers::mcp_resource::ListMcpResourceTemplatesTool {
-                            servers: Arc::clone(&servers),
-                        },
-                    ));
-                        registry.register(Arc::new(
-                            crate::runtime::tools::handlers::mcp_resource::ReadMcpResourceTool {
-                                servers,
-                            },
-                        ));
-
-                        mcp_resource_tool_names.push("list_mcp_resources".to_string());
-                        mcp_resource_tool_names.push("list_mcp_resource_templates".to_string());
-                        mcp_resource_tool_names.push("read_mcp_resource".to_string());
-                        enable_mcp_resource_tool_prompt = true;
-                    }
-                }
-            }
-        }
-
-        // Local web search tool:
-        // - User explicitly selected a web_search provider for this run
-        // - And the selected provider is enabled + has API key configured
-        let ws_cfg = &config.general.web_search_tool;
-
-        // Parse the selected provider from input (if any)
-        let selected_provider = input
-            .web_search_provider
-            .as_ref()
-            .and_then(|p| match p.as_str() {
-                "tavily" => Some(crate::models::WebSearchProvider::Tavily),
-                "google" => Some(crate::models::WebSearchProvider::Google),
-                "brave" => Some(crate::models::WebSearchProvider::Brave),
-                _ => None,
-            });
-
-        // Check if the selected provider is enabled and has API key
-        let (provider_enabled, has_key) = if let Some(provider) = selected_provider {
-            let enabled = match provider {
-                crate::models::WebSearchProvider::Tavily => ws_cfg.tavily_enabled,
-                crate::models::WebSearchProvider::Brave => ws_cfg.brave_enabled,
-                crate::models::WebSearchProvider::Google => ws_cfg.google_enabled,
-            };
-            let has_key = match provider {
-                crate::models::WebSearchProvider::Tavily => ws_cfg
-                    .tavily_api_key
-                    .as_ref()
-                    .is_some_and(|k| !k.trim().is_empty()),
-                crate::models::WebSearchProvider::Brave => ws_cfg
-                    .brave_api_key
-                    .as_ref()
-                    .is_some_and(|k| !k.trim().is_empty()),
-                crate::models::WebSearchProvider::Google => {
-                    ws_cfg
-                        .google_api_key
-                        .as_ref()
-                        .is_some_and(|k| !k.trim().is_empty())
-                        && ws_cfg
-                            .google_cx
-                            .as_ref()
-                            .is_some_and(|k| !k.trim().is_empty())
-                }
-            };
-            (enabled, has_key)
-        } else {
-            (false, false)
-        };
-
-        enable_local_web_search_tool = selected_provider.is_some() && provider_enabled && has_key;
-
-        if enable_local_web_search_tool {
-            registry.register(Arc::new(
-                crate::runtime::tools::handlers::web_search::WebSearchTool {
-                    settings: ws_cfg.clone(),
-                    provider_override: selected_provider,
-                },
-            ));
-            if matches!(toolset.mode, super::tools::spec::ToolSetMode::AllowList) {
-                if !toolset.tools.iter().any(|t| t == "web_search") {
-                    toolset.tools.push("web_search".to_string());
-                }
-            }
-        }
-
-        // 如果 agent 使用 allow_list toolset，需要把 MCP 工具名也显式加入 allow_list，
-        // 否则 orchestrator 会把它们过滤掉（即使 registry 已注册）。
-        //
-        // 注意：即使 toolset 未绑定（默认只启用 web_search），只要本次 run 确实注入了 MCP 工具
-        //（例如 agent 绑定了 MCP Set，或用户在消息中显式 mention 了 MCP server），也应该允许这些 MCP 工具生效。
-        if matches!(toolset.mode, super::tools::spec::ToolSetMode::AllowList)
-            && (!mcp_tool_names.is_empty() || !mcp_resource_tool_names.is_empty())
-        {
-            toolset.tools.extend(mcp_tool_names);
-            toolset.tools.extend(mcp_resource_tool_names);
-        }
-
-        let orchestrator = ToolOrchestrator::new(
-            Arc::new(registry),
-            ToolOrchestratorConfig {
-                toolset,
-                permission_policy,
-            },
-        );
-
-        let specs = orchestrator.tool_specs_for_model();
-        let allowed_tool_names: HashSet<String> = specs.iter().map(|s| s.name.clone()).collect();
-        (
-            Some(orchestrator),
-            Some(tool_specs_to_definitions(&specs)),
-            Some(allowed_tool_names),
-        )
-    };
-    let enable_apply_patch_tool_prompt = allowed_tool_names
-        .as_ref()
-        .is_some_and(|names| names.contains("apply_patch"));
-    let enable_apply_patch_unified_diff_tool_prompt = allowed_tool_names
-        .as_ref()
-        .is_some_and(|names| names.contains("apply_patch_unified_diff"));
-    let enable_write_file_replace_string_tool_prompt = allowed_tool_names
-        .as_ref()
-        .is_some_and(|names| names.contains("write_file") || names.contains("replace_string"));
-    // 防御性兜底：理论上在 toolset 约束后不会同时为 true；若出现，优先保留自定义锚定版 apply_patch。
-    let (enable_apply_patch_tool_prompt, enable_apply_patch_unified_diff_tool_prompt) = match (
+    let ToolingBuildResult {
+        tool_orchestrator,
+        tools,
+        allowed_tool_names,
+        allow_persistent_pty,
+        enable_local_web_search_tool,
+        enable_mcp_resource_tool_prompt,
         enable_apply_patch_tool_prompt,
         enable_apply_patch_unified_diff_tool_prompt,
-    ) {
-        (true, true) => (true, false),
-        other => other,
-    };
-    // 防御性兜底：文本编辑工具实现应该互斥；若出现，优先保留 apply_patch 系提示词。
-    let enable_write_file_replace_string_tool_prompt = enable_write_file_replace_string_tool_prompt
-        && !enable_apply_patch_tool_prompt
-        && !enable_apply_patch_unified_diff_tool_prompt;
-    let task_agent_tool_prompt = allowed_tool_names.as_ref().and_then(|names| {
-        names
-            .contains(AGENT_TASK_TOOL_NAME)
-            .then(|| render_task_agent_tool_prompt(&config))
-    });
+        enable_write_file_replace_string_tool_prompt,
+        task_agent_tool_prompt,
+    } = build_tooling_for_run(
+        tools_enabled,
+        &config,
+        agent,
+        model,
+        &sandbox_policy,
+        chat_mode,
+        &input.content,
+        input.web_search_provider.as_deref(),
+    )
+    .await?;
 
     // 4) TurnLoop：max_turns 统一以配置为准（agent.max_turns），未配置则使用全局默认值。
     let default_max_turns: u32 = 10_000;
@@ -4754,85 +5106,17 @@ async fn run_task_inner(
     // Note: 如果 max_turns 过小且模型仍然请求工具调用，会在 TurnLoop 内失败并提示用户调大 max_turns。
 
     // Skills: load (metadata only by default; full contents only when a skill is explicitly mentioned).
-    let app_skills_dir = config_manager
-        .config_path()
-        .parent()
-        .map(|p| p.join("skills"));
-    let repo_skills_dir = {
-        // Prefer bundled resources: `resources/skills/` -> `<resource_dir>/skills`
-        let from_resources = app
-            .as_ref()
-            .and_then(|app_handle| app_handle.path().resource_dir().ok())
-            .map(|p| p.join("skills"))
-            .filter(|p| p.is_dir());
-        if from_resources.is_some() {
-            from_resources
-        } else {
-            // Dev fallback: prefer build-time manifest dir (stable even if runtime cwd changes).
-            let from_manifest = option_env!("CARGO_MANIFEST_DIR").and_then(|manifest_dir| {
-                let manifest = std::path::PathBuf::from(manifest_dir);
-                if let Some(parent) = manifest.parent() {
-                    let p = parent.join("skills");
-                    if p.is_dir() {
-                        return Some(p);
-                    }
-                }
-                if let Some(grand) = manifest.parent().and_then(|p| p.parent()) {
-                    let p = grand.join("tauri-ai").join("skills");
-                    if p.is_dir() {
-                        return Some(p);
-                    }
-                    let p2 = grand.join("skills");
-                    if p2.is_dir() {
-                        return Some(p2);
-                    }
-                }
-                None
-            });
-            if from_manifest.is_some() {
-                from_manifest
-            } else {
-                // Fallbacks: search from executable directory and current working directory (and their ancestors).
-                let try_from_ancestors = |base: &std::path::Path| -> Option<std::path::PathBuf> {
-                    for dir in base.ancestors().take(8) {
-                        let p = dir.join("tauri-ai").join("skills");
-                        if p.is_dir() {
-                            return Some(p);
-                        }
-                        let p2 = dir.join("skills");
-                        if p2.is_dir() {
-                            return Some(p2);
-                        }
-                    }
-                    None
-                };
-
-                let from_exe = std::env::current_exe()
-                    .ok()
-                    .and_then(|exe| exe.parent().and_then(try_from_ancestors));
-                if from_exe.is_some() {
-                    from_exe
-                } else {
-                    std::env::current_dir()
-                        .ok()
-                        .and_then(|cwd| try_from_ancestors(&cwd))
-                }
-            }
-        }
-    };
-    let workstudio_skills_dir = workstudio
-        .as_ref()
-        .map(|ws| std::path::PathBuf::from(&ws.main_folder).join("skills"))
-        .filter(|p| p.is_dir());
-
-    // Metadata only (no SKILL.md bodies) for the cached system prompt + mention detection.
-    let enabled_skills_meta = select_enabled_skills(
+    let SkillResolution {
+        app_skills_dir,
+        repo_skills_dir,
+        workstudio_skills_dir,
+        enabled_skills_meta,
+    } = resolve_skill_context(
+        &config_manager,
+        app.as_ref(),
+        workstudio.as_ref(),
         &config,
         agent,
-        app_skills_dir.as_deref(),
-        repo_skills_dir.as_deref(),
-        workstudio_skills_dir.as_deref(),
-        false,
     );
 
     let py = python_availability();
@@ -5140,354 +5424,19 @@ async fn run_task_inner(
         .cleanup_task_sessions(&input.conversation_id, &task_id, allow_persistent_pty)
         .await;
 
-    match outcome {
-        TaskOutcome::Failed {
-            turn_id,
-            error,
-            debug_info,
-            content,
-            thinking,
-            blocks,
-            turns,
-        } => {
-            let error = decorate_user_error_with_origin(&error, debug_info.as_ref());
-            if let Some(id) = user_message_id_for_status_update.as_deref() {
-                let err = error.clone();
-                let _ = async_db::with_db(&db, "run_task:failed:update_user_status", |db| {
-                    db.update_message_status(id, MessageStatus::Failed, Some(err.clone()))
-                })
-                .await;
-            }
-
-            let should_persist = reuse_assistant_message_id
-                || !content.is_empty()
-                || !thinking.is_empty()
-                || !blocks.is_empty()
-                || !turns.is_empty();
-
-            if should_persist {
-                let usage_for_meta = turns.iter().rev().find_map(|t| t.usage.clone());
-
-                let existing: Option<Message> = if reuse_assistant_message_id {
-                    async_db::read_message(
-                        &db,
-                        "run_task:failed:get_existing_assistant",
-                        &input.conversation_id,
-                        &assistant_message_id,
-                    )
-                    .await
-                    .ok()
-                } else {
-                    None
-                };
-                let has_existing = existing.is_some();
-
-                let (merged_blocks, merged_turns) = if let Some(existing) = existing.as_ref() {
-                    let prefix_meta = existing.meta.as_ref();
-                    let prefix_blocks = prefix_meta.and_then(|m| m.blocks.clone());
-                    let prefix_turns = prefix_meta.and_then(|m| m.turns.clone());
-                    (
-                        merge_message_blocks(prefix_blocks, blocks),
-                        merge_message_turns(prefix_turns, turns),
-                    )
-                } else {
-                    (blocks, turns)
-                };
-
-                let assistant_message = Message {
-                    id: assistant_message_id.clone(),
-                    conversation_id: input.conversation_id.clone(),
-                    role: MessageRole::Assistant,
-                    content: content.clone(),
-                    content_parts: Vec::new(),
-                    thinking: if thinking.trim().is_empty() {
-                        None
-                    } else {
-                        Some(thinking.clone())
-                    },
-                    meta: Some(MessageMeta {
-                        model: Some(model_config.model.clone()),
-                        blocks: if merged_blocks.is_empty() {
-                            None
-                        } else {
-                            Some(merged_blocks)
-                        },
-                        turns: if merged_turns.is_empty() {
-                            None
-                        } else {
-                            Some(merged_turns)
-                        },
-                        usage: usage_for_meta,
-                        ..Default::default()
-                    }),
-                    created_at: chrono::Utc::now(),
-                    status: MessageStatus::Failed,
-                    error_message: Some(error.clone()),
-                };
-
-                let assistant_fields =
-                    crate::storage::MessageDbFields::from_message(&assistant_message)
-                        .unwrap_or_else(|_| crate::storage::MessageDbFields {
-                            role: "assistant",
-                            status: "failed",
-                            created_at: assistant_message.created_at.to_rfc3339(),
-                            content_parts_json: None,
-                            meta_json: None,
-                        });
-                let _ = async_db::with_db(&db, "run_task:failed:persist_assistant", |db| {
-                    if reuse_assistant_message_id && has_existing {
-                        db.update_message_with_fields(&assistant_message, &assistant_fields)
-                    } else {
-                        db.add_message_with_fields(
-                            &input.conversation_id,
-                            &assistant_message,
-                            &assistant_fields,
-                        )
-                    }
-                })
-                .await;
-            }
-
-            emitter.emit(RunEvent::Error {
-                task_id: Some(task_id),
-                turn_id: Some(turn_id),
-                assistant_message_id: Some(assistant_message_id),
-                error,
-                debug_info,
-            });
-            Ok(())
-        }
-        TaskOutcome::Success {
-            last_turn_id,
-            content,
-            thinking,
-            debug_info,
-            usage,
-            blocks,
-            turns,
-        } => {
-            if let Some(id) = user_message_id_for_status_update.as_deref() {
-                let _ = async_db::with_db(&db, "run_task:success:update_user_status", |db| {
-                    db.update_message_status(id, MessageStatus::Success, None)
-                })
-                .await;
-            }
-
-            if !content.is_empty()
-                || !thinking.is_empty()
-                || !blocks.is_empty()
-                || !turns.is_empty()
-            {
-                let usage_for_meta = usage
-                    .clone()
-                    .or_else(|| turns.iter().rev().find_map(|t| t.usage.clone()));
-
-                let existing: Option<Message> = if reuse_assistant_message_id {
-                    async_db::read_message(
-                        &db,
-                        "run_task:success:get_existing_assistant",
-                        &input.conversation_id,
-                        &assistant_message_id,
-                    )
-                    .await
-                    .ok()
-                } else {
-                    None
-                };
-                let has_existing = existing.is_some();
-
-                let (merged_blocks, merged_turns) = if let Some(existing) = existing.as_ref() {
-                    let prefix_meta = existing.meta.as_ref();
-                    let prefix_blocks = prefix_meta.and_then(|m| m.blocks.clone());
-                    let prefix_turns = prefix_meta.and_then(|m| m.turns.clone());
-                    (
-                        merge_message_blocks(prefix_blocks, blocks),
-                        merge_message_turns(prefix_turns, turns),
-                    )
-                } else {
-                    (blocks, turns)
-                };
-
-                let assistant_message = Message {
-                    id: assistant_message_id.clone(),
-                    conversation_id: input.conversation_id.clone(),
-                    role: MessageRole::Assistant,
-                    content: content.clone(),
-                    content_parts: Vec::new(),
-                    thinking: if thinking.trim().is_empty() {
-                        None
-                    } else {
-                        Some(thinking.clone())
-                    },
-                    meta: Some(MessageMeta {
-                        model: Some(model_config.model.clone()),
-                        blocks: if merged_blocks.is_empty() {
-                            None
-                        } else {
-                            Some(merged_blocks)
-                        },
-                        turns: if merged_turns.is_empty() {
-                            None
-                        } else {
-                            Some(merged_turns)
-                        },
-                        usage: usage_for_meta,
-                        ..Default::default()
-                    }),
-                    created_at: chrono::Utc::now(),
-                    status: MessageStatus::Success,
-                    error_message: None,
-                };
-
-                let assistant_fields =
-                    crate::storage::MessageDbFields::from_message(&assistant_message)
-                        .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
-                async_db::with_db(&db, "run_task:success:persist_assistant", |db| {
-                    if reuse_assistant_message_id && has_existing {
-                        db.update_message_with_fields(&assistant_message, &assistant_fields)
-                    } else {
-                        db.add_message_with_fields(
-                            &input.conversation_id,
-                            &assistant_message,
-                            &assistant_fields,
-                        )
-                    }
-                })
-                .await
-                .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
-            }
-
-            emitter.emit(RunEvent::Done {
-                task_id,
-                turn_id: last_turn_id,
-                assistant_message_id: Some(assistant_message_id),
-                full_content: content,
-                format: output_format,
-                thinking: if thinking.trim().is_empty() {
-                    None
-                } else {
-                    Some(thinking)
-                },
-                debug_info,
-                usage,
-                model: Some(model_config.model),
-            });
-            Ok(())
-        }
-        TaskOutcome::Aborted {
-            last_turn_id,
-            content,
-            thinking,
-            blocks,
-            turns,
-        } => {
-            if let Some(id) = user_message_id_for_status_update.as_deref() {
-                let _ = async_db::with_db(&db, "run_task:aborted:update_user_status", |db| {
-                    db.update_message_status(id, MessageStatus::Success, None)
-                })
-                .await;
-            }
-
-            if !content.is_empty()
-                || !thinking.is_empty()
-                || !blocks.is_empty()
-                || !turns.is_empty()
-            {
-                let usage_for_meta = turns.iter().rev().find_map(|t| t.usage.clone());
-
-                let existing: Option<Message> = if reuse_assistant_message_id {
-                    async_db::read_message(
-                        &db,
-                        "run_task:aborted:get_existing_assistant",
-                        &input.conversation_id,
-                        &assistant_message_id,
-                    )
-                    .await
-                    .ok()
-                } else {
-                    None
-                };
-                let has_existing = existing.is_some();
-
-                let (merged_blocks, merged_turns) = if let Some(existing) = existing.as_ref() {
-                    let prefix_meta = existing.meta.as_ref();
-                    let prefix_blocks = prefix_meta.and_then(|m| m.blocks.clone());
-                    let prefix_turns = prefix_meta.and_then(|m| m.turns.clone());
-                    (
-                        merge_message_blocks(prefix_blocks, blocks),
-                        merge_message_turns(prefix_turns, turns),
-                    )
-                } else {
-                    (blocks, turns)
-                };
-
-                let assistant_message = Message {
-                    id: assistant_message_id.clone(),
-                    conversation_id: input.conversation_id.clone(),
-                    role: MessageRole::Assistant,
-                    content: content.clone(),
-                    content_parts: Vec::new(),
-                    thinking: if thinking.trim().is_empty() {
-                        None
-                    } else {
-                        Some(thinking.clone())
-                    },
-                    meta: Some(MessageMeta {
-                        model: Some(model_config.model.clone()),
-                        blocks: if merged_blocks.is_empty() {
-                            None
-                        } else {
-                            Some(merged_blocks)
-                        },
-                        turns: if merged_turns.is_empty() {
-                            None
-                        } else {
-                            Some(merged_turns)
-                        },
-                        usage: usage_for_meta,
-                        ..Default::default()
-                    }),
-                    created_at: chrono::Utc::now(),
-                    status: MessageStatus::Success,
-                    error_message: None,
-                };
-
-                let assistant_fields =
-                    crate::storage::MessageDbFields::from_message(&assistant_message)
-                        .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
-                async_db::with_db(&db, "run_task:aborted:persist_assistant", |db| {
-                    if reuse_assistant_message_id && has_existing {
-                        db.update_message_with_fields(&assistant_message, &assistant_fields)
-                    } else {
-                        db.add_message_with_fields(
-                            &input.conversation_id,
-                            &assistant_message,
-                            &assistant_fields,
-                        )
-                    }
-                })
-                .await
-                .map_err(|e| AppErrorCode::UnknownError(e.to_string()))?;
-            }
-
-            emitter.emit(RunEvent::Done {
-                task_id,
-                turn_id: last_turn_id,
-                assistant_message_id: Some(assistant_message_id),
-                full_content: content,
-                format: output_format,
-                thinking: if thinking.trim().is_empty() {
-                    None
-                } else {
-                    Some(thinking)
-                },
-                debug_info: None,
-                usage: None,
-                model: Some(model_config.model),
-            });
-            Ok(())
-        }
-    }
+    finalize_task_outcome(
+        outcome,
+        db,
+        &mut emitter,
+        &input.conversation_id,
+        user_message_id_for_status_update.as_deref(),
+        reuse_assistant_message_id,
+        task_id,
+        assistant_message_id,
+        output_format,
+        model_config.model,
+    )
+    .await
 }
 
 async fn cleanup_abort_sender(run_state: &RunState, conversation_id: &str) {
