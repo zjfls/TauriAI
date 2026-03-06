@@ -4,7 +4,7 @@ use tauri::{
     image::Image,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager, Runtime,
+    AppHandle, Emitter, Manager, Runtime,
 };
 use tokio::sync::Mutex as TokioMutex;
 
@@ -146,6 +146,8 @@ fn save_state_and_exit<R: Runtime>(app: &AppHandle<R>) {
     }
 
     // 退出应用
+    let _ = app.emit("app:closing", ());
+    std::thread::sleep(std::time::Duration::from_millis(250));
     app.exit(0);
 }
 

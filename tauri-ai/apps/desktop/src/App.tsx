@@ -6,9 +6,10 @@
 
 import { useEffect, useMemo, useRef } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { PhysicalPosition, PhysicalSize } from '@tauri-apps/api/dpi';
 import { listen } from '@tauri-apps/api/event';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
-import { WebviewWindow, getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { MainLayout } from './components/Layout/MainLayout';
 import { StandaloneLayout } from './components/Layout/StandaloneLayout';
 import { GlobalErrorModal } from './components/GlobalErrorModal';
@@ -41,6 +42,7 @@ import type { CodeSnippetContentPart, WorkspaceMentionChip, Workstudio } from '.
 import {
   clearAppClosingIfStale,
   isAppClosingRecently,
+  markAppClosing,
   readWindowLayout,
   removeWindowRecord,
   upsertWindowRecord,
@@ -366,11 +368,21 @@ function App() {
       }, 200);
     };
 
+    const flushBounds = async () => {
+      if (disposed) return;
+      if (timer) {
+        window.clearTimeout(timer);
+        timer = null;
+      }
+      await updateBounds();
+    };
+
     void updateBounds();
 
     let unlistenMoved: null | (() => void) = null;
     let unlistenResized: null | (() => void) = null;
     let unlistenClose: null | (() => void) = null;
+    let unlistenAppClosing: null | (() => void) = null;
 
     void win
       .onMoved(() => scheduleBounds())
@@ -385,12 +397,22 @@ function App() {
       })
       .catch(() => { });
 
+    void listen('app:closing', () => {
+      markAppClosing();
+      void flushBounds();
+    })
+      .then((fn) => {
+        unlistenAppClosing = fn;
+      })
+      .catch(() => { });
+
     void win
       .onCloseRequested(async (event) => {
         // 关键：`@tauri-apps/api` 的 `onCloseRequested` 默认会在 handler 结束后调用 `window.destroy()`，
         // 这需要 `core:window:allow-destroy` 权限。我们这里统一 preventDefault，并改用后端命令 destroy 窗口，
         // 避免权限报错导致“窗口无法关闭”。
         event.preventDefault();
+        await flushBounds();
 
         // 主窗口 close(X)：隐藏到系统托盘，不销毁任何资源（避免会话/对话重建）。
         if (label === 'main') {
@@ -419,6 +441,7 @@ function App() {
       unlistenMoved?.();
       unlistenResized?.();
       unlistenClose?.();
+      unlistenAppClosing?.();
     };
   }, [isStandalone, isDragGhostWindow]);
 
@@ -433,13 +456,25 @@ function App() {
     let disposed = false;
 
     const layout = readWindowLayout();
+    const mainBounds = layout.windows.find((w) => w.label === 'main')?.bounds ?? null;
     const records = layout.windows.filter((w) => w.label !== 'main' && w.params?.standalone && w.params?.view);
-    const preferredWorkstudioLabel =
-      records
-        .filter((w) => w.params?.view === 'workstudio')
-        .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))[0]?.label ?? null;
-
     // 逐个恢复；openOrFocus 会自动去重（若窗口已存在则只聚焦）
+    if (mainBounds) {
+      const win = getCurrentWebviewWindow();
+      void (async () => {
+        try {
+          await win.setSize(new PhysicalSize(mainBounds.width, mainBounds.height));
+        } catch {
+          // ignore: best-effort restore
+        }
+        try {
+          await win.setPosition(new PhysicalPosition(mainBounds.x, mainBounds.y));
+        } catch {
+          // ignore: best-effort restore
+        }
+      })();
+    }
+
     for (const w of records) {
       const view = w.params.view;
       if (!view) continue;
@@ -467,40 +502,36 @@ function App() {
       });
     }
 
-    // 启动恢复后：若存在 Workstudio 窗口，优先把最新使用的 Workstudio 置前。
-    if (preferredWorkstudioLabel) {
-      void (async () => {
-        const retryDelaysMs = [90, 180, 320, 500, 800, 1200];
-        for (const delayMs of retryDelaysMs) {
-          if (disposed) return;
-          await new Promise<void>((resolve) => window.setTimeout(resolve, delayMs));
-          if (disposed) return;
+    // 启动恢复后：优先把主聊天窗口保持在最前，避免被恢复出的 Workstudio 抢焦点。
+    void (async () => {
+      const retryDelaysMs = [90, 180, 320, 500, 800, 1200];
+      const win = getCurrentWebviewWindow();
+      for (const delayMs of retryDelaysMs) {
+        if (disposed) return;
+        await new Promise<void>((resolve) => window.setTimeout(resolve, delayMs));
+        if (disposed) return;
 
-          const win = await WebviewWindow.getByLabel(preferredWorkstudioLabel).catch(() => null);
-          if (!win) continue;
-
-          try {
-            const minimized = await (win as any).isMinimized?.();
-            if (minimized) {
-              await (win as any).unminimize?.();
-            }
-          } catch {
-            // ignore
+        try {
+          const minimized = await (win as any).isMinimized?.();
+          if (minimized) {
+            await (win as any).unminimize?.();
           }
-          try {
-            await (win as any).show?.();
-          } catch {
-            // ignore
-          }
-          try {
-            await win.setFocus();
-            return;
-          } catch {
-            // ignore and retry
-          }
+        } catch {
+          // ignore
         }
-      })();
-    }
+        try {
+          await (win as any).show?.();
+        } catch {
+          // ignore
+        }
+        try {
+          await win.setFocus();
+          return;
+        } catch {
+          // ignore and retry
+        }
+      }
+    })();
 
     return () => {
       disposed = true;
