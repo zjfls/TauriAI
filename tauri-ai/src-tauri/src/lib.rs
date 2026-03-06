@@ -680,6 +680,7 @@ fn run_desktop() {
             create_workstudio,
             set_workstudio_main_folder,
             remove_workstudio_folder,
+            resolve_workstudio_file_target,
             workstudio_find_files,
             workstudio_main_folder_has_real_content,
             // Code intelligence (LSP)

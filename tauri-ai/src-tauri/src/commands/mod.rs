@@ -116,7 +116,8 @@ pub use window_control::{close_invoking_window, hide_invoking_window};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use workstudio::{
     add_workstudio_folder, create_workstudio, ensure_workstudio_for_conversation, get_workstudio,
-    remove_workstudio_folder, set_workstudio_main_folder, workstudio_find_files,
+    remove_workstudio_folder, resolve_workstudio_file_target, set_workstudio_main_folder,
+    workstudio_find_files,
     workstudio_main_folder_has_real_content,
 };
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
