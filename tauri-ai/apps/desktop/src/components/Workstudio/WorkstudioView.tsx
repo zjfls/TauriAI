@@ -403,7 +403,7 @@ const PaneDropZone: React.FC<{ paneId: string; children: React.ReactNode }> = ({
 	      onMouseLeave={onMouseLeave}
 	      data-workstudio-tab-id={id}
 		      className={[
-		        'group flex items-center gap-2 rounded px-2 py-1 text-xs',
+		        'group flex h-7 items-center gap-0.5 rounded-sm px-1.5 py-0 text-[15px] leading-5',
 		        active
 		          ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
 		          : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800',
@@ -412,9 +412,9 @@ const PaneDropZone: React.FC<{ paneId: string; children: React.ReactNode }> = ({
 		      {...attributes}
 		      {...listeners}
 		    >
-		      <span className="max-w-[180px] truncate" title={tooltip || title}>{title}</span>
+		      <span className="max-w-[132px] truncate" title={tooltip || title}>{title}</span>
 	      <span
-	        className="rounded p-0.5 text-gray-400 hover:bg-gray-200 hover:text-gray-700 dark:hover:bg-gray-700 dark:hover:text-gray-200"
+	        className="rounded p-px text-gray-400 hover:bg-gray-200 hover:text-gray-700 dark:hover:bg-gray-700 dark:hover:text-gray-200"
 	        onClick={(event) => {
 	          event.stopPropagation();
           onClose();
@@ -422,7 +422,7 @@ const PaneDropZone: React.FC<{ paneId: string; children: React.ReactNode }> = ({
         role="button"
         aria-label="close"
       >
-        <X size={12} />
+        <X size={9} />
       </span>
     </button>
   );
@@ -484,6 +484,28 @@ const basename = (p: string) => {
   const normalized = p.replace(/\\/g, '/');
   const segments = normalized.split('/').filter(Boolean);
   return segments.length === 0 ? p : segments[segments.length - 1];
+};
+
+const splitFsPathForBreadcrumb = (absPathRaw: string, rootsRaw: string[]): string[] => {
+  const absPath = normalizeFsPath(String(absPathRaw ?? '').trim());
+  if (!absPath) return [];
+
+  let bestRoot = '';
+  for (const raw of rootsRaw ?? []) {
+    const root = normalizeFsPath(String(raw ?? '').trim());
+    if (!root) continue;
+    if (absPath !== root && !absPath.startsWith(`${root}/`)) continue;
+    if (!bestRoot || root.length > bestRoot.length) bestRoot = root;
+  }
+
+  if (bestRoot) {
+    const rootLabel = basename(bestRoot) || bestRoot;
+    const rel = absPath.slice(bestRoot.length).replace(/^\/+/, '');
+    const relSegments = rel ? rel.split('/').filter(Boolean) : [];
+    return [rootLabel, ...relSegments];
+  }
+
+  return absPath.split('/').filter(Boolean);
 };
 
 const isAutoDetectMatchForLanguage = (languageId: string, filePath: string): boolean => {
@@ -1106,6 +1128,17 @@ const findOutlinePathAtPosition = (items: OutlineItem[], line: number, column: n
     }
   }
   return best;
+};
+
+const findOutlinePathByKey = (items: OutlineItem[], keyRaw: string): OutlineItem[] | null => {
+  const key = String(keyRaw ?? '').trim();
+  if (!key || items.length === 0) return null;
+  for (const item of items) {
+    if (item.key === key) return [item];
+    const childPath = findOutlinePathByKey(item.children, key);
+    if (childPath) return [item, ...childPath];
+  }
+  return null;
 };
 
 const outlineCanContain = (parent: OutlineItem, child: OutlineItem): boolean => {
@@ -3788,6 +3821,43 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     activeOutlineFilePathRef.current = activeOutlineFilePath;
   }, [activeOutlineFilePath]);
 
+  const resolveOutlinePathAtFocusedCursor = useCallback((): OutlineItem[] | null | undefined => {
+    const state = useWindowLayoutStore.getState();
+    const paneId =
+      (resolvedFocusedPaneId && state.panes.some((p) => p.id === resolvedFocusedPaneId)
+        ? resolvedFocusedPaneId
+        : state.focusedPaneId) ?? null;
+    if (!paneId) return undefined;
+
+    const activeTabId = getActiveTabIdForPane(paneId);
+    if (!activeTabId) return undefined;
+
+    const activeOutlinePath = activeOutlineFilePathRef.current;
+    const normalizedTabPath = normalizeFsPath(activeTabId);
+    if (!activeOutlinePath || normalizedTabPath !== activeOutlinePath) return undefined;
+
+    const editor = editorByPaneRef.current.get(paneId) ?? null;
+    if (!editor) return undefined;
+
+    const selection = editor.getSelection();
+    const pos = selection?.getStartPosition?.() ?? editor.getPosition();
+    if (!pos) return undefined;
+
+    const items = outlineItemsRef.current;
+    if (!items || items.length === 0) return null;
+    return findOutlinePathAtPosition(items, pos.lineNumber, pos.column);
+  }, [getActiveTabIdForPane, resolvedFocusedPaneId]);
+
+  useEffect(() => {
+    const pathAtCursor = resolveOutlinePathAtFocusedCursor();
+    if (typeof pathAtCursor === 'undefined') return;
+    const nextKey = pathAtCursor && pathAtCursor.length > 0 ? String(pathAtCursor[pathAtCursor.length - 1]?.key ?? '').trim() : '';
+    const normalizedNextKey = nextKey || null;
+    if (outlineActiveKeyRef.current === normalizedNextKey) return;
+    outlineActiveKeyRef.current = normalizedNextKey;
+    setOutlineActiveKey(normalizedNextKey);
+  }, [activeOutlineFilePath, outlineItems, resolveOutlinePathAtFocusedCursor]);
+
   const updateOutlineFileViewState = useCallback(
     (filePathRaw: string, updater: (prev: OutlineFileViewState) => OutlineFileViewState) => {
       const filePath = normalizeFsPath(String(filePathRaw ?? '').trim());
@@ -5021,7 +5091,7 @@ type OpenFromLinkErrorInfo = {
         `error: ${msg}`,
       ].join('\n');
       setOpenFromLinkError({ message: msg, details });
-      void showGlobalError('????????', msg, error);
+      void showGlobalError('打开链接文件失败', msg, error);
     }
   }, [dbg, getActiveTabIdForPane, openFileAtPath, revealFileInExplorer, uiStateRestored, workstudioId, ws]);
 
@@ -5333,6 +5403,19 @@ type OpenFromLinkErrorInfo = {
       setFocusedPane,
     ]
   );
+
+  const activeBreadcrumbSymbolPath = useMemo(
+    () => (outlineActiveKey ? findOutlinePathByKey(outlineItems, outlineActiveKey) ?? [] : []),
+    [outlineActiveKey, outlineItems]
+  );
+  const activeBreadcrumbTitle = useMemo(() => {
+    const filePath = normalizeFsPath(activeFilePathInFocusedPane ?? '');
+    if (!filePath) return '';
+    const symbolNames = activeBreadcrumbSymbolPath
+      .map((item) => String(item.name ?? '').trim())
+      .filter((name) => name.length > 0);
+    return symbolNames.length > 0 ? `${filePath} > ${symbolNames.join(' > ')}` : filePath;
+  }, [activeBreadcrumbSymbolPath, activeFilePathInFocusedPane]);
 
   const makeSymbolAnalysisCacheKey = useCallback(
     (filePathRaw: string, symbolKey: string) => {
@@ -8893,6 +8976,16 @@ type OpenFromLinkErrorInfo = {
 
         // 记录“代码导航类”跳转（例如 F12 转到定义）产生的程序化光标移动。
         // 只在 source=api 或者存在 pendingNavRecord 时记入历史，避免箭头键移动污染浏览栈。
+        window.setTimeout(() => {
+          const pathAtCursor = resolveOutlinePathAtFocusedCursor();
+          if (typeof pathAtCursor === 'undefined') return;
+          const nextKey = pathAtCursor && pathAtCursor.length > 0 ? String(pathAtCursor[pathAtCursor.length - 1]?.key ?? '').trim() : '';
+          const normalizedNextKey = nextKey || null;
+          if (outlineActiveKeyRef.current === normalizedNextKey) return;
+          outlineActiveKeyRef.current = normalizedNextKey;
+          setOutlineActiveKey(normalizedNextKey);
+        }, 0);
+
         editor.onDidChangeCursorPosition((ev) => {
           const tabId = readActiveTabId();
           if (!tabId) return;
@@ -9004,6 +9097,7 @@ type OpenFromLinkErrorInfo = {
       lspAutoConfigStatus,
       openInlineChatComposer,
       openLinkTarget,
+      resolveOutlinePathAtFocusedCursor,
       refreshChatWithMarkersForPane,
       saveFile,
       viewExplorerFileChatWithHistory,
@@ -13088,6 +13182,11 @@ type OpenFromLinkErrorInfo = {
                     const activeFile = activeFileId ? openFiles.find((f) => f.id === activeFileId) ?? null : null;
                     const isFocused = pane.id === resolvedFocusedPaneId;
                     const leftPaneId = idx > 0 ? resolvedPanes[idx - 1]!.id : null;
+                    const paneFilePath = activeFile ? normalizeFsPath(activeFile.path) : '';
+                    const paneBreadcrumbFileSegments = activeFile ? splitFsPathForBreadcrumb(activeFile.path, rootFolders) : [];
+                    const paneShowsActiveSymbolPath = Boolean(isFocused && paneFilePath && activeOutlineFilePath && paneFilePath === activeOutlineFilePath);
+                    const paneBreadcrumbSymbolPath = paneShowsActiveSymbolPath ? activeBreadcrumbSymbolPath : [];
+                    const paneBreadcrumbTitle = paneShowsActiveSymbolPath && activeBreadcrumbTitle ? activeBreadcrumbTitle : paneFilePath;
                     return (
                       <React.Fragment key={pane.id}>
                         {idx > 0 && leftPaneId && (
@@ -13109,7 +13208,7 @@ type OpenFromLinkErrorInfo = {
                           <PaneDropZone paneId={pane.id}>
                             <div
                               ref={registerPaneTabStripRef(pane.id)}
-                              className="flex items-center gap-1 overflow-x-auto border-b border-gray-200 bg-white px-2 py-1 dark:border-gray-800 dark:bg-gray-950"
+                              className="flex items-center gap-0.5 overflow-x-auto border-b border-gray-200 bg-white px-1.5 py-[2px] dark:border-gray-800 dark:bg-gray-950"
                             >
                               <SortableContext items={pane.tabIds} strategy={horizontalListSortingStrategy}>
                                 {pane.tabIds.length === 0 ? (
@@ -13151,11 +13250,11 @@ type OpenFromLinkErrorInfo = {
                                 )}
                               </SortableContext>
 
-                              <div className="ml-auto flex items-center gap-2 px-1">
+                              <div className="ml-auto flex items-center gap-1 pl-1">
                                 <button
                                   type="button"
                                   disabled={resolvedPanes.length <= 1}
-                                  className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 disabled:opacity-60 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                                  className="inline-flex h-6 items-center rounded border border-gray-200 px-1.5 text-[10px] text-gray-600 hover:bg-gray-100 disabled:opacity-60 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
                                   onClick={() => closePaneAndMerge(pane.id)}
                                   title="关闭窗格"
                                 >
@@ -13164,6 +13263,56 @@ type OpenFromLinkErrorInfo = {
                               </div>
                             </div>
 
+                            {paneBreadcrumbFileSegments.length > 0 && (
+                              <div
+                                className="flex items-center gap-1 overflow-x-auto border-b border-gray-200 bg-gray-50/80 px-2 py-1 text-[11px] text-gray-600 dark:border-gray-800 dark:bg-gray-950/70 dark:text-gray-300"
+                                title={paneBreadcrumbTitle || undefined}
+                              >
+                                {paneBreadcrumbFileSegments.map((segment, idx) => (
+                                  <React.Fragment key={`${pane.id}:file:${idx}:${segment}`}>
+                                    {idx > 0 && <ChevronRight size={11} className="shrink-0 text-gray-400" />}
+                                    <span
+                                      className={[
+                                        'max-w-[160px] shrink truncate rounded px-1 py-0.5',
+                                        idx === paneBreadcrumbFileSegments.length - 1 && paneBreadcrumbSymbolPath.length === 0
+                                          ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
+                                          : 'text-gray-600 dark:text-gray-300',
+                                      ].join(' ')}
+                                    >
+                                      {segment}
+                                    </span>
+                                  </React.Fragment>
+                                ))}
+                                {paneBreadcrumbSymbolPath.map((item) => (
+                                  <React.Fragment key={`${pane.id}:symbol:${item.key}`}>
+                                    <ChevronRight size={11} className="shrink-0 text-gray-400" />
+                                    <button
+                                      type="button"
+                                      className={[
+                                        'max-w-[160px] shrink truncate rounded px-1 py-0.5 text-left transition-colors',
+                                        item.key === outlineActiveKey
+                                          ? 'bg-blue-50 text-blue-700 hover:bg-blue-100 dark:bg-blue-900/30 dark:text-blue-200 dark:hover:bg-blue-900/40'
+                                          : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800',
+                                      ].join(' ')}
+                                      onClick={() => jumpToOutlineItem(item)}
+                                      title={`${item.name}（${normalizeOutlineKind(item.kind)}）${item.detail ? ` · ${item.detail}` : ''}`}
+                                    >
+                                      {item.name}
+                                    </button>
+                                  </React.Fragment>
+                                ))}
+                                {paneShowsActiveSymbolPath && outlineLoading && paneBreadcrumbSymbolPath.length === 0 && (
+                                  <span className="ml-1 shrink-0 rounded border border-gray-200 px-1 py-0.5 text-[10px] text-gray-500 dark:border-gray-700 dark:text-gray-400">
+                                    符号解析中…
+                                  </span>
+                                )}
+                                {paneShowsActiveSymbolPath && outlineError && (
+                                  <span className="ml-1 max-w-[220px] truncate text-[10px] text-red-600 dark:text-red-300" title={outlineError}>
+                                    {outlineError}
+                                  </span>
+                                )}
+                              </div>
+                            )}
                             <div ref={registerPaneBodyRef(pane.id)} className="min-h-0 flex-1 overflow-hidden">
                               {activeFile ? (
                                 activeFile.kind === 'text' ? (
@@ -14513,7 +14662,7 @@ type OpenFromLinkErrorInfo = {
                 title="关闭面板"
                 aria-label="关闭面板"
               >
-                <X size={12} />
+                <X size={9} />
               </button>
             </div>
           </div>
