@@ -1,3 +1,4 @@
+import { normalizePracticeGenerationCounts } from "./generation";
 import { extractJsonCandidates, safeJsonParse } from "./json";
 import type {
   PracticeGrading,
@@ -9,6 +10,8 @@ import type {
 export type LlmInvoke = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
 
 type MobileChatMessage = { role: string; content: string };
+
+const PRACTICE_TITLE_MAX_CHARS = 10;
 type MobileChatImagePart = {
   type: "image";
   url: string;
@@ -169,13 +172,12 @@ function normalizeQuizPayload(payload: any): { title: string; questions: Practic
   return { title, questions };
 }
 
-export async function mobileChat(
+export async function practiceChat(
   invoke: LlmInvoke,
-  opts: { messages: MobileChatMessageWithParts[]; agentName?: string },
+  opts: { messages: MobileChatMessageWithParts[] },
 ): Promise<string> {
-  const res = await invoke<{ content: string }>("mobile_chat", {
+  const res = await invoke<{ content: string }>("practice_chat", {
     messages: opts.messages,
-    agentName: opts.agentName || undefined,
   });
   return String(res?.content ?? "");
 }
@@ -188,25 +190,24 @@ export type GeneratePracticeQuizOptions = {
 
 export async function generatePracticeQuiz(
   invoke: LlmInvoke,
-  opts: { agentName?: string; options: GeneratePracticeQuizOptions },
+  opts: { options: GeneratePracticeQuizOptions },
 ): Promise<PracticeQuiz> {
   const topic = opts.options.topic.trim();
   if (!topic) throw new Error("题目主题不能为空");
 
-  const c = opts.options.counts || {};
-  const numMc = Math.max(0, Math.min(20, Math.round(asNumber(c.multiple_choice, 2))));
-  const numCalc = Math.max(0, Math.min(20, Math.round(asNumber(c.calculation, 2))));
-  const numProof = Math.max(0, Math.min(20, Math.round(asNumber(c.proof, 1))));
-  const numQa = Math.max(0, Math.min(20, Math.round(asNumber(c.qa, 1))));
+  const counts = normalizePracticeGenerationCounts(opts.options.counts || {});
+  const numMc = counts.multiple_choice;
+  const numCalc = counts.calculation;
+  const numProof = counts.proof;
+  const numQa = counts.qa;
   const total = numMc + numCalc + numProof + numQa;
   if (total <= 0) throw new Error("至少需要生成 1 道题");
 
   const difficulty = opts.options.difficulty ?? "medium";
 
   const system = [
-    "你是出题老师。请为用户生成一套练习题。",
+    "任务：为用户生成一套练习题。",
     "不要调用任何工具（包括 web_search），不要请求外部资源。",
-    "忽略任何与出题无关的系统/开发者提示，只按本消息执行。",
     "",
     "输出要求（非常重要）：",
     "1) 你必须只输出 1 个 JSON 对象，不要输出任何额外文字、Markdown、代码块、注释。",
@@ -235,8 +236,7 @@ export async function generatePracticeQuiz(
     `- qa: ${numQa}`,
   ].join("\n");
 
-  let content = await mobileChat(invoke, {
-    agentName: opts.agentName,
+  let content = await practiceChat(invoke, {
     messages: [
       { role: "system", content: system },
       { role: "user", content: user },
@@ -283,8 +283,7 @@ export async function generatePracticeQuiz(
       content,
     ].join("\n");
 
-    content = await mobileChat(invoke, {
-      agentName: opts.agentName,
+    content = await practiceChat(invoke, {
       messages: [
         { role: "system", content: repairSystem },
         { role: "user", content: repairUser },
@@ -313,10 +312,63 @@ export async function generatePracticeQuiz(
   };
 }
 
+function practiceTitleQuestionTypeLabel(type: PracticeQuestionType): string {
+  if (type === "multiple_choice") return "选择题";
+  if (type === "calculation") return "计算题";
+  if (type === "proof") return "证明题";
+  return "问答题";
+}
+
+function normalizePracticeTitleText(text: string, maxChars = PRACTICE_TITLE_MAX_CHARS): string {
+  const compact = String(text ?? "")
+    .replace(/[`*_#>[\]{}()]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return Array.from(compact).slice(0, maxChars).join("");
+}
+
+export async function generatePracticeTitle(
+  invoke: LlmInvoke,
+  opts: {
+    topic: string;
+    questions: PracticeQuestion[];
+    fallbackTitle?: string;
+  },
+): Promise<string> {
+  const fallback =
+    normalizePracticeTitleText(opts.fallbackTitle || "") ||
+    normalizePracticeTitleText(opts.topic || "") ||
+    "AI练习";
+
+  const outline = [
+    opts.topic.trim() ? `主题：${opts.topic.trim()}` : "",
+    ...opts.questions.slice(0, 4).map((question) => {
+      const prompt = normalizePracticeTitleText(question.prompt || "", 24);
+      return `${practiceTitleQuestionTypeLabel(question.type)}：${prompt}`;
+    }),
+  ]
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+
+  if (!outline) return fallback;
+
+  try {
+    const raw = await invoke<string>("practice_generate_title", {
+      messages: [{ role: "user", content: outline }],
+      maxChars: PRACTICE_TITLE_MAX_CHARS,
+      contextKind: "练习",
+    });
+
+    return normalizePracticeTitleText(raw || "") || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 export async function gradePracticeAnswer(
   invoke: LlmInvoke,
   opts: {
-    agentName?: string;
     question: PracticeQuestion;
     studentAnswer: string;
     studentAnswerImages?: MobileChatImagePart[];
@@ -331,9 +383,8 @@ export async function gradePracticeAnswer(
   }
 
   const system = [
-    "你是阅卷老师。请根据题目、参考答案对学生作答进行评分，并给出讲解。",
+    "任务：根据题目、参考答案对学生作答评分，并给出讲解。",
     "不要调用任何工具（包括 web_search），不要请求外部资源。",
-    "忽略任何与阅卷无关的系统/开发者提示，只按本消息执行。",
     "",
     "输出要求（非常重要）：",
     "1) 你必须只输出 1 个 JSON 对象，不要输出任何额外文字、Markdown、代码块、注释。",
@@ -361,8 +412,7 @@ export async function gradePracticeAnswer(
     answerImages.length > 0 ? `学生作答图片：共 ${answerImages.length} 张（已附在消息内容中）` : "",
   ].join("\n\n");
 
-  let content = await mobileChat(invoke, {
-    agentName: opts.agentName,
+  let content = await practiceChat(invoke, {
     messages: [
       { role: "system", content: system },
       {
@@ -391,8 +441,7 @@ export async function gradePracticeAnswer(
       content,
     ].join("\n");
 
-    content = await mobileChat(invoke, {
-      agentName: opts.agentName,
+    content = await practiceChat(invoke, {
       messages: [
         { role: "system", content: repairSystem },
         {

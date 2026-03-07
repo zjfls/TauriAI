@@ -216,6 +216,13 @@ export function ScrollableInkPad({
   const lastPointRef = useRef<InkPoint | null>(null);
   const activeStrokeIdRef = useRef<string | null>(null);
   const presentRafRef = useRef<number | null>(null);
+  const touchScrollRef = useRef<{
+    pointerId: number;
+    startClientX: number;
+    startClientY: number;
+    startScrollLeft: number;
+    startScrollTop: number;
+  } | null>(null);
 
   const [viewportSize, setViewportSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const [inking, setInking] = useState(false);
@@ -545,13 +552,43 @@ export function ScrollableInkPad({
     lastPointRef.current = null;
   };
 
-  const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (disabled) return;
-    // Finger scrolls; pen/mouse writes.
-    if (e.pointerType === "touch") return;
+  const endTouchScroll = () => {
+    touchScrollRef.current = null;
+  };
 
+  const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+
+    if (e.pointerType === "touch") {
+      if (drawingRef.current) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+
+      const viewport = viewportRef.current;
+      if (!viewport) return;
+
+      try {
+        canvas.setPointerCapture(e.pointerId);
+      } catch {
+        // ignore
+      }
+
+      touchScrollRef.current = {
+        pointerId: e.pointerId,
+        startClientX: e.clientX,
+        startClientY: e.clientY,
+        startScrollLeft: viewport.scrollLeft,
+        startScrollTop: viewport.scrollTop,
+      };
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+
+    if (disabled) return;
 
     try {
       canvas.setPointerCapture(e.pointerId);
@@ -559,8 +596,8 @@ export function ScrollableInkPad({
       // ignore
     }
 
-    canvas.style.touchAction = "none";
     e.preventDefault();
+    e.stopPropagation();
 
     const rect = canvas.getBoundingClientRect();
     const p = getPointFromEvent(e, rect);
@@ -571,9 +608,30 @@ export function ScrollableInkPad({
   };
 
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const touchScroll = touchScrollRef.current;
+    if (touchScroll && touchScroll.pointerId === e.pointerId) {
+      const viewport = viewportRef.current;
+      if (!viewport) return;
+      viewport.scrollLeft = touchScroll.startScrollLeft - (e.clientX - touchScroll.startClientX);
+      viewport.scrollTop = touchScroll.startScrollTop - (e.clientY - touchScroll.startClientY);
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+
+    if (e.pointerType === "touch") {
+      if (drawingRef.current) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+      return;
+    }
+
     if (!drawingRef.current) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
+    e.preventDefault();
+    e.stopPropagation();
     const rect = canvas.getBoundingClientRect();
     const p = getPointFromEvent(e, rect);
     const last = lastPointRef.current;
@@ -583,22 +641,33 @@ export function ScrollableInkPad({
   };
 
   const onPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const touchScroll = touchScrollRef.current;
+    if (touchScroll && touchScroll.pointerId === e.pointerId) {
+      endTouchScroll();
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+
     if (!drawingRef.current) return;
     drawingRef.current = false;
     setInking(false);
-    const canvas = canvasRef.current;
-    if (canvas) canvas.style.touchAction = "pan-y";
     e.preventDefault();
+    e.stopPropagation();
     endStroke();
     if (dirtyRef.current) commitDraft();
   };
 
-  const onPointerCancel = () => {
+  const onPointerCancel = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const touchScroll = touchScrollRef.current;
+    if (touchScroll && touchScroll.pointerId === e.pointerId) {
+      endTouchScroll();
+      return;
+    }
+
     if (!drawingRef.current) return;
     drawingRef.current = false;
     setInking(false);
-    const canvas = canvasRef.current;
-    if (canvas) canvas.style.touchAction = "pan-y";
     endStroke();
     // iOS/WKWebView may emit pointercancel for gestures / app backgrounding.
     // Commit to avoid losing the last stroke.
@@ -653,8 +722,9 @@ export function ScrollableInkPad({
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}
             onPointerCancel={onPointerCancel}
-            // Let finger pan vertically when not writing; we toggle to `none` during pen write.
-            style={{ backgroundColor: "transparent", touchAction: inking ? "none" : "pan-y" }}
+            // Disable native touch scrolling on canvas so pen/palm gestures never drag the outer page.
+            // Finger scrolling is handled by updating the internal viewport scroll position.
+            style={{ backgroundColor: "transparent", touchAction: "none" }}
           />
         </div>
       </div>

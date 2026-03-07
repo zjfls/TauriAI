@@ -23,6 +23,7 @@ import { useDocumentStore } from './stores/documentStore';
 import { useWebTabStore } from './stores/webTabStore';
 import { useTerminalTabStore } from './stores/terminalTabStore';
 import { useUIStore } from './stores/uiStore';
+import { filterNonPracticeAgents } from '../../common/src/agentUtils';
 import { useWindowLayoutStore } from './stores/windowLayoutStore';
 import { chatTabId, docTabId, parseWorkspaceTabId, terminalTabId, webTabId } from './stores/workspaceTabStore';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
@@ -1362,7 +1363,11 @@ function App() {
               viewOverride !== 'settings'));
 
         if (skipDefaultSession) return;
-        const defaultAgent = config.defaultAgent || config.agents?.[0]?.name;
+        const visibleAgents = filterNonPracticeAgents(config.agents || []);
+        const defaultAgent =
+          (config.defaultAgent && visibleAgents.some((agent) => agent.name === config.defaultAgent)
+            ? config.defaultAgent
+            : '') || visibleAgents[0]?.name;
         if (defaultAgent) {
           try {
             await createSession(defaultAgent);

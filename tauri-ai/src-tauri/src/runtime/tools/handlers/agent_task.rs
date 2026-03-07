@@ -99,6 +99,7 @@ fn agent_type_label(agent_type: AgentType) -> &'static str {
         AgentType::Chat => "chat",
         AgentType::Tool => "tool",
         AgentType::TaskAgent => "task_agent",
+        AgentType::Practice => "practice",
     }
 }
 

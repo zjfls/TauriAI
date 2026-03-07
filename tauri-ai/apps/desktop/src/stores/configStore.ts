@@ -5,6 +5,7 @@
 
 import { create } from 'zustand';
 import { registerConfigStateGetter, tauriInvoke as invoke } from '../utils/errorUtils';
+import { filterNonPracticeAgents, isPracticeAgentLike } from '../../../common/src/agentUtils';
 import type { AppConfig, Provider, Model, Agent } from '../types';
 import { useUIStore } from './uiStore';
 
@@ -307,17 +308,18 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
 
   getAgent: (name: string) => {
     const { config } = get();
-    return config?.agents.find((a) => a.name === name && (a.enabled ?? true));
+    return config?.agents.find((a) => a.name === name && (a.enabled ?? true) && !isPracticeAgentLike(a));
   },
 
   getDefaultAgent: () => {
     const { config } = get();
     if (!config) return undefined;
+    const visibleAgents = filterNonPracticeAgents(config.agents).filter((a) => (a.enabled ?? true));
     if (config.defaultAgent) {
-      const byName = config.agents.find((a) => a.name === config.defaultAgent);
-      if (byName && (byName.enabled ?? true)) return byName;
+      const byName = visibleAgents.find((a) => a.name === config.defaultAgent);
+      if (byName) return byName;
     }
-    return config.agents.find((a) => (a.enabled ?? true));
+    return visibleAgents[0];
   },
 
   getModelOptions: () => {

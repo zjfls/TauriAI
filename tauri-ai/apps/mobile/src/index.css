@@ -12,6 +12,8 @@ body,
   overflow-y: hidden;
   overscroll-behavior-y: none;
   overscroll-behavior-x: none;
+  /* 整个移动端界面禁用浏览器级双指缩放，只保留普通滚动/平移。 */
+  touch-action: pan-x pan-y;
 }
 
 body {

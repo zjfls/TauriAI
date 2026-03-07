@@ -15,6 +15,7 @@ import { closeAllWorkstudioWindows, openOrFocusWorkstudioWindow } from '../utils
 import { detectShortcutPlatform, eventToKeybindingString, isEditableElement, normalizeKeybindingString } from '../shortcuts';
 import { SHORTCUT_ACTIONS } from '../shortcuts/registry';
 import type { AgentSession, AppConfig, Workstudio } from '../types';
+import { filterNonPracticeAgents } from '../../../common/src/agentUtils';
 
 interface KeyboardShortcutsOptions {
   /** Whether shortcuts are enabled */
@@ -141,7 +142,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
    * Requirements: 9.1
    */
   const handleCreateSession = useCallback(async () => {
-    const agents = config?.agents || [];
+    const agents = filterNonPracticeAgents(config?.agents || []);
     
     if (agents.length === 0) {
       // No agents configured
@@ -162,7 +163,10 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
         onNewSessionRequest();
       } else {
         // Default: use default agent
-        const defaultAgent = config?.defaultAgent || agents[0].name;
+        const defaultAgent =
+          (config?.defaultAgent && agents.some((agent) => agent.name === config.defaultAgent)
+            ? config.defaultAgent
+            : '') || agents[0].name;
         try {
           await useSessionStore.getState().createSession(defaultAgent);
         } catch (error) {

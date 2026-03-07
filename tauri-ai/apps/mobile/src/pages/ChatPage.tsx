@@ -12,6 +12,7 @@ import { Input } from "../ui/Input";
 import { RichText } from "../ui/RichText";
 import type { ChatMessage } from "../types/chat";
 import { useConversationStore } from "../stores/conversationStore";
+import { filterNonPracticeAgents } from "../../../common/src/agentUtils";
 
 type MobileChatStreamPayload = {
   streamId: string;
@@ -118,11 +119,14 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
     try {
       const cfg = await tauriInvoke<any>("get_app_config");
 
+      const list: any[] = filterNonPracticeAgents(Array.isArray(cfg?.agents) ? cfg.agents : []);
       const def = String(cfg?.defaultAgent ?? cfg?.default_agent ?? "").trim();
-      if (def) setFallbackAgentName(def);
+      const resolvedFallback =
+        (def && list.some((agent: any) => String(agent?.name ?? "").trim() === def) ? def : "") ||
+        String(list[0]?.name ?? "").trim();
+      setFallbackAgentName(resolvedFallback);
 
       const next: Record<string, string> = {};
-      const list: any[] = Array.isArray(cfg?.agents) ? cfg.agents : [];
       for (const a of list) {
         if (!a || typeof a !== "object") continue;
         const name = String((a as any).name ?? "").trim();

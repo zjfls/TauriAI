@@ -17,6 +17,7 @@ import type {
   SecurityPolicyConfig,
   SkillSetConfig,
 } from '../../types';
+import { isPracticeAgentLike } from '../../../../common/src/agentUtils';
 
 const defaultAgent: Agent = {
   name: '',
@@ -214,6 +215,7 @@ export const AgentConfigForm: React.FC = () => {
   // Chat tab: non-workstudio + 非 TaskAgent
   const chatAgents = agents.filter(
     (a) =>
+      !isPracticeAgentLike(a) &&
       !isSystemWorkspaceAgentName(a.name) &&
       a.workstudioEnabled !== true &&
       a.type !== 'task_agent'
@@ -222,6 +224,7 @@ export const AgentConfigForm: React.FC = () => {
   // Task tab: non-workstudio + task_agent
   const taskAgents = agents.filter(
     (a) =>
+      !isPracticeAgentLike(a) &&
       !isSystemWorkspaceAgentName(a.name) &&
       a.workstudioEnabled !== true &&
       a.type === 'task_agent'
@@ -236,7 +239,7 @@ export const AgentConfigForm: React.FC = () => {
     return { ...sys, ...saved, isSystem: true, systemRole: sys.systemRole };
   });
   const userWorkspaceAgents = agents.filter(
-    (a) => !isSystemWorkspaceAgentName(a.name) && a.workstudioEnabled === true
+    (a) => !isPracticeAgentLike(a) && !isSystemWorkspaceAgentName(a.name) && a.workstudioEnabled === true
   );
   const workspaceAgents = [...systemWorkspaceAgents, ...userWorkspaceAgents];
 

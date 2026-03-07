@@ -2,6 +2,7 @@
 //!
 //! Contains format prompts and utilities for prompt composition.
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use crate::skills::{SkillEntry, SkillMetadata};
 
 /// Format prompt for rich text rendering in chat view
@@ -439,6 +440,7 @@ Guidelines:
 /// This is injected whenever a skill set is bound (metadata only). Full `SKILL.md` bodies are
 /// intentionally injected separately (only when the user explicitly mentions a skill), to avoid
 /// default token explosion.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn render_skills_section(skills: &[SkillEntry]) -> Option<String> {
     if skills.is_empty() {
         return None;
@@ -486,6 +488,7 @@ pub fn render_skills_section(skills: &[SkillEntry]) -> Option<String> {
 }
 
 /// Same as [`render_skills_section`] but accepts metadata directly (for frontend display/estimation).
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn render_skills_section_from_meta(skills: &[SkillMetadata]) -> Option<String> {
     if skills.is_empty() {
         return None;
@@ -533,6 +536,7 @@ pub fn render_skills_section_from_meta(skills: &[SkillMetadata]) -> Option<Strin
 }
 
 /// Wrap mentioned `SKILL.md` bodies into `<skill>...</skill>` blocks (Codex-like).
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn build_skill_prompt_block(skills: &[SkillEntry]) -> String {
     let mut out = String::new();
     for s in skills {

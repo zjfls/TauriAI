@@ -8,7 +8,6 @@ import type {
   PracticeQuestion,
   PracticeQuestionId,
   PracticeQuestionProgress,
-  PracticeQuestionType,
   PracticeQuiz,
   PracticeQuizId,
 } from "./types";
@@ -27,14 +26,6 @@ type State = {
   setActiveQuiz: (id: PracticeQuizId) => void;
   renameQuiz: (id: PracticeQuizId, title: string) => void;
   appendGeneratedQuestions: (quizId: PracticeQuizId, questions: PracticeQuestion[]) => void;
-
-  addQuestion: (quizId: PracticeQuizId, type: PracticeQuestionType) => PracticeQuestionId;
-  deleteQuestion: (quizId: PracticeQuizId, questionId: PracticeQuestionId) => void;
-  updateQuestion: (
-    quizId: PracticeQuizId,
-    questionId: PracticeQuestionId,
-    patch: Partial<PracticeQuestion>,
-  ) => void;
 
   setAnswer: (
     quizId: PracticeQuizId,
@@ -211,35 +202,6 @@ function setQuestionProgress(
   return { ...q, progress: { byQuestionId: nextBy } };
 }
 
-function createBlankQuestion(type: PracticeQuestionType): PracticeQuestion {
-  const id = newId("pq");
-  if (type === "multiple_choice") {
-    const options = [
-      { id: "A", text: "" },
-      { id: "B", text: "" },
-      { id: "C", text: "" },
-      { id: "D", text: "" },
-    ];
-    return {
-      id,
-      type,
-      prompt: "",
-      points: 5,
-      options,
-      correctOptionId: "A",
-      explanation: "",
-    };
-  }
-  return {
-    id,
-    type,
-    prompt: "",
-    points: 10,
-    referenceAnswer: "",
-    explanation: "",
-  };
-}
-
 function createEmptyQuiz(opts?: CreateQuizOptions): PracticeQuiz {
   const id = newId("quiz");
   return {
@@ -362,47 +324,6 @@ export const usePracticeStore = create<State>((set) => {
 
           if (incoming.length === 0) return quiz;
           return { ...quiz, questions: [...quiz.questions, ...incoming], updatedAt: now() };
-        });
-        return { quizzes, activeQuizId: prev.activeQuizId };
-      }, true);
-    },
-
-    addQuestion: (quizId, type) => {
-      const question = createBlankQuestion(type);
-      updateQuizzes((prev) => {
-        const quizzes = prev.quizzes.map((q) => {
-          if (q.id !== quizId) return q;
-          const quiz = ensureProgress(q);
-          return { ...quiz, questions: [...quiz.questions, question], updatedAt: now() };
-        });
-        return { quizzes, activeQuizId: prev.activeQuizId };
-      }, true);
-      return question.id;
-    },
-
-    deleteQuestion: (quizId, questionId) => {
-      updateQuizzes((prev) => {
-        const quizzes = prev.quizzes.map((q) => {
-          if (q.id !== quizId) return q;
-          const quiz = ensureProgress(q);
-          const questions = quiz.questions.filter((qq) => qq.id !== questionId);
-          const by = { ...(quiz.progress?.byQuestionId ?? {}) };
-          delete by[questionId];
-          return { ...quiz, questions, progress: { byQuestionId: by }, updatedAt: now() };
-        });
-        return { quizzes, activeQuizId: prev.activeQuizId };
-      }, true);
-    },
-
-    updateQuestion: (quizId, questionId, patch) => {
-      updateQuizzes((prev) => {
-        const quizzes = prev.quizzes.map((q) => {
-          if (q.id !== quizId) return q;
-          const questions = q.questions.map((qq) => {
-            if (qq.id !== questionId) return qq;
-            return { ...qq, ...(patch as any) } as PracticeQuestion;
-          });
-          return { ...q, questions, updatedAt: now() };
         });
         return { quizzes, activeQuizId: prev.activeQuizId };
       }, true);

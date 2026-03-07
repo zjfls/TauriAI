@@ -1,11 +1,18 @@
 import { useMemo, useState } from "react";
 import { isTauri, invoke } from "@tauri-apps/api/core";
-import { Plus, Trash2, Wand2 } from "lucide-react";
+import { Plus, Wand2 } from "lucide-react";
 import { useConfigStore } from "../../stores/configStore";
+import { resolvePracticeAgentPresentation, SYSTEM_PRACTICE_AGENT_LABEL } from "../../../../common/src/agentUtils";
 import { MarkdownRenderer } from "../Chat/MarkdownRenderer";
 import { usePracticeStore } from "../../../../common/src/practice/store";
 import type { PracticeQuestion, PracticeQuestionType, PracticeQuiz } from "../../../../common/src/practice/types";
-import { generatePracticeQuiz, gradePracticeAnswer } from "../../../../common/src/practice/llm";
+import { generatePracticeQuiz, generatePracticeTitle, gradePracticeAnswer } from "../../../../common/src/practice/llm";
+import {
+  DEFAULT_PRACTICE_GENERATION_COUNTS,
+  PRACTICE_GENERATION_FIELDS,
+  normalizePracticeGenerationCountValue,
+  totalPracticeGenerationCounts,
+} from "../../../../common/src/practice/generation";
 import { ScrollableInkPad, createEmptyInkState } from "../../../../common/src/practice/ink/ScrollableInkPad";
 
 function questionTypeLabel(t: PracticeQuestionType): string {
@@ -20,21 +27,17 @@ export function PracticeView() {
   const activeQuizId = usePracticeStore((s) => s.activeQuizId);
   const setActiveQuiz = usePracticeStore((s) => s.setActiveQuiz);
   const createQuiz = usePracticeStore((s) => s.createQuiz);
-  const importQuiz = usePracticeStore((s) => s.importQuiz);
   const deleteQuiz = usePracticeStore((s) => s.deleteQuiz);
   const renameQuiz = usePracticeStore((s) => s.renameQuiz);
 
-  const addQuestion = usePracticeStore((s) => s.addQuestion);
-  const deleteQuestion = usePracticeStore((s) => s.deleteQuestion);
-  const updateQuestion = usePracticeStore((s) => s.updateQuestion);
+  const appendGeneratedQuestions = usePracticeStore((s) => s.appendGeneratedQuestions);
   const setAnswer = usePracticeStore((s) => s.setAnswer);
   const setInkDraft = usePracticeStore((s) => s.setInkDraft);
   const setGrading = usePracticeStore((s) => s.setGrading);
   const clearQuestionResult = usePracticeStore((s) => s.clearQuestionResult);
 
-  const defaultAgent = useConfigStore((s) => s.getDefaultAgent());
-  const agentName = defaultAgent?.name || undefined;
-  const agentLabel = defaultAgent?.displayName || defaultAgent?.name || "";
+  const config = useConfigStore((s) => s.config);
+  const practiceAgent = useMemo(() => resolvePracticeAgentPresentation(config), [config]);
 
   const quiz = useMemo(
     () => quizzes.find((q) => q.id === activeQuizId) ?? quizzes[0],
@@ -45,6 +48,9 @@ export function PracticeView() {
   const [difficulty, setDifficulty] = useState<"easy" | "medium" | "hard">("medium");
   const [genBusy, setGenBusy] = useState(false);
   const [genError, setGenError] = useState<string>("");
+  const [questionCounts, setQuestionCounts] = useState(DEFAULT_PRACTICE_GENERATION_COUNTS);
+
+  const totalQuestionCount = useMemo(() => totalPracticeGenerationCounts(questionCounts), [questionCounts]);
 
   const [gradeBusy, setGradeBusy] = useState<Record<string, boolean>>({});
   const [gradeError, setGradeError] = useState<Record<string, string>>({});
@@ -55,6 +61,10 @@ export function PracticeView() {
       setGenError("请输入主题");
       return;
     }
+    if (totalQuestionCount <= 0) {
+      setGenError("请至少输入 1 道题");
+      return;
+    }
     setGenError("");
     if (!isTauri()) {
       setGenError("当前在浏览器预览模式，无法调用后端生成题目。请在 App 内运行。");
@@ -63,15 +73,24 @@ export function PracticeView() {
     if (genBusy) return;
     setGenBusy(true);
     try {
+      const shouldAutoRenameQuiz =
+        quiz.questions.length === 0 && (!quiz.title.trim() || quiz.title.trim() === "新练习");
       const generated = await generatePracticeQuiz(invoke as any, {
-        agentName,
         options: {
           topic: t,
           difficulty,
-          counts: { multiple_choice: 2, calculation: 2, proof: 1, qa: 1 },
+          counts: questionCounts,
         },
       });
-      importQuiz(generated, { setActive: true });
+      appendGeneratedQuestions(quiz.id, generated.questions);
+      if (shouldAutoRenameQuiz) {
+        const nextTitle = await generatePracticeTitle(invoke as any, {
+          topic: t,
+          questions: generated.questions,
+          fallbackTitle: generated.title,
+        });
+        if (nextTitle) renameQuiz(quiz.id, nextTitle);
+      }
       setTopic("");
     } catch (e: any) {
       setGenError(String(e?.message ?? e ?? "生成失败"));
@@ -128,7 +147,6 @@ export function PracticeView() {
       setGradeBusy((prev) => ({ ...prev, [q.id]: true }));
       try {
         const res = await gradePracticeAnswer(invoke as any, {
-          agentName,
           question: q,
           studentAnswer: text,
         });
@@ -162,133 +180,13 @@ export function PracticeView() {
               <MarkdownRenderer content={q.prompt || "（题目为空）"} />
             </div>
 
-            <details className="mt-3">
-              <summary className="cursor-pointer text-sm text-gray-700 dark:text-gray-200">
-                编辑题目
-              </summary>
-              <div className="mt-3 grid gap-3">
-                <div>
-                  <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">
-                    题干（Markdown）
-                  </label>
-                  <textarea
-                    className="w-full min-h-[120px] rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
-                    value={q.prompt}
-                    onChange={(e) => updateQuestion(quiz2.id, q.id, { prompt: e.target.value } as any)}
-                    placeholder="输入题干…"
-                  />
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">分值</label>
-                    <input
-                      type="number"
-                      className="w-full h-10 px-3 rounded-lg border border-gray-200 bg-white text-gray-900 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
-                      value={q.points}
-                      min={1}
-                      step={1}
-                      onChange={(e) =>
-                        updateQuestion(quiz2.id, q.id, { points: Math.max(1, Number(e.target.value) || 1) } as any)
-                      }
-                    />
-                  </div>
-                  <div />
-                </div>
-
-                {q.type === "multiple_choice" ? (
-                  <div className="grid gap-2">
-                    <label className="block text-xs text-gray-500 dark:text-gray-400">
-                      选项
-                    </label>
-                    <div className="grid grid-cols-2 gap-2">
-                      {q.options.map((opt, oi) => (
-                        <div key={opt.id} className="flex items-center gap-2">
-                          <div className="w-6 text-sm font-semibold text-gray-600 dark:text-gray-300">
-                            {opt.id}
-                          </div>
-                          <input
-                            className="flex-1 min-w-0 h-10 px-3 rounded-lg border border-gray-200 bg-white text-gray-900 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
-                            value={opt.text}
-                            onChange={(e) => {
-                              const next = q.options.map((o, idx) => (idx === oi ? { ...o, text: e.target.value } : o));
-                              updateQuestion(quiz2.id, q.id, { options: next } as any);
-                            }}
-                            placeholder="选项内容…"
-                          />
-                        </div>
-                      ))}
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">
-                          正确选项
-                        </label>
-                        <select
-                          className="w-full h-10 px-3 rounded-lg border border-gray-200 bg-white text-gray-900 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
-                          value={q.correctOptionId}
-                          onChange={(e) =>
-                            updateQuestion(quiz2.id, q.id, { correctOptionId: e.target.value } as any)
-                          }
-                        >
-                          {q.options.map((opt) => (
-                            <option key={opt.id} value={opt.id}>
-                              {opt.id}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div />
-                    </div>
-                  </div>
-                ) : (
-                  <div className="grid gap-3">
-                    <div>
-                      <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">
-                        参考答案（Markdown）
-                      </label>
-                      <textarea
-                        className="w-full min-h-[120px] rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
-                        value={(q as any).referenceAnswer || ""}
-                        onChange={(e) =>
-                          updateQuestion(quiz2.id, q.id, { referenceAnswer: e.target.value } as any)
-                        }
-                        placeholder="输入参考答案…"
-                      />
-                    </div>
-                  </div>
-                )}
-
-                <div>
-                  <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">
-                    讲解（Markdown，可选）
-                  </label>
-                  <textarea
-                    className="w-full min-h-[120px] rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
-                    value={q.explanation || ""}
-                    onChange={(e) =>
-                      updateQuestion(quiz2.id, q.id, { explanation: e.target.value } as any)
-                    }
-                    placeholder="输入讲解…"
-                  />
-                </div>
-              </div>
-            </details>
           </div>
 
-          <button
-            type="button"
-            className="h-8 w-8 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center justify-center text-gray-500"
-            onClick={() => deleteQuestion(quiz2.id, q.id)}
-            title="删除题目"
-          >
-            <Trash2 size={16} />
-          </button>
         </div>
 
         <div className="mt-3 grid gap-3">
           {q.type === "multiple_choice" ? (
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
               {q.options.map((opt) => {
                 const selected = answer?.kind === "choice" && answer.optionId === opt.id;
                 return (
@@ -296,15 +194,26 @@ export function PracticeView() {
                     key={opt.id}
                     type="button"
                     className={[
-                      "text-left rounded-lg border px-3 py-2 text-sm transition-colors",
+                      "flex items-start gap-3 text-left rounded-lg border px-3 py-3 text-sm transition-colors",
                       selected
                         ? "border-indigo-500 bg-indigo-500/10 text-indigo-700 dark:text-indigo-200"
                         : "border-gray-200 hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-700/40 text-gray-800 dark:text-gray-100",
                     ].join(" ")}
                     onClick={() => setChoice(opt.id)}
                   >
-                    <div className="font-medium">{opt.id}</div>
-                    <div className="text-gray-700 dark:text-gray-200">{opt.text || "（空）"}</div>
+                    <div
+                      className={[
+                        "mt-0.5 inline-flex h-7 min-w-7 shrink-0 items-center justify-center rounded-full border px-2 text-xs font-semibold",
+                        selected
+                          ? "border-indigo-500/40 bg-indigo-500/15 text-indigo-700 dark:text-indigo-100"
+                          : "border-gray-300 bg-gray-100 text-gray-600 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200",
+                      ].join(" ")}
+                    >
+                      {opt.id}
+                    </div>
+                    <div className="min-w-0 flex-1 leading-6 text-gray-700 dark:text-gray-200">
+                      {opt.text || "（空）"}
+                    </div>
                   </button>
                 );
               })}
@@ -467,11 +376,12 @@ export function PracticeView() {
             </div>
 
             <div className="mt-3 text-sm text-gray-600 dark:text-gray-300">
-              批改/出题使用 Agent：{agentLabel || "（未配置）"}
+              批改/出题使用 Agent：{practiceAgent.label || SYSTEM_PRACTICE_AGENT_LABEL}
+              {practiceAgent.modelLabel ? ` · ${practiceAgent.modelLabel}` : ""}
             </div>
 
             <div className="mt-4 grid grid-cols-12 gap-2 items-end">
-              <div className="col-span-7">
+              <div className="col-span-12">
                 <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">AI 出题主题</label>
                 <input
                   className="w-full h-10 px-3 rounded-lg border border-gray-200 bg-white text-gray-900 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
@@ -480,7 +390,27 @@ export function PracticeView() {
                   placeholder="例如：线性代数 特征值与特征向量"
                 />
               </div>
-              <div className="col-span-3">
+              {PRACTICE_GENERATION_FIELDS.map((field) => (
+                <div key={field.type} className="col-span-3">
+                  <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">{field.label}</label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={20}
+                    step={1}
+                    inputMode="numeric"
+                    className="w-full h-10 px-3 rounded-lg border border-gray-200 bg-white text-gray-900 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
+                    value={questionCounts[field.type]}
+                    onChange={(e) =>
+                      setQuestionCounts((prev) => ({
+                        ...prev,
+                        [field.type]: normalizePracticeGenerationCountValue(e.target.value, prev[field.type]),
+                      }))
+                    }
+                  />
+                </div>
+              ))}
+              <div className="col-span-8">
                 <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">难度</label>
                 <select
                   className="w-full h-10 px-3 rounded-lg border border-gray-200 bg-white text-gray-900 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
@@ -492,7 +422,7 @@ export function PracticeView() {
                   <option value="hard">困难</option>
                 </select>
               </div>
-              <div className="col-span-2 flex justify-end">
+              <div className="col-span-4 flex justify-end">
                 <button
                   type="button"
                   className="h-10 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm flex items-center gap-2 disabled:opacity-50"
@@ -500,8 +430,12 @@ export function PracticeView() {
                   disabled={genBusy}
                 >
                   <Wand2 size={16} />
-                  {genBusy ? "生成中…" : "生成"}
+                  {genBusy ? "生成中…" : `生成 ${totalQuestionCount} 题`}
                 </button>
+              </div>
+              <div className="col-span-12 flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
+                <span>共 {totalQuestionCount} 题</span>
+                <span>每种题型可填 0-20</span>
               </div>
               {genError ? (
                 <div className="col-span-12 text-sm text-red-600 dark:text-red-400">{genError}</div>
@@ -509,40 +443,10 @@ export function PracticeView() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              className="h-9 px-3 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-800 text-sm dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100"
-              onClick={() => addQuestion(quiz.id, "multiple_choice")}
-            >
-              + 选择题
-            </button>
-            <button
-              type="button"
-              className="h-9 px-3 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-800 text-sm dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100"
-              onClick={() => addQuestion(quiz.id, "calculation")}
-            >
-              + 计算题
-            </button>
-            <button
-              type="button"
-              className="h-9 px-3 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-800 text-sm dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100"
-              onClick={() => addQuestion(quiz.id, "proof")}
-            >
-              + 证明题
-            </button>
-            <button
-              type="button"
-              className="h-9 px-3 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-800 text-sm dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100"
-              onClick={() => addQuestion(quiz.id, "qa")}
-            >
-              + 问答题
-            </button>
-          </div>
 
           {quiz.questions.length === 0 ? (
             <div className="rounded-xl border border-dashed border-gray-300 p-8 text-center text-gray-500 dark:border-gray-700 dark:text-gray-400">
-              还没有题目。你可以使用 AI 出题，或手动添加题目。
+              还没有题目。请使用 AI 出题。
             </div>
           ) : (
             <div className="grid gap-4">

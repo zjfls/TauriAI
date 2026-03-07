@@ -23,6 +23,7 @@ import {
 import { useShallow } from 'zustand/shallow';
 import { useConversationStore } from '../../stores/conversationStore';
 import { useSessionStore } from '../../stores/sessionStore';
+import { filterNonPracticeAgents } from '../../../../common/src/agentUtils';
 import { useConfigStore } from '../../stores/configStore';
 import { useUIStore } from '../../stores/uiStore';
 import type { Conversation, Workstudio } from '../../types';
@@ -1642,7 +1643,11 @@ export const HistoryPanel: React.FC = () => {
   const handleNewConversation = async () => {
     try {
       // Use default agent to create new session
-      const defaultAgentName = config?.defaultAgent || config?.agents?.[0]?.name || '';
+      const visibleAgents = filterNonPracticeAgents(config?.agents || []);
+      const defaultAgentName =
+        (config?.defaultAgent && visibleAgents.some((agent) => agent.name === config.defaultAgent)
+          ? config.defaultAgent
+          : '') || visibleAgents[0]?.name || '';
       if (!defaultAgentName) {
         console.error('No agent configured');
         return;
