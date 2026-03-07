@@ -3,6 +3,7 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -11,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
+use tokio::sync::Mutex;
 
 use crate::agents::chat::resolve_chat_model;
 use crate::ai_client::ToolCall;
@@ -20,7 +22,8 @@ use crate::external_agents::{
     ExternalAgentInvocationOutput, ExternalAgentReplayMessage, ExternalAgentReplayRole,
 };
 use crate::models::{
-    AppConfig, AskForApproval, ExternalAgentConfig, ExternalAgentTransportType, SandboxPolicy,
+    AppConfig, AskForApproval, ExternalAgentConfig, ExternalAgentTransportType, MessageRole,
+    SandboxPolicy,
 };
 use crate::runtime::tools::permissions::ToolPermission;
 use crate::runtime::tools::registry::{
@@ -30,6 +33,8 @@ use crate::runtime::tools::sandbox::{
     dedupe_paths, effective_workspace_roots, is_path_under_any_root, normalize_root_for_join,
 };
 use crate::runtime::tools::spec::ToolSpec;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use crate::storage::{async_db, Database};
 
 pub const AGENT_RUN_TOOL_NAME: &str = "agent_run";
 pub const AGENT_SESSION_TOOL_NAME: &str = "agent_session";
@@ -39,7 +44,7 @@ const STDOUT_TAIL_LIMIT: usize = 24;
 const DEFAULT_RUNTIME_TIMEOUT_MS: u64 = 120_000;
 const WAIT_TIMEOUT_BUFFER_MS: u64 = 8_000;
 const SESSION_PREVIEW_LIMIT: usize = 240;
-const SESSION_STORE_VERSION: u32 = 1;
+const SESSION_STORE_VERSION: u32 = 2;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -119,11 +124,86 @@ enum ExternalAgentSessionStatus {
     Closed,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalAgentSessionScopeKind {
+    Conversation,
+    Standalone,
+    Workspace,
+    Schedule,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ExternalAgentSessionScope {
+    pub kind: ExternalAgentSessionScopeKind,
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalAgentSessionSummary {
+    pub session_id: String,
+    pub agent_name: String,
+    pub display_name: Option<String>,
+    pub remote_agent_name: String,
+    pub transport: String,
+    pub session_mode: String,
+    pub title: String,
+    pub status: String,
+    pub scope_kind: ExternalAgentSessionScopeKind,
+    pub scope_id: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub child_conversation_id: String,
+    pub db_path: Option<String>,
+    pub model_ref: Option<String>,
+    pub run_mode: Option<String>,
+    pub cwd: Option<String>,
+    pub last_result_preview: Option<String>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalAgentSessionTranscriptEntry {
+    pub id: String,
+    pub role: String,
+    pub content: String,
+    pub thinking: Option<String>,
+    pub created_at: Option<DateTime<Utc>>,
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalAgentSessionDetail {
+    pub summary: ExternalAgentSessionSummary,
+    pub messages: Vec<ExternalAgentSessionTranscriptEntry>,
+    pub transcript_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalAgentSessionCommandResult {
+    pub detail: ExternalAgentSessionDetail,
+    pub content: String,
+    pub thinking: Option<String>,
+    pub model: Option<String>,
+    pub usage: Option<Value>,
+    pub binary: String,
+    pub exit_code: Option<i32>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ExternalAgentSessionRecord {
     id: String,
     parent_conversation_id: String,
+    #[serde(default = "default_session_scope_kind")]
+    scope_kind: ExternalAgentSessionScopeKind,
+    #[serde(default)]
+    scope_id: String,
     agent_name: String,
     remote_agent_name: String,
     title: String,
@@ -144,7 +224,7 @@ struct ExternalAgentSessionRecord {
     last_error: Option<String>,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ExternalAgentSessionStore {
     #[serde(default = "default_session_store_version")]
@@ -155,6 +235,90 @@ struct ExternalAgentSessionStore {
 
 fn default_session_store_version() -> u32 {
     SESSION_STORE_VERSION
+}
+
+fn default_session_scope_kind() -> ExternalAgentSessionScopeKind {
+    ExternalAgentSessionScopeKind::Conversation
+}
+
+pub(crate) fn conversation_session_scope(conversation_id: &str) -> ExternalAgentSessionScope {
+    ExternalAgentSessionScope {
+        kind: ExternalAgentSessionScopeKind::Conversation,
+        id: conversation_id.to_string(),
+    }
+}
+
+pub(crate) fn standalone_session_scope() -> ExternalAgentSessionScope {
+    ExternalAgentSessionScope {
+        kind: ExternalAgentSessionScopeKind::Standalone,
+        id: "global".to_string(),
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DirectAgentSessionStartRequest {
+    pub scope: ExternalAgentSessionScope,
+    pub agent_name: String,
+    pub prompt: String,
+    pub title: Option<String>,
+    pub model_ref: Option<String>,
+    pub run_mode: Option<String>,
+    pub thinking: Option<Value>,
+    pub timeout_ms: Option<u64>,
+    pub cwd: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DirectAgentSessionSendRequest {
+    pub session_id: String,
+    pub prompt: String,
+    pub model_ref: Option<String>,
+    pub run_mode: Option<String>,
+    pub thinking: Option<Value>,
+    pub timeout_ms: Option<u64>,
+    pub cwd: Option<String>,
+}
+
+impl ExternalAgentSessionRecord {
+    fn normalize_scope(&mut self) {
+        if self.scope_id.trim().is_empty() {
+            if !self.parent_conversation_id.trim().is_empty() {
+                self.scope_kind = ExternalAgentSessionScopeKind::Conversation;
+                self.scope_id = self.parent_conversation_id.clone();
+            } else {
+                let standalone = standalone_session_scope();
+                self.scope_kind = standalone.kind;
+                self.scope_id = standalone.id;
+            }
+        }
+
+        if self.scope_kind == ExternalAgentSessionScopeKind::Conversation
+            && self.parent_conversation_id.trim().is_empty()
+        {
+            self.parent_conversation_id = self.scope_id.clone();
+        }
+    }
+
+    fn scope(&self) -> ExternalAgentSessionScope {
+        let mut cloned = self.clone();
+        cloned.normalize_scope();
+        ExternalAgentSessionScope {
+            kind: cloned.scope_kind,
+            id: cloned.scope_id,
+        }
+    }
+
+    fn matches_scope(&self, scope: &ExternalAgentSessionScope) -> bool {
+        let current = self.scope();
+        current.kind == scope.kind && current.id == scope.id
+    }
+}
+
+fn normalize_session_store(store: &mut ExternalAgentSessionStore) {
+    store.version = SESSION_STORE_VERSION;
+    for session in &mut store.sessions {
+        session.normalize_scope();
+    }
 }
 
 struct HeadlessInvocationOutput {
@@ -266,7 +430,7 @@ fn resolve_required_session_id(args: &AgentSessionArgs) -> Result<String, ToolEr
         .ok_or_else(|| ToolError::invalid("agent_session 缺少 session_id 参数"))
 }
 
-fn load_app_config() -> Result<AppConfig, ToolError> {
+pub(crate) fn load_app_config() -> Result<AppConfig, ToolError> {
     let manager = ConfigManager::new()
         .map_err(|e| ToolError::new(format!("external agent 初始化配置失败: {e}")))?;
     manager
@@ -274,7 +438,7 @@ fn load_app_config() -> Result<AppConfig, ToolError> {
         .map_err(|e| ToolError::new(format!("external agent 读取配置失败: {e}")))
 }
 
-fn resolve_external_agent<'a>(
+pub(crate) fn resolve_external_agent<'a>(
     config: &'a AppConfig,
     requested_name: &str,
 ) -> Result<&'a ExternalAgentConfig, ToolError> {
@@ -316,7 +480,7 @@ fn resolve_local_headless_approval_policy(
     })
 }
 
-fn validate_desktop_subprocess_support(tool_name: &str) -> Result<(), ToolError> {
+pub(crate) fn validate_desktop_subprocess_support(tool_name: &str) -> Result<(), ToolError> {
     if cfg!(any(target_os = "android", target_os = "ios")) {
         return Err(ToolError::denied(format!(
             "{tool_name} 当前仅支持桌面端外部子进程。"
@@ -325,7 +489,7 @@ fn validate_desktop_subprocess_support(tool_name: &str) -> Result<(), ToolError>
     Ok(())
 }
 
-fn maybe_validate_auto_headless_target(
+pub(crate) fn maybe_validate_auto_headless_target(
     config: &AppConfig,
     external_agent: &ExternalAgentConfig,
     model_ref: Option<&str>,
@@ -420,12 +584,14 @@ fn load_session_store() -> Result<ExternalAgentSessionStore, ToolError> {
     }
     let content = fs::read_to_string(&path)
         .map_err(|e| ToolError::new(format!("读取 external agent session store 失败: {e}")))?;
-    serde_json::from_str::<ExternalAgentSessionStore>(&content).map_err(|e| {
+    let mut store = serde_json::from_str::<ExternalAgentSessionStore>(&content).map_err(|e| {
         ToolError::new(format!(
             "解析 external agent session store 失败（{}）: {e}",
             path.display()
         ))
-    })
+    })?;
+    normalize_session_store(&mut store);
+    Ok(store)
 }
 
 fn save_session_store(store: &ExternalAgentSessionStore) -> Result<(), ToolError> {
@@ -438,7 +604,9 @@ fn save_session_store(store: &ExternalAgentSessionStore) -> Result<(), ToolError
             ))
         })?;
     }
-    let content = serde_json::to_string_pretty(store).map_err(|e| {
+    let mut normalized = store.clone();
+    normalize_session_store(&mut normalized);
+    let content = serde_json::to_string_pretty(&normalized).map_err(|e| {
         ToolError::internal(format!("序列化 external agent session store 失败: {e}"))
     })?;
     fs::write(&path, content).map_err(|e| {
@@ -447,6 +615,17 @@ fn save_session_store(store: &ExternalAgentSessionStore) -> Result<(), ToolError
             path.display()
         ))
     })
+}
+
+fn resolve_unrestricted_workdir(
+    requested_cwd: Option<&str>,
+    fallback_cwd: Option<&str>,
+    transport_cwd: Option<&PathBuf>,
+) -> Option<PathBuf> {
+    normalize_optional_string(requested_cwd)
+        .or_else(|| normalize_optional_string(fallback_cwd))
+        .map(PathBuf::from)
+        .or_else(|| transport_cwd.cloned())
 }
 
 fn resolve_effective_workdir(
@@ -743,7 +922,9 @@ fn response_session_ref_option(parsed: &Value) -> Option<Value> {
     }
 }
 
-fn headless_output_to_invocation(output: HeadlessInvocationOutput) -> ExternalAgentInvocationOutput {
+fn headless_output_to_invocation(
+    output: HeadlessInvocationOutput,
+) -> ExternalAgentInvocationOutput {
     ExternalAgentInvocationOutput {
         content: response_content(&output.parsed),
         thinking: response_thinking(&output.parsed),
@@ -772,26 +953,188 @@ fn preview_text(content: &str) -> Option<String> {
     Some(out)
 }
 
+fn session_mode_for_transport(transport_type: ExternalAgentTransportType) -> &'static str {
+    if transport_type == ExternalAgentTransportType::Headless {
+        "native"
+    } else {
+        "replay"
+    }
+}
+
+fn session_status_label(status: ExternalAgentSessionStatus) -> &'static str {
+    match status {
+        ExternalAgentSessionStatus::Active => "active",
+        ExternalAgentSessionStatus::Closed => "closed",
+    }
+}
+
+fn message_role_label(role: &MessageRole) -> &'static str {
+    match role {
+        MessageRole::User => "user",
+        MessageRole::Assistant => "assistant",
+        MessageRole::System => "system",
+        MessageRole::Tool => "tool",
+    }
+}
+
+fn session_summary(
+    record: &ExternalAgentSessionRecord,
+    display_name: Option<&str>,
+) -> ExternalAgentSessionSummary {
+    let scope = record.scope();
+    ExternalAgentSessionSummary {
+        session_id: record.id.clone(),
+        agent_name: record.agent_name.clone(),
+        display_name: display_name.map(ToOwned::to_owned),
+        remote_agent_name: record.remote_agent_name.clone(),
+        transport: record.transport_type.as_str().to_string(),
+        session_mode: session_mode_for_transport(record.transport_type).to_string(),
+        title: record.title.clone(),
+        status: session_status_label(record.status).to_string(),
+        scope_kind: scope.kind,
+        scope_id: scope.id,
+        created_at: record.created_at,
+        updated_at: record.updated_at,
+        child_conversation_id: record.child_conversation_id.clone(),
+        db_path: record.db_path.clone(),
+        model_ref: record.model_ref.clone(),
+        run_mode: record.run_mode.clone(),
+        cwd: record.cwd.clone(),
+        last_result_preview: record.last_result_preview.clone(),
+        last_error: record.last_error.clone(),
+    }
+}
+
 fn session_summary_value(record: &ExternalAgentSessionRecord, display_name: Option<&str>) -> Value {
-    json!({
-        "sessionId": record.id,
-        "agentName": record.agent_name,
-        "displayName": display_name,
-        "remoteAgentName": record.remote_agent_name,
-        "transport": record.transport_type.as_str(),
-        "sessionMode": if record.transport_type == ExternalAgentTransportType::Headless { "native" } else { "replay" },
-        "title": record.title,
-        "status": record.status,
-        "createdAt": record.created_at,
-        "updatedAt": record.updated_at,
-        "childConversationId": record.child_conversation_id,
-        "dbPath": record.db_path,
-        "modelRef": record.model_ref,
-        "runMode": record.run_mode,
-        "cwd": record.cwd,
-        "lastResultPreview": record.last_result_preview,
-        "lastError": record.last_error,
-    })
+    serde_json::to_value(session_summary(record, display_name))
+        .unwrap_or_else(|_| Value::Object(Map::new()))
+}
+
+pub(crate) fn list_external_agent_sessions(
+    scope: Option<&ExternalAgentSessionScope>,
+) -> Result<Vec<ExternalAgentSessionSummary>, ToolError> {
+    let config = load_app_config()?;
+    let mut store = load_session_store()?;
+    normalize_session_store(&mut store);
+    let mut sessions = store.sessions.iter().collect::<Vec<_>>();
+    if let Some(scope) = scope {
+        sessions.retain(|session| session.matches_scope(scope));
+    }
+    sessions.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    Ok(sessions
+        .into_iter()
+        .map(|session| {
+            let display_name = config
+                .get_external_agent(&session.agent_name)
+                .map(|agent| agent.display_name.as_str());
+            session_summary(session, display_name)
+        })
+        .collect())
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+async fn load_session_transcript_entries(
+    record: &ExternalAgentSessionRecord,
+) -> Result<Vec<ExternalAgentSessionTranscriptEntry>, ToolError> {
+    if record.transport_type == ExternalAgentTransportType::Headless {
+        let db_path = record.db_path.clone().ok_or_else(|| {
+            ToolError::new(format!("agent_session 会话缺少 dbPath：{}", record.id))
+        })?;
+        let db = Database::new(PathBuf::from(&db_path)).map_err(|e| {
+            ToolError::new(format!(
+                "打开 external agent session DB 失败（{db_path}）: {e}"
+            ))
+        })?;
+        let db = Arc::new(Mutex::new(db));
+        let messages = async_db::read_all_messages(
+            &db,
+            "external_agent:load_session_transcript_entries",
+            &record.child_conversation_id,
+        )
+        .await
+        .map_err(|e| {
+            ToolError::new(format!(
+                "读取 external agent session transcript 失败（{}）: {e}",
+                record.child_conversation_id
+            ))
+        })?;
+        return Ok(messages
+            .into_iter()
+            .map(|message| ExternalAgentSessionTranscriptEntry {
+                id: message.id,
+                role: message_role_label(&message.role).to_string(),
+                content: message.content,
+                thinking: message.thinking,
+                created_at: Some(message.created_at),
+                status: Some(
+                    match message.status {
+                        crate::models::MessageStatus::Pending => "pending",
+                        crate::models::MessageStatus::Success => "success",
+                        crate::models::MessageStatus::Failed => "failed",
+                    }
+                    .to_string(),
+                ),
+            })
+            .collect());
+    }
+
+    Ok(record
+        .replay_messages
+        .iter()
+        .enumerate()
+        .map(|(index, message)| ExternalAgentSessionTranscriptEntry {
+            id: format!("{}:{index}", record.id),
+            role: match message.role {
+                ExternalAgentReplayRole::User => "user",
+                ExternalAgentReplayRole::Assistant => "assistant",
+            }
+            .to_string(),
+            content: message.content.clone(),
+            thinking: None,
+            created_at: None,
+            status: None,
+        })
+        .collect())
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub(crate) async fn get_external_agent_session_detail(
+    session_id: &str,
+) -> Result<ExternalAgentSessionDetail, ToolError> {
+    let config = load_app_config()?;
+    let mut store = load_session_store()?;
+    normalize_session_store(&mut store);
+    let record = store
+        .sessions
+        .iter()
+        .find(|session| session.id == session_id)
+        .ok_or_else(|| ToolError::invalid(format!("agent_session 未找到会话：{session_id}")))?;
+    let display_name = config
+        .get_external_agent(&record.agent_name)
+        .map(|agent| agent.display_name.as_str());
+    let summary = session_summary(record, display_name);
+    match load_session_transcript_entries(record).await {
+        Ok(messages) => Ok(ExternalAgentSessionDetail {
+            summary,
+            messages,
+            transcript_error: None,
+        }),
+        Err(error) => Ok(ExternalAgentSessionDetail {
+            summary,
+            messages: Vec::new(),
+            transcript_error: Some(error.message),
+        }),
+    }
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+pub(crate) async fn get_external_agent_session_detail(
+    session_id: &str,
+) -> Result<ExternalAgentSessionDetail, ToolError> {
+    let _ = session_id;
+    Err(ToolError::denied(
+        "external agent session detail 当前仅支持桌面端",
+    ))
 }
 
 fn find_owned_session_mut<'a>(
@@ -804,12 +1147,463 @@ fn find_owned_session_mut<'a>(
         .iter_mut()
         .find(|session| session.id == session_id)
         .ok_or_else(|| ToolError::invalid(format!("agent_session 未找到会话：{session_id}")))?;
-    if record.parent_conversation_id != parent_conversation_id {
+    if !record.matches_scope(&conversation_session_scope(parent_conversation_id)) {
         return Err(ToolError::denied(
             "agent_session 只允许访问当前对话创建的外部会话",
         ));
     }
     Ok(record)
+}
+
+fn parent_conversation_id_for_scope(scope: &ExternalAgentSessionScope) -> &str {
+    if scope.kind == ExternalAgentSessionScopeKind::Conversation {
+        scope.id.as_str()
+    } else {
+        ""
+    }
+}
+
+fn find_session_mut_by_id<'a>(
+    store: &'a mut ExternalAgentSessionStore,
+    session_id: &str,
+) -> Result<&'a mut ExternalAgentSessionRecord, ToolError> {
+    store
+        .sessions
+        .iter_mut()
+        .find(|session| session.id == session_id)
+        .ok_or_else(|| ToolError::invalid(format!("agent_session 未找到会话：{session_id}")))
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub(crate) async fn start_external_agent_session_direct(
+    request: DirectAgentSessionStartRequest,
+) -> Result<ExternalAgentSessionCommandResult, ToolError> {
+    validate_desktop_subprocess_support(AGENT_SESSION_TOOL_NAME)?;
+    let prompt = request.prompt.trim();
+    if prompt.is_empty() {
+        return Err(ToolError::invalid("agent session 初始消息不能为空"));
+    }
+    let config = load_app_config()?;
+    let external_agent = resolve_external_agent(&config, &request.agent_name)?;
+    let effective_model_ref = normalize_optional_string(request.model_ref.as_deref())
+        .or_else(|| normalize_optional_string(external_agent.model_ref.as_deref()));
+    let effective_run_mode = normalize_optional_string(request.run_mode.as_deref())
+        .or_else(|| normalize_optional_string(external_agent.run_mode.as_deref()));
+    let effective_thinking = request
+        .thinking
+        .clone()
+        .or_else(|| external_agent.thinking.clone());
+    let effective_timeout_ms = request
+        .timeout_ms
+        .or(external_agent.default_timeout_ms)
+        .unwrap_or(DEFAULT_RUNTIME_TIMEOUT_MS)
+        .clamp(1_000, 3_600_000);
+    if external_agent.transport.transport_type == ExternalAgentTransportType::Headless {
+        maybe_validate_auto_headless_target(
+            &config,
+            external_agent,
+            effective_model_ref.as_deref(),
+            effective_run_mode.as_deref(),
+        )?;
+    }
+
+    let workdir = resolve_unrestricted_workdir(
+        request.cwd.as_deref(),
+        None,
+        external_agent.transport.cwd.as_ref(),
+    );
+    let scope = request.scope.clone();
+    let session_id = format!("agent_session_{}", uuid::Uuid::new_v4());
+    let remote_agent_name = effective_remote_agent_name(external_agent);
+    let title = normalize_optional_string(request.title.as_deref())
+        .unwrap_or_else(|| format!("{} Session", external_agent.display_name));
+
+    let (record, output) = match external_agent.transport.transport_type {
+        ExternalAgentTransportType::Headless => {
+            let db_path = session_db_path(&session_id)?;
+            if let Some(parent) = db_path.parent() {
+                fs::create_dir_all(parent).map_err(|e| {
+                    ToolError::new(format!(
+                        "创建 external agent session DB 目录失败（{}）: {e}",
+                        parent.display()
+                    ))
+                })?;
+            }
+            let request_payload = json!({
+                "requestId": format!("agent_session_start_{}", uuid::Uuid::new_v4()),
+                "task": {
+                    "content": prompt,
+                    "agentName": remote_agent_name.clone(),
+                    "modelRef": effective_model_ref.clone(),
+                    "runMode": effective_run_mode.clone(),
+                    "thinking": effective_thinking.clone(),
+                },
+                "session": {
+                    "backend": "db",
+                    "mode": "new",
+                    "dbPath": db_path.to_string_lossy().to_string(),
+                    "title": title.clone(),
+                },
+                "output": {
+                    "mode": "final_json",
+                    "includeEvents": false,
+                    "includeMessages": false,
+                },
+                "runtime": {
+                    "timeoutMs": effective_timeout_ms,
+                }
+            });
+            let output = headless_output_to_invocation(
+                invoke_external_headless(
+                    AGENT_SESSION_TOOL_NAME,
+                    external_agent,
+                    &request_payload,
+                    effective_timeout_ms,
+                    workdir.clone(),
+                    parent_conversation_id_for_scope(&scope),
+                    Some(session_id.as_str()),
+                    Some(AgentSessionAction::Start),
+                )
+                .await?,
+            );
+            let session_ref = output.session_ref.clone().ok_or_else(|| {
+                ToolError::new("agent_session(start) 缺少 sessionRef.conversationId")
+            })?;
+            let child_conversation_id = session_ref
+                .get("conversationId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    ToolError::new("agent_session(start) 缺少 sessionRef.conversationId")
+                })?
+                .to_string();
+            let stored_db_path = session_ref
+                .get("dbPath")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .or_else(|| Some(db_path.to_string_lossy().to_string()));
+            let now = Utc::now();
+            (
+                ExternalAgentSessionRecord {
+                    id: session_id.clone(),
+                    parent_conversation_id: parent_conversation_id_for_scope(&scope).to_string(),
+                    scope_kind: scope.kind,
+                    scope_id: scope.id.clone(),
+                    agent_name: external_agent.name.clone(),
+                    remote_agent_name: remote_agent_name.clone(),
+                    title: title.clone(),
+                    status: ExternalAgentSessionStatus::Active,
+                    created_at: now,
+                    updated_at: now,
+                    transport_type: external_agent.transport.transport_type,
+                    child_conversation_id,
+                    db_path: stored_db_path,
+                    model_ref: effective_model_ref.clone(),
+                    run_mode: effective_run_mode.clone(),
+                    thinking: effective_thinking.clone(),
+                    cwd: workdir
+                        .as_ref()
+                        .map(|path| path.to_string_lossy().to_string()),
+                    replay_messages: Vec::new(),
+                    last_result_preview: preview_text(&output.content),
+                    last_error: None,
+                },
+                output,
+            )
+        }
+        ExternalAgentTransportType::CodexCli | ExternalAgentTransportType::ClaudeCode => {
+            let output = invoke_cli_transport(
+                AGENT_SESSION_TOOL_NAME,
+                external_agent,
+                prompt,
+                effective_model_ref.as_deref(),
+                effective_timeout_ms,
+                workdir.as_deref(),
+                parent_conversation_id_for_scope(&scope),
+                Some(session_id.as_str()),
+                Some(AgentSessionAction::Start.as_str()),
+            )
+            .await?;
+            let now = Utc::now();
+            (
+                ExternalAgentSessionRecord {
+                    id: session_id.clone(),
+                    parent_conversation_id: parent_conversation_id_for_scope(&scope).to_string(),
+                    scope_kind: scope.kind,
+                    scope_id: scope.id.clone(),
+                    agent_name: external_agent.name.clone(),
+                    remote_agent_name: remote_agent_name.clone(),
+                    title: title.clone(),
+                    status: ExternalAgentSessionStatus::Active,
+                    created_at: now,
+                    updated_at: now,
+                    transport_type: external_agent.transport.transport_type,
+                    child_conversation_id: session_id.clone(),
+                    db_path: None,
+                    model_ref: effective_model_ref.clone(),
+                    run_mode: effective_run_mode.clone(),
+                    thinking: effective_thinking.clone(),
+                    cwd: workdir
+                        .as_ref()
+                        .map(|path| path.to_string_lossy().to_string()),
+                    replay_messages: vec![
+                        ExternalAgentReplayMessage {
+                            role: ExternalAgentReplayRole::User,
+                            content: prompt.to_string(),
+                        },
+                        ExternalAgentReplayMessage {
+                            role: ExternalAgentReplayRole::Assistant,
+                            content: output.content.clone(),
+                        },
+                    ],
+                    last_result_preview: preview_text(&output.content),
+                    last_error: None,
+                },
+                output,
+            )
+        }
+    };
+
+    let mut store = load_session_store()?;
+    store.sessions.retain(|session| session.id != record.id);
+    store.sessions.push(record);
+    save_session_store(&store)?;
+    let detail = get_external_agent_session_detail(&session_id).await?;
+    Ok(ExternalAgentSessionCommandResult {
+        detail,
+        content: output.content,
+        thinking: output.thinking,
+        model: output.model.or(effective_model_ref),
+        usage: output.usage,
+        binary: output.binary_display,
+        exit_code: output.exit_code,
+    })
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub(crate) async fn send_external_agent_session_direct(
+    request: DirectAgentSessionSendRequest,
+) -> Result<ExternalAgentSessionCommandResult, ToolError> {
+    validate_desktop_subprocess_support(AGENT_SESSION_TOOL_NAME)?;
+    let prompt = request.prompt.trim();
+    if prompt.is_empty() {
+        return Err(ToolError::invalid("agent session 消息不能为空"));
+    }
+    let config = load_app_config()?;
+    let mut store = load_session_store()?;
+    let record = find_session_mut_by_id(&mut store, &request.session_id)?;
+    if record.status != ExternalAgentSessionStatus::Active {
+        return Err(ToolError::denied(format!(
+            "agent_session 会话已关闭：{}",
+            request.session_id
+        )));
+    }
+    let external_agent = resolve_external_agent(&config, &record.agent_name)?;
+    if external_agent.transport.transport_type != record.transport_type {
+        return Err(ToolError::new(format!(
+            "agent_session 当前配置的 transport 已变化：session={}, current={}",
+            record.transport_type.as_str(),
+            external_agent.transport.transport_type.as_str()
+        )));
+    }
+
+    let effective_model_ref = normalize_optional_string(request.model_ref.as_deref())
+        .or_else(|| record.model_ref.clone());
+    let effective_run_mode =
+        normalize_optional_string(request.run_mode.as_deref()).or_else(|| record.run_mode.clone());
+    let effective_thinking = request.thinking.clone().or_else(|| record.thinking.clone());
+    let effective_timeout_ms = request
+        .timeout_ms
+        .or(external_agent.default_timeout_ms)
+        .unwrap_or(DEFAULT_RUNTIME_TIMEOUT_MS)
+        .clamp(1_000, 3_600_000);
+    if record.transport_type == ExternalAgentTransportType::Headless {
+        maybe_validate_auto_headless_target(
+            &config,
+            external_agent,
+            effective_model_ref.as_deref(),
+            effective_run_mode.as_deref(),
+        )?;
+    }
+
+    let scope = record.scope();
+    let workdir = resolve_unrestricted_workdir(
+        request.cwd.as_deref(),
+        record.cwd.as_deref(),
+        external_agent.transport.cwd.as_ref(),
+    );
+    let output_result = match record.transport_type {
+        ExternalAgentTransportType::Headless => {
+            let db_path = record.db_path.clone().ok_or_else(|| {
+                ToolError::new(format!(
+                    "agent_session 会话缺少 dbPath：{}",
+                    request.session_id
+                ))
+            })?;
+            let request_payload = json!({
+                "requestId": format!("agent_session_send_{}", uuid::Uuid::new_v4()),
+                "task": {
+                    "content": prompt,
+                    "agentName": record.remote_agent_name.clone(),
+                    "modelRef": effective_model_ref.clone(),
+                    "runMode": effective_run_mode.clone(),
+                    "thinking": effective_thinking.clone(),
+                },
+                "session": {
+                    "backend": "db",
+                    "mode": "resume",
+                    "conversationId": record.child_conversation_id.clone(),
+                    "dbPath": db_path,
+                    "title": record.title.clone(),
+                },
+                "output": {
+                    "mode": "final_json",
+                    "includeEvents": false,
+                    "includeMessages": false,
+                },
+                "runtime": {
+                    "timeoutMs": effective_timeout_ms,
+                }
+            });
+            invoke_external_headless(
+                AGENT_SESSION_TOOL_NAME,
+                external_agent,
+                &request_payload,
+                effective_timeout_ms,
+                workdir.clone(),
+                parent_conversation_id_for_scope(&scope),
+                Some(request.session_id.as_str()),
+                Some(AgentSessionAction::Send),
+            )
+            .await
+            .map(headless_output_to_invocation)
+        }
+        ExternalAgentTransportType::CodexCli | ExternalAgentTransportType::ClaudeCode => {
+            let replay_prompt = build_replay_prompt(&record.title, &record.replay_messages, prompt);
+            invoke_cli_transport(
+                AGENT_SESSION_TOOL_NAME,
+                external_agent,
+                &replay_prompt,
+                effective_model_ref.as_deref(),
+                effective_timeout_ms,
+                workdir.as_deref(),
+                parent_conversation_id_for_scope(&scope),
+                Some(request.session_id.as_str()),
+                Some(AgentSessionAction::Send.as_str()),
+            )
+            .await
+        }
+    };
+
+    let output = match output_result {
+        Ok(output) => output,
+        Err(err) => {
+            record.updated_at = Utc::now();
+            record.last_error = Some(err.message.clone());
+            save_session_store(&store)?;
+            return Err(err);
+        }
+    };
+
+    record.updated_at = Utc::now();
+    record.model_ref = effective_model_ref.clone();
+    record.run_mode = effective_run_mode.clone();
+    record.thinking = effective_thinking.clone();
+    record.cwd = workdir
+        .as_ref()
+        .map(|path| path.to_string_lossy().to_string());
+    if record.transport_type != ExternalAgentTransportType::Headless {
+        record.replay_messages.push(ExternalAgentReplayMessage {
+            role: ExternalAgentReplayRole::User,
+            content: prompt.to_string(),
+        });
+        record.replay_messages.push(ExternalAgentReplayMessage {
+            role: ExternalAgentReplayRole::Assistant,
+            content: output.content.clone(),
+        });
+    }
+    record.last_result_preview = preview_text(&output.content);
+    record.last_error = None;
+    save_session_store(&store)?;
+    let detail = get_external_agent_session_detail(&request.session_id).await?;
+    Ok(ExternalAgentSessionCommandResult {
+        detail,
+        content: output.content,
+        thinking: output.thinking,
+        model: output.model.or(effective_model_ref),
+        usage: output.usage,
+        binary: output.binary_display,
+        exit_code: output.exit_code,
+    })
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub(crate) async fn close_external_agent_session_direct(
+    session_id: &str,
+    delete_session_db: bool,
+) -> Result<ExternalAgentSessionDetail, ToolError> {
+    let config = load_app_config()?;
+    let mut store = load_session_store()?;
+    let record = find_session_mut_by_id(&mut store, session_id)?;
+    let existing_db_path = record.db_path.clone();
+    if delete_session_db {
+        if let Some(path) = existing_db_path.as_deref() {
+            match fs::remove_file(path) {
+                Ok(()) => {
+                    record.db_path = None;
+                }
+                Err(err) if err.kind() == ErrorKind::NotFound => {
+                    record.db_path = None;
+                }
+                Err(err) => {
+                    return Err(ToolError::new(format!(
+                        "agent_session 删除 DB 文件失败（{}）: {err}",
+                        path
+                    )));
+                }
+            }
+        }
+    }
+    record.status = ExternalAgentSessionStatus::Closed;
+    record.updated_at = Utc::now();
+    let display_name = config
+        .get_external_agent(&record.agent_name)
+        .map(|agent| agent.display_name.as_str());
+    let summary = session_summary(record, display_name);
+    save_session_store(&store)?;
+    match get_external_agent_session_detail(session_id).await {
+        Ok(detail) => Ok(detail),
+        Err(error) => Ok(ExternalAgentSessionDetail {
+            summary,
+            messages: Vec::new(),
+            transcript_error: Some(error.message),
+        }),
+    }
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+pub(crate) async fn start_external_agent_session_direct(
+    request: DirectAgentSessionStartRequest,
+) -> Result<ExternalAgentSessionCommandResult, ToolError> {
+    let _ = request;
+    Err(ToolError::denied("external agent session 当前仅支持桌面端"))
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+pub(crate) async fn send_external_agent_session_direct(
+    request: DirectAgentSessionSendRequest,
+) -> Result<ExternalAgentSessionCommandResult, ToolError> {
+    let _ = request;
+    Err(ToolError::denied("external agent session 当前仅支持桌面端"))
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+pub(crate) async fn close_external_agent_session_direct(
+    session_id: &str,
+    delete_session_db: bool,
+) -> Result<ExternalAgentSessionDetail, ToolError> {
+    let _ = session_id;
+    let _ = delete_session_db;
+    Err(ToolError::denied("external agent session 当前仅支持桌面端"))
 }
 
 async fn run_agent_run(
@@ -1047,7 +1841,9 @@ async fn run_agent_session_start(
             let child_conversation_id = session_ref
                 .get("conversationId")
                 .and_then(Value::as_str)
-                .ok_or_else(|| ToolError::new("agent_session(start) 缺少 sessionRef.conversationId"))?
+                .ok_or_else(|| {
+                    ToolError::new("agent_session(start) 缺少 sessionRef.conversationId")
+                })?
                 .to_string();
             let stored_db_path = session_ref
                 .get("dbPath")
@@ -1059,6 +1855,8 @@ async fn run_agent_session_start(
                 ExternalAgentSessionRecord {
                     id: session_id.clone(),
                     parent_conversation_id: ctx.conversation_id.to_string(),
+                    scope_kind: ExternalAgentSessionScopeKind::Conversation,
+                    scope_id: ctx.conversation_id.to_string(),
                     agent_name: external_agent.name.clone(),
                     remote_agent_name: remote_agent_name.clone(),
                     title: title.clone(),
@@ -1099,6 +1897,8 @@ async fn run_agent_session_start(
                 ExternalAgentSessionRecord {
                     id: session_id.clone(),
                     parent_conversation_id: ctx.conversation_id.to_string(),
+                    scope_kind: ExternalAgentSessionScopeKind::Conversation,
+                    scope_id: ctx.conversation_id.to_string(),
                     agent_name: external_agent.name.clone(),
                     remote_agent_name: remote_agent_name.clone(),
                     title: title.clone(),
@@ -1352,7 +2152,7 @@ fn run_agent_session_info(
         .iter()
         .find(|session| session.id == session_id)
         .ok_or_else(|| ToolError::invalid(format!("agent_session 未找到会话：{session_id}")))?;
-    if record.parent_conversation_id != ctx.conversation_id {
+    if !record.matches_scope(&conversation_session_scope(ctx.conversation_id)) {
         return Err(ToolError::denied(
             "agent_session 只允许访问当前对话创建的外部会话",
         ));
@@ -1382,7 +2182,7 @@ fn run_agent_session_list(
     let mut sessions = store
         .sessions
         .iter()
-        .filter(|session| session.parent_conversation_id == ctx.conversation_id)
+        .filter(|session| session.matches_scope(&conversation_session_scope(ctx.conversation_id)))
         .collect::<Vec<_>>();
     sessions.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
     let sessions = sessions

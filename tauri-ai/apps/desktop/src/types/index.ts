@@ -36,6 +36,7 @@ export type ActiveView =
   | 'history'
   | 'practice'
   | 'settings'
+  | 'agent_sessions'
   | 'document'
   | 'json_analyzer'
   | 'workstudio'
@@ -1381,6 +1382,60 @@ export interface ExternalAgentProbeInfo {
   supportsSession: boolean;
   sessionMode: ExternalAgentSessionMode;
   suggestedConfig: ExternalAgentConfig;
+}
+
+export type AgentSessionScopeKind = 'conversation' | 'standalone' | 'workspace' | 'schedule';
+
+export interface AgentSessionScope {
+  kind: AgentSessionScopeKind;
+  id: string;
+}
+
+export interface AgentSessionSummary {
+  sessionId: string;
+  agentName: string;
+  displayName?: string | null;
+  remoteAgentName: string;
+  transport: string;
+  sessionMode: string;
+  title: string;
+  status: string;
+  scopeKind: AgentSessionScopeKind;
+  scopeId: string;
+  createdAt: string;
+  updatedAt: string;
+  childConversationId: string;
+  dbPath?: string | null;
+  modelRef?: string | null;
+  runMode?: string | null;
+  cwd?: string | null;
+  lastResultPreview?: string | null;
+  lastError?: string | null;
+}
+
+export interface AgentSessionTranscriptEntry {
+  id: string;
+  role: string;
+  content: string;
+  thinking?: string | null;
+  createdAt?: string | null;
+  status?: string | null;
+}
+
+export interface AgentSessionDetail {
+  summary: AgentSessionSummary;
+  messages: AgentSessionTranscriptEntry[];
+  transcriptError?: string | null;
+}
+
+export interface AgentSessionCommandResult {
+  detail: AgentSessionDetail;
+  content: string;
+  thinking?: string | null;
+  model?: string | null;
+  usage?: unknown;
+  binary: string;
+  exitCode?: number | null;
 }
 
 // ============================================================================

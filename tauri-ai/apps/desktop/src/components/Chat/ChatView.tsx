@@ -9,7 +9,7 @@ import { useShallow } from 'zustand/shallow';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
-import { Folder, ChevronDown, Shield, ListOrdered, ArrowUp, ArrowDown, Pencil, Trash2, Check, X, Code2, ExternalLink } from 'lucide-react';
+import { Folder, ChevronDown, Shield, ListOrdered, ArrowUp, ArrowDown, Pencil, Trash2, Check, X, Code2, ExternalLink, Bot } from 'lucide-react';
 import {
   clearSessionStreamViewerVisibility,
   setSessionStreamViewerVisibility,
@@ -20,6 +20,7 @@ import { useConfigStore } from '../../stores/configStore';
 import { MessageList, type MessageListHandle } from './MessageList';
 import { InputArea, type InputAreaHandle } from './InputArea';
 import { ToolSessionsPanel } from './ToolSessionsPanel';
+import { AgentSessionsPanel } from './AgentSessionsPanel';
 import { estimateTokens } from '../../utils/tokenizer';
 import { getApiProtocol } from '../../utils/apiUtils';
 import { openUrl } from '@tauri-apps/plugin-opener';
@@ -41,6 +42,7 @@ import type {
   MessageBlock,
 } from '../../types';
 import { useToolSessionStore } from '../../stores/toolSessionStore';
+import { useAgentSessionStore } from '../../stores/agentSessionStore';
 import { endChatOpenProfile, getActiveChatOpenProfile, markChatOpenProfile } from '../../utils/chatOpenProfile';
 import { openOrFocusWorkstudioWindow } from '../../utils/viewWindow';
 import { openWorkstudioFileInWorkspace } from '../../utils/workstudioOpenFile';
@@ -100,6 +102,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
 				    }))
 			  );
   const [showToolSessions, setShowToolSessions] = useState(false);
+  const [showAgentSessions, setShowAgentSessions] = useState(false);
   const [selectedRequestMessageId, setSelectedRequestMessageId] = useState<string | null>(null);
   const [outlineOpen, setOutlineOpen] = useState(false);
   const [editingQueueMessageId, setEditingQueueMessageId] = useState<string | null>(null);
@@ -559,6 +562,10 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
   const showUsage = config?.general?.showUsage ?? true;
 
   const refreshToolSessions = useToolSessionStore((state) => state.refreshSessions);
+  const refreshAgentSessions = useAgentSessionStore((state) => state.refreshSessions);
+  const agentSessions = useAgentSessionStore((state) =>
+    conversationId ? state.sessionsByScopeKey[`conversation:${conversationId}`] ?? [] : []
+  );
   const toolSessions = useToolSessionStore(
     (state) =>
       conversationId
@@ -572,6 +579,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
     return filtered.length > 0 ? filtered : EMPTY_PTY_SESSIONS;
   }, [toolSessions, persistanceShellEnhance]);
   const activeToolCount = persistentToolSessions.filter((s) => s.isAlive).length;
+  const activeAgentSessionCount = agentSessions.filter((s) => s.status !== 'closed').length;
 
   const workspaceEnabled = useMemo(() => {
     if (!agentName) return false;
@@ -984,7 +992,10 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
     if (persistanceShellEnhance && (conversationChanged || generationFinished || enhanceJustEnabled)) {
       refreshToolSessions(conversationId);
     }
-  }, [conversationId, isGenerating, refreshToolSessions, persistanceShellEnhance]);
+    if (conversationChanged || generationFinished) {
+      void refreshAgentSessions({ kind: 'conversation', id: conversationId });
+    }
+  }, [conversationId, isGenerating, refreshAgentSessions, refreshToolSessions, persistanceShellEnhance]);
 
   // 系统级提示词统一以 `src-tauri/src/prompts.rs` 为准；前端需要时通过 Tauri command 获取，避免两份数据漂移。
 
@@ -1619,7 +1630,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
       onWheelCapture={maybeAcknowledgeUnreadCompletion}
       onKeyDownCapture={maybeAcknowledgeUnreadCompletion}
     >
-      {(persistanceShellEnhance || workspaceEnabled || (canExportChat && session)) && (
+      {(persistanceShellEnhance || Boolean(conversationId) || workspaceEnabled || (canExportChat && session)) && (
         <div className="flex items-center justify-between gap-3 border-b border-gray-100 px-4 py-2 text-xs text-gray-500 dark:border-gray-800 dark:text-gray-400">
           <div className="flex min-w-0 items-center gap-2">
             {persistanceShellEnhance && (
@@ -1633,6 +1644,20 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
                 <span>持久进程</span>
                 <span className="rounded-full bg-gray-200 px-1.5 text-[10px] text-gray-700 dark:bg-gray-700 dark:text-gray-200">
                   {activeToolCount}
+                </span>
+              </button>
+            )}
+            {conversationId && (
+              <button
+                type="button"
+                onClick={() => setShowAgentSessions(true)}
+                className="flex items-center gap-2 rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                title="查看当前对话的子 Agent 会话"
+              >
+                <Bot size={14} />
+                <span>子 Agent</span>
+                <span className="rounded-full bg-gray-200 px-1.5 text-[10px] text-gray-700 dark:bg-gray-700 dark:text-gray-200">
+                  {activeAgentSessionCount}
                 </span>
               </button>
             )}
@@ -2034,6 +2059,13 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
           conversationId={conversationId}
           isOpen={showToolSessions}
           onClose={() => setShowToolSessions(false)}
+        />
+      )}
+      {conversationId && (
+        <AgentSessionsPanel
+          conversationId={conversationId}
+          isOpen={showAgentSessions}
+          onClose={() => setShowAgentSessions(false)}
         />
       )}
     </div>

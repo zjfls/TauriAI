@@ -1419,7 +1419,7 @@ function App() {
     // 兼容旧的 standalone window 语义：
     // - history/settings/practice：作为初始 activeView
     // - document/web/terminal/workstudio：视为“在工作区内打开一个 Tab”，activeView 仍为 chat
-    if (viewOverride === 'history' || viewOverride === 'settings' || viewOverride === 'practice') {
+    if (viewOverride === 'history' || viewOverride === 'settings' || viewOverride === 'practice' || viewOverride === 'agent_sessions') {
       if (viewOverride !== activeView) setActiveView(viewOverride);
       return;
     }
