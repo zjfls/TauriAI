@@ -891,8 +891,8 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
     const layout = useWindowLayoutStore.getState();
     const existing = (layout.panes ?? []).find((p) => p.tabIds.includes(tabId)) ?? null;
     if (existing) {
-      layout.setFocusedPane(existing.id);
-      layout.setActiveTabInPane(existing.id, tabId);
+      layout.setFocusedPane(existing.id, { trackUser: true });
+      layout.setActiveTabInPane(existing.id, tabId, { trackUser: true });
       return;
     }
     layout.openTabInFocusedPane(tabId);

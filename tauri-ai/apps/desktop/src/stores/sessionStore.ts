@@ -5,7 +5,6 @@
  */
 
 import { create } from 'zustand';
-import { arrayMove } from '@dnd-kit/sortable';
 import { tauriInvoke as invoke, showGlobalError } from '../utils/errorUtils';
 import { listen } from '@tauri-apps/api/event';
 import type {
@@ -47,7 +46,7 @@ import { useDocumentStore } from './documentStore';
 import { useTerminalTabStore } from './terminalTabStore';
 import { useUIStore } from './uiStore';
 import { useWebTabStore } from './webTabStore';
-import { useWindowLayoutStore } from './windowLayoutStore';
+import { useWindowLayoutStore, type WindowPane } from './windowLayoutStore';
 import { chatTabId, docTabId, terminalTabId, useWorkspaceTabStore, webTabId, type WorkspaceTabId } from './workspaceTabStore';
 
 // Constants for persistence
@@ -191,6 +190,127 @@ const sanitizePanesForSessions = (
   return { panes: normalized, changed };
 };
 
+const isChatWorkspaceTabId = (tabId: unknown): tabId is `chat:${string}` => {
+  return typeof tabId === 'string' && tabId.startsWith('chat:');
+};
+
+const sessionIdFromWorkspaceChatTab = (tabId: unknown): string | null => {
+  return isChatWorkspaceTabId(tabId) ? tabId.slice('chat:'.length) : null;
+};
+
+const serializeSessionPanesToWindowPanes = (panes: SessionPane[]): WindowPane[] => {
+  return normalizePaneWeights(ensureAtLeastOnePane(panes)).map((pane) => ({
+    id: pane.id,
+    tabIds: pane.sessionIds.map((sessionId) => chatTabId(sessionId)),
+    activeTabId: pane.activeSessionId ? chatTabId(pane.activeSessionId) : null,
+    weight: pane.weight,
+  }));
+};
+
+const deriveSessionPanesFromWindowLayout = (
+  sessions: Map<string, AgentSession>,
+  layoutState = useWindowLayoutStore.getState()
+): SessionPane[] => {
+  const basePanes: WindowPane[] =
+    Array.isArray(layoutState.panes) && layoutState.panes.length > 0
+      ? layoutState.panes
+      : [
+          {
+            id: layoutState.focusedPaneId ?? crypto.randomUUID(),
+            tabIds: [],
+            activeTabId: null,
+            weight: 1,
+          },
+        ];
+
+  const assigned = new Set<string>();
+  const panes: SessionPane[] = basePanes.map((pane) => {
+    const sessionIds: string[] = [];
+    for (const tabId of pane.tabIds) {
+      const sessionId = sessionIdFromWorkspaceChatTab(tabId);
+      if (!sessionId || !sessions.has(sessionId) || assigned.has(sessionId)) continue;
+      assigned.add(sessionId);
+      sessionIds.push(sessionId);
+    }
+
+    const activeFromTab = sessionIdFromWorkspaceChatTab(pane.activeTabId);
+    const activeSessionId = activeFromTab && sessionIds.includes(activeFromTab) ? activeFromTab : sessionIds[0] ?? null;
+
+    return {
+      id: pane.id,
+      sessionIds,
+      activeSessionId,
+      weight: Number.isFinite(pane.weight) && pane.weight > 0 ? pane.weight : 1,
+    };
+  });
+
+  const unassigned = Array.from(sessions.keys()).filter((sessionId) => !assigned.has(sessionId));
+  if (unassigned.length > 0) {
+    const nextPanes = panes.length > 0 ? panes : ensureAtLeastOnePane([]);
+    const preferredPaneId =
+      layoutState.focusedPaneId && nextPanes.some((pane) => pane.id === layoutState.focusedPaneId)
+        ? layoutState.focusedPaneId
+        : nextPanes[0]?.id ?? null;
+    const targetPane =
+      (preferredPaneId ? nextPanes.find((pane) => pane.id === preferredPaneId) : null) ?? nextPanes[0]!;
+    for (const sessionId of unassigned) {
+      if (!targetPane.sessionIds.includes(sessionId)) targetPane.sessionIds.push(sessionId);
+    }
+    if (!targetPane.activeSessionId) {
+      targetPane.activeSessionId = targetPane.sessionIds[0] ?? null;
+    }
+    return sanitizePanesForSessions(nextPanes, sessions).panes;
+  }
+
+  return sanitizePanesForSessions(panes, sessions).panes;
+};
+
+const resolveFocusedPaneIdForSessionPanes = (
+  panes: SessionPane[],
+  focusedPaneId: string | null,
+  activeSessionId?: string | null
+): string | null => {
+  if (focusedPaneId && panes.some((pane) => pane.id === focusedPaneId)) return focusedPaneId;
+  if (activeSessionId) {
+    const idx = findPaneIndexBySessionId(panes, activeSessionId);
+    if (idx >= 0) return panes[idx]!.id;
+  }
+  return panes[0]?.id ?? null;
+};
+
+const deriveActiveSessionIdFromWindowLayout = (
+  sessions: Map<string, AgentSession>,
+  fallbackActiveSessionId?: string | null,
+  layoutState = useWindowLayoutStore.getState()
+): string | null => {
+  const panes = deriveSessionPanesFromWindowLayout(sessions, layoutState);
+  const focusedPaneId = resolveFocusedPaneIdForSessionPanes(panes, layoutState.focusedPaneId, fallbackActiveSessionId ?? null);
+  const focusedPane = (focusedPaneId ? panes.find((pane) => pane.id === focusedPaneId) : null) ?? panes[0] ?? null;
+  const candidate = focusedPane?.activeSessionId ?? focusedPane?.sessionIds[0] ?? null;
+  if (candidate && sessions.has(candidate)) return candidate;
+  if (fallbackActiveSessionId && sessions.has(fallbackActiveSessionId)) return fallbackActiveSessionId;
+  return Array.from(sessions.keys())[0] ?? null;
+};
+
+const getSessionPaneLocation = (
+  sessions: Map<string, AgentSession>,
+  sessionId: string,
+  layoutState = useWindowLayoutStore.getState()
+): { panes: SessionPane[]; paneIndex: number; pane: SessionPane | null; tabIndex: number } => {
+  const panes = deriveSessionPanesFromWindowLayout(sessions, layoutState);
+  const paneIndex = findPaneIndexBySessionId(panes, sessionId);
+  const pane = paneIndex >= 0 ? panes[paneIndex]! : null;
+  const tabIndex = pane ? pane.sessionIds.indexOf(sessionId) : -1;
+  return { panes, paneIndex, pane, tabIndex };
+};
+
+const applySessionPaneLayout = (panes: SessionPane[], focusedPaneId: string | null) => {
+  useWindowLayoutStore.getState().replaceLayout({
+    panes: serializeSessionPanesToWindowPanes(panes),
+    focusedPaneId,
+  });
+};
+
 const coerceThinkingModeForProtocol = (
   thinkingMode: ThinkingMode | undefined,
   apiProtocol: ApiProtocolType,
@@ -230,9 +350,6 @@ export interface SessionState {
    * - 若此时按“当前 sessionsMap”去清洗布局，会把持久化的 chat tabs 误删并写回，造成“分屏布局持久化没生效”的观感。
    */
   hydrated: boolean;
-  // Pane/group management (VS Code-like)
-  panes: SessionPane[];
-  focusedPaneId: string | null;
 
   // Session operations
   createSession: (agentName: string) => Promise<string>;
@@ -431,8 +548,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   sessions: new Map<string, AgentSession>(),
   activeSessionId: null,
   hydrated: false,
-  panes: ensureAtLeastOnePane([]),
-  focusedPaneId: null,
 
   /**
    * Get the currently active session
@@ -473,7 +588,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   createSession: async (agentName: string) => {
     const { sessions } = get();
 
-    // Check max sessions limit
     if (sessions.size >= MAX_SESSIONS) {
       throw new Error(`已达到最大会话数限制 (${MAX_SESSIONS})`);
     }
@@ -481,7 +595,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const now = new Date().toISOString();
     const sessionId = crypto.randomUUID();
 
-    // Create conversation in backend
     const { useConfigStore } = await import('./configStore');
     const agent = useConfigStore.getState().getAgent(agentName);
     const config = useConfigStore.getState().config;
@@ -497,7 +610,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const fallbackRunMode: RunMode = toolLikeAgent ? 'agent' : 'chat';
     const runMode: RunMode = isRunMode(agent?.defaultRunMode) ? agent.defaultRunMode : fallbackRunMode;
 
-    // Generate default title with timestamp: 新对话_MM-DD HH:mm
     const nowDate = new Date();
     const month = (nowDate.getMonth() + 1).toString().padStart(2, '0');
     const day = nowDate.getDate().toString().padStart(2, '0');
@@ -507,20 +619,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     const conversation = await invoke<{ id: string }>('create_conversation', {
       title: defaultTitle,
-      // agentName is ignored by create_conversation command, so we need to update it separately
     });
 
-    // Sync metadata to DB immediately
     await invoke('update_conversation_metadata', {
       conversationId: conversation.id,
-      agentName: agentName,
+      agentName,
       modelRef: agent?.modelRef,
       runMode,
       thinkingMode,
     }).catch(console.error);
 
-    // Session 启动阶段：预热 MCP（Codex-like），避免首次消息触发工具注入时再去拉 tools/list。
-    // Best-effort：不阻塞会话创建流程。
     invoke('warmup_mcp_servers').catch((e) => console.warn('warmup_mcp_servers failed:', e));
 
     let resolvedWorkstudioId: string | null = null;
@@ -535,69 +643,45 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
     }
 
-		    const session: AgentSession = {
-		      id: sessionId,
-		      agentName,
-		      title: defaultTitle,
-	      modelRef,
-	      conversationId: conversation.id,
-	      workstudioId: resolvedWorkstudioId,
-	      apiType: apiProtocol, // 当前会话协议（不再做“首条消息锁定”）
-	      runMode,
-			      thinkingMode,
-			      draftContent: '',
-			      draftWorkspaceMentions: [],
-			      draftCodeSnippets: [],
-			      messages: [],
-			      queuedMessages: [],
-		      streamingBlocks: null,
-	      isGenerating: false,
-	      error: null,
-	      hasUnreadCompletion: false,
-	      unreadCompletionMessageId: null,
-	      createdAt: now,
-	      lastActiveAt: now,
-	    };
+    const session: AgentSession = {
+      id: sessionId,
+      agentName,
+      title: defaultTitle,
+      modelRef,
+      conversationId: conversation.id,
+      workstudioId: resolvedWorkstudioId,
+      apiType: apiProtocol,
+      runMode,
+      thinkingMode,
+      draftContent: '',
+      draftWorkspaceMentions: [],
+      draftCodeSnippets: [],
+      messages: [],
+      queuedMessages: [],
+      streamingBlocks: null,
+      isGenerating: false,
+      error: null,
+      hasUnreadCompletion: false,
+      unreadCompletionMessageId: null,
+      createdAt: now,
+      lastActiveAt: now,
+    };
 
     set((state) => {
       const newSessions = new Map(state.sessions);
       newSessions.set(sessionId, session);
-
-      const basePanes = ensureAtLeastOnePane(state.panes ?? []);
-      const nextPanes: SessionPane[] = basePanes.map((p) => ({
-        ...p,
-        sessionIds: [...p.sessionIds].filter((id) => id !== sessionId),
-      }));
-
-      const resolvedFocusedPaneId =
-        state.focusedPaneId && nextPanes.some((p) => p.id === state.focusedPaneId)
-          ? state.focusedPaneId
-          : nextPanes[0].id;
-      const targetIndex = Math.max(0, nextPanes.findIndex((p) => p.id === resolvedFocusedPaneId));
-      const targetPane = nextPanes[targetIndex]!;
-      targetPane.sessionIds.push(sessionId);
-      targetPane.activeSessionId = sessionId;
-
       return {
         sessions: newSessions,
         activeSessionId: sessionId,
-        panes: normalizePaneWeights(nextPanes),
-        focusedPaneId: targetPane.id,
       };
     });
 
-    // WorkspaceTabBar uses a separate order list; keep it in sync.
-    // 多窗口隔离：standalone 窗口不应影响主窗口的 workspace tab 顺序（文档 tabs 也依赖该顺序）。
     useWorkspaceTabStore.getState().upsertChatTab(sessionId);
+    const layout = useWindowLayoutStore.getState();
+    layout.openTabInPane(layout.getPreferredChatPaneId(), chatTabId(sessionId));
 
-    // Workspace panes: ensure the new session is visible as a tab in the focused pane.
-    useWindowLayoutStore.getState().openTabInFocusedPane(chatTabId(sessionId));
-
-    // Save state after creating session
     get().saveSessionState();
 
-    // Refresh conversation list so new conversation appears in history immediately
-    // This also ensures generateTitle can find the conversation
     const { useConversationStore } = await import('./conversationStore');
     await useConversationStore.getState().loadConversations();
 
@@ -615,88 +699,22 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (!session) return;
     clearQueuedMessagesForSession(sessionId);
 
-    // Remove session from state
+    useWindowLayoutStore.getState().closeTabInLayout(chatTabId(sessionId));
+    useWorkspaceTabStore.getState().removeChatTab(sessionId);
+
     set((state) => {
       const newSessions = new Map(state.sessions);
       newSessions.delete(sessionId);
-
-      let nextPanes = ensureAtLeastOnePane(state.panes ?? []).map((p) => ({
-        ...p,
-        sessionIds: [...p.sessionIds],
-      }));
-
-      let removedPaneIndex = -1;
-      let removedIndexInPane = -1;
-      for (let i = 0; i < nextPanes.length; i++) {
-        const idx = nextPanes[i]!.sessionIds.indexOf(sessionId);
-        if (idx >= 0) {
-          removedPaneIndex = i;
-          removedIndexInPane = idx;
-          nextPanes[i]!.sessionIds.splice(idx, 1);
-          break;
-        }
-      }
-
-      if (removedPaneIndex >= 0) {
-        const pane = nextPanes[removedPaneIndex]!;
-        if (pane.activeSessionId === sessionId) {
-          pane.activeSessionId =
-            pane.sessionIds.length > 0
-              ? pane.sessionIds[Math.min(removedIndexInPane, pane.sessionIds.length - 1)]!
-              : null;
-        }
-        // 空 pane 且存在其它 pane 时，自动移除（避免出现“空分屏”）
-        if (pane.sessionIds.length === 0 && nextPanes.length > 1) {
-          nextPanes.splice(removedPaneIndex, 1);
-        }
-      }
-
-      // 修复各 pane 的 activeSessionId（防御：确保在本 pane 内）
-      nextPanes = ensureAtLeastOnePane(nextPanes).map((p) => {
-        if (p.activeSessionId && !p.sessionIds.includes(p.activeSessionId)) {
-          return { ...p, activeSessionId: p.sessionIds[0] ?? null };
-        }
-        if (!p.activeSessionId && p.sessionIds.length > 0) {
-          return { ...p, activeSessionId: p.sessionIds[0]! };
-        }
-        return p;
-      });
-
-      let focusedPaneId = state.focusedPaneId;
-      if (!focusedPaneId || !nextPanes.some((p) => p.id === focusedPaneId)) {
-        const fallbackIndex =
-          removedPaneIndex >= 0 ? Math.min(removedPaneIndex, nextPanes.length - 1) : 0;
-        focusedPaneId = nextPanes[fallbackIndex]!.id;
-      }
-
-      const focusedPane = nextPanes.find((p) => p.id === focusedPaneId) ?? nextPanes[0]!;
-
-      // 兼容旧字段：全局 activeSessionId 代表“当前聚焦 pane 的 active tab”
-      let newActiveId: string | null = focusedPane.activeSessionId;
-      if (newActiveId && !newSessions.has(newActiveId)) {
-        newActiveId = null;
-      }
-      if (!newActiveId) {
-        for (const p of nextPanes) {
-          const candidate = p.activeSessionId ?? p.sessionIds[0] ?? null;
-          if (candidate && newSessions.has(candidate)) {
-            newActiveId = candidate;
-            break;
-          }
-        }
-      }
-
+      const nextActiveSessionId = deriveActiveSessionIdFromWindowLayout(
+        newSessions,
+        state.activeSessionId === sessionId ? null : state.activeSessionId
+      );
       return {
         sessions: newSessions,
-        activeSessionId: newActiveId,
-        panes: normalizePaneWeights(nextPanes),
-        focusedPaneId,
+        activeSessionId: nextActiveSessionId,
       };
     });
 
-    useWorkspaceTabStore.getState().removeChatTab(sessionId);
-
-    // Save state after closing session
     get().saveSessionState();
   },
 
@@ -737,27 +755,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
     markChatOpenProfile('sessionStore:switchSession:start', { sessionId });
 
-    set((state) => {
-      const basePanes = ensureAtLeastOnePane(state.panes ?? []);
-      const nextPanes: SessionPane[] = basePanes.map((p) => ({
-        ...p,
-        sessionIds: [...p.sessionIds],
-      }));
+    const layout = useWindowLayoutStore.getState();
+    const { pane } = getSessionPaneLocation(sessions, sessionId, layout);
+    if (pane) {
+      layout.setFocusedPane(pane.id);
+      layout.setActiveTabInPane(pane.id, chatTabId(sessionId));
+    } else {
+      layout.openTabInPane(layout.getPreferredChatPaneId(), chatTabId(sessionId));
+    }
 
-      const paneIndex = findPaneIndexBySessionId(nextPanes, sessionId);
-      if (paneIndex >= 0) {
-        nextPanes[paneIndex]!.activeSessionId = sessionId;
-      }
-
-      const focusedPaneId =
-        paneIndex >= 0 ? nextPanes[paneIndex]!.id : state.focusedPaneId ?? nextPanes[0]!.id;
-
-      return {
-        activeSessionId: sessionId,
-        panes: normalizePaneWeights(nextPanes),
-        focusedPaneId,
-      };
-    });
+    set({ activeSessionId: sessionId });
 
     const afterSetActiveAt =
       typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
@@ -766,7 +773,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       meta: { deltaMs: Number((afterSetActiveAt - startedAt).toFixed(1)) },
     });
 
-    // Update lastActiveAt
     set((state) => {
       const newSessions = new Map(state.sessions);
       const session = newSessions.get(sessionId);
@@ -786,7 +792,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       meta: { deltaMs: Number((afterLastActiveAt - startedAt).toFixed(1)) },
     });
 
-    // Save state after switching
     const beforeSaveAt =
       typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
     get().saveSessionState();
@@ -821,47 +826,28 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    * Requirements: 2.1, 2.2
    */
   closeOtherSessions: (keepSessionId: string) => {
-    const { sessions, panes } = get();
+    const { sessions } = get();
     if (!sessions.has(keepSessionId)) return;
 
-    const paneIndex = findPaneIndexBySessionId(panes ?? [], keepSessionId);
-    if (paneIndex < 0) return;
+    const { pane } = getSessionPaneLocation(sessions, keepSessionId);
+    if (!pane) return;
 
-    const toClose = panes[paneIndex]!.sessionIds.filter((id) => id !== keepSessionId);
+    const toClose = pane.sessionIds.filter((id) => id !== keepSessionId);
     for (const id of toClose) clearQueuedMessagesForSession(id);
+
+    for (const id of toClose) {
+      useWindowLayoutStore.getState().closeTabInLayout(chatTabId(id));
+      useWorkspaceTabStore.getState().removeChatTab(id);
+    }
 
     set((state) => {
       const newSessions = new Map(state.sessions);
       for (const id of toClose) newSessions.delete(id);
-
-      const basePanes = ensureAtLeastOnePane(state.panes ?? []);
-      const targetPaneId = state.panes?.[paneIndex]?.id ?? basePanes[paneIndex]?.id ?? null;
-      const nextPanes = basePanes.map((p) => {
-        const isTarget = targetPaneId ? p.id === targetPaneId : false;
-        return {
-          ...p,
-          sessionIds: isTarget ? [keepSessionId] : p.sessionIds.filter((sid) => newSessions.has(sid)),
-          activeSessionId: isTarget ? keepSessionId : p.activeSessionId,
-        };
-      });
-
-      const sanitized = sanitizePanesForSessions(nextPanes, newSessions);
-      const focusedPaneId =
-        sanitized.panes.find((p) => p.sessionIds.includes(keepSessionId))?.id ??
-        state.focusedPaneId ??
-        sanitized.panes[0]!.id;
-
       return {
         sessions: newSessions,
-        panes: sanitized.panes,
-        focusedPaneId,
         activeSessionId: keepSessionId,
       };
     });
-
-    for (const id of toClose) {
-      useWorkspaceTabStore.getState().removeChatTab(id);
-    }
 
     get().saveSessionState();
   },
@@ -871,57 +857,28 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    * Requirements: 3.1, 3.3
    */
   closeSessionsToLeft: (sessionId: string) => {
-    const { sessions, panes, activeSessionId } = get();
+    const { sessions, activeSessionId } = get();
     if (!sessions.has(sessionId)) return;
 
-    const paneIndex = findPaneIndexBySessionId(panes ?? [], sessionId);
-    if (paneIndex < 0) return;
+    const { pane, tabIndex } = getSessionPaneLocation(sessions, sessionId);
+    if (!pane || tabIndex <= 0) return;
 
-    const pane = panes[paneIndex]!;
-    const targetIndex = pane.sessionIds.indexOf(sessionId);
-    if (targetIndex <= 0) return;
-
-    const toClose = pane.sessionIds.slice(0, targetIndex);
+    const toClose = pane.sessionIds.slice(0, tabIndex);
     for (const id of toClose) clearQueuedMessagesForSession(id);
+
+    for (const id of toClose) {
+      useWindowLayoutStore.getState().closeTabInLayout(chatTabId(id));
+      useWorkspaceTabStore.getState().removeChatTab(id);
+    }
 
     set((state) => {
       const newSessions = new Map(state.sessions);
       for (const id of toClose) newSessions.delete(id);
-
-      const nextPanes = ensureAtLeastOnePane(state.panes ?? []).map((p) => {
-        if (p.id !== pane.id) {
-          return {
-            ...p,
-            sessionIds: p.sessionIds.filter((id) => newSessions.has(id)),
-          };
-        }
-
-        const kept = p.sessionIds.filter((id) => id === sessionId || !toClose.includes(id));
-        const nextActive =
-          p.activeSessionId && newSessions.has(p.activeSessionId)
-            ? p.activeSessionId
-            : sessionId;
-        return {
-          ...p,
-          sessionIds: kept,
-          activeSessionId: nextActive,
-        };
-      });
-
-      let newActiveId = activeSessionId;
-      if (newActiveId && !newSessions.has(newActiveId)) newActiveId = sessionId;
-
-      const sanitized = sanitizePanesForSessions(nextPanes, newSessions);
       return {
         sessions: newSessions,
-        panes: sanitized.panes,
-        activeSessionId: newActiveId,
+        activeSessionId: activeSessionId && newSessions.has(activeSessionId) ? activeSessionId : sessionId,
       };
     });
-
-    for (const id of toClose) {
-      useWorkspaceTabStore.getState().removeChatTab(id);
-    }
 
     get().saveSessionState();
   },
@@ -931,318 +888,97 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    * Requirements: 4.1, 4.3
    */
   closeSessionsToRight: (sessionId: string) => {
-    const { sessions, panes, activeSessionId } = get();
+    const { sessions, activeSessionId } = get();
     if (!sessions.has(sessionId)) return;
 
-    const paneIndex = findPaneIndexBySessionId(panes ?? [], sessionId);
-    if (paneIndex < 0) return;
+    const { pane, tabIndex } = getSessionPaneLocation(sessions, sessionId);
+    if (!pane || tabIndex < 0 || tabIndex >= pane.sessionIds.length - 1) return;
 
-    const pane = panes[paneIndex]!;
-    const targetIndex = pane.sessionIds.indexOf(sessionId);
-    if (targetIndex < 0 || targetIndex >= pane.sessionIds.length - 1) return;
-
-    const toClose = pane.sessionIds.slice(targetIndex + 1);
+    const toClose = pane.sessionIds.slice(tabIndex + 1);
     for (const id of toClose) clearQueuedMessagesForSession(id);
+
+    for (const id of toClose) {
+      useWindowLayoutStore.getState().closeTabInLayout(chatTabId(id));
+      useWorkspaceTabStore.getState().removeChatTab(id);
+    }
 
     set((state) => {
       const newSessions = new Map(state.sessions);
       for (const id of toClose) newSessions.delete(id);
-
-      const nextPanes = ensureAtLeastOnePane(state.panes ?? []).map((p) => {
-        if (p.id !== pane.id) {
-          return {
-            ...p,
-            sessionIds: p.sessionIds.filter((id) => newSessions.has(id)),
-          };
-        }
-
-        const kept = p.sessionIds.filter((id) => !toClose.includes(id));
-        const nextActive =
-          p.activeSessionId && newSessions.has(p.activeSessionId)
-            ? p.activeSessionId
-            : sessionId;
-        return {
-          ...p,
-          sessionIds: kept,
-          activeSessionId: nextActive,
-        };
-      });
-
-      let newActiveId = activeSessionId;
-      if (newActiveId && !newSessions.has(newActiveId)) newActiveId = sessionId;
-
-      const sanitized = sanitizePanesForSessions(nextPanes, newSessions);
       return {
         sessions: newSessions,
-        panes: sanitized.panes,
-        activeSessionId: newActiveId,
+        activeSessionId: activeSessionId && newSessions.has(activeSessionId) ? activeSessionId : sessionId,
       };
     });
-
-    for (const id of toClose) {
-      useWorkspaceTabStore.getState().removeChatTab(id);
-    }
 
     get().saveSessionState();
   },
 
   setFocusedPane: (paneId: string) => {
-    set((state) => {
-      const basePanes = ensureAtLeastOnePane(state.panes ?? []);
-      const nextPanes: SessionPane[] = basePanes.map((p) => ({
-        ...p,
-        sessionIds: [...p.sessionIds],
-      }));
-
-      const idx = nextPanes.findIndex((p) => p.id === paneId);
-      if (idx < 0) return {};
-
-      const pane = nextPanes[idx]!;
-      if (pane.activeSessionId && !pane.sessionIds.includes(pane.activeSessionId)) {
-        pane.activeSessionId = pane.sessionIds[0] ?? null;
-      }
-      if (!pane.activeSessionId && pane.sessionIds.length > 0) {
-        pane.activeSessionId = pane.sessionIds[0]!;
-      }
-
-      return {
-        panes: normalizePaneWeights(nextPanes),
-        focusedPaneId: pane.id,
-        activeSessionId: pane.activeSessionId ?? null,
-      };
-    });
+    useWindowLayoutStore.getState().setFocusedPane(paneId);
+    const pane = deriveSessionPanesFromWindowLayout(get().sessions).find((item) => item.id === paneId) ?? null;
+    set({ activeSessionId: pane?.activeSessionId ?? pane?.sessionIds[0] ?? get().activeSessionId });
     void get().saveSessionState();
   },
 
   setActiveSessionInPane: (paneId: string, sessionId: string) => {
     if (!get().sessions.has(sessionId)) return;
-    set((state) => {
-      const basePanes = ensureAtLeastOnePane(state.panes ?? []);
-      const nextPanes: SessionPane[] = basePanes.map((p) => ({
-        ...p,
-        sessionIds: [...p.sessionIds],
-      }));
-      const idx = nextPanes.findIndex((p) => p.id === paneId);
-      if (idx < 0) return {};
-      const pane = nextPanes[idx]!;
-      if (!pane.sessionIds.includes(sessionId)) return {};
-      pane.activeSessionId = sessionId;
-
-      const isFocused = (state.focusedPaneId ?? nextPanes[0]!.id) === paneId;
-      return {
-        panes: normalizePaneWeights(nextPanes),
-        activeSessionId: isFocused ? sessionId : state.activeSessionId,
-      };
-    });
+    useWindowLayoutStore.getState().setActiveTabInPane(paneId, chatTabId(sessionId));
+    set({ activeSessionId: sessionId });
     void get().saveSessionState();
   },
 
   reorderSessionInPane: (paneId: string, activeSessionId: string, overSessionId: string) => {
-    set((state) => {
-      const basePanes = ensureAtLeastOnePane(state.panes ?? []);
-      const nextPanes: SessionPane[] = basePanes.map((p) => ({
-        ...p,
-        sessionIds: [...p.sessionIds],
-      }));
-      const idx = nextPanes.findIndex((p) => p.id === paneId);
-      if (idx < 0) return {};
-      const pane = nextPanes[idx]!;
-      const oldIndex = pane.sessionIds.indexOf(activeSessionId);
-      const newIndex = pane.sessionIds.indexOf(overSessionId);
-      if (oldIndex < 0 || newIndex < 0 || oldIndex === newIndex) return {};
-      pane.sessionIds = arrayMove(pane.sessionIds, oldIndex, newIndex);
-      return { panes: normalizePaneWeights(nextPanes) };
-    });
+    useWindowLayoutStore.getState().reorderTabInPane(paneId, chatTabId(activeSessionId), chatTabId(overSessionId));
     void get().saveSessionState();
   },
 
   moveSessionToPane: (sessionId: string, toPaneId: string, toIndex?: number) => {
     if (!get().sessions.has(sessionId)) return;
-    set((state) => {
-      let nextPanes: SessionPane[] = ensureAtLeastOnePane(state.panes ?? []).map((p) => ({
-        ...p,
-        sessionIds: [...p.sessionIds],
-      }));
-
-      // 1) 从原 pane 移除
-      for (const p of nextPanes) {
-        const idx = p.sessionIds.indexOf(sessionId);
-        if (idx < 0) continue;
-        p.sessionIds.splice(idx, 1);
-        if (p.activeSessionId === sessionId) {
-          p.activeSessionId = p.sessionIds[0] ?? null;
-        }
-      }
-
-      // 2) 移除空 pane（但至少保留一个）
-      nextPanes = nextPanes.filter((p) => p.sessionIds.length > 0 || nextPanes.length === 1);
-      nextPanes = ensureAtLeastOnePane(nextPanes);
-
-      // 3) 插入到目标 pane
-      const targetIdx = nextPanes.findIndex((p) => p.id === toPaneId);
-      if (targetIdx < 0) return {};
-      const targetPane = nextPanes[targetIdx]!;
-
-      const insertIndex = (() => {
-        const raw = toIndex ?? targetPane.sessionIds.length;
-        return Math.max(0, Math.min(raw, targetPane.sessionIds.length));
-      })();
-
-      if (!targetPane.sessionIds.includes(sessionId)) {
-        targetPane.sessionIds.splice(insertIndex, 0, sessionId);
-      }
-      targetPane.activeSessionId = sessionId;
-
-      // 目标 pane 变为焦点
-      return {
-        panes: normalizePaneWeights(nextPanes),
-        focusedPaneId: targetPane.id,
-        activeSessionId: sessionId,
-      };
-    });
+    useWindowLayoutStore.getState().moveTabToPane(chatTabId(sessionId), toPaneId, toIndex);
+    set({ activeSessionId: sessionId });
     void get().saveSessionState();
   },
 
   splitSessionToNewPane: (sessionId: string, direction: 'left' | 'right', targetPaneId: string) => {
     if (!get().sessions.has(sessionId)) return;
-
-    set((state) => {
-      let nextPanes: SessionPane[] = ensureAtLeastOnePane(state.panes ?? []).map((p) => ({
-        ...p,
-        sessionIds: [...p.sessionIds],
-      }));
-
-      // 从任意 pane 移除该 session
-      for (const p of nextPanes) {
-        const idx = p.sessionIds.indexOf(sessionId);
-        if (idx < 0) continue;
-        p.sessionIds.splice(idx, 1);
-        if (p.activeSessionId === sessionId) {
-          p.activeSessionId = p.sessionIds[0] ?? null;
-        }
-      }
-
-      // 清理空 pane（但至少保留一个）
-      nextPanes = nextPanes.filter((p) => p.sessionIds.length > 0 || nextPanes.length === 1);
-      nextPanes = ensureAtLeastOnePane(nextPanes);
-
-      const targetIndex = Math.max(0, nextPanes.findIndex((p) => p.id === targetPaneId));
-      const targetPane = nextPanes[targetIndex] ?? nextPanes[0]!;
-
-      const baseWeight = Number.isFinite(targetPane.weight) && targetPane.weight > 0 ? targetPane.weight : 1;
-      const newPaneWeight = Math.max(0.4, baseWeight / 2);
-      targetPane.weight = Math.max(0.4, baseWeight - newPaneWeight);
-
-      const newPane: SessionPane = {
-        id: crypto.randomUUID(),
-        sessionIds: [sessionId],
-        activeSessionId: sessionId,
-        weight: newPaneWeight,
-      };
-
-      const insertAt = direction === 'left' ? targetIndex : targetIndex + 1;
-      nextPanes.splice(insertAt, 0, newPane);
-
-      return {
-        panes: normalizePaneWeights(nextPanes),
-        focusedPaneId: newPane.id,
-        activeSessionId: sessionId,
-      };
-    });
-
+    useWindowLayoutStore.getState().splitTabToNewPane(chatTabId(sessionId), direction, targetPaneId);
+    set({ activeSessionId: sessionId });
     void get().saveSessionState();
   },
 
   closePaneAndMerge: (paneId: string) => {
-    set((state) => {
-      const basePanes = ensureAtLeastOnePane(state.panes ?? []);
-      if (basePanes.length <= 1) return {};
-
-      const nextPanes: SessionPane[] = basePanes.map((p) => ({
-        ...p,
-        sessionIds: [...p.sessionIds],
-      }));
-
-      const idx = nextPanes.findIndex((p) => p.id === paneId);
-      if (idx < 0) return {};
-
-      const closing = nextPanes[idx]!;
-      const targetIdx = idx < nextPanes.length - 1 ? idx + 1 : idx - 1;
-      const target = nextPanes[targetIdx]!;
-
-      // 合并 tabs：追加到目标 pane 的末尾（保留目标 pane 当前 active）
-      for (const sid of closing.sessionIds) {
-        if (!target.sessionIds.includes(sid)) {
-          target.sessionIds.push(sid);
-        }
-      }
-
-      target.weight = (Number.isFinite(target.weight) ? target.weight : 1) + (Number.isFinite(closing.weight) ? closing.weight : 1);
-      if (target.activeSessionId && !target.sessionIds.includes(target.activeSessionId)) {
-        target.activeSessionId = target.sessionIds[0] ?? null;
-      }
-      if (!target.activeSessionId && target.sessionIds.length > 0) {
-        target.activeSessionId = target.sessionIds[0]!;
-      }
-
-      nextPanes.splice(idx, 1);
-
-      let focusedPaneId = state.focusedPaneId;
-      if (focusedPaneId === paneId) focusedPaneId = target.id;
-      if (!focusedPaneId || !nextPanes.some((p) => p.id === focusedPaneId)) {
-        focusedPaneId = nextPanes[0]!.id;
-      }
-      const focusedPane = nextPanes.find((p) => p.id === focusedPaneId) ?? nextPanes[0]!;
-
-      return {
-        panes: normalizePaneWeights(nextPanes),
-        focusedPaneId,
-        activeSessionId: focusedPane.activeSessionId ?? null,
-      };
-    });
+    useWindowLayoutStore.getState().closePaneAndMerge(paneId);
+    set((state) => ({
+      activeSessionId: deriveActiveSessionIdFromWindowLayout(state.sessions, state.activeSessionId),
+    }));
     void get().saveSessionState();
   },
 
   setPaneWeights: (weights) => {
-    if (!Array.isArray(weights) || weights.length === 0) return;
-    set((state) => {
-      const basePanes = ensureAtLeastOnePane(state.panes ?? []);
-      const map = new Map(weights.map((w) => [w.paneId, w.weight] as const));
-      const nextPanes: SessionPane[] = basePanes.map((p) => {
-        const next = map.get(p.id);
-        if (next === undefined) return p;
-        return {
-          ...p,
-          weight: Number.isFinite(next) && next > 0 ? next : p.weight,
-        };
-      });
-      return { panes: normalizePaneWeights(nextPanes) };
-    });
+    useWindowLayoutStore.getState().setPaneWeights(weights);
+    void get().saveSessionState();
   },
 
   sanitizeLayoutState: () => {
-    set((state) => {
-      const sanitized = sanitizePanesForSessions(state.panes ?? [], state.sessions);
-      if (!sanitized.changed) return {};
-
-      let focusedPaneId = state.focusedPaneId;
-      if (!focusedPaneId || !sanitized.panes.some((p) => p.id === focusedPaneId)) {
-        const idx = state.activeSessionId ? findPaneIndexBySessionId(sanitized.panes, state.activeSessionId) : -1;
-        focusedPaneId = idx >= 0 ? sanitized.panes[idx]!.id : sanitized.panes[0]!.id;
-      }
-
-      const focusedPane = sanitized.panes.find((p) => p.id === focusedPaneId) ?? sanitized.panes[0]!;
-      const activeSessionId = focusedPane.activeSessionId ?? focusedPane.sessionIds[0] ?? null;
-
-      return {
-        panes: sanitized.panes,
-        focusedPaneId,
-        activeSessionId,
-      };
+    const state = get();
+    const layout = useWindowLayoutStore.getState();
+    const panes = deriveSessionPanesFromWindowLayout(state.sessions, layout);
+    const sanitized = sanitizePanesForSessions(panes, state.sessions);
+    const focusedPaneId = resolveFocusedPaneIdForSessionPanes(
+      sanitized.panes,
+      layout.focusedPaneId,
+      state.activeSessionId
+    );
+    applySessionPaneLayout(sanitized.panes, focusedPaneId);
+    set({
+      activeSessionId: deriveActiveSessionIdFromWindowLayout(state.sessions, state.activeSessionId),
     });
     get().saveSessionState();
   },
 
+  /**
+   * Send a message in a specific session
 
   /**
    * Send a message in a specific session
@@ -2485,7 +2221,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    * Requirements: 5.1
    */
 		  saveSessionState: async () => {
-		    const { sessions, activeSessionId, panes, focusedPaneId } = get();
+		    const { sessions, activeSessionId } = get();
+    const layout = useWindowLayoutStore.getState();
+    const panes = deriveSessionPanesFromWindowLayout(sessions, layout);
+    const focusedPaneId = resolveFocusedPaneIdForSessionPanes(panes, layout.focusedPaneId, activeSessionId);
 
 		    const persistedSessions: PersistedSession[] = Array.from(sessions.values()).map((session) => {
 		      const rawMentions = Array.isArray(session.draftWorkspaceMentions) ? session.draftWorkspaceMentions : [];
@@ -2542,7 +2281,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       version: PERSISTENCE_VERSION,
       sessions: persistedSessions,
       activeSessionId,
-      panes: normalizePaneWeights(ensureAtLeastOnePane(panes ?? [])).map((p) => ({
+      panes: normalizePaneWeights(ensureAtLeastOnePane(panes)).map((p) => ({
         id: p.id,
         sessionIds: [...p.sessionIds],
         activeSessionId: p.activeSessionId,
@@ -2781,11 +2520,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
       set({
         sessions: newSessions,
-        panes,
-        focusedPaneId,
         activeSessionId,
         hydrated: true,
       });
+
+      applySessionPaneLayout(panes, focusedPaneId);
 
       // App/session 启动阶段：预热 MCP（Codex-like），让后续 tool 注入走缓存而不是每次请求 tools/list。
       // Best-effort：不阻塞 UI hydration。
@@ -2839,7 +2578,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           meta: { sessionId: session.id },
         });
         get().switchSession(session.id);
-        useWindowLayoutStore.getState().openTabInFocusedPane(chatTabId(session.id));
+        const layout = useWindowLayoutStore.getState();
+        layout.openTabInPane(layout.getPreferredChatPaneId(), chatTabId(session.id));
         markChatOpenProfile('sessionStore:switchSession(done)', {
           conversationId,
           meta: { sessionId: session.id },
@@ -2976,27 +2716,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((state) => {
       const newSessions = new Map(state.sessions);
       newSessions.set(sessionId, session);
-
-      const basePanes = ensureAtLeastOnePane(state.panes ?? []);
-      const nextPanes: SessionPane[] = basePanes.map((p) => ({
-        ...p,
-        sessionIds: [...p.sessionIds].filter((id) => id !== sessionId),
-      }));
-
-      const resolvedFocusedPaneId =
-        state.focusedPaneId && nextPanes.some((p) => p.id === state.focusedPaneId)
-          ? state.focusedPaneId
-          : nextPanes[0].id;
-      const targetIndex = Math.max(0, nextPanes.findIndex((p) => p.id === resolvedFocusedPaneId));
-      const targetPane = nextPanes[targetIndex]!;
-      targetPane.sessionIds.push(sessionId);
-      targetPane.activeSessionId = sessionId;
-
       return {
         sessions: newSessions,
         activeSessionId: sessionId,
-        panes: normalizePaneWeights(nextPanes),
-        focusedPaneId: targetPane.id,
       };
     });
     markChatOpenProfile('sessionStore:setState(done)', { conversationId, meta: { sessionId } });
@@ -3004,7 +2726,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     useWorkspaceTabStore.getState().upsertChatTab(sessionId);
     markChatOpenProfile('sessionStore:upsertChatTab', { conversationId, meta: { sessionId } });
 
-    useWindowLayoutStore.getState().openTabInFocusedPane(chatTabId(sessionId));
+    const layout = useWindowLayoutStore.getState();
+    layout.openTabInPane(layout.getPreferredChatPaneId(), chatTabId(sessionId));
 
     // Save state
     get().saveSessionState();
@@ -3014,7 +2737,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   cloneConversation: async (sourceSessionId: string) => {
-    const { sessions, panes } = get();
+    const { sessions } = get();
     const source = sessions.get(sourceSessionId);
     if (!source?.conversationId) {
       throw new Error('当前会话未绑定对话，无法克隆');
@@ -3023,11 +2746,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       throw new Error('生成中，无法克隆（请先停止生成）');
     }
 
-    const basePanes = ensureAtLeastOnePane(panes ?? []);
-    const sourcePaneIndex = findPaneIndexBySessionId(basePanes, sourceSessionId);
-    const sourcePaneId = sourcePaneIndex >= 0 ? basePanes[sourcePaneIndex]!.id : null;
-    const sourceTabIndex =
-      sourcePaneIndex >= 0 ? basePanes[sourcePaneIndex]!.sessionIds.indexOf(sourceSessionId) : -1;
+    const { pane, tabIndex } = getSessionPaneLocation(sessions, sourceSessionId);
+    const sourcePaneId = pane?.id ?? null;
+    const sourceTabIndex = tabIndex;
 
     // 保证“打开/新建 tab”发生在正确的 pane 上（避免多 pane 时归属错误）。
     if (sourcePaneId) {
@@ -3634,7 +3355,7 @@ export const initStreamListeners = async () => {
 
           const state = useSessionStore.getState();
           const layout = useWindowLayoutStore.getState();
-          const basePaneId = layout.focusedPaneId ?? layout.panes?.[0]?.id ?? null;
+          const basePaneId = layout.getPreferredChatPaneId();
           const placement: ChatDockPlacement = payload.placement ?? 'tab';
 
           const sessionId = await state.openHistoricalConversation(payload.conversationId, {
@@ -3677,7 +3398,7 @@ export const initStreamListeners = async () => {
           }
 
           const layout = useWindowLayoutStore.getState();
-          const basePaneId = layout.focusedPaneId ?? layout.panes?.[0]?.id ?? null;
+          const basePaneId = layout.getPreferredPaneId();
           const placement: ChatDockPlacement = payload.placement ?? 'tab';
 
           let tabId: WorkspaceTabId | null = null;

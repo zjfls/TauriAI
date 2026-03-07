@@ -1216,7 +1216,7 @@ const ChatViewContainerInner: React.FC = () => {
       } else if (parsed.kind === 'terminal' && parsed.terminalTabId) {
         setActiveTerminalTab(parsed.terminalTabId);
       }
-      setActiveTabInPane(paneId, tabId);
+      setActiveTabInPane(paneId, tabId, { trackUser: true });
     },
     [setActiveDocument, setActiveTabInPane, setActiveTerminalTab, setActiveWebTab, switchSession]
   );
@@ -1252,7 +1252,7 @@ const ChatViewContainerInner: React.FC = () => {
                 canClosePane={canClosePane}
                 onFocus={() => {
                   if (!resolvedFocusedPaneId || pane.id !== resolvedFocusedPaneId) {
-                    setFocusedPane(pane.id);
+                    setFocusedPane(pane.id, { trackUser: true });
                   }
                 }}
                 onSelectTab={(tabId) => selectTab(pane.id, tabId)}
