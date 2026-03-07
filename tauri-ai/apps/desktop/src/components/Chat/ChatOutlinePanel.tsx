@@ -1,5 +1,7 @@
 import React, { useMemo } from 'react';
-import { ChevronLeft, ChevronRight, ListOrdered } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ListOrdered, X } from 'lucide-react';
+
+export type ChatOutlineDisplayMode = 'sidebar' | 'overlay';
 
 export type ChatOutlineItem = {
   messageId: string;
@@ -12,22 +14,30 @@ export const ChatOutlinePanel: React.FC<{
   selectedMessageId: string | null;
   selectedFullText?: string | null;
   isOpen: boolean;
+  displayMode: ChatOutlineDisplayMode;
   onToggle: () => void;
   onSelect: (messageId: string) => void;
-}> = ({ items, selectedMessageId, selectedFullText, isOpen, onToggle, onSelect }) => {
+}> = ({ items, selectedMessageId, selectedFullText, isOpen, displayMode, onToggle, onSelect }) => {
   const selected = useMemo(() => {
     if (!selectedMessageId) return null;
     return items.find((i) => i.messageId === selectedMessageId) ?? null;
   }, [items, selectedMessageId]);
 
+  const isOverlay = displayMode === 'overlay';
+  const closeLabel = isOverlay ? '关闭消息目录' : '收起消息目录';
+
   return (
     <div
       className={[
-        isOpen ? 'w-64' : 'w-0',
+        isOpen ? (isOverlay ? 'w-72' : 'w-64') : 'w-0',
         'flex-shrink-0 overflow-hidden h-full',
-        'transition-[width] duration-200 ease-out',
-        isOpen ? 'border-r border-gray-200 dark:border-gray-800' : 'border-r-0',
-        isOpen ? 'bg-white/70 dark:bg-gray-900/55 backdrop-blur' : 'bg-transparent',
+        'transition-[width,opacity,transform] duration-200 ease-out',
+        isOverlay
+          ? 'rounded-xl border border-gray-200/80 bg-white/95 shadow-xl dark:border-gray-800 dark:bg-gray-900/90'
+          : isOpen
+            ? 'border-r border-gray-200 bg-white/70 backdrop-blur dark:border-gray-800 dark:bg-gray-900/55'
+            : 'border-r-0 bg-transparent',
+        isOverlay && !isOpen ? '-translate-x-3 opacity-0' : 'translate-x-0 opacity-100',
         isOpen ? 'pointer-events-auto' : 'pointer-events-none',
         'flex min-h-0 flex-col',
       ].join(' ')}
@@ -49,10 +59,10 @@ export const ChatOutlinePanel: React.FC<{
                 type="button"
                 onClick={onToggle}
                 className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
-                aria-label="收起消息目录"
-                title="收起消息目录"
+                aria-label={closeLabel}
+                title={closeLabel}
               >
-                <ChevronLeft size={14} />
+                {isOverlay ? <X size={14} /> : <ChevronLeft size={14} />}
               </button>
             </div>
           </div>

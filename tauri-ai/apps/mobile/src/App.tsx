@@ -93,6 +93,7 @@ export default function App() {
         onNewConversation={
           tab === "chat" || tab === "history" ? () => setNewConversationOpen(true) : undefined
         }
+        listPaneClassName={tab === "practice" ? "w-[240px]" : undefined}
         list={list}
         detail={detail}
       />

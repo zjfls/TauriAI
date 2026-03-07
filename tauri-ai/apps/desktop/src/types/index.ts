@@ -1180,6 +1180,8 @@ export interface WorkstudioOutlineFileUiState {
 
 export interface WorkstudioOutlineUiState {
   open?: boolean;
+  /** Outline 显示方式：默认与 Explorer 共用标签页，可切换为上下分栏模式。 */
+  displayMode?: 'tab' | 'sidecar';
   /** 是否优先使用 LSP 生成 Outline（默认 true）。 */
   preferLsp?: boolean;
   /** Outline 符号排序方式（默认 position）。 */

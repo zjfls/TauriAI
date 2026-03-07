@@ -311,6 +311,8 @@ type OutlineItem = {
 };
 
 type OutlineSortMode = 'position' | 'kind' | 'name' | 'size';
+type OutlineDisplayMode = 'tab' | 'sidecar';
+type WorkstudioSidebarTab = 'explorer' | 'outline';
 
 type OutlineFileViewState = {
   collapsedKeys: string[];
@@ -340,6 +342,8 @@ const OUTLINE_FILE_STATE_LIMIT = 120;
 const OUTLINE_COLLAPSED_KEY_LIMIT = 512;
 const DEFAULT_OUTLINE_PREFER_LSP = true;
 const DEFAULT_OUTLINE_SORT_MODE: OutlineSortMode = 'position';
+const DEFAULT_OUTLINE_DISPLAY_MODE: OutlineDisplayMode = 'tab';
+const DEFAULT_WORKSTUDIO_SIDEBAR_TAB: WorkstudioSidebarTab = 'explorer';
 
 // Code Index（落盘缓存）优先级：数值越大越优先。
 // 与后端约定保持一致（index_manager.rs），但前端不强依赖具体实现细节。
@@ -3301,6 +3305,8 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const lspStatusButtonRef = useRef<HTMLButtonElement | null>(null);
   const [explorerOpen, setExplorerOpen] = useState(true);
   const [outlineOpen, setOutlineOpen] = useState(true);
+  const [outlineDisplayMode, setOutlineDisplayMode] = useState<OutlineDisplayMode>(DEFAULT_OUTLINE_DISPLAY_MODE);
+  const [sidebarTab, setSidebarTab] = useState<WorkstudioSidebarTab>(DEFAULT_WORKSTUDIO_SIDEBAR_TAB);
   const [outlinePreferLsp, setOutlinePreferLsp] = useState(DEFAULT_OUTLINE_PREFER_LSP);
   const [outlineSortMode, setOutlineSortMode] = useState<OutlineSortMode>(DEFAULT_OUTLINE_SORT_MODE);
   const [outlineToolsMenuOpen, setOutlineToolsMenuOpen] = useState(false);
@@ -3309,7 +3315,9 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const [workstudioAiSettingsOpen, setWorkstudioAiSettingsOpen] = useState(false);
   const [outlineSearchQuery, setOutlineSearchQuery] = useState('');
 
-
+  const isOutlineVisible = outlineDisplayMode === 'tab' ? sidebarTab === 'outline' : outlineOpen;
+  const showExplorerSidebarPanel = outlineDisplayMode === 'sidecar' || sidebarTab === 'explorer';
+  const showOutlineSidebarPanel = outlineDisplayMode === 'tab' && sidebarTab === 'outline';
 
   const [outlineItems, setOutlineItems] = useState<OutlineItem[]>([]);
   const outlineItemsRef = useRef<OutlineItem[]>([]);
@@ -3634,6 +3642,9 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const outlineItemsForDisplay = outlineSearchQuery.trim() ? outlineSearchFilterResult.items : outlineItemsForRender;
   const outlineSearchMatchedKeys = outlineSearchFilterResult.matchedKeys;
   const outlineSearchMatchCount = outlineSearchFilterResult.matchCount;
+  const outlinePanelSubtitle = activeTextFileInFocusedPane
+    ? `${basename(activeTextFileInFocusedPane.path)}${outlineSourceLabel ? ` · ${outlineSourceLabel}` : ''} · ${outlineSortModeLabel}`
+    : '当前无文本文件';
   const outlineAnalyzeAllTargets = useMemo(() => {
     if (outlineItems.length === 0) return [];
     const flat = flattenOutlineItems(outlineItems);
@@ -3896,11 +3907,11 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   }, [activeTextFileInFocusedPane?.id]);
 
   useEffect(() => {
-    if (outlineOpen) return;
+    if (isOutlineVisible) return;
     setOutlineToolsMenuOpen(false);
     setOutlineAnalyzeAllPanelOpen(false);
     closeBreadcrumbSymbolMenu();
-  }, [closeBreadcrumbSymbolMenu, outlineOpen]);
+  }, [closeBreadcrumbSymbolMenu, isOutlineVisible]);
 
   useEffect(() => {
     if (!breadcrumbSymbolMenu) return;
@@ -3912,7 +3923,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   // - 避免大项目“全量索引”抢占用户正在看的文件：真正的高优先级由上面的 open-file effect 提升
   useEffect(() => {
     if (!isTauri()) return;
-    if (!outlineOpen) return;
+    if (!isOutlineVisible) return;
     const wsId = ws?.id ?? null;
     if (!wsId) return;
     if (codeIndexScanStartedRef.current.has(wsId)) return;
@@ -3926,7 +3937,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     }, 900);
 
     return () => window.clearTimeout(timer);
-  }, [outlineOpen, ws?.id]);
+  }, [isOutlineVisible, ws?.id]);
 
   useEffect(() => {
     return () => {
@@ -3938,7 +3949,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   }, []);
 
   useEffect(() => {
-    if (!outlineOpen) return;
+    if (!isOutlineVisible) return;
     if (outlineLoading) return;
     const filePath = activeOutlineFilePath;
     if (!filePath) return;
@@ -3953,10 +3964,10 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     return () => {
       if (rafId) window.cancelAnimationFrame(rafId);
     };
-  }, [activeOutlineFilePath, outlineFileStateByPath, outlineItems.length, outlineLoading, outlineOpen]);
+  }, [activeOutlineFilePath, outlineFileStateByPath, outlineItems.length, outlineLoading, isOutlineVisible]);
 
   useEffect(() => {
-    if (!outlineOpen) return;
+    if (!isOutlineVisible) return;
     if (!isTauri()) {
       setOutlineItems([]);
       setOutlineSource('none');
@@ -4075,7 +4086,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       window.clearTimeout(timer);
     };
   }, [
-    outlineOpen,
+    isOutlineVisible,
     ws?.id,
     activeTextFileInFocusedPane?.id,
     activeTextFileInFocusedPane?.content,
@@ -5617,7 +5628,7 @@ type OpenFromLinkErrorInfo = {
 			  // Outline: proactively refresh analysis status for the active file on page open / file switch.
 			  // This avoids "right click to refresh" UX.
 				  useEffect(() => {
-			    if (!outlineOpen) return;
+			    if (!isOutlineVisible) return;
 			    if (outlineLoading) return;
 			    if (!workstudioId) return;
 			    const filePath = activeOutlineFilePath;
@@ -5802,7 +5813,7 @@ type OpenFromLinkErrorInfo = {
 			    activeOutlineFilePath,
 			    outlineItems,
 			    outlineLoading,
-			    outlineOpen,
+			    isOutlineVisible,
 			    workstudioId,
 			    makeSymbolAnalysisCacheKey,
 			    showNavToast,
@@ -8010,6 +8021,399 @@ type OpenFromLinkErrorInfo = {
       );
     });
 
+
+  const handleChangeOutlineDisplayMode = useCallback(
+    (nextMode: OutlineDisplayMode) => {
+      setOutlineDisplayMode(nextMode);
+      setOutlineOpen(true);
+      setOutlineToolsMenuOpen(false);
+      setOutlineAnalyzeAllPanelOpen(false);
+      closeBreadcrumbSymbolMenu();
+      if (nextMode === 'tab') {
+        setSidebarTab('outline');
+        return;
+      }
+      setSidebarTab('explorer');
+    },
+    [closeBreadcrumbSymbolMenu]
+  );
+
+  const renderOutlineActionControls = (): React.ReactNode => (
+    <div className="relative flex shrink-0 items-center gap-1">
+      <button
+        type="button"
+        className="rounded border border-gray-200 p-1 text-gray-500 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+        onClick={() => refreshOutline()}
+        title="刷新 Outline"
+      >
+        <RefreshCw size={12} />
+      </button>
+      <button
+        type="button"
+        className={[
+          'rounded border border-gray-200 p-1 text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800',
+          outlineToolsMenuOpen ? 'bg-gray-100 dark:bg-gray-800' : '',
+        ].join(' ')}
+        onClick={() => {
+          if (outlineToolsMenuOpen) {
+            setOutlineToolsMenuOpen(false);
+            return;
+          }
+          closeBreadcrumbSymbolMenu();
+          setOutlineAnalyzeAllPanelOpen(false);
+          setOutlineToolsMenuOpen(true);
+        }}
+        title="Outline 菜单"
+      >
+        <SlidersHorizontal size={14} />
+      </button>
+
+      {outlineToolsMenuOpen && (
+        <div
+          className="absolute right-0 top-full z-[210] mt-2 w-[280px] max-w-[80vw] overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900"
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <div className="py-1 text-sm">
+            <div className="px-3 pb-1 pt-2 text-[11px] font-semibold text-gray-500 dark:text-gray-400">
+              显示方式
+            </div>
+            <button
+              type="button"
+              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+              onClick={() => handleChangeOutlineDisplayMode('tab')}
+              title="在左侧与 Explorer 共用标签页"
+            >
+              <span className="flex items-center gap-2">
+                {outlineDisplayMode === 'tab' ? (
+                  <CheckCircle2 size={14} className="shrink-0 text-blue-600 dark:text-blue-300" />
+                ) : (
+                  <span className="w-[14px] shrink-0" />
+                )}
+                <span className="truncate">标签页（与 Explorer 同区）</span>
+              </span>
+            </button>
+            <button
+              type="button"
+              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+              onClick={() => handleChangeOutlineDisplayMode('sidecar')}
+              title="在同一侧栏中上下分栏显示 Explorer 和 Outline"
+            >
+              <span className="flex items-center gap-2">
+                {outlineDisplayMode === 'sidecar' ? (
+                  <CheckCircle2 size={14} className="shrink-0 text-blue-600 dark:text-blue-300" />
+                ) : (
+                  <span className="w-[14px] shrink-0" />
+                )}
+                <span className="truncate">上下分栏</span>
+              </span>
+            </button>
+            <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
+            <div className="px-3 pb-1 pt-2 text-[11px] font-semibold text-gray-500 dark:text-gray-400">
+              排序
+            </div>
+            <button
+              type="button"
+              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+              onClick={() => {
+                setOutlineSortMode('position');
+                setOutlineToolsMenuOpen(false);
+              }}
+              title="按代码位置排序（与文件中的出现顺序一致）"
+            >
+              <span className="flex items-center gap-2">
+                {outlineSortMode === 'position' ? (
+                  <CheckCircle2 size={14} className="shrink-0 text-blue-600 dark:text-blue-300" />
+                ) : (
+                  <span className="w-[14px] shrink-0" />
+                )}
+                <span className="truncate">按位置（代码顺序）</span>
+              </span>
+            </button>
+            <button
+              type="button"
+              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+              onClick={() => {
+                setOutlineSortMode('kind');
+                setOutlineToolsMenuOpen(false);
+              }}
+              title="按类型排序（先类/结构，再函数/方法，再变量/字段）"
+            >
+              <span className="flex items-center gap-2">
+                {outlineSortMode === 'kind' ? (
+                  <CheckCircle2 size={14} className="shrink-0 text-blue-600 dark:text-blue-300" />
+                ) : (
+                  <span className="w-[14px] shrink-0" />
+                )}
+                <span className="truncate">按类型（类/函数/变量）</span>
+              </span>
+            </button>
+            <button
+              type="button"
+              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+              onClick={() => {
+                setOutlineSortMode('name');
+                setOutlineToolsMenuOpen(false);
+              }}
+              title="按名称排序（A → Z）"
+            >
+              <span className="flex items-center gap-2">
+                {outlineSortMode === 'name' ? (
+                  <CheckCircle2 size={14} className="shrink-0 text-blue-600 dark:text-blue-300" />
+                ) : (
+                  <span className="w-[14px] shrink-0" />
+                )}
+                <span className="truncate">按名称（A → Z）</span>
+              </span>
+            </button>
+            <button
+              type="button"
+              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+              onClick={() => {
+                setOutlineSortMode('size');
+                setOutlineToolsMenuOpen(false);
+              }}
+              title="按重要程度排序（行数多 → 少）"
+            >
+              <span className="flex items-center gap-2">
+                {outlineSortMode === 'size' ? (
+                  <CheckCircle2 size={14} className="shrink-0 text-blue-600 dark:text-blue-300" />
+                ) : (
+                  <span className="w-[14px] shrink-0" />
+                )}
+                <span className="truncate">按重要程度（行数多 → 少）</span>
+              </span>
+            </button>
+            <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
+            <button
+              type="button"
+              disabled={
+                !activeTextFileInFocusedPane ||
+                outlineItems.length === 0 ||
+                outlineLoading ||
+                outlineCollapsibleKeyCount === 0
+              }
+              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:text-gray-200 dark:hover:bg-gray-800"
+              onClick={() => {
+                setOutlineToolsMenuOpen(false);
+                collapseAllOutline();
+              }}
+              title={
+                outlineCollapsibleKeyCount > 0 ? '全部折叠（仅折叠包含子节点的符号）' : '没有可折叠的符号'
+              }
+            >
+              折叠全部符号
+            </button>
+            <button
+              type="button"
+              disabled={
+                !activeTextFileInFocusedPane ||
+                outlineItems.length === 0 ||
+                outlineLoading ||
+                outlineCollapsedKeys.size === 0
+              }
+              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:text-gray-200 dark:hover:bg-gray-800"
+              onClick={() => {
+                setOutlineToolsMenuOpen(false);
+                expandAllOutline();
+              }}
+              title="全部展开"
+            >
+              展开全部符号
+            </button>
+            <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
+            <button
+              type="button"
+              disabled={
+                !codeIntelligenceConfig?.symbolAnalysis?.enabled ||
+                !activeTextFileInFocusedPane ||
+                outlineItems.length === 0 ||
+                outlineLoading
+              }
+              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:text-gray-200 dark:hover:bg-gray-800"
+              onClick={() => {
+                setOutlineToolsMenuOpen(false);
+                openOutlineAnalyzeAllPanel();
+              }}
+              title={
+                !codeIntelligenceConfig?.symbolAnalysis?.enabled
+                  ? '请先在“设置 -> 代码智能 -> 符号分析”中启用'
+                  : outlineItems.length === 0
+                    ? 'Outline 为空：没有可解析的符号'
+                    : `批量解析当前文件的全部符号（默认：${
+                        codeIntelligenceConfig?.symbolAnalysis?.bulkExcludeVariables !== false
+                          ? '跳过变量/字段'
+                          : '包含变量/字段'
+                      }，点击可修改）`
+              }
+            >
+              全部解析
+            </button>
+          </div>
+        </div>
+      )}
+
+      {outlineAnalyzeAllPanelOpen && (
+        <div
+          className="absolute right-0 top-full z-[210] mt-2 w-[320px] max-w-[80vw] overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900"
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <div className="px-3 py-2 text-xs font-semibold text-gray-800 dark:text-gray-100">
+            全部解析
+          </div>
+          <div className="px-3 pb-2 text-[11px] text-gray-500 dark:text-gray-400">
+            {activeTextFileInFocusedPane ? `文件：${basename(activeTextFileInFocusedPane.path)}` : '当前无文本文件'}
+          </div>
+
+          <div className="px-3 pb-2 text-[11px] text-gray-600 dark:text-gray-300">
+            将加入解析队列：
+            <span className="ml-1 font-semibold text-gray-800 dark:text-gray-100">
+              {outlineAnalyzeAllTargets.length}
+            </span>
+            <span className="ml-1">个符号</span>
+            <span className="ml-1 text-gray-400 dark:text-gray-500">
+              （{outlineAnalyzeAllExcludeVariables ? '跳过变量/字段' : '包含变量/字段'}）
+            </span>
+          </div>
+
+          <label className="flex cursor-pointer items-start gap-2 px-3 py-2 text-[11px] text-gray-700 hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-gray-800/40">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={outlineAnalyzeAllExcludeVariables}
+              onChange={(e) => setOutlineAnalyzeAllExcludeVariables(e.target.checked)}
+            />
+            <div className="min-w-0">
+              <div className="font-semibold">跳过变量/字段</div>
+              <div className="mt-0.5 text-gray-500 dark:text-gray-400">
+                变量/字段通常数量很多，跳过可更快更省（仍会解析类、函数、struct 等）。
+              </div>
+            </div>
+          </label>
+
+          {outlineAnalyzeAllTargets.length === 0 && (
+            <div className="px-3 pb-2 text-[11px] text-red-600 dark:text-red-300">
+              当前配置下没有可解析的符号。
+            </div>
+          )}
+
+          <div className="px-3 pb-2 text-[11px] text-amber-700 dark:text-amber-200">
+            提示：这会发起大量模型请求，可能耗时较长并产生费用。
+          </div>
+
+          <div className="flex items-center justify-end gap-2 border-t border-gray-200 px-3 py-2 dark:border-gray-700">
+            <button
+              type="button"
+              className="rounded border border-gray-200 px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+              onClick={() => setOutlineAnalyzeAllPanelOpen(false)}
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              className="rounded bg-blue-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={outlineAnalyzeAllTargets.length === 0 || outlineLoading}
+              onClick={() => {
+                setOutlineAnalyzeAllPanelOpen(false);
+                void runOutlineAnalyzeAll({ excludeVariables: outlineAnalyzeAllExcludeVariables });
+              }}
+            >
+              确认并开始
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
+  const renderOutlinePanelBody = (containerClassName: string): React.ReactNode => (
+    <div
+      className={containerClassName}
+      ref={outlineContainerRef}
+      onScroll={handleOutlineScroll}
+    >
+      {!activeTextFileInFocusedPane ? (
+        <div className="px-2 py-2 text-xs text-gray-500 dark:text-gray-400">
+          打开文本文件后可查看函数、属性与符号结构。
+        </div>
+      ) : (
+        <>
+          <div className="sticky top-0 z-10 -mx-2 mb-2 border-b border-gray-200 bg-white/95 px-2 pb-2 pt-1 backdrop-blur dark:border-gray-800 dark:bg-gray-950/95">
+            <div className="relative">
+              <Search size={13} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+              <input
+                ref={outlineSearchInputRef}
+                value={outlineSearchQuery}
+                onChange={(e) => setOutlineSearchQuery(e.target.value)}
+                autoCorrect="off"
+                autoCapitalize="off"
+                autoComplete="off"
+                spellCheck={false}
+                placeholder="搜索当前文件符号..."
+                className="w-full rounded-lg border border-gray-200 bg-white py-1.5 pl-8 pr-8 text-xs text-gray-900 outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+              />
+              {outlineSearchQuery.trim() && (
+                <button
+                  type="button"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+                  onClick={() => {
+                    setOutlineSearchQuery('');
+                    outlineSearchInputRef.current?.focus();
+                  }}
+                  title="清空符号搜索"
+                >
+                  <X size={12} />
+                </button>
+              )}
+            </div>
+            <div className="mt-1 px-1 text-[11px] text-gray-500 dark:text-gray-400">
+              {outlineSearchQuery.trim()
+                ? `匹配 ${outlineSearchMatchCount} / ${outlineItemCount} 个符号`
+                : `当前文件共 ${outlineItemCount} 个符号`}
+            </div>
+          </div>
+
+          {outlineItems.length > 0 ? (
+            <div className="space-y-1">
+              {outlineLoading && (
+                <div className="px-2 pb-1 text-[11px] text-gray-500 dark:text-gray-400">
+                  更新中...
+                </div>
+              )}
+              {outlineError && (
+                <div className="px-2 pb-1 text-[11px] text-red-600 dark:text-red-300">
+                  {outlineError}
+                </div>
+              )}
+              {outlineItemsForDisplay.length > 0 ? (
+                <div className="space-y-0.5">{renderOutlineNodes(outlineItemsForDisplay)}</div>
+              ) : outlineSearchQuery.trim() ? (
+                <div className="px-2 py-2 text-xs text-gray-500 dark:text-gray-400">
+                  未找到匹配符号。
+                </div>
+              ) : (
+                <div className="px-2 py-2 text-xs text-gray-500 dark:text-gray-400">
+                  未检测到可展示的符号。
+                </div>
+              )}
+            </div>
+          ) : outlineLoading ? (
+            <div className="px-2 py-2 text-xs text-gray-500 dark:text-gray-400">
+              生成 Outline 中...
+            </div>
+          ) : outlineError ? (
+            <div className="px-2 py-2 text-xs text-red-600 dark:text-red-300">
+              {outlineError}
+            </div>
+          ) : (
+            <div className="px-2 py-2 text-xs text-gray-500 dark:text-gray-400">
+              未检测到可展示的符号。
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+
   const activateTabInPane = useCallback((paneId: string, tabId: string) => {
     const prevLocation = suppressNavRecordDepthRef.current === 0 ? getCurrentNavLocationForPane(paneId) : null;
     const targetLocation: NavLocation = { tabId };
@@ -9184,10 +9588,10 @@ type OpenFromLinkErrorInfo = {
   }, [editorFontSize]);
 
   const editorLayoutKey = useMemo(() => {
-    return `${outlineOpen ? '1' : '0'}|${resolvedPanes
+    return `${outlineDisplayMode}:${outlineOpen ? '1' : '0'}|${resolvedPanes
       .map((pane) => `${pane.id}:${pane.weight}:${pane.activeTabId ?? ''}:${pane.tabIds.join(',')}`)
       .join('|')}`;
-  }, [outlineOpen, resolvedPanes]);
+  }, [outlineDisplayMode, outlineOpen, resolvedPanes]);
 
   useEffect(() => {
     let rafId1 = 0;
@@ -10664,6 +11068,8 @@ type OpenFromLinkErrorInfo = {
     setWsEnabledLspLanguageIds(null);
     setEditorFontSize(DEFAULT_EDITOR_FONT_SIZE);
     setOutlineOpen(true);
+    setOutlineDisplayMode(DEFAULT_OUTLINE_DISPLAY_MODE);
+    setSidebarTab(DEFAULT_WORKSTUDIO_SIDEBAR_TAB);
     setExplorerOpen(true);
     setOutlinePreferLsp(DEFAULT_OUTLINE_PREFER_LSP);
     setOutlineSortMode(DEFAULT_OUTLINE_SORT_MODE);
@@ -10708,12 +11114,22 @@ type OpenFromLinkErrorInfo = {
         if (typeof state.outline?.open === 'boolean') {
           setOutlineOpen(state.outline.open);
         }
+        {
+          const rawDisplayMode = String((state.outline as any)?.displayMode ?? '').trim();
+          if (rawDisplayMode === 'sidecar' || rawDisplayMode === 'overlay') {
+            setOutlineDisplayMode('sidecar');
+            setSidebarTab(DEFAULT_WORKSTUDIO_SIDEBAR_TAB);
+          } else if (rawDisplayMode === 'tab' || rawDisplayMode === 'sidebar') {
+            setOutlineDisplayMode('tab');
+            setSidebarTab(DEFAULT_WORKSTUDIO_SIDEBAR_TAB);
+          }
+        }
         if (typeof state.outline?.preferLsp === 'boolean') {
           setOutlinePreferLsp(state.outline.preferLsp);
         }
         {
           const raw = String((state.outline as any)?.sortMode ?? '').trim();
-          if (raw === 'position' || raw === 'kind' || raw === 'name') {
+          if (raw === 'position' || raw === 'kind' || raw === 'name' || raw === 'size') {
             setOutlineSortMode(raw as OutlineSortMode);
           }
         }
@@ -10913,14 +11329,15 @@ type OpenFromLinkErrorInfo = {
     if (saveStateTimerRef.current) window.clearTimeout(saveStateTimerRef.current);
     saveStateTimerRef.current = window.setTimeout(() => {
       const persistedOpenFiles = openFiles.filter((f) => !isUntitledPath(f.path));
-	      const outlineFiles = normalizeOutlineFileStateMap(outlineFileStateByPath);
-	      const hasOutlineFiles = Object.keys(outlineFiles).length > 0;
-	      const shouldPersistOutline =
-	        !outlineOpen ||
-	        hasOutlineFiles ||
-	        outlinePreferLsp !== DEFAULT_OUTLINE_PREFER_LSP ||
-	        outlineSortMode !== DEFAULT_OUTLINE_SORT_MODE;
-	      const state: WorkstudioUiState = {
+      const outlineFiles = normalizeOutlineFileStateMap(outlineFileStateByPath);
+      const hasOutlineFiles = Object.keys(outlineFiles).length > 0;
+      const shouldPersistOutline =
+        !outlineOpen ||
+        hasOutlineFiles ||
+        outlineDisplayMode !== DEFAULT_OUTLINE_DISPLAY_MODE ||
+        outlinePreferLsp !== DEFAULT_OUTLINE_PREFER_LSP ||
+        outlineSortMode !== DEFAULT_OUTLINE_SORT_MODE;
+      const state: WorkstudioUiState = {
 	        openFiles: Array.from(new Set(persistedOpenFiles.map((f) => f.path))),
 	        panes: resolvedPanes
 	          .map((p) => ({
@@ -10933,18 +11350,19 @@ type OpenFromLinkErrorInfo = {
         focusedPaneId: resolvedFocusedPaneId ?? undefined,
         expandedDirs: Array.from(expandedDirs),
         ...(editorFontSize === DEFAULT_EDITOR_FONT_SIZE ? {} : { editorFontSize }),
-	        ...(shouldPersistOutline
-	          ? {
-	            outline: {
-	              ...(outlineOpen ? {} : { open: false }),
-	              ...(outlinePreferLsp === DEFAULT_OUTLINE_PREFER_LSP
-	                ? {}
-	                : { preferLsp: outlinePreferLsp }),
-	              ...(outlineSortMode === DEFAULT_OUTLINE_SORT_MODE ? {} : { sortMode: outlineSortMode }),
-	              ...(hasOutlineFiles ? { files: outlineFiles } : {}),
-	            },
-	          }
-	          : {}),
+        ...(shouldPersistOutline
+          ? {
+            outline: {
+              ...(outlineOpen ? {} : { open: false }),
+              ...(outlineDisplayMode === DEFAULT_OUTLINE_DISPLAY_MODE ? {} : { displayMode: outlineDisplayMode }),
+              ...(outlinePreferLsp === DEFAULT_OUTLINE_PREFER_LSP
+                ? {}
+                : { preferLsp: outlinePreferLsp }),
+              ...(outlineSortMode === DEFAULT_OUTLINE_SORT_MODE ? {} : { sortMode: outlineSortMode }),
+              ...(hasOutlineFiles ? { files: outlineFiles } : {}),
+            },
+          }
+          : {}),
         ...(wsEnabledLspLanguageIds === null
           ? {}
           : {
@@ -10966,13 +11384,14 @@ type OpenFromLinkErrorInfo = {
     resolvedPanes,
     resolvedFocusedPaneId,
     expandedDirs,
-	    editorFontSize,
-	    outlineOpen,
-	    outlinePreferLsp,
-	    outlineSortMode,
-	    outlineFileStateByPath,
-	    wsEnabledLspLanguageIds,
-	  ]);
+    editorFontSize,
+    outlineOpen,
+    outlineDisplayMode,
+    outlinePreferLsp,
+    outlineSortMode,
+    outlineFileStateByPath,
+    wsEnabledLspLanguageIds,
+  ]);
 
   useEffect(() => {
     if (!ws) return;
@@ -12697,45 +13116,61 @@ type OpenFromLinkErrorInfo = {
             </div>
           </div>
 
-          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-            <div
-              className={[
-                'flex flex-col overflow-hidden',
-                explorerOpen ? 'min-h-0 flex-[1.15]' : 'flex-none',
-              ].join(' ')}
-            >
-              <button
-                type="button"
-                className="flex items-center justify-between border-b border-gray-200 px-3 py-2 text-left hover:bg-gray-50 dark:border-gray-800 dark:hover:bg-gray-900/40"
-                onClick={() => setExplorerOpen((v) => !v)}
-                title={explorerOpen ? '折叠 Explorer' : '展开 Explorer'}
-              >
-                <div className="flex min-w-0 items-center gap-2">
-                  {explorerOpen ? (
-                    <ChevronDown size={14} className="shrink-0 text-gray-400" />
-                  ) : (
-                    <ChevronRight size={14} className="shrink-0 text-gray-400" />
-                  )}
-                  <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-700 dark:text-gray-200">
-                    Explorer
-                  </span>
-                </div>
-                <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500 dark:bg-gray-800 dark:text-gray-400">
-                  {rootFolders.length}
-                </span>
-              </button>
-
-              {explorerOpen && (
-                <div
-                  className="min-h-0 flex-1 overflow-auto px-2 py-2 scrollbar-stable"
-                  ref={explorerContainerRef}
-                  onContextMenu={(e) => {
-                    const target = e.target as HTMLElement | null;
-                    e.preventDefault();
-                    if (target && target.closest('[data-ws-node="1"]')) return;
-                    setContextMenu({ visible: true, x: e.clientX, y: e.clientY, kind: 'blank' });
+          {outlineDisplayMode === 'tab' ? (
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+              <div className="flex items-center gap-2 border-b border-gray-200 px-2 py-2 dark:border-gray-800">
+                <button
+                  type="button"
+                  className={[
+                    'inline-flex min-w-0 flex-1 items-center justify-between rounded-md px-2 py-1 text-left text-xs font-semibold transition-colors',
+                    sidebarTab === 'explorer'
+                      ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
+                      : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800',
+                  ].join(' ')}
+                  onClick={() => {
+                    setSidebarTab('explorer');
+                    setOutlineToolsMenuOpen(false);
+                    setOutlineAnalyzeAllPanelOpen(false);
+                    closeBreadcrumbSymbolMenu();
                   }}
+                  title="切换到 Explorer"
                 >
+                  <span className="truncate">Explorer</span>
+                  <span className="ml-2 rounded bg-white/70 px-1.5 py-0.5 text-[10px] font-medium text-gray-500 dark:bg-gray-900/60 dark:text-gray-400">
+                    {rootFolders.length}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  className={[
+                    'inline-flex min-w-0 flex-1 items-center justify-between rounded-md px-2 py-1 text-left text-xs font-semibold transition-colors',
+                    sidebarTab === 'outline'
+                      ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
+                      : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800',
+                  ].join(' ')}
+                  onClick={() => {
+                    setSidebarTab('outline');
+                    setOutlineOpen(true);
+                    setOutlineToolsMenuOpen(false);
+                    setOutlineAnalyzeAllPanelOpen(false);
+                    closeBreadcrumbSymbolMenu();
+                  }}
+                  title="切换到 Outline"
+                >
+                  <span className="truncate">Outline</span>
+                  <span className="ml-2 rounded bg-white/70 px-1.5 py-0.5 text-[10px] font-medium text-gray-500 dark:bg-gray-900/60 dark:text-gray-400">
+                    {outlineItemCount}
+                  </span>
+                </button>
+              </div>
+
+              {showExplorerSidebarPanel && (
+                <div className="min-h-0 flex-1 overflow-auto px-2 py-2 scrollbar-stable" ref={explorerContainerRef} onContextMenu={(e) => {
+                  const target = e.target as HTMLElement | null;
+                  e.preventDefault();
+                  if (target && target.closest('[data-ws-node="1"]')) return;
+                  setContextMenu({ visible: true, x: e.clientX, y: e.clientY, kind: 'blank' });
+                }}>
                   <div className="space-y-1">
                     {rootFolders.map((folder) =>
                       renderDirNode(folder, 0, { isRoot: true, isMainRoot: folder === ws.mainFolder })
@@ -12743,391 +13178,113 @@ type OpenFromLinkErrorInfo = {
                   </div>
                 </div>
               )}
-            </div>
 
-            <div
-              className={[
-                'relative flex flex-col overflow-hidden border-t border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-950',
-                outlineOpen ? 'min-h-0 flex-1' : 'flex-none',
-              ].join(' ')}
-            >
-              <div className="flex items-center gap-2 px-3 py-2">
+              {showOutlineSidebarPanel && (
+                <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-white dark:bg-gray-950">
+                  <div className="flex items-center gap-2 border-b border-gray-200 px-3 py-2 dark:border-gray-800">
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-[11px] font-semibold uppercase tracking-wide text-gray-700 dark:text-gray-200">
+                        Outline{outlineItemCount > 0 ? `(${outlineItemCount})` : ''}
+                      </div>
+                      <div className="mt-0.5 truncate text-[11px] text-gray-500 dark:text-gray-400">
+                        {outlinePanelSubtitle}
+                      </div>
+                    </div>
+                    {renderOutlineActionControls()}
+                  </div>
+                  {renderOutlinePanelBody('min-h-0 flex-1 overflow-auto px-2 py-2 scrollbar-stable')}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+              <div
+                className={[
+                  'flex flex-col overflow-hidden',
+                  explorerOpen ? 'min-h-0 flex-[1.15]' : 'flex-none',
+                ].join(' ')}
+              >
                 <button
                   type="button"
-                  className="flex min-w-0 flex-1 items-center gap-2 rounded text-left hover:bg-gray-50 dark:hover:bg-gray-900/40"
-                  onClick={() => {
-                    setOutlineOpen((v) => !v);
-                    setOutlineToolsMenuOpen(false);
-                    setOutlineAnalyzeAllPanelOpen(false);
-                    closeBreadcrumbSymbolMenu();
-                  }}
-                  title={outlineOpen ? '折叠 Outline' : '展开 Outline'}
+                  className="flex items-center justify-between border-b border-gray-200 px-3 py-2 text-left hover:bg-gray-50 dark:border-gray-800 dark:hover:bg-gray-900/40"
+                  onClick={() => setExplorerOpen((v) => !v)}
+                  title={explorerOpen ? '折叠 Explorer' : '展开 Explorer'}
                 >
-                  {outlineOpen ? (
-                    <ChevronDown size={14} className="shrink-0 text-gray-400" />
-                  ) : (
-                    <ChevronRight size={14} className="shrink-0 text-gray-400" />
-                  )}
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-[11px] font-semibold uppercase tracking-wide text-gray-700 dark:text-gray-200">
-                      Outline{outlineItemCount > 0 ? `(${outlineItemCount})` : ''}
-                    </div>
-                    <div className="mt-0.5 truncate text-[11px] text-gray-500 dark:text-gray-400">
-                      {activeTextFileInFocusedPane
-                        ? `${basename(activeTextFileInFocusedPane.path)}${outlineSourceLabel ? ` · ${outlineSourceLabel}` : ''} · ${outlineSortModeLabel}`
-                        : '当前无文本文件'}
-                    </div>
+                  <div className="flex min-w-0 items-center gap-2">
+                    {explorerOpen ? (
+                      <ChevronDown size={14} className="shrink-0 text-gray-400" />
+                    ) : (
+                      <ChevronRight size={14} className="shrink-0 text-gray-400" />
+                    )}
+                    <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-700 dark:text-gray-200">
+                      Explorer
+                    </span>
                   </div>
+                  <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500 dark:bg-gray-800 dark:text-gray-400">
+                    {rootFolders.length}
+                  </span>
                 </button>
 
-                {outlineOpen && (
-                  <div className="relative flex shrink-0 items-center gap-1">
-                    <button
-                      type="button"
-                      className="rounded border border-gray-200 p-1 text-gray-500 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-                      onClick={() => refreshOutline()}
-                      title="刷新 Outline"
-                    >
-                      <RefreshCw size={12} />
-                    </button>
-                    <button
-                      type="button"
-                      className={[
-                        'rounded border border-gray-200 p-1 text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800',
-                        outlineToolsMenuOpen ? 'bg-gray-100 dark:bg-gray-800' : '',
-                      ].join(' ')}
-                      onClick={() => {
-                        if (outlineToolsMenuOpen) {
-                          setOutlineToolsMenuOpen(false);
-                          return;
-                        }
-                        closeBreadcrumbSymbolMenu();
-                        setOutlineAnalyzeAllPanelOpen(false);
-                        setOutlineToolsMenuOpen(true);
-                      }}
-                      title="Outline 菜单"
-                    >
-                      <SlidersHorizontal size={14} />
-                    </button>
-
-                    {outlineToolsMenuOpen && (
-                      <div
-                        className="absolute right-0 top-full z-[210] mt-2 w-[260px] max-w-[80vw] overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900"
-                        onMouseDown={(e) => e.stopPropagation()}
-                      >
-                        <div className="py-1 text-sm">
-                          <div className="px-3 pb-1 pt-2 text-[11px] font-semibold text-gray-500 dark:text-gray-400">
-                            排序
-                          </div>
-                          <button
-                            type="button"
-                            className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
-                            onClick={() => {
-                              setOutlineSortMode('position');
-                              setOutlineToolsMenuOpen(false);
-                            }}
-                            title="按代码位置排序（与文件中的出现顺序一致）"
-                          >
-                            <span className="flex items-center gap-2">
-                              {outlineSortMode === 'position' ? (
-                                <CheckCircle2 size={14} className="shrink-0 text-blue-600 dark:text-blue-300" />
-                              ) : (
-                                <span className="w-[14px] shrink-0" />
-                              )}
-                              <span className="truncate">按位置（代码顺序）</span>
-                            </span>
-                          </button>
-                          <button
-                            type="button"
-                            className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
-                            onClick={() => {
-                              setOutlineSortMode('kind');
-                              setOutlineToolsMenuOpen(false);
-                            }}
-                            title="按类型排序（先类/结构，再函数/方法，再变量/字段）"
-                          >
-                            <span className="flex items-center gap-2">
-                              {outlineSortMode === 'kind' ? (
-                                <CheckCircle2 size={14} className="shrink-0 text-blue-600 dark:text-blue-300" />
-                              ) : (
-                                <span className="w-[14px] shrink-0" />
-                              )}
-                              <span className="truncate">按类型（类/函数/变量）</span>
-                            </span>
-                          </button>
-                          <button
-                            type="button"
-                            className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
-                            onClick={() => {
-                              setOutlineSortMode('name');
-                              setOutlineToolsMenuOpen(false);
-                            }}
-                            title="按名称排序（A → Z）"
-                          >
-                            <span className="flex items-center gap-2">
-                              {outlineSortMode === 'name' ? (
-                                <CheckCircle2 size={14} className="shrink-0 text-blue-600 dark:text-blue-300" />
-                              ) : (
-                                <span className="w-[14px] shrink-0" />
-                              )}
-                              <span className="truncate">按名称（A → Z）</span>
-                            </span>
-                          </button>
-                          <button
-                            type="button"
-                            className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
-                            onClick={() => {
-                              setOutlineSortMode('size');
-                              setOutlineToolsMenuOpen(false);
-                            }}
-                            title="按重要程度排序（行数多 → 少）"
-                          >
-                            <span className="flex items-center gap-2">
-                              {outlineSortMode === 'size' ? (
-                                <CheckCircle2 size={14} className="shrink-0 text-blue-600 dark:text-blue-300" />
-                              ) : (
-                                <span className="w-[14px] shrink-0" />
-                              )}
-                              <span className="truncate">按重要程度（行数多 → 少）</span>
-                            </span>
-                          </button>
-                          <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
-                          <button
-                            type="button"
-                            disabled={
-                              !activeTextFileInFocusedPane ||
-                              outlineItems.length === 0 ||
-                              outlineLoading ||
-                              outlineCollapsibleKeyCount === 0
-                            }
-                            className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:text-gray-200 dark:hover:bg-gray-800"
-                            onClick={() => {
-                              setOutlineToolsMenuOpen(false);
-                              collapseAllOutline();
-                            }}
-                            title={
-                              outlineCollapsibleKeyCount > 0 ? '全部折叠（仅折叠包含子节点的符号）' : '没有可折叠的符号'
-                            }
-                          >
-                            折叠全部符号
-                          </button>
-                          <button
-                            type="button"
-                            disabled={
-                              !activeTextFileInFocusedPane ||
-                              outlineItems.length === 0 ||
-                              outlineLoading ||
-                              outlineCollapsedKeys.size === 0
-                            }
-                            className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:text-gray-200 dark:hover:bg-gray-800"
-                            onClick={() => {
-                              setOutlineToolsMenuOpen(false);
-                              expandAllOutline();
-                            }}
-                            title="全部展开"
-                          >
-                            展开全部符号
-                          </button>
-                          <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
-                          <button
-                            type="button"
-                            disabled={
-                              !codeIntelligenceConfig?.symbolAnalysis?.enabled ||
-                              !activeTextFileInFocusedPane ||
-                              outlineItems.length === 0 ||
-                              outlineLoading
-                            }
-                            className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:text-gray-200 dark:hover:bg-gray-800"
-                            onClick={() => {
-                              setOutlineToolsMenuOpen(false);
-                              openOutlineAnalyzeAllPanel();
-                            }}
-                            title={
-                              !codeIntelligenceConfig?.symbolAnalysis?.enabled
-                                ? '请先在“设置 -> 代码智能 -> 符号分析”中启用'
-                                : outlineItems.length === 0
-                                  ? 'Outline 为空：没有可解析的符号'
-                                  : `批量解析当前文件的全部符号（默认：${
-                                      codeIntelligenceConfig?.symbolAnalysis?.bulkExcludeVariables !== false
-                                        ? '跳过变量/字段'
-                                        : '包含变量/字段'
-                                    }，点击可修改）`
-                            }
-                          >
-                            全部解析
-                          </button>
-                        </div>
-                      </div>
-                    )}
-
-                    {outlineAnalyzeAllPanelOpen && (
-                      <div
-                        className="absolute right-0 top-full z-[210] mt-2 w-[320px] max-w-[80vw] overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900"
-                        onMouseDown={(e) => e.stopPropagation()}
-                      >
-                        <div className="px-3 py-2 text-xs font-semibold text-gray-800 dark:text-gray-100">
-                          全部解析
-                        </div>
-                        <div className="px-3 pb-2 text-[11px] text-gray-500 dark:text-gray-400">
-                          {activeTextFileInFocusedPane ? `文件：${basename(activeTextFileInFocusedPane.path)}` : '当前无文本文件'}
-                        </div>
-
-                        <div className="px-3 pb-2 text-[11px] text-gray-600 dark:text-gray-300">
-                          将加入解析队列：
-                          <span className="ml-1 font-semibold text-gray-800 dark:text-gray-100">
-                            {outlineAnalyzeAllTargets.length}
-                          </span>
-                          <span className="ml-1">个符号</span>
-                          <span className="ml-1 text-gray-400 dark:text-gray-500">
-                            （{outlineAnalyzeAllExcludeVariables ? '跳过变量/字段' : '包含变量/字段'}）
-                          </span>
-                        </div>
-
-                        <label className="flex cursor-pointer items-start gap-2 px-3 py-2 text-[11px] text-gray-700 hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-gray-800/40">
-                          <input
-                            type="checkbox"
-                            className="mt-0.5"
-                            checked={outlineAnalyzeAllExcludeVariables}
-                            onChange={(e) => setOutlineAnalyzeAllExcludeVariables(e.target.checked)}
-                          />
-                          <div className="min-w-0">
-                            <div className="font-semibold">跳过变量/字段</div>
-                            <div className="mt-0.5 text-gray-500 dark:text-gray-400">
-                              变量/字段通常数量很多，跳过可更快更省（仍会解析类、函数、struct 等）。
-                            </div>
-                          </div>
-                        </label>
-
-                        {outlineAnalyzeAllTargets.length === 0 && (
-                          <div className="px-3 pb-2 text-[11px] text-red-600 dark:text-red-300">
-                            当前配置下没有可解析的符号。
-                          </div>
-                        )}
-
-                        <div className="px-3 pb-2 text-[11px] text-amber-700 dark:text-amber-200">
-                          提示：这会发起大量模型请求，可能耗时较长并产生费用。
-                        </div>
-
-                        <div className="flex items-center justify-end gap-2 border-t border-gray-200 px-3 py-2 dark:border-gray-700">
-                          <button
-                            type="button"
-                            className="rounded border border-gray-200 px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
-                            onClick={() => setOutlineAnalyzeAllPanelOpen(false)}
-                          >
-                            取消
-                          </button>
-                          <button
-                            type="button"
-                            className="rounded bg-blue-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
-                            disabled={outlineAnalyzeAllTargets.length === 0 || outlineLoading}
-                            onClick={() => {
-                              setOutlineAnalyzeAllPanelOpen(false);
-                              void runOutlineAnalyzeAll({ excludeVariables: outlineAnalyzeAllExcludeVariables });
-                            }}
-                          >
-                            确认并开始
-                          </button>
-                        </div>
-                      </div>
-                    )}
+                {explorerOpen && (
+                  <div
+                    className="min-h-0 flex-1 overflow-auto px-2 py-2 scrollbar-stable"
+                    ref={explorerContainerRef}
+                    onContextMenu={(e) => {
+                      const target = e.target as HTMLElement | null;
+                      e.preventDefault();
+                      if (target && target.closest('[data-ws-node="1"]')) return;
+                      setContextMenu({ visible: true, x: e.clientX, y: e.clientY, kind: 'blank' });
+                    }}
+                  >
+                    <div className="space-y-1">
+                      {rootFolders.map((folder) =>
+                        renderDirNode(folder, 0, { isRoot: true, isMainRoot: folder === ws.mainFolder })
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
 
-              {outlineOpen && (
-                <div
-                  className="min-h-0 flex-1 overflow-auto px-2 py-2 scrollbar-stable"
-                  ref={outlineContainerRef}
-                  onScroll={handleOutlineScroll}
-                >
-                  {!activeTextFileInFocusedPane ? (
-                    <div className="px-2 py-2 text-xs text-gray-500 dark:text-gray-400">
-                      打开文本文件后可查看函数、属性与符号结构。
-                    </div>
-                  ) : (
-                    <>
-                      <div className="sticky top-0 z-10 -mx-2 mb-2 border-b border-gray-200 bg-white/95 px-2 pb-2 pt-1 backdrop-blur dark:border-gray-800 dark:bg-gray-950/95">
-                        <div className="relative">
-                          <Search size={13} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                          <input
-                            ref={outlineSearchInputRef}
-                            value={outlineSearchQuery}
-                            onChange={(e) => setOutlineSearchQuery(e.target.value)}
-                            autoCorrect="off"
-                            autoCapitalize="off"
-                            autoComplete="off"
-                            spellCheck={false}
-                            placeholder="搜索当前文件符号..."
-                            className="w-full rounded-lg border border-gray-200 bg-white py-1.5 pl-8 pr-8 text-xs text-gray-900 outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
-                          />
-                          {outlineSearchQuery.trim() && (
-                            <button
-                              type="button"
-                              className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-200"
-                              onClick={() => {
-                                setOutlineSearchQuery('');
-                                outlineSearchInputRef.current?.focus();
-                              }}
-                              title="清空符号搜索"
-                            >
-                              <X size={12} />
-                            </button>
-                          )}
-                        </div>
-                        <div className="mt-1 px-1 text-[11px] text-gray-500 dark:text-gray-400">
-                          {outlineSearchQuery.trim()
-                            ? `匹配 ${outlineSearchMatchCount} / ${outlineItemCount} 个符号`
-                            : `当前文件共 ${outlineItemCount} 个符号`}
-                        </div>
+              <div
+                className={[
+                  'relative flex flex-col overflow-hidden border-t border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-950',
+                  outlineOpen ? 'min-h-0 flex-1' : 'flex-none',
+                ].join(' ')}
+              >
+                <div className="flex items-center gap-2 px-3 py-2">
+                  <button
+                    type="button"
+                    className="flex min-w-0 flex-1 items-center gap-2 rounded text-left hover:bg-gray-50 dark:hover:bg-gray-900/40"
+                    onClick={() => {
+                      setOutlineOpen((v) => !v);
+                      setOutlineToolsMenuOpen(false);
+                      setOutlineAnalyzeAllPanelOpen(false);
+                      closeBreadcrumbSymbolMenu();
+                    }}
+                    title={outlineOpen ? '折叠 Outline' : '展开 Outline'}
+                  >
+                    {outlineOpen ? (
+                      <ChevronDown size={14} className="shrink-0 text-gray-400" />
+                    ) : (
+                      <ChevronRight size={14} className="shrink-0 text-gray-400" />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-[11px] font-semibold uppercase tracking-wide text-gray-700 dark:text-gray-200">
+                        Outline{outlineItemCount > 0 ? `(${outlineItemCount})` : ''}
                       </div>
-
-                      {outlineItems.length > 0 ? (
-                        <div className="space-y-1">
-                          {outlineLoading && (
-                            <div className="px-2 pb-1 text-[11px] text-gray-500 dark:text-gray-400">
-                              更新中...
-                            </div>
-                          )}
-                          {outlineError && (
-                            <div className="px-2 pb-1 text-[11px] text-red-600 dark:text-red-300">
-                              {outlineError}
-                            </div>
-                          )}
-                          {outlineItemsForDisplay.length > 0 ? (
-                            <div className="space-y-0.5">
-                              {renderOutlineNodes(outlineItemsForDisplay)}
-                            </div>
-                          ) : outlineSearchQuery.trim() ? (
-                            <div className="px-2 py-2 text-xs text-gray-500 dark:text-gray-400">
-                              未找到匹配符号。
-                            </div>
-                          ) : (
-                            <div className="px-2 py-2 text-xs text-gray-500 dark:text-gray-400">
-                              未检测到可展示的符号。
-                            </div>
-                          )}
-                        </div>
-                      ) : outlineLoading ? (
-                        <div className="px-2 py-2 text-xs text-gray-500 dark:text-gray-400">
-                          生成 Outline 中...
-                        </div>
-                      ) : outlineError ? (
-                        <div className="px-2 py-2 text-xs text-red-600 dark:text-red-300">
-                          {outlineError}
-                        </div>
-                      ) : (
-                        <div className="px-2 py-2 text-xs text-gray-500 dark:text-gray-400">
-                          未检测到可展示的符号。
-                        </div>
-                      )}
-                    </>
-                  )}
+                      <div className="mt-0.5 truncate text-[11px] text-gray-500 dark:text-gray-400">
+                        {outlinePanelSubtitle}
+                      </div>
+                    </div>
+                  </button>
+                  {renderOutlineActionControls()}
                 </div>
-              )}
-            </div>
-          </div>
-        </div>
 
+                {outlineOpen && renderOutlinePanelBody('min-h-0 flex-1 overflow-auto px-2 py-2 scrollbar-stable')}
+              </div>
+            </div>
+          )}
+        </div>
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
           <div className="flex items-center justify-between border-b border-gray-200 bg-white px-3 py-2 dark:border-gray-800 dark:bg-gray-950">
             <div className="flex min-w-0 items-center gap-2">

@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { InkPoint, InkState, InkStroke, InkToolKind } from "../types";
 import { findInkBrushPreset } from "./brushes";
 
@@ -51,9 +51,94 @@ function scaleStrokes(
   }));
 }
 
-function getPointFromEvent(
-  e: React.PointerEvent<HTMLCanvasElement>,
-  rect: DOMRect,
+type PointerSampleLike = {
+  clientX: number;
+  clientY: number;
+  pressure?: number;
+  tiltX?: number;
+  tiltY?: number;
+  twist?: number;
+};
+
+type CanvasRectLike = {
+  left: number;
+  top: number;
+};
+
+type ResolvedStrokeStyle = {
+  isEraser: boolean;
+  compositeOperation: GlobalCompositeOperation;
+  strokeStyle: string;
+  globalAlpha: number;
+  lineCap: CanvasLineCap;
+  lineJoin: CanvasLineJoin;
+  baseSize: number;
+  pressureSensitivity: number;
+};
+
+type InkPerfMetrics = {
+  strokeStartedAtMs: number;
+  moveEventCount: number;
+  sampleCount: number;
+  sampleTimeMs: number;
+  drawTimeMs: number;
+  presentCount: number;
+  presentTimeMs: number;
+  commitTimeMs: number;
+};
+
+const PAPER_COLOR = "#f6efdb";
+const MIN_VALID_VIEWPORT_PX = 50;
+const MAX_INK_CANVAS_DPR = 2;
+
+function nowMs(): number {
+  if (typeof performance !== "undefined" && typeof performance.now === "function") {
+    return performance.now();
+  }
+  return Date.now();
+}
+
+function createInkPerfMetrics(): InkPerfMetrics {
+  return {
+    strokeStartedAtMs: 0,
+    moveEventCount: 0,
+    sampleCount: 0,
+    sampleTimeMs: 0,
+    drawTimeMs: 0,
+    presentCount: 0,
+    presentTimeMs: 0,
+    commitTimeMs: 0,
+  };
+}
+
+function shouldLogInkPerf(): boolean {
+  return typeof globalThis !== "undefined" && Boolean((globalThis as any).__TAURIAI_INK_DEBUG__);
+}
+
+function logInkPerf(metrics: InkPerfMetrics): void {
+  if (!shouldLogInkPerf() || metrics.strokeStartedAtMs <= 0) return;
+  const totalMs = Math.max(0, nowMs() - metrics.strokeStartedAtMs);
+  const round = (value: number) => Number(value.toFixed(2));
+  console.debug("[ink] stroke perf", {
+    totalMs: round(totalMs),
+    moveEventCount: metrics.moveEventCount,
+    sampleCount: metrics.sampleCount,
+    sampleTimeMs: round(metrics.sampleTimeMs),
+    drawTimeMs: round(metrics.drawTimeMs),
+    presentCount: metrics.presentCount,
+    presentTimeMs: round(metrics.presentTimeMs),
+    commitTimeMs: round(metrics.commitTimeMs),
+  });
+}
+
+function readCanvasRect(canvas: HTMLCanvasElement): CanvasRectLike {
+  const rect = canvas.getBoundingClientRect();
+  return { left: rect.left, top: rect.top };
+}
+
+function getPointFromPointerSample(
+  e: PointerSampleLike,
+  rect: CanvasRectLike,
 ): InkPoint {
   const x = e.clientX - rect.left;
   const y = e.clientY - rect.top;
@@ -64,47 +149,58 @@ function getPointFromEvent(
   return { x, y, t: Date.now(), pressure, tiltX, tiltY, twist };
 }
 
+function resolveStrokeStyle(stroke: InkStroke): ResolvedStrokeStyle {
+  const needsBrushFallback =
+    stroke.opacity == null ||
+    stroke.pressureSensitivity == null ||
+    stroke.blendMode == null ||
+    stroke.lineCap == null ||
+    stroke.lineJoin == null;
+  const brush = needsBrushFallback ? findInkBrushPreset(stroke.brushId) : undefined;
+  const isEraser = stroke.tool === "eraser";
+  return {
+    isEraser,
+    compositeOperation: isEraser ? "destination-out" : (stroke.blendMode ?? brush?.blendMode ?? "source-over"),
+    strokeStyle: isEraser
+      ? "rgba(0,0,0,1)"
+      : (typeof stroke.color === "string" && stroke.color.trim() ? stroke.color : "#111827"),
+    globalAlpha: isEraser ? 1 : clamp(stroke.opacity ?? brush?.opacity ?? (stroke.tool === "pencil" ? 0.65 : 1), 0.05, 1),
+    lineCap: stroke.lineCap ?? brush?.lineCap ?? "round",
+    lineJoin: stroke.lineJoin ?? brush?.lineJoin ?? "round",
+    baseSize: clamp(stroke.size, 0.5, 64),
+    pressureSensitivity: clamp(stroke.pressureSensitivity ?? brush?.pressureSensitivity ?? 0, 0, 1),
+  };
+}
+
+function applyStrokeStyle(ctx: CanvasRenderingContext2D, style: ResolvedStrokeStyle): void {
+  ctx.globalCompositeOperation = style.compositeOperation;
+  ctx.strokeStyle = style.strokeStyle;
+  ctx.globalAlpha = style.globalAlpha;
+  ctx.lineCap = style.lineCap;
+  ctx.lineJoin = style.lineJoin;
+}
+
 function drawStrokeSegment(
   ctx: CanvasRenderingContext2D,
-  stroke: InkStroke,
+  style: ResolvedStrokeStyle,
   a: InkPoint,
   b: InkPoint,
 ) {
-  const brush = findInkBrushPreset(stroke.brushId);
-  const pressureSensitivity = clamp(stroke.pressureSensitivity ?? brush?.pressureSensitivity ?? 0, 0, 1);
-  const opacity = clamp(stroke.opacity ?? brush?.opacity ?? (stroke.tool === "pencil" ? 0.65 : 1), 0.05, 1);
-  const lineCap = stroke.lineCap ?? brush?.lineCap ?? "round";
-  const lineJoin = stroke.lineJoin ?? brush?.lineJoin ?? "round";
-  const blendMode = stroke.blendMode ?? brush?.blendMode ?? "source-over";
-  const baseSize = clamp(stroke.size, 0.5, 64);
   const rawPressure =
     (typeof b.pressure === "number" && b.pressure > 0 ? b.pressure : undefined) ??
     (typeof a.pressure === "number" && a.pressure > 0 ? a.pressure : undefined) ??
     0.5;
   const pressure = clamp(rawPressure, 0.1, 1);
   const width =
-    stroke.tool === "eraser"
-      ? baseSize
-      : Math.max(0.5, baseSize * (1 - pressureSensitivity + pressureSensitivity * pressure));
+    style.isEraser
+      ? style.baseSize
+      : Math.max(0.5, style.baseSize * (1 - style.pressureSensitivity + style.pressureSensitivity * pressure));
 
-  ctx.save();
-  if (stroke.tool === "eraser") {
-    ctx.globalCompositeOperation = "destination-out";
-    ctx.strokeStyle = "rgba(0,0,0,1)";
-    ctx.globalAlpha = 1;
-  } else {
-    ctx.globalCompositeOperation = blendMode;
-    ctx.strokeStyle = typeof stroke.color === "string" && stroke.color.trim() ? stroke.color : "#111827";
-    ctx.globalAlpha = opacity;
-  }
   ctx.lineWidth = width;
-  ctx.lineCap = lineCap;
-  ctx.lineJoin = lineJoin;
   ctx.beginPath();
   ctx.moveTo(a.x, a.y);
   ctx.lineTo(b.x, b.y);
   ctx.stroke();
-  ctx.restore();
 }
 
 function redrawAll(
@@ -117,14 +213,13 @@ function redrawAll(
   for (const s of strokes) {
     const pts = s.points;
     if (pts.length < 2) continue;
+    const style = resolveStrokeStyle(s);
+    applyStrokeStyle(ctx, style);
     for (let i = 1; i < pts.length; i += 1) {
-      drawStrokeSegment(ctx, s, pts[i - 1]!, pts[i]!);
+      drawStrokeSegment(ctx, style, pts[i - 1]!, pts[i]!);
     }
   }
 }
-
-const PAPER_COLOR = "#f6efdb";
-const MIN_VALID_VIEWPORT_PX = 50;
 
 function redrawPaperBackground(
   ctx: CanvasRenderingContext2D,
@@ -178,71 +273,59 @@ export function createDefaultInkState(viewportWidth: number, viewportHeight: num
   return { width: w, height: h, strokes: [] };
 }
 
-export type ScrollableInkPadProps = {
+function preparePreviewInk(value: InkState, targetWidth: number): { strokes: InkStroke[]; minHeight: number } {
+  const safeWidth = Math.max(1, Math.round(targetWidth));
+  const sourceWidth = Number.isFinite(value.width) ? value.width : 0;
+  const sourceHeight = Math.max(0, Number.isFinite(value.height) ? value.height : 0);
+
+  if (sourceWidth >= MIN_VALID_VIEWPORT_PX) {
+    const scale = safeWidth / sourceWidth;
+    if (!Number.isFinite(scale) || Math.abs(scale - 1) < 1e-6) {
+      return { strokes: value.strokes, minHeight: sourceHeight };
+    }
+    return {
+      strokes: scaleStrokes(value.strokes, scale),
+      minHeight: sourceHeight * scale,
+    };
+  }
+
+  const maxX = computeMaxX(value.strokes);
+  const maxY = computeMaxY(value.strokes);
+  const looksNormalized = maxX <= MIN_VALID_VIEWPORT_PX && maxY <= MIN_VALID_VIEWPORT_PX;
+  if (!looksNormalized) {
+    return { strokes: value.strokes, minHeight: sourceHeight };
+  }
+
+  const scale = safeWidth / Math.max(1, sourceWidth);
+  if (!Number.isFinite(scale) || Math.abs(scale - 1) < 1e-6) {
+    return { strokes: value.strokes, minHeight: sourceHeight };
+  }
+  return {
+    strokes: scaleStrokes(value.strokes, scale),
+    minHeight: sourceHeight > 0 ? sourceHeight * scale : sourceHeight,
+  };
+}
+
+export type InkPreviewProps = {
   value: InkState;
-  onChange: (next: InkState, committed: boolean) => void;
   className?: string;
   viewportClassName?: string;
   contentClassName?: string;
   template?: "blank" | "ruled" | "grid";
-  tool?: InkToolKind;
-  brushId?: string;
-  penColor?: string;
-  penSize?: number;
-  disabled?: boolean;
+  swallowInteractions?: boolean;
 };
 
-export function ScrollableInkPad({
+export function InkPreview({
   value,
-  onChange,
   className,
   viewportClassName,
   contentClassName,
   template = "ruled",
-  tool = "pen",
-  brushId,
-  penColor = "#111827",
-  penSize = 3,
-  disabled,
-}: ScrollableInkPadProps) {
+  swallowInteractions = true,
+}: InkPreviewProps) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
-  const strokeCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const strokeCtxRef = useRef<CanvasRenderingContext2D | null>(null);
-  const drawingRef = useRef(false);
-  const dirtyRef = useRef(false);
-  const mountedRef = useRef(true);
-  const lastPointRef = useRef<InkPoint | null>(null);
-  const activeStrokeIdRef = useRef<string | null>(null);
-  const presentRafRef = useRef<number | null>(null);
-  const touchScrollRef = useRef<{
-    pointerId: number;
-    startClientX: number;
-    startClientY: number;
-    startScrollLeft: number;
-    startScrollTop: number;
-  } | null>(null);
-
   const [viewportSize, setViewportSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
-  const [inking, setInking] = useState(false);
-
-  const [draft, setDraft] = useState<InkState>(value);
-  const draftRef = useRef<InkState>(value);
-
-  // Sync from controlled value when not inking.
-  useEffect(() => {
-    if (inking) return;
-    setDraft(value);
-    draftRef.current = value;
-    const strokeCtx = strokeCtxRef.current;
-    if (strokeCtx) {
-      const w = Math.max(1, Math.round(desiredContentWidth));
-      const h = Math.max(1, Math.round(desiredContentHeight));
-      redrawAll(strokeCtx, value.strokes, w, h);
-      schedulePresent();
-    }
-  }, [inking, value]);
 
   useLayoutEffect(() => {
     const el = viewportRef.current;
@@ -278,6 +361,202 @@ export function ScrollableInkPad({
     return () => ro.disconnect();
   }, []);
 
+  const desiredContentWidth = useMemo(() => {
+    const measured = Math.max(0, Math.round(viewportSize.w));
+    if (measured >= MIN_VALID_VIEWPORT_PX) return measured;
+    const fallback = Number.isFinite(value.width) ? value.width : 0;
+    if (fallback >= MIN_VALID_VIEWPORT_PX) return fallback;
+    return Math.max(1, measured);
+  }, [value.width, viewportSize.w]);
+
+  const preview = useMemo(() => preparePreviewInk(value, desiredContentWidth), [desiredContentWidth, value]);
+
+  const desiredContentHeight = useMemo(() => {
+    return computeDesiredHeightPx(preview.strokes, viewportSize.h, preview.minHeight);
+  }, [preview, viewportSize.h]);
+
+  useLayoutEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const dpr = clamp(window.devicePixelRatio || 1, 1, MAX_INK_CANVAS_DPR);
+    const w = Math.max(1, Math.round(desiredContentWidth));
+    const h = Math.max(1, Math.round(desiredContentHeight));
+
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    canvas.style.width = `${w}px`;
+    canvas.style.height = `${h}px`;
+
+    let ctx = canvas.getContext("2d", { alpha: false });
+    if (!ctx) ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    redrawPaperBackground(ctx, template, w, h);
+    redrawAll(ctx, preview.strokes, w, h);
+  }, [desiredContentHeight, desiredContentWidth, preview, template]);
+
+  const swallowPreviewInteraction = useCallback((event: React.SyntheticEvent<HTMLDivElement>) => {
+    if (!swallowInteractions) return;
+    event.preventDefault();
+    event.stopPropagation();
+  }, [swallowInteractions]);
+
+  return (
+    <div className={cx("relative h-full w-full", className)}>
+      <div
+        ref={viewportRef}
+        className={cx("relative h-full w-full overflow-hidden rounded-lg border border-black/10", viewportClassName)}
+        style={{ backgroundColor: PAPER_COLOR }}
+      >
+        <div
+          className={cx("relative w-full", contentClassName)}
+          style={{ height: `${desiredContentHeight}px` }}
+        >
+          <canvas ref={canvasRef} aria-hidden="true" className="absolute inset-0 block pointer-events-none" />
+        </div>
+        {swallowInteractions ? (
+          <div
+            aria-hidden="true"
+            className="absolute inset-0 z-[1] rounded-lg"
+            style={{ touchAction: "none" }}
+            onPointerDown={swallowPreviewInteraction}
+            onPointerMove={swallowPreviewInteraction}
+            onPointerUp={swallowPreviewInteraction}
+            onPointerCancel={swallowPreviewInteraction}
+            onTouchStart={swallowPreviewInteraction}
+            onTouchMove={swallowPreviewInteraction}
+            onTouchEnd={swallowPreviewInteraction}
+            onWheel={swallowPreviewInteraction}
+            onContextMenu={swallowPreviewInteraction}
+          />
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+export type ScrollableInkPadProps = {
+  value: InkState;
+  onChange: (next: InkState, committed: boolean) => void;
+  className?: string;
+  viewportClassName?: string;
+  contentClassName?: string;
+  template?: "blank" | "ruled" | "grid";
+  tool?: InkToolKind;
+  brushId?: string;
+  penColor?: string;
+  penSize?: number;
+  disabled?: boolean;
+};
+
+export function ScrollableInkPad({
+  value,
+  onChange,
+  className,
+  viewportClassName,
+  contentClassName,
+  template = "ruled",
+  tool = "pen",
+  brushId,
+  penColor = "#111827",
+  penSize = 3,
+  disabled,
+}: ScrollableInkPadProps) {
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const backgroundCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const backgroundCtxRef = useRef<CanvasRenderingContext2D | null>(null);
+  const strokeCtxRef = useRef<CanvasRenderingContext2D | null>(null);
+  const drawingRef = useRef(false);
+  const dirtyRef = useRef(false);
+  const mountedRef = useRef(true);
+  const lastPointRef = useRef<InkPoint | null>(null);
+  const activeStrokeIdRef = useRef<string | null>(null);
+  const activeStrokeRef = useRef<InkStroke | null>(null);
+  const touchScrollRef = useRef<{
+    pointerId: number;
+    startClientX: number;
+    startClientY: number;
+    startScrollLeft: number;
+    startScrollTop: number;
+  } | null>(null);
+  const canvasRectRef = useRef<CanvasRectLike | null>(null);
+  const activeStrokeStyleRef = useRef<ResolvedStrokeStyle | null>(null);
+  const inkPerfRef = useRef<InkPerfMetrics>(createInkPerfMetrics());
+
+  const [viewportSize, setViewportSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
+  const [inking, setInking] = useState(false);
+
+  const [draft, setDraft] = useState<InkState>(value);
+  const draftRef = useRef<InkState>(value);
+
+  const refreshCanvasRect = useCallback((): CanvasRectLike | null => {
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      canvasRectRef.current = null;
+      return null;
+    }
+    const rect = readCanvasRect(canvas);
+    canvasRectRef.current = rect;
+    return rect;
+  }, []);
+
+  const getCanvasRect = useCallback((): CanvasRectLike | null => {
+    return canvasRectRef.current ?? refreshCanvasRect();
+  }, [refreshCanvasRect]);
+
+  useLayoutEffect(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+    const update = () => {
+      const rect = el.getBoundingClientRect();
+      setViewportSize((prev) => {
+        const w = Math.max(1, Math.round(rect.width));
+        const h = Math.max(1, Math.round(rect.height));
+        if (prev.w === w && prev.h === h) return prev;
+        return { w, h };
+      });
+      canvasRectRef.current = null;
+    };
+
+    update();
+
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", update);
+      return () => window.removeEventListener("resize", update);
+    }
+
+    const ro = new ResizeObserver((entries) => {
+      const box = entries[0]?.contentRect;
+      if (!box) return;
+      setViewportSize((prev) => {
+        const w = Math.max(1, Math.round(box.width));
+        const h = Math.max(1, Math.round(box.height));
+        if (prev.w === w && prev.h === h) return prev;
+        return { w, h };
+      });
+      canvasRectRef.current = null;
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const invalidateRect = () => {
+      canvasRectRef.current = null;
+    };
+    viewport.addEventListener("scroll", invalidateRect, { passive: true });
+    window.addEventListener("scroll", invalidateRect, { passive: true });
+    window.addEventListener("resize", invalidateRect, { passive: true });
+    return () => {
+      viewport.removeEventListener("scroll", invalidateRect);
+      window.removeEventListener("scroll", invalidateRect);
+      window.removeEventListener("resize", invalidateRect);
+    };
+  }, []);
+
   const desiredContentHeight = useMemo(() => {
     return computeDesiredHeightPx(draft.strokes, viewportSize.h, value.height || 0);
   }, [draft.strokes, value.height, viewportSize.h]);
@@ -290,39 +569,41 @@ export function ScrollableInkPad({
     return Math.max(1, measured);
   }, [value.width, viewportSize.w]);
 
-  const presentComposite = useMemo(() => {
-    return () => {
-      const ctx = ctxRef.current;
-      const strokeCanvas = strokeCanvasRef.current;
-      if (!ctx || !strokeCanvas) return;
-
-      const w = Math.max(1, Math.round(desiredContentWidth));
-      const h = Math.max(1, Math.round(desiredContentHeight));
+  const redrawBackgroundLayer = useCallback(
+    (w = Math.max(1, Math.round(desiredContentWidth)), h = Math.max(1, Math.round(desiredContentHeight))) => {
+      const ctx = backgroundCtxRef.current;
+      if (!ctx) return;
       redrawPaperBackground(ctx, template, w, h);
-      ctx.save();
-      ctx.globalCompositeOperation = "source-over";
-      ctx.globalAlpha = 1;
-      ctx.drawImage(strokeCanvas, 0, 0, w, h);
-      ctx.restore();
-    };
-  }, [desiredContentHeight, desiredContentWidth, template]);
+    },
+    [desiredContentHeight, desiredContentWidth, template],
+  );
 
-  const schedulePresent = useMemo(() => {
-    return () => {
-      if (typeof requestAnimationFrame === "undefined") {
-        presentComposite();
-        return;
-      }
-      if (presentRafRef.current != null) return;
-      presentRafRef.current = requestAnimationFrame(() => {
-        presentRafRef.current = null;
-        presentComposite();
-      });
-    };
-  }, [presentComposite]);
+  const redrawStrokeLayer = useCallback(
+    (strokes: InkStroke[], w = Math.max(1, Math.round(desiredContentWidth)), h = Math.max(1, Math.round(desiredContentHeight))) => {
+      const ctx = strokeCtxRef.current;
+      if (!ctx) return;
+      const start = nowMs();
+      redrawAll(ctx, strokes, w, h);
+      const perf = inkPerfRef.current;
+      perf.presentCount += 1;
+      perf.presentTimeMs += nowMs() - start;
+    },
+    [desiredContentHeight, desiredContentWidth],
+  );
+
+  // Sync from controlled value when not inking.
+  useEffect(() => {
+    if (inking) return;
+    setDraft(value);
+    draftRef.current = value;
+    const w = Math.max(1, Math.round(desiredContentWidth));
+    const h = Math.max(1, Math.round(desiredContentHeight));
+    redrawStrokeLayer(value.strokes, w, h);
+  }, [desiredContentHeight, desiredContentWidth, inking, redrawStrokeLayer, value]);
 
   const commitDraft = useMemo(() => {
     return () => {
+      const commitStartedAt = nowMs();
       const raw = draftRef.current;
       const rawWidth = Number.isFinite(raw.width) ? raw.width : 0;
       // When the viewport is being hidden / torn down, ResizeObserver can transiently report 0 width.
@@ -349,6 +630,9 @@ export function ScrollableInkPad({
       draftRef.current = committed;
       if (mountedRef.current) setDraft(committed);
       onChange(committed, true);
+      const perf = inkPerfRef.current;
+      perf.commitTimeMs += nowMs() - commitStartedAt;
+      logInkPerf(perf);
     };
   }, [desiredContentWidth, onChange, value.height, viewportSize.h]);
 
@@ -370,9 +654,6 @@ export function ScrollableInkPad({
   useEffect(() => {
     return () => {
       mountedRef.current = false;
-      if (presentRafRef.current != null && typeof cancelAnimationFrame !== "undefined") {
-        cancelAnimationFrame(presentRafRef.current);
-      }
     };
   }, []);
 
@@ -405,11 +686,7 @@ export function ScrollableInkPad({
         setDraft(next);
         draftRef.current = next;
         onChange(next, true);
-        const strokeCtx = strokeCtxRef.current;
-        if (strokeCtx) {
-          redrawAll(strokeCtx, next.strokes, Math.max(1, Math.round(w)), Math.max(1, Math.round(nextHeight)));
-          schedulePresent();
-        }
+        redrawStrokeLayer(next.strokes, Math.max(1, Math.round(w)), Math.max(1, Math.round(nextHeight)));
         return;
       }
 
@@ -428,11 +705,7 @@ export function ScrollableInkPad({
       setDraft(next);
       draftRef.current = next;
       onChange(next, true);
-      const strokeCtx = strokeCtxRef.current;
-      if (strokeCtx) {
-        redrawAll(strokeCtx, next.strokes, Math.max(1, Math.round(w)), Math.max(1, Math.round(nextHeight)));
-        schedulePresent();
-      }
+      redrawStrokeLayer(next.strokes, Math.max(1, Math.round(w)), Math.max(1, Math.round(nextHeight)));
       return;
     }
 
@@ -451,50 +724,45 @@ export function ScrollableInkPad({
     setDraft(next);
     draftRef.current = next;
     onChange(next, true);
-    const strokeCtx = strokeCtxRef.current;
-    if (strokeCtx) {
-      redrawAll(strokeCtx, next.strokes, Math.max(1, Math.round(w)), Math.max(1, Math.round(nextHeight)));
-      schedulePresent();
-    }
+    redrawStrokeLayer(next.strokes, Math.max(1, Math.round(w)), Math.max(1, Math.round(nextHeight)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [desiredContentWidth, inking, viewportSize.h]);
+  }, [desiredContentWidth, inking, redrawStrokeLayer, viewportSize.h]);
 
-  // Setup canvas devicePixelRatio scaling.
+  // Setup layered canvases: paper/background and visible stroke layer.
   useLayoutEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const dpr = Math.max(1, Math.round(window.devicePixelRatio || 1));
+    const strokeCanvas = canvasRef.current;
+    const backgroundCanvas = backgroundCanvasRef.current;
+    if (!strokeCanvas || !backgroundCanvas) return;
+    const dpr = clamp(window.devicePixelRatio || 1, 1, MAX_INK_CANVAS_DPR);
     const w = Math.max(1, Math.round(desiredContentWidth));
     const h = Math.max(1, Math.round(desiredContentHeight));
 
-    if (!strokeCanvasRef.current && typeof document !== "undefined") {
-      strokeCanvasRef.current = document.createElement("canvas");
-    }
-    const strokeCanvas = strokeCanvasRef.current;
-    if (!strokeCanvas) return;
+    backgroundCanvas.width = w * dpr;
+    backgroundCanvas.height = h * dpr;
+    backgroundCanvas.style.width = `${w}px`;
+    backgroundCanvas.style.height = `${h}px`;
+
+    let backgroundCtx = backgroundCanvas.getContext("2d", { alpha: false });
+    if (!backgroundCtx) backgroundCtx = backgroundCanvas.getContext("2d");
+    if (!backgroundCtx) return;
+    backgroundCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    backgroundCtxRef.current = backgroundCtx;
 
     strokeCanvas.width = w * dpr;
     strokeCanvas.height = h * dpr;
+    strokeCanvas.style.width = `${w}px`;
+    strokeCanvas.style.height = `${h}px`;
+
     let strokeCtx = strokeCanvas.getContext("2d", { alpha: true });
     if (!strokeCtx) strokeCtx = strokeCanvas.getContext("2d");
     if (!strokeCtx) return;
     strokeCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
     strokeCtxRef.current = strokeCtx;
 
-    canvas.width = w * dpr;
-    canvas.height = h * dpr;
-    canvas.style.width = `${w}px`;
-    canvas.style.height = `${h}px`;
-
-    let ctx = canvas.getContext("2d", { alpha: false });
-    if (!ctx) ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctxRef.current = ctx;
-
-    redrawAll(strokeCtx, draftRef.current.strokes, w, h);
-    presentComposite();
-  }, [desiredContentWidth, desiredContentHeight, presentComposite]);
+    redrawBackgroundLayer(w, h);
+    redrawStrokeLayer(draftRef.current.strokes, w, h);
+    canvasRectRef.current = null;
+  }, [desiredContentWidth, desiredContentHeight, redrawBackgroundLayer, redrawStrokeLayer]);
 
   const beginStroke = (p: InkPoint) => {
     const brush = findInkBrushPreset(brushId);
@@ -515,6 +783,17 @@ export function ScrollableInkPad({
       points: [p],
     };
     activeStrokeIdRef.current = id;
+    activeStrokeRef.current = stroke;
+    activeStrokeStyleRef.current = resolveStrokeStyle(stroke);
+    inkPerfRef.current = {
+      ...createInkPerfMetrics(),
+      strokeStartedAtMs: nowMs(),
+      sampleCount: 1,
+    };
+    const strokeCtx = strokeCtxRef.current;
+    if (strokeCtx && activeStrokeStyleRef.current) {
+      applyStrokeStyle(strokeCtx, activeStrokeStyleRef.current);
+    }
     const prev = draftRef.current;
     const next: InkState = {
       ...prev,
@@ -532,23 +811,24 @@ export function ScrollableInkPad({
     if (!strokeId) return;
     const strokeCtx = strokeCtxRef.current;
     const last = lastPointRef.current;
+    const stroke = activeStrokeRef.current;
+    if (!stroke || stroke.id !== strokeId) return;
 
-    const nextState = draftRef.current;
-    const idx = nextState.strokes.findIndex((s) => s.id === strokeId);
-    if (idx < 0) return;
-
-    const stroke = nextState.strokes[idx]!;
     stroke.points.push(p);
     dirtyRef.current = true;
 
+    const style = activeStrokeStyleRef.current ?? resolveStrokeStyle(stroke);
+    activeStrokeStyleRef.current = style;
     if (strokeCtx && last) {
-      drawStrokeSegment(strokeCtx, stroke, last, p);
-      schedulePresent();
+      applyStrokeStyle(strokeCtx, style);
+      drawStrokeSegment(strokeCtx, style, last, p);
     }
   };
 
   const endStroke = () => {
     activeStrokeIdRef.current = null;
+    activeStrokeRef.current = null;
+    activeStrokeStyleRef.current = null;
     lastPointRef.current = null;
   };
 
@@ -599,8 +879,9 @@ export function ScrollableInkPad({
     e.preventDefault();
     e.stopPropagation();
 
-    const rect = canvas.getBoundingClientRect();
-    const p = getPointFromEvent(e, rect);
+    const rect = refreshCanvasRect();
+    if (!rect) return;
+    const p = getPointFromPointerSample(e.nativeEvent, rect);
     drawingRef.current = true;
     setInking(true);
     beginStroke(p);
@@ -628,16 +909,36 @@ export function ScrollableInkPad({
     }
 
     if (!drawingRef.current) return;
-    const canvas = canvasRef.current;
-    if (!canvas) return;
     e.preventDefault();
     e.stopPropagation();
-    const rect = canvas.getBoundingClientRect();
-    const p = getPointFromEvent(e, rect);
-    const last = lastPointRef.current;
-    if (last && Math.hypot(p.x - last.x, p.y - last.y) < 0.5) return;
-    appendPoint(p);
-    lastPointRef.current = p;
+
+    const rect = getCanvasRect();
+    if (!rect) return;
+
+    const perf = inkPerfRef.current;
+    perf.moveEventCount += 1;
+
+    const sampleStartedAt = nowMs();
+    const nativeEvent = e.nativeEvent as PointerEvent & { getCoalescedEvents?: () => PointerEvent[] };
+    const sampleEvents =
+      typeof nativeEvent.getCoalescedEvents === "function"
+        ? nativeEvent.getCoalescedEvents()
+        : [];
+    const sourceEvents = sampleEvents.length > 0 ? sampleEvents : [nativeEvent];
+    const points = sourceEvents.map((event) => getPointFromPointerSample(event, rect));
+    perf.sampleCount += points.length;
+    perf.sampleTimeMs += nowMs() - sampleStartedAt;
+
+    const drawStartedAt = nowMs();
+    for (const point of points) {
+      const last = lastPointRef.current;
+      if (last && Math.hypot(point.x - last.x, point.y - last.y) < 0.5) {
+        continue;
+      }
+      appendPoint(point);
+      lastPointRef.current = point;
+    }
+    perf.drawTimeMs += nowMs() - drawStartedAt;
   };
 
   const onPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -680,11 +981,7 @@ export function ScrollableInkPad({
     setDraft(next);
     draftRef.current = next;
     onChange(next, true);
-    const strokeCtx = strokeCtxRef.current;
-    if (strokeCtx) {
-      redrawAll(strokeCtx, next.strokes, Math.max(1, Math.round(desiredContentWidth)), Math.max(1, Math.round(desiredContentHeight)));
-      schedulePresent();
-    }
+    redrawStrokeLayer(next.strokes, Math.max(1, Math.round(desiredContentWidth)), Math.max(1, Math.round(desiredContentHeight)));
   };
 
   const undo = () => {
@@ -694,11 +991,7 @@ export function ScrollableInkPad({
     setDraft(next);
     draftRef.current = next;
     onChange(next, true);
-    const strokeCtx = strokeCtxRef.current;
-    if (strokeCtx) {
-      redrawAll(strokeCtx, next.strokes, Math.max(1, Math.round(desiredContentWidth)), Math.max(1, Math.round(desiredContentHeight)));
-      schedulePresent();
-    }
+    redrawStrokeLayer(next.strokes, Math.max(1, Math.round(desiredContentWidth)), Math.max(1, Math.round(desiredContentHeight)));
   };
 
   return (
@@ -716,8 +1009,13 @@ export function ScrollableInkPad({
           style={{ height: `${desiredContentHeight}px` }}
         >
           <canvas
+            ref={backgroundCanvasRef}
+            aria-hidden="true"
+            className="absolute inset-0 block pointer-events-none"
+          />
+          <canvas
             ref={canvasRef}
-            className="relative block"
+            className="absolute inset-0 block"
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}

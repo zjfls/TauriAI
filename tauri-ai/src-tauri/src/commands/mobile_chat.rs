@@ -94,7 +94,7 @@ fn resolve_provider_model_for_practice(cfg: &AppConfig) -> Option<(String, Strin
             return Some(provider_model);
         }
     }
-    resolve_provider_model(cfg, None)
+    resolve_provider_model(cfg, None, None)
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -186,8 +186,19 @@ fn summarize_debug_info(di: &DebugInfoData) -> String {
     parts.join(" ")
 }
 
-fn resolve_provider_model(cfg: &AppConfig, agent_name: Option<&str>) -> Option<(String, String)> {
-    // Highest priority: explicit agentName from the current conversation (mobile UI)
+fn resolve_provider_model(
+    cfg: &AppConfig,
+    model_ref: Option<&str>,
+    agent_name: Option<&str>,
+) -> Option<(String, String)> {
+    // Highest priority: explicit modelRef from the current conversation (mobile UI)
+    if let Some(model_ref) = model_ref.map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(provider_model) = resolve_provider_model_from_ref(model_ref) {
+            return Some(provider_model);
+        }
+    }
+
+    // Next: explicit agentName from the current conversation (mobile UI)
     if let Some(agent_name) = agent_name.map(str::trim).filter(|s| !s.is_empty()) {
         if let Some(agent) = cfg
             .agents
@@ -262,6 +273,8 @@ fn build_model_config(
     cfg: &AppConfig,
     provider_name: &str,
     model_name: &str,
+    thinking: Option<serde_json::Value>,
+    web_search_enabled: Option<bool>,
 ) -> Result<ModelConfig, String> {
     let provider = cfg
         .providers
@@ -288,6 +301,27 @@ fn build_model_config(
         None
     };
 
+    let thinking_level = if model.capabilities.thinking {
+        let level = match thinking {
+            Some(serde_json::Value::Bool(true)) => Some("medium".to_string()),
+            Some(serde_json::Value::Bool(false)) => Some("disabled".to_string()),
+            Some(serde_json::Value::String(level)) => Some(level),
+            Some(serde_json::Value::Null) => Some("disabled".to_string()),
+            None => Some("medium".to_string()),
+            _ => Some("medium".to_string()),
+        };
+
+        match provider.provider_type {
+            crate::models::ProviderType::Google => match level.as_deref() {
+                Some("xhigh") | Some("very_high") => Some("high".to_string()),
+                _ => level,
+            },
+            _ => level,
+        }
+    } else {
+        None
+    };
+
     Ok(ModelConfig {
         id: "mobile".to_string(),
         name: "mobile".to_string(),
@@ -296,15 +330,11 @@ fn build_model_config(
         api_key: provider.api_key.clone(),
         model: model.name.clone(),
         parameters,
-        thinking_level: if model.capabilities.thinking {
-            Some("medium".to_string())
-        } else {
-            None
-        },
+        thinking_level,
         thinking_budget_tokens: model.thinking_budget_tokens,
         vision_enabled: model.capabilities.vision,
-        web_search_enabled: model.capabilities.web_search,
-        max_images: model.max_images.map(|v| v as u32),
+        web_search_enabled: model.capabilities.web_search && web_search_enabled.unwrap_or(true),
+        max_images: model.max_images,
         use_reasoning_effort: model.use_reasoning_effort,
         force_responses_reasoning: provider.force_responses_reasoning,
         seasun_thinking: provider.seasun_thinking,
@@ -785,17 +815,22 @@ async fn build_mcp_tooling_for_mobile(
 pub async fn mobile_chat(
     messages: Vec<MobileChatMessage>,
     agent_name: Option<String>,
+    model_ref: Option<String>,
     config_manager: tauri::State<'_, Arc<ConfigManager>>,
 ) -> Result<MobileChatResponse, String> {
     let cfg = config_manager.ensure_default().map_err(|e| e.to_string())?;
     reject_practice_agent_request(&cfg, agent_name.as_deref())?;
 
-    let (provider_name, model_name) = resolve_provider_model(&cfg, agent_name.as_deref()).ok_or_else(|| {
+    let (provider_name, model_name) = resolve_provider_model(
+        &cfg,
+        model_ref.as_deref(),
+        agent_name.as_deref(),
+    ).ok_or_else(|| {
         "未配置 provider/model。请在 Settings 中设置 Provider、API Base、API Key（如需要）以及 Model。"
             .to_string()
     })?;
 
-    let model_cfg = build_model_config(&cfg, &provider_name, &model_name)?;
+    let model_cfg = build_model_config(&cfg, &provider_name, &model_name, None, None)?;
     let client = get_client(&model_cfg.provider).map_err(|e| e.to_string())?;
     let mut msgs = to_messages("mobile", messages);
     prepend_agent_system_prompt(&cfg, "mobile", agent_name.as_deref(), &mut msgs);
@@ -818,7 +853,7 @@ pub async fn practice_chat(
     let (provider_name, model_name) = resolve_provider_model_for_practice(&cfg)
         .ok_or_else(|| "练习专用 Agent 未配置可用模型。请先在 Settings 中配置模型。".to_string())?;
 
-    let model_cfg = build_model_config(&cfg, &provider_name, &model_name)?;
+    let model_cfg = build_model_config(&cfg, &provider_name, &model_name, None, None)?;
     let client = get_client(&model_cfg.provider).map_err(|e| e.to_string())?;
     let mut msgs = to_messages("practice", messages);
     prepend_practice_system_prompt(&cfg, "practice", &mut msgs);
@@ -835,6 +870,7 @@ pub async fn practice_chat(
 pub async fn mobile_generate_title(
     messages: Vec<MobileChatMessage>,
     agent_name: Option<String>,
+    model_ref: Option<String>,
     max_chars: Option<usize>,
     context_kind: Option<String>,
     config_manager: tauri::State<'_, Arc<ConfigManager>>,
@@ -842,10 +878,11 @@ pub async fn mobile_generate_title(
     let cfg = config_manager.ensure_default().map_err(|e| e.to_string())?;
     reject_practice_agent_request(&cfg, agent_name.as_deref())?;
 
-    let (provider_name, model_name) = resolve_provider_model(&cfg, agent_name.as_deref())
-        .ok_or_else(|| "未配置 provider/model。请先在 Settings 中配置模型。".to_string())?;
+    let (provider_name, model_name) =
+        resolve_provider_model(&cfg, model_ref.as_deref(), agent_name.as_deref())
+            .ok_or_else(|| "未配置 provider/model。请先在 Settings 中配置模型。".to_string())?;
 
-    let mut model_cfg = build_model_config(&cfg, &provider_name, &model_name)?;
+    let mut model_cfg = build_model_config(&cfg, &provider_name, &model_name, None, None)?;
     model_cfg.thinking_level = None;
     model_cfg.thinking_budget_tokens = None;
     model_cfg.vision_enabled = false;
@@ -930,7 +967,7 @@ pub async fn practice_generate_title(
     let (provider_name, model_name) = resolve_provider_model_for_practice(&cfg)
         .ok_or_else(|| "练习专用 Agent 未配置可用模型。请先在 Settings 中配置模型。".to_string())?;
 
-    let mut model_cfg = build_model_config(&cfg, &provider_name, &model_name)?;
+    let mut model_cfg = build_model_config(&cfg, &provider_name, &model_name, None, None)?;
     model_cfg.thinking_level = None;
     model_cfg.thinking_budget_tokens = None;
     model_cfg.vision_enabled = false;
@@ -1018,6 +1055,9 @@ pub async fn mobile_chat_stream_start(
     assistant_message_id: String,
     messages: Vec<MobileChatMessage>,
     agent_name: Option<String>,
+    model_ref: Option<String>,
+    thinking_mode: Option<serde_json::Value>,
+    web_search_enabled: Option<bool>,
     config_manager: tauri::State<'_, Arc<ConfigManager>>,
 ) -> Result<(), String> {
     let stream_id = stream_id.trim().to_string();
@@ -1029,11 +1069,17 @@ pub async fn mobile_chat_stream_start(
     let cfg = config_manager.ensure_default().map_err(|e| e.to_string())?;
     reject_practice_agent_request(&cfg, agent_name.as_deref())?;
     let (provider_name, model_name) =
-        resolve_provider_model(&cfg, agent_name.as_deref()).ok_or_else(|| {
+        resolve_provider_model(&cfg, model_ref.as_deref(), agent_name.as_deref()).ok_or_else(|| {
             "未配置 provider/model。请在 Settings 中设置 Provider、API Base、API Key（如需要）以及 Model。"
                 .to_string()
         })?;
-    let model_cfg = build_model_config(&cfg, &provider_name, &model_name)?;
+    let model_cfg = build_model_config(
+        &cfg,
+        &provider_name,
+        &model_name,
+        thinking_mode.clone(),
+        web_search_enabled,
+    )?;
     let client = get_client(&model_cfg.provider).map_err(|e| e.to_string())?;
     let user_text = find_last_user_text(&messages);
     let mut msgs = to_messages(&conversation_id, messages);
@@ -1125,30 +1171,19 @@ pub async fn mobile_chat_stream_start(
         let mut tool_rounds: u32 = 0;
         let max_tool_rounds: u32 = 8;
 
-        // Allow a couple of consecutive empty model rounds (no tokens/thinking/tool_calls).
+        // Empty/no-visible-output retry budget. Reuse the model retry setting so mobile and desktop
+        // don't diverge when the stream only emits thinking/web_search and then gets cut off.
         let mut empty_model_rounds: u32 = 0;
-        let max_empty_model_rounds: u32 = 2;
+        let max_empty_model_rounds: u32 = model_cfg.retry_attempts.unwrap_or(8).max(1);
 
         // Some("done") | Some("error") | None
         let mut terminal: Option<&'static str> = None;
+        let mut stream_err: Option<String> = None;
 
         while terminal != Some("done") && terminal != Some("error") {
             model_rounds += 1;
             if model_rounds > max_model_rounds {
-                emit_mobile_stream_event(
-                    &app2,
-                    MobileChatStreamPayload {
-                        stream_id: stream_id2.clone(),
-                        conversation_id: conversation_id2.clone(),
-                        assistant_message_id: assistant_message_id2.clone(),
-                        kind: "error".to_string(),
-                        delta: None,
-                        content: None,
-                        thinking: None,
-                        data: None,
-                        error: Some("模型调用轮次过多（可能出现循环/空响应重试）。".to_string()),
-                    },
-                );
+                stream_err = Some("模型调用轮次过多（可能出现循环/空响应重试）。".to_string());
                 terminal = Some("error");
                 break;
             }
@@ -1179,7 +1214,7 @@ pub async fn mobile_chat_stream_start(
             let mut pending_tool_calls: Option<Vec<ToolCall>> = None;
             terminal = None;
             let mut stream_done = false;
-            let mut stream_err: Option<String> = None;
+            stream_err = None;
 
             loop {
                 tokio::select! {
@@ -1239,20 +1274,7 @@ pub async fn mobile_chat_stream_start(
                                 terminal = Some("done");
                             }
                             StreamEvent::Error(err) => {
-                                emit_mobile_stream_event(
-                                    &app2,
-                                    MobileChatStreamPayload {
-                                        stream_id: stream_id2.clone(),
-                                        conversation_id: conversation_id2.clone(),
-                                        assistant_message_id: assistant_message_id2.clone(),
-                                        kind: "error".to_string(),
-                                        delta: None,
-                                        content: None,
-                                        thinking: None,
-                                        data: None,
-                                        error: Some(err),
-                                    },
-                                );
+                                stream_err = Some(err);
                                 terminal = Some("error");
                                 break;
                             }
@@ -1334,18 +1356,18 @@ pub async fn mobile_chat_stream_start(
                 .as_deref()
                 .map(|s| !s.trim().is_empty())
                 .unwrap_or(false);
-            let round_emitted_any = content_buf.len() > content_len_before_round
-                || thinking_buf.len() > thinking_len_before_round
-                || done_content_nonempty
+            let round_visible_output =
+                content_buf.len() > content_len_before_round || done_content_nonempty;
+            let round_has_nonvisible_activity = thinking_buf.len() > thinking_len_before_round
                 || done_thinking_nonempty
-                || saw_web_search
-                || pending_tool_calls.as_ref().is_some_and(|c| !c.is_empty());
+                || saw_web_search;
+            let round_has_tool_calls = pending_tool_calls.as_ref().is_some_and(|c| !c.is_empty());
 
-            if round_emitted_any {
+            if round_visible_output || round_has_tool_calls {
                 empty_model_rounds = 0;
-            } else if terminal != Some("error") {
-                // 空响应：在移动端偶发（尤其是 MCP 工具回合后续 turn），PC 端会把它当作可重试的流错误。
-                // 这里先做一个小范围的连续空轮次重试，避免“工具调用后任务直接结束”的体验。
+            } else if terminal != Some("error") || round_has_nonvisible_activity {
+                // 只收到 thinking / web_search 之类的“非正文”事件时，不要把这一轮当成成功完成；
+                // 应按空响应重试，否则移动端会表现为“搜索/思考后回答直接中断”。
                 if let Some(di) = round_debug_info.as_ref() {
                     log_mobile(format!(
                         "empty_round model_round={} tool_round={} provider={} model={} turn_state={:?} {}",
@@ -1358,12 +1380,14 @@ pub async fn mobile_chat_stream_start(
                     ));
                 } else {
                     log_mobile(format!(
-                        "empty_round model_round={} tool_round={} provider={} model={} turn_state={:?} (no debug_info)",
+                        "empty_round model_round={} tool_round={} provider={} model={} turn_state={:?} nonvisible_activity={} stream_err={:?}",
                         model_rounds,
                         tool_rounds,
                         model_cfg.provider,
                         model_cfg.model,
                         round_turn_state.as_deref(),
+                        round_has_nonvisible_activity,
+                        stream_err.as_deref(),
                     ));
                 }
                 empty_model_rounds = empty_model_rounds.saturating_add(1);
@@ -1372,19 +1396,9 @@ pub async fn mobile_chat_stream_start(
                     continue;
                 }
 
-                emit_mobile_stream_event(
-                    &app2,
-                    MobileChatStreamPayload {
-                        stream_id: stream_id2.clone(),
-                        conversation_id: conversation_id2.clone(),
-                        assistant_message_id: assistant_message_id2.clone(),
-                        kind: "error".to_string(),
-                        delta: None,
-                        content: None,
-                        thinking: None,
-                        data: None,
-                        error: Some("模型返回空响应（多次重试后仍为空）".to_string()),
-                    },
+                stream_err = Some(
+                    stream_err
+                        .unwrap_or_else(|| "模型返回空响应（多次重试后仍无正文输出）".to_string()),
                 );
                 terminal = Some("error");
             }
@@ -1393,40 +1407,14 @@ pub async fn mobile_chat_stream_start(
                 Some("tool_calls") => {
                     tool_rounds += 1;
                     if tool_rounds > max_tool_rounds {
-                        emit_mobile_stream_event(
-                            &app2,
-                            MobileChatStreamPayload {
-                                stream_id: stream_id2.clone(),
-                                conversation_id: conversation_id2.clone(),
-                                assistant_message_id: assistant_message_id2.clone(),
-                                kind: "error".to_string(),
-                                delta: None,
-                                content: None,
-                                thinking: None,
-                                data: None,
-                                error: Some("工具调用轮次过多（可能出现循环）。".to_string()),
-                            },
-                        );
+                        stream_err = Some("工具调用轮次过多（可能出现循环）。".to_string());
                         terminal = Some("error");
                         break;
                     }
 
                     let calls = pending_tool_calls.take().unwrap_or_default();
                     if calls.is_empty() {
-                        emit_mobile_stream_event(
-                            &app2,
-                            MobileChatStreamPayload {
-                                stream_id: stream_id2.clone(),
-                                conversation_id: conversation_id2.clone(),
-                                assistant_message_id: assistant_message_id2.clone(),
-                                kind: "error".to_string(),
-                                delta: None,
-                                content: None,
-                                thinking: None,
-                                data: None,
-                                error: Some("模型请求了空的 tool_calls。".to_string()),
-                            },
-                        );
+                        stream_err = Some("模型请求了空的 tool_calls。".to_string());
                         terminal = Some("error");
                         break;
                     }
@@ -1652,8 +1640,7 @@ pub async fn mobile_chat_stream_start(
                 Some("error") => break,
                 None => {
                     // 容错：如果流被关闭但已经拿到内容，按 done 处理；否则报错。
-                    let round_has_output = content_buf.len() > content_len_before_round
-                        || thinking_buf.len() > thinking_len_before_round;
+                    let round_has_output = round_visible_output;
                     if round_has_output {
                         terminal = Some("done");
                         final_content = Some(content_buf.clone());
@@ -1664,39 +1651,13 @@ pub async fn mobile_chat_stream_start(
                     }
 
                     // 如果 chat_stream 本身返回了 Err，但未能透传为 StreamEvent::Error，则在此补发更明确的错误。
-                    if let Some(err) = stream_err {
-                        emit_mobile_stream_event(
-                            &app2,
-                            MobileChatStreamPayload {
-                                stream_id: stream_id2.clone(),
-                                conversation_id: conversation_id2.clone(),
-                                assistant_message_id: assistant_message_id2.clone(),
-                                kind: "error".to_string(),
-                                delta: None,
-                                content: None,
-                                thinking: None,
-                                data: None,
-                                error: Some(err),
-                            },
-                        );
+                    if let Some(err) = stream_err.take() {
+                        stream_err = Some(err);
                         terminal = Some("error");
                         break;
                     }
 
-                    emit_mobile_stream_event(
-                        &app2,
-                        MobileChatStreamPayload {
-                            stream_id: stream_id2.clone(),
-                            conversation_id: conversation_id2.clone(),
-                            assistant_message_id: assistant_message_id2.clone(),
-                            kind: "error".to_string(),
-                            delta: None,
-                            content: None,
-                            thinking: None,
-                            data: None,
-                            error: Some("流式响应提前结束（未收到 Done/Error）".to_string()),
-                        },
-                    );
+                    stream_err = Some("流式响应提前结束（未收到 Done/Error）".to_string());
                     terminal = Some("error");
                     break;
                 }
@@ -1731,6 +1692,24 @@ pub async fn mobile_chat_stream_start(
                     thinking,
                     data: None,
                     error: None,
+                },
+            );
+        } else if terminal == Some("error") {
+            emit_mobile_stream_event(
+                &app2,
+                MobileChatStreamPayload {
+                    stream_id: stream_id2.clone(),
+                    conversation_id: conversation_id2.clone(),
+                    assistant_message_id: assistant_message_id2.clone(),
+                    kind: "error".to_string(),
+                    delta: None,
+                    content: None,
+                    thinking: None,
+                    data: None,
+                    error: Some(
+                        stream_err
+                            .unwrap_or_else(|| "请求失败：移动端流式回答未正常完成。".to_string()),
+                    ),
                 },
             );
         }

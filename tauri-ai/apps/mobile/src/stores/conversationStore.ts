@@ -4,6 +4,7 @@ import type {
   ChatMessage,
   ChatMessageBlock,
   Conversation,
+  ThinkingMode,
   ToolCallEvent,
   WebSearchEvent,
 } from "../types/chat";
@@ -11,6 +12,9 @@ import type {
 export type CreateConversationOptions = {
   title?: string;
   agentName?: string;
+  modelRef?: string;
+  thinkingMode?: ThinkingMode;
+  webSearchEnabled?: boolean;
 };
 
 type State = {
@@ -36,6 +40,8 @@ type State = {
     patch: { content?: string; thinking?: string },
   ) => void;
   setTitle: (conversationId: string, title: string) => void;
+  patchConversation: (conversationId: string, patch: Partial<Conversation>) => void;
+  replaceConversationMessages: (conversationId: string, messages: ChatMessage[]) => void;
 };
 
 const STORAGE_KEY = "tauriai.mobile.conversations.v1";
@@ -101,6 +107,9 @@ function createEmptyConversation(opts?: CreateConversationOptions): Conversation
     id,
     title: opts?.title || "新对话",
     agentName: opts?.agentName,
+    modelRef: opts?.modelRef,
+    thinkingMode: opts?.thinkingMode,
+    webSearchEnabled: opts?.webSearchEnabled,
     updatedAt: now(),
     messages: [],
   };
@@ -120,11 +129,24 @@ function loadInitial() {
   return data;
 }
 
+function sanitizeForStorage(next: Pick<State, "conversations" | "activeConversationId">) {
+  return {
+    activeConversationId: next.activeConversationId,
+    conversations: next.conversations.map((conversation) => ({
+      ...conversation,
+      messages: conversation.messages.map((message) => ({
+        ...message,
+        contentParts: undefined,
+      })),
+    })),
+  };
+}
+
 export const useConversationStore = create<State>((set) => {
   const initial = loadInitial();
 
   const persist = (next: Pick<State, "conversations" | "activeConversationId">) => {
-    saveJson(STORAGE_KEY, next);
+    saveJson(STORAGE_KEY, sanitizeForStorage(next));
   };
 
   return {
@@ -497,6 +519,26 @@ export const useConversationStore = create<State>((set) => {
       set((s) => {
         const conversations = s.conversations.map((c) =>
           c.id === conversationId ? { ...c, title, updatedAt: now() } : c,
+        );
+        const next = { conversations, activeConversationId: s.activeConversationId };
+        persist(next);
+        return next;
+      });
+    },
+    patchConversation: (conversationId, patch) => {
+      set((s) => {
+        const conversations = s.conversations.map((c) =>
+          c.id === conversationId ? { ...c, ...patch, updatedAt: now() } : c,
+        );
+        const next = { conversations, activeConversationId: s.activeConversationId };
+        persist(next);
+        return next;
+      });
+    },
+    replaceConversationMessages: (conversationId, messages) => {
+      set((s) => {
+        const conversations = s.conversations.map((c) =>
+          c.id === conversationId ? { ...c, messages, updatedAt: now() } : c,
         );
         const next = { conversations, activeConversationId: s.activeConversationId };
         persist(next);

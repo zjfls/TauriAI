@@ -4,6 +4,7 @@ import type {
   InkState,
   InkStroke,
   PracticeAnswer,
+  PracticeAnswerImage,
   PracticeGrading,
   PracticeQuestion,
   PracticeQuestionId,
@@ -155,12 +156,59 @@ function normalizeInkState(raw: unknown): { ink: InkState; changed: boolean } {
   return { ink: { width: widthOut, height: heightOut, strokes: strokesOut }, changed };
 }
 
+function normalizePracticeAnswerImages(
+  raw: unknown,
+): { images: PracticeAnswerImage[] | undefined; changed: boolean } {
+  if (raw == null) return { images: undefined, changed: false };
+  if (!Array.isArray(raw)) return { images: undefined, changed: true };
+
+  let changed = false;
+  const images: PracticeAnswerImage[] = [];
+  for (const item of raw) {
+    const image = item && typeof item === "object" ? (item as any) : {};
+    const url = typeof image.url === "string" ? image.url.trim() : "";
+    if (!url) {
+      changed = true;
+      continue;
+    }
+
+    const id = typeof image.id === "string" && image.id.trim() ? image.id.trim() : newId("ans_img");
+    const name = typeof image.name === "string" && image.name.trim() ? image.name.trim() : undefined;
+    const width =
+      typeof image.width === "number" && Number.isFinite(image.width) && image.width > 0
+        ? Math.round(image.width)
+        : undefined;
+    const height =
+      typeof image.height === "number" && Number.isFinite(image.height) && image.height > 0
+        ? Math.round(image.height)
+        : undefined;
+
+    if (id !== image.id || name !== image.name || width !== image.width || height !== image.height) {
+      changed = true;
+    }
+
+    images.push({ id, url, name, width, height });
+  }
+
+  return { images, changed };
+}
+
 function normalizeProgressAnswer(answer: PracticeAnswer | undefined): { answer: PracticeAnswer | undefined; changed: boolean } {
   if (!answer) return { answer, changed: false };
   if (answer.kind !== "ink") return { answer, changed: false };
-  const normalized = normalizeInkState((answer as any).ink);
-  if (!normalized.changed) return { answer, changed: false };
-  return { answer: { ...(answer as any), ink: normalized.ink }, changed: true };
+  const normalizedInk = normalizeInkState((answer as any).ink);
+  const normalizedImages = normalizePracticeAnswerImages((answer as any).images);
+  if (!normalizedInk.changed && !normalizedImages.changed) {
+    return { answer, changed: false };
+  }
+  return {
+    answer: {
+      ...(answer as any),
+      ink: normalizedInk.ink,
+      images: normalizedImages.images,
+    },
+    changed: true,
+  };
 }
 
 function normalizeQuizzesOnLoad(
@@ -346,7 +394,14 @@ export const usePracticeStore = create<State>((set) => {
       updateQuizzes((prev) => {
         const quizzes = prev.quizzes.map((q) => {
           if (q.id !== quizId) return q;
-          const answer: PracticeAnswer = { kind: "ink", ink: normalizedInk, summaryText: opts?.summaryText };
+          const previousAnswer = q.progress?.byQuestionId?.[questionId]?.answer;
+          const answer: PracticeAnswer = {
+            kind: "ink",
+            ink: normalizedInk,
+            summaryText:
+              opts?.summaryText ?? (previousAnswer?.kind === "ink" ? previousAnswer.summaryText : undefined),
+            images: previousAnswer?.kind === "ink" ? previousAnswer.images : undefined,
+          };
           return setQuestionProgress(ensureProgress(q), questionId, { answer });
         });
         return { quizzes, activeQuizId: prev.activeQuizId };

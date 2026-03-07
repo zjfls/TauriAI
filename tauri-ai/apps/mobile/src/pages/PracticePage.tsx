@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Plus, Wand2 } from "lucide-react";
 import { useLayoutSize } from "../lib/breakpoints";
 import { isTauriRuntime, tauriInvoke } from "../lib/tauri";
@@ -11,6 +11,8 @@ import type {
   InkPoint,
   InkState,
   InkStroke,
+  PracticeAnswer,
+  PracticeAnswerImage,
   PracticeQuestion,
   PracticeQuestionType,
   PracticeQuiz,
@@ -23,7 +25,7 @@ import {
   normalizePracticeGenerationCountValue,
   totalPracticeGenerationCounts,
 } from "../../../common/src/practice/generation";
-import { ScrollableInkPad, createEmptyInkState } from "../../../common/src/practice/ink/ScrollableInkPad";
+import { InkPreview, ScrollableInkPad, createEmptyInkState } from "../../../common/src/practice/ink/ScrollableInkPad";
 import { DEFAULT_INK_BRUSH_ID, INK_BRUSH_PRESETS } from "../../../common/src/practice/ink/brushes";
 
 type InkTemplate = "blank" | "ruled" | "grid";
@@ -36,6 +38,9 @@ const INK_TEMPLATES: Array<{ value: InkTemplate; label: string }> = [
 ];
 const INK_SIZE_MIN = 1;
 const INK_SIZE_MAX = 24;
+const MAX_PASTED_ANSWER_IMAGE_COUNT = 4;
+const MAX_PASTED_ANSWER_IMAGE_BYTES = 20 * 1024 * 1024;
+const MAX_PASTED_ANSWER_IMAGE_EDGE = 1600;
 const DRAWING_BRUSH_PRESETS = INK_BRUSH_PRESETS.filter((item) => item.tool !== "eraser");
 const ERASER_BRUSH_PRESET = INK_BRUSH_PRESETS.find((item) => item.tool === "eraser");
 
@@ -144,6 +149,372 @@ async function renderInkToDataUrl(ink: InkState): Promise<string | null> {
   return canvas.toDataURL("image/png");
 }
 
+
+type QuestionImageFeedback = {
+  kind: "success" | "error";
+  message: string;
+};
+
+function pathRoundedRect(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius: number,
+) {
+  const safeRadius = Math.max(0, Math.min(radius, width / 2, height / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + safeRadius, y);
+  ctx.arcTo(x + width, y, x + width, y + height, safeRadius);
+  ctx.arcTo(x + width, y + height, x, y + height, safeRadius);
+  ctx.arcTo(x, y + height, x, y, safeRadius);
+  ctx.arcTo(x, y, x + width, y, safeRadius);
+  ctx.closePath();
+}
+
+function normalizeQuestionPromptForImage(markdown: string): string {
+  return String(markdown ?? "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/```(?:[^\n`]*)\n?/g, "")
+    .replace(/```/g, "")
+    .replace(/^#{1,6}\s*/gm, "")
+    .replace(/^\s*>\s?/gm, "")
+    .replace(/^\s*[-*+]\s+/gm, "• ")
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/__([^_]+)__/g, "$1")
+    .replace(/~~([^~]+)~~/g, "$1")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function wrapCanvasText(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  maxWidth: number,
+): string[] {
+  const paragraphs = text.split("\n");
+  const lines: string[] = [];
+
+  for (const rawParagraph of paragraphs) {
+    const paragraph = rawParagraph.replace(/\t/g, "  ").trimEnd();
+    if (!paragraph.trim()) {
+      if (lines.length > 0 && lines[lines.length - 1] !== "") {
+        lines.push("");
+      }
+      continue;
+    }
+
+    let current = "";
+    for (const char of Array.from(paragraph)) {
+      const next = `${current}${char}`;
+      if (current && ctx.measureText(next).width > maxWidth) {
+        lines.push(current.trimEnd());
+        current = char === " " ? "" : char;
+      } else {
+        current = next;
+      }
+    }
+    if (current) {
+      lines.push(current.trimEnd());
+    }
+  }
+
+  return lines.length > 0 ? lines : ["（题目为空）"];
+}
+
+function drawQuestionImageTag(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  text: string,
+  backgroundColor: string,
+  textColor: string,
+): number {
+  ctx.save();
+  ctx.font = '600 28px system-ui, -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif';
+  ctx.textBaseline = "middle";
+  const paddingX = 18;
+  const width = Math.ceil(ctx.measureText(text).width + paddingX * 2);
+  pathRoundedRect(ctx, x, y, width, 42, 21);
+  ctx.fillStyle = backgroundColor;
+  ctx.fill();
+  ctx.fillStyle = textColor;
+  ctx.fillText(text, x + paddingX, y + 21);
+  ctx.restore();
+  return width;
+}
+
+async function renderQuestionToDataUrl(
+  question: PracticeQuestion,
+  index: number,
+): Promise<string | null> {
+  if (typeof document === "undefined") return null;
+  try {
+    await document.fonts?.ready;
+  } catch {
+    // ignore
+  }
+
+  const logicalWidth = 1080;
+  const outerPadding = 32;
+  const cardPaddingX = 56;
+  const cardPaddingY = 52;
+  const metaHeight = 42;
+  const promptGap = 30;
+  const promptLineHeight = 58;
+  const promptText = normalizeQuestionPromptForImage(question.prompt || "（题目为空）");
+
+  const probeCanvas = document.createElement("canvas");
+  const probeCtx = probeCanvas.getContext("2d");
+  if (!probeCtx) return null;
+  probeCtx.font = '500 38px system-ui, -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif';
+  const contentWidth = logicalWidth - outerPadding * 2 - cardPaddingX * 2;
+  const promptLines = wrapCanvasText(probeCtx, promptText, contentWidth);
+
+  const cardHeight = Math.max(
+    320,
+    cardPaddingY * 2 + metaHeight + promptGap + promptLines.length * promptLineHeight,
+  );
+  const logicalHeight = outerPadding * 2 + cardHeight;
+  const pixelRatio =
+    typeof window !== "undefined"
+      ? Math.max(1, Math.min(2, window.devicePixelRatio || 1))
+      : 1;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(logicalWidth * pixelRatio);
+  canvas.height = Math.round(logicalHeight * pixelRatio);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+
+  ctx.scale(pixelRatio, pixelRatio);
+  ctx.fillStyle = "#eef2ff";
+  ctx.fillRect(0, 0, logicalWidth, logicalHeight);
+
+  const cardX = outerPadding;
+  const cardY = outerPadding;
+  const cardWidth = logicalWidth - outerPadding * 2;
+
+  ctx.save();
+  ctx.shadowColor = "rgba(15, 23, 42, 0.08)";
+  ctx.shadowBlur = 24;
+  ctx.shadowOffsetY = 8;
+  pathRoundedRect(ctx, cardX, cardY, cardWidth, cardHeight, 30);
+  ctx.fillStyle = "#ffffff";
+  ctx.fill();
+  ctx.restore();
+
+  pathRoundedRect(ctx, cardX, cardY, cardWidth, cardHeight, 30);
+  ctx.strokeStyle = "#dbe4ff";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  let chipX = cardX + cardPaddingX;
+  const chipY = cardY + cardPaddingY;
+  chipX += drawQuestionImageTag(ctx, chipX, chipY, `第 ${index + 1} 题`, "#111827", "#ffffff") + 14;
+  chipX +=
+    drawQuestionImageTag(ctx, chipX, chipY, questionTypeLabel(question.type), "#ede9fe", "#6d28d9") +
+    14;
+  drawQuestionImageTag(ctx, chipX, chipY, `${question.points} 分`, "#e0f2fe", "#0f766e");
+
+  ctx.save();
+  ctx.font = '500 38px system-ui, -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif';
+  ctx.fillStyle = "#0f172a";
+  ctx.textBaseline = "top";
+  let textY = chipY + metaHeight + promptGap;
+  for (const line of promptLines) {
+    if (!line) {
+      textY += Math.round(promptLineHeight * 0.45);
+      continue;
+    }
+    ctx.fillText(line, cardX + cardPaddingX, textY);
+    textY += promptLineHeight;
+  }
+  ctx.restore();
+
+  return canvas.toDataURL("image/png");
+}
+
+async function copyPngDataUrlToClipboard(dataUrl: string): Promise<void> {
+  if (isTauriRuntime()) {
+    try {
+      await tauriInvoke("clipboard_write_png_base64", { pngBase64: dataUrl });
+      return;
+    } catch {
+      await tauriInvoke("clipboard_write_png_base64", { png_base64: dataUrl } as any);
+      return;
+    }
+  }
+
+  const clipboardWrite = (navigator.clipboard as any)?.write as
+    | undefined
+    | ((items: any[]) => Promise<void>);
+  const ClipboardItemCtor = (window as any).ClipboardItem as any;
+  if (!clipboardWrite || !ClipboardItemCtor) {
+    throw new Error("当前环境不支持图片复制");
+  }
+
+  const response = await fetch(dataUrl);
+  const blob = await response.blob();
+  await clipboardWrite([new ClipboardItemCtor({ "image/png": blob })]);
+}
+
+type PracticeInkAnswer = Extract<PracticeAnswer, { kind: "ink" }>;
+
+function newPracticeAnswerImageId(): string {
+  return `ans_img_${Math.random().toString(36).slice(2)}_${Date.now().toString(36)}`;
+}
+
+function getInkAnswer(answer?: PracticeAnswer): PracticeInkAnswer | null {
+  return answer?.kind === "ink" ? answer : null;
+}
+
+function getInkAnswerImages(answer?: PracticeAnswer): PracticeAnswerImage[] {
+  return getInkAnswer(answer)?.images ?? [];
+}
+
+function buildInkAnswer(
+  answer: PracticeAnswer | undefined,
+  patch: Partial<Pick<PracticeInkAnswer, "ink" | "images" | "summaryText">>,
+): PracticeInkAnswer {
+  const existingInkAnswer = getInkAnswer(answer);
+  return {
+    kind: "ink",
+    ink: patch.ink ?? existingInkAnswer?.ink ?? createEmptyInkState(),
+    summaryText: patch.summaryText ?? existingInkAnswer?.summaryText,
+    images: patch.images ?? existingInkAnswer?.images,
+  };
+}
+
+function mergePracticeAnswerImages(
+  existing: PracticeAnswerImage[],
+  incoming: PracticeAnswerImage[],
+): PracticeAnswerImage[] {
+  const seen = new Set(existing.map((image) => image.url));
+  const merged = [...existing];
+  for (const image of incoming) {
+    if (!image.url || seen.has(image.url)) continue;
+    seen.add(image.url);
+    merged.push(image);
+  }
+  return merged;
+}
+
+function clipboardDataHasImage(dataTransfer: DataTransfer | null): boolean {
+  if (!dataTransfer) return false;
+  const items = Array.from(dataTransfer.items ?? []);
+  if (items.some((item) => item.kind === "file" && item.type.startsWith("image/"))) {
+    return true;
+  }
+  return Array.from(dataTransfer.files ?? []).some((file) => file.type.startsWith("image/"));
+}
+
+function loadImageElement(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("加载图片失败"));
+    image.src = src;
+  });
+}
+
+async function createPracticeAnswerImageFromBlob(
+  blob: Blob,
+  fallbackName: string,
+): Promise<PracticeAnswerImage> {
+  if (blob.size > MAX_PASTED_ANSWER_IMAGE_BYTES) {
+    throw new Error(`图片过大，请选择小于 ${MAX_PASTED_ANSWER_IMAGE_BYTES / 1024 / 1024}MB 的图片`);
+  }
+
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    const image = await loadImageElement(objectUrl);
+    const scale =
+      Math.max(image.naturalWidth, image.naturalHeight) > MAX_PASTED_ANSWER_IMAGE_EDGE
+        ? MAX_PASTED_ANSWER_IMAGE_EDGE / Math.max(image.naturalWidth, image.naturalHeight)
+        : 1;
+    const width = Math.max(1, Math.round(image.naturalWidth * scale));
+    const height = Math.max(1, Math.round(image.naturalHeight * scale));
+
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      throw new Error("初始化图片画布失败");
+    }
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, width, height);
+    ctx.drawImage(image, 0, 0, width, height);
+
+    let url = canvas.toDataURL("image/jpeg", 0.9);
+    if (url.length > 2_400_000) {
+      url = canvas.toDataURL("image/jpeg", 0.82);
+    }
+
+    return {
+      id: newPracticeAnswerImageId(),
+      url,
+      name: fallbackName,
+      width,
+      height,
+    };
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+async function extractPracticeAnswerImagesFromDataTransfer(
+  dataTransfer: DataTransfer,
+): Promise<PracticeAnswerImage[]> {
+  const collected: Array<{ blob: Blob; name: string }> = [];
+
+  for (const item of Array.from(dataTransfer.items ?? [])) {
+    if (item.kind !== "file" || !item.type.startsWith("image/")) continue;
+    const file = item.getAsFile();
+    if (!file) continue;
+    collected.push({ blob: file, name: file.name || `粘贴图片 ${collected.length + 1}` });
+    if (collected.length >= MAX_PASTED_ANSWER_IMAGE_COUNT) break;
+  }
+
+  if (collected.length === 0) {
+    for (const file of Array.from(dataTransfer.files ?? [])) {
+      if (!file.type.startsWith("image/")) continue;
+      collected.push({ blob: file, name: file.name || `粘贴图片 ${collected.length + 1}` });
+      if (collected.length >= MAX_PASTED_ANSWER_IMAGE_COUNT) break;
+    }
+  }
+
+  const images: PracticeAnswerImage[] = [];
+  for (const item of collected) {
+    images.push(await createPracticeAnswerImageFromBlob(item.blob, item.name));
+  }
+  return images;
+}
+
+async function readPracticeAnswerImagesFromClipboard(): Promise<PracticeAnswerImage[]> {
+  const read = (navigator.clipboard as any)?.read as undefined | (() => Promise<any[]>);
+  if (!read) {
+    throw new Error("当前系统不支持直接读取剪贴板图片，请点击下方粘贴区后使用系统粘贴。");
+  }
+
+  const clipboardItems = await read();
+  const images: PracticeAnswerImage[] = [];
+  for (const item of clipboardItems) {
+    const types = Array.isArray(item?.types) ? item.types : [];
+    const imageType = types.find((type: unknown) => typeof type === "string" && type.startsWith("image/"));
+    if (!imageType) continue;
+    const blob = await item.getType(imageType);
+    images.push(await createPracticeAnswerImageFromBlob(blob, `剪贴板图片 ${images.length + 1}`));
+    if (images.length >= MAX_PASTED_ANSWER_IMAGE_COUNT) break;
+  }
+  return images;
+}
+
 function questionTypeLabel(t: PracticeQuestionType): string {
   if (t === "multiple_choice") return "选择题";
   if (t === "calculation") return "计算题";
@@ -199,6 +570,11 @@ export function PracticePage() {
 
   const [gradeBusy, setGradeBusy] = useState<Record<string, boolean>>({});
   const [gradeError, setGradeError] = useState<Record<string, string>>({});
+  const [copyQuestionImageBusy, setCopyQuestionImageBusy] = useState<Record<string, boolean>>({});
+  const [fullscreenPasteBusy, setFullscreenPasteBusy] = useState(false);
+  const [fullscreenPasteStatus, setFullscreenPasteStatus] = useState("");
+  const fullscreenPasteTargetRef = useRef<HTMLDivElement | null>(null);
+  const [copyQuestionImageFeedback, setCopyQuestionImageFeedback] = useState<Record<string, QuestionImageFeedback>>({});
   const [inkDrawBrushId, setInkDrawBrushId] = useState<string>(() => {
     const preferred = DRAWING_BRUSH_PRESETS.find((item) => item.id === DEFAULT_INK_BRUSH_ID);
     return preferred?.id ?? DRAWING_BRUSH_PRESETS[0]?.id ?? DEFAULT_INK_BRUSH_ID;
@@ -239,6 +615,11 @@ export function PracticePage() {
       setFullscreenInkTarget(null);
     }
   }, [fullscreenInkQuestion, fullscreenInkTarget]);
+
+  useEffect(() => {
+    setFullscreenPasteBusy(false);
+    setFullscreenPasteStatus("");
+  }, [fullscreenInkQuestion?.question.id]);
 
   const onGenerate = async () => {
     const t = topic.trim();
@@ -285,14 +666,157 @@ export function PracticePage() {
     }
   };
 
+  const copyQuestionAsImage = useCallback(async (question: PracticeQuestion, index: number) => {
+    setCopyQuestionImageBusy((prev) => ({ ...prev, [question.id]: true }));
+    setCopyQuestionImageFeedback((prev) => {
+      if (!(question.id in prev)) return prev;
+      const next = { ...prev };
+      delete next[question.id];
+      return next;
+    });
+
+    try {
+      const dataUrl = await renderQuestionToDataUrl(question, index);
+      if (!dataUrl) {
+        throw new Error("题图生成失败");
+      }
+      await copyPngDataUrlToClipboard(dataUrl);
+      setCopyQuestionImageFeedback((prev) => ({
+        ...prev,
+        [question.id]: { kind: "success", message: "题目已复制为图片" },
+      }));
+    } catch (error) {
+      const message = String(error instanceof Error ? error.message : error ?? "复制失败");
+      setCopyQuestionImageFeedback((prev) => ({
+        ...prev,
+        [question.id]: { kind: "error", message: `复制题图失败：${message}` },
+      }));
+    } finally {
+      setCopyQuestionImageBusy((prev) => ({ ...prev, [question.id]: false }));
+    }
+  }, []);
+
+  const appendFullscreenAnswerImages = useCallback(
+    (incomingImages: PracticeAnswerImage[]) => {
+      if (!quiz || !fullscreenInkQuestion || incomingImages.length === 0) return;
+
+      const currentImages = getInkAnswerImages(fullscreenInkQuestion.answer);
+      const merged = mergePracticeAnswerImages(currentImages, incomingImages);
+      const limited = merged.slice(0, MAX_PASTED_ANSWER_IMAGE_COUNT);
+      const addedCount = Math.max(0, limited.length - currentImages.length);
+
+      if (addedCount === 0) {
+        setFullscreenPasteStatus("剪贴板中的图片已存在，无需重复添加。");
+        return;
+      }
+
+      setAnswer(
+        quiz.id,
+        fullscreenInkQuestion.question.id,
+        buildInkAnswer(fullscreenInkQuestion.answer, { images: limited }),
+        { commit: true },
+      );
+      if (fullscreenInkQuestion.submitted) {
+        clearQuestionResult(quiz.id, fullscreenInkQuestion.question.id);
+      }
+      if (merged.length > MAX_PASTED_ANSWER_IMAGE_COUNT) {
+        setFullscreenPasteStatus(`最多保留 ${MAX_PASTED_ANSWER_IMAGE_COUNT} 张图片，已添加前 ${addedCount} 张。`);
+        return;
+      }
+      setFullscreenPasteStatus(`已添加 ${addedCount} 张图片答案。`);
+    },
+    [clearQuestionResult, fullscreenInkQuestion, quiz, setAnswer],
+  );
+
+  const importFullscreenPastedImages = useCallback(
+    async (dataTransfer: DataTransfer | null) => {
+      if (!dataTransfer) {
+        setFullscreenPasteStatus("未读取到剪贴板数据。");
+        return;
+      }
+      setFullscreenPasteBusy(true);
+      setFullscreenPasteStatus("");
+      try {
+        const images = await extractPracticeAnswerImagesFromDataTransfer(dataTransfer);
+        if (images.length === 0) {
+          setFullscreenPasteStatus("剪贴板里没有图片，请先复制图片后再试。");
+          return;
+        }
+        appendFullscreenAnswerImages(images);
+      } catch (error) {
+        setFullscreenPasteStatus(`粘贴图片失败：${String(error instanceof Error ? error.message : error ?? "未知错误")}`);
+      } finally {
+        setFullscreenPasteBusy(false);
+      }
+    },
+    [appendFullscreenAnswerImages],
+  );
+
+  const handleFullscreenPasteButton = useCallback(async () => {
+    setFullscreenPasteBusy(true);
+    setFullscreenPasteStatus("");
+    try {
+      const images = await readPracticeAnswerImagesFromClipboard();
+      if (images.length === 0) {
+        setFullscreenPasteStatus("剪贴板里没有图片，请先复制图片后再试。");
+        fullscreenPasteTargetRef.current?.focus();
+        return;
+      }
+      appendFullscreenAnswerImages(images);
+    } catch (error) {
+      fullscreenPasteTargetRef.current?.focus();
+      setFullscreenPasteStatus(String(error instanceof Error ? error.message : error ?? "读取剪贴板失败"));
+    } finally {
+      setFullscreenPasteBusy(false);
+    }
+  }, [appendFullscreenAnswerImages]);
+
+  const removeFullscreenAnswerImage = useCallback(
+    (imageId: string) => {
+      if (!quiz || !fullscreenInkQuestion) return;
+      const remaining = getInkAnswerImages(fullscreenInkQuestion.answer).filter((image) => image.id !== imageId);
+      setAnswer(
+        quiz.id,
+        fullscreenInkQuestion.question.id,
+        buildInkAnswer(fullscreenInkQuestion.answer, { images: remaining }),
+        { commit: true },
+      );
+      if (fullscreenInkQuestion.submitted) {
+        clearQuestionResult(quiz.id, fullscreenInkQuestion.question.id);
+      }
+      setFullscreenPasteStatus(remaining.length > 0 ? "已移除图片答案。" : "已移除最后一张图片答案。");
+    },
+    [clearQuestionResult, fullscreenInkQuestion, quiz, setAnswer],
+  );
+
+  useEffect(() => {
+    if (!fullscreenInkQuestion) return;
+    const handlePaste = (event: ClipboardEvent) => {
+      if (!clipboardDataHasImage(event.clipboardData)) return;
+      event.preventDefault();
+      void importFullscreenPastedImages(event.clipboardData);
+    };
+    document.addEventListener("paste", handlePaste);
+    return () => {
+      document.removeEventListener("paste", handlePaste);
+    };
+  }, [fullscreenInkQuestion, importFullscreenPastedImages]);
+
   const renderQuestion = (q: PracticeQuestion, index: number, quiz2: PracticeQuiz) => {
     const progress = quiz2.progress?.byQuestionId?.[q.id];
     const grading = progress?.grading;
     const answer = progress?.answer;
     const submitted = Boolean(progress?.submittedAt);
+    const answerImages = getInkAnswerImages(answer);
 
     const busy = Boolean(gradeBusy[q.id]);
     const err = gradeError[q.id] || "";
+    const copyBusy = Boolean(copyQuestionImageBusy[q.id]);
+    const copyFeedback = copyQuestionImageFeedback[q.id];
+    const copyError = copyFeedback?.kind === "error" ? copyFeedback.message : "";
+    const copySuccess = copyFeedback?.kind === "success";
+    const isFullscreenInkOpen =
+      fullscreenInkTarget?.quizId === quiz2.id && fullscreenInkTarget?.questionId === q.id;
 
     const submit = async () => {
       setGradeError((prev) => ({ ...prev, [q.id]: "" }));
@@ -310,12 +834,7 @@ export function PracticePage() {
         return;
       }
 
-      const text =
-        answer?.kind === "text"
-          ? answer.text
-          : answer?.kind === "ink"
-            ? answer.summaryText || ""
-            : "";
+      const text = answer?.kind === "text" ? answer.text : "";
 
       if (!isTauriRuntime()) {
         setGradeError((prev) => ({
@@ -326,15 +845,19 @@ export function PracticePage() {
       }
       if (busy) return;
 
-      const answerImage =
+      const renderedInkImage =
         answer?.kind === "ink"
           ? await renderInkToDataUrl(answer.ink)
           : null;
+      const studentAnswerImages = [
+        ...answerImages.map((image) => ({ type: "image" as const, url: image.url, detail: "high" as const })),
+        ...(renderedInkImage ? [{ type: "image" as const, url: renderedInkImage, detail: "high" as const }] : []),
+      ];
 
-      if (!text.trim() && !answerImage) {
+      if (!text.trim() && studentAnswerImages.length === 0) {
         setGradeError((prev) => ({
           ...prev,
-          [q.id]: "请先填写总结，或在手写区作答后再提交",
+          [q.id]: "请先在手写区作答、填写文字答案，或粘贴图片后再提交",
         }));
         return;
       }
@@ -344,9 +867,7 @@ export function PracticePage() {
         const res = await gradePracticeAnswer(tauriInvoke as any, {
           question: q,
           studentAnswer: text,
-          studentAnswerImages: answerImage
-            ? [{ type: "image", url: answerImage, detail: "high" }]
-            : undefined,
+          studentAnswerImages: studentAnswerImages.length > 0 ? studentAnswerImages : undefined,
         });
         setGrading(quiz2.id, q.id, res);
       } catch (e: any) {
@@ -365,15 +886,32 @@ export function PracticePage() {
       <div key={q.id} className="rounded-2xl border border-white/10 bg-white/5 p-4 overflow-x-hidden">
         <div className="flex items-start gap-3">
           <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <div className="text-sm font-semibold text-white">
                 {index + 1}. {questionTypeLabel(q.type)}
               </div>
               <div className="text-xs text-white/50">{q.points} 分</div>
+              {q.type !== "multiple_choice" ? (
+                <button
+                  type="button"
+                  className={clsx(
+                    "ml-auto h-8 px-3 rounded-lg border text-xs transition-colors disabled:opacity-60",
+                    copySuccess
+                      ? "border-emerald-300/30 bg-emerald-500/15 text-emerald-100"
+                      : "border-white/10 bg-white/5 text-white/80 hover:bg-white/10",
+                  )}
+                  onClick={() => void copyQuestionAsImage(q, index)}
+                  disabled={copyBusy}
+                  title="复制题目为图片"
+                >
+                  {copyBusy ? "生成中…" : copySuccess ? "已复制" : "复制题图"}
+                </button>
+              ) : null}
             </div>
             <div className="mt-2 text-sm text-white/90 max-w-full overflow-x-hidden">
               <RichText content={q.prompt || "（题目为空）"} />
             </div>
+            {copyError ? <div className="mt-2 text-xs text-amber-200">{copyError}</div> : null}
 
           </div>
 
@@ -424,10 +962,14 @@ export function PracticePage() {
               autoCorrect="off"
               spellCheck={false}
             />
+          ) : isFullscreenInkOpen ? (
+            <div className="rounded-xl border border-indigo-400/30 bg-indigo-500/10 px-3 py-3 text-sm text-indigo-100">
+              当前题目正在全屏作答，请在全屏面板中继续书写。
+            </div>
           ) : (
             <>
               <div className="flex items-center justify-between">
-                <div className="text-xs text-white/50">手写作答</div>
+                <div className="text-xs text-white/50">手写 / 图片作答</div>
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
@@ -438,37 +980,30 @@ export function PracticePage() {
                   </button>
                 </div>
               </div>
+              {answerImages.length > 0 ? (
+                <div className="grid grid-cols-2 gap-2">
+                  {answerImages.map((image) => (
+                    <div key={image.id} className="overflow-hidden rounded-xl border border-white/10 bg-black/20">
+                      <img
+                        src={image.url}
+                        alt={image.name || "图片答案"}
+                        className="h-28 w-full object-cover"
+                      />
+                      <div className="truncate px-2 py-1 text-[11px] text-white/65">
+                        {image.name || "图片答案"}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
               <div className="h-56">
-                <ScrollableInkPad
+                <InkPreview
                   value={answer?.kind === "ink" ? answer.ink : createEmptyInkState()}
-                  onChange={(nextInk) => {
-                    setInkDraft(quiz2.id, q.id, nextInk, {
-                      summaryText: answer?.kind === "ink" ? answer.summaryText : "",
-                      commit: true,
-                    });
-                    if (submitted) clearQuestionResult(quiz2.id, q.id);
-                  }}
                   viewportClassName="border-white/15"
                   template={inkTemplate}
-                  tool={activeInkBrush.tool}
-                  brushId={activeInkBrush.id}
-                  penColor={inkPenColor}
-                  penSize={inkPenSize}
+                  swallowInteractions
                 />
               </div>
-              <textarea
-                className="w-full min-h-[96px] rounded-xl bg-black/20 border border-white/10 px-3 py-2 text-[16px] leading-5 outline-none focus:border-indigo-400"
-                value={answer?.kind === "ink" ? answer.summaryText || "" : ""}
-                onChange={(e) => {
-                  const ink = answer?.kind === "ink" ? answer.ink : createEmptyInkState();
-                  setInkDraft(quiz2.id, q.id, ink, { summaryText: e.target.value, commit: true });
-                  if (submitted) clearQuestionResult(quiz2.id, q.id);
-                }}
-                placeholder="答案总结（用于批改，可写关键步骤/结论）…"
-                autoCapitalize="none"
-                autoCorrect="off"
-                spellCheck={false}
-              />
             </>
           )}
 
@@ -744,6 +1279,15 @@ export function PracticePage() {
                   {item.label}
                 </button>
               ))}
+
+              <button
+                type="button"
+                className="ml-auto h-8 px-3 rounded-md border border-emerald-300/25 bg-emerald-500/15 text-xs text-emerald-100 disabled:opacity-60"
+                onClick={() => void handleFullscreenPasteButton()}
+                disabled={fullscreenPasteBusy}
+              >
+                {fullscreenPasteBusy ? "读取中…" : "粘贴图片"}
+              </button>
             </div>
           </div>
 
@@ -754,15 +1298,73 @@ export function PracticePage() {
             </div>
           </div>
 
+          <div className="px-3 py-2 border-b border-white/10 bg-black/10">
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-xs text-white/60">图片答案</div>
+              <div className="text-[11px] text-white/45">支持系统粘贴或按钮读取剪贴板</div>
+            </div>
+            <div
+              ref={fullscreenPasteTargetRef}
+              contentEditable
+              suppressContentEditableWarning
+              role="textbox"
+              tabIndex={0}
+              className="mt-2 rounded-xl border border-dashed border-white/15 bg-white/5 px-3 py-2 text-xs text-white/55 outline-none focus:border-emerald-300/50 focus:bg-emerald-500/10"
+              onPaste={(event) => {
+                event.preventDefault();
+                void importFullscreenPastedImages(event.clipboardData);
+              }}
+              onInput={(event) => {
+                event.currentTarget.textContent = "";
+              }}
+            >
+              点击这里后使用系统粘贴图片，或直接点上方“粘贴图片”。
+            </div>
+            {fullscreenPasteStatus ? (
+              <div
+                className={clsx(
+                  "mt-2 text-[11px]",
+                  /失败|没有|不支持|未读取/.test(fullscreenPasteStatus)
+                    ? "text-amber-200"
+                    : "text-emerald-100/90",
+                )}
+              >
+                {fullscreenPasteStatus}
+              </div>
+            ) : null}
+            {getInkAnswerImages(fullscreenInkQuestion.answer).length > 0 ? (
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                {getInkAnswerImages(fullscreenInkQuestion.answer).map((image) => (
+                  <div key={image.id} className="overflow-hidden rounded-xl border border-white/10 bg-black/20">
+                    <img
+                      src={image.url}
+                      alt={image.name || "图片答案"}
+                      className="h-28 w-full object-cover"
+                    />
+                    <div className="flex items-center justify-between gap-2 px-2 py-2">
+                      <div className="min-w-0 truncate text-[11px] text-white/65">
+                        {image.name || "图片答案"}
+                      </div>
+                      <button
+                        type="button"
+                        className="h-7 shrink-0 rounded-md border border-white/10 bg-white/5 px-2 text-[11px] text-white/75"
+                        onClick={() => removeFullscreenAnswerImage(image.id)}
+                      >
+                        移除
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+
           <div className="flex-1 min-h-0 px-3 py-3 overflow-hidden">
             <ScrollableInkPad
               className="h-full"
-              value={fullscreenInkQuestion.answer?.kind === "ink" ? fullscreenInkQuestion.answer.ink : createEmptyInkState()}
+              value={getInkAnswer(fullscreenInkQuestion.answer)?.ink ?? createEmptyInkState()}
               onChange={(nextInk) => {
-                setInkDraft(quiz.id, fullscreenInkQuestion.question.id, nextInk, {
-                  summaryText: fullscreenInkQuestion.answer?.kind === "ink" ? fullscreenInkQuestion.answer.summaryText : "",
-                  commit: true,
-                });
+                setInkDraft(quiz.id, fullscreenInkQuestion.question.id, nextInk, { commit: true });
                 if (fullscreenInkQuestion.submitted) clearQuestionResult(quiz.id, fullscreenInkQuestion.question.id);
               }}
               viewportClassName="border-white/15"
@@ -774,31 +1376,6 @@ export function PracticePage() {
             />
           </div>
 
-          <div
-            className="border-t border-white/10 bg-black/20 px-3 pt-2"
-            style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 12px)" }}
-          >
-            <div className="text-xs text-white/60 mb-1">答案总结（用于批改）</div>
-            <textarea
-              className="w-full min-h-[92px] rounded-xl bg-black/20 border border-white/10 px-3 py-2 text-[16px] leading-5 outline-none focus:border-indigo-400"
-              value={fullscreenInkQuestion.answer?.kind === "ink" ? fullscreenInkQuestion.answer.summaryText || "" : ""}
-              onChange={(e) => {
-                const ink =
-                  fullscreenInkQuestion.answer?.kind === "ink"
-                    ? fullscreenInkQuestion.answer.ink
-                    : createEmptyInkState();
-                setInkDraft(quiz.id, fullscreenInkQuestion.question.id, ink, {
-                  summaryText: e.target.value,
-                  commit: true,
-                });
-                if (fullscreenInkQuestion.submitted) clearQuestionResult(quiz.id, fullscreenInkQuestion.question.id);
-              }}
-              placeholder="可写关键步骤/结论，方便自动批改…"
-              autoCapitalize="none"
-              autoCorrect="off"
-              spellCheck={false}
-            />
-          </div>
         </div>
       ) : null}
     </>

@@ -46,7 +46,7 @@ import { openOrFocusWorkstudioWindow } from '../../utils/viewWindow';
 import { openWorkstudioFileInWorkspace } from '../../utils/workstudioOpenFile';
 import { WorkstudioSecurityModal } from './WorkstudioSecurityModal';
 import type { WebSearchProvider } from './WebSearchToggle';
-import { ChatOutlinePanel, type ChatOutlineItem } from './ChatOutlinePanel';
+import { ChatOutlinePanel, type ChatOutlineDisplayMode, type ChatOutlineItem } from './ChatOutlinePanel';
 import { stripAnsi } from '../../utils/stripAnsi';
 
 interface ChatViewProps {
@@ -57,6 +57,18 @@ interface ChatViewProps {
 }
 
 const EMPTY_PTY_SESSIONS: PtySessionInfo[] = [];
+const CHAT_OUTLINE_DISPLAY_MODE_STORAGE_KEY = 'tauri-ai:chat:outline-display-mode:v1';
+
+function loadChatOutlineDisplayMode(): ChatOutlineDisplayMode {
+  if (typeof window === 'undefined') return 'sidebar';
+  try {
+    return window.localStorage.getItem(CHAT_OUTLINE_DISPLAY_MODE_STORAGE_KEY) === 'overlay'
+      ? 'overlay'
+      : 'sidebar';
+  } catch {
+    return 'sidebar';
+  }
+}
 
 export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false, streamVisibilityTier = 'hidden' }) => {
   // Get session from SessionStore
@@ -102,6 +114,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
   const [showToolSessions, setShowToolSessions] = useState(false);
   const [selectedRequestMessageId, setSelectedRequestMessageId] = useState<string | null>(null);
   const [outlineOpen, setOutlineOpen] = useState(false);
+  const [outlineDisplayMode, setOutlineDisplayMode] = useState<ChatOutlineDisplayMode>(() => loadChatOutlineDisplayMode());
   const [editingQueueMessageId, setEditingQueueMessageId] = useState<string | null>(null);
   const [editingQueueContent, setEditingQueueContent] = useState('');
 
@@ -111,6 +124,15 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
   const streamViewerIdRef = useRef<string>(crypto.randomUUID());
   const outlineToggleButtonRef = useRef<HTMLButtonElement>(null);
   const chatOpenProfileScheduledRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(CHAT_OUTLINE_DISPLAY_MODE_STORAGE_KEY, outlineDisplayMode);
+    } catch {
+      // ignore
+    }
+  }, [outlineDisplayMode]);
 
   // 仅对“当前聚焦 Pane 的激活会话”自动聚焦，避免 keep-alive 多会话同时挂载时互相抢焦点。
   useEffect(() => {
@@ -791,6 +813,17 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
 
   useEffect(() => {
     if (!outlineOpen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOutlineOpen(false);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [outlineOpen]);
+
+  useEffect(() => {
+    if (!outlineOpen || outlineDisplayMode !== 'overlay') return;
     const handlePointerDown = (event: MouseEvent | TouchEvent) => {
       const target = event.target as Node | null;
       if (!target) return;
@@ -798,18 +831,13 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
       if (outlineToggleButtonRef.current?.contains(target)) return;
       setOutlineOpen(false);
     };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOutlineOpen(false);
-    };
     document.addEventListener('mousedown', handlePointerDown);
     document.addEventListener('touchstart', handlePointerDown);
-    window.addEventListener('keydown', handleKeyDown);
     return () => {
       document.removeEventListener('mousedown', handlePointerDown);
       document.removeEventListener('touchstart', handlePointerDown);
-      window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [outlineOpen]);
+  }, [outlineDisplayMode, outlineOpen]);
 
   useEffect(() => {
     if (!workstudioMenuOpen) return;
@@ -1723,6 +1751,23 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
                   {outlineItems.length}
                 </span>
               </button>
+              <button
+                type="button"
+                onClick={() =>
+                  setOutlineDisplayMode((mode) => (mode === 'sidebar' ? 'overlay' : 'sidebar'))
+                }
+                className={[
+                  'order-first rounded border border-transparent px-2 py-1 text-[11px] text-gray-500 hover:bg-gray-100',
+                  'dark:text-gray-300 dark:hover:bg-gray-800',
+                ].join(' ')}
+                title={
+                  outlineDisplayMode === 'sidebar'
+                    ? '目录当前为侧栏模式，点击切换为浮层'
+                    : '目录当前为浮层模式，点击切换为侧栏'
+                }
+              >
+                {outlineDisplayMode === 'sidebar' ? '侧栏' : '浮层'}
+              </button>
             </div>
           </div>
 
@@ -1756,6 +1801,20 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
         </div>
       )}
       <div className="relative flex flex-1 min-h-0 overflow-hidden">
+        {outlineDisplayMode === 'sidebar' ? (
+          <div ref={outlinePanelRef} className="h-full flex-shrink-0">
+            <ChatOutlinePanel
+              items={outlineItems}
+              selectedMessageId={selectedRequestMessageId}
+              selectedFullText={selectedOutlineFullText}
+              isOpen={outlineOpen}
+              displayMode={outlineDisplayMode}
+              onToggle={() => setOutlineOpen((v) => !v)}
+              onSelect={handleSelectOutline}
+            />
+          </div>
+        ) : null}
+
         <div className="flex min-w-0 flex-1 flex-col">
           {chatWithScope && (
             <div className="border-b border-blue-100 bg-blue-50/70 px-4 py-3 text-xs dark:border-blue-900/40 dark:bg-blue-950/30">
@@ -1809,18 +1868,22 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
             />
           </React.Profiler>
         </div>
-        <div className="absolute inset-y-0 left-0 z-30">
-          <div ref={outlinePanelRef} className="h-full">
-            <ChatOutlinePanel
-              items={outlineItems}
-              selectedMessageId={selectedRequestMessageId}
-              selectedFullText={selectedOutlineFullText}
-              isOpen={outlineOpen}
-              onToggle={() => setOutlineOpen((v) => !v)}
-              onSelect={handleSelectOutline}
-            />
+
+        {outlineDisplayMode === 'overlay' ? (
+          <div className="pointer-events-none absolute inset-y-3 left-3 z-30 flex max-w-[calc(100%-1.5rem)]">
+            <div ref={outlinePanelRef} className="pointer-events-auto h-full">
+              <ChatOutlinePanel
+                items={outlineItems}
+                selectedMessageId={selectedRequestMessageId}
+                selectedFullText={selectedOutlineFullText}
+                isOpen={outlineOpen}
+                displayMode={outlineDisplayMode}
+                onToggle={() => setOutlineOpen((v) => !v)}
+                onSelect={handleSelectOutline}
+              />
+            </div>
           </div>
-        </div>
+        ) : null}
       </div>
       {/* Conversation total token usage */}
       {showUsage && totalUsage && (
