@@ -2882,7 +2882,7 @@ export const MessageBlocks: React.FC<{
         );
       }
       const deferHeavy = Boolean(opts?.deferHeavy) && !isStreaming;
-      return <DeferredMarkdown content={block.text} conversationId={conversationId} immediate={!deferHeavy} minDelayMs={deferHeavy ? 220 : 0} />;
+      return <DeferredMarkdown content={block.text} conversationId={conversationId} isStreaming={isStreaming} immediate={!deferHeavy} minDelayMs={deferHeavy ? 220 : 0} />;
     }
 
     if (block.type === 'tool_call') {

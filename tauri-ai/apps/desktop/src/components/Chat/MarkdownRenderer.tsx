@@ -258,6 +258,63 @@ interface MarkdownRendererProps {
   content: string;
   conversationId?: string | null;
   workstudioId?: string | null;
+  isStreaming?: boolean;
+}
+
+type StreamingMermaidRenderState = {
+  stableContent: string;
+  hasPendingMermaidFence: boolean;
+};
+
+function getStreamingMermaidRenderState(content: string): StreamingMermaidRenderState {
+  const source = (content ?? '').replace(/\r\n/g, '\n');
+  if (!source) {
+    return { stableContent: '', hasPendingMermaidFence: false };
+  }
+
+  const lines = source.split('\n');
+  let offset = 0;
+  let activeFenceMarkerChar: '`' | '~' | null = null;
+  let activeFenceMarkerLength = 0;
+  let activeFenceIsMermaid = false;
+  let activeFenceStartOffset = -1;
+
+  for (const line of lines) {
+    const openFenceMatch = line.match(/^[ \t]{0,3}(`{3,}|~{3,})(.*)$/);
+    const closeFenceMatch = line.match(/^[ \t]{0,3}(`{3,}|~{3,})[ \t]*$/);
+
+    if (!activeFenceMarkerChar) {
+      if (openFenceMatch) {
+        const marker = openFenceMatch[1] ?? '';
+        const info = (openFenceMatch[2] ?? '').trim().toLowerCase();
+        const language = info.split(/\s+/)[0] ?? '';
+
+        activeFenceMarkerChar = marker[0] as '`' | '~';
+        activeFenceMarkerLength = marker.length;
+        activeFenceIsMermaid = language === 'mermaid';
+        activeFenceStartOffset = offset;
+      }
+    } else if (closeFenceMatch) {
+      const marker = closeFenceMatch[1] ?? '';
+      if (marker[0] === activeFenceMarkerChar && marker.length >= activeFenceMarkerLength) {
+        activeFenceMarkerChar = null;
+        activeFenceMarkerLength = 0;
+        activeFenceIsMermaid = false;
+        activeFenceStartOffset = -1;
+      }
+    }
+
+    offset += line.length + 1;
+  }
+
+  if (activeFenceMarkerChar && activeFenceIsMermaid && activeFenceStartOffset >= 0) {
+    return {
+      stableContent: source.slice(0, activeFenceStartOffset),
+      hasPendingMermaidFence: true,
+    };
+  }
+
+  return { stableContent: source, hasPendingMermaidFence: false };
 }
 
 interface CodeBlockProps {
@@ -1073,15 +1130,28 @@ const MermaidBlock = React.memo(function MermaidBlock({ code, tryOpenFileReferen
   );
 });
 
+const PendingMermaidBlock = React.memo(function PendingMermaidBlock() {
+  return (
+    <div className="my-2 rounded-lg border border-dashed border-sky-300 bg-sky-50/80 px-4 py-3 text-sky-700 dark:border-sky-700 dark:bg-sky-950/30 dark:text-sky-200">
+      <div className="text-sm font-medium">图表准备中</div>
+      <div className="mt-1 text-xs opacity-80">检测到 Mermaid 图表仍在流式输出，完成后自动渲染。</div>
+    </div>
+  );
+});
+
 // ============================================================================
 // Main MarkdownRenderer Component
 // ============================================================================
 
-export const MarkdownRenderer = React.memo(function MarkdownRendererImpl({ content, conversationId, workstudioId }: MarkdownRendererProps) {
+export const MarkdownRenderer = React.memo(function MarkdownRendererImpl({ content, conversationId, workstudioId, isStreaming = false }: MarkdownRendererProps) {
   // 高频更新（例如 streaming）时，markdown 解析/高亮很容易成为主线程热点。
   // 用 deferred value 把昂贵的渲染降为低优先级，减少“每次增量都重解析”的抖动。
   const deferredContent = useDeferredValue(content);
   const renderContent = content.length > 800 ? deferredContent : content;
+  const streamingMermaidState = useMemo(
+    () => (isStreaming ? getStreamingMermaidRenderState(renderContent) : { stableContent: renderContent, hasPendingMermaidFence: false }),
+    [isStreaming, renderContent]
+  );
 
   const openFileReference = useCallback(async (ref: ParsedFileReference) => {
     if (!isTauriRuntime()) return;
@@ -1442,6 +1512,7 @@ export const MarkdownRenderer = React.memo(function MarkdownRendererImpl({ conte
                   content={bodyText}
                   conversationId={conversationId}
                   workstudioId={workstudioId}
+                  isStreaming={isStreaming}
                 />
               )}
               {bodyNodes.length > 0 && <div className={hasBodyMarkdown ? 'mt-2' : ''}>{bodyNodes}</div>}
@@ -1472,7 +1543,10 @@ export const MarkdownRenderer = React.memo(function MarkdownRendererImpl({ conte
 
   return (
     <div className="prose prose-sm max-w-none dark:prose-invert prose-pre:bg-transparent prose-pre:p-0">
-      <CommonMarkdown content={renderContent} components={components} />
+      {streamingMermaidState.stableContent.trim().length > 0 ? (
+        <CommonMarkdown content={streamingMermaidState.stableContent} components={components} />
+      ) : null}
+      {streamingMermaidState.hasPendingMermaidFence ? <PendingMermaidBlock /> : null}
     </div>
   );
 });

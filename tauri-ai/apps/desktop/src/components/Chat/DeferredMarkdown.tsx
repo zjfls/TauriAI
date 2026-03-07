@@ -5,6 +5,7 @@ export type DeferredMarkdownProps = {
   content: string;
   conversationId?: string | null;
   workstudioId?: string | null;
+  isStreaming?: boolean;
   /**
    * 是否立即渲染（用于 streaming / 用户主动展开时）。
    */
@@ -25,6 +26,7 @@ export const DeferredMarkdown: React.FC<DeferredMarkdownProps> = React.memo(func
   content,
   conversationId,
   workstudioId,
+  isStreaming = false,
   immediate = false,
   minDelayMs = 0,
   previewChars = 2000,
@@ -55,7 +57,7 @@ export const DeferredMarkdown: React.FC<DeferredMarkdownProps> = React.memo(func
   }, [content, previewChars]);
 
   if (ready) {
-    return <MarkdownRenderer content={content} conversationId={conversationId} workstudioId={workstudioId} />;
+    return <MarkdownRenderer content={content} conversationId={conversationId} workstudioId={workstudioId} isStreaming={isStreaming} />;
   }
 
   return (

@@ -18,7 +18,7 @@ import { DragGhostView } from './components/DragGhost/DragGhostView';
 import { JsonAnalyzerView } from './components/Json/JsonAnalyzerView';
 import { useConfigStore } from './stores/configStore';
 import { useConversationStore } from './stores/conversationStore';
-import { useSessionStore, initStreamListeners } from './stores/sessionStore';
+import { useSessionStore, initStreamListeners, setGlobalChatStreamVisibility } from './stores/sessionStore';
 import { useDocumentStore } from './stores/documentStore';
 import { useWebTabStore } from './stores/webTabStore';
 import { useTerminalTabStore } from './stores/terminalTabStore';
@@ -1414,6 +1414,13 @@ function App() {
   const resolvedView = activeView;
   const viewDef = getViewDefinition(resolvedView) || getViewDefinition('chat');
   const isChatActive = (viewDef?.id ?? 'chat') === 'chat';
+
+  useEffect(() => {
+    setGlobalChatStreamVisibility(isChatActive);
+    return () => {
+      setGlobalChatStreamVisibility(true);
+    };
+  }, [isChatActive]);
 
   useEffect(() => {
     if (!viewOverride) return;

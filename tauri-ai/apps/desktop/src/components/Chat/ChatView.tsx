@@ -10,7 +10,12 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { Folder, ChevronDown, Shield, ListOrdered, ArrowUp, ArrowDown, Pencil, Trash2, Check, X } from 'lucide-react';
-import { useSessionStore } from '../../stores/sessionStore';
+import {
+  clearSessionStreamViewerVisibility,
+  setSessionStreamViewerVisibility,
+  type SessionStreamVisibilityTier,
+  useSessionStore,
+} from '../../stores/sessionStore';
 import { useConfigStore } from '../../stores/configStore';
 import { MessageList, type MessageListHandle } from './MessageList';
 import { InputArea, type InputAreaHandle } from './InputArea';
@@ -47,11 +52,12 @@ interface ChatViewProps {
   sessionId: string | null;
   /** 仅在“当前聚焦 Pane 的激活会话”里自动聚焦输入框（避免 keep-alive 多实例抢焦点） */
   autoFocus?: boolean;
+  streamVisibilityTier?: SessionStreamVisibilityTier;
 }
 
 const EMPTY_PTY_SESSIONS: PtySessionInfo[] = [];
 
-export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false }) => {
+export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false, streamVisibilityTier = 'hidden' }) => {
   // Get session from SessionStore
 		  const {
 		    session,
@@ -101,6 +107,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
   const inputRef = useRef<InputAreaHandle>(null);
   const messageListRef = useRef<MessageListHandle>(null);
   const outlinePanelRef = useRef<HTMLDivElement>(null);
+  const streamViewerIdRef = useRef<string>(crypto.randomUUID());
   const outlineToggleButtonRef = useRef<HTMLButtonElement>(null);
   const chatOpenProfileScheduledRef = useRef<string | null>(null);
 
@@ -114,6 +121,15 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
     }
     focus();
   }, [autoFocus, sessionId]);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    const viewerId = streamViewerIdRef.current;
+    setSessionStreamViewerVisibility(sessionId, viewerId, streamVisibilityTier);
+    return () => {
+      clearSessionStreamViewerVisibility(sessionId, viewerId);
+    };
+  }, [sessionId, streamVisibilityTier]);
 
   // 允许把文件/文本拖拽到聊天窗口（消息列表）时，直接追加到输入框里
   const handleDropFilesToInput = useCallback((files: FileList | File[]) => {

@@ -3066,12 +3066,26 @@ let listenersInitialized = false;
 // Streaming UI update throttling
 // - Token events can be very frequent; updating React/Zustand on every token will
 //   cause excessive re-renders. We buffer tokens and flush at a fixed rate.
-// - 调整刷新频率：把 STREAM_UI_UPDATE_FPS 改成 2 或 3 即可（2=每秒2次，3=每秒3次）
+// - 不同可见级别采用不同刷新上限：激活 15fps、可见未激活 6fps、隐藏 1fps。
 // ============================================================================
-const STREAM_UI_UPDATE_FPS = 20;
-const STREAM_UI_UPDATE_INTERVAL_MS = Math.round(1000 / STREAM_UI_UPDATE_FPS);
+export type SessionStreamVisibilityTier = 'hidden' | 'visible' | 'active';
+
+const STREAM_UI_UPDATE_ACTIVE_FPS = 15;
+const STREAM_UI_UPDATE_VISIBLE_FPS = 6;
+const STREAM_UI_UPDATE_HIDDEN_FPS = 1;
+const STREAM_UI_UPDATE_INTERVAL_MS_BY_TIER: Record<SessionStreamVisibilityTier, number> = {
+  active: Math.round(1000 / STREAM_UI_UPDATE_ACTIVE_FPS),
+  visible: Math.round(1000 / STREAM_UI_UPDATE_VISIBLE_FPS),
+  hidden: Math.round(1000 / STREAM_UI_UPDATE_HIDDEN_FPS),
+};
+const STREAM_VISIBILITY_WEIGHT: Record<SessionStreamVisibilityTier, number> = {
+  hidden: 0,
+  visible: 1,
+  active: 2,
+};
 
 type PendingStreamChunks = {
+  queuedAtMs: number;
   // key: uiBlockId（turnId:blockId）
   blocks: Map<
     string,
@@ -3095,7 +3109,63 @@ type ChatDockRequestPayload = {
 };
 
 const pendingStreamChunksBySessionId = new Map<string, PendingStreamChunks>();
+const sessionStreamViewerVisibilityBySessionId = new Map<string, Map<string, SessionStreamVisibilityTier>>();
+let globalChatStreamVisibility = true;
 let streamFlushTimeout: ReturnType<typeof setTimeout> | null = null;
+let scheduledStreamFlushAtMs: number | null = null;
+
+const getSessionStreamVisibilityTier = (sessionId: string): SessionStreamVisibilityTier => {
+  if (!globalChatStreamVisibility) return 'hidden';
+
+  const viewers = sessionStreamViewerVisibilityBySessionId.get(sessionId);
+  if (!viewers || viewers.size === 0) return 'hidden';
+
+  let best: SessionStreamVisibilityTier = 'hidden';
+  for (const tier of viewers.values()) {
+    if (STREAM_VISIBILITY_WEIGHT[tier] > STREAM_VISIBILITY_WEIGHT[best]) {
+      best = tier;
+      if (best === 'active') break;
+    }
+  }
+  return best;
+};
+
+const getSessionStreamUpdateIntervalMs = (sessionId: string): number => {
+  return STREAM_UI_UPDATE_INTERVAL_MS_BY_TIER[getSessionStreamVisibilityTier(sessionId)];
+};
+
+export const setGlobalChatStreamVisibility = (visible: boolean) => {
+  if (globalChatStreamVisibility === visible) return;
+  globalChatStreamVisibility = visible;
+  if (pendingStreamChunksBySessionId.size > 0) scheduleStreamFlush();
+};
+
+export const setSessionStreamViewerVisibility = (
+  sessionId: string,
+  viewerId: string,
+  tier: SessionStreamVisibilityTier
+) => {
+  if (!sessionId || !viewerId) return;
+  let viewers = sessionStreamViewerVisibilityBySessionId.get(sessionId);
+  if (!viewers) {
+    viewers = new Map<string, SessionStreamVisibilityTier>();
+    sessionStreamViewerVisibilityBySessionId.set(sessionId, viewers);
+  }
+  if (viewers.get(viewerId) === tier) return;
+  viewers.set(viewerId, tier);
+  if (pendingStreamChunksBySessionId.size > 0) scheduleStreamFlush();
+};
+
+export const clearSessionStreamViewerVisibility = (sessionId: string, viewerId: string) => {
+  if (!sessionId || !viewerId) return;
+  const viewers = sessionStreamViewerVisibilityBySessionId.get(sessionId);
+  if (!viewers) return;
+  viewers.delete(viewerId);
+  if (viewers.size === 0) {
+    sessionStreamViewerVisibilityBySessionId.delete(sessionId);
+  }
+  if (pendingStreamChunksBySessionId.size > 0) scheduleStreamFlush();
+};
 
 type StreamingTurnsById = Map<string, MessageTurn>;
 const streamingTurnIndexBySessionId = new Map<string, Map<string, number>>();
@@ -3125,7 +3195,7 @@ const clearTurnIndexesForSession = (sessionId: string) => {
 const getOrCreatePendingChunks = (sessionId: string): PendingStreamChunks => {
   let chunks = pendingStreamChunksBySessionId.get(sessionId);
   if (!chunks) {
-    chunks = { blocks: new Map() };
+    chunks = { queuedAtMs: Date.now(), blocks: new Map() };
     pendingStreamChunksBySessionId.set(sessionId, chunks);
   }
   return chunks;
@@ -3133,13 +3203,37 @@ const getOrCreatePendingChunks = (sessionId: string): PendingStreamChunks => {
 
 const clearPendingChunks = (sessionId: string) => {
   pendingStreamChunksBySessionId.delete(sessionId);
+  if (pendingStreamChunksBySessionId.size === 0 && streamFlushTimeout) {
+    clearTimeout(streamFlushTimeout);
+    streamFlushTimeout = null;
+    scheduledStreamFlushAtMs = null;
+  }
 };
 
-const flushPendingStreamChunks = () => {
+type FlushPendingStreamOptions = {
+  nowMs?: number;
+  forceSessionIds?: Set<string> | null;
+};
+
+const flushPendingStreamChunks = (options: FlushPendingStreamOptions = {}) => {
   if (pendingStreamChunksBySessionId.size === 0) return;
 
-  const snapshot = Array.from(pendingStreamChunksBySessionId.entries());
-  pendingStreamChunksBySessionId.clear();
+  const nowMs = options.nowMs ?? Date.now();
+  const snapshot: Array<[string, PendingStreamChunks]> = [];
+
+  for (const [sessionId, chunks] of pendingStreamChunksBySessionId.entries()) {
+    const forced = options.forceSessionIds?.has(sessionId) ?? false;
+    if (!forced) {
+      const intervalMs = getSessionStreamUpdateIntervalMs(sessionId);
+      const ageMs = nowMs - chunks.queuedAtMs;
+      if (ageMs < intervalMs) continue;
+    }
+
+    snapshot.push([sessionId, chunks]);
+    pendingStreamChunksBySessionId.delete(sessionId);
+  }
+
+  if (snapshot.length === 0) return;
 
   useSessionStore.setState((state) => {
     let updated = false;
@@ -3428,17 +3522,58 @@ const flushPendingStreamChunks = () => {
   });
 };
 
+const getNextStreamFlushDelayMs = (nowMs: number): number | null => {
+  let nextDelayMs: number | null = null;
+
+  for (const [sessionId, chunks] of pendingStreamChunksBySessionId.entries()) {
+    const intervalMs = getSessionStreamUpdateIntervalMs(sessionId);
+    const ageMs = nowMs - chunks.queuedAtMs;
+    const delayMs = Math.max(0, intervalMs - ageMs);
+    if (nextDelayMs === null || delayMs < nextDelayMs) {
+      nextDelayMs = delayMs;
+    }
+  }
+
+  return nextDelayMs;
+};
+
 const scheduleStreamFlush = () => {
-  if (streamFlushTimeout) return;
+  if (pendingStreamChunksBySessionId.size === 0) {
+    if (streamFlushTimeout) {
+      clearTimeout(streamFlushTimeout);
+      streamFlushTimeout = null;
+    }
+    scheduledStreamFlushAtMs = null;
+    return;
+  }
+
+  const nowMs = Date.now();
+  const nextDelayMs = getNextStreamFlushDelayMs(nowMs);
+  if (nextDelayMs === null) return;
+
+  const nextFlushAtMs = nowMs + nextDelayMs;
+  if (
+    streamFlushTimeout !== null &&
+    scheduledStreamFlushAtMs !== null &&
+    scheduledStreamFlushAtMs <= nextFlushAtMs + 1
+  ) {
+    return;
+  }
+
+  if (streamFlushTimeout) {
+    clearTimeout(streamFlushTimeout);
+  }
+
+  scheduledStreamFlushAtMs = nextFlushAtMs;
   streamFlushTimeout = setTimeout(() => {
     streamFlushTimeout = null;
-    flushPendingStreamChunks();
+    scheduledStreamFlushAtMs = null;
+    flushPendingStreamChunks({ nowMs: Date.now() });
 
-    // If tokens arrive again during the next tick, they'll schedule another flush.
     if (pendingStreamChunksBySessionId.size > 0) {
       scheduleStreamFlush();
     }
-  }, STREAM_UI_UPDATE_INTERVAL_MS);
+  }, Math.max(0, Math.ceil(nextDelayMs)));
 };
 
 const queueBlockDelta = (
@@ -3583,7 +3718,7 @@ export const initStreamListeners = async () => {
 
       if (payload.type === 'done') {
         // 收尾前先 flush 一次，避免最后一批 token 被节流队列丢弃
-        flushPendingStreamChunks();
+        flushPendingStreamChunks({ forceSessionIds: new Set([session.id]) });
         if (discardNextFinalizeByConversationId.has(payload.conversationId)) {
           discardNextFinalizeByConversationId.delete(payload.conversationId);
           return;
@@ -3603,7 +3738,7 @@ export const initStreamListeners = async () => {
       }
 
       if (payload.type === 'error') {
-        flushPendingStreamChunks();
+        flushPendingStreamChunks({ forceSessionIds: new Set([session.id]) });
         if (discardNextFinalizeByConversationId.has(payload.conversationId)) {
           discardNextFinalizeByConversationId.delete(payload.conversationId);
           return;

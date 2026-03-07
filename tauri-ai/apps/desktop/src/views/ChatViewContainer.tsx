@@ -20,7 +20,7 @@ import { TerminalTabView } from '../components/Terminal/TerminalTabView';
 import { WebTabView } from '../components/Web/WebTabView';
 import { WindowPaneHeader } from '../components/WindowPane/WindowPaneHeader';
 import { useDocumentStore } from '../stores/documentStore';
-import { useSessionStore } from '../stores/sessionStore';
+import { useSessionStore, type SessionStreamVisibilityTier } from '../stores/sessionStore';
 import { useTerminalTabStore } from '../stores/terminalTabStore';
 import { useWebTabStore } from '../stores/webTabStore';
 import { type WindowPane, useWindowLayoutStore } from '../stores/windowLayoutStore';
@@ -102,7 +102,9 @@ const WindowPaneView: React.FC<{
     if (parsed.kind === 'chat') {
       const sid = parsed.sessionId;
       if (!sid) return null;
-      return <MemoChatView sessionId={sid} autoFocus={isFocused && tabId === activeTabId} />;
+      const streamVisibilityTier: SessionStreamVisibilityTier =
+        tabId !== activeTabId ? 'hidden' : isFocused ? 'active' : 'visible';
+      return <MemoChatView sessionId={sid} autoFocus={isFocused && tabId === activeTabId} streamVisibilityTier={streamVisibilityTier} />;
     }
     if (parsed.kind === 'document') {
       const did = parsed.documentId;
