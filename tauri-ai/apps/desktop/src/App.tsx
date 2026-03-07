@@ -701,6 +701,7 @@ function App() {
     let disposed = false;
     let unlistenHistory: null | (() => void) = null;
     let unlistenPractice: null | (() => void) = null;
+    let unlistenAgentWorkspace: null | (() => void) = null;
     const currentWindow = getCurrentWebviewWindow();
 
     void currentWindow.listen('menu:open_history', () => {
@@ -727,10 +728,23 @@ function App() {
       })
       .catch(() => { });
 
+    void currentWindow.listen('menu:open_agent_workspace', () => {
+      useUIStore.getState().setActiveView('agent_sessions');
+    })
+      .then((fn) => {
+        if (disposed) {
+          fn();
+          return;
+        }
+        unlistenAgentWorkspace = fn;
+      })
+      .catch(() => { });
+
     return () => {
       disposed = true;
       unlistenHistory?.();
       unlistenPractice?.();
+      unlistenAgentWorkspace?.();
     };
   }, [shouldInitChatRuntime]);
 
@@ -1478,7 +1492,7 @@ function App() {
     // 兼容旧的 standalone window 语义：
     // - history/settings/practice：作为初始 activeView
     // - document/web/terminal/workstudio：视为“在工作区内打开一个 Tab”，activeView 仍为 chat
-    if (viewOverride === 'history' || viewOverride === 'settings' || viewOverride === 'practice') {
+    if (viewOverride === 'history' || viewOverride === 'settings' || viewOverride === 'practice' || viewOverride === 'agent_sessions') {
       if (viewOverride !== activeView) setActiveView(viewOverride);
       return;
     }

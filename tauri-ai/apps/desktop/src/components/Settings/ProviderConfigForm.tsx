@@ -915,10 +915,10 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
                                     className="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100"
                                   >
                                     <option value="in_process">in_process（默认）</option>
-                                    <option value="subprocess">subprocess（headless）</option>
+                                    <option value="subprocess">subprocess（headless，需 approval never）</option>
                                   </select>
                                   <p className="mt-1 text-[11px] text-gray-500">
-                                    仅当 toolset 开启 <code className="font-mono">agenttask</code> 时生效；工具名始终为 <code className="font-mono">agenttask</code>。
+                                    仅当 toolset 开启 <code className="font-mono">agenttask</code> 时生效；<code className="font-mono">subprocess</code> 当前要求目标 agent 的 approval policy 为 <code className="font-mono">never</code>。
                                   </p>
                                 </div>
 

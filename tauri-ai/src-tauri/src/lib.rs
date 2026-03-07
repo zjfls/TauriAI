@@ -4,10 +4,13 @@ pub mod ai_client;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod bundled_tools;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub mod cli;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod code_intel;
 pub mod commands;
 pub mod config;
 pub mod errors;
+pub mod external_agents;
 pub mod git_tools;
 pub mod mentions;
 pub mod models;
@@ -260,6 +263,12 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
     // Session/app actions (moved from top-right toolbar to system menu bar)
     // 只保留“按 Agent 新建会话”，并把快捷键绑定到默认 Agent 的菜单项。
     let new_session_shortcut = configured_shortcut(config, "session.new", "Cmd+T", "Ctrl+T");
+    let open_agent_workspace_shortcut = configured_shortcut(
+        config,
+        "app.openAgentWorkspace",
+        "Cmd+Shift+J",
+        "Ctrl+Shift+J",
+    );
     let open_settings_shortcut = configured_shortcut(config, "app.openSettings", "Cmd+,", "Ctrl+,");
     let open_history_shortcut =
         configured_shortcut(config, "app.openHistory", "Cmd+Y", "Ctrl+Shift+H");
@@ -303,6 +312,13 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
         "设置…",
         true,
         open_settings_shortcut.as_deref(),
+    )?;
+    let open_agent_workspace = MenuItem::with_id(
+        app,
+        "open_agent_workspace",
+        "子 Agent 工作台",
+        true,
+        open_agent_workspace_shortcut.as_deref(),
     )?;
     let open_practice = MenuItem::with_id(app, "open_practice", "练习", true, None::<&str>)?;
     let view_settings_separator = PredefinedMenuItem::separator(app)?;
@@ -412,6 +428,7 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
         view.insert_items(&[&open_devtools], 0)?;
         view.insert_items(
             &[
+                &open_agent_workspace,
                 &open_practice,
                 &open_settings,
                 &view_settings_separator,
@@ -428,6 +445,7 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
             "View",
             true,
             &[
+                &open_agent_workspace,
                 &open_practice,
                 &open_settings,
                 &view_settings_separator,
@@ -443,6 +461,7 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
             "View",
             true,
             &[
+                &open_agent_workspace,
                 &open_practice,
                 &open_settings,
                 &view_settings_separator,
@@ -610,7 +629,7 @@ fn is_main_host_menu_action(action_id: &str) -> bool {
     action_id.starts_with("new_session_agent:")
         || matches!(
             action_id,
-            "open_settings" | "open_history" | "open_practice"
+            "open_agent_workspace" | "open_settings" | "open_history" | "open_practice"
         )
 }
 
@@ -801,11 +820,12 @@ pub(crate) fn desktop_menu_signature(config: &crate::models::AppConfig) -> Strin
         &config.general.keyboard_shortcuts.windows
     };
 
-    let mut sig = String::from("v2|default=");
+    let mut sig = String::from("v3|default=");
     sig.push_str(effective_default_agent);
     sig.push('|');
     for key in [
         "session.new",
+        "app.openAgentWorkspace",
         "app.openSettings",
         "app.openHistory",
         "app.openDevtools",
@@ -873,6 +893,16 @@ fn run_desktop() {
                         emit_webview_window_event(app, &label, "menu:open_settings", ());
                     } else {
                         println!("[Shortcut][menu] open_settings triggered; target_window=<none>");
+                    }
+                }
+                "open_agent_workspace" => {
+                    if let Some(window) = pick_menu_target("open_agent_workspace") {
+                        emit_webview_window_event(
+                            app,
+                            window.label(),
+                            "menu:open_agent_workspace",
+                            (),
+                        );
                     }
                 }
                 "open_practice" => {
@@ -1030,6 +1060,11 @@ fn run_desktop() {
             respond_approval,
             list_pty_sessions,
             close_pty_session,
+            list_agent_sessions,
+            get_agent_session_detail,
+            start_agent_session,
+            send_agent_session_message,
+            close_agent_session,
             // Workstudio commands
             ensure_workstudio_for_conversation,
             get_workstudio,
@@ -1115,6 +1150,7 @@ fn run_desktop() {
             save_app_config,
             test_connection,
             fetch_provider_models,
+            probe_external_agents,
             // Lightweight LLM calls (used by practice module)
             mobile_chat,
             mobile_generate_title,
@@ -1389,6 +1425,7 @@ fn run_mobile() {
         mobile_generate_title,
         practice_chat,
         practice_generate_title,
+        probe_external_agents,
         save_app_config,
         set_agent_mcp_set,
         test_connection,
@@ -1408,6 +1445,7 @@ fn run_mobile() {
             save_app_config,
             test_connection,
             fetch_provider_models,
+            probe_external_agents,
             mobile_chat,
             mobile_generate_title,
             practice_chat,

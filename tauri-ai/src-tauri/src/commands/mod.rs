@@ -4,6 +4,8 @@
 //! the frontend and backend functionality.
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
+mod agent_sessions;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod clipboard;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod code_intel;
@@ -50,6 +52,11 @@ mod workstudio_state;
 mod workstudio_terminal;
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub use agent_sessions::{
+    close_agent_session, get_agent_session_detail, list_agent_sessions, send_agent_session_message,
+    start_agent_session,
+};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use clipboard::clipboard_write_png_base64;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use code_intel::{
@@ -67,7 +74,9 @@ pub use code_intel::{
     save_workstudio_folder_analysis, save_workstudio_symbol_analysis,
     upsert_workstudio_chat_with_index,
 };
-pub use config::{fetch_provider_models, get_app_config, save_app_config, test_connection};
+pub use config::{
+    fetch_provider_models, get_app_config, probe_external_agents, save_app_config, test_connection,
+};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use conversation::{
     clone_conversation, create_conversation, delete_conversation, delete_messages_from,

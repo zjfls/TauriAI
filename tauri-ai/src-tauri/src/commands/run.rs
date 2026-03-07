@@ -62,6 +62,21 @@ fn build_serializable_error(code: &str, message: impl Into<String>) -> Serializa
     }
 }
 
+#[derive(Debug)]
+struct HeadlessRunError {
+    error: SerializableError,
+    allow_in_process_fallback: bool,
+}
+
+impl HeadlessRunError {
+    fn new(code: &str, message: impl Into<String>, allow_in_process_fallback: bool) -> Self {
+        Self {
+            error: build_serializable_error(code, message),
+            allow_in_process_fallback,
+        }
+    }
+}
+
 async fn reserve_run_request(
     conversation_id: &str,
     request_id: &str,
@@ -140,12 +155,34 @@ struct HeadlessStdoutCollector {
     run_event_count: usize,
 }
 
+fn headless_binary_stem() -> &'static str {
+    "tauri-ai-headless"
+}
+
 fn headless_binary_name() -> &'static str {
     if cfg!(target_os = "windows") {
         "tauri-ai-headless.exe"
     } else {
         "tauri-ai-headless"
     }
+}
+
+fn headless_binary_names() -> Vec<String> {
+    let mut names = vec![headless_binary_name().to_string()];
+    if let Some(target) = option_env!("TARGET")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let suffixed = if cfg!(target_os = "windows") {
+            format!("{}-{target}.exe", headless_binary_stem())
+        } else {
+            format!("{}-{target}", headless_binary_stem())
+        };
+        if !names.iter().any(|existing| existing == &suffixed) {
+            names.push(suffixed);
+        }
+    }
+    names
 }
 
 fn headless_command_candidates() -> Vec<PathBuf> {
@@ -158,18 +195,24 @@ fn headless_command_candidates() -> Vec<PathBuf> {
         }
     }
 
+    let binary_names = headless_binary_names();
     if let Ok(current_exe) = std::env::current_exe() {
         if let Some(dir) = current_exe.parent() {
-            candidates.push(dir.join(headless_binary_name()));
+            for name in &binary_names {
+                candidates.push(dir.join(name));
+            }
             if let Some(parent) = dir.parent() {
-                // macOS bundle fallback（例如 Contents/MacOS）
-                candidates.push(parent.join("MacOS").join(headless_binary_name()));
+                for name in &binary_names {
+                    candidates.push(parent.join("MacOS").join(name));
+                    candidates.push(parent.join("Resources").join(name));
+                }
             }
         }
     }
 
-    // 最后尝试 PATH
-    candidates.push(PathBuf::from(headless_binary_name()));
+    for name in binary_names {
+        candidates.push(PathBuf::from(name));
+    }
 
     let mut seen = std::collections::HashSet::<String>::new();
     let mut deduped = Vec::new();
@@ -182,7 +225,7 @@ fn headless_command_candidates() -> Vec<PathBuf> {
     deduped
 }
 
-fn spawn_headless_process() -> Result<(Child, String), SerializableError> {
+fn spawn_headless_process() -> Result<(Child, String), HeadlessRunError> {
     let mut last_error: Option<(String, String)> = None;
 
     for candidate in headless_command_candidates() {
@@ -208,9 +251,10 @@ fn spawn_headless_process() -> Result<(Child, String), SerializableError> {
     let detail = last_error
         .map(|(bin, err)| format!("{bin}: {err}"))
         .unwrap_or_else(|| "没有可用的 headless 可执行文件".to_string());
-    Err(build_serializable_error(
+    Err(HeadlessRunError::new(
         "HEADLESS_UNAVAILABLE",
         format!("无法启动 headless 运行器（tauri-ai-headless）：{detail}"),
+        true,
     ))
 }
 
@@ -364,6 +408,10 @@ fn is_abort_like_error(final_data: &Value) -> bool {
 }
 
 fn should_try_headless_runner(config: &crate::models::AppConfig, input: &RunTaskInput) -> bool {
+    if cfg!(any(target_os = "android", target_os = "ios")) {
+        return false;
+    }
+
     if std::env::var("TAURIAI_DISABLE_HEADLESS_RUNNER")
         .ok()
         .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -403,7 +451,7 @@ async fn run_task_via_headless(
     input: &RunTaskInput,
     request_id: &str,
     run_state: Arc<RunState>,
-) -> Result<(), SerializableError> {
+) -> Result<(), HeadlessRunError> {
     let conversation_id = input.conversation_id.clone();
     let result = run_task_via_headless_inner(app, input, request_id, run_state.clone()).await;
     run_state.finish_run(&conversation_id).await;
@@ -416,7 +464,7 @@ async fn run_task_via_headless_inner(
     input: &RunTaskInput,
     request_id: &str,
     run_state: Arc<RunState>,
-) -> Result<(), SerializableError> {
+) -> Result<(), HeadlessRunError> {
     let payload = json!({
         "requestId": request_id,
         "task": {
@@ -442,45 +490,58 @@ async fn run_task_via_headless_inner(
         }
     });
     let payload_text = serde_json::to_string(&payload).map_err(|err| {
-        build_serializable_error(
+        HeadlessRunError::new(
             "HEADLESS_PAYLOAD_ERROR",
             format!("构造 headless 请求失败：{err}"),
+            true,
         )
     })?;
 
     let (mut child, used_command) = spawn_headless_process()?;
     let stdout = child.stdout.take().ok_or_else(|| {
-        build_serializable_error("HEADLESS_IO_ERROR", "headless stdout 未就绪，无法读取事件")
+        HeadlessRunError::new(
+            "HEADLESS_IO_ERROR",
+            "headless stdout 未就绪，无法读取事件",
+            true,
+        )
     })?;
     let stderr = child.stderr.take().ok_or_else(|| {
-        build_serializable_error(
+        HeadlessRunError::new(
             "HEADLESS_IO_ERROR",
             "headless stderr 未就绪，无法读取错误信息",
+            true,
         )
     })?;
     let mut stdin = child.stdin.take().ok_or_else(|| {
-        build_serializable_error("HEADLESS_IO_ERROR", "headless stdin 未就绪，无法发送请求")
+        HeadlessRunError::new(
+            "HEADLESS_IO_ERROR",
+            "headless stdin 未就绪，无法发送请求",
+            true,
+        )
     })?;
 
     stdin
         .write_all(payload_text.as_bytes())
         .await
         .map_err(|err| {
-            build_serializable_error(
+            HeadlessRunError::new(
                 "HEADLESS_IO_ERROR",
                 format!("写入 headless stdin 失败：{err}"),
+                true,
             )
         })?;
     stdin.write_all(b"\n").await.map_err(|err| {
-        build_serializable_error(
+        HeadlessRunError::new(
             "HEADLESS_IO_ERROR",
             format!("写入 headless stdin 换行失败：{err}"),
+            true,
         )
     })?;
     stdin.flush().await.map_err(|err| {
-        build_serializable_error(
+        HeadlessRunError::new(
             "HEADLESS_IO_ERROR",
             format!("flush headless stdin 失败：{err}"),
+            true,
         )
     })?;
     drop(stdin);
@@ -617,16 +678,18 @@ async fn run_task_via_headless_inner(
                                 .is_some_and(|t| t.elapsed() > Duration::from_secs(RUN_ABORT_MAX_WAIT_SECS))
                         {
                             let _ = child.start_kill();
-                            return Err(build_serializable_error(
+                            return Err(HeadlessRunError::new(
                                 "HEADLESS_ABORT_TIMEOUT",
-                                "中止任务后等待子进程退出超时，请重试。"
+                                "中止任务后等待子进程退出超时，请重试。",
+                                false,
                             ));
                         }
                     }
                     Err(err) => {
-                        return Err(build_serializable_error(
+                        return Err(HeadlessRunError::new(
                             "HEADLESS_WAIT_ERROR",
-                            format!("等待 headless 子进程失败：{err}")
+                            format!("等待 headless 子进程失败：{err}"),
+                            false,
                         ));
                     }
                 }
@@ -635,23 +698,53 @@ async fn run_task_via_headless_inner(
     };
 
     let stdout_result = stdout_task.await.map_err(|err| {
-        build_serializable_error(
+        let allow_fallback = collector
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .run_event_count
+            == 0;
+        HeadlessRunError::new(
             "HEADLESS_STDOUT_TASK_ERROR",
             format!("等待 stdout 读取任务失败：{err}"),
+            allow_fallback,
         )
     })?;
     if let Err(err_msg) = stdout_result {
-        return Err(build_serializable_error("HEADLESS_STDOUT_ERROR", err_msg));
+        let allow_fallback = collector
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .run_event_count
+            == 0;
+        return Err(HeadlessRunError::new(
+            "HEADLESS_STDOUT_ERROR",
+            err_msg,
+            allow_fallback,
+        ));
     }
 
     let stderr_result = stderr_task.await.map_err(|err| {
-        build_serializable_error(
+        let allow_fallback = collector
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .run_event_count
+            == 0;
+        HeadlessRunError::new(
             "HEADLESS_STDERR_TASK_ERROR",
             format!("等待 stderr 读取任务失败：{err}"),
+            allow_fallback,
         )
     })?;
     if let Err(err_msg) = stderr_result {
-        return Err(build_serializable_error("HEADLESS_STDERR_ERROR", err_msg));
+        let allow_fallback = collector
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .run_event_count
+            == 0;
+        return Err(HeadlessRunError::new(
+            "HEADLESS_STDERR_ERROR",
+            err_msg,
+            allow_fallback,
+        ));
     }
 
     let (final_data, stdout_tail, parse_errors, run_event_count) = {
@@ -696,12 +789,13 @@ async fn run_task_via_headless_inner(
                 tail_lines_to_text(&stderr_tail)
             ));
         }
-        return Err(build_serializable_error(
+        return Err(HeadlessRunError::new(
             "HEADLESS_PROTOCOL_ERROR",
             format!(
                 "headless 未返回 final 结果（可能在协议层提前结束）。\n\n{}",
                 details.join("\n\n")
             ),
+            run_event_count == 0,
         ));
     };
 
@@ -773,9 +867,10 @@ async fn run_task_via_headless_inner(
         ));
     }
 
-    Err(build_serializable_error(
+    Err(HeadlessRunError::new(
         &error_code,
         format!("{base_message}\n\n{}", sections.join("\n")),
+        false,
     ))
 }
 
@@ -845,7 +940,7 @@ pub async fn run_task(
         .await
         {
             Ok(()) => Ok(()),
-            Err(err) if err.code == "HEADLESS_UNAVAILABLE" => {
+            Err(headless_err) if headless_err.allow_in_process_fallback => {
                 run_task_impl(
                     app,
                     run_input,
@@ -855,7 +950,7 @@ pub async fn run_task(
                 )
                 .await
             }
-            Err(err) => Err(err),
+            Err(headless_err) => Err(headless_err.error),
         }
     } else {
         run_task_impl(

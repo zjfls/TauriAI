@@ -19,6 +19,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 name = "tauri-ai-headless"
 path = "src/bin/headless.rs"
 
+[[bin]]
+name = "tauri-ai-cli"
+path = "src/bin/cli.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -79,6 +83,11 @@ tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 muda = "0.17"
+clap = { version = "4.5", features = ["derive"] }
+crossterm = "0.28"
+ratatui = "0.29"
+tui-textarea = "0.7"
+unicode-width = "0.2"
 
 # MCP client (Model Context Protocol)
 rmcp = { version = "0.12.0", default-features = false, features = [

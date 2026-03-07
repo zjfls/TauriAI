@@ -51,6 +51,7 @@ use super::approvals::ApprovalDecision;
 use super::emitter::{RunEmitter, RunEventCallback};
 use super::run_state::RunState;
 use super::tools::handlers::agent_task::AGENT_TASK_TOOL_NAME;
+use super::tools::handlers::external_agent::AGENT_RUN_TOOL_NAME;
 use super::tools::registry::{
     register_builtin_handlers_with_options, BuiltinHandlerOptions, ToolRegistry,
 };
@@ -559,6 +560,7 @@ fn compute_system_prompt_cache_key(
     enable_local_web_search_tool: bool,
     enable_mcp_resource_tool_prompt: bool,
     task_agent_tool_prompt: Option<&str>,
+    external_agent_run_tool_prompt: Option<&str>,
     enabled_skills: &[SkillEntry],
     py: PythonAvailability,
 ) -> String {
@@ -567,7 +569,7 @@ fn compute_system_prompt_cache_key(
     let mut h = Sha1::new();
     // NOTE: Cache key must include any prompt text that can affect the actual HTTP request.
     // Bump this version whenever the cache inputs change.
-    h.update(b"v8\n");
+    h.update(b"v10\n");
     h.update(agent.name.as_bytes());
     h.update(b"\n");
     h.update(agent.system_prompt.as_bytes());
@@ -610,6 +612,13 @@ fn compute_system_prompt_cache_key(
     h.update(format!("mcp_resource_prompt:{enable_mcp_resource_tool_prompt}\n").as_bytes());
     h.update(b"task_agent_prompt\n");
     if let Some(prompt) = task_agent_tool_prompt {
+        h.update(prompt.as_bytes());
+    } else {
+        h.update(b"<none>");
+    }
+    h.update(b"\n");
+    h.update(b"external_agent_run_prompt\n");
+    if let Some(prompt) = external_agent_run_tool_prompt {
         h.update(prompt.as_bytes());
     } else {
         h.update(b"<none>");
@@ -917,6 +926,163 @@ fn inject_task_agent_tool_prompt(
     task_agent_prompt: &str,
 ) {
     let content = task_agent_prompt.trim().to_string();
+    if content.is_empty() {
+        return;
+    }
+    let insert_at = messages
+        .iter()
+        .take_while(|m| m.role == MessageRole::System)
+        .count();
+    messages.insert(
+        insert_at,
+        Message {
+            id: uuid::Uuid::new_v4().to_string(),
+            conversation_id: conversation_id.to_string(),
+            role: MessageRole::System,
+            content,
+            content_parts: Vec::new(),
+            thinking: None,
+            meta: None,
+            created_at: chrono::Utc::now(),
+            status: MessageStatus::Success,
+            error_message: None,
+        },
+    );
+}
+
+fn render_external_agent_run_tool_prompt(config: &crate::models::AppConfig) -> String {
+    let mut lines: Vec<String> = vec![
+        "## `agent_run` 外部委托用法".to_string(),
+        "- 只有在你明确需要把一个子任务委托给外部 agent 程序时，才调用 `agent_run`。".to_string(),
+        "- `agent_run` 是一次性调用：必须填写精确的 `agent_name`，并提供自包含的 `prompt`；如任务依赖仓库或目录上下文，请显式传 `cwd`。".to_string(),
+        "- `timeout_ms` 只在预计任务会明显超过默认超时时再覆盖。".to_string(),
+        "- 下面只列出当前已激活、且可通过 `agent_run` 调用的 adapter；不要臆造新的 `agent_name`。".to_string(),
+    ];
+
+    let mut external_agents = config
+        .external_agents
+        .agents
+        .iter()
+        .filter(|agent| agent.enabled)
+        .collect::<Vec<_>>();
+    external_agents.sort_by(|a, b| a.name.cmp(&b.name));
+
+    if external_agents.is_empty() {
+        lines.push("当前没有已激活的 external agent adapter，请不要调用 `agent_run`。".to_string());
+        return lines.join("\n");
+    }
+
+    lines.push("可用 adapter：".to_string());
+    for agent in external_agents {
+        let name = agent.name.trim();
+        let description = agent
+            .description
+            .as_deref()
+            .or(agent.task_usage.as_deref())
+            .unwrap_or("")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let default_model_ref = agent
+            .model_ref
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+
+        lines.push(format!("### `agent_name={name}`"));
+        match agent.transport.transport_type {
+            crate::models::ExternalAgentTransportType::Headless => {
+                lines.push(
+                    "- 底层执行器：`tauri-ai-headless`；适合把任务委托给本应用内部的 TauriAI agent。"
+                        .to_string(),
+                );
+                lines.push(
+                    "- 参数语义：`model_ref`、`run_mode`、`thinking` 会真实透传给内部 TauriAI agent；`cwd` 会成为子任务工作目录。"
+                        .to_string(),
+                );
+                if let Some(target_agent) = agent
+                    .remote_agent_name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    lines.push(format!(
+                        "- 当前绑定的内部 agent：`{target_agent}`；若要复用这个内部 agent 的能力，优先使用它。"
+                    ));
+                } else {
+                    lines.push(
+                        "- 当前未显式绑定内部 agent：会回退为同名内部 agent；若内部不存在同名 agent，调用会失败。"
+                            .to_string(),
+                    );
+                }
+                if let Some(model_ref) = default_model_ref {
+                    lines.push(format!("- 当前默认 `model_ref`：`{model_ref}`。"));
+                }
+                lines.push(
+                    "- 适用：当你希望外部委托仍复用 TauriAI 自身的 agent / model / run_mode / thinking 能力时，优先选择它。"
+                        .to_string(),
+                );
+                lines.push(format!(
+                    "- 推荐调用形态：{{\"agent_name\":\"{name}\",\"cwd\":\"<repo-or-dir>\",\"prompt\":\"<自包含子任务>\"}}"
+                ));
+            }
+            crate::models::ExternalAgentTransportType::CodexCli => {
+                lines.push("- 底层执行器：`codex exec`；非交互、一次性返回最终文本。".to_string());
+                lines.push(
+                    "- 参数语义：`prompt` 必须自包含；`cwd` 对仓库/文件任务非常重要；`model_ref` 会映射到 codex 的 `--model`。"
+                        .to_string(),
+                );
+                lines.push(
+                    "- 当前 adapter 会忽略 `run_mode` 与 `thinking`，不要依赖这两个参数。"
+                        .to_string(),
+                );
+                if let Some(model_ref) = default_model_ref {
+                    lines.push(format!("- 当前默认 `model_ref`：`{model_ref}`。"));
+                }
+                lines.push(
+                    "- 适用：独立的一次性编码、改代码、调试、代码审查、仓库分析任务。".to_string(),
+                );
+                lines.push(format!(
+                    "- 推荐调用形态：{{\"agent_name\":\"{name}\",\"cwd\":\"<repo-root>\",\"prompt\":\"<自包含编码任务>\"}}"
+                ));
+            }
+            crate::models::ExternalAgentTransportType::ClaudeCode => {
+                lines.push(
+                    "- 底层执行器：`claude -p --output-format text`；非交互、一次性返回最终文本。"
+                        .to_string(),
+                );
+                lines.push(
+                    "- 参数语义：`prompt` 必须自包含；`cwd` 对仓库/文件任务很重要；`model_ref` 会映射到 Claude Code 的 `--model`。"
+                        .to_string(),
+                );
+                lines.push(
+                    "- 当前 adapter 会忽略 `run_mode` 与 `thinking`，不要依赖这两个参数。"
+                        .to_string(),
+                );
+                if let Some(model_ref) = default_model_ref {
+                    lines.push(format!("- 当前默认 `model_ref`：`{model_ref}`。"));
+                }
+                lines.push("- 适用：独立的一次性编码、分析、解释、文档整理任务。".to_string());
+                lines.push(format!(
+                    "- 推荐调用形态：{{\"agent_name\":\"{name}\",\"cwd\":\"<repo-root>\",\"prompt\":\"<自包含分析或编码任务>\"}}"
+                ));
+            }
+        }
+        if !description.is_empty() {
+            lines.push(format!("- 补充说明：{description}"));
+        }
+        lines.push(String::new());
+    }
+
+    lines.join("\n")
+}
+
+fn inject_external_agent_run_tool_prompt(
+    messages: &mut Vec<Message>,
+    conversation_id: &str,
+    external_agent_run_tool_prompt: &str,
+) {
+    let content = external_agent_run_tool_prompt.trim().to_string();
     if content.is_empty() {
         return;
     }
@@ -3706,6 +3872,7 @@ struct ToolingBuildResult {
     enable_apply_patch_unified_diff_tool_prompt: bool,
     enable_write_file_replace_string_tool_prompt: bool,
     task_agent_tool_prompt: Option<String>,
+    external_agent_run_tool_prompt: Option<String>,
 }
 
 fn resolve_text_edit_tools_in_allow_list(
@@ -4256,6 +4423,9 @@ async fn build_tooling_for_run(
     let task_agent_tool_prompt = allowed_tool_names
         .contains(AGENT_TASK_TOOL_NAME)
         .then(|| render_task_agent_tool_prompt(config));
+    let external_agent_run_tool_prompt = allowed_tool_names
+        .contains(AGENT_RUN_TOOL_NAME)
+        .then(|| render_external_agent_run_tool_prompt(config));
 
     Ok(ToolingBuildResult {
         tool_orchestrator: Some(orchestrator),
@@ -4268,6 +4438,7 @@ async fn build_tooling_for_run(
         enable_apply_patch_unified_diff_tool_prompt,
         enable_write_file_replace_string_tool_prompt,
         task_agent_tool_prompt,
+        external_agent_run_tool_prompt,
     })
 }
 
@@ -5094,6 +5265,7 @@ async fn run_task_inner(
         enable_apply_patch_unified_diff_tool_prompt,
         enable_write_file_replace_string_tool_prompt,
         task_agent_tool_prompt,
+        external_agent_run_tool_prompt,
     } = build_tooling_for_run(
         tools_enabled,
         &config,
@@ -5136,6 +5308,7 @@ async fn run_task_inner(
         enable_local_web_search_tool,
         enable_mcp_resource_tool_prompt,
         task_agent_tool_prompt.as_deref(),
+        external_agent_run_tool_prompt.as_deref(),
         &enabled_skills_meta,
         py,
     );
@@ -5214,6 +5387,13 @@ async fn run_task_inner(
         }
         if let Some(task_agent_prompt) = task_agent_tool_prompt.as_deref() {
             inject_task_agent_tool_prompt(&mut messages, &input.conversation_id, task_agent_prompt);
+        }
+        if let Some(external_agent_prompt) = external_agent_run_tool_prompt.as_deref() {
+            inject_external_agent_run_tool_prompt(
+                &mut messages,
+                &input.conversation_id,
+                external_agent_prompt,
+            );
         }
 
         if let Some(merged_prompt) =

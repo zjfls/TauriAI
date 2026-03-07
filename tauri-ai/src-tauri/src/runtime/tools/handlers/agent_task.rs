@@ -14,7 +14,8 @@ use crate::agents::chat::{build_model_config, build_request_messages, resolve_ch
 use crate::ai_client::{get_client, ToolCall};
 use crate::config::ConfigManager;
 use crate::models::{
-    AgentTaskImplementation, AgentType, AppConfig, Message, MessageRole, MessageStatus,
+    AgentTaskImplementation, AgentType, AppConfig, AskForApproval, Message, MessageRole,
+    MessageStatus,
 };
 use crate::runtime::tools::registry::{
     ToolCallResult, ToolError, ToolExecutionContext, ToolHandler,
@@ -145,6 +146,32 @@ fn resolve_target_task_agent_name(
     ))
 }
 
+fn resolve_subprocess_approval_policy(
+    config: &AppConfig,
+    target_agent_name: &str,
+    model_ref: Option<&str>,
+    run_mode: Option<&str>,
+) -> Result<AskForApproval, ToolError> {
+    let resolved = resolve_chat_model(config, Some(target_agent_name), model_ref).map_err(|e| {
+        ToolError::new(format!(
+            "agenttask(subprocess) 解析 agent/model 失败: {e:?}"
+        ))
+    })?;
+    let requested_mode = run_mode.unwrap_or("").trim();
+    let use_custom_security = requested_mode == "agent-custom";
+    let base_policy = config
+        .security
+        .resolve_policy(resolved.agent.security_policy.as_deref());
+    Ok(if use_custom_security {
+        resolved
+            .agent
+            .approval_policy
+            .unwrap_or(base_policy.approval_policy)
+    } else {
+        base_policy.approval_policy
+    })
+}
+
 fn tail_push(tail: &mut VecDeque<String>, line: String, limit: usize) {
     if limit == 0 {
         return;
@@ -162,6 +189,32 @@ fn tail_to_text(tail: &VecDeque<String>) -> String {
     tail.iter().cloned().collect::<Vec<_>>().join("\n")
 }
 
+fn headless_binary_stem() -> &'static str {
+    "tauri-ai-headless"
+}
+
+fn headless_binary_names() -> Vec<String> {
+    let mut names = vec![if cfg!(target_os = "windows") {
+        "tauri-ai-headless.exe".to_string()
+    } else {
+        "tauri-ai-headless".to_string()
+    }];
+    if let Some(target) = option_env!("TARGET")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let suffixed = if cfg!(target_os = "windows") {
+            format!("{}-{target}.exe", headless_binary_stem())
+        } else {
+            format!("{}-{target}", headless_binary_stem())
+        };
+        if !names.iter().any(|existing| existing == &suffixed) {
+            names.push(suffixed);
+        }
+    }
+    names
+}
+
 fn current_exe_headless_candidates() -> Vec<PathBuf> {
     let mut out = Vec::<PathBuf>::new();
 
@@ -172,20 +225,23 @@ fn current_exe_headless_candidates() -> Vec<PathBuf> {
         }
     }
 
-    let headless_name = if cfg!(target_os = "windows") {
-        "tauri-ai-headless.exe"
-    } else {
-        "tauri-ai-headless"
-    };
+    let binary_names = headless_binary_names();
     if let Ok(current_exe) = std::env::current_exe() {
         if let Some(dir) = current_exe.parent() {
-            out.push(dir.join(headless_name));
+            for name in &binary_names {
+                out.push(dir.join(name));
+            }
             if let Some(parent) = dir.parent() {
-                out.push(parent.join("MacOS").join(headless_name));
+                for name in &binary_names {
+                    out.push(parent.join("MacOS").join(name));
+                    out.push(parent.join("Resources").join(name));
+                }
             }
         }
     }
-    out.push(PathBuf::from(headless_name));
+    for name in binary_names {
+        out.push(PathBuf::from(name));
+    }
 
     let mut dedup = Vec::<PathBuf>::new();
     let mut seen = std::collections::HashSet::<String>::new();
@@ -459,6 +515,24 @@ async fn run_agent_task(
             run_in_process_agent_task(call, &args, &prompt, ctx, &config, &target_agent_name).await
         }
         AgentTaskImplementation::Subprocess => {
+            if cfg!(any(target_os = "android", target_os = "ios")) {
+                return Err(ToolError::denied(
+                    "agenttask(subprocess) 仅支持桌面端 headless 子进程；移动端请改用 in_process。",
+                ));
+            }
+
+            let approval_policy = resolve_subprocess_approval_policy(
+                &config,
+                &target_agent_name,
+                args.model_ref.as_deref(),
+                args.run_mode.as_deref(),
+            )?;
+            if !matches!(approval_policy, AskForApproval::Never) {
+                return Err(ToolError::denied(
+                    "agenttask(subprocess) 当前未接入审批回传；目标 agent 的 approval policy 必须为 never。请改用 in_process，或把该 agent 的审批策略改为 never。",
+                ));
+            }
+
             run_subprocess_agent_task(&args, &prompt, &target_agent_name).await
         }
     }
