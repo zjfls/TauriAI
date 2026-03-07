@@ -9,7 +9,7 @@ import { useShallow } from 'zustand/shallow';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
-import { Folder, ChevronDown, Shield, ListOrdered, ArrowUp, ArrowDown, Pencil, Trash2, Check, X } from 'lucide-react';
+import { Folder, ChevronDown, Shield, ListOrdered, ArrowUp, ArrowDown, Pencil, Trash2, Check, X, Code2, ExternalLink } from 'lucide-react';
 import {
   clearSessionStreamViewerVisibility,
   setSessionStreamViewerVisibility,
@@ -43,6 +43,7 @@ import type {
 import { useToolSessionStore } from '../../stores/toolSessionStore';
 import { endChatOpenProfile, getActiveChatOpenProfile, markChatOpenProfile } from '../../utils/chatOpenProfile';
 import { openOrFocusWorkstudioWindow } from '../../utils/viewWindow';
+import { openWorkstudioFileInWorkspace } from '../../utils/workstudioOpenFile';
 import { WorkstudioSecurityModal } from './WorkstudioSecurityModal';
 import type { WebSearchProvider } from './WebSearchToggle';
 import { ChatOutlinePanel, type ChatOutlineItem } from './ChatOutlinePanel';
@@ -150,6 +151,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
   const isGenerating = session?.isGenerating ?? false;
   const conversationId = session?.conversationId ?? '';
   const agentName = session?.agentName ?? null;
+  const chatWithScope = session?.chatWithScope ?? null;
 
   const maybeAcknowledgeUnreadCompletion = useCallback(() => {
     if (!sessionId) return;
@@ -901,6 +903,20 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
     if (!ws) return;
     await openOrFocusWorkstudioWindow(`Workstudio: ${ws.mainFolder}`, { workstudioId: ws.id, mainFolder: ws.mainFolder });
   }, [ensureWorkstudio]);
+
+  const openChatWithSource = useCallback(async () => {
+    if (!chatWithScope || !session?.workstudioId) return;
+    await openWorkstudioFileInWorkspace({
+      workstudioId: session.workstudioId,
+      target: {
+        filePath: chatWithScope.filePath,
+        line: chatWithScope.range?.startLine,
+        column: chatWithScope.range?.startColumn,
+        endLine: chatWithScope.range?.endLine,
+        endColumn: chatWithScope.range?.endColumn,
+      },
+    });
+  }, [chatWithScope, session?.workstudioId]);
 
   // 快捷键：打开 Workstudio（仅作用于“当前聚焦 Pane”的 ChatView）
   useEffect(() => {
@@ -1741,6 +1757,41 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
       )}
       <div className="relative flex flex-1 min-h-0 overflow-hidden">
         <div className="flex min-w-0 flex-1 flex-col">
+          {chatWithScope && (
+            <div className="border-b border-blue-100 bg-blue-50/70 px-4 py-3 text-xs dark:border-blue-900/40 dark:bg-blue-950/30">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1 font-semibold text-blue-700 dark:text-blue-300">
+                    <Code2 size={13} />
+                    <span>Chat with 上下文</span>
+                  </div>
+                  <div className="mt-1 truncate text-gray-700 dark:text-gray-200">{chatWithScope.label}</div>
+                  <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-gray-500 dark:text-gray-400">
+                    <span className="rounded bg-white/80 px-1.5 py-0.5 dark:bg-gray-900/50">{chatWithScope.filePath}</span>
+                    {chatWithScope.range && (
+                      <span>
+                        L{chatWithScope.range.startLine}:{chatWithScope.range.startColumn}
+                        {' - '}
+                        L{chatWithScope.range.endLine}:{chatWithScope.range.endColumn}
+                      </span>
+                    )}
+                    {chatWithScope.languageId && <span>· {chatWithScope.languageId}</span>}
+                  </div>
+                </div>
+                {session?.workstudioId && (
+                  <button
+                    type="button"
+                    className="inline-flex shrink-0 items-center gap-1 rounded-md border border-blue-200 bg-white px-2.5 py-1 text-[11px] font-medium text-blue-700 hover:bg-blue-50 dark:border-blue-800/50 dark:bg-gray-900 dark:text-blue-300 dark:hover:bg-blue-900/20"
+                    onClick={() => void openChatWithSource()}
+                    title="定位到 Chat with 的代码选区"
+                  >
+                    <ExternalLink size={12} />
+                    <span>定位源码</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
           <React.Profiler id="MessageList" onRender={handleMessageListProfiler}>
             <MessageList
               ref={messageListRef}

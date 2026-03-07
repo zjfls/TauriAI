@@ -826,6 +826,12 @@ pub struct WorkstudioFolderAnalysisSummary {
 pub struct WorkstudioChatWithRecord {
     pub id: String,
     pub workstudio_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_message_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assistant_message_id: Option<String>,
     pub agent_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_ref: Option<String>,
@@ -842,6 +848,38 @@ pub struct WorkstudioChatWithRecord {
     pub latency_ms: Option<u64>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkstudioChatWithIndexEntry {
+    pub id: String,
+    pub workstudio_id: String,
+    pub conversation_id: String,
+    pub user_message_id: String,
+    pub assistant_message_id: String,
+    pub agent_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_ref: Option<String>,
+    pub file_path: String,
+    pub language_id: String,
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub range: Option<CodeSnippetRange>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u64>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkstudioChatWithScope {
+    pub file_path: String,
+    pub language_id: String,
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub range: Option<CodeSnippetRange>,
 }
 
 /// Lightweight summary for "Chat with" records grouped by file (used by Explorer markers).

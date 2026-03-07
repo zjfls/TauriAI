@@ -85,6 +85,7 @@ import {
   lspStatus,
 } from '../../services';
 import { useConfigStore } from '../../stores/configStore';
+import { useSessionStore } from '../../stores/sessionStore';
 import { useTerminalSessionStore } from '../../stores/terminalSessionStore';
 import { type WindowPane, useWindowLayoutStore } from '../../stores/windowLayoutStore';
 import { reconcileWindowPaneLayoutSnapshot } from '../../utils/windowPaneLayout';
@@ -152,20 +153,6 @@ type InlineChatSelection = {
   label: string;
 };
 
-type InlineChatThreadMessage = {
-  id: string;
-  role: 'user' | 'assistant';
-  markdown: string;
-  createdAt: string;
-  runId?: string;
-  status?: WorkstudioAiBubbleStatus;
-  thinking?: string;
-  toolCalls?: WorkstudioToolCallEntry[];
-  modelRef?: string;
-  latencyMs?: number;
-  error?: string;
-};
-
 const isSameInlineChatSelection = (a: InlineChatSelection | null, b: InlineChatSelection | null): boolean => {
   if (!a || !b) return false;
   return (
@@ -177,7 +164,7 @@ const isSameInlineChatSelection = (a: InlineChatSelection | null, b: InlineChatS
   );
 };
 
-type WorkstudioAiBubbleKind = 'inline_chat' | 'symbol_analysis' | 'folder_analysis' | 'agent_run';
+type WorkstudioAiBubbleKind = 'symbol_analysis' | 'folder_analysis';
 
 // Streaming state machine for AI Bubbles
 // idle → queued → connecting → thinking → streaming → tool_calling → done / error
@@ -196,13 +183,6 @@ type WorkstudioToolCallEntry = {
   name: string;
   arguments: string;
   result?: string;
-};
-
-type WorkstudioInlineChatMeta = {
-  workstudioId: string;
-  languageId: string;
-  filePath: string;
-  range: OutlineRange;
 };
 
 type WorkstudioSymbolAnalysisMeta = {
@@ -246,8 +226,6 @@ type WorkstudioAiBubble = {
   turns?: MessageTurn[];
   /** Name of the agent that produced this bubble */
   agentName?: string;
-  /** Optional meta for persisting inline chat results */
-  inlineChatMeta?: WorkstudioInlineChatMeta;
   /** Optional meta for persisting symbol analysis results */
   analysisMeta?: WorkstudioSymbolAnalysisMeta;
   /** Optional meta for persisting folder analysis results */
@@ -1559,15 +1537,10 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     open: boolean;
     selection: InlineChatSelection | null;
     question: string;
-    messages: InlineChatThreadMessage[];
-    activeRunId: string | null;
-  }>({ open: false, selection: null, question: '', messages: [], activeRunId: null });
-  const inlineChatRunMessageIdRef = useRef<Map<string, string>>(new Map());
+    submitting: boolean;
+  }>({ open: false, selection: null, question: '', submitting: false });
   const openInlineChatComposer = useCallback((selection: InlineChatSelection) => {
     setInlineChatComposer((prev) => {
-      if (prev.activeRunId && !isSameInlineChatSelection(prev.selection, selection)) {
-        return { ...prev, open: true };
-      }
       const sameSelection = isSameInlineChatSelection(prev.selection, selection);
       if (sameSelection) {
         return {
@@ -1580,22 +1553,24 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         open: true,
         selection,
         question: '',
-        messages: [],
-        activeRunId: null,
+        submitting: false,
       };
     });
   }, []);
   const closeInlineChatComposer = useCallback(() => {
-    setInlineChatComposer((prev) => ({ ...prev, open: false }));
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      inlineChatRunMessageIdRef.current.clear();
-    };
+    setInlineChatComposer((prev) => ({ ...prev, open: false, submitting: false }));
   }, []);
 
   const [chatWithHistoryViewer, setChatWithHistoryViewer] = useState<{
+    open: boolean;
+    filePath: string;
+    filterLine: number | null;
+    records: WorkstudioChatWithRecord[];
+    selectedId: string | null;
+    loading: boolean;
+    error: string | null;
+  } | null>(null);
+  const chatWithHistoryViewerRef = useRef<{
     open: boolean;
     filePath: string;
     filterLine: number | null;
@@ -1629,6 +1604,10 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
 	  const folderAnalysisFirstRunEventWaitersRef = useRef<Map<string, () => void>>(new Map());
 	  const folderAnalysisCompletionWaitersRef = useRef<Map<string, () => void>>(new Map());
 	  const folderAnalysisLastRunEventAtMsByConversationIdRef = useRef<Map<string, number>>(new Map());
+  useEffect(() => {
+    chatWithHistoryViewerRef.current = chatWithHistoryViewer;
+  }, [chatWithHistoryViewer]);
+
 	  useEffect(() => {
 	    aiBubblesRef.current = aiBubbles;
 	  }, [aiBubbles]);
@@ -1691,314 +1670,9 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     setAiViewerId(null);
   }, [aiViewerId]);
 
-  // ── workstudio:agent:event listener ─────────────────────────────────
-  // Listens to streaming events from `workstudio_run_agent_stream` and
-  // drives the Bubble state machine in real-time.
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    // Lazily import listen to avoid crashing in non-Tauri environments
-    let unlisten: (() => void) | undefined;
-    (async () => {
-      try {
-        // `listen` is already imported at the top of this file
-        unlisten = await listen<{
-          type: string;
-          run_id: string;
-          delta?: string;
-          answer_md?: string;
-          model_ref?: string;
-          latency_ms?: number;
-          message?: string;
-          id?: string;
-          name?: string;
-          arguments?: string;
-        }>('workstudio:agent:event', (ev) => {
-          const { type: evType, run_id } = ev.payload;
-          const inlineAssistantMessageId = inlineChatRunMessageIdRef.current.get(run_id) ?? null;
-          if (inlineAssistantMessageId) {
-            setInlineChatComposer((prev) => {
-              const idx = prev.messages.findIndex((m) => m.id === inlineAssistantMessageId);
-              if (idx === -1) return prev;
-              const nextMessages = prev.messages.slice();
-              const current = nextMessages[idx];
-              switch (evType) {
-                case 'text_delta':
-                  nextMessages[idx] = {
-                    ...current,
-                    status: 'streaming',
-                    markdown: (current.markdown ?? '') + (ev.payload.delta ?? ''),
-                  };
-                  break;
-                case 'thinking_delta':
-                  nextMessages[idx] = {
-                    ...current,
-                    status: 'thinking',
-                    thinking: (current.thinking ?? '') + (ev.payload.delta ?? ''),
-                  };
-                  break;
-                case 'tool_call': {
-                  const entry: WorkstudioToolCallEntry = {
-                    id: ev.payload.id ?? crypto.randomUUID(),
-                    name: ev.payload.name ?? '',
-                    arguments: ev.payload.arguments ?? '',
-                  };
-                  nextMessages[idx] = {
-                    ...current,
-                    status: 'tool_calling',
-                    toolCalls: [...(current.toolCalls ?? []), entry],
-                  };
-                  break;
-                }
-                case 'done':
-                  inlineChatRunMessageIdRef.current.delete(run_id);
-                  nextMessages[idx] = {
-                    ...current,
-                    status: 'done',
-                    markdown: ev.payload.answer_md ?? current.markdown,
-                    modelRef: ev.payload.model_ref ?? current.modelRef,
-                    latencyMs: ev.payload.latency_ms ?? current.latencyMs,
-                  };
-                  break;
-                case 'error':
-                  inlineChatRunMessageIdRef.current.delete(run_id);
-                  nextMessages[idx] = {
-                    ...current,
-                    status: 'error',
-                    error: ev.payload.message ?? 'Unknown error',
-                    markdown:
-                      current.markdown && current.markdown.trim()
-                        ? current.markdown
-                        : `**错误**\n\n\`\`\`text\n${ev.payload.message ?? 'Unknown error'}\n\`\`\``,
-                  };
-                  break;
-                default:
-                  return prev;
-              }
-              const clearActiveRun =
-                (evType === 'done' || evType === 'error') && prev.activeRunId === run_id;
-              return {
-                ...prev,
-                messages: nextMessages,
-                activeRunId: clearActiveRun ? null : prev.activeRunId,
-              };
-            });
-          }
-
-          if (evType === 'done') {
-            const bubble = aiBubblesRef.current.find((b) => b.id === run_id) ?? null;
-            const meta = bubble?.kind === 'inline_chat' ? (bubble.inlineChatMeta ?? null) : null;
-            if (meta && meta.workstudioId) {
-              const fp = normalizeFsPath(meta.filePath) || meta.filePath;
-              if (fp) {
-                const cacheKey = `${meta.workstudioId}::${fp}`;
-                setChatWithFileSummaryCache((prev) => {
-                  const existing = prev[cacheKey] ?? null;
-                  const nextCount = (existing?.recordCount ?? 0) + 1;
-                  const next: WorkstudioChatWithFileSummary = {
-                    filePath: fp,
-                    recordCount: nextCount,
-                    updatedAt: new Date().toISOString(),
-                  };
-                  return { ...prev, [cacheKey]: next };
-                });
-                setChatWithMarkerEpoch((v) => v + 1);
-              }
-            }
-          }
-
-          setAiBubbles((prev) => prev.map((b) => {
-            if (b.id !== run_id) return b;
-            switch (evType) {
-              case 'text_delta':
-                return {
-                  ...b,
-                  status: 'streaming' as WorkstudioAiBubbleStatus,
-                  answer: (b.answer ?? '') + (ev.payload.delta ?? ''),
-                };
-              case 'thinking_delta':
-                return {
-                  ...b,
-                  status: 'thinking' as WorkstudioAiBubbleStatus,
-                  thinking: (b.thinking ?? '') + (ev.payload.delta ?? ''),
-                };
-              case 'tool_call': {
-                const entry: WorkstudioToolCallEntry = {
-                  id: ev.payload.id ?? crypto.randomUUID(),
-                  name: ev.payload.name ?? '',
-                  arguments: ev.payload.arguments ?? '',
-                };
-                return {
-                  ...b,
-                  status: 'tool_calling' as WorkstudioAiBubbleStatus,
-                  toolCalls: [...(b.toolCalls ?? []), entry],
-                };
-              }
-              case 'done':
-                return {
-                  ...b,
-                  status: 'done' as WorkstudioAiBubbleStatus,
-                  answer: ev.payload.answer_md ?? b.answer,
-                  modelRef: ev.payload.model_ref ?? b.modelRef,
-                  latencyMs: ev.payload.latency_ms ?? b.latencyMs,
-                };
-              case 'error':
-                return {
-                  ...b,
-                  status: 'error' as WorkstudioAiBubbleStatus,
-                  error: ev.payload.message ?? 'Unknown error',
-                };
-              default:
-                return b;
-            }
-          }));
-        });
-      } catch {
-        // Not in Tauri or listen failed — ignore
-      }
-    })();
-    return () => { unlisten?.(); };
-  }, []);
-
   const chatWithAgentRef = useConfigStore((s) => s.config?.codeIntelligence?.aiCompletion?.chatWithAgentRef);
-
-  const submitInlineChat = useCallback(async () => {
-    const selection = inlineChatComposer.selection;
-    const question = inlineChatComposer.question.trim();
-    if (!selection || !question || inlineChatComposer.activeRunId) return;
-
-    const userMessageId = crypto.randomUUID();
-    const assistantMessageId = crypto.randomUUID();
-    const messageCreatedAt = new Date().toISOString();
-    const recentHistory = inlineChatComposer.messages
-      .slice(-8)
-      .map((m) => {
-        const role = m.role === 'user' ? '用户' : '助手';
-        const text = (m.markdown || m.error || '').trim();
-        if (!text) return '';
-        const clipped = text.length > 1600 ? `${text.slice(0, 1600)}\n…（已截断）` : text;
-        return `[${role}]\n${clipped}`;
-      })
-      .filter((v) => v.length > 0)
-      .join('\n\n');
-
-    const userInput = recentHistory
-      ? `请延续下面的历史对话语境回答。\n\n【历史对话】\n${recentHistory}\n\n【本轮问题】\n${question}`
-      : question;
-
-    setInlineChatComposer((prev) => ({
-      ...prev,
-      question: '',
-      messages: [
-        ...prev.messages,
-        {
-          id: userMessageId,
-          role: 'user',
-          markdown: question,
-          createdAt: messageCreatedAt,
-        },
-        {
-          id: assistantMessageId,
-          role: 'assistant',
-          markdown: '',
-          createdAt: messageCreatedAt,
-          status: 'connecting',
-        },
-      ],
-    }));
-
-    const id = crypto.randomUUID();
-    const name = question.length > 28 ? `${question.slice(0, 28)}…` : question;
-    const createdAt = new Date().toISOString();
-    const bubble: WorkstudioAiBubble = {
-      id,
-      kind: 'inline_chat',
-      name,
-      subtitle: selection.label,
-      prompt: question,
-      status: 'connecting',
-      inlineChatMeta: workstudioId
-        ? {
-            workstudioId,
-            languageId: selection.languageId,
-            filePath: selection.filePath,
-            range: selection.range,
-          }
-        : undefined,
-      createdAt,
-    };
-    setAiBubbles((prev) => [...prev, bubble]);
-
-    try {
-      if (!isTauri()) throw new Error('Not running in Tauri');
-      // Use streaming agent command — events handled by the workstudio:agent:event listener.
-      // The 'InlineChat' agent is a default coding agent for inline Q&A.
-      const runId = await invoke<string>('workstudio_run_agent_stream', {
-        args: {
-          workstudioId: workstudioId ?? '',
-          agentName: chatWithAgentRef || '__system_chat_with',
-          purpose: 'chat_with',
-          languageId: selection.languageId,
-          filePath: selection.filePath,
-          selectionRange: selection.range,
-          code: selection.text,
-          userInput,
-        },
-      });
-      inlineChatRunMessageIdRef.current.set(runId, assistantMessageId);
-      setInlineChatComposer((prev) => {
-        const nextMessages = prev.messages.map((m) =>
-          m.id === assistantMessageId ? { ...m, runId, status: 'connecting' as WorkstudioAiBubbleStatus } : m
-        );
-        return {
-          ...prev,
-          messages: nextMessages,
-          activeRunId: runId,
-        };
-      });
-      // Rename bubble id to run_id so the listener can correlate events
-      setAiBubbles((prev) =>
-        prev.map((b) => (b.id === id ? { ...b, id: runId } : b))
-      );
-      setAiViewerId((prev) => (prev === id ? runId : prev));
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setInlineChatComposer((prev) => {
-        const nextMessages = prev.messages.map((m) =>
-          m.id === assistantMessageId
-            ? {
-              ...m,
-              status: 'error' as WorkstudioAiBubbleStatus,
-              error: message,
-              markdown: `**错误**\n\n\`\`\`text\n${message}\n\`\`\``,
-            }
-            : m
-        );
-        return {
-          ...prev,
-          messages: nextMessages,
-          activeRunId: null,
-        };
-      });
-      setAiBubbles((prev) =>
-        prev.map((b) => (b.id === id ? { ...b, status: 'error', error: message } : b))
-      );
-    }
-  }, [inlineChatComposer.activeRunId, inlineChatComposer.messages, inlineChatComposer.question, inlineChatComposer.selection, chatWithAgentRef, workstudioId]);
-
-  const clearInlineChatConversation = useCallback(() => {
-    if (inlineChatComposer.activeRunId) return;
-    setInlineChatComposer((prev) => ({
-      ...prev,
-      question: '',
-      messages: [],
-    }));
-  }, [inlineChatComposer.activeRunId]);
-
-  const abortInlineChatRun = useCallback(() => {
-    const runId = inlineChatComposer.activeRunId;
-    if (!runId || !isTauri()) return;
-    void invoke('workstudio_abort_agent', { runId }).catch(() => {});
-  }, [inlineChatComposer.activeRunId]);
+  const openChatWithSession = useSessionStore((state) => state.openChatWithSession);
+  const openHistoricalConversation = useSessionStore((state) => state.openHistoricalConversation);
 
   const terminalScope: TerminalScope | null = useMemo(() => {
     if (!workstudioId) return null;
@@ -2086,6 +1760,44 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       }
     };
   }, []);
+
+  const submitInlineChat = useCallback(async () => {
+    const selection = inlineChatComposer.selection;
+    const question = inlineChatComposer.question.trim();
+    if (!selection || !question || inlineChatComposer.submitting) return;
+    if (!workstudioId) {
+      showNavToast('当前 Workstudio 未初始化，无法发起 Chat with');
+      return;
+    }
+
+    setInlineChatComposer((prev) => ({ ...prev, submitting: true }));
+    try {
+      await openChatWithSession({
+        agentName: chatWithAgentRef || '__system_chat_with',
+        workstudioId,
+        scope: {
+          filePath: selection.filePath,
+          languageId: selection.languageId,
+          label: selection.label,
+          range: selection.range,
+        },
+        selectionText: selection.text,
+        question,
+      });
+      setInlineChatComposer({
+        open: false,
+        selection,
+        question: '',
+        submitting: false,
+      });
+      showNavToast('已在 Chat 中打开 Chat with 会话');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setInlineChatComposer((prev) => ({ ...prev, submitting: false }));
+      showNavToast(message || '启动 Chat with 会话失败');
+    }
+  }, [chatWithAgentRef, inlineChatComposer.question, inlineChatComposer.selection, inlineChatComposer.submitting, openChatWithSession, showNavToast, workstudioId]);
+
 
   useEffect(() => {
     // 切换 Workstudio 时清空浏览历史，避免跨项目串联。
@@ -5675,33 +5387,103 @@ type OpenFromLinkErrorInfo = {
 		    };
 		  }, [makeFolderAnalysisCacheKey, workstudioId, ws?.id]);
 
-		  // Explorer: prefetch "Chat with" record summaries (file-level markers) on workstudio open.
-		  useEffect(() => {
-		    if (!workstudioId) return;
-		    if (!isTauri()) return;
-		    const wsId = workstudioId;
-		    let cancelled = false;
-		    void (async () => {
-		      try {
-		        const rows = await listWorkstudioChatWithFileSummaries({ workstudioId: wsId });
-		        if (cancelled) return;
-		        const nextSummaries: Record<string, WorkstudioChatWithFileSummary | null> = {};
-		        for (const raw of rows ?? []) {
-		          const filePath = normalizeFsPath(String((raw as any)?.filePath ?? '').trim());
-		          if (!filePath) continue;
-		          const cacheKey = makeChatWithFileCacheKey(filePath);
-		          nextSummaries[cacheKey] = { ...(raw as any), filePath } as WorkstudioChatWithFileSummary;
-		        }
-		        setChatWithFileSummaryCache(nextSummaries);
-		        setChatWithMarkerEpoch((v) => v + 1);
-		      } catch (err) {
-		        console.warn('[Workstudio][Explorer] listWorkstudioChatWithFileSummaries failed:', err);
-		      }
-		    })();
-		    return () => {
-		      cancelled = true;
-		    };
-		  }, [makeChatWithFileCacheKey, workstudioId, ws?.id]);
+  const reloadChatWithFileSummaries = useCallback(async () => {
+    if (!workstudioId || !isTauri()) return;
+    const rows = await listWorkstudioChatWithFileSummaries({ workstudioId });
+    const nextSummaries: Record<string, WorkstudioChatWithFileSummary | null> = {};
+    for (const raw of rows ?? []) {
+      const filePath = normalizeFsPath(String((raw as any)?.filePath ?? '').trim());
+      if (!filePath) continue;
+      const cacheKey = makeChatWithFileCacheKey(filePath);
+      nextSummaries[cacheKey] = { ...(raw as any), filePath } as WorkstudioChatWithFileSummary;
+    }
+    setChatWithFileSummaryCache(nextSummaries);
+    setChatWithMarkerEpoch((v) => v + 1);
+  }, [makeChatWithFileCacheKey, workstudioId]);
+
+  // Explorer: prefetch "Chat with" record summaries (file-level markers) on workstudio open.
+  useEffect(() => {
+    if (!workstudioId) return;
+    if (!isTauri()) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        await reloadChatWithFileSummaries();
+      } catch (err) {
+        if (cancelled) return;
+        console.warn('[Workstudio][Explorer] listWorkstudioChatWithFileSummaries failed:', err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadChatWithFileSummaries, workstudioId, ws?.id]);
+
+  useEffect(() => {
+    if (!workstudioId) return;
+    if (!isTauri()) return;
+
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+
+    const reloadOpenHistoryViewer = async (changedFilePath?: string | null) => {
+      const viewer = chatWithHistoryViewerRef.current;
+      if (!viewer?.open) return;
+      const targetFilePath = normalizeFsPath(viewer.filePath) || viewer.filePath;
+      const normalizedChanged = normalizeFsPath(String(changedFilePath ?? '').trim()) || String(changedFilePath ?? '').trim();
+      if (normalizedChanged && normalizedChanged !== targetFilePath) return;
+
+      const records = await listWorkstudioChatWithRecordsForFile({
+        workstudioId,
+        filePath: targetFilePath,
+        limit: 200,
+      });
+      if (disposed) return;
+
+      setChatWithHistoryViewer((prev) => {
+        if (!prev) return prev;
+        const prevPath = normalizeFsPath(prev.filePath) || prev.filePath;
+        if (prevPath !== targetFilePath) return prev;
+        if (!records || records.length === 0) return null;
+        const nextSelectedId = records.some((record) => record.id === prev.selectedId)
+          ? prev.selectedId
+          : (records[0]?.id ?? null);
+        return {
+          ...prev,
+          records,
+          selectedId: nextSelectedId,
+          loading: false,
+          error: null,
+        };
+      });
+    };
+
+    void (async () => {
+      try {
+        unlisten = await listen<{ workstudioId: string; filePath?: string | null }>('workstudio:chat_with_index_changed', (event) => {
+          const payload = event.payload;
+          if (!payload || String(payload.workstudioId ?? '').trim() !== workstudioId) return;
+          void (async () => {
+            try {
+              await reloadChatWithFileSummaries();
+              await reloadOpenHistoryViewer(payload.filePath ?? null);
+            } catch (err) {
+              console.warn('[Workstudio][ChatWith] refresh on index_changed failed:', err);
+            }
+          })();
+        });
+      } catch (err) {
+        console.warn('[Workstudio][ChatWith] listen workstudio:chat_with_index_changed failed:', err);
+      }
+    })();
+
+    return () => {
+      disposed = true;
+      if (unlisten) {
+        void unlisten();
+      }
+    };
+  }, [reloadChatWithFileSummaries, workstudioId]);
 
 			  // Outline: proactively refresh analysis status for the active file on page open / file switch.
 			  // This avoids "right click to refresh" UX.
@@ -11891,7 +11673,7 @@ type OpenFromLinkErrorInfo = {
 
       {inlineChatComposer.open && inlineChatComposer.selection && (
         <div className="fixed inset-0 z-[220] flex items-center justify-center bg-black/30 p-4">
-          <div className="flex h-[calc(100vh-3rem)] w-full max-w-7xl flex-col rounded-xl border border-gray-200 bg-white shadow-xl dark:border-gray-800 dark:bg-gray-950">
+          <div className="flex h-[calc(100vh-8rem)] w-full max-w-6xl flex-col rounded-xl border border-gray-200 bg-white shadow-xl dark:border-gray-800 dark:bg-gray-950">
             <div className="flex shrink-0 items-start justify-between gap-3 border-b border-gray-100 p-4 dark:border-gray-800">
               <div className="min-w-0">
                 <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">Chat with</div>
@@ -11903,158 +11685,66 @@ type OpenFromLinkErrorInfo = {
                 type="button"
                 className="rounded p-1 text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
                 onClick={closeInlineChatComposer}
-                title="关闭（保留会话）"
+                title="关闭"
               >
                 <X size={16} />
               </button>
             </div>
 
-            <div className="min-h-0 flex flex-1 gap-4 p-4">
-              <div className="flex w-[34%] min-w-[260px] flex-col gap-2 rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-900/30">
+            <div className="grid min-h-0 flex-1 gap-4 p-4 lg:grid-cols-[minmax(280px,36%)_1fr]">
+              <div className="flex min-h-0 flex-col gap-2 rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-900/30">
                 <div className="text-[11px] font-semibold text-gray-700 dark:text-gray-200">选中代码</div>
                 <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words rounded border border-gray-200 bg-white p-2 text-[11px] text-gray-800 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-100">
                   {(() => {
                     const raw = inlineChatComposer.selection?.text ?? '';
                     const limit = 5000;
-                    return raw.length > limit ? `${raw.slice(0, limit)}\n…（已截断）` : raw;
+                    return raw.length > limit ? `${raw.slice(0, limit)}
+…（已截断）` : raw;
                   })()}
                 </pre>
                 <div className="text-[11px] text-gray-500 dark:text-gray-400">
-                  回答将使用富文本渲染（Markdown / Mermaid / 代码链接）。
+                  将使用标准 Chat 会话发送本次问题，后续追问与调试能力完全复用 ChatView。
                 </div>
               </div>
 
-              <div className="flex min-w-0 flex-1 flex-col">
-                <div className="min-h-0 flex-1 space-y-3 overflow-y-auto rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-800 dark:bg-gray-950">
-                  {inlineChatComposer.messages.length === 0 ? (
-                    <div className="rounded-lg border border-dashed border-gray-200 bg-gray-50 px-3 py-4 text-xs text-gray-500 dark:border-gray-800 dark:bg-gray-900/30 dark:text-gray-400">
-                      请输入问题后发送。窗口会保留上下文，可连续追问。
-                    </div>
-                  ) : (
-                    inlineChatComposer.messages.map((msg) => {
-                      const isAssistant = msg.role === 'assistant';
-                      const isActive = Boolean(
-                        msg.status
-                        && ['connecting', 'thinking', 'streaming', 'tool_calling'].includes(msg.status)
-                      );
-                      return (
-                        <div
-                          key={msg.id}
-                          className={[
-                            'rounded-lg border px-3 py-2',
-                            isAssistant
-                              ? 'border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-950'
-                              : 'border-blue-100 bg-blue-50/50 dark:border-blue-900/40 dark:bg-blue-900/10',
-                          ].join(' ')}
-                        >
-                          <div className="mb-1 flex items-center justify-between gap-2">
-                            <div className="text-[11px] font-semibold text-gray-700 dark:text-gray-200">
-                              {isAssistant ? '助手' : '你'}
-                            </div>
-                            {isAssistant && msg.status && (
-                              <div className="inline-flex items-center gap-1 text-[11px] text-gray-500 dark:text-gray-400">
-                                {isActive && <Loader2 size={10} className="animate-spin" />}
-                                {describeWorkstudioAiBubbleStatus(msg.status)}
-                                {msg.modelRef ? ` · ${msg.modelRef}` : ''}
-                                {msg.latencyMs ? ` · ${msg.latencyMs}ms` : ''}
-                              </div>
-                            )}
-                          </div>
-                          {isAssistant ? (
-                            <>
-                              {msg.markdown ? (
-                                <DeferredMarkdown
-                                  content={msg.markdown}
-                                  conversationId={null}
-                                  workstudioId={workstudioId}
-                                  immediate={isActive}
-                                  minDelayMs={isActive ? 0 : 120}
-                                />
-                              ) : (
-                                <div className="text-xs text-gray-400 dark:text-gray-500">等待输出…</div>
-                              )}
-                              {msg.thinking && (
-                                <details className="mt-2">
-                                  <summary className="cursor-pointer text-[11px] text-purple-600 dark:text-purple-400">思考过程</summary>
-                                  <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded border border-purple-100 bg-purple-50/60 px-2 py-1.5 text-[11px] text-purple-900 dark:border-purple-900/40 dark:bg-purple-900/10 dark:text-purple-200">
-                                    {msg.thinking}
-                                  </pre>
-                                </details>
-                              )}
-                              {msg.toolCalls && msg.toolCalls.length > 0 && (
-                                <details className="mt-2">
-                                  <summary className="cursor-pointer text-[11px] text-amber-600 dark:text-amber-400">
-                                    工具调用（{msg.toolCalls.length}）
-                                  </summary>
-                                  <div className="mt-1 space-y-1.5">
-                                    {msg.toolCalls.map((tc) => (
-                                      <div key={tc.id} className="rounded border border-amber-200 bg-amber-50/60 px-2 py-1.5 dark:border-amber-900/40 dark:bg-amber-900/10">
-                                        <div className="text-[11px] font-semibold text-amber-700 dark:text-amber-300">{tc.name}</div>
-                                        <pre className="mt-0.5 whitespace-pre-wrap break-words text-[11px] text-amber-900 dark:text-amber-200">{tc.arguments}</pre>
-                                      </div>
-                                    ))}
-                                  </div>
-                                </details>
-                              )}
-                            </>
-                          ) : (
-                            <div className="whitespace-pre-wrap break-words text-sm text-gray-900 dark:text-gray-100">
-                              {msg.markdown}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-
-                <div className="mt-3 rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-800 dark:bg-gray-950">
-                  <div className="mb-1 text-[11px] font-medium text-gray-600 dark:text-gray-300">继续提问</div>
-                  <textarea
-                    value={inlineChatComposer.question}
-                    onChange={(e) => setInlineChatComposer((prev) => ({ ...prev, question: e.target.value }))}
-                    rows={3}
-                    autoCorrect="off"
-                    autoCapitalize="off"
-                    autoComplete="off"
-                    spellCheck={false}
-                    onKeyDown={(e) => {
-                      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-                        e.preventDefault();
-                        void submitInlineChat();
-                      }
-                    }}
-                    className="w-full resize-y rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none focus:ring-2 focus:ring-blue-500/40 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-100"
-                    placeholder="例如：这段代码为什么这样设计？业务调用路径是什么？"
-                  />
-                  <div className="mt-2 flex items-center justify-between gap-2">
-                    <div className="text-[11px] text-gray-400 dark:text-gray-500">⌘/Ctrl + Enter 发送</div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-800 dark:text-gray-200 dark:hover:bg-gray-900/40"
-                        disabled={Boolean(inlineChatComposer.activeRunId) || inlineChatComposer.messages.length === 0}
-                        onClick={clearInlineChatConversation}
-                      >
-                        清空会话
-                      </button>
-                      <button
-                        type="button"
-                        className="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-900/40 dark:text-red-300 dark:hover:bg-red-900/20"
-                        disabled={!inlineChatComposer.activeRunId}
-                        onClick={abortInlineChatRun}
-                      >
-                        中止
-                      </button>
-                      <button
-                        type="button"
-                        className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
-                        disabled={!inlineChatComposer.question.trim() || Boolean(inlineChatComposer.activeRunId)}
-                        onClick={() => void submitInlineChat()}
-                      >
-                        发送
-                      </button>
-                    </div>
+              <div className="flex min-h-0 flex-col rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-950">
+                <div className="mb-2 text-[11px] font-medium text-gray-600 dark:text-gray-300">问题</div>
+                <textarea
+                  value={inlineChatComposer.question}
+                  onChange={(e) => setInlineChatComposer((prev) => ({ ...prev, question: e.target.value }))}
+                  rows={8}
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  autoComplete="off"
+                  spellCheck={false}
+                  onKeyDown={(e) => {
+                    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                      e.preventDefault();
+                      void submitInlineChat();
+                    }
+                  }}
+                  className="min-h-[200px] w-full flex-1 resize-none rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none focus:ring-2 focus:ring-blue-500/40 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-100"
+                  placeholder="例如：这段代码为什么这样设计？业务调用路径是什么？"
+                />
+                <div className="mt-3 flex items-center justify-between gap-3">
+                  <div className="text-[11px] text-gray-400 dark:text-gray-500">⌘/Ctrl + Enter 发送到 Chat 会话</div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-800 dark:text-gray-200 dark:hover:bg-gray-900/40"
+                      onClick={closeInlineChatComposer}
+                    >
+                      取消
+                    </button>
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+                      disabled={!inlineChatComposer.question.trim() || inlineChatComposer.submitting}
+                      onClick={() => void submitInlineChat()}
+                    >
+                      {inlineChatComposer.submitting && <Loader2 size={12} className="animate-spin" />}
+                      <span>{inlineChatComposer.submitting ? '打开中…' : '在 Chat 中打开'}</span>
+                    </button>
                   </div>
                 </div>
               </div>
@@ -12194,6 +11884,19 @@ type OpenFromLinkErrorInfo = {
                           </div>
                         </div>
                         <div className="flex shrink-0 items-center gap-2">
+                          {rec.conversationId && (
+                            <button
+                              type="button"
+                              className="rounded-lg border border-blue-200 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-50 dark:border-blue-800/50 dark:text-blue-300 dark:hover:bg-blue-900/20"
+                              onClick={() => {
+                                closeChatWithHistoryViewer();
+                                void openHistoricalConversation(rec.conversationId!);
+                              }}
+                              title="打开真实 Chat 会话"
+                            >
+                              打开对话
+                            </button>
+                          )}
                           <button
                             type="button"
                             className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-800 dark:text-gray-200 dark:hover:bg-gray-900/40"
@@ -12360,7 +12063,6 @@ type OpenFromLinkErrorInfo = {
 
                       const convId = (aiViewer.conversationId ?? '').trim();
                       if (convId) void invoke('abort_run', { conversationId: convId }).catch(() => {});
-                      else void invoke('workstudio_abort_agent', { runId: aiViewer.id }).catch(() => {});
                     }}
                   >
                     中止

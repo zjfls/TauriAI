@@ -20,9 +20,10 @@ use crate::code_intel::lsp::{resolve_lsp_spawn_program, LspManager};
 use crate::code_intel::types::{LspLaunchConfig, LspServerStatus};
 use crate::config::ConfigManager;
 use crate::models::{
-    AppConfig, CodeSnippetRange, Message, MessageRole, MessageStatus, Workstudio,
-    WorkstudioChatWithFileSummary, WorkstudioChatWithRecord, WorkstudioFolderAnalysis,
-    WorkstudioFolderAnalysisSummary, WorkstudioSymbolAnalysis, WorkstudioSymbolAnalysisSummary,
+    AppConfig, CodeSnippetRange, ContentPart, Message, MessageRole, MessageStatus, Workstudio,
+    WorkstudioChatWithFileSummary, WorkstudioChatWithIndexEntry, WorkstudioChatWithRecord,
+    WorkstudioChatWithScope, WorkstudioFolderAnalysis, WorkstudioFolderAnalysisSummary,
+    WorkstudioSymbolAnalysis, WorkstudioSymbolAnalysisSummary,
 };
 use crate::storage::async_db;
 use crate::storage::Database;
@@ -364,24 +365,6 @@ pub struct AiCodeCompletionResult {
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AiChatWithSelectionArgs {
-    pub workstudio_id: String,
-    pub language_id: String,
-    pub file_path: String,
-    pub selection: String,
-    pub question: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AiChatWithSelectionResult {
-    pub answer: String,
-    pub model_ref: String,
-    pub latency_ms: u64,
-}
-
-#[derive(Debug, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct ParsedCompletionResponse {
     #[serde(default)]
     items: Vec<ParsedCompletionItem>,
@@ -429,9 +412,6 @@ pub async fn ai_code_completion(
     if !settings.enabled {
         return Err("AI 补全已关闭（设置 -> Code Intelligence -> AI Completion）".to_string());
     }
-    // modelRef 优先级：
-    // 1) agent config (name: "__system_code_completion")
-    // 2) AppConfig.currentModelRef
     let assigned_agent = settings.agent_ref.trim();
     let assigned_agent = if assigned_agent.is_empty() {
         "__system_code_completion"
@@ -490,16 +470,8 @@ pub async fn ai_code_completion(
         Some(serde_json::Value::Bool(false)),
         Some(false),
     );
-    // AI Completion 不需要“思考/推理”模式，并且部分 OpenAI-compatible 网关在请求体包含 `thinking`
-    // 字段时会返回 `message.content = null`（即使 200 OK），导致前端拿不到补全内容。
-    // 这里显式清空 thinking_level，避免下游 client 发送 `thinking` 字段。
     model_config.thinking_level = None;
     model_config.parameters.temperature = Some(settings.temperature.max(0.0).min(2.0) as f32);
-    // 实测部分 OpenAI-compatible 网关/模型在 `max_tokens` 太小时会把输出“挤”到 reasoning_content，
-    // 甚至出现 content=null，导致 AI Completion 解析失败（No content in response）。
-    // 这里为补全请求设置一个更高的下限，保证有足够预算产出最终 content。
-    //
-    // 注意：AI Completion 是交互式能力，宁可浪费一点 token 也要保证稳定返回 content。
     model_config.parameters.max_tokens = Some(settings.max_tokens.max(8_192));
 
     let client = get_client(&model_config.provider).map_err(|e| e.to_string())?;
@@ -572,184 +544,6 @@ pub async fn ai_code_completion(
     let items = parse_ai_completion_items(&raw, count);
     Ok(AiCodeCompletionResult {
         items,
-        model_ref: model_ref.to_string(),
-        latency_ms: started.elapsed().as_millis() as u64,
-    })
-}
-
-#[tauri::command]
-pub async fn ai_chat_with_selection(
-    args: AiChatWithSelectionArgs,
-    db: tauri::State<'_, Arc<Mutex<Database>>>,
-    config_manager: tauri::State<'_, Arc<ConfigManager>>,
-) -> Result<AiChatWithSelectionResult, String> {
-    let ws_id = args.workstudio_id.trim();
-    let lang = args.language_id.trim();
-    let file_path = args.file_path.trim();
-    let question = args.question.trim();
-    let selection = args.selection.trim();
-
-    if ws_id.is_empty() {
-        return Err("workstudioId 为空".to_string());
-    }
-    if lang.is_empty() {
-        return Err("languageId 为空".to_string());
-    }
-    if file_path.is_empty() {
-        return Err("filePath 为空".to_string());
-    }
-    if question.is_empty() {
-        return Err("question 为空".to_string());
-    }
-    if selection.is_empty() {
-        return Err("selection 为空".to_string());
-    }
-
-    let ws: Workstudio = {
-        async_db::with_db(db.inner(), "ai_chat_with_selection:get_workstudio", |db| {
-            db.get_workstudio(ws_id)
-        })
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Workstudio not found".to_string())?
-    };
-
-    let config = config_manager.ensure_default().map_err(|e| e.to_string())?;
-    let settings = &config.code_intelligence.ai_completion;
-    if !settings.enabled {
-        return Err("AI 补全已关闭（设置 -> Code Intelligence -> AI Completion）".to_string());
-    }
-    // modelRef 优先级：
-    // 1) agent config (name: "__system_chat_with")
-    // 2) AppConfig.currentModelRef
-    let assigned_agent = settings.chat_with_agent_ref.trim();
-    let assigned_agent = if assigned_agent.is_empty() {
-        "__system_chat_with"
-    } else {
-        assigned_agent
-    };
-
-    let agent = config
-        .agents
-        .iter()
-        .find(|a| a.name == assigned_agent)
-        .or_else(|| {
-            config
-                .agents
-                .iter()
-                .find(|a| a.name == "__system_chat_with")
-        });
-    let effective_model_ref = agent.map(|a| a.model_ref.trim()).unwrap_or("");
-    let effective_model_ref = if effective_model_ref.is_empty() {
-        config
-            .current_model_ref
-            .as_deref()
-            .unwrap_or("")
-            .trim()
-            .to_string()
-    } else {
-        effective_model_ref.to_string()
-    };
-    let model_ref = effective_model_ref.trim();
-    if model_ref.is_empty() {
-        return Err("未配置 AI Completion 的 modelRef（也未设置 currentModelRef）".to_string());
-    }
-
-    let (provider_name, model_name) = AppConfig::parse_model_ref(model_ref)
-        .ok_or_else(|| "无效 modelRef（应为 provider/model）".to_string())?;
-    let provider = config
-        .get_provider(provider_name)
-        .ok_or_else(|| format!("未找到 provider：{provider_name}"))?;
-    if !provider.enabled {
-        return Err(format!("Provider 未启用：{provider_name}"));
-    }
-    let model = provider
-        .models
-        .iter()
-        .find(|m| m.name == model_name)
-        .ok_or_else(|| format!("未找到 model：{model_name}"))?;
-
-    let mut model_config = build_model_config(
-        provider,
-        model,
-        Some(serde_json::Value::Bool(false)),
-        Some(false),
-    );
-    // Inline chat 不需要“思考/推理”字段，避免部分网关返回 content=null
-    model_config.thinking_level = None;
-    model_config.parameters.temperature = Some(settings.temperature.max(0.0).min(2.0) as f32);
-    model_config.parameters.max_tokens = Some(settings.max_tokens.max(8_192));
-
-    let client = get_client(&model_config.provider).map_err(|e| e.to_string())?;
-
-    let rel_path = file_path
-        .strip_prefix(ws.main_folder.as_str())
-        .unwrap_or(file_path)
-        .trim_start_matches(std::path::MAIN_SEPARATOR)
-        .to_string();
-
-    let system_prompt = {
-        let configured = config
-            .agents
-            .iter()
-            .find(|a| a.name == "__system_chat_with");
-        match configured {
-            Some(a) if !a.system_prompt.trim().is_empty() => a.system_prompt.clone(),
-            _ => inline_chat_system_prompt(),
-        }
-    };
-    let user_prompt = inline_chat_user_prompt(
-        lang,
-        &rel_path,
-        ws.main_folder.as_str(),
-        question,
-        selection,
-    );
-
-    let now = chrono::Utc::now();
-    let conversation_id = format!("workstudio:{ws_id}:inline_chat");
-    let messages = vec![
-        Message {
-            id: uuid::Uuid::new_v4().to_string(),
-            conversation_id: conversation_id.clone(),
-            role: MessageRole::System,
-            content: system_prompt,
-            content_parts: Vec::new(),
-            thinking: None,
-            meta: None,
-            created_at: now,
-            status: MessageStatus::Success,
-            error_message: None,
-        },
-        Message {
-            id: uuid::Uuid::new_v4().to_string(),
-            conversation_id,
-            role: MessageRole::User,
-            content: user_prompt,
-            content_parts: Vec::new(),
-            thinking: None,
-            meta: None,
-            created_at: now,
-            status: MessageStatus::Success,
-            error_message: None,
-        },
-    ];
-
-    let started = Instant::now();
-    let timeout_ms = settings.timeout_ms.max(15_000);
-    let answer = match tokio::time::timeout(
-        Duration::from_millis(timeout_ms),
-        client.chat(messages, &model_config, None),
-    )
-    .await
-    {
-        Ok(Ok(v)) => v,
-        Ok(Err(e)) => return Err(e.to_string()),
-        Err(_) => return Err(format!("内联问答超时（{}ms）", timeout_ms)),
-    };
-
-    Ok(AiChatWithSelectionResult {
-        answer,
         model_ref: model_ref.to_string(),
         latency_ms: started.elapsed().as_millis() as u64,
     })
@@ -1344,8 +1138,255 @@ pub async fn save_workstudio_folder_analysis(
 }
 
 // ============================================================================
-// Workstudio Chat With (Inline Chat, persisted)
+// Workstudio Chat With（index-backed history）
 // ============================================================================
+
+pub const WORKSTUDIO_CHAT_WITH_INDEX_CHANGED_EVENT: &str = "workstudio:chat_with_index_changed";
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkstudioChatWithIndexChangedEvent {
+    workstudio_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    conversation_id: Option<String>,
+}
+
+fn emit_workstudio_chat_with_index_changed(
+    app_handle: &tauri::AppHandle,
+    workstudio_id: &str,
+    file_path: Option<&str>,
+    conversation_id: Option<&str>,
+) {
+    use tauri::Emitter;
+
+    let _ = app_handle.emit(
+        WORKSTUDIO_CHAT_WITH_INDEX_CHANGED_EVENT,
+        WorkstudioChatWithIndexChangedEvent {
+            workstudio_id: workstudio_id.to_string(),
+            file_path: file_path.map(|value| value.to_string()),
+            conversation_id: conversation_id.map(|value| value.to_string()),
+        },
+    );
+}
+
+fn build_chat_with_scope_label(
+    file_path: &str,
+    range: Option<&CodeSnippetRange>,
+    preferred: Option<&str>,
+) -> String {
+    let preferred = preferred.unwrap_or("").trim();
+    if !preferred.is_empty() {
+        return preferred.to_string();
+    }
+
+    let base = std::path::Path::new(file_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.trim())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("选中代码");
+
+    match range {
+        Some(range) if range.start_line > 0 && range.end_line > 0 => {
+            if range.start_line == range.end_line {
+                format!("{} · L{}", base, range.start_line)
+            } else {
+                format!("{} · L{}-{}", base, range.start_line, range.end_line)
+            }
+        }
+        _ => base.to_string(),
+    }
+}
+
+fn derive_chat_with_scope_from_message(message: &Message) -> Option<WorkstudioChatWithScope> {
+    for part in &message.content_parts {
+        if let ContentPart::CodeSnippet {
+            label,
+            language_id,
+            file_path,
+            range,
+            ..
+        } = part
+        {
+            let file_path = file_path.as_deref().unwrap_or("").trim().to_string();
+            if file_path.is_empty() {
+                continue;
+            }
+            let range = range.clone();
+            return Some(WorkstudioChatWithScope {
+                file_path: file_path.clone(),
+                language_id: language_id.as_deref().unwrap_or("").trim().to_string(),
+                label: build_chat_with_scope_label(&file_path, range.as_ref(), Some(label)),
+                range,
+            });
+        }
+    }
+    None
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpsertWorkstudioChatWithIndexArgs {
+    pub workstudio_id: String,
+    pub conversation_id: String,
+    pub user_message_id: String,
+    pub assistant_message_id: String,
+    pub agent_name: String,
+    pub model_ref: Option<String>,
+    pub file_path: String,
+    pub language_id: String,
+    pub label: Option<String>,
+    pub range: Option<CodeSnippetRange>,
+}
+
+#[tauri::command]
+pub async fn upsert_workstudio_chat_with_index(
+    args: UpsertWorkstudioChatWithIndexArgs,
+    app_handle: tauri::AppHandle,
+    db: tauri::State<'_, Arc<Mutex<Database>>>,
+) -> Result<(), String> {
+    let workstudio_id = args.workstudio_id.trim().to_string();
+    let conversation_id = args.conversation_id.trim().to_string();
+    let user_message_id = args.user_message_id.trim().to_string();
+    let assistant_message_id = args.assistant_message_id.trim().to_string();
+    let agent_name = args.agent_name.trim().to_string();
+
+    if workstudio_id.is_empty() {
+        return Err("workstudioId 为空".to_string());
+    }
+    if conversation_id.is_empty() {
+        return Err("conversationId 为空".to_string());
+    }
+    if user_message_id.is_empty() {
+        return Err("userMessageId 为空".to_string());
+    }
+    if assistant_message_id.is_empty() {
+        return Err("assistantMessageId 为空".to_string());
+    }
+    if agent_name.is_empty() {
+        return Err("agentName 为空".to_string());
+    }
+
+    let conversation_id_for_event = conversation_id.clone();
+    let file_path_for_event =
+        async_db::with_db(db.inner(), "upsert_workstudio_chat_with_index", |db| {
+            let user_message = db.get_message(&conversation_id, &user_message_id)?;
+            let assistant_message = db.get_message(&conversation_id, &assistant_message_id)?;
+            let derived_scope = derive_chat_with_scope_from_message(&user_message);
+
+            let range = args
+                .range
+                .clone()
+                .or_else(|| derived_scope.as_ref().and_then(|scope| scope.range.clone()));
+            let file_path = {
+                let value = args.file_path.trim();
+                if !value.is_empty() {
+                    value.to_string()
+                } else {
+                    derived_scope
+                        .as_ref()
+                        .map(|scope| scope.file_path.clone())
+                        .unwrap_or_default()
+                }
+            };
+            if file_path.trim().is_empty() {
+                return Err(crate::storage::StorageError::Database(
+                    "filePath 为空".to_string(),
+                ));
+            }
+
+            let language_id = {
+                let value = args.language_id.trim();
+                if !value.is_empty() {
+                    value.to_string()
+                } else {
+                    derived_scope
+                        .as_ref()
+                        .map(|scope| scope.language_id.clone())
+                        .unwrap_or_default()
+                }
+            };
+            let label = build_chat_with_scope_label(
+                &file_path,
+                range.as_ref(),
+                args.label
+                    .as_deref()
+                    .or_else(|| derived_scope.as_ref().map(|scope| scope.label.as_str())),
+            );
+            let model_ref = args
+                .model_ref
+                .clone()
+                .and_then(|value| {
+                    let trimmed = value.trim().to_string();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed)
+                    }
+                })
+                .or_else(|| {
+                    assistant_message
+                        .meta
+                        .as_ref()
+                        .and_then(|meta| meta.model.clone())
+                });
+            let latency_ms = assistant_message
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.duration);
+
+            let entry = WorkstudioChatWithIndexEntry {
+                id: assistant_message_id.clone(),
+                workstudio_id: workstudio_id.clone(),
+                conversation_id: conversation_id.clone(),
+                user_message_id: user_message_id.clone(),
+                assistant_message_id: assistant_message_id.clone(),
+                agent_name: agent_name.clone(),
+                model_ref,
+                file_path: file_path.clone(),
+                language_id,
+                label,
+                range,
+                latency_ms,
+                created_at: user_message.created_at,
+                updated_at: assistant_message.created_at,
+            };
+
+            db.upsert_workstudio_chat_with_index(&entry)?;
+            Ok(file_path)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+
+    emit_workstudio_chat_with_index_changed(
+        &app_handle,
+        &workstudio_id,
+        Some(&file_path_for_event),
+        Some(&conversation_id_for_event),
+    );
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_workstudio_chat_with_scope_for_conversation(
+    conversation_id: String,
+    db: tauri::State<'_, Arc<Mutex<Database>>>,
+) -> Result<Option<WorkstudioChatWithScope>, String> {
+    let conversation_id = conversation_id.trim();
+    if conversation_id.is_empty() {
+        return Err("conversationId 为空".to_string());
+    }
+
+    async_db::with_db(
+        db.inner(),
+        "get_workstudio_chat_with_scope_for_conversation",
+        |db| db.get_workstudio_chat_with_scope_for_conversation(conversation_id),
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1366,10 +1407,10 @@ pub async fn list_workstudio_chat_with_records_for_file(
     let limit = args.limit.unwrap_or(200) as usize;
 
     if ws_id.is_empty() {
-        return Err("workstudioId 涓虹┖".to_string());
+        return Err("workstudioId 为空".to_string());
     }
     if file_path.is_empty() {
-        return Err("filePath 涓虹┖".to_string());
+        return Err("filePath 为空".to_string());
     }
 
     async_db::with_db(
@@ -1391,25 +1432,29 @@ pub struct DeleteWorkstudioChatWithRecordsForFileArgs {
 #[tauri::command]
 pub async fn delete_workstudio_chat_with_records_for_file(
     args: DeleteWorkstudioChatWithRecordsForFileArgs,
+    app_handle: tauri::AppHandle,
     db: tauri::State<'_, Arc<Mutex<Database>>>,
 ) -> Result<(), String> {
-    let ws_id = args.workstudio_id.trim();
-    let file_path = args.file_path.trim();
+    let ws_id = args.workstudio_id.trim().to_string();
+    let file_path = args.file_path.trim().to_string();
 
     if ws_id.is_empty() {
-        return Err("workstudioId 涓虹┖".to_string());
+        return Err("workstudioId 为空".to_string());
     }
     if file_path.is_empty() {
-        return Err("filePath 涓虹┖".to_string());
+        return Err("filePath 为空".to_string());
     }
 
     async_db::with_db(
         db.inner(),
         "delete_workstudio_chat_with_records_for_file",
-        |db| db.delete_workstudio_chat_with_records_for_file(ws_id, file_path),
+        |db| db.delete_workstudio_chat_with_records_for_file(&ws_id, &file_path),
     )
     .await
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+
+    emit_workstudio_chat_with_index_changed(&app_handle, &ws_id, Some(&file_path), None);
+    Ok(())
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -1451,10 +1496,11 @@ pub struct DeleteWorkstudioChatWithRecordArgs {
 #[tauri::command]
 pub async fn delete_workstudio_chat_with_record(
     args: DeleteWorkstudioChatWithRecordArgs,
+    app_handle: tauri::AppHandle,
     db: tauri::State<'_, Arc<Mutex<Database>>>,
 ) -> Result<(), String> {
-    let ws_id = args.workstudio_id.trim();
-    let id = args.id.trim();
+    let ws_id = args.workstudio_id.trim().to_string();
+    let id = args.id.trim().to_string();
 
     if ws_id.is_empty() {
         return Err("workstudioId 为空".to_string());
@@ -1463,13 +1509,14 @@ pub async fn delete_workstudio_chat_with_record(
         return Err("id 为空".to_string());
     }
 
-    async_db::with_db(
-        db.inner(),
-        "delete_workstudio_chat_with_record",
-        |db| db.delete_workstudio_chat_with_record(ws_id, id),
-    )
+    async_db::with_db(db.inner(), "delete_workstudio_chat_with_record", |db| {
+        db.delete_workstudio_chat_with_record(&ws_id, &id)
+    })
     .await
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+
+    emit_workstudio_chat_with_index_changed(&app_handle, &ws_id, None, None);
+    Ok(())
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -1791,55 +1838,6 @@ fn ai_completion_user_prompt(
     out
 }
 
-fn inline_chat_system_prompt() -> String {
-    r#"你是 IDE 中的“代码对话助手（Chat With）”。
-
-你会收到：
-- 用户问题（可能是连续追问）
-- 一个选中代码片段（可能不完整）
-- 元信息（languageId、filePath、projectRoot）
-
-输出必须使用 Markdown，并遵循：
-1) 先给结论摘要，再给结构化分析，最后给可执行建议/验证步骤。
-2) 关键结论尽量附代码定位，文件引用格式仅允许：
-   - `path:line` / `path:line:column`
-   - `path#Lline` / `path#LlineCcolumn`
-   禁止使用 `[label](path)` 这种文件链接写法；不要编造行号。
-   - 所有 `path` 都必须相对 `projectRoot` 输出；如果仓库里还有嵌套子项目，不能省略外层目录前缀。
-   - 例如：若 `projectRoot` 是仓库根目录，而代码位于 `tauri-ai/` 子项目中，应写 `tauri-ai/apps/desktop/src/hooks/useKeyboardShortcuts.ts:46`，不要写 `apps/desktop/src/hooks/useKeyboardShortcuts.ts:46`。
-3) 解释调用链/模块关系/生命周期时，优先给 Mermaid UML（flowchart / sequence / classDiagram）。
-4) 若 Mermaid 节点需要可点击跳转代码，请使用 `click` 语法并绑定到 `path:line`。
-5) 缺少上下文时明确指出需要查看的文件/符号/命令，不要臆测。
-"#
-    .to_string()
-}
-
-fn inline_chat_user_prompt(
-    language_id: &str,
-    file_path: &str,
-    project_root: &str,
-    question: &str,
-    selection: &str,
-) -> String {
-    let mut out = String::new();
-    out.push_str("请基于选中代码片段回答问题。\n\n");
-    out.push_str(&format!("languageId: {language_id}\n"));
-    out.push_str(&format!("filePath: {file_path}\n"));
-    out.push_str(&format!("projectRoot: {project_root}\n"));
-    out.push_str(
-        "fileReferenceRule: 所有文件引用都必须相对 projectRoot；如果仓库内存在嵌套子项目，请保留最外层子目录前缀，不要擅自改成相对子项目根目录的写法。\n",
-    );
-    out.push_str(
-        "fileReferenceExample: 正确 `tauri-ai/apps/desktop/src/hooks/useKeyboardShortcuts.ts:46`；错误 `apps/desktop/src/hooks/useKeyboardShortcuts.ts:46`。\n",
-    );
-    out.push('\n');
-    out.push_str("问题：\n");
-    out.push_str(question);
-    out.push_str("\n\n选中代码：\n");
-    out.push_str(&format!("```{language_id}\n{selection}\n```\n"));
-    out
-}
-
 #[derive(Debug, Clone, Copy)]
 enum SymbolAnalysisKind {
     Class,
@@ -2083,426 +2081,4 @@ fn head_chars(text: &str, max_chars: usize) -> String {
         return text.to_string();
     }
     text.chars().take(max_chars).collect()
-}
-
-// ============================================================================
-// Workstudio Agent Stream
-// ============================================================================
-
-/// Abort sender registry: run_id → oneshot cancel sender
-fn agent_abort_map() -> &'static dashmap::DashMap<String, tokio::sync::oneshot::Sender<()>> {
-    static MAP: std::sync::OnceLock<dashmap::DashMap<String, tokio::sync::oneshot::Sender<()>>> =
-        std::sync::OnceLock::new();
-    MAP.get_or_init(dashmap::DashMap::new)
-}
-
-#[derive(Debug, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkstudioRunAgentArgs {
-    pub workstudio_id: String,
-    pub agent_name: String,
-    pub purpose: Option<String>,
-    pub language_id: Option<String>,
-    pub file_path: Option<String>,
-    pub selection_range: Option<CodeSnippetRange>,
-    pub symbol_key: Option<String>,
-    pub symbol_name: Option<String>,
-    pub symbol_kind: Option<String>,
-    pub code: Option<String>,
-    pub user_input: String,
-}
-
-/// Agent stream event payload emitted to the frontend as `workstudio:agent:event`
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase", tag = "type")]
-pub enum WorkstudioAgentEvent {
-    /// A content text delta was received
-    TextDelta { run_id: String, delta: String },
-    /// A thinking/reasoning delta was received
-    ThinkingDelta { run_id: String, delta: String },
-    /// A tool call was requested by the model
-    ToolCall {
-        run_id: String,
-        id: String,
-        name: String,
-        arguments: String,
-    },
-    /// Streaming completed successfully
-    Done {
-        run_id: String,
-        answer_md: String,
-        model_ref: String,
-        latency_ms: u64,
-    },
-    /// An error occurred
-    Error { run_id: String, message: String },
-}
-
-#[tauri::command]
-pub async fn workstudio_run_agent_stream(
-    args: WorkstudioRunAgentArgs,
-    app_handle: tauri::AppHandle,
-    db: tauri::State<'_, Arc<Mutex<Database>>>,
-    config_manager: tauri::State<'_, Arc<ConfigManager>>,
-) -> Result<String, String> {
-    use crate::ai_client::{StreamEvent, StreamOptions};
-    use tauri::Emitter;
-    use tokio::sync::{mpsc, oneshot};
-
-    let ws_id = args.workstudio_id.trim().to_string();
-    let agent_name = args.agent_name.trim().to_string();
-    let user_input = args.user_input.trim().to_string();
-
-    if ws_id.is_empty() {
-        return Err("workstudioId 为空".to_string());
-    }
-    if agent_name.is_empty() {
-        return Err("agentName 为空".to_string());
-    }
-    if user_input.is_empty() {
-        return Err("userInput 为空".to_string());
-    }
-
-    // --- Fetch workstudio ---
-    let ws: Workstudio = {
-        async_db::with_db(
-            db.inner(),
-            "workstudio_run_agent_stream:get_workstudio",
-            |db| db.get_workstudio(&ws_id),
-        )
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Workstudio not found".to_string())?
-    };
-
-    // --- Fetch config & agent ---
-    let config = config_manager.ensure_default().map_err(|e| e.to_string())?;
-    let agent = config
-        .agents
-        .iter()
-        .find(|a| a.name == agent_name)
-        .cloned()
-        .or_else(|| {
-            // Fallback for default system agents that might not be explicitly stored yet
-            if agent_name.starts_with("__system_") {
-                Some(crate::models::Agent {
-                    name: agent_name.clone(),
-                    enabled: true,
-                    agent_type: crate::models::AgentType::Chat,
-                    display_name: String::new(),
-                    description: None,
-                    task_usage: None,
-                    model_ref: config.current_model_ref.clone().unwrap_or_default(),
-                    system_prompt: String::new(),
-                    format_type: crate::prompts::FormatPromptType::default(),
-                    default_run_mode: None,
-                    toolset: None,
-                    mcp_set: None,
-                    skill_set: None,
-                    security_policy: None,
-                    sandbox_policy: None,
-                    approval_policy: None,
-                    workspace_support: None,
-                    max_turns: None,
-                    reinject_thinking: false,
-                    context_policy: None,
-                    workstudio_enabled: None,
-                })
-            } else {
-                None
-            }
-        })
-        .ok_or_else(|| format!("Agent not found: {agent_name}"))?;
-
-    let model_ref = agent.model_ref.trim().to_string();
-    if model_ref.is_empty() {
-        return Err(format!("Agent '{agent_name}' has no modelRef configured"));
-    }
-
-    let (provider_name, model_name) = AppConfig::parse_model_ref(&model_ref)
-        .ok_or_else(|| format!("Invalid modelRef: {model_ref}"))?;
-    let provider = config
-        .get_provider(provider_name)
-        .ok_or_else(|| format!("Provider not found: {provider_name}"))?;
-    if !provider.enabled {
-        return Err(format!("Provider not enabled: {provider_name}"));
-    }
-    let model = provider
-        .models
-        .iter()
-        .find(|m| m.name == model_name)
-        .ok_or_else(|| format!("Model not found: {model_name}"))?;
-
-    let mut model_config = build_model_config(
-        provider,
-        model,
-        Some(serde_json::Value::Bool(false)),
-        Some(false),
-    );
-    model_config.thinking_level = None;
-
-    let client = get_client(&model_config.provider).map_err(|e| e.to_string())?;
-
-    // --- Build messages ---
-    let run_id = uuid::Uuid::new_v4().to_string();
-    let now = chrono::Utc::now();
-    let conversation_id = format!("workstudio:{ws_id}:agent:{agent_name}");
-
-    let rel_path = args.file_path.as_deref().map(|fp| {
-        fp.strip_prefix(ws.main_folder.as_str())
-            .unwrap_or(fp)
-            .trim_start_matches(std::path::MAIN_SEPARATOR)
-            .to_string()
-    });
-
-    // Build system prompt from agent + context metadata
-    let mut system_parts = vec![agent.system_prompt.clone()];
-    if let Some(ref rp) = rel_path {
-        system_parts.push(format!("当前文件: {rp}"));
-    }
-    if let Some(ref sym) = args.symbol_name {
-        let kind = args.symbol_kind.as_deref().unwrap_or("symbol");
-        system_parts.push(format!("当前符号: {sym}（{kind}）"));
-    }
-    if !ws.main_folder.is_empty() {
-        system_parts.push(format!("项目根目录: {}", ws.main_folder));
-    }
-    let system_content = system_parts.join("\n");
-
-    // Build user content: optional code snippet + user question
-    let mut user_parts: Vec<String> = Vec::new();
-    if let Some(ref code) = args.code {
-        let lang = args.language_id.as_deref().unwrap_or("text");
-        user_parts.push(format!("```{lang}\n{code}\n```"));
-    }
-    user_parts.push(user_input.clone());
-    let user_content = user_parts.join("\n\n");
-
-    let messages = vec![
-        Message {
-            id: uuid::Uuid::new_v4().to_string(),
-            conversation_id: conversation_id.clone(),
-            role: MessageRole::System,
-            content: system_content,
-            content_parts: Vec::new(),
-            thinking: None,
-            meta: None,
-            created_at: now,
-            status: MessageStatus::Success,
-            error_message: None,
-        },
-        Message {
-            id: uuid::Uuid::new_v4().to_string(),
-            conversation_id,
-            role: MessageRole::User,
-            content: user_content,
-            content_parts: Vec::new(),
-            thinking: None,
-            meta: None,
-            created_at: now,
-            status: MessageStatus::Success,
-            error_message: None,
-        },
-    ];
-
-    // --- Set up abort channel ---
-    let (abort_tx, abort_rx) = oneshot::channel::<()>();
-    agent_abort_map().insert(run_id.clone(), abort_tx);
-
-    // --- Spawn streaming task ---
-    let persist_chat_with = args
-        .purpose
-        .as_deref()
-        .map(|s| s.trim())
-        .is_some_and(|s| s.eq_ignore_ascii_case("chat_with"));
-    let run_id_clone = run_id.clone();
-    let app_handle_clone = app_handle.clone();
-    let file_path = args.file_path.clone();
-    let symbol_key = args.symbol_key.clone();
-    let language_id = args.language_id.clone();
-    let selection_range = args.selection_range.clone();
-    let code = args.code.clone();
-    let question = user_input.clone();
-    let agent_name_for_store = agent_name.clone();
-    let ws_id_for_store = ws_id.clone();
-    let created_at = now;
-    let model_ref_clone = model_ref.clone();
-    let db_clone = Arc::clone(db.inner());
-
-    tokio::spawn(async move {
-        let (tx, mut rx) = mpsc::channel::<StreamEvent>(256);
-        let started = Instant::now();
-
-        let stream_handle = tokio::spawn({
-            let model_config = model_config.clone();
-            let client = client.clone();
-            async move {
-                client
-                    .chat_stream(messages, &model_config, None, tx, StreamOptions::default())
-                    .await
-            }
-        });
-
-        let mut content_buf = String::new();
-        let mut thinking_buf = String::new();
-        let mut final_content: Option<String> = None;
-        let mut stream_error: Option<String> = None;
-
-        tokio::select! {
-            _ = abort_rx => {
-                stream_handle.abort();
-                let _ = app_handle_clone.emit(
-                    "workstudio:agent:event",
-                    WorkstudioAgentEvent::Error {
-                        run_id: run_id_clone.clone(),
-                        message: "已中止".to_string(),
-                    },
-                );
-                agent_abort_map().remove(&run_id_clone);
-                return;
-            }
-            _ = async {
-                while let Some(ev) = rx.recv().await {
-                    match ev {
-                        StreamEvent::Token(delta) => {
-                            content_buf.push_str(&delta);
-                            let _ = app_handle_clone.emit(
-                                "workstudio:agent:event",
-                                WorkstudioAgentEvent::TextDelta {
-                                    run_id: run_id_clone.clone(),
-                                    delta,
-                                },
-                            );
-                        }
-                        StreamEvent::Thinking(delta) => {
-                            thinking_buf.push_str(&delta);
-                            let _ = app_handle_clone.emit(
-                                "workstudio:agent:event",
-                                WorkstudioAgentEvent::ThinkingDelta {
-                                    run_id: run_id_clone.clone(),
-                                    delta,
-                                },
-                            );
-                        }
-                        StreamEvent::ToolCalls(calls) => {
-                            for call in calls {
-                                let _ = app_handle_clone.emit(
-                                    "workstudio:agent:event",
-                                    WorkstudioAgentEvent::ToolCall {
-                                        run_id: run_id_clone.clone(),
-                                        id: call.id,
-                                        name: call.name,
-                                        arguments: call.arguments,
-                                    },
-                                );
-                            }
-                        }
-                        StreamEvent::Done(content) => {
-                            final_content = Some(content);
-                            break;
-                        }
-                        StreamEvent::DoneWithThinking { content, .. } => {
-                            final_content = Some(content);
-                            break;
-                        }
-                        StreamEvent::DoneWithDebug { content, .. } => {
-                            final_content = Some(content);
-                            break;
-                        }
-                        StreamEvent::Error(e) => {
-                            stream_error = Some(e);
-                            break;
-                        }
-                        StreamEvent::TurnState(_) | StreamEvent::WebSearch { .. } => {}
-                    }
-                }
-            } => {}
-        }
-
-        agent_abort_map().remove(&run_id_clone);
-
-        if let Some(err) = stream_error {
-            let _ = app_handle_clone.emit(
-                "workstudio:agent:event",
-                WorkstudioAgentEvent::Error {
-                    run_id: run_id_clone,
-                    message: err,
-                },
-            );
-            return;
-        }
-
-        let answer_md = final_content.unwrap_or(content_buf);
-        let latency_ms = started.elapsed().as_millis() as u64;
-
-        // Persist to DB if we have a symbol key
-        if let (Some(fp), Some(sk)) = (file_path.as_deref(), symbol_key.as_deref()) {
-            // We have a db handle reference via the db State, but it was consumed during messages build.
-            // We emit the done event with full content and let frontend cache.
-            // For heavy persistence, a separate `workstudio_save_agent_result` command can be called by frontend.
-            let _ = sk; // suppress warning — persistence done client-side via separate invoke
-            let _ = fp;
-        }
-
-        // Persist Chat-with history (best-effort; do not fail the UI run on DB errors).
-        if persist_chat_with {
-            if let (Some(fp), Some(lang), Some(code)) = (
-                file_path.as_deref(),
-                language_id.as_deref(),
-                code.as_deref(),
-            ) {
-                let updated_at = chrono::Utc::now();
-                let record = WorkstudioChatWithRecord {
-                    id: run_id_clone.clone(),
-                    workstudio_id: ws_id_for_store.clone(),
-                    agent_name: agent_name_for_store.clone(),
-                    model_ref: Some(model_ref_clone.clone()),
-                    file_path: fp.to_string(),
-                    language_id: lang.to_string(),
-                    range: selection_range.clone(),
-                    question: question.clone(),
-                    code: code.to_string(),
-                    answer_md: answer_md.clone(),
-                    thinking: {
-                        let t = thinking_buf.trim();
-                        if t.is_empty() {
-                            None
-                        } else {
-                            Some(thinking_buf.clone())
-                        }
-                    },
-                    latency_ms: Some(latency_ms),
-                    created_at,
-                    updated_at,
-                };
-
-                let _ = async_db::with_db(
-                    &db_clone,
-                    "workstudio_run_agent_stream:insert_workstudio_chat_with_record",
-                    |db| db.insert_workstudio_chat_with_record(&record),
-                )
-                .await;
-            }
-        }
-
-        let _ = app_handle_clone.emit(
-            "workstudio:agent:event",
-            WorkstudioAgentEvent::Done {
-                run_id: run_id_clone,
-                answer_md,
-                model_ref: model_ref_clone,
-                latency_ms,
-            },
-        );
-    });
-
-    Ok(run_id)
-}
-
-#[tauri::command]
-pub async fn workstudio_abort_agent(run_id: String) -> Result<(), String> {
-    if let Some((_, tx)) = agent_abort_map().remove(&run_id) {
-        let _ = tx.send(());
-    }
-    Ok(())
 }

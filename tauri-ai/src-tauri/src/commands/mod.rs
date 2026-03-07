@@ -51,17 +51,18 @@ mod workstudio_terminal;
 pub use clipboard::clipboard_write_png_base64;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use code_intel::{
-    ai_analyze_workstudio_symbol, ai_chat_with_selection, ai_code_completion, ast_document_symbols,
+    ai_analyze_workstudio_symbol, ai_code_completion, ast_document_symbols,
     code_index_request_document_symbols, code_index_start_workspace_scan, code_index_status,
     code_index_summary, delete_workstudio_chat_with_record,
     delete_workstudio_chat_with_records_for_file, delete_workstudio_folder_analysis,
-    delete_workstudio_symbol_analysis, get_workstudio_folder_analysis, get_workstudio_symbol_analysis,
+    delete_workstudio_symbol_analysis, get_workstudio_chat_with_scope_for_conversation,
+    get_workstudio_folder_analysis, get_workstudio_symbol_analysis,
     list_workstudio_chat_with_file_summaries, list_workstudio_chat_with_records_for_file,
     list_workstudio_folder_analysis_summaries, list_workstudio_symbol_analysis_keys_for_file,
     list_workstudio_symbol_analysis_summaries_for_file, lsp_detect_server, lsp_ensure_server,
     lsp_notify, lsp_request, lsp_shutdown_language, lsp_shutdown_workstudio, lsp_status,
-    save_workstudio_folder_analysis, save_workstudio_symbol_analysis, workstudio_abort_agent,
-    workstudio_run_agent_stream,
+    save_workstudio_folder_analysis, save_workstudio_symbol_analysis,
+    upsert_workstudio_chat_with_index,
 };
 pub use config::{fetch_provider_models, get_app_config, save_app_config, test_connection};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -119,13 +120,12 @@ pub use window_control::{close_invoking_window, hide_invoking_window};
 pub use workstudio::{
     add_workstudio_folder, create_workstudio, ensure_workstudio_for_conversation, get_workstudio,
     remove_workstudio_folder, resolve_workstudio_file_target, set_workstudio_main_folder,
-    workstudio_find_files,
-    workstudio_main_folder_has_real_content,
+    workstudio_find_files, workstudio_main_folder_has_real_content,
 };
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use workstudio_fs::{
-    get_local_file_snapshots, workstudio_fs_sync_watch, workstudio_fs_unwatch,
-    WorkstudioFsWatcher, WorkstudioFsWatcherState,
+    get_local_file_snapshots, workstudio_fs_sync_watch, workstudio_fs_unwatch, WorkstudioFsWatcher,
+    WorkstudioFsWatcherState,
 };
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use workstudio_security::{get_workstudio_security_config, set_workstudio_security_config};

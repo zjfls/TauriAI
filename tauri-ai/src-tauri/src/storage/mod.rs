@@ -2,7 +2,7 @@
 //!
 //! This module provides SQLite-based storage for conversations and messages.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::{
     collections::{BTreeMap, HashSet},
@@ -17,9 +17,9 @@ use thiserror::Error;
 use crate::models::WorkstudioUiState;
 use crate::models::{
     CodeSnippetRange, ContentPart, Conversation, Message, MessageRole, Workstudio,
-    WorkstudioChatWithFileSummary, WorkstudioChatWithRecord, WorkstudioFolderAnalysis,
-    WorkstudioFolderAnalysisSummary, WorkstudioSymbolAnalysis, WorkstudioSymbolAnalysisSummary,
-    WorkstudioSymbolDiagnosisCounts,
+    WorkstudioChatWithFileSummary, WorkstudioChatWithIndexEntry, WorkstudioChatWithRecord,
+    WorkstudioChatWithScope, WorkstudioFolderAnalysis, WorkstudioFolderAnalysisSummary,
+    WorkstudioSymbolAnalysis, WorkstudioSymbolAnalysisSummary, WorkstudioSymbolDiagnosisCounts,
 };
 
 pub mod async_db;
@@ -141,6 +141,111 @@ impl MessageDbFields {
             meta_json,
         })
     }
+}
+
+fn parse_db_datetime_or_now(value: &str) -> DateTime<Utc> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|dt| dt.with_timezone(&Utc))
+        .unwrap_or_else(|_| Utc::now())
+}
+
+fn build_chat_with_scope_label(
+    file_path: &str,
+    range: Option<&CodeSnippetRange>,
+    preferred: Option<&str>,
+) -> String {
+    let preferred = preferred.unwrap_or("").trim();
+    if !preferred.is_empty() {
+        return preferred.to_string();
+    }
+
+    let base = Path::new(file_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.trim())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("选中代码");
+
+    match range {
+        Some(range) if range.start_line > 0 && range.end_line > 0 => {
+            if range.start_line == range.end_line {
+                format!("{} · L{}", base, range.start_line)
+            } else {
+                format!("{} · L{}-{}", base, range.start_line, range.end_line)
+            }
+        }
+        _ => base.to_string(),
+    }
+}
+
+fn extract_chat_with_snippet_parts(
+    message: &Message,
+) -> (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<CodeSnippetRange>,
+    String,
+) {
+    let mut label: Option<String> = None;
+    let mut language_id: Option<String> = None;
+    let mut file_path: Option<String> = None;
+    let mut range: Option<CodeSnippetRange> = None;
+    let mut snippets: Vec<String> = Vec::new();
+
+    for part in &message.content_parts {
+        if let ContentPart::CodeSnippet {
+            label: part_label,
+            text,
+            language_id: part_language_id,
+            file_path: part_file_path,
+            range: part_range,
+            ..
+        } = part
+        {
+            let trimmed_label = part_label.trim();
+            if label.is_none() && !trimmed_label.is_empty() {
+                label = Some(trimmed_label.to_string());
+            }
+            if language_id.is_none() {
+                let candidate = part_language_id.as_deref().unwrap_or("").trim();
+                if !candidate.is_empty() {
+                    language_id = Some(candidate.to_string());
+                }
+            }
+            if file_path.is_none() {
+                let candidate = part_file_path.as_deref().unwrap_or("").trim();
+                if !candidate.is_empty() {
+                    file_path = Some(candidate.to_string());
+                }
+            }
+            if range.is_none() {
+                range = part_range.clone();
+            }
+            let normalized = text.replace("\r\n", "\n");
+            if !normalized.trim().is_empty() {
+                snippets.push(normalized);
+            }
+        }
+    }
+
+    (label, language_id, file_path, range, snippets.join("\n\n"))
+}
+
+fn derive_chat_with_scope_from_message(message: &Message) -> Option<WorkstudioChatWithScope> {
+    let (label, language_id, file_path, range, _code) = extract_chat_with_snippet_parts(message);
+    let file_path = file_path?.trim().to_string();
+    if file_path.is_empty() {
+        return None;
+    }
+    let language_id = language_id.unwrap_or_default();
+    let computed_label = build_chat_with_scope_label(&file_path, range.as_ref(), label.as_deref());
+    Some(WorkstudioChatWithScope {
+        file_path,
+        language_id,
+        label: computed_label,
+        range,
+    })
 }
 
 impl Database {
@@ -404,7 +509,55 @@ impl Database {
             [],
         )?;
 
-        // Create workstudio_chat_with_records table (persisted inline chat "Chat with…" history)
+        // Create workstudio_chat_with_indexes table (new Chat With index rows -> real conversation messages)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS workstudio_chat_with_indexes (
+                id TEXT PRIMARY KEY,
+                workstudio_id TEXT NOT NULL,
+                conversation_id TEXT NOT NULL,
+                user_message_id TEXT NOT NULL,
+                assistant_message_id TEXT NOT NULL,
+                agent_name TEXT NOT NULL,
+                model_ref TEXT,
+                file_path TEXT NOT NULL,
+                language_id TEXT NOT NULL,
+                label TEXT NOT NULL DEFAULT '',
+                range_start_line INTEGER,
+                range_start_column INTEGER,
+                range_end_line INTEGER,
+                range_end_column INTEGER,
+                latency_ms INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )",
+            [],
+        )?;
+        let _ = conn.execute(
+            "ALTER TABLE workstudio_chat_with_indexes ADD COLUMN label TEXT NOT NULL DEFAULT ''",
+            [],
+        );
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_workstudio_chat_with_indexes_ws
+             ON workstudio_chat_with_indexes(workstudio_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_workstudio_chat_with_indexes_file
+             ON workstudio_chat_with_indexes(file_path)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_workstudio_chat_with_indexes_conversation
+             ON workstudio_chat_with_indexes(conversation_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_workstudio_chat_with_indexes_updated_at
+             ON workstudio_chat_with_indexes(updated_at)",
+            [],
+        )?;
+
+        // Legacy Chat With snapshot table（仅用于兼容旧数据读取；新数据不再写入）
         conn.execute(
             "CREATE TABLE IF NOT EXISTS workstudio_chat_with_records (
                 id TEXT PRIMARY KEY,
@@ -1217,7 +1370,10 @@ impl Database {
         let now = Utc::now().to_rfc3339();
 
         // Clearing is always allowed.
-        let Some(new_id) = cutoff_message_id.map(|v| v.trim()).filter(|v| !v.is_empty()) else {
+        let Some(new_id) = cutoff_message_id
+            .map(|v| v.trim())
+            .filter(|v| !v.is_empty())
+        else {
             let rows = conn.execute(
                 "UPDATE conversations
                  SET prompt_cutoff_message_id = NULL,
@@ -1263,8 +1419,7 @@ impl Database {
                 )
                 .ok();
 
-            if let (Some(old_time), Some(new_time)) = (old_time.as_deref(), new_time.as_deref())
-            {
+            if let (Some(old_time), Some(new_time)) = (old_time.as_deref(), new_time.as_deref()) {
                 if let (Ok(old_dt), Ok(new_dt)) = (
                     DateTime::parse_from_rfc3339(old_time),
                     DateTime::parse_from_rfc3339(new_time),
@@ -3015,7 +3170,158 @@ impl Database {
         Ok(())
     }
 
-    // ==================== Workstudio Chat With (Inline Chat) ====================
+    // ==================== Workstudio Chat With ====================
+
+    pub fn upsert_workstudio_chat_with_index(
+        &self,
+        entry: &WorkstudioChatWithIndexEntry,
+    ) -> Result<(), StorageError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Lock(e.to_string()))?;
+
+        let created_at_str = entry.created_at.to_rfc3339();
+        let updated_at_str = entry.updated_at.to_rfc3339();
+        let range = entry.range.as_ref();
+
+        conn.execute(
+            "INSERT INTO workstudio_chat_with_indexes (
+                id,
+                workstudio_id,
+                conversation_id,
+                user_message_id,
+                assistant_message_id,
+                agent_name,
+                model_ref,
+                file_path,
+                language_id,
+                label,
+                range_start_line,
+                range_start_column,
+                range_end_line,
+                range_end_column,
+                latency_ms,
+                created_at,
+                updated_at
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17
+            )
+            ON CONFLICT(id) DO UPDATE
+              SET workstudio_id = excluded.workstudio_id,
+                  conversation_id = excluded.conversation_id,
+                  user_message_id = excluded.user_message_id,
+                  assistant_message_id = excluded.assistant_message_id,
+                  agent_name = excluded.agent_name,
+                  model_ref = excluded.model_ref,
+                  file_path = excluded.file_path,
+                  language_id = excluded.language_id,
+                  label = excluded.label,
+                  range_start_line = excluded.range_start_line,
+                  range_start_column = excluded.range_start_column,
+                  range_end_line = excluded.range_end_line,
+                  range_end_column = excluded.range_end_column,
+                  latency_ms = excluded.latency_ms,
+                  created_at = excluded.created_at,
+                  updated_at = excluded.updated_at",
+            params![
+                entry.id.as_str(),
+                entry.workstudio_id.as_str(),
+                entry.conversation_id.as_str(),
+                entry.user_message_id.as_str(),
+                entry.assistant_message_id.as_str(),
+                entry.agent_name.as_str(),
+                entry.model_ref.as_deref(),
+                entry.file_path.as_str(),
+                entry.language_id.as_str(),
+                entry.label.as_str(),
+                range.map(|r| r.start_line as i64),
+                range.map(|r| r.start_column as i64),
+                range.map(|r| r.end_line as i64),
+                range.map(|r| r.end_column as i64),
+                entry.latency_ms.map(|v| v as i64),
+                created_at_str.as_str(),
+                updated_at_str.as_str(),
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn get_workstudio_chat_with_scope_for_conversation(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Option<WorkstudioChatWithScope>, StorageError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Lock(e.to_string()))?;
+
+        let mut stmt = conn.prepare(
+            "SELECT
+                file_path,
+                language_id,
+                label,
+                range_start_line,
+                range_start_column,
+                range_end_line,
+                range_end_column
+             FROM workstudio_chat_with_indexes
+             WHERE conversation_id = ?1
+             ORDER BY updated_at DESC
+             LIMIT 1",
+        )?;
+
+        let indexed_scope = stmt
+            .query_row(params![conversation_id], |r| {
+                let start_line: Option<i64> = r.get(3)?;
+                let start_column: Option<i64> = r.get(4)?;
+                let end_line: Option<i64> = r.get(5)?;
+                let end_column: Option<i64> = r.get(6)?;
+                let range = match (start_line, start_column, end_line, end_column) {
+                    (Some(sl), Some(sc), Some(el), Some(ec)) => Some(CodeSnippetRange {
+                        start_line: sl.max(0) as u32,
+                        start_column: sc.max(0) as u32,
+                        end_line: el.max(0) as u32,
+                        end_column: ec.max(0) as u32,
+                    }),
+                    _ => None,
+                };
+                let file_path: String = r.get(0)?;
+                let label: String = r.get(2)?;
+                Ok(WorkstudioChatWithScope {
+                    file_path: file_path.clone(),
+                    language_id: r.get(1)?,
+                    label: build_chat_with_scope_label(&file_path, range.as_ref(), Some(&label)),
+                    range,
+                })
+            })
+            .optional()?;
+
+        if indexed_scope.is_some() {
+            return Ok(indexed_scope);
+        }
+
+        let mut stmt = conn.prepare(
+            "SELECT id, conversation_id, role, content, thinking, content_parts, meta, created_at, status, error_message
+             FROM messages
+             WHERE conversation_id = ?1 AND role = 'user'
+             ORDER BY created_at ASC",
+        )?;
+
+        let messages = stmt
+            .query_map(params![conversation_id], |row| RawMessageRow::from_row(row))?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        for raw in messages {
+            let message = Self::raw_message_row_to_message(raw);
+            if let Some(scope) = derive_chat_with_scope_from_message(&message) {
+                return Ok(Some(scope));
+            }
+        }
+
+        Ok(None)
+    }
 
     pub fn insert_workstudio_chat_with_record(
         &self,
@@ -3092,17 +3398,12 @@ impl Database {
         Ok(())
     }
 
-    pub fn list_workstudio_chat_with_records_for_file(
-        &self,
+    fn list_legacy_workstudio_chat_with_records_for_file_locked(
+        conn: &Connection,
         workstudio_id: &str,
         file_path: &str,
         limit: usize,
     ) -> Result<Vec<WorkstudioChatWithRecord>, StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Lock(e.to_string()))?;
-
         let limit = limit.clamp(1, 5000) as i64;
         let mut stmt = conn.prepare(
             "SELECT
@@ -3151,6 +3452,9 @@ impl Database {
                 Ok(WorkstudioChatWithRecord {
                     id: r.get(0)?,
                     workstudio_id: r.get(1)?,
+                    conversation_id: None,
+                    user_message_id: None,
+                    assistant_message_id: None,
                     agent_name: r.get(2)?,
                     model_ref: r.get(3)?,
                     file_path: r.get(4)?,
@@ -3161,17 +3465,222 @@ impl Database {
                     answer_md: r.get(12)?,
                     thinking: r.get(13)?,
                     latency_ms: r.get::<_, Option<i64>>(14)?.map(|v| v.max(0) as u64),
-                    created_at: DateTime::parse_from_rfc3339(&created_at_str)
-                        .map(|dt| dt.with_timezone(&Utc))
-                        .unwrap_or_else(|_| Utc::now()),
-                    updated_at: DateTime::parse_from_rfc3339(&updated_at_str)
-                        .map(|dt| dt.with_timezone(&Utc))
-                        .unwrap_or_else(|_| Utc::now()),
+                    created_at: parse_db_datetime_or_now(&created_at_str),
+                    updated_at: parse_db_datetime_or_now(&updated_at_str),
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(rows)
+    }
+
+    pub fn list_workstudio_chat_with_records_for_file(
+        &self,
+        workstudio_id: &str,
+        file_path: &str,
+        limit: usize,
+    ) -> Result<Vec<WorkstudioChatWithRecord>, StorageError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::Lock(e.to_string()))?;
+
+        let limit = limit.clamp(1, 5000) as i64;
+        let mut stmt = conn.prepare(
+            "SELECT
+                id,
+                workstudio_id,
+                conversation_id,
+                user_message_id,
+                assistant_message_id,
+                agent_name,
+                model_ref,
+                file_path,
+                language_id,
+                label,
+                range_start_line,
+                range_start_column,
+                range_end_line,
+                range_end_column,
+                latency_ms,
+                created_at,
+                updated_at
+             FROM workstudio_chat_with_indexes
+             WHERE workstudio_id = ?1 AND file_path = ?2
+             ORDER BY updated_at DESC
+             LIMIT ?3",
+        )?;
+
+        let entries = stmt
+            .query_map(params![workstudio_id, file_path, limit], |r| {
+                let start_line: Option<i64> = r.get(10)?;
+                let start_column: Option<i64> = r.get(11)?;
+                let end_line: Option<i64> = r.get(12)?;
+                let end_column: Option<i64> = r.get(13)?;
+                let range = match (start_line, start_column, end_line, end_column) {
+                    (Some(sl), Some(sc), Some(el), Some(ec)) => Some(CodeSnippetRange {
+                        start_line: sl.max(0) as u32,
+                        start_column: sc.max(0) as u32,
+                        end_line: el.max(0) as u32,
+                        end_column: ec.max(0) as u32,
+                    }),
+                    _ => None,
+                };
+                let created_at_str: String = r.get(15)?;
+                let updated_at_str: String = r.get(16)?;
+                Ok(WorkstudioChatWithIndexEntry {
+                    id: r.get(0)?,
+                    workstudio_id: r.get(1)?,
+                    conversation_id: r.get(2)?,
+                    user_message_id: r.get(3)?,
+                    assistant_message_id: r.get(4)?,
+                    agent_name: r.get(5)?,
+                    model_ref: r.get(6)?,
+                    file_path: r.get(7)?,
+                    language_id: r.get(8)?,
+                    label: r.get(9)?,
+                    range,
+                    latency_ms: r.get::<_, Option<i64>>(14)?.map(|v| v.max(0) as u64),
+                    created_at: parse_db_datetime_or_now(&created_at_str),
+                    updated_at: parse_db_datetime_or_now(&updated_at_str),
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut message_stmt = conn.prepare(
+            "SELECT id, conversation_id, role, content, thinking, content_parts, meta, created_at, status, error_message
+             FROM messages
+             WHERE conversation_id = ?1 AND id = ?2
+             LIMIT 1",
+        )?;
+
+        let mut records: Vec<WorkstudioChatWithRecord> = Vec::new();
+        for entry in entries {
+            let user_raw = message_stmt
+                .query_row(
+                    params![
+                        entry.conversation_id.as_str(),
+                        entry.user_message_id.as_str()
+                    ],
+                    |row| RawMessageRow::from_row(row),
+                )
+                .optional()?;
+            let assistant_raw = message_stmt
+                .query_row(
+                    params![
+                        entry.conversation_id.as_str(),
+                        entry.assistant_message_id.as_str()
+                    ],
+                    |row| RawMessageRow::from_row(row),
+                )
+                .optional()?;
+
+            let user_message = user_raw.map(Self::raw_message_row_to_message);
+            let assistant_message = assistant_raw.map(Self::raw_message_row_to_message);
+
+            let (
+                derived_label,
+                derived_language_id,
+                derived_file_path,
+                derived_range,
+                derived_code,
+            ) = user_message
+                .as_ref()
+                .map(extract_chat_with_snippet_parts)
+                .unwrap_or((None, None, None, None, String::new()));
+
+            let effective_file_path = if !entry.file_path.trim().is_empty() {
+                entry.file_path.clone()
+            } else {
+                derived_file_path.unwrap_or_default()
+            };
+            if effective_file_path.trim().is_empty() {
+                continue;
+            }
+            let effective_language_id = if !entry.language_id.trim().is_empty() {
+                entry.language_id.clone()
+            } else {
+                derived_language_id.unwrap_or_default()
+            };
+            let effective_range = entry.range.clone().or(derived_range.clone());
+            let effective_label = build_chat_with_scope_label(
+                &effective_file_path,
+                effective_range.as_ref(),
+                Some(if !entry.label.trim().is_empty() {
+                    entry.label.as_str()
+                } else {
+                    derived_label.as_deref().unwrap_or("")
+                }),
+            );
+
+            let question = user_message
+                .as_ref()
+                .map(|m| m.content.trim().to_string())
+                .unwrap_or_default();
+            let answer_md = assistant_message
+                .as_ref()
+                .map(|m| m.content.clone())
+                .unwrap_or_default();
+            let thinking = assistant_message.as_ref().and_then(|m| m.thinking.clone());
+            let model_ref = entry.model_ref.clone().or_else(|| {
+                assistant_message
+                    .as_ref()
+                    .and_then(|m| m.meta.as_ref())
+                    .and_then(|meta| meta.model.clone())
+            });
+            let latency_ms = entry.latency_ms.or_else(|| {
+                assistant_message
+                    .as_ref()
+                    .and_then(|m| m.meta.as_ref())
+                    .and_then(|meta| meta.duration)
+            });
+
+            let mut record = WorkstudioChatWithRecord {
+                id: entry.id.clone(),
+                workstudio_id: entry.workstudio_id.clone(),
+                conversation_id: Some(entry.conversation_id.clone()),
+                user_message_id: Some(entry.user_message_id.clone()),
+                assistant_message_id: Some(entry.assistant_message_id.clone()),
+                agent_name: entry.agent_name.clone(),
+                model_ref,
+                file_path: effective_file_path,
+                language_id: effective_language_id,
+                range: effective_range,
+                question,
+                code: derived_code,
+                answer_md,
+                thinking,
+                latency_ms,
+                created_at: entry.created_at,
+                updated_at: entry.updated_at,
+            };
+
+            if record.code.trim().is_empty() {
+                record.code = build_chat_with_scope_label(
+                    &record.file_path,
+                    record.range.as_ref(),
+                    Some(&effective_label),
+                );
+            }
+
+            records.push(record);
+        }
+
+        let mut legacy = Self::list_legacy_workstudio_chat_with_records_for_file_locked(
+            &conn,
+            workstudio_id,
+            file_path,
+            limit as usize,
+        )?;
+        records.append(&mut legacy);
+        records.sort_by(|a, b| {
+            b.updated_at
+                .cmp(&a.updated_at)
+                .then_with(|| b.created_at.cmp(&a.created_at))
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        records.truncate(limit as usize);
+        Ok(records)
     }
 
     pub fn list_workstudio_chat_with_file_summaries(
@@ -3185,31 +3694,69 @@ impl Database {
             .map_err(|e| StorageError::Lock(e.to_string()))?;
 
         let limit = limit.clamp(1, 50_000) as i64;
-        let mut stmt = conn.prepare(
+        let mut merged: BTreeMap<String, WorkstudioChatWithFileSummary> = BTreeMap::new();
+
+        let mut index_stmt = conn.prepare(
+            "SELECT
+                file_path,
+                COUNT(*) as record_count,
+                MAX(updated_at) as updated_at
+             FROM workstudio_chat_with_indexes
+             WHERE workstudio_id = ?1
+             GROUP BY file_path",
+        )?;
+        let index_rows = index_stmt
+            .query_map(params![workstudio_id], |r| {
+                let updated_at_str: String = r.get(2)?;
+                Ok(WorkstudioChatWithFileSummary {
+                    file_path: r.get(0)?,
+                    record_count: r.get::<_, i64>(1)?.max(0) as u32,
+                    updated_at: parse_db_datetime_or_now(&updated_at_str),
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        for row in index_rows {
+            merged.insert(row.file_path.clone(), row);
+        }
+
+        let mut legacy_stmt = conn.prepare(
             "SELECT
                 file_path,
                 COUNT(*) as record_count,
                 MAX(updated_at) as updated_at
              FROM workstudio_chat_with_records
              WHERE workstudio_id = ?1
-             GROUP BY file_path
-             ORDER BY updated_at DESC
-             LIMIT ?2",
+             GROUP BY file_path",
         )?;
-
-        let rows = stmt
-            .query_map(params![workstudio_id, limit], |r| {
+        let legacy_rows = legacy_stmt
+            .query_map(params![workstudio_id], |r| {
                 let updated_at_str: String = r.get(2)?;
                 Ok(WorkstudioChatWithFileSummary {
                     file_path: r.get(0)?,
                     record_count: r.get::<_, i64>(1)?.max(0) as u32,
-                    updated_at: DateTime::parse_from_rfc3339(&updated_at_str)
-                        .map(|dt| dt.with_timezone(&Utc))
-                        .unwrap_or_else(|_| Utc::now()),
+                    updated_at: parse_db_datetime_or_now(&updated_at_str),
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
+        for row in legacy_rows {
+            merged
+                .entry(row.file_path.clone())
+                .and_modify(|existing| {
+                    existing.record_count = existing.record_count.saturating_add(row.record_count);
+                    if row.updated_at > existing.updated_at {
+                        existing.updated_at = row.updated_at;
+                    }
+                })
+                .or_insert(row);
+        }
 
+        let mut rows: Vec<WorkstudioChatWithFileSummary> = merged.into_values().collect();
+        rows.sort_by(|a, b| {
+            b.updated_at
+                .cmp(&a.updated_at)
+                .then_with(|| a.file_path.cmp(&b.file_path))
+        });
+        rows.truncate(limit as usize);
         Ok(rows)
     }
 
@@ -3223,6 +3770,11 @@ impl Database {
             .lock()
             .map_err(|e| StorageError::Lock(e.to_string()))?;
 
+        conn.execute(
+            "DELETE FROM workstudio_chat_with_indexes
+             WHERE workstudio_id = ?1 AND file_path = ?2",
+            params![workstudio_id, file_path],
+        )?;
         conn.execute(
             "DELETE FROM workstudio_chat_with_records
              WHERE workstudio_id = ?1 AND file_path = ?2",
@@ -3241,6 +3793,11 @@ impl Database {
             .lock()
             .map_err(|e| StorageError::Lock(e.to_string()))?;
 
+        conn.execute(
+            "DELETE FROM workstudio_chat_with_indexes
+             WHERE workstudio_id = ?1 AND id = ?2",
+            params![workstudio_id, id],
+        )?;
         conn.execute(
             "DELETE FROM workstudio_chat_with_records
              WHERE workstudio_id = ?1 AND id = ?2",
