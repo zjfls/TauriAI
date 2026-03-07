@@ -11,6 +11,7 @@ import { useConfigStore } from '../../stores/configStore';
 import { useSessionStore } from '../../stores/sessionStore';
 import { openViewWindow } from '../../utils/viewWindow';
 import { markChatOpenProfile, startChatOpenProfile } from '../../utils/chatOpenProfile';
+import { filterNonPracticeAgents } from '../../../../common/src/agentUtils';
 
 interface MainLayoutProps {
   children: React.ReactNode;
@@ -64,7 +65,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
   };
 
   // Get agents for session creation dropdown
-  const agents = config?.agents || [];
+  const agents = filterNonPracticeAgents(config?.agents || []);
 
   const handlePopoutSession = async (sessionId: string) => {
     const session = sessions.find((s) => s.id === sessionId);

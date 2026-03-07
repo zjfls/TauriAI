@@ -73,6 +73,7 @@ pub use conversation::{
 };
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use db_debug::get_db_lock_snapshot;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use devtools::open_devtools_current_window;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use drag_ghost::{
@@ -98,6 +99,7 @@ pub use mcp::{
 pub use mermaid_cache::{get_mermaid_svg_cache, set_mermaid_svg_cache};
 pub use mobile_chat::{
     mobile_chat, mobile_chat_stream_cancel, mobile_chat_stream_start, mobile_generate_title,
+    practice_chat, practice_generate_title,
 };
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use prompts::{get_format_prompt, get_system_prompt, render_skills_section};

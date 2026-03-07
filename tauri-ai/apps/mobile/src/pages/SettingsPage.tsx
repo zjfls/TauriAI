@@ -8,6 +8,7 @@ import { SecretInput } from "../ui/SecretInput";
 import { Select } from "../ui/Select";
 import { Spinner } from "../ui/Spinner";
 import { loadChatRenderMode, saveChatRenderMode, type ChatRenderMode } from "../lib/chatRenderPrefs";
+import { filterNonPracticeAgents } from "../../../common/src/agentUtils";
 
 type ProviderType =
   | "openai"
@@ -41,7 +42,7 @@ type ProviderDraft = {
   models: ModelDraft[];
 };
 
-type AgentType = "chat" | "tool";
+type AgentType = "chat" | "tool" | "practice";
 
 type AgentDraft = {
   name: string;
@@ -362,9 +363,11 @@ export function SettingsPage() {
     return `${activeProvider.name}/${activeModel.name}`;
   }, [activeProvider, activeModel]);
 
+  const visibleAgents = useMemo(() => filterNonPracticeAgents(agents), [agents]);
+
   const activeAgent = useMemo(
-    () => agents.find((a) => a.name === activeAgentName) ?? agents[0],
-    [agents, activeAgentName],
+    () => visibleAgents.find((a) => a.name === activeAgentName) ?? visibleAgents[0],
+    [visibleAgents, activeAgentName],
   );
 
   const activeMcpServer = useMemo(
@@ -422,19 +425,29 @@ export function SettingsPage() {
         .filter((a) => a.name.trim());
 
       setAgents(nextAgents);
+      const visibleNextAgents = filterNonPracticeAgents(nextAgents);
       const nextDefaultAgent = String(cfg?.defaultAgent ?? "");
       const nextCurrentAgent = String(cfg?.currentAgent ?? "");
-      const firstEnabledAgent = nextAgents.find((a) => a.enabled !== false)?.name || "";
-      const resolvedDefaultAgent = nextDefaultAgent || firstEnabledAgent || nextAgents[0]?.name || "";
+      const firstEnabledAgent = visibleNextAgents.find((a) => a.enabled !== false)?.name || "";
+      const resolvedDefaultAgent =
+        (nextDefaultAgent && visibleNextAgents.some((a) => a.name === nextDefaultAgent) ? nextDefaultAgent : "") ||
+        firstEnabledAgent ||
+        visibleNextAgents[0]?.name ||
+        "";
       setDefaultAgentName(resolvedDefaultAgent);
-      setActiveAgentName(nextCurrentAgent || resolvedDefaultAgent || nextAgents[0]?.name || "");
+      setActiveAgentName(
+        (nextCurrentAgent && visibleNextAgents.some((a) => a.name === nextCurrentAgent) ? nextCurrentAgent : "") ||
+          resolvedDefaultAgent ||
+          visibleNextAgents[0]?.name ||
+          "",
+      );
 
       const candidateModelRef =
         cfg?.currentModelRef ||
         (nextCurrentAgent &&
-          nextAgents.find((a) => a.enabled !== false && a.name === nextCurrentAgent)?.modelRef) ||
+          visibleNextAgents.find((a) => a.enabled !== false && a.name === nextCurrentAgent)?.modelRef) ||
         (nextDefaultAgent &&
-          nextAgents.find((a) => a.enabled !== false && a.name === nextDefaultAgent)?.modelRef) ||
+          visibleNextAgents.find((a) => a.enabled !== false && a.name === nextDefaultAgent)?.modelRef) ||
         "";
       const parsed = parseModelRef(candidateModelRef);
       const list = nextProviders.length > 0 ? nextProviders : providers;
@@ -487,23 +500,23 @@ export function SettingsPage() {
   }, [providers, activeProviderName, activeModelName]);
 
   useEffect(() => {
-    if (agents.length === 0) {
+    if (visibleAgents.length === 0) {
       if (activeAgentName) setActiveAgentName("");
       return;
     }
-    const found = agents.find((a) => a.name === activeAgentName);
-    if (!found) setActiveAgentName(agents[0].name);
-  }, [agents, activeAgentName]);
+    const found = visibleAgents.find((a) => a.name === activeAgentName);
+    if (!found) setActiveAgentName(visibleAgents[0].name);
+  }, [visibleAgents, activeAgentName]);
 
   useEffect(() => {
-    if (agents.length === 0) {
+    if (visibleAgents.length === 0) {
       if (defaultAgentName) setDefaultAgentName("");
       return;
     }
-    if (defaultAgentName && agents.some((a) => a.name === defaultAgentName)) return;
-    const firstEnabled = agents.find((a) => a.enabled !== false)?.name;
-    setDefaultAgentName(firstEnabled || agents[0].name);
-  }, [agents, defaultAgentName]);
+    if (defaultAgentName && visibleAgents.some((a) => a.name === defaultAgentName)) return;
+    const firstEnabled = visibleAgents.find((a) => a.enabled !== false)?.name;
+    setDefaultAgentName(firstEnabled || visibleAgents[0].name);
+  }, [visibleAgents, defaultAgentName]);
 
   const test = async () => {
     if (!isTauriRuntime()) return;
@@ -983,13 +996,13 @@ export function SettingsPage() {
             <Select
               value={defaultAgentName}
               onChange={(e) => setDefaultAgentName(e.target.value)}
-              disabled={agents.length === 0}
+              disabled={visibleAgents.length === 0}
             >
-              {agents.length === 0 ? <option value="">（暂无 Agent）</option> : null}
-              {agents.filter((a) => a.enabled !== false).length === 0 ? (
+              {visibleAgents.length === 0 ? <option value="">（暂无 Agent）</option> : null}
+              {visibleAgents.filter((a) => a.enabled !== false).length === 0 ? (
                 <option value="">（没有启用的 Agent）</option>
               ) : null}
-              {agents
+              {visibleAgents
                 .filter((a) => a.enabled !== false)
                 .map((a) => (
                   <option key={a.name} value={a.name}>
@@ -1002,10 +1015,10 @@ export function SettingsPage() {
             <Select
               value={activeAgentName}
               onChange={(e) => setActiveAgentName(e.target.value)}
-              disabled={agents.length === 0}
+              disabled={visibleAgents.length === 0}
             >
-              {agents.length === 0 ? <option value="">（暂无 Agent）</option> : null}
-              {agents.map((a) => (
+              {visibleAgents.length === 0 ? <option value="">（暂无 Agent）</option> : null}
+              {visibleAgents.map((a) => (
                 <option key={a.name} value={a.name}>
                   {agentLabel(a)}
                 </option>

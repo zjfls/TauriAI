@@ -214,7 +214,7 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
     let mut enabled_agents: Vec<_> = config
         .agents
         .iter()
-        .filter(|a| a.enabled && a.workstudio_enabled != Some(true))
+        .filter(|a| a.enabled && !a.is_practice() && a.workstudio_enabled != Some(true))
         .collect();
     // If configured default agent is missing/disabled, fall back to the first enabled agent.
     // Otherwise Ctrl/Cmd+T may not be bound to any menu item, making it look "not working".
@@ -1107,6 +1107,9 @@ fn run_desktop() {
             fetch_provider_models,
             // Lightweight LLM calls (used by practice module)
             mobile_chat,
+            mobile_generate_title,
+            practice_chat,
+            practice_generate_title,
             // Clipboard
             clipboard_write_png_base64,
 	            // DevTools
@@ -1347,6 +1350,8 @@ fn run_mobile() {
         mobile_chat_stream_cancel,
         mobile_chat_stream_start,
         mobile_generate_title,
+        practice_chat,
+        practice_generate_title,
         save_app_config,
         set_agent_mcp_set,
         test_connection,
@@ -1360,6 +1365,7 @@ fn run_mobile() {
     println!("[Backend] TauriAI starting... (mobile)");
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             get_app_config,
             save_app_config,
@@ -1367,6 +1373,8 @@ fn run_mobile() {
             fetch_provider_models,
             mobile_chat,
             mobile_generate_title,
+            practice_chat,
+            practice_generate_title,
             mobile_chat_stream_start,
             mobile_chat_stream_cancel,
             // MCP commands

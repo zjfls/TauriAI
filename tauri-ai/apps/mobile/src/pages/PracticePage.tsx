@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Plus, Trash2, Wand2 } from "lucide-react";
+import { Plus, Wand2 } from "lucide-react";
 import { useLayoutSize } from "../lib/breakpoints";
 import { isTauriRuntime, tauriInvoke } from "../lib/tauri";
 import { clsx } from "../lib/clsx";
@@ -15,18 +15,18 @@ import type {
   PracticeQuestionType,
   PracticeQuiz,
 } from "../../../common/src/practice/types";
-import { generatePracticeQuiz, gradePracticeAnswer } from "../../../common/src/practice/llm";
+import { resolvePracticeAgentPresentation, SYSTEM_PRACTICE_AGENT_LABEL, type PracticeAgentPresentation } from "../../../common/src/agentUtils";
+import { generatePracticeQuiz, generatePracticeTitle, gradePracticeAnswer } from "../../../common/src/practice/llm";
+import {
+  DEFAULT_PRACTICE_GENERATION_COUNTS,
+  PRACTICE_GENERATION_FIELDS,
+  normalizePracticeGenerationCountValue,
+  totalPracticeGenerationCounts,
+} from "../../../common/src/practice/generation";
 import { ScrollableInkPad, createEmptyInkState } from "../../../common/src/practice/ink/ScrollableInkPad";
 import { DEFAULT_INK_BRUSH_ID, INK_BRUSH_PRESETS } from "../../../common/src/practice/ink/brushes";
 
 type InkTemplate = "blank" | "ruled" | "grid";
-type PracticeAgentOption = {
-  name: string;
-  displayName: string;
-  modelRef: string;
-  modelLabel: string;
-  enabled: boolean;
-};
 
 const INK_COLORS = ["#111827", "#1d4ed8", "#0f766e", "#7c3aed", "#b91c1c"] as const;
 const INK_TEMPLATES: Array<{ value: InkTemplate; label: string }> = [
@@ -38,21 +38,6 @@ const INK_SIZE_MIN = 1;
 const INK_SIZE_MAX = 24;
 const DRAWING_BRUSH_PRESETS = INK_BRUSH_PRESETS.filter((item) => item.tool !== "eraser");
 const ERASER_BRUSH_PRESET = INK_BRUSH_PRESETS.find((item) => item.tool === "eraser");
-
-function formatModelLabel(
-  modelRef: string,
-  providerDisplayNameById: Map<string, string>,
-): string {
-  const ref = String(modelRef || "").trim();
-  if (!ref) return "";
-  const idx = ref.indexOf("/");
-  if (idx <= 0) return ref;
-  const providerId = ref.slice(0, idx).trim();
-  const modelName = ref.slice(idx + 1).trim();
-  if (!providerId || !modelName) return ref;
-  const providerLabel = providerDisplayNameById.get(providerId) || providerId;
-  return `${providerLabel}/${modelName}`;
-}
 
 function drawInkSegment(ctx: CanvasRenderingContext2D, stroke: InkStroke, a: InkPoint, b: InkPoint) {
   const rawSize = typeof stroke.size === "number" && Number.isFinite(stroke.size) ? stroke.size : 1;
@@ -173,13 +158,9 @@ export function PracticePage() {
   const activeQuizId = usePracticeStore((s) => s.activeQuizId);
   const setActiveQuiz = usePracticeStore((s) => s.setActiveQuiz);
   const createQuiz = usePracticeStore((s) => s.createQuiz);
-  const importQuiz = usePracticeStore((s) => s.importQuiz);
   const deleteQuiz = usePracticeStore((s) => s.deleteQuiz);
   const renameQuiz = usePracticeStore((s) => s.renameQuiz);
   const appendGeneratedQuestions = usePracticeStore((s) => s.appendGeneratedQuestions);
-  const addQuestion = usePracticeStore((s) => s.addQuestion);
-  const deleteQuestion = usePracticeStore((s) => s.deleteQuestion);
-  const updateQuestion = usePracticeStore((s) => s.updateQuestion);
   const setAnswer = usePracticeStore((s) => s.setAnswer);
   const setInkDraft = usePracticeStore((s) => s.setInkDraft);
   const setGrading = usePracticeStore((s) => s.setGrading);
@@ -190,57 +171,15 @@ export function PracticePage() {
     [quizzes, activeQuizId],
   );
 
-  const [fallbackAgentName, setFallbackAgentName] = useState<string>("");
-  const [agentOptions, setAgentOptions] = useState<PracticeAgentOption[]>([]);
-  const [practiceAgentName, setPracticeAgentName] = useState<string>("");
+  const [practiceAgentInfo, setPracticeAgentInfo] = useState<PracticeAgentPresentation>(() =>
+    resolvePracticeAgentPresentation(null),
+  );
 
   const loadConfig = useCallback(async () => {
     if (!isTauriRuntime()) return;
     try {
       const cfg = await tauriInvoke<any>("get_app_config");
-      const defaultAgent = String(cfg?.defaultAgent ?? cfg?.default_agent ?? "").trim();
-      const currentAgent = String(cfg?.currentAgent ?? cfg?.current_agent ?? "").trim();
-      const providerDisplayNameById = new Map<string, string>();
-      const providerList: any[] = Array.isArray(cfg?.providers) ? cfg.providers : [];
-      for (const p of providerList) {
-        if (!p || typeof p !== "object") continue;
-        const id = String((p as any).name ?? "").trim();
-        if (!id) continue;
-        const displayName = String((p as any).displayName ?? (p as any).display_name ?? id).trim();
-        providerDisplayNameById.set(id, displayName || id);
-      }
-      const next: PracticeAgentOption[] = [];
-      const list: any[] = Array.isArray(cfg?.agents) ? cfg.agents : [];
-      for (const a of list) {
-        if (!a || typeof a !== "object") continue;
-        const name = String((a as any).name ?? "").trim();
-        if (!name) continue;
-        const displayName = String((a as any).displayName ?? (a as any).display_name ?? name).trim();
-        const modelRef = String((a as any).modelRef ?? (a as any).model_ref ?? "").trim();
-        const modelLabel = formatModelLabel(modelRef, providerDisplayNameById);
-        const enabled = typeof (a as any).enabled === "boolean" ? Boolean((a as any).enabled) : true;
-        next.push({
-          name,
-          displayName: displayName || name,
-          modelRef,
-          modelLabel,
-          enabled,
-        });
-      }
-      setAgentOptions(next);
-
-      const enabledList = next.filter((item) => item.enabled);
-      const preferred =
-        (defaultAgent && next.some((item) => item.name === defaultAgent) ? defaultAgent : "") ||
-        (currentAgent && next.some((item) => item.name === currentAgent) ? currentAgent : "") ||
-        enabledList[0]?.name ||
-        next[0]?.name ||
-        "";
-      if (preferred) setFallbackAgentName(preferred);
-      setPracticeAgentName((prev) => {
-        if (prev && next.some((item) => item.name === prev)) return prev;
-        return preferred || prev;
-      });
+      setPracticeAgentInfo(resolvePracticeAgentPresentation(cfg));
     } catch {
       // ignore
     }
@@ -250,21 +189,13 @@ export function PracticePage() {
     void loadConfig();
   }, [loadConfig]);
 
-  const enabledAgentOptions = useMemo(
-    () => agentOptions.filter((item) => item.enabled),
-    [agentOptions],
-  );
-  const agentName = (practiceAgentName || fallbackAgentName || "").trim() || undefined;
-  const selectedAgent = useMemo(
-    () => agentOptions.find((item) => item.name === agentName),
-    [agentName, agentOptions],
-  );
-  const agentLabel = selectedAgent?.displayName || agentName || "";
-
   const [topic, setTopic] = useState("");
   const [difficulty, setDifficulty] = useState<"easy" | "medium" | "hard">("medium");
   const [genBusy, setGenBusy] = useState(false);
   const [genError, setGenError] = useState("");
+  const [questionCounts, setQuestionCounts] = useState(DEFAULT_PRACTICE_GENERATION_COUNTS);
+
+  const totalQuestionCount = useMemo(() => totalPracticeGenerationCounts(questionCounts), [questionCounts]);
 
   const [gradeBusy, setGradeBusy] = useState<Record<string, boolean>>({});
   const [gradeError, setGradeError] = useState<Record<string, string>>({});
@@ -315,6 +246,10 @@ export function PracticePage() {
       setGenError("请输入主题");
       return;
     }
+    if (totalQuestionCount <= 0) {
+      setGenError("请至少输入 1 道题");
+      return;
+    }
     setGenError("");
     if (!isTauriRuntime()) {
       setGenError("当前在浏览器预览模式，无法调用后端生成题目。请在 App 内运行。");
@@ -323,38 +258,26 @@ export function PracticePage() {
     if (genBusy) return;
     setGenBusy(true);
     try {
-      const hasExistingQuestions = quiz.questions.length > 0;
-      const counts = (() => {
-        if (!hasExistingQuestions) {
-          return { multiple_choice: 2, calculation: 2, proof: 1, qa: 1 };
-        }
-        const r = Math.floor(Math.random() * 4);
-        if (r === 0) return { multiple_choice: 1, calculation: 0, proof: 0, qa: 0 };
-        if (r === 1) return { multiple_choice: 0, calculation: 1, proof: 0, qa: 0 };
-        if (r === 2) return { multiple_choice: 0, calculation: 0, proof: 1, qa: 0 };
-        return { multiple_choice: 0, calculation: 0, proof: 0, qa: 1 };
-      })();
-
+      const shouldAutoRenameQuiz =
+        quiz.questions.length === 0 && (!quiz.title.trim() || quiz.title.trim() === "新练习");
       const generated = await generatePracticeQuiz(tauriInvoke as any, {
-        agentName,
         options: {
           topic: t,
           difficulty,
-          counts,
+          counts: questionCounts,
         },
       });
 
-      if (!hasExistingQuestions) {
-        importQuiz(generated, { setActive: true });
-        setTopic("");
-      } else {
-        const next = generated.questions?.[0];
-        if (!next) {
-          setGenError("未生成到可用题目，请重试");
-          return;
-        }
-        appendGeneratedQuestions(quiz.id, [next]);
+      appendGeneratedQuestions(quiz.id, generated.questions);
+      if (shouldAutoRenameQuiz) {
+        const nextTitle = await generatePracticeTitle(tauriInvoke as any, {
+          topic: t,
+          questions: generated.questions,
+          fallbackTitle: generated.title,
+        });
+        if (nextTitle) renameQuiz(quiz.id, nextTitle);
       }
+      setTopic("");
     } catch (e: any) {
       setGenError(String(e?.message ?? e ?? "生成失败"));
     } finally {
@@ -419,7 +342,6 @@ export function PracticePage() {
       setGradeBusy((prev) => ({ ...prev, [q.id]: true }));
       try {
         const res = await gradePracticeAnswer(tauriInvoke as any, {
-          agentName,
           question: q,
           studentAnswer: text,
           studentAnswerImages: answerImage
@@ -453,116 +375,13 @@ export function PracticePage() {
               <RichText content={q.prompt || "（题目为空）"} />
             </div>
 
-            <details className="mt-3">
-              <summary className="cursor-pointer text-sm text-white/80">编辑题目</summary>
-              <div className="mt-3 grid gap-3">
-                <div>
-                  <div className="text-xs text-white/50 mb-1">题干（Markdown）</div>
-                  <textarea
-                    className="w-full min-h-[120px] rounded-xl bg-black/20 border border-white/10 px-3 py-2 text-[16px] leading-5 outline-none focus:border-indigo-400"
-                    value={q.prompt}
-                    onChange={(e) => updateQuestion(quiz2.id, q.id, { prompt: e.target.value } as any)}
-                    placeholder="输入题干…"
-                    autoCapitalize="none"
-                    autoCorrect="off"
-                    spellCheck={false}
-                  />
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <div className="text-xs text-white/50 mb-1">分值</div>
-                    <Input
-                      type="number"
-                      value={String(q.points)}
-                      onChange={(e) =>
-                        updateQuestion(quiz2.id, q.id, { points: Math.max(1, Number(e.target.value) || 1) } as any)
-                      }
-                    />
-                  </div>
-                  <div />
-                </div>
-
-                {q.type === "multiple_choice" ? (
-                  <div className="grid gap-2">
-                    <div className="text-xs text-white/50">选项</div>
-                    <div className="grid gap-2">
-                      {q.options.map((opt, oi) => (
-                        <div key={opt.id} className="flex items-center gap-2">
-                          <div className="w-6 text-sm font-semibold text-white/70">{opt.id}</div>
-                          <Input
-                            value={opt.text}
-                            onChange={(e) => {
-                              const next = q.options.map((o, idx) => (idx === oi ? { ...o, text: e.target.value } : o));
-                              updateQuestion(quiz2.id, q.id, { options: next } as any);
-                            }}
-                            placeholder="选项内容…"
-                          />
-                        </div>
-                      ))}
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <div className="text-xs text-white/50 mb-1">正确选项</div>
-                        <select
-                          className="h-10 w-full rounded-md bg-white/5 border border-white/10 px-3 text-[16px] outline-none focus:border-indigo-400"
-                          value={q.correctOptionId}
-                          onChange={(e) => updateQuestion(quiz2.id, q.id, { correctOptionId: e.target.value } as any)}
-                        >
-                          {q.options.map((opt) => (
-                            <option key={opt.id} value={opt.id}>
-                              {opt.id}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div />
-                    </div>
-                  </div>
-                ) : (
-                  <div>
-                    <div className="text-xs text-white/50 mb-1">参考答案（Markdown）</div>
-                    <textarea
-                      className="w-full min-h-[120px] rounded-xl bg-black/20 border border-white/10 px-3 py-2 text-[16px] leading-5 outline-none focus:border-indigo-400"
-                      value={(q as any).referenceAnswer || ""}
-                      onChange={(e) => updateQuestion(quiz2.id, q.id, { referenceAnswer: e.target.value } as any)}
-                      placeholder="输入参考答案…"
-                      autoCapitalize="none"
-                      autoCorrect="off"
-                      spellCheck={false}
-                    />
-                  </div>
-                )}
-
-                <div>
-                  <div className="text-xs text-white/50 mb-1">讲解（Markdown，可选）</div>
-                  <textarea
-                    className="w-full min-h-[120px] rounded-xl bg-black/20 border border-white/10 px-3 py-2 text-[16px] leading-5 outline-none focus:border-indigo-400"
-                    value={q.explanation || ""}
-                    onChange={(e) => updateQuestion(quiz2.id, q.id, { explanation: e.target.value } as any)}
-                    placeholder="输入讲解…"
-                    autoCapitalize="none"
-                    autoCorrect="off"
-                    spellCheck={false}
-                  />
-                </div>
-              </div>
-            </details>
           </div>
 
-          <button
-            type="button"
-            className="h-8 w-8 rounded-md bg-white/5 hover:bg-white/10 flex items-center justify-center text-white/70 hover:text-white"
-            onClick={() => deleteQuestion(quiz2.id, q.id)}
-            title="删除题目"
-          >
-            <Trash2 size={16} />
-          </button>
         </div>
 
         <div className="mt-3 grid gap-3">
           {q.type === "multiple_choice" ? (
-            <div className="grid gap-2">
+            <div className="grid gap-2 sm:grid-cols-2">
               {q.options.map((opt) => {
                 const selected = answer?.kind === "choice" && answer.optionId === opt.id;
                 return (
@@ -570,15 +389,24 @@ export function PracticePage() {
                     key={opt.id}
                     type="button"
                     className={clsx(
-                      "text-left rounded-xl border px-3 py-2 text-sm transition-colors overflow-x-hidden",
+                      "flex items-start gap-3 text-left rounded-xl border px-3 py-3 text-sm transition-colors overflow-x-hidden",
                       selected
                         ? "border-indigo-400 bg-indigo-400/10 text-white"
                         : "border-white/10 bg-black/20 hover:bg-white/5 text-white/90",
                     )}
                     onClick={() => setChoice(opt.id)}
                   >
-                    <div className="font-semibold">{opt.id}</div>
-                    <RichText content={opt.text || "（空）"} className="text-white/80" />
+                    <div
+                      className={clsx(
+                        "mt-0.5 inline-flex h-7 min-w-7 shrink-0 items-center justify-center rounded-full border px-2 text-xs font-semibold",
+                        selected
+                          ? "border-indigo-300/60 bg-indigo-400/15 text-indigo-100"
+                          : "border-white/15 bg-white/8 text-white/75",
+                      )}
+                    >
+                      {opt.id}
+                    </div>
+                    <RichText content={opt.text || "（空）"} className="min-w-0 flex-1 text-white/80" />
                   </button>
                 );
               })}
@@ -730,26 +558,15 @@ export function PracticePage() {
                 <div className="flex-1 min-w-0">
                   <Input value={quiz.title} onChange={(e) => renameQuiz(quiz.id, e.target.value)} />
                   <div className="mt-2 grid gap-2">
-                    <div className="text-xs text-white/50">练习 Agent / 模型</div>
-                    {enabledAgentOptions.length > 0 ? (
-                      <select
-                        className="h-10 rounded-md bg-white/5 border border-white/10 px-3 text-[16px] outline-none focus:border-indigo-400"
-                        value={agentName || ""}
-                        onChange={(e) => setPracticeAgentName(e.target.value)}
-                      >
-                        {enabledAgentOptions.map((item) => (
-                          <option key={item.name} value={item.name}>
-                            {item.displayName || item.name}
-                            {item.modelLabel ? ` (${item.modelLabel})` : ""}
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      <div className="text-xs text-red-300">未找到可用 Agent，请先在设置中配置模型</div>
-                    )}
-                    <div className="text-xs text-white/50">
-                      当前：{agentLabel || "（未配置）"}
-                      {selectedAgent?.modelLabel ? ` · ${selectedAgent.modelLabel}` : ""}
+                    <div className="text-xs text-white/50">练习专用 Agent</div>
+                    <div className="rounded-xl border border-white/10 bg-black/10 px-3 py-2">
+                      <div className="text-sm text-white/90">
+                        {practiceAgentInfo.label || SYSTEM_PRACTICE_AGENT_LABEL}
+                        <span className="ml-2 text-[11px] text-indigo-200/80">系统内置</span>
+                      </div>
+                      <div className="mt-1 text-xs text-white/50">
+                        {practiceAgentInfo.modelLabel ? `模型：${practiceAgentInfo.modelLabel}` : "模型：未配置"}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -770,6 +587,34 @@ export function PracticePage() {
                   placeholder="例如：线性代数 特征值与特征向量"
                 />
                 <div className="grid grid-cols-2 gap-2">
+                  {PRACTICE_GENERATION_FIELDS.map((field) => (
+                    <label
+                      key={field.type}
+                      className="rounded-xl border border-white/10 bg-black/10 p-2 text-white/90"
+                    >
+                      <span className="block text-xs text-white/50 mb-1">{field.label}</span>
+                      <Input
+                        type="number"
+                        min={0}
+                        max={20}
+                        step={1}
+                        inputMode="numeric"
+                        value={questionCounts[field.type]}
+                        onChange={(e) =>
+                          setQuestionCounts((prev) => ({
+                            ...prev,
+                            [field.type]: normalizePracticeGenerationCountValue(e.target.value, prev[field.type]),
+                          }))
+                        }
+                      />
+                    </label>
+                  ))}
+                </div>
+                <div className="flex items-center justify-between text-xs text-white/50">
+                  <span>共 {totalQuestionCount} 题</span>
+                  <span>每种题型可填 0-20</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
                   <select
                     className="h-10 rounded-md bg-white/5 border border-white/10 px-3 text-[16px] outline-none focus:border-indigo-400"
                     value={difficulty}
@@ -786,47 +631,17 @@ export function PracticePage() {
                     disabled={genBusy}
                   >
                     <Wand2 size={16} />
-                    {genBusy ? "生成中…" : quiz.questions.length === 0 ? "生成 6 题" : "生成题目"}
+                    {genBusy ? "生成中…" : `生成 ${totalQuestionCount} 题`}
                   </button>
                 </div>
                 {genError ? <div className="text-sm text-red-300">{genError}</div> : null}
               </div>
             </div>
 
-            <div className="flex items-center gap-2 flex-wrap">
-              <button
-                type="button"
-                className="h-9 px-3 rounded-xl bg-white/5 hover:bg-white/10 text-white/80 text-sm"
-                onClick={() => addQuestion(quiz.id, "multiple_choice")}
-              >
-                + 选择题
-              </button>
-              <button
-                type="button"
-                className="h-9 px-3 rounded-xl bg-white/5 hover:bg-white/10 text-white/80 text-sm"
-                onClick={() => addQuestion(quiz.id, "calculation")}
-              >
-                + 计算题
-              </button>
-              <button
-                type="button"
-                className="h-9 px-3 rounded-xl bg-white/5 hover:bg-white/10 text-white/80 text-sm"
-                onClick={() => addQuestion(quiz.id, "proof")}
-              >
-                + 证明题
-              </button>
-              <button
-                type="button"
-                className="h-9 px-3 rounded-xl bg-white/5 hover:bg-white/10 text-white/80 text-sm"
-                onClick={() => addQuestion(quiz.id, "qa")}
-              >
-                + 问答题
-              </button>
-            </div>
 
             {quiz.questions.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-white/15 p-8 text-center text-white/50">
-                还没有题目。你可以使用 AI 出题，或手动添加题目。
+                还没有题目。请使用 AI 出题。
               </div>
             ) : (
               <div className="grid gap-3">

@@ -11,8 +11,8 @@ use crate::ai_client::get_client;
 use crate::ai_client::{DebugInfoData, StreamEvent, StreamOptions, ToolCall, ToolDefinition};
 use crate::config::ConfigManager;
 use crate::models::{
-    AppConfig, ContentPart, McpServerConfig, Message, MessageMeta, MessageRole, MessageStatus,
-    ModelConfig, ModelParameters,
+    Agent, AppConfig, ContentPart, McpServerConfig, Message, MessageMeta, MessageRole,
+    MessageStatus, ModelConfig, ModelParameters,
 };
 use crate::prompts::compose_system_prompt;
 use crate::runtime::mcp::global_mcp_runtime;
@@ -46,6 +46,55 @@ static MOBILE_STREAMS: OnceLock<Mutex<HashMap<String, MobileStreamState>>> = Onc
 
 fn mobile_streams() -> &'static Mutex<HashMap<String, MobileStreamState>> {
     MOBILE_STREAMS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn is_practice_agent(agent: &Agent) -> bool {
+    agent.is_practice()
+}
+
+fn resolve_provider_model_from_ref(model_ref: &str) -> Option<(String, String)> {
+    let (provider_name, model_name) = model_ref.split_once('/')?;
+    let provider_name = provider_name.trim();
+    let model_name = model_name.trim();
+    if provider_name.is_empty() || model_name.is_empty() {
+        return None;
+    }
+    Some((provider_name.to_string(), model_name.to_string()))
+}
+
+fn resolve_provider_model_from_agent(agent: &Agent) -> Option<(String, String)> {
+    resolve_provider_model_from_ref(&agent.model_ref)
+}
+
+fn is_reserved_practice_agent_request(cfg: &AppConfig, agent_name: Option<&str>) -> bool {
+    let Some(agent_name) = agent_name.map(str::trim).filter(|s| !s.is_empty()) else {
+        return false;
+    };
+    cfg.agents
+        .iter()
+        .find(|a| a.enabled && a.name == agent_name)
+        .is_some_and(is_practice_agent)
+}
+
+fn reject_practice_agent_request(cfg: &AppConfig, agent_name: Option<&str>) -> Result<(), String> {
+    if is_reserved_practice_agent_request(cfg, agent_name) {
+        Err("练习专用 Agent 为系统保留，不能用于通用聊天链路。".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+fn resolve_practice_agent(cfg: &AppConfig) -> Option<&Agent> {
+    cfg.get_practice_agent()
+}
+
+fn resolve_provider_model_for_practice(cfg: &AppConfig) -> Option<(String, String)> {
+    if let Some(agent) = resolve_practice_agent(cfg) {
+        if let Some(provider_model) = resolve_provider_model_from_agent(agent) {
+            return Some(provider_model);
+        }
+    }
+    resolve_provider_model(cfg, None)
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -143,14 +192,10 @@ fn resolve_provider_model(cfg: &AppConfig, agent_name: Option<&str>) -> Option<(
         if let Some(agent) = cfg
             .agents
             .iter()
-            .find(|a| a.enabled && a.name == agent_name)
+            .find(|a| a.enabled && !is_practice_agent(a) && a.name == agent_name)
         {
-            if let Some((p, m)) = agent.model_ref.split_once('/') {
-                let p = p.trim();
-                let m = m.trim();
-                if !p.is_empty() && !m.is_empty() {
-                    return Some((p.to_string(), m.to_string()));
-                }
+            if let Some(provider_model) = resolve_provider_model_from_agent(agent) {
+                return Some(provider_model);
             }
         }
     }
@@ -162,12 +207,8 @@ fn resolve_provider_model(cfg: &AppConfig, agent_name: Option<&str>) -> Option<(
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        if let Some((p, m)) = model_ref.split_once('/') {
-            let p = p.trim();
-            let m = m.trim();
-            if !p.is_empty() && !m.is_empty() {
-                return Some((p.to_string(), m.to_string()));
-            }
+        if let Some(provider_model) = resolve_provider_model_from_ref(model_ref) {
+            return Some(provider_model);
         }
     }
 
@@ -181,14 +222,10 @@ fn resolve_provider_model(cfg: &AppConfig, agent_name: Option<&str>) -> Option<(
         if let Some(agent) = cfg
             .agents
             .iter()
-            .find(|a| a.enabled && a.name == agent_name)
+            .find(|a| a.enabled && !is_practice_agent(a) && a.name == agent_name)
         {
-            if let Some((p, m)) = agent.model_ref.split_once('/') {
-                let p = p.trim();
-                let m = m.trim();
-                if !p.is_empty() && !m.is_empty() {
-                    return Some((p.to_string(), m.to_string()));
-                }
+            if let Some(provider_model) = resolve_provider_model_from_agent(agent) {
+                return Some(provider_model);
             }
         }
     }
@@ -198,14 +235,10 @@ fn resolve_provider_model(cfg: &AppConfig, agent_name: Option<&str>) -> Option<(
         if let Some(agent) = cfg
             .agents
             .iter()
-            .find(|a| a.enabled && a.name == cfg.default_agent)
+            .find(|a| a.enabled && !is_practice_agent(a) && a.name == cfg.default_agent)
         {
-            if let Some((p, m)) = agent.model_ref.split_once('/') {
-                let p = p.trim();
-                let m = m.trim();
-                if !p.is_empty() && !m.is_empty() {
-                    return Some((p.to_string(), m.to_string()));
-                }
+            if let Some(provider_model) = resolve_provider_model_from_agent(agent) {
+                return Some(provider_model);
             }
         }
     }
@@ -307,13 +340,11 @@ fn to_messages(conversation_id: &str, messages: Vec<MobileChatMessage>) -> Vec<M
         .collect()
 }
 
-fn prepend_agent_system_prompt(
-    cfg: &AppConfig,
+fn prepend_system_prompt_from_agent(
+    agent: Option<&Agent>,
     conversation_id: &str,
-    agent_name: Option<&str>,
     messages: &mut Vec<Message>,
 ) {
-    let agent = resolve_enabled_agent(cfg, agent_name);
     let base_prompt = agent.and_then(|a| {
         if a.system_prompt.trim().is_empty() {
             None
@@ -340,6 +371,25 @@ fn prepend_agent_system_prompt(
         error_message: None,
     };
     messages.insert(0, system_message);
+}
+
+fn prepend_agent_system_prompt(
+    cfg: &AppConfig,
+    conversation_id: &str,
+    agent_name: Option<&str>,
+    messages: &mut Vec<Message>,
+) {
+    let agent = resolve_enabled_agent(cfg, agent_name);
+    prepend_system_prompt_from_agent(agent, conversation_id, messages);
+}
+
+fn prepend_practice_system_prompt(
+    cfg: &AppConfig,
+    conversation_id: &str,
+    messages: &mut Vec<Message>,
+) {
+    let agent = resolve_practice_agent(cfg);
+    prepend_system_prompt_from_agent(agent, conversation_id, messages);
 }
 
 async fn collect_streamed_text(
@@ -426,16 +476,13 @@ fn qualify_mcp_tool_name(server_name: &str, tool_name: &str) -> String {
     format!("{qualified}{sha1_str}")
 }
 
-fn resolve_enabled_agent<'a>(
-    cfg: &'a AppConfig,
-    agent_name: Option<&str>,
-) -> Option<&'a crate::models::Agent> {
+fn resolve_enabled_agent<'a>(cfg: &'a AppConfig, agent_name: Option<&str>) -> Option<&'a Agent> {
     // Highest priority: explicit agentName from the current conversation (mobile UI)
     if let Some(agent_name) = agent_name.map(str::trim).filter(|s| !s.is_empty()) {
         if let Some(agent) = cfg
             .agents
             .iter()
-            .find(|a| a.enabled && a.name == agent_name)
+            .find(|a| a.enabled && !is_practice_agent(a) && a.name == agent_name)
         {
             return Some(agent);
         }
@@ -451,7 +498,7 @@ fn resolve_enabled_agent<'a>(
         if let Some(agent) = cfg
             .agents
             .iter()
-            .find(|a| a.enabled && a.name == agent_name)
+            .find(|a| a.enabled && !is_practice_agent(a) && a.name == agent_name)
         {
             return Some(agent);
         }
@@ -462,14 +509,16 @@ fn resolve_enabled_agent<'a>(
         if let Some(agent) = cfg
             .agents
             .iter()
-            .find(|a| a.enabled && a.name == cfg.default_agent)
+            .find(|a| a.enabled && !is_practice_agent(a) && a.name == cfg.default_agent)
         {
             return Some(agent);
         }
     }
 
-    // Fallback: first enabled agent
-    cfg.agents.iter().find(|a| a.enabled)
+    // Fallback: first enabled non-practice agent
+    cfg.agents
+        .iter()
+        .find(|a| a.enabled && !is_practice_agent(a))
 }
 
 fn find_last_user_text(messages: &[MobileChatMessage]) -> String {
@@ -739,6 +788,7 @@ pub async fn mobile_chat(
     config_manager: tauri::State<'_, Arc<ConfigManager>>,
 ) -> Result<MobileChatResponse, String> {
     let cfg = config_manager.ensure_default().map_err(|e| e.to_string())?;
+    reject_practice_agent_request(&cfg, agent_name.as_deref())?;
 
     let (provider_name, model_name) = resolve_provider_model(&cfg, agent_name.as_deref()).ok_or_else(|| {
         "未配置 provider/model。请在 Settings 中设置 Provider、API Base、API Key（如需要）以及 Model。"
@@ -759,12 +809,38 @@ pub async fn mobile_chat(
 }
 
 #[tauri::command]
+pub async fn practice_chat(
+    messages: Vec<MobileChatMessage>,
+    config_manager: tauri::State<'_, Arc<ConfigManager>>,
+) -> Result<MobileChatResponse, String> {
+    let cfg = config_manager.ensure_default().map_err(|e| e.to_string())?;
+
+    let (provider_name, model_name) = resolve_provider_model_for_practice(&cfg)
+        .ok_or_else(|| "练习专用 Agent 未配置可用模型。请先在 Settings 中配置模型。".to_string())?;
+
+    let model_cfg = build_model_config(&cfg, &provider_name, &model_name)?;
+    let client = get_client(&model_cfg.provider).map_err(|e| e.to_string())?;
+    let mut msgs = to_messages("practice", messages);
+    prepend_practice_system_prompt(&cfg, "practice", &mut msgs);
+
+    let content = client
+        .chat(msgs, &model_cfg, None)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(MobileChatResponse { content })
+}
+
+#[tauri::command]
 pub async fn mobile_generate_title(
     messages: Vec<MobileChatMessage>,
     agent_name: Option<String>,
+    max_chars: Option<usize>,
+    context_kind: Option<String>,
     config_manager: tauri::State<'_, Arc<ConfigManager>>,
 ) -> Result<String, String> {
     let cfg = config_manager.ensure_default().map_err(|e| e.to_string())?;
+    reject_practice_agent_request(&cfg, agent_name.as_deref())?;
 
     let (provider_name, model_name) = resolve_provider_model(&cfg, agent_name.as_deref())
         .ok_or_else(|| "未配置 provider/model。请先在 Settings 中配置模型。".to_string())?;
@@ -776,6 +852,13 @@ pub async fn mobile_generate_title(
     model_cfg.web_search_enabled = false;
     model_cfg.max_images = None;
     model_cfg.use_reasoning_effort = None;
+
+    let max_chars = max_chars.unwrap_or(20).clamp(4, 20);
+    let context_kind = context_kind
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("对话");
 
     let compact = messages
         .iter()
@@ -799,7 +882,10 @@ pub async fn mobile_generate_title(
         id: uuid::Uuid::new_v4().to_string(),
         conversation_id: "mobile_title".to_string(),
         role: MessageRole::User,
-        content: format!("根据对话生成简洁标题（不超20字）：\n{}", compact),
+        content: format!(
+            "根据{}生成简洁标题（不超{}字）：\n{}",
+            context_kind, max_chars, compact
+        ),
         content_parts: Vec::new(),
         thinking: None,
         meta: None,
@@ -821,8 +907,94 @@ pub async fn mobile_generate_title(
         .collect::<Vec<_>>()
         .join(" ");
 
-    if title.chars().count() > 24 {
-        title = title.chars().take(24).collect();
+    if title.chars().count() > max_chars {
+        title = title.chars().take(max_chars).collect();
+    }
+
+    if title.is_empty() {
+        return Err("生成标题为空".to_string());
+    }
+
+    Ok(title)
+}
+
+#[tauri::command]
+pub async fn practice_generate_title(
+    messages: Vec<MobileChatMessage>,
+    max_chars: Option<usize>,
+    context_kind: Option<String>,
+    config_manager: tauri::State<'_, Arc<ConfigManager>>,
+) -> Result<String, String> {
+    let cfg = config_manager.ensure_default().map_err(|e| e.to_string())?;
+
+    let (provider_name, model_name) = resolve_provider_model_for_practice(&cfg)
+        .ok_or_else(|| "练习专用 Agent 未配置可用模型。请先在 Settings 中配置模型。".to_string())?;
+
+    let mut model_cfg = build_model_config(&cfg, &provider_name, &model_name)?;
+    model_cfg.thinking_level = None;
+    model_cfg.thinking_budget_tokens = None;
+    model_cfg.vision_enabled = false;
+    model_cfg.web_search_enabled = false;
+    model_cfg.max_images = None;
+    model_cfg.use_reasoning_effort = None;
+
+    let max_chars = max_chars.unwrap_or(20).clamp(4, 20);
+    let context_kind = context_kind
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("练习");
+
+    let compact = messages
+        .iter()
+        .take(6)
+        .map(|m| {
+            let role = match m.role.as_str() {
+                "assistant" => "助手",
+                "system" => "系统",
+                _ => "用户",
+            };
+            format!("{}: {}", role, m.content.trim())
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if compact.trim().is_empty() {
+        return Err("没有可用于生成标题的消息".to_string());
+    }
+
+    let mut prompts = vec![Message {
+        id: uuid::Uuid::new_v4().to_string(),
+        conversation_id: "practice_title".to_string(),
+        role: MessageRole::User,
+        content: format!(
+            "根据{}生成简洁标题（不超{}字）：\n{}",
+            context_kind, max_chars, compact
+        ),
+        content_parts: Vec::new(),
+        thinking: None,
+        meta: None,
+        created_at: chrono::Utc::now(),
+        status: MessageStatus::Success,
+        error_message: None,
+    }];
+    prepend_practice_system_prompt(&cfg, "practice_title", &mut prompts);
+
+    let client = get_client(&model_cfg.provider).map_err(|e| e.to_string())?;
+    let raw = collect_streamed_text(client, prompts, model_cfg).await?;
+
+    let mut title = raw
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .replace('\r', " ")
+        .replace('\n', " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    if title.chars().count() > max_chars {
+        title = title.chars().take(max_chars).collect();
     }
 
     if title.is_empty() {
@@ -855,6 +1027,7 @@ pub async fn mobile_chat_stream_start(
 
     // Resolve config/model before spawning, so we can return errors synchronously.
     let cfg = config_manager.ensure_default().map_err(|e| e.to_string())?;
+    reject_practice_agent_request(&cfg, agent_name.as_deref())?;
     let (provider_name, model_name) =
         resolve_provider_model(&cfg, agent_name.as_deref()).ok_or_else(|| {
             "未配置 provider/model。请在 Settings 中设置 Provider、API Base、API Key（如需要）以及 Model。"

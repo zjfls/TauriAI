@@ -49,7 +49,7 @@ export type ActiveView =
 export type FormatPromptType = 'chat' | 'plain' | 'json' | 'none';
 
 // Agent type for extensible runtime behaviors
-export type AgentType = 'chat' | 'tool' | 'task_agent' | 'coding';
+export type AgentType = 'chat' | 'tool' | 'task_agent' | 'coding' | 'practice';
 
 // Run mode (input-level): chat / agent / agent full access
 export type RunMode = 'chat' | 'agent' | 'agent-custom' | 'agent-full-access';
