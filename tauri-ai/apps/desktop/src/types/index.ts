@@ -1280,6 +1280,7 @@ export interface WebSearchToolSettings {
 // ============================================================================
 
 export type KeyboardShortcutActionId =
+  | 'app.openAgentWorkspace'
   | 'app.openSettings'
   | 'app.openHistory'
   | 'app.openDevtools'

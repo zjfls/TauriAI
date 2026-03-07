@@ -12,7 +12,7 @@ export const AgentSessionsView: React.FC = () => {
     <AgentSessionsWorkspace
       listScope={null}
       createScope={createScope}
-      title="子 Agent 会话"
+      title="子 Agent 工作台"
     />
   );
 };

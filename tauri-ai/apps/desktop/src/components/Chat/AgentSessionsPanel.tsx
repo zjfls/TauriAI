@@ -15,10 +15,9 @@ export const AgentSessionsPanel: React.FC<AgentSessionsPanelProps> = ({
   onClose,
 }) => {
   const setActiveView = useUIStore((state) => state.setActiveView);
+  const scope = useMemo<AgentSessionScope>(() => ({ kind: 'conversation', id: conversationId }), [conversationId]);
 
   if (!isOpen) return null;
-
-  const scope = useMemo<AgentSessionScope>(() => ({ kind: 'conversation', id: conversationId }), [conversationId]);
 
   return (
     <div className="fixed inset-0 z-40">
@@ -30,7 +29,7 @@ export const AgentSessionsPanel: React.FC<AgentSessionsPanelProps> = ({
         <AgentSessionsWorkspace
           listScope={scope}
           createScope={scope}
-          title="当前对话子 Agent"
+          title="当前对话子 Agent 工作台"
           embedded
           onClose={onClose}
           onOpenManager={() => {

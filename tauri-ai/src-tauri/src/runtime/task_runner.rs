@@ -1027,9 +1027,7 @@ fn render_external_agent_run_tool_prompt(config: &crate::models::AppConfig) -> S
                 ));
             }
             crate::models::ExternalAgentTransportType::CodexCli => {
-                lines.push(
-                    "- 底层执行器：`codex exec`；非交互、一次性返回最终文本。".to_string(),
-                );
+                lines.push("- 底层执行器：`codex exec`；非交互、一次性返回最终文本。".to_string());
                 lines.push(
                     "- 参数语义：`prompt` 必须自包含；`cwd` 对仓库/文件任务非常重要；`model_ref` 会映射到 codex 的 `--model`。"
                         .to_string(),
@@ -1042,8 +1040,7 @@ fn render_external_agent_run_tool_prompt(config: &crate::models::AppConfig) -> S
                     lines.push(format!("- 当前默认 `model_ref`：`{model_ref}`。"));
                 }
                 lines.push(
-                    "- 适用：独立的一次性编码、改代码、调试、代码审查、仓库分析任务。"
-                        .to_string(),
+                    "- 适用：独立的一次性编码、改代码、调试、代码审查、仓库分析任务。".to_string(),
                 );
                 lines.push(format!(
                     "- 推荐调用形态：{{\"agent_name\":\"{name}\",\"cwd\":\"<repo-root>\",\"prompt\":\"<自包含编码任务>\"}}"
@@ -1065,10 +1062,7 @@ fn render_external_agent_run_tool_prompt(config: &crate::models::AppConfig) -> S
                 if let Some(model_ref) = default_model_ref {
                     lines.push(format!("- 当前默认 `model_ref`：`{model_ref}`。"));
                 }
-                lines.push(
-                    "- 适用：独立的一次性编码、分析、解释、文档整理任务。"
-                        .to_string(),
-                );
+                lines.push("- 适用：独立的一次性编码、分析、解释、文档整理任务。".to_string());
                 lines.push(format!(
                     "- 推荐调用形态：{{\"agent_name\":\"{name}\",\"cwd\":\"<repo-root>\",\"prompt\":\"<自包含分析或编码任务>\"}}"
                 ));

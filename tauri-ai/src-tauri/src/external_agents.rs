@@ -291,7 +291,10 @@ pub(crate) fn default_command_candidates(
         ExternalAgentTransportType::CodexCli => path_command_candidates(&["codex"]),
         ExternalAgentTransportType::ClaudeCode => path_command_candidates(&["claude"]),
     };
-    candidates.into_iter().map(|candidate| candidate.path).collect()
+    candidates
+        .into_iter()
+        .map(|candidate| candidate.path)
+        .collect()
 }
 
 async fn probe_version(path: &Path) -> Option<String> {

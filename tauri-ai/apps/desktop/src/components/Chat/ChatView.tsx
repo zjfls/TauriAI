@@ -1652,7 +1652,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
                 type="button"
                 onClick={() => setShowAgentSessions(true)}
                 className="flex items-center gap-2 rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-                title="查看当前对话的子 Agent 会话"
+                title="查看当前对话的子 Agent 工作台"
               >
                 <Bot size={14} />
                 <span>子 Agent</span>

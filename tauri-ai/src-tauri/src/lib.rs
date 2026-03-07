@@ -263,6 +263,12 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
     // Session/app actions (moved from top-right toolbar to system menu bar)
     // 只保留“按 Agent 新建会话”，并把快捷键绑定到默认 Agent 的菜单项。
     let new_session_shortcut = configured_shortcut(config, "session.new", "Cmd+T", "Ctrl+T");
+    let open_agent_workspace_shortcut = configured_shortcut(
+        config,
+        "app.openAgentWorkspace",
+        "Cmd+Shift+J",
+        "Ctrl+Shift+J",
+    );
     let open_settings_shortcut = configured_shortcut(config, "app.openSettings", "Cmd+,", "Ctrl+,");
     let open_history_shortcut =
         configured_shortcut(config, "app.openHistory", "Cmd+Y", "Ctrl+Shift+H");
@@ -306,6 +312,13 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
         "设置…",
         true,
         open_settings_shortcut.as_deref(),
+    )?;
+    let open_agent_workspace = MenuItem::with_id(
+        app,
+        "open_agent_workspace",
+        "子 Agent 工作台",
+        true,
+        open_agent_workspace_shortcut.as_deref(),
     )?;
     let open_practice = MenuItem::with_id(app, "open_practice", "练习", true, None::<&str>)?;
     let view_settings_separator = PredefinedMenuItem::separator(app)?;
@@ -415,6 +428,7 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
         view.insert_items(&[&open_devtools], 0)?;
         view.insert_items(
             &[
+                &open_agent_workspace,
                 &open_practice,
                 &open_settings,
                 &view_settings_separator,
@@ -431,6 +445,7 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
             "View",
             true,
             &[
+                &open_agent_workspace,
                 &open_practice,
                 &open_settings,
                 &view_settings_separator,
@@ -446,6 +461,7 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
             "View",
             true,
             &[
+                &open_agent_workspace,
                 &open_practice,
                 &open_settings,
                 &view_settings_separator,
@@ -604,7 +620,7 @@ fn preferred_menu_target_label(
     if action_id.starts_with("new_session_agent:")
         || matches!(
             action_id,
-            "open_settings" | "open_history" | "open_practice"
+            "open_agent_workspace" | "open_settings" | "open_history" | "open_practice"
         )
     {
         snapshot
@@ -621,7 +637,7 @@ fn menu_target_allowed(action_id: &str, label: &str) -> bool {
     if action_id.starts_with("new_session_agent:")
         || matches!(
             action_id,
-            "open_settings" | "open_history" | "open_practice"
+            "open_agent_workspace" | "open_settings" | "open_history" | "open_practice"
         )
     {
         return is_chat_menu_target_label(label);
@@ -767,11 +783,12 @@ pub(crate) fn desktop_menu_signature(config: &crate::models::AppConfig) -> Strin
         &config.general.keyboard_shortcuts.windows
     };
 
-    let mut sig = String::from("v2|default=");
+    let mut sig = String::from("v3|default=");
     sig.push_str(effective_default_agent);
     sig.push('|');
     for key in [
         "session.new",
+        "app.openAgentWorkspace",
         "app.openSettings",
         "app.openHistory",
         "app.openDevtools",
@@ -841,7 +858,14 @@ fn run_desktop() {
 	                        let _ = app.emit("menu:open_settings", ());
 	                    }
 	                }
-	                "open_practice" => {
+	                "open_agent_workspace" => {
+                    if let Some(window) = pick_menu_target("open_agent_workspace") {
+                        let _ = window.emit("menu:open_agent_workspace", ());
+                    } else {
+                        let _ = app.emit("menu:open_agent_workspace", ());
+                    }
+                }
+                "open_practice" => {
 	                    if let Some(window) = pick_menu_target("open_practice") {
 	                        let _ = window.emit("menu:open_practice", ());
 	                    } else {

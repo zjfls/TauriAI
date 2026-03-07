@@ -649,6 +649,7 @@ function App() {
     let disposed = false;
     let unlistenHistory: null | (() => void) = null;
     let unlistenPractice: null | (() => void) = null;
+    let unlistenAgentWorkspace: null | (() => void) = null;
 
     void listen('menu:open_history', () => {
       useUIStore.getState().setActiveView('history');
@@ -674,10 +675,23 @@ function App() {
       })
       .catch(() => { });
 
+    void listen('menu:open_agent_workspace', () => {
+      useUIStore.getState().setActiveView('agent_sessions');
+    })
+      .then((fn) => {
+        if (disposed) {
+          fn();
+          return;
+        }
+        unlistenAgentWorkspace = fn;
+      })
+      .catch(() => { });
+
     return () => {
       disposed = true;
       unlistenHistory?.();
       unlistenPractice?.();
+      unlistenAgentWorkspace?.();
     };
   }, [shouldInitChatRuntime]);
 

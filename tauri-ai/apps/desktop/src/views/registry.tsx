@@ -60,7 +60,7 @@ export const VIEW_DEFINITIONS: ViewDefinition[] = [
   {
     id: 'agent_sessions',
     label: '子 Agent',
-    title: '子 Agent 会话',
+    title: '子 Agent 工作台',
     icon: <Bot size={20} />,
     render: () => <AgentSessionsView />,
     inSidebar: true,
