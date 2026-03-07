@@ -15,6 +15,7 @@ import { loadChatDraftAttachments, MOBILE_SUPPORTED_TEXT_EXTENSIONS, toAttachmen
 import { collectSpeechSegments, ensureMicrophonePermission, getSpeechRecognitionConstructor, mapMicrophonePermissionError, mapVoiceInputError, mergeVoiceText, supportsVoiceInput, type BrowserSpeechRecognition } from "../lib/voiceInput";
 import type { ChatContentPart, ChatMessage, ThinkingMode } from "../types/chat";
 import { useConversationStore } from "../stores/conversationStore";
+import { useChatComposerStore } from "../stores/chatComposerStore";
 import { filterNonPracticeAgents } from "../../../common/src/agentUtils";
 
 type MobileChatStreamPayload = {
@@ -359,6 +360,8 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
       conversations[0];
     return c;
   }, [activeConversationId, conversations]);
+  const composerDrafts = useChatComposerStore((s) => s.drafts);
+  const setComposerDraft = useChatComposerStore((s) => s.setDraft);
 
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -388,6 +391,17 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
   const [voiceError, setVoiceError] = useState("");
 
   const messages = conversation?.messages ?? [];
+  const conversationDraft = conversation?.id ? composerDrafts[conversation.id] ?? "" : "";
+
+  const updateInput = useCallback(
+    (next: string) => {
+      setInput(next);
+      if (conversation?.id) {
+        setComposerDraft(conversation.id, next);
+      }
+    },
+    [conversation?.id, setComposerDraft],
+  );
   const outlineItems = useMemo(() => {
     const items: Array<{ messageId: string; index: number; preview: string }> = [];
     let index = 0;
@@ -412,6 +426,10 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
 
   // 读取渲染模式（默认 rich）。不做 memo，方便 Settings 修改后即时生效。
   const renderMode = loadChatRenderMode();
+
+  useEffect(() => {
+    setInput(conversationDraft);
+  }, [conversation?.id, conversationDraft]);
 
   useEffect(() => {
     if (outlineItems.length === 0) {
@@ -757,7 +775,7 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
     };
     recognition.onresult = (event) => {
       const { finalTranscript, interimTranscript } = collectSpeechSegments(event);
-      setInput(mergeVoiceText(voiceBaseInputRef.current, finalTranscript, interimTranscript));
+      updateInput(mergeVoiceText(voiceBaseInputRef.current, finalTranscript, interimTranscript));
       setVoiceInputState("listening");
     };
     recognition.onerror = (event) => {
@@ -780,7 +798,7 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
       setVoiceInputState("idle");
       setVoiceError(String(error instanceof Error ? error.message : error) || "启动语音输入失败");
     }
-  }, [attachmentBusy, input, sending, stopVoiceInput]);
+  }, [attachmentBusy, input, sending, stopVoiceInput, updateInput]);
 
   useEffect(() => {
     if (conversation?.id == null) return;
@@ -809,14 +827,14 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
     const el = inputRef.current;
     const current = input;
     if (!el) {
-      setInput(current ? `${current}$` : "$");
+      updateInput(current ? `${current}$` : "$");
       return;
     }
 
     const start = typeof el.selectionStart === "number" ? el.selectionStart : current.length;
     const end = typeof el.selectionEnd === "number" ? el.selectionEnd : current.length;
     const next = current.slice(0, start) + "$" + current.slice(end);
-    setInput(next);
+    updateInput(next);
 
     requestAnimationFrame(() => {
       try {
@@ -880,7 +898,7 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
       };
       appendMessage(conversation.id, userMessage);
       if (options?.content === undefined) {
-        setInput("");
+        updateInput("");
         setDraftAttachments([]);
         setAttachmentError("");
       }
@@ -1508,7 +1526,7 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
               ref={inputRef}
               value={input}
               onChange={(e) => {
-                setInput(e.target.value);
+                updateInput(e.target.value);
                 if (voiceError) setVoiceError("");
               }}
               placeholder={voiceInputState === "listening" ? "正在听写…" : attachmentBusy ? "附件处理中…" : sending ? "发送中…" : "输入消息…"}

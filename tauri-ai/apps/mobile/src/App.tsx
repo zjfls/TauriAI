@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLayoutSize } from "./lib/breakpoints";
 import { PhoneShell } from "./shell/PhoneShell";
 import { TabletShell, loadShellPrefs, saveShellPrefs } from "./shell/TabletShell";
@@ -6,6 +6,7 @@ import type { RootTab } from "./shell/types";
 import { ConversationList } from "./components/ConversationList";
 import { PracticeQuizList } from "./components/PracticeQuizList";
 import { useConversationStore } from "./stores/conversationStore";
+import { useChatComposerStore } from "./stores/chatComposerStore";
 import { ChatPage } from "./pages/ChatPage";
 import { HistoryPage } from "./pages/HistoryPage";
 import { PracticePage } from "./pages/PracticePage";
@@ -27,8 +28,21 @@ export default function App() {
 
   const { conversations, activeConversationId, createConversation, setActiveConversation, deleteConversation } =
     useConversationStore();
+  const setChatComposerDraft = useChatComposerStore((s) => s.setDraft);
 
   const { quizzes, activeQuizId, createQuiz, setActiveQuiz, deleteQuiz } = usePracticeStore();
+
+  const handleCopyQuestionToChat = useCallback(
+    (content: string) => {
+      const normalized = content.trim();
+      if (!normalized) return;
+      const targetConversationId = activeConversationId ?? conversations[0]?.id ?? createConversation();
+      setChatComposerDraft(targetConversationId, normalized);
+      setActiveConversation(targetConversationId);
+      setTab("chat");
+    },
+    [activeConversationId, conversations, createConversation, setActiveConversation, setChatComposerDraft],
+  );
 
   const list =
     tab === "practice" ? (
@@ -67,7 +81,7 @@ export default function App() {
         onNavigateChat={() => setTab("chat")}
       />
     ) : tab === "practice" ? (
-      <PracticePage />
+      <PracticePage onCopyQuestionToChat={handleCopyQuestionToChat} />
     ) : (
       <SettingsPage />
     );

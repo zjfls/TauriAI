@@ -522,7 +522,18 @@ function questionTypeLabel(t: PracticeQuestionType): string {
   return "问答题";
 }
 
-export function PracticePage() {
+function buildQuestionChatPrompt(question: PracticeQuestion): string {
+  const sections = ["解答题目", question.prompt.trim() || "（题目为空）"];
+  if (question.type === "multiple_choice" && question.options.length > 0) {
+    sections.push(
+      "",
+      ...question.options.map((option) => `${option.id}. ${option.text.trim() || "（空）"}`),
+    );
+  }
+  return sections.join("\n").trim();
+}
+
+export function PracticePage({ onCopyQuestionToChat }: { onCopyQuestionToChat?: (content: string) => void }) {
   const layout = useLayoutSize();
 
   const quizzes = usePracticeStore((s) => s.quizzes);
@@ -575,6 +586,7 @@ export function PracticePage() {
   const [fullscreenPasteStatus, setFullscreenPasteStatus] = useState("");
   const fullscreenPasteTargetRef = useRef<HTMLDivElement | null>(null);
   const [copyQuestionImageFeedback, setCopyQuestionImageFeedback] = useState<Record<string, QuestionImageFeedback>>({});
+  const [copyQuestionToChatFeedback, setCopyQuestionToChatFeedback] = useState<Record<string, string>>({});
   const [inkDrawBrushId, setInkDrawBrushId] = useState<string>(() => {
     const preferred = DRAWING_BRUSH_PRESETS.find((item) => item.id === DEFAULT_INK_BRUSH_ID);
     return preferred?.id ?? DRAWING_BRUSH_PRESETS[0]?.id ?? DEFAULT_INK_BRUSH_ID;
@@ -665,6 +677,15 @@ export function PracticePage() {
       setGenBusy(false);
     }
   };
+
+  const copyQuestionToChat = useCallback(
+    (question: PracticeQuestion) => {
+      if (!onCopyQuestionToChat) return;
+      onCopyQuestionToChat(buildQuestionChatPrompt(question));
+      setCopyQuestionToChatFeedback((prev) => ({ ...prev, [question.id]: "已放入聊天" }));
+    },
+    [onCopyQuestionToChat],
+  );
 
   const copyQuestionAsImage = useCallback(async (question: PracticeQuestion, index: number) => {
     setCopyQuestionImageBusy((prev) => ({ ...prev, [question.id]: true }));
@@ -815,6 +836,7 @@ export function PracticePage() {
     const copyFeedback = copyQuestionImageFeedback[q.id];
     const copyError = copyFeedback?.kind === "error" ? copyFeedback.message : "";
     const copySuccess = copyFeedback?.kind === "success";
+    const chatCopySuccess = Boolean(copyQuestionToChatFeedback[q.id]);
     const isFullscreenInkOpen =
       fullscreenInkTarget?.quizId === quiz2.id && fullscreenInkTarget?.questionId === q.id;
 
@@ -891,22 +913,39 @@ export function PracticePage() {
                 {index + 1}. {questionTypeLabel(q.type)}
               </div>
               <div className="text-xs text-white/50">{q.points} 分</div>
-              {q.type !== "multiple_choice" ? (
-                <button
-                  type="button"
-                  className={clsx(
-                    "ml-auto h-8 px-3 rounded-lg border text-xs transition-colors disabled:opacity-60",
-                    copySuccess
-                      ? "border-emerald-300/30 bg-emerald-500/15 text-emerald-100"
-                      : "border-white/10 bg-white/5 text-white/80 hover:bg-white/10",
-                  )}
-                  onClick={() => void copyQuestionAsImage(q, index)}
-                  disabled={copyBusy}
-                  title="复制题目为图片"
-                >
-                  {copyBusy ? "生成中…" : copySuccess ? "已复制" : "复制题图"}
-                </button>
-              ) : null}
+              <div className="ml-auto flex flex-wrap items-center gap-2">
+                {onCopyQuestionToChat ? (
+                  <button
+                    type="button"
+                    className={clsx(
+                      "h-8 px-3 rounded-lg border text-xs transition-colors",
+                      chatCopySuccess
+                        ? "border-sky-300/30 bg-sky-500/15 text-sky-100"
+                        : "border-white/10 bg-white/5 text-white/80 hover:bg-white/10",
+                    )}
+                    onClick={() => copyQuestionToChat(q)}
+                    title="放入聊天输入框"
+                  >
+                    {chatCopySuccess ? "已放入聊天" : "问聊天"}
+                  </button>
+                ) : null}
+                {q.type !== "multiple_choice" ? (
+                  <button
+                    type="button"
+                    className={clsx(
+                      "h-8 px-3 rounded-lg border text-xs transition-colors disabled:opacity-60",
+                      copySuccess
+                        ? "border-emerald-300/30 bg-emerald-500/15 text-emerald-100"
+                        : "border-white/10 bg-white/5 text-white/80 hover:bg-white/10",
+                    )}
+                    onClick={() => void copyQuestionAsImage(q, index)}
+                    disabled={copyBusy}
+                    title="复制题目为图片"
+                  >
+                    {copyBusy ? "生成中…" : copySuccess ? "已复制" : "复制题图"}
+                  </button>
+                ) : null}
+              </div>
             </div>
             <div className="mt-2 text-sm text-white/90 max-w-full overflow-x-hidden">
               <RichText content={q.prompt || "（题目为空）"} />
@@ -919,7 +958,7 @@ export function PracticePage() {
 
         <div className="mt-3 grid gap-3">
           {q.type === "multiple_choice" ? (
-            <div className="grid gap-2 sm:grid-cols-2">
+            <div className="grid auto-rows-fr gap-2 sm:grid-cols-2">
               {q.options.map((opt) => {
                 const selected = answer?.kind === "choice" && answer.optionId === opt.id;
                 return (
@@ -927,24 +966,19 @@ export function PracticePage() {
                     key={opt.id}
                     type="button"
                     className={clsx(
-                      "flex items-start gap-3 text-left rounded-xl border px-3 py-3 text-sm transition-colors overflow-x-hidden",
+                      "h-full rounded-xl border px-3 py-3 text-left text-sm transition-colors overflow-x-hidden",
                       selected
-                        ? "border-indigo-400 bg-indigo-400/10 text-white"
-                        : "border-white/10 bg-black/20 hover:bg-white/5 text-white/90",
+                        ? "border-indigo-400/80 bg-white/[0.08] ring-1 ring-indigo-400/35 text-white"
+                        : "border-white/10 bg-white/[0.04] hover:bg-white/[0.07] text-white/90",
                     )}
                     onClick={() => setChoice(opt.id)}
                   >
-                    <div
-                      className={clsx(
-                        "mt-0.5 inline-flex h-7 min-w-7 shrink-0 items-center justify-center rounded-full border px-2 text-xs font-semibold",
-                        selected
-                          ? "border-indigo-300/60 bg-indigo-400/15 text-indigo-100"
-                          : "border-white/15 bg-white/8 text-white/75",
-                      )}
-                    >
-                      {opt.id}
+                    <div className="flex min-w-0 items-start gap-2">
+                      <span className={clsx("shrink-0 text-sm font-semibold", selected ? "text-indigo-200" : "text-white/70")}>
+                        {opt.id}.
+                      </span>
+                      <RichText content={opt.text || "（空）"} className="min-w-0 flex-1 text-white/90" />
                     </div>
-                    <RichText content={opt.text || "（空）"} className="min-w-0 flex-1 text-white/80" />
                   </button>
                 );
               })}
