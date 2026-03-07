@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { isTauriRuntime, tauriInvoke } from "../lib/tauri";
-import { Bot, Palette, Plug, Server, Shield, Sliders, Sparkles, Wrench } from "lucide-react";
+import { Bot, Brain, Eye, Palette, Plug, Search, Server, Shield, Sliders, Sparkles, Wrench } from "lucide-react";
 import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
 import { ModelPickerModal } from "../ui/ModelPickerModal";
@@ -20,6 +20,13 @@ type ProviderType =
 
 type AppConfig = any;
 
+type ModelCapabilitiesDraft = {
+  thinking: boolean;
+  vision: boolean;
+  functionCalling: boolean;
+  webSearch: boolean;
+};
+
 type ModelDraft = {
   name: string;
   originalName: string;
@@ -28,7 +35,15 @@ type ModelDraft = {
   maxTokens: number | null;
   topP: number | null;
   topPEnabled: boolean;
-  capabilities: Record<string, unknown>;
+  contextLength: number | null;
+  capabilities: ModelCapabilitiesDraft;
+  retryAttempts: number | null;
+  resumePartialOutput: boolean;
+  streamIncludeUsage: boolean;
+  maxImages: number | null;
+  thinkingBudgetTokens: number | null;
+  useReasoningEffort: boolean;
+  reinjectReasoningContent: boolean;
 };
 
 type ProviderDraft = {
@@ -90,6 +105,20 @@ function newId(prefix: string) {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
 }
 
+function ensureModelCapabilitiesDraft(value: any): ModelCapabilitiesDraft {
+  const caps = value && typeof value === "object" ? value : {};
+  return {
+    thinking: Boolean(caps.thinking),
+    vision: Boolean(caps.vision),
+    functionCalling: Boolean(caps.functionCalling ?? caps.function_calling),
+    webSearch: Boolean(caps.webSearch ?? caps.web_search),
+  };
+}
+
+function optionalNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 function buildDefaultModel(name: string): ModelDraft {
   return {
     name,
@@ -99,7 +128,15 @@ function buildDefaultModel(name: string): ModelDraft {
     maxTokens: null,
     topP: null,
     topPEnabled: true,
-    capabilities: {},
+    contextLength: null,
+    capabilities: ensureModelCapabilitiesDraft(undefined),
+    retryAttempts: null,
+    resumePartialOutput: false,
+    streamIncludeUsage: true,
+    maxImages: null,
+    thinkingBudgetTokens: null,
+    useReasoningEffort: false,
+    reinjectReasoningContent: false,
   };
 }
 
@@ -128,10 +165,23 @@ function ensureProvidersDraft(providers: any[]): ProviderDraft[] {
             temperature: typeof m?.temperature === "number" ? m.temperature : 0.7,
             temperatureEnabled:
               typeof m?.temperatureEnabled === "boolean" ? m.temperatureEnabled : true,
-            maxTokens: typeof m?.maxTokens === "number" ? m.maxTokens : null,
+            maxTokens: optionalNumber(m?.maxTokens),
             topP: typeof m?.topP === "number" ? m.topP : null,
             topPEnabled: typeof m?.topPEnabled === "boolean" ? m.topPEnabled : true,
-            capabilities: (m?.capabilities as Record<string, unknown>) ?? {},
+            contextLength: optionalNumber(m?.contextLength),
+            capabilities: ensureModelCapabilitiesDraft(m?.capabilities),
+            retryAttempts: optionalNumber(m?.retryAttempts),
+            resumePartialOutput: typeof m?.resumePartialOutput === "boolean" ? m.resumePartialOutput : false,
+            streamIncludeUsage:
+              typeof m?.streamIncludeUsage === "boolean" ? m.streamIncludeUsage : true,
+            maxImages: optionalNumber(m?.maxImages),
+            thinkingBudgetTokens: optionalNumber(m?.thinkingBudgetTokens),
+            useReasoningEffort:
+              typeof m?.useReasoningEffort === "boolean" ? m.useReasoningEffort : false,
+            reinjectReasoningContent:
+              typeof m?.reinjectReasoningContent === "boolean"
+                ? m.reinjectReasoningContent
+                : false,
             } satisfies ModelDraft;
           })
           .filter((m: ModelDraft) => m.name),
@@ -363,6 +413,24 @@ export function SettingsPage() {
     return `${activeProvider.name}/${activeModel.name}`;
   }, [activeProvider, activeModel]);
 
+  const updateActiveModel = useCallback(
+    (updater: (model: ModelDraft) => ModelDraft) => {
+      if (!activeProvider || !activeModel) return;
+      setProviders((prev) =>
+        prev.map((provider) => {
+          if (provider.name !== activeProvider.name) return provider;
+          return {
+            ...provider,
+            models: provider.models.map((model) =>
+              model.name === activeModel.name ? updater(model) : model,
+            ),
+          };
+        }),
+      );
+    },
+    [activeModel, activeProvider],
+  );
+
   const visibleAgents = useMemo(() => filterNonPracticeAgents(agents), [agents]);
 
   const activeAgent = useMemo(
@@ -569,15 +637,29 @@ export function SettingsPage() {
         base.models = p.models.map((m) => {
           const existingModel = existingByName.get(m.originalName);
           const mb: any = existingModel && typeof existingModel === "object" ? { ...existingModel } : {};
+          const existingCapabilities =
+            existingModel && typeof existingModel?.capabilities === "object" ? existingModel.capabilities : {};
           mb.name = m.name;
-          mb.temperature = typeof mb.temperature === "number" ? mb.temperature : m.temperature;
-          mb.temperatureEnabled =
-            typeof mb.temperatureEnabled === "boolean" ? mb.temperatureEnabled : m.temperatureEnabled;
-          mb.maxTokens = typeof mb.maxTokens === "number" ? mb.maxTokens : m.maxTokens;
-          mb.topP = typeof mb.topP === "number" ? mb.topP : m.topP;
-          mb.topPEnabled = typeof mb.topPEnabled === "boolean" ? mb.topPEnabled : m.topPEnabled;
-          mb.capabilities =
-            mb.capabilities && typeof mb.capabilities === "object" ? mb.capabilities : (m.capabilities ?? {});
+          mb.temperature = m.temperature;
+          mb.temperatureEnabled = m.temperatureEnabled;
+          mb.maxTokens = m.maxTokens;
+          mb.topP = m.topP;
+          mb.topPEnabled = m.topPEnabled;
+          mb.contextLength = m.contextLength;
+          mb.capabilities = {
+            ...existingCapabilities,
+            thinking: m.capabilities.thinking,
+            vision: m.capabilities.vision,
+            functionCalling: m.capabilities.functionCalling,
+            webSearch: m.capabilities.webSearch,
+          };
+          mb.retryAttempts = m.retryAttempts;
+          mb.resumePartialOutput = m.resumePartialOutput;
+          mb.streamIncludeUsage = m.streamIncludeUsage;
+          mb.maxImages = m.maxImages;
+          mb.thinkingBudgetTokens = m.thinkingBudgetTokens;
+          mb.useReasoningEffort = m.useReasoningEffort;
+          mb.reinjectReasoningContent = m.reinjectReasoningContent;
           return mb;
         });
         return base;
@@ -900,7 +982,7 @@ export function SettingsPage() {
               />
 
               <label className="text-xs text-white/70 mt-2">当前 Model</label>
-              <div className="space-y-2">
+              <div className="space-y-3">
                 <Select
                   value={activeModel?.name ?? ""}
                   onChange={(e) => setActiveModelName(e.target.value)}
@@ -944,6 +1026,295 @@ export function SettingsPage() {
                     获取模型
                   </Button>
                 </div>
+
+                {activeModel ? (
+                  <div className="rounded-lg border border-white/10 bg-black/20 p-3 space-y-3">
+                    <div>
+                      <div className="text-sm font-medium text-white">模型详情</div>
+                      <div className="text-[11px] text-white/55 mt-1">
+                        不自动推断能力；新增模型默认全部关闭，由你手动勾选。
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <div className="text-[11px] font-medium tracking-wide text-white/45 uppercase">基础</div>
+                      <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                        <div>
+                          <label className="text-[11px] text-white/60">模型名</label>
+                          <div className="mt-1 h-10 rounded-md border border-white/10 bg-white/5 px-3 text-sm flex items-center text-white/85">
+                            {activeModel.name}
+                          </div>
+                        </div>
+                        <div>
+                          <label className="text-[11px] text-white/60">Max Tokens</label>
+                          <Input
+                            type="number"
+                            inputMode="numeric"
+                            value={activeModel.maxTokens ?? ""}
+                            onChange={(e) =>
+                              updateActiveModel((model) => ({
+                                ...model,
+                                maxTokens: e.target.value === "" ? null : Math.max(1, parseInt(e.target.value, 10) || 0),
+                              }))
+                            }
+                            placeholder="留空表示不限制"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[11px] text-white/60">Context Length</label>
+                          <Input
+                            type="number"
+                            inputMode="numeric"
+                            value={activeModel.contextLength ?? ""}
+                            onChange={(e) =>
+                              updateActiveModel((model) => ({
+                                ...model,
+                                contextLength: e.target.value === "" ? null : Math.max(1, parseInt(e.target.value, 10) || 0),
+                              }))
+                            }
+                            placeholder="例如 128000"
+                          />
+                        </div>
+                        <div className="rounded-md border border-white/10 bg-white/5 p-2 space-y-2">
+                          <label className="flex items-center justify-between gap-3 text-sm text-white/85">
+                            <span>Temperature</span>
+                            <input
+                              type="checkbox"
+                              checked={activeModel.temperatureEnabled}
+                              onChange={(e) =>
+                                updateActiveModel((model) => ({
+                                  ...model,
+                                  temperatureEnabled: e.target.checked,
+                                }))
+                              }
+                            />
+                          </label>
+                          <Input
+                            type="number"
+                            inputMode="decimal"
+                            step="0.1"
+                            value={activeModel.temperature}
+                            disabled={!activeModel.temperatureEnabled}
+                            onChange={(e) =>
+                              updateActiveModel((model) => ({
+                                ...model,
+                                temperature: Number.isFinite(parseFloat(e.target.value))
+                                  ? parseFloat(e.target.value)
+                                  : model.temperature,
+                              }))
+                            }
+                          />
+                        </div>
+                        <div className="rounded-md border border-white/10 bg-white/5 p-2 space-y-2">
+                          <label className="flex items-center justify-between gap-3 text-sm text-white/85">
+                            <span>Top P</span>
+                            <input
+                              type="checkbox"
+                              checked={activeModel.topPEnabled}
+                              onChange={(e) =>
+                                updateActiveModel((model) => ({
+                                  ...model,
+                                  topPEnabled: e.target.checked,
+                                }))
+                              }
+                            />
+                          </label>
+                          <Input
+                            type="number"
+                            inputMode="decimal"
+                            step="0.1"
+                            value={activeModel.topP ?? ""}
+                            disabled={!activeModel.topPEnabled}
+                            onChange={(e) =>
+                              updateActiveModel((model) => ({
+                                ...model,
+                                topP: e.target.value === "" ? null : parseFloat(e.target.value),
+                              }))
+                            }
+                            placeholder="留空表示不发送"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <div className="text-[11px] font-medium tracking-wide text-white/45 uppercase">能力</div>
+                      <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                        <label className="rounded-md border border-white/10 bg-white/5 p-3 flex items-center justify-between gap-3 text-sm text-white/85">
+                          <span className="inline-flex items-center gap-2"><Brain size={14} className="text-violet-300" />思考</span>
+                          <input
+                            type="checkbox"
+                            checked={activeModel.capabilities.thinking}
+                            onChange={(e) =>
+                              updateActiveModel((model) => ({
+                                ...model,
+                                capabilities: { ...model.capabilities, thinking: e.target.checked },
+                              }))
+                            }
+                          />
+                        </label>
+                        <label className="rounded-md border border-white/10 bg-white/5 p-3 flex items-center justify-between gap-3 text-sm text-white/85">
+                          <span className="inline-flex items-center gap-2"><Eye size={14} className="text-sky-300" />视觉</span>
+                          <input
+                            type="checkbox"
+                            checked={activeModel.capabilities.vision}
+                            onChange={(e) =>
+                              updateActiveModel((model) => ({
+                                ...model,
+                                capabilities: { ...model.capabilities, vision: e.target.checked },
+                              }))
+                            }
+                          />
+                        </label>
+                        <label className="rounded-md border border-white/10 bg-white/5 p-3 flex items-center justify-between gap-3 text-sm text-white/85">
+                          <span className="inline-flex items-center gap-2"><Wrench size={14} className="text-emerald-300" />工具调用</span>
+                          <input
+                            type="checkbox"
+                            checked={activeModel.capabilities.functionCalling}
+                            onChange={(e) =>
+                              updateActiveModel((model) => ({
+                                ...model,
+                                capabilities: { ...model.capabilities, functionCalling: e.target.checked },
+                              }))
+                            }
+                          />
+                        </label>
+                        <label className="rounded-md border border-white/10 bg-white/5 p-3 flex items-center justify-between gap-3 text-sm text-white/85">
+                          <span className="inline-flex items-center gap-2"><Search size={14} className="text-amber-300" />网络搜索</span>
+                          <input
+                            type="checkbox"
+                            checked={activeModel.capabilities.webSearch}
+                            onChange={(e) =>
+                              updateActiveModel((model) => ({
+                                ...model,
+                                capabilities: { ...model.capabilities, webSearch: e.target.checked },
+                              }))
+                            }
+                          />
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <div className="text-[11px] font-medium tracking-wide text-white/45 uppercase">高级</div>
+                      <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                        <div>
+                          <label className="text-[11px] text-white/60">重试次数</label>
+                          <Input
+                            type="number"
+                            inputMode="numeric"
+                            value={activeModel.retryAttempts ?? ""}
+                            onChange={(e) =>
+                              updateActiveModel((model) => ({
+                                ...model,
+                                retryAttempts: e.target.value === "" ? null : Math.max(0, parseInt(e.target.value, 10) || 0),
+                              }))
+                            }
+                            placeholder="默认 8"
+                          />
+                        </div>
+
+                        {activeModel.capabilities.vision ? (
+                          <div>
+                            <label className="text-[11px] text-white/60">最大图片数</label>
+                            <Input
+                              type="number"
+                              inputMode="numeric"
+                              value={activeModel.maxImages ?? ""}
+                              onChange={(e) =>
+                                updateActiveModel((model) => ({
+                                  ...model,
+                                  maxImages: e.target.value === "" ? null : Math.max(1, parseInt(e.target.value, 10) || 1),
+                                }))
+                              }
+                              placeholder="默认 10"
+                            />
+                          </div>
+                        ) : null}
+
+                        {activeProvider.type === "anthropic" && activeModel.capabilities.thinking ? (
+                          <div>
+                            <label className="text-[11px] text-white/60">思考预算 Tokens</label>
+                            <Input
+                              type="number"
+                              inputMode="numeric"
+                              value={activeModel.thinkingBudgetTokens ?? ""}
+                              onChange={(e) =>
+                                updateActiveModel((model) => ({
+                                  ...model,
+                                  thinkingBudgetTokens: e.target.value === "" ? null : Math.max(1024, parseInt(e.target.value, 10) || 1024),
+                                }))
+                              }
+                              placeholder="Anthropic ≥ 1024"
+                            />
+                          </div>
+                        ) : null}
+
+                        <label className="rounded-md border border-white/10 bg-white/5 p-3 flex items-center justify-between gap-3 text-sm text-white/85 md:col-span-2">
+                          <span>断线后允许继续输出</span>
+                          <input
+                            type="checkbox"
+                            checked={activeModel.resumePartialOutput}
+                            onChange={(e) =>
+                              updateActiveModel((model) => ({
+                                ...model,
+                                resumePartialOutput: e.target.checked,
+                              }))
+                            }
+                          />
+                        </label>
+
+                        {(activeProvider.type === "openai" || activeProvider.type === "openai_compatible") ? (
+                          <label className="rounded-md border border-white/10 bg-white/5 p-3 flex items-center justify-between gap-3 text-sm text-white/85 md:col-span-2">
+                            <span>stream.include_usage</span>
+                            <input
+                              type="checkbox"
+                              checked={activeModel.streamIncludeUsage}
+                              onChange={(e) =>
+                                updateActiveModel((model) => ({
+                                  ...model,
+                                  streamIncludeUsage: e.target.checked,
+                                }))
+                              }
+                            />
+                          </label>
+                        ) : null}
+
+                        {(activeProvider.type === "openai" || activeProvider.type === "openai_compatible") && activeModel.capabilities.thinking ? (
+                          <label className="rounded-md border border-white/10 bg-white/5 p-3 flex items-center justify-between gap-3 text-sm text-white/85 md:col-span-2">
+                            <span>使用 Reasoning Effort</span>
+                            <input
+                              type="checkbox"
+                              checked={activeModel.useReasoningEffort}
+                              onChange={(e) =>
+                                updateActiveModel((model) => ({
+                                  ...model,
+                                  useReasoningEffort: e.target.checked,
+                                }))
+                              }
+                            />
+                          </label>
+                        ) : null}
+
+                        {activeProvider.type === "openai_compatible" && activeModel.capabilities.thinking ? (
+                          <label className="rounded-md border border-white/10 bg-white/5 p-3 flex items-center justify-between gap-3 text-sm text-white/85 md:col-span-2">
+                            <span>回传历史 reasoning_content</span>
+                            <input
+                              type="checkbox"
+                              checked={activeModel.reinjectReasoningContent}
+                              onChange={(e) =>
+                                updateActiveModel((model) => ({
+                                  ...model,
+                                  reinjectReasoningContent: e.target.checked,
+                                }))
+                              }
+                            />
+                          </label>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
               </div>
 
               <label className="text-xs text-white/70 mt-2">添加 Model</label>

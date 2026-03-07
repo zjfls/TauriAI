@@ -74,6 +74,66 @@ function normalizeQuestionType(v: unknown): PracticeQuestionType | null {
   return null;
 }
 
+function normalizeChoiceLetter(id: unknown, index: number): string {
+  const raw = typeof id === "string" ? id.trim().toUpperCase() : "";
+  if (/^[A-H]$/.test(raw)) return raw;
+  if (typeof id === "number" && Number.isFinite(id)) {
+    const numeric = Math.trunc(id);
+    if (numeric >= 1 && numeric <= 8) {
+      return String.fromCharCode(64 + numeric);
+    }
+  }
+  return String.fromCharCode(65 + Math.max(0, Math.min(7, index)));
+}
+
+function sanitizeChoiceText(rawId: string, rawText: string, canonicalId: string): string {
+  const semanticId = rawId.trim();
+  const text = rawText.trim();
+  const semanticLooksLikeLetter = /^[A-H]$/i.test(semanticId);
+
+  if (!text) {
+    return semanticId && !semanticLooksLikeLetter ? semanticId : "";
+  }
+
+  if (!semanticId || semanticLooksLikeLetter || semanticId.toUpperCase() === canonicalId) {
+    return text;
+  }
+
+  const lowerText = text.toLowerCase();
+  const lowerSemantic = semanticId.toLowerCase();
+  if (lowerText === lowerSemantic || lowerText.startsWith(`${lowerSemantic}：`) || lowerText.startsWith(`${lowerSemantic}:`)) {
+    return text;
+  }
+
+  return `${semanticId}：${text}`;
+}
+
+function normalizeCorrectOptionId(
+  rawCorrect: string,
+  originalIdToCanonicalId: Map<string, string>,
+  options: Array<{ id: string; text: string }>,
+): string {
+  const trimmed = rawCorrect.trim();
+  if (!trimmed) return options[0]?.id || "A";
+
+  const normalizedKey = trimmed.toLowerCase();
+  const mapped = originalIdToCanonicalId.get(normalizedKey);
+  if (mapped) return mapped;
+
+  if (/^[A-H]$/i.test(trimmed)) {
+    const upper = trimmed.toUpperCase();
+    if (options.some((option) => option.id === upper)) return upper;
+  }
+
+  if (/^[1-8]$/.test(trimmed)) {
+    const candidate = String.fromCharCode(64 + Number(trimmed));
+    if (options.some((option) => option.id === candidate)) return candidate;
+  }
+
+  const matchedByText = options.find((option) => option.text.trim().toLowerCase() === normalizedKey);
+  return matchedByText?.id || options[0]?.id || "A";
+}
+
 function normalizeQuestion(raw: any, index: number): PracticeQuestion | null {
   const type =
     normalizeQuestionType(raw?.type) ??
@@ -95,22 +155,49 @@ function normalizeQuestion(raw: any, index: number): PracticeQuestion | null {
   if (type === "multiple_choice") {
     const optionsRaw = raw?.options;
     let options: { id: string; text: string }[] = [];
+    const originalIdToCanonicalId = new Map<string, string>();
     if (Array.isArray(optionsRaw)) {
       options = optionsRaw
         .map((o, i) => {
+          const canonicalId = normalizeChoiceLetter((o as any)?.id, i);
           if (typeof o === "string") {
-            return { id: String.fromCharCode(65 + i), text: o };
+            return { id: canonicalId, text: o.trim() };
           }
-          const id = asString((o as any)?.id).trim() || String.fromCharCode(65 + i);
-          const text = asString((o as any)?.text) || asString((o as any)?.value) || "";
-          return { id, text };
+          const rawId =
+            asString((o as any)?.id).trim() ||
+            asString((o as any)?.key).trim() ||
+            asString((o as any)?.label).trim();
+          const rawText =
+            asString((o as any)?.text) ||
+            asString((o as any)?.value) ||
+            asString((o as any)?.content) ||
+            asString((o as any)?.option) ||
+            asString((o as any)?.answer) ||
+            asString((o as any)?.label);
+          if (rawId) originalIdToCanonicalId.set(rawId.toLowerCase(), canonicalId);
+          const text = sanitizeChoiceText(rawId, rawText, canonicalId);
+          return { id: canonicalId, text };
         })
-        .filter((o) => o.id);
+        .filter((o) => o.text);
     } else if (optionsRaw && typeof optionsRaw === "object") {
       const entries = Object.entries(optionsRaw as Record<string, unknown>);
       options = entries
-        .map(([k, v]) => ({ id: k.trim() || "", text: asString(v) }))
-        .filter((o) => o.id);
+        .map(([k, v], i) => {
+          const canonicalId = normalizeChoiceLetter(k, i);
+          originalIdToCanonicalId.set(k.trim().toLowerCase(), canonicalId);
+          if (typeof v === "string") {
+            return { id: canonicalId, text: sanitizeChoiceText(k, v, canonicalId) };
+          }
+          const rawText =
+            asString((v as any)?.text) ||
+            asString((v as any)?.value) ||
+            asString((v as any)?.content) ||
+            asString((v as any)?.option) ||
+            asString((v as any)?.answer) ||
+            asString((v as any)?.label);
+          return { id: canonicalId, text: sanitizeChoiceText(k, rawText, canonicalId) };
+        })
+        .filter((o) => o.text);
     }
 
     const safeOptions =
@@ -123,12 +210,15 @@ function normalizeQuestion(raw: any, index: number): PracticeQuestion | null {
             { id: "D", text: "" },
           ];
 
-    const correctOptionId =
+    const rawCorrectOptionId =
       asString(raw?.correctOptionId).trim() ||
       asString(raw?.correct).trim() ||
-      asString(raw?.answer).trim() ||
-      safeOptions[0]?.id ||
-      "A";
+      asString(raw?.answer).trim();
+    const correctOptionId = normalizeCorrectOptionId(
+      rawCorrectOptionId,
+      originalIdToCanonicalId,
+      safeOptions,
+    );
 
     return {
       id,
@@ -221,9 +311,11 @@ export async function generatePracticeQuiz(
     "- 每道题都有：type,prompt,points；explanation 可选",
     "- type 只能是：multiple_choice | calculation | proof | qa",
     "- 选择题必须包含：options([{id,text},...]) 和 correctOptionId(必须在 options.id 中)",
+    "- 选择题的 id 只能用单个大写字母 A/B/C/D...，不要把 unknown/any/数字/中文写到 id 里",
+    "- 选择题的 text 必须写完整选项内容；不要输出 {\"unknown\":\"...\"} 这种对象映射，也不要把概念名拆到单独 label 字段",
     "- calculation/proof/qa 必须包含：referenceAnswer",
     "",
-    "内容要求：prompt/referenceAnswer/explanation 允许包含 Markdown、LaTeX、Mermaid。",
+    "内容要求：prompt/referenceAnswer/explanation 允许包含 Markdown、LaTeX、Mermaid；options.text 也允许 Markdown，但不要使用代码块围栏。",
   ].join("\n");
 
   const user = [
@@ -277,6 +369,7 @@ export async function generatePracticeQuiz(
       `题型数量：multiple_choice=${numMc}, calculation=${numCalc}, proof=${numProof}, qa=${numQa}。`,
       "每题字段：type,prompt,points；explanation 可选。",
       "选择题还需 options([{id,text},...]) + correctOptionId。",
+      "选择题的 id 必须是 A/B/C/D...，text 写完整选项内容，不要输出 unknown/any 这类语义 id 或对象映射。",
       "非选择题还需 referenceAnswer。",
       "",
       "原始输出：",

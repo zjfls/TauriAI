@@ -18,6 +18,7 @@ export function TabletShell({
   listVisible,
   onToggleList,
   onNewConversation,
+  listPaneClassName,
 }: {
   tab: RootTab;
   onTabChange: (next: RootTab) => void;
@@ -26,13 +27,14 @@ export function TabletShell({
   listVisible: boolean;
   onToggleList: () => void;
   onNewConversation?: () => void;
+  listPaneClassName?: string;
 }) {
   return (
     <div className="h-full flex overflow-x-hidden overflow-y-hidden">
       <Rail tab={tab} onTabChange={onTabChange} />
 
       {listVisible && list ? (
-        <aside className="w-[360px] border-r border-white/10 bg-white/5">{list}</aside>
+        <aside className={clsx("w-[360px] border-r border-white/10 bg-white/5", listPaneClassName)}>{list}</aside>
       ) : null}
 
       <main className="flex-1 min-w-0 overflow-x-hidden overflow-y-hidden">

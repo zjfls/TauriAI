@@ -30,6 +30,7 @@ describe('ChatOutlinePanel', () => {
             selectedMessageId={selected}
             selectedFullText={selected ? fullText[selected] : null}
             isOpen={open}
+            displayMode="sidebar"
             onToggle={() => setOpen((v) => !v)}
             onSelect={(id) => setSelected(id)}
           />
@@ -42,5 +43,23 @@ describe('ChatOutlinePanel', () => {
 
     await user.click(screen.getByRole('button', { name: 'toggle' }));
     expect(screen.getByText('First request')).toBeInTheDocument();
+  });
+
+  it('overlay 模式显示关闭按钮文案', () => {
+    const items: ChatOutlineItem[] = [{ messageId: 'm1', index: 1, preview: 'First request' }];
+
+    render(
+      <ChatOutlinePanel
+        items={items}
+        selectedMessageId="m1"
+        selectedFullText="First full text"
+        isOpen
+        displayMode="overlay"
+        onToggle={() => {}}
+        onSelect={() => {}}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: '关闭消息目录' })).toBeInTheDocument();
   });
 });

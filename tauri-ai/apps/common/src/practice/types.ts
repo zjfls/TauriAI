@@ -65,10 +65,18 @@ export interface PracticeTextQuestion extends PracticeQuestionBase {
 
 export type PracticeQuestion = PracticeMultipleChoiceQuestion | PracticeTextQuestion;
 
+export interface PracticeAnswerImage {
+  id: string;
+  url: string;
+  name?: string;
+  width?: number;
+  height?: number;
+}
+
 export type PracticeAnswer =
   | { kind: "choice"; optionId: string }
   | { kind: "text"; text: string }
-  | { kind: "ink"; ink: InkState; summaryText?: string };
+  | { kind: "ink"; ink: InkState; summaryText?: string; images?: PracticeAnswerImage[] };
 
 export interface PracticeGrading {
   score: number;
