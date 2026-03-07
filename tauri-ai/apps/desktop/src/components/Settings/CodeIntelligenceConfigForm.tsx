@@ -81,16 +81,114 @@ const safeStringify = (v: unknown) => {
   }
 };
 
-const defaultServer = (): LspServerConfig => ({
-  languageId: 'rust',
-  enabled: true,
-  command: 'rust-analyzer',
-  // rust-analyzer 默认使用 stdio 通信；无需 `--stdio`（部分版本会报 unknown flag）。
-  args: [],
-  env: {},
-  initializationOptions: {},
-  settings: {},
-});
+const normalizeLspLanguageId = (languageId: string) => {
+  const raw = String(languageId ?? '').trim().toLowerCase();
+  switch (raw) {
+    case 'c++':
+    case 'cplusplus':
+    case 'cc':
+    case 'cxx':
+    case 'hpp':
+    case 'hh':
+    case 'hxx':
+      return 'cpp';
+    case 'py':
+      return 'python';
+    default:
+      return raw;
+  }
+};
+
+const createServerTemplate = (languageId: string): LspServerConfig => {
+  const lang = normalizeLspLanguageId(languageId) || 'rust';
+  switch (lang) {
+    case 'rust':
+      return {
+        languageId: 'rust',
+        enabled: true,
+        command: 'rust-analyzer',
+        args: [],
+        env: {},
+        initializationOptions: {},
+        settings: {},
+      };
+    case 'python':
+      return {
+        languageId: 'python',
+        enabled: true,
+        command: 'pyright-langserver',
+        args: ['--stdio'],
+        env: {},
+        initializationOptions: {},
+        settings: {},
+      };
+    case 'go':
+      return {
+        languageId: 'go',
+        enabled: true,
+        command: 'gopls',
+        args: ['serve'],
+        env: {},
+        initializationOptions: {},
+        settings: {},
+      };
+    case 'cpp':
+    case 'c':
+      return {
+        languageId: lang,
+        enabled: true,
+        command: 'clangd',
+        args: [],
+        env: {},
+        initializationOptions: {},
+        settings: {},
+      };
+    case 'lua':
+      return {
+        languageId: 'lua',
+        enabled: true,
+        command: 'lua-language-server',
+        args: [],
+        env: {},
+        initializationOptions: {},
+        settings: {},
+      };
+    default:
+      return {
+        languageId: lang,
+        enabled: true,
+        command: '',
+        args: [],
+        env: {},
+        initializationOptions: {},
+        settings: {},
+      };
+  }
+};
+
+const sameStringArray = (left: string[], right: string[]) =>
+  left.length === right.length && left.every((value, index) => value === right[index]);
+
+const defaultServer = (languageId = 'rust'): LspServerConfig => createServerTemplate(languageId);
+
+const applyLanguageTemplate = (server: LspServerConfig, nextLanguageId: string): LspServerConfig => {
+  const previousLanguageId = normalizeLspLanguageId(server.languageId ?? '');
+  const normalizedNextLanguageId = normalizeLspLanguageId(nextLanguageId);
+  const previousTemplate = createServerTemplate(previousLanguageId || 'rust');
+  const nextTemplate = createServerTemplate(normalizedNextLanguageId || 'rust');
+  const currentCommand = String(server.command ?? '').trim();
+  const currentArgs = Array.isArray(server.args) ? server.args.map((arg) => String(arg)) : [];
+
+  const shouldReplaceCommand = !currentCommand || currentCommand == String(previousTemplate.command ?? '').trim();
+  const shouldReplaceArgs = currentArgs.length === 0 || sameStringArray(currentArgs, previousTemplate.args ?? []);
+
+  return {
+    ...server,
+    languageId: normalizedNextLanguageId,
+    command: shouldReplaceCommand ? nextTemplate.command : server.command,
+    args: shouldReplaceArgs ? nextTemplate.args : currentArgs,
+  };
+};
 
 const defaultAiCompletionSettings = (): AiCompletionSettings => ({
   enabled: false,
@@ -358,7 +456,7 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
 
   const autoConfigureSelected = async () => {
     if (!selectedServer) return;
-    const lang = String(selectedServer.languageId || '').trim();
+    const lang = normalizeLspLanguageId(selectedServer.languageId || '');
     if (!lang) {
       setAutoConfigError('languageId 为空');
       return;
@@ -1586,10 +1684,10 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
                     onChange={(e) => {
                       setAutoConfigMessage(null);
                       setAutoConfigError(null);
-                      updateServer(selectedIndex, (s) => ({ ...s, languageId: e.target.value }));
+                      updateServer(selectedIndex, (s) => applyLanguageTemplate(s, e.target.value));
                     }}
                     className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
-                    placeholder="rust / python / go / cpp / c / lua ..."
+                    placeholder="rust / python / go / cpp（也支持 c++）/ c / lua ..."
                   />
                 </div>
               </div>

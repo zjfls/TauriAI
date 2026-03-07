@@ -447,12 +447,15 @@ const languageForPath = (path: string) => {
     lower.endsWith('.cc') ||
     lower.endsWith('.cpp') ||
     lower.endsWith('.cxx') ||
+    lower.endsWith('.c++') ||
     lower.endsWith('.h') ||
     lower.endsWith('.hh') ||
     lower.endsWith('.hpp') ||
     lower.endsWith('.hxx') ||
+    lower.endsWith('.h++') ||
     lower.endsWith('.inl') ||
     lower.endsWith('.ipp') ||
+    lower.endsWith('.tpp') ||
     lower.endsWith('.ixx') ||
     lower.endsWith('.cppm')
   )
@@ -471,7 +474,7 @@ const AUTO_DETECT_LSP_FILE_QUERIES: Record<string, string[]> = {
   rust: ['.rs', 'cargo.toml'],
   python: ['.py', 'pyproject.toml', 'requirements.txt'],
   go: ['.go', 'go.mod', 'go.work', 'go.sum'],
-  cpp: ['.cpp', '.cc', '.cxx', '.hpp', '.hh', '.hxx', '.ixx', '.cppm'],
+  cpp: ['.cpp', '.cc', '.cxx', '.c++', '.hpp', '.hh', '.hxx', '.h++', '.ipp', '.tpp', '.ixx', '.cppm', 'compile_commands.json', 'compile_flags.txt', 'cmakelists.txt'],
   c: ['.c'],
   lua: ['.lua'],
 };
@@ -538,11 +541,18 @@ const isAutoDetectMatchForLanguage = (languageId: string, filePath: string): boo
         lower.endsWith('.cc') ||
         lower.endsWith('.cpp') ||
         lower.endsWith('.cxx') ||
+        lower.endsWith('.c++') ||
         lower.endsWith('.hpp') ||
         lower.endsWith('.hh') ||
         lower.endsWith('.hxx') ||
+        lower.endsWith('.h++') ||
+        lower.endsWith('.ipp') ||
+        lower.endsWith('.tpp') ||
         lower.endsWith('.ixx') ||
-        lower.endsWith('.cppm')
+        lower.endsWith('.cppm') ||
+        name === 'compile_commands.json' ||
+        name === 'compile_flags.txt' ||
+        name === 'cmakelists.txt'
       );
     case 'c':
       return lower.endsWith('.c');

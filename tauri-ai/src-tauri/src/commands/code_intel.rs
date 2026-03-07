@@ -30,6 +30,14 @@ use crate::models::{
 use crate::storage::async_db;
 use crate::storage::Database;
 
+fn canonical_lsp_language_id(language_id: &str) -> String {
+    match language_id.trim().to_ascii_lowercase().as_str() {
+        "c++" | "cplusplus" | "cc" | "cxx" | "hpp" | "hh" | "hxx" => "cpp".to_string(),
+        "py" => "python".to_string(),
+        other => other.to_string(),
+    }
+}
+
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LspEnsureServerArgs {
@@ -53,8 +61,9 @@ pub async fn lsp_ensure_server(
         .ok_or_else(|| "Workstudio not found".to_string())?
     };
 
-    let launch = resolve_launch_config(&*config_manager, &args.language_id)?;
-    lsp.ensure(&ws, &args.language_id, launch).await?;
+    let language_id = canonical_lsp_language_id(&args.language_id);
+    let launch = resolve_launch_config(&*config_manager, &language_id)?;
+    lsp.ensure(&ws, &language_id, launch).await?;
     Ok(())
 }
 
@@ -84,8 +93,9 @@ pub async fn lsp_notify(
         .ok_or_else(|| "Workstudio not found".to_string())?
     };
 
-    let launch = resolve_launch_config(&*config_manager, &args.language_id)?;
-    let server = lsp.ensure(&ws, &args.language_id, launch).await?;
+    let language_id = canonical_lsp_language_id(&args.language_id);
+    let launch = resolve_launch_config(&*config_manager, &language_id)?;
+    let server = lsp.ensure(&ws, &language_id, launch).await?;
     server.notify(&args.method, args.params).await
 }
 
@@ -117,8 +127,9 @@ pub async fn lsp_request(
         .ok_or_else(|| "Workstudio not found".to_string())?
     };
 
-    let launch = resolve_launch_config(&*config_manager, &args.language_id)?;
-    let server = lsp.ensure(&ws, &args.language_id, launch).await?;
+    let language_id = canonical_lsp_language_id(&args.language_id);
+    let launch = resolve_launch_config(&*config_manager, &language_id)?;
+    let server = lsp.ensure(&ws, &language_id, launch).await?;
 
     let timeout = args
         .timeout_ms
@@ -150,7 +161,8 @@ pub async fn lsp_shutdown_language(
     lsp: tauri::State<'_, Arc<LspManager>>,
 ) -> Result<(), String> {
     let ws = workstudio_id.trim();
-    let lang = language_id.trim();
+    let canonical_language_id = canonical_lsp_language_id(&language_id);
+    let lang = canonical_language_id.trim();
     if ws.is_empty() {
         return Err("workstudioId 为空".to_string());
     }
@@ -242,7 +254,8 @@ pub struct LspDetectServerResult {
 /// - 当前支持 rust/python/go/cpp/c/lua。
 #[tauri::command]
 pub async fn lsp_detect_server(args: LspDetectServerArgs) -> Result<LspDetectServerResult, String> {
-    let lang = args.language_id.trim();
+    let canonical_language = canonical_lsp_language_id(&args.language_id);
+    let lang = canonical_language.trim();
     if lang.is_empty() {
         return Err("languageId 为空".to_string());
     }
@@ -304,7 +317,8 @@ fn resolve_launch_config(
         return Err("代码智能已关闭（设置 -> Code Intelligence）".to_string());
     }
 
-    let lang = language_id.trim();
+    let canonical_language = canonical_lsp_language_id(language_id);
+    let lang = canonical_language.trim();
     if lang.is_empty() {
         return Err("languageId 为空".to_string());
     }
@@ -313,7 +327,7 @@ fn resolve_launch_config(
         .code_intelligence
         .lsp_servers
         .iter()
-        .find(|s| s.enabled && s.language_id == lang)
+        .find(|s| s.enabled && canonical_lsp_language_id(&s.language_id) == lang)
         .ok_or_else(|| format!("未找到已启用的 LSP 配置: {lang}"))?;
 
     let mut env = server

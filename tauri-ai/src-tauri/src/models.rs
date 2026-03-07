@@ -2316,9 +2316,58 @@ pub struct CodeIntelligenceSettings {
     pub folder_analysis: Option<FolderAnalysisSettings>,
 }
 
+fn normalize_code_intelligence_language_id(language_id: &str) -> String {
+    match language_id.trim().to_ascii_lowercase().as_str() {
+        "c++" | "cplusplus" | "cc" | "cxx" | "hpp" | "hh" | "hxx" => "cpp".to_string(),
+        "py" => "python".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn default_lsp_server_config(language_id: &str) -> Option<LspServerConfig> {
+    match normalize_code_intelligence_language_id(language_id).as_str() {
+        "rust" => Some(LspServerConfig {
+            language_id: "rust".to_string(),
+            enabled: true,
+            command: "rust-analyzer".to_string(),
+            args: vec![],
+            ..Default::default()
+        }),
+        "python" => Some(LspServerConfig {
+            language_id: "python".to_string(),
+            enabled: true,
+            command: "pyright-langserver".to_string(),
+            args: vec!["--stdio".to_string()],
+            ..Default::default()
+        }),
+        "go" => Some(LspServerConfig {
+            language_id: "go".to_string(),
+            enabled: true,
+            command: "gopls".to_string(),
+            args: vec!["serve".to_string()],
+            ..Default::default()
+        }),
+        "cpp" => Some(LspServerConfig {
+            language_id: "cpp".to_string(),
+            enabled: true,
+            command: "clangd".to_string(),
+            args: vec![],
+            ..Default::default()
+        }),
+        "c" => Some(LspServerConfig {
+            language_id: "c".to_string(),
+            enabled: true,
+            command: "clangd".to_string(),
+            args: vec![],
+            ..Default::default()
+        }),
+        _ => None,
+    }
+}
+
 impl Default for CodeIntelligenceSettings {
     fn default() -> Self {
-        // 默认开启 Rust/Python/Go（若本机未安装对应语言服务器，会在 UI 层提示；不会影响其它功能）
+        // 默认开启 Rust/Python/Go/C/C++（若本机未安装对应语言服务器，会在 UI 层提示；不会影响其它功能）
         Self {
             enabled: true,
             lsp_completion_enabled: true,
@@ -2328,31 +2377,10 @@ impl Default for CodeIntelligenceSettings {
             lsp_signature_help_enabled: true,
             monaco_word_suggestions_enabled: true,
             outline_split_view_enabled: false,
-            lsp_servers: vec![
-                LspServerConfig {
-                    language_id: "rust".to_string(),
-                    enabled: true,
-                    command: "rust-analyzer".to_string(),
-                    // rust-analyzer 默认使用 stdio 通信；无需传 `--stdio`（部分版本会报 unknown flag）。
-                    args: vec![],
-                    ..Default::default()
-                },
-                LspServerConfig {
-                    language_id: "python".to_string(),
-                    enabled: true,
-                    command: "pyright-langserver".to_string(),
-                    args: vec!["--stdio".to_string()],
-                    ..Default::default()
-                },
-                LspServerConfig {
-                    language_id: "go".to_string(),
-                    enabled: true,
-                    command: "gopls".to_string(),
-                    // 显式使用 `serve`（兼容旧版本 gopls；新版本无参也会默认 serve）。
-                    args: vec!["serve".to_string()],
-                    ..Default::default()
-                },
-            ],
+            lsp_servers: ["rust", "python", "go", "cpp", "c"]
+                .into_iter()
+                .filter_map(default_lsp_server_config)
+                .collect(),
             ai_completion: AiCompletionSettings::default(),
             symbol_analysis: Some(SymbolAnalysisSettings::default()),
             folder_analysis: Some(FolderAnalysisSettings::default()),
@@ -2363,28 +2391,26 @@ impl Default for CodeIntelligenceSettings {
 fn ensure_default_lsp_server_configs(cfg: &mut CodeIntelligenceSettings) -> bool {
     let mut changed = false;
 
-    // vNext defaults: ensure Python LSP is present for existing configs.
-    if !cfg.lsp_servers.iter().any(|s| s.language_id == "python") {
-        cfg.lsp_servers.push(LspServerConfig {
-            language_id: "python".to_string(),
-            enabled: true,
-            command: "pyright-langserver".to_string(),
-            args: vec!["--stdio".to_string()],
-            ..Default::default()
-        });
-        changed = true;
+    for server in &mut cfg.lsp_servers {
+        let normalized_language_id = normalize_code_intelligence_language_id(&server.language_id);
+        if server.language_id != normalized_language_id {
+            server.language_id = normalized_language_id;
+            changed = true;
+        }
     }
 
-    // vNext defaults: ensure Go LSP is present for existing configs.
-    if !cfg.lsp_servers.iter().any(|s| s.language_id == "go") {
-        cfg.lsp_servers.push(LspServerConfig {
-            language_id: "go".to_string(),
-            enabled: true,
-            command: "gopls".to_string(),
-            args: vec!["serve".to_string()],
-            ..Default::default()
-        });
-        changed = true;
+    for language_id in ["python", "go", "cpp", "c"] {
+        if cfg
+            .lsp_servers
+            .iter()
+            .any(|server| server.language_id == language_id)
+        {
+            continue;
+        }
+        if let Some(server) = default_lsp_server_config(language_id) {
+            cfg.lsp_servers.push(server);
+            changed = true;
+        }
     }
 
     changed

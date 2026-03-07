@@ -32,12 +32,15 @@ const languageForPath = (path: string): string => {
     lower.endsWith('.cc') ||
     lower.endsWith('.cpp') ||
     lower.endsWith('.cxx') ||
+    lower.endsWith('.c++') ||
     lower.endsWith('.h') ||
     lower.endsWith('.hh') ||
     lower.endsWith('.hpp') ||
     lower.endsWith('.hxx') ||
+    lower.endsWith('.h++') ||
     lower.endsWith('.inl') ||
     lower.endsWith('.ipp') ||
+    lower.endsWith('.tpp') ||
     lower.endsWith('.ixx') ||
     lower.endsWith('.cppm')
   )
