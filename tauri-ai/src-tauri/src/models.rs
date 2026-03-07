@@ -1625,6 +1625,33 @@ impl Default for AppearanceSettings {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompletionNotificationSettings {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub notify_on_success: bool,
+    #[serde(default = "default_true")]
+    pub notify_on_failure: bool,
+    #[serde(default = "default_true")]
+    pub include_preview: bool,
+    #[serde(default = "default_true")]
+    pub request_attention: bool,
+}
+
+impl Default for CompletionNotificationSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            notify_on_success: true,
+            notify_on_failure: true,
+            include_preview: true,
+            request_attention: true,
+        }
+    }
+}
+
 /// General application settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1659,6 +1686,9 @@ pub struct GeneralSettings {
     /// Whether to open DevTools on startup (dev builds only)
     #[serde(default)]
     pub open_devtools_on_start: bool,
+    /// Desktop notification preferences for task completion / failure.
+    #[serde(default)]
+    pub completion_notifications: CompletionNotificationSettings,
     /// Hidden: local web search tool settings (used only when model has no native web search)
     #[serde(default)]
     pub web_search_tool: WebSearchToolSettings,
@@ -1678,6 +1708,7 @@ impl Default for GeneralSettings {
             ansi_render_mode: "color".to_string(),
             ansi_color_mode: "auto".to_string(),
             open_devtools_on_start: false,
+            completion_notifications: CompletionNotificationSettings::default(),
             web_search_tool: WebSearchToolSettings::default(),
         }
     }

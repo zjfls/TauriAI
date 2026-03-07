@@ -777,6 +777,7 @@ fn run_desktop() {
         })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(database)
         .manage(config_manager)
         .manage(run_state)

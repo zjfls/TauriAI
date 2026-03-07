@@ -66,6 +66,7 @@ futures = "0.3"
 # Directory utilities
 dirs = "5"
 dashmap = "6.1.0"
+tauri-plugin-notification = "2"
 
 [dev-dependencies]
 # Temporary directories for testing

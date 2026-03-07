@@ -44,6 +44,7 @@ import {
 import { getWindowLabelForStorage, getWindowScopedStorageKey, isMainWindowLabel } from '../utils/windowStorage';
 import { useConfigStore } from './configStore';
 import { useDocumentStore } from './documentStore';
+import { notifyTaskCompletion, syncUnreadCompletionBadge } from '../utils/completionNotifications';
 import { useTerminalTabStore } from './terminalTabStore';
 import { useUIStore } from './uiStore';
 import { useWebTabStore } from './webTabStore';
@@ -58,6 +59,25 @@ const MAX_SESSIONS = 20;
 const DRAFT_PERSIST_DEBOUNCE_MS = 500;
 const MAX_PERSISTED_DRAFT_CODE_SNIPPET_CHARS = 200_000;
 let draftPersistTimeout: ReturnType<typeof setTimeout> | null = null;
+
+const countUnreadCompletions = (sessions: Map<string, AgentSession>): number => {
+  let unread = 0;
+  for (const session of sessions.values()) {
+    if (session.hasUnreadCompletion) unread += 1;
+  }
+  return unread;
+};
+
+const shouldDispatchCompletionNotification = (
+  state: Pick<SessionState, 'panes' | 'activeSessionId'>,
+  sessionId: string
+): boolean => {
+  const windowVisible = typeof document !== 'undefined' && !document.hidden && document.hasFocus();
+  if (!windowVisible) return true;
+  if (useUIStore.getState().activeView !== 'chat') return true;
+  const visibleInPane = state.panes.some((pane) => pane.activeSessionId === sessionId);
+  return !(visibleInPane || state.activeSessionId === sessionId);
+};
 
 const isStandaloneWindow = (): boolean => {
   try {
@@ -814,6 +834,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       });
       return { sessions: newSessions };
     });
+    void syncUnreadCompletionBadge(countUnreadCompletions(get().sessions));
   },
 
   /**
@@ -1675,8 +1696,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    * Requirements: 7.5
    */
   finalizeStreaming: (sessionId: string, turnId: string, fullContent: string, thinking?: string, debugInfo?: DebugInfo, usage?: TokenUsage, model?: string, assistantMessageId?: string, format?: string) => {
-    const session = get().sessions.get(sessionId);
+    const stateBeforeFinalize = get();
+    const session = stateBeforeFinalize.sessions.get(sessionId);
     if (!session?.conversationId) return;
+    const config = useConfigStore.getState().config;
+    const shouldNotify = shouldDispatchCompletionNotification(stateBeforeFinalize, sessionId);
 
     const baseBlocks = session.streamingBlocks ?? [];
     const blocksById = new Map<string, MessageBlock>(baseBlocks.map((b) => [b.id, b]));
@@ -1870,6 +1894,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 	      return { sessions: newSessions };
 	    });
 
+    void syncUnreadCompletionBadge(countUnreadCompletions(get().sessions));
+    if (shouldNotify) {
+      void notifyTaskCompletion(
+        {
+          kind: 'success',
+          sessionTitle: session.title,
+          agentName: session.agentName,
+          previewText: finalContent || finalThinking || '任务已经完成。',
+        },
+        config
+      );
+    }
+
     clearTurnIndexesForSession(sessionId);
 
     // Trigger auto-title generation
@@ -1901,8 +1938,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    * Requirements: 7.4
    */
   handleError: (sessionId: string, error: string, debugInfo?: DebugInfo, turnId?: string, assistantMessageId?: string) => {
-    const session = get().sessions.get(sessionId);
+    const stateBeforeError = get();
+    const session = stateBeforeError.sessions.get(sessionId);
     if (!session?.conversationId) return;
+    const config = useConfigStore.getState().config;
+    const shouldNotify = shouldDispatchCompletionNotification(stateBeforeError, sessionId);
 
     const turnsSorted = session.streamingTurns
       ? Array.from(session.streamingTurns.values()).sort((a, b) => a.turnIndex - b.turnIndex)
@@ -2113,6 +2153,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
       return { sessions: newSessions };
     });
+
+    void syncUnreadCompletionBadge(countUnreadCompletions(get().sessions));
+    if (shouldNotify) {
+      void notifyTaskCompletion(
+        {
+          kind: 'failure',
+          sessionTitle: session.title,
+          agentName: session.agentName,
+          previewText: error,
+        },
+        config
+      );
+    }
 
     clearTurnIndexesForSession(sessionId);
     void drainQueuedMessages(sessionId);

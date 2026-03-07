@@ -14,6 +14,7 @@ import { McpConfigForm } from './McpConfigForm';
 import { SkillsConfigForm } from './SkillsConfigForm';
 import { CodeIntelligenceConfigForm } from './CodeIntelligenceConfigForm';
 import { SecretInput } from './SecretInput';
+import { defaultCompletionNotificationSettings } from '../../utils/completionNotifications';
 import { useConfigStore } from '../../stores/configStore';
 import { useUIStore } from '../../stores/uiStore';
 import { SHORTCUT_ACTIONS, detectShortcutPlatform, eventToKeybindingString, normalizeKeybindingString } from '../../shortcuts';
@@ -25,6 +26,7 @@ import type {
   WebSearchToolSettings,
   KeyboardShortcutsSettings,
   KeyboardShortcutActionId,
+  CompletionNotificationSettings,
 } from '../../types';
 
 type SettingsTab =
@@ -149,6 +151,15 @@ export const SettingsView: React.FC = () => {
     saveConfig(updatedConfig);
   };
 
+  const handleCompletionNotificationsChange = (completionNotifications: CompletionNotificationSettings) => {
+    if (!config) return;
+    const updatedConfig: AppConfig = {
+      ...config,
+      general: { ...config.general, completionNotifications },
+    };
+    saveConfig(updatedConfig);
+  };
+
   const handleAnsiRenderModeChange = (ansiRenderMode: AnsiRenderMode) => {
     if (!config) return;
     const updatedConfig: AppConfig = {
@@ -262,6 +273,7 @@ export const SettingsView: React.FC = () => {
             ansiColorMode={config.general.ansiColorMode ?? 'auto'}
             webSearchTool={config.general.webSearchTool}
             keyboardShortcuts={config.general.keyboardShortcuts}
+            completionNotifications={config.general.completionNotifications}
             onLanguageChange={handleLanguageChange}
             onAutoStartChange={handleAutoStartChange}
             onManualTurnRetryChange={handleManualTurnRetryChange}
@@ -270,6 +282,7 @@ export const SettingsView: React.FC = () => {
             onTaskEndDebugButtonChange={handleTaskEndDebugButtonChange}
             onOpenDevtoolsOnStartChange={handleOpenDevtoolsOnStartChange}
             onShowUsageChange={handleShowUsageChange}
+            onCompletionNotificationsChange={handleCompletionNotificationsChange}
             onPdfDebugModeChange={handlePdfDebugModeChange}
             onAnsiRenderModeChange={handleAnsiRenderModeChange}
             onAnsiColorModeChange={handleAnsiColorModeChange}
@@ -386,6 +399,7 @@ interface GeneralSettingsProps {
   ansiColorMode: AnsiColorMode;
   webSearchTool?: WebSearchToolSettings;
   keyboardShortcuts?: KeyboardShortcutsSettings;
+  completionNotifications?: CompletionNotificationSettings;
   onLanguageChange: (language: string) => void;
   onAutoStartChange: (value: boolean) => void;
   onManualTurnRetryChange: (value: boolean) => void;
@@ -394,6 +408,7 @@ interface GeneralSettingsProps {
   onTaskEndDebugButtonChange: (value: boolean) => void;
   onOpenDevtoolsOnStartChange: (value: boolean) => void;
   onShowUsageChange: (value: boolean) => void;
+  onCompletionNotificationsChange: (value: CompletionNotificationSettings) => void;
   onPdfDebugModeChange: (value: boolean) => void;
   onAnsiRenderModeChange: (value: AnsiRenderMode) => void;
   onAnsiColorModeChange: (value: AnsiColorMode) => void;
@@ -415,6 +430,7 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
   ansiColorMode,
   webSearchTool,
   keyboardShortcuts,
+  completionNotifications,
   onLanguageChange,
   onAutoStartChange,
   onManualTurnRetryChange,
@@ -423,6 +439,7 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
   onTaskEndDebugButtonChange,
   onOpenDevtoolsOnStartChange,
   onShowUsageChange,
+  onCompletionNotificationsChange,
   onPdfDebugModeChange,
   onAnsiRenderModeChange,
   onAnsiColorModeChange,
@@ -449,6 +466,11 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
 
   const currentKeyboardShortcuts: KeyboardShortcutsSettings = keyboardShortcuts ?? {};
   const keyboardShortcutsEnabled = currentKeyboardShortcuts.enabled ?? true;
+  const currentCompletionNotifications: CompletionNotificationSettings = {
+    ...defaultCompletionNotificationSettings(),
+    ...(completionNotifications ?? {}),
+  };
+  const completionNotificationsEnabled = currentCompletionNotifications.enabled ?? true;
   const [editingShortcutPlatform, setEditingShortcutPlatform] = useState<'mac' | 'windows'>(() => detectShortcutPlatform());
 
   const getShortcutMap = (platform: 'mac' | 'windows') => {
@@ -480,6 +502,10 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
     }
     return map;
   })();
+
+  const setCompletionNotifications = (next: Partial<CompletionNotificationSettings>) => {
+    onCompletionNotificationsChange({ ...currentCompletionNotifications, ...next });
+  };
 
   const ShortcutRecorder: React.FC<{ actionId: KeyboardShortcutActionId }> = ({ actionId }) => {
     const [recording, setRecording] = useState(false);
@@ -539,10 +565,11 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
 
   const [sections, setSections] = useState({
     general: true,
+    shortcuts: true,
+    notifications: true,
     debug: true,
     display: true,
     webSearch: true,
-    shortcuts: true,
   });
 
   const toggleSection = (key: keyof typeof sections) => {
@@ -701,6 +728,81 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
         <p className="text-xs text-gray-500">
           提示：会话快速切换仍支持 Ctrl/Cmd + 1-9（固定规则，不在这里展开配置）。
         </p>
+      </SettingsSection>
+
+      <SettingsSection
+        title="通知"
+        open={sections.notifications}
+        onToggle={() => toggleSection('notifications')}
+      >
+        <div className="flex items-center justify-between">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">启用任务完成通知</label>
+            <p className="text-xs text-gray-500">任务完成或失败时发送系统通知；Windows 建议在安装版中验证。</p>
+          </div>
+          <button
+            onClick={() => setCompletionNotifications({ enabled: !completionNotificationsEnabled })}
+            className={`relative w-11 h-6 rounded-full transition-colors ${completionNotificationsEnabled ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'}`}
+          >
+            <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${completionNotificationsEnabled ? 'translate-x-5' : ''}`} />
+          </button>
+        </div>
+
+        <div className="flex items-center justify-between">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">成功时通知</label>
+            <p className="text-xs text-gray-500">任务顺利完成后提醒你查看结果。</p>
+          </div>
+          <button
+            disabled={!completionNotificationsEnabled}
+            onClick={() => setCompletionNotifications({ notifyOnSuccess: !(currentCompletionNotifications.notifyOnSuccess ?? true) })}
+            className={`relative w-11 h-6 rounded-full transition-colors ${(currentCompletionNotifications.notifyOnSuccess ?? true) ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'} ${!completionNotificationsEnabled ? 'opacity-60 cursor-not-allowed' : ''}`}
+          >
+            <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${(currentCompletionNotifications.notifyOnSuccess ?? true) ? 'translate-x-5' : ''}`} />
+          </button>
+        </div>
+
+        <div className="flex items-center justify-between">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">失败时通知</label>
+            <p className="text-xs text-gray-500">任务报错时优先提醒，便于及时处理。</p>
+          </div>
+          <button
+            disabled={!completionNotificationsEnabled}
+            onClick={() => setCompletionNotifications({ notifyOnFailure: !(currentCompletionNotifications.notifyOnFailure ?? true) })}
+            className={`relative w-11 h-6 rounded-full transition-colors ${(currentCompletionNotifications.notifyOnFailure ?? true) ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'} ${!completionNotificationsEnabled ? 'opacity-60 cursor-not-allowed' : ''}`}
+          >
+            <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${(currentCompletionNotifications.notifyOnFailure ?? true) ? 'translate-x-5' : ''}`} />
+          </button>
+        </div>
+
+        <div className="flex items-center justify-between">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">显示摘要预览</label>
+            <p className="text-xs text-gray-500">在通知正文中显示结果摘要或错误摘要。</p>
+          </div>
+          <button
+            disabled={!completionNotificationsEnabled}
+            onClick={() => setCompletionNotifications({ includePreview: !(currentCompletionNotifications.includePreview ?? true) })}
+            className={`relative w-11 h-6 rounded-full transition-colors ${(currentCompletionNotifications.includePreview ?? true) ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'} ${!completionNotificationsEnabled ? 'opacity-60 cursor-not-allowed' : ''}`}
+          >
+            <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${(currentCompletionNotifications.includePreview ?? true) ? 'translate-x-5' : ''}`} />
+          </button>
+        </div>
+
+        <div className="flex items-center justify-between">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">请求窗口注意力</label>
+            <p className="text-xs text-gray-500">通知之外，再触发 Dock 弹跳或任务栏闪烁等系统提醒。</p>
+          </div>
+          <button
+            disabled={!completionNotificationsEnabled}
+            onClick={() => setCompletionNotifications({ requestAttention: !(currentCompletionNotifications.requestAttention ?? true) })}
+            className={`relative w-11 h-6 rounded-full transition-colors ${(currentCompletionNotifications.requestAttention ?? true) ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'} ${!completionNotificationsEnabled ? 'opacity-60 cursor-not-allowed' : ''}`}
+          >
+            <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${(currentCompletionNotifications.requestAttention ?? true) ? 'translate-x-5' : ''}`} />
+          </button>
+        </div>
       </SettingsSection>
 
       <SettingsSection

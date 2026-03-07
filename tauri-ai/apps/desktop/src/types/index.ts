@@ -1216,6 +1216,14 @@ export interface AppearanceSettings {
 /**
  * General application settings
  */
+export interface CompletionNotificationSettings {
+  enabled?: boolean;
+  notifyOnSuccess?: boolean;
+  notifyOnFailure?: boolean;
+  includePreview?: boolean;
+  requestAttention?: boolean;
+}
+
 export interface GeneralSettings {
   language: string;
   autoStart: boolean;
@@ -1232,6 +1240,7 @@ export interface GeneralSettings {
   webSearchTool?: WebSearchToolSettings; // Local web search tool settings
   manualTurnRetry?: boolean; // When true: disable automatic turn retries, use manual retry button instead
   keyboardShortcuts?: KeyboardShortcutsSettings; // Keyboard shortcuts (per-platform, configurable)
+  completionNotifications?: CompletionNotificationSettings; // Task completion notifications
 }
 
 export type WebSearchProvider = 'tavily' | 'google' | 'brave';
