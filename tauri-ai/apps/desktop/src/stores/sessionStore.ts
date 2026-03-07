@@ -68,13 +68,14 @@ const countUnreadCompletions = (sessions: Map<string, AgentSession>): number => 
 };
 
 const shouldDispatchCompletionNotification = (
-  state: Pick<SessionState, 'panes' | 'activeSessionId'>,
+  state: Pick<SessionState, 'sessions' | 'activeSessionId'>,
   sessionId: string
 ): boolean => {
   const windowVisible = typeof document !== 'undefined' && !document.hidden && document.hasFocus();
   if (!windowVisible) return true;
   if (useUIStore.getState().activeView !== 'chat') return true;
-  const visibleInPane = state.panes.some((pane) => pane.activeSessionId === sessionId);
+  const panes = deriveSessionPanesFromWindowLayout(state.sessions);
+  const visibleInPane = panes.some((pane) => pane.activeSessionId === sessionId);
   return !(visibleInPane || state.activeSessionId === sessionId);
 };
 
@@ -735,6 +736,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       };
     });
 
+    void syncUnreadCompletionBadge(countUnreadCompletions(get().sessions));
     get().saveSessionState();
   },
 
@@ -870,6 +872,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       };
     });
 
+    void syncUnreadCompletionBadge(countUnreadCompletions(get().sessions));
     get().saveSessionState();
   },
 
@@ -901,6 +904,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       };
     });
 
+    void syncUnreadCompletionBadge(countUnreadCompletions(get().sessions));
     get().saveSessionState();
   },
 
@@ -932,6 +936,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       };
     });
 
+    void syncUnreadCompletionBadge(countUnreadCompletions(get().sessions));
     get().saveSessionState();
   },
 
@@ -2371,6 +2376,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     if (!stored) {
       set({ hydrated: true });
+      void syncUnreadCompletionBadge(0);
       return;
     }
 
@@ -2577,6 +2583,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         hydrated: true,
       });
 
+      void syncUnreadCompletionBadge(countUnreadCompletions(newSessions));
       applySessionPaneLayout(panes, focusedPaneId);
 
       // App/session 启动阶段：预热 MCP（Codex-like），让后续 tool 注入走缓存而不是每次请求 tools/list。
@@ -2604,6 +2611,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     } catch (error) {
       console.error('Failed to restore session state:', error);
       set({ hydrated: true });
+      void syncUnreadCompletionBadge(0);
     }
   },
 
