@@ -54,5 +54,41 @@ describe('InputArea - overlay token 占位', () => {
     expect(overlay!.textContent).toContain(`@{snippet:${id}}`);
     expect(overlay!.textContent).toContain('snippet.ts:1:1-2:1');
   });
-});
 
+  it('plain $skill 在 overlay 中保留 raw token 占位（避免光标错位）', () => {
+    const value = '$skill-forge-quiz 为我生成试题';
+
+    const { container } = render(
+      <InputArea
+        onSend={() => {}}
+        disabled={false}
+        isGenerating={false}
+        value={value}
+      />
+    );
+
+    const overlay = container.querySelector('div[aria-hidden="true"]') as HTMLDivElement | null;
+    expect(overlay).toBeTruthy();
+    const transparentSpans = Array.from(overlay!.querySelectorAll('span.text-transparent'));
+    expect(transparentSpans.some((span) => span.textContent === '$skill-forge-quiz')).toBe(true);
+  });
+
+  it('[$skill](...) 在 overlay 中保留 $skill raw token 占位（避免光标错位）', () => {
+    const value = '使用 [$skill-forge-quiz](app://skill-forge-quiz) 生成';
+
+    const { container } = render(
+      <InputArea
+        onSend={() => {}}
+        disabled={false}
+        isGenerating={false}
+        value={value}
+      />
+    );
+
+    const overlay = container.querySelector('div[aria-hidden="true"]') as HTMLDivElement | null;
+    expect(overlay).toBeTruthy();
+    const transparentSpans = Array.from(overlay!.querySelectorAll('span.text-transparent'));
+    expect(transparentSpans.some((span) => span.textContent === '$skill-forge-quiz')).toBe(true);
+    expect(overlay!.textContent).toContain('(app://skill-forge-quiz)');
+  });
+});
