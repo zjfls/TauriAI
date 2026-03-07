@@ -9,6 +9,7 @@ use tauri::{Emitter, Manager};
 
 use crate::ai_client::get_client;
 use crate::config::ConfigManager;
+use crate::external_agents::{probe_known_external_agents, ExternalAgentProbeInfo};
 use crate::models::{AppConfig, Message, MessageRole, MessageStatus, ModelConfig, ModelParameters};
 
 /// Get the current application configuration
@@ -259,4 +260,10 @@ pub async fn fetch_provider_models(
 
     println!("[FetchModels] Found {} models", models.len());
     Ok(models)
+}
+
+/// Probe known external agent CLIs and sidecars available in the current environment
+#[tauri::command]
+pub async fn probe_external_agents() -> Result<Vec<ExternalAgentProbeInfo>, String> {
+    Ok(probe_known_external_agents().await)
 }

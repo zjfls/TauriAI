@@ -65,7 +65,10 @@ pub use code_intel::{
     save_workstudio_folder_analysis, save_workstudio_symbol_analysis,
     upsert_workstudio_chat_with_index,
 };
-pub use config::{fetch_provider_models, get_app_config, save_app_config, test_connection};
+pub use config::{
+    fetch_provider_models, get_app_config, probe_external_agents, save_app_config,
+    test_connection,
+};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use conversation::{
     clone_conversation, create_conversation, delete_conversation, delete_messages_from,

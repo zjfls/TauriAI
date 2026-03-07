@@ -4,10 +4,13 @@ pub mod ai_client;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod bundled_tools;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub mod cli;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod code_intel;
 pub mod commands;
 pub mod config;
 pub mod errors;
+pub mod external_agents;
 pub mod git_tools;
 pub mod mentions;
 pub mod models;
@@ -1106,6 +1109,7 @@ fn run_desktop() {
             save_app_config,
             test_connection,
             fetch_provider_models,
+            probe_external_agents,
             // Lightweight LLM calls (used by practice module)
             mobile_chat,
             mobile_generate_title,
@@ -1343,6 +1347,7 @@ fn run_mobile() {
         delete_mcp_set,
         fetch_provider_models,
         get_app_config,
+        probe_external_agents,
         list_mcp_server_resources,
         list_mcp_server_tools,
         list_mcp_servers,
@@ -1372,6 +1377,7 @@ fn run_mobile() {
             save_app_config,
             test_connection,
             fetch_provider_models,
+            probe_external_agents,
             mobile_chat,
             mobile_generate_title,
             practice_chat,

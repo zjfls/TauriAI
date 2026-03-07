@@ -1336,6 +1336,53 @@ export interface ToolsSettings {
   toolsets: ToolSetConfig[];
 }
 
+export type ExternalAgentTransportType = 'headless' | 'codex_cli' | 'claude_code';
+
+export type ExternalAgentSessionMode = 'native' | 'replay';
+
+export interface ExternalAgentTransportConfig {
+  type: ExternalAgentTransportType;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  envVars?: string[];
+  cwd?: string;
+}
+
+export interface ExternalAgentConfig {
+  name: string;
+  enabled?: boolean;
+  displayName: string;
+  description?: string;
+  taskUsage?: string;
+  remoteAgentName?: string;
+  modelRef?: string;
+  runMode?: string;
+  thinking?: unknown;
+  defaultTimeoutMs?: number;
+  transport: ExternalAgentTransportConfig;
+}
+
+export interface ExternalAgentsSettings {
+  agents: ExternalAgentConfig[];
+}
+
+export interface ExternalAgentProbeInfo {
+  name: string;
+  displayName: string;
+  description?: string;
+  transportType: ExternalAgentTransportType;
+  programName: string;
+  detected: boolean;
+  commandPath?: string;
+  commandSource: string;
+  version?: string;
+  supportsRun: boolean;
+  supportsSession: boolean;
+  sessionMode: ExternalAgentSessionMode;
+  suggestedConfig: ExternalAgentConfig;
+}
+
 // ============================================================================
 // Code Intelligence (LSP / AST)
 // ============================================================================
@@ -1663,6 +1710,7 @@ export interface AppConfig {
   interceptConsoleError?: boolean; // 拦截控制台报错日志转弹窗（默认 true）
   tools: ToolsSettings;
   codeIntelligence: CodeIntelligenceSettings;
+  externalAgents: ExternalAgentsSettings;
   mcp: McpSettings;
   skills: SkillsSettings;
   security: SecuritySettings;

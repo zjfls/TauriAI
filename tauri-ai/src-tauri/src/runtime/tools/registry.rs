@@ -12,6 +12,7 @@ use crate::runtime::emitter::RunEmitter;
 use super::handlers::agent_task::{AgentTaskInProcessTool, AgentTaskSubprocessTool};
 use super::handlers::apply_patch::{ApplyPatchTool, ApplyPatchUnifiedDiffTool};
 use super::handlers::builtin::{EchoTool, GetTimeTool};
+use super::handlers::external_agent::{AgentRunTool, AgentSessionTool};
 use super::handlers::file_tools::{ListDirTool, ReadFileTool, RgTool};
 use super::handlers::pty::{
     ExecCommandPersistentTool, ExecCommandTool, WriteStdinPersistentTool, WriteStdinTool,
@@ -216,6 +217,8 @@ pub fn register_builtin_handlers_with_options(
         AgentTaskImplementation::InProcess => registry.register(Arc::new(AgentTaskInProcessTool)),
         AgentTaskImplementation::Subprocess => registry.register(Arc::new(AgentTaskSubprocessTool)),
     }
+    registry.register(Arc::new(AgentRunTool));
+    registry.register(Arc::new(AgentSessionTool));
     registry.register(Arc::new(ApplyPatchTool));
     registry.register(Arc::new(ApplyPatchUnifiedDiffTool));
     registry.register(Arc::new(WriteFileTool));

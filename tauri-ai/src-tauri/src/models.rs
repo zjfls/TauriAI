@@ -1028,6 +1028,110 @@ impl Default for AgentTaskImplementation {
     }
 }
 
+/// External agent subprocess transport type.
+///
+/// 当前仅支持 `headless`：子进程需要兼容 TauriAI headless JSON 协议
+/// （stdin 接收请求，stdout 返回 `final_json`）。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalAgentTransportType {
+    Headless,
+    CodexCli,
+    ClaudeCode,
+}
+
+impl Default for ExternalAgentTransportType {
+    fn default() -> Self {
+        Self::Headless
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalAgentTransportConfig {
+    #[serde(default, rename = "type")]
+    pub transport_type: ExternalAgentTransportType,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub env: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env_vars: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<PathBuf>,
+}
+
+impl Default for ExternalAgentTransportConfig {
+    fn default() -> Self {
+        Self {
+            transport_type: ExternalAgentTransportType::Headless,
+            command: None,
+            args: Vec::new(),
+            env: HashMap::new(),
+            env_vars: Vec::new(),
+            cwd: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalAgentConfig {
+    pub name: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    pub display_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_usage: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_agent_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub transport: ExternalAgentTransportConfig,
+}
+
+impl Default for ExternalAgentConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            enabled: true,
+            display_name: String::new(),
+            description: None,
+            task_usage: None,
+            remote_agent_name: None,
+            model_ref: None,
+            run_mode: None,
+            thinking: None,
+            default_timeout_ms: None,
+            transport: ExternalAgentTransportConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalAgentsSettings {
+    #[serde(default)]
+    pub agents: Vec<ExternalAgentConfig>,
+}
+
+impl Default for ExternalAgentsSettings {
+    fn default() -> Self {
+        Self { agents: Vec::new() }
+    }
+}
+
 /// Model configuration (pure model parameters, no system prompt)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -2823,6 +2927,9 @@ pub struct AppConfig {
     /// Code intelligence settings (LSP / AST)
     #[serde(default)]
     pub code_intelligence: CodeIntelligenceSettings,
+    /// External agent settings (subprocess-backed delegation)
+    #[serde(default)]
+    pub external_agents: ExternalAgentsSettings,
     /// MCP settings (servers + sets)
     #[serde(default)]
     pub mcp: McpSettings,
@@ -2865,6 +2972,7 @@ impl Default for AppConfig {
             intercept_console_error: Some(true),
             tools: ToolsSettings::default(),
             code_intelligence: CodeIntelligenceSettings::default(),
+            external_agents: ExternalAgentsSettings::default(),
             mcp: McpSettings::default(),
             skills: SkillsSettings::default(),
             security: SecuritySettings::default(),
@@ -3077,6 +3185,14 @@ impl AppConfig {
         self.agents
             .iter()
             .find(|a| a.name == name && a.enabled && !a.is_practice())
+    }
+
+    /// Get external agent by name
+    pub fn get_external_agent(&self, name: &str) -> Option<&ExternalAgentConfig> {
+        self.external_agents
+            .agents
+            .iter()
+            .find(|agent| agent.name == name && agent.enabled)
     }
 
     /// Get practice agent（仅供练习系统使用）

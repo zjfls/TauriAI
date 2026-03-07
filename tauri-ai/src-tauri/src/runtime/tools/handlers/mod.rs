@@ -1,6 +1,7 @@
 pub mod agent_task;
 pub mod apply_patch;
 pub mod builtin;
+pub mod external_agent;
 pub mod file_tools;
 pub mod mcp;
 pub mod mcp_resource;

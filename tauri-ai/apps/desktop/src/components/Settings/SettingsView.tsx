@@ -9,6 +9,7 @@ import { ArrowLeft, Server, Bot, Palette, Sliders, Wrench, Shield, Plug, Sparkle
 import { ProviderConfigForm } from './ProviderConfigForm';
 import { AgentConfigForm } from './AgentConfigForm';
 import { ToolsConfigForm } from './ToolsConfigForm';
+import { SubAgentConfigForm } from './SubAgentConfigForm';
 import { SecurityConfigForm } from './SecurityConfigForm';
 import { McpConfigForm } from './McpConfigForm';
 import { SkillsConfigForm } from './SkillsConfigForm';
@@ -33,6 +34,7 @@ type SettingsTab =
   | 'providers'
   | 'agents'
   | 'tools'
+  | 'subAgents'
   | 'codeIntelligence'
   | 'mcp'
   | 'skills'
@@ -70,6 +72,7 @@ export const SettingsView: React.FC = () => {
     { id: 'providers', icon: <Server size={18} />, label: '提供商' },
     { id: 'agents', icon: <Bot size={18} />, label: '智能体' },
     { id: 'tools', icon: <Wrench size={18} />, label: '工具' },
+    { id: 'subAgents', icon: <Bot size={18} />, label: '子agent' },
     { id: 'codeIntelligence', icon: <Code size={18} />, label: '代码智能' },
     { id: 'mcp', icon: <Plug size={18} />, label: 'MCP' },
     { id: 'skills', icon: <Sparkles size={18} />, label: 'Skills' },
@@ -240,6 +243,8 @@ export const SettingsView: React.FC = () => {
         return <AgentConfigForm />;
       case 'tools':
         return <ToolsConfigForm />;
+      case 'subAgents':
+        return <SubAgentConfigForm />;
       case 'codeIntelligence':
         return <CodeIntelligenceConfigForm />;
       case 'mcp':

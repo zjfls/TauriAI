@@ -4,7 +4,7 @@
  */
 
 import { tauriInvoke as invoke } from '../utils/errorUtils';
-import type { AppConfig, ProviderType } from '../types';
+import type { AppConfig, ExternalAgentProbeInfo, ProviderType } from '../types';
 
 /**
  * Test connection result from the backend
@@ -67,4 +67,11 @@ export async function fetchProviderModels(
     apiBase,
     apiKey,
   });
+}
+
+/**
+ * Probe known external agent CLIs / sidecars in the current environment
+ */
+export async function probeExternalAgents(): Promise<ExternalAgentProbeInfo[]> {
+  return invoke<ExternalAgentProbeInfo[]>('probe_external_agents');
 }
