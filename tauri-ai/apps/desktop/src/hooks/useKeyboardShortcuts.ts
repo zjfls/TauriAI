@@ -9,6 +9,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { useSessionStore } from '../stores/sessionStore';
 import { useConfigStore } from '../stores/configStore';
 import { useUIStore } from '../stores/uiStore';
+import { useWindowLayoutStore } from '../stores/windowLayoutStore';
 import { markChatOpenProfile, startChatOpenProfile } from '../utils/chatOpenProfile';
 import { closeAllWorkstudioWindows, openOrFocusWorkstudioWindow } from '../utils/viewWindow';
 import { detectShortcutPlatform, eventToKeybindingString, isEditableElement, normalizeKeybindingString } from '../shortcuts';
@@ -110,15 +111,18 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
   // Get ordered sessions in the focused pane (VS Code-like group behavior)
   const getOrderedSessions = useCallback((): AgentSession[] => {
     const state = useSessionStore.getState();
-    const panes = state.panes ?? [];
-    const focusedPaneId = state.focusedPaneId ?? panes[0]?.id ?? null;
-    const focusedPane = (focusedPaneId ? panes.find((p) => p.id === focusedPaneId) : null) ?? panes[0] ?? null;
+    const layout = useWindowLayoutStore.getState();
+    const panes = layout.panes ?? [];
+    const focusedPaneId = layout.focusedPaneId ?? panes[0]?.id ?? null;
+    const focusedPane = (focusedPaneId ? panes.find((pane) => pane.id === focusedPaneId) : null) ?? panes[0] ?? null;
     if (!focusedPane) return [];
 
     const out: AgentSession[] = [];
-    for (const id of focusedPane.sessionIds) {
-      const s = state.sessions.get(id);
-      if (s) out.push(s);
+    for (const tabId of focusedPane.tabIds) {
+      if (!tabId.startsWith('chat:')) continue;
+      const sessionId = tabId.slice('chat:'.length);
+      const session = state.sessions.get(sessionId);
+      if (session) out.push(session);
     }
     return out;
   }, []);

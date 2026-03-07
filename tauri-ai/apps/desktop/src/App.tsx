@@ -38,6 +38,7 @@ import {
   stripWorkstudioWindowTitlePrefix,
 } from './utils/windowBranding';
 import { getCurrentWindowLabelSafe, removeWindowPresence, writeWindowPresence } from './utils/windowPresence';
+import { clearWindowInteraction, recordWindowInteraction } from './utils/windowInteractionRouting';
 import type { CodeSnippetContentPart, WorkspaceMentionChip, Workstudio } from './types';
 import {
   clearAppClosingIfStale,
@@ -139,6 +140,16 @@ function App() {
   const panes = useWindowLayoutStore((state) => state.panes);
   const focusedPaneId = useWindowLayoutStore((state) => state.focusedPaneId);
 
+  const resolveChatDraftTargetSessionId = () => {
+    const layout = useWindowLayoutStore.getState();
+    const sessionStore = useSessionStore.getState();
+    const sessionsMap = sessionStore.sessions;
+    const candidate = (layout.getActiveChatSessionId() ?? sessionStore.activeSessionId ?? '').trim();
+    if (candidate && sessionsMap.has(candidate)) return candidate;
+    const first = sessionsMap.keys().next().value as string | undefined;
+    return first && sessionsMap.has(first) ? first : null;
+  };
+
   const currentVisibleWindowTitle = useMemo(() => {
     const focusedPane = panes.find((pane) => pane.id === focusedPaneId) ?? panes[0] ?? null;
     const activeTabId = focusedPane?.activeTabId ?? focusedPane?.tabIds[0] ?? null;
@@ -214,6 +225,44 @@ function App() {
     viewOverride,
     windowParams,
   ]);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    if (isDragGhostWindow || isJsonAnalyzerWindow) return;
+
+    let disposed = false;
+    const reportInteraction = () => {
+      if (disposed) return;
+      const layout = useWindowLayoutStore.getState();
+      void recordWindowInteraction({
+        label: currentWindowLabel,
+        paneId: layout.getPreferredPaneId(),
+        chatPaneId: layout.getPreferredChatPaneId(),
+      });
+    };
+
+    const onPointerDown = () => reportInteraction();
+    const onKeyDown = () => reportInteraction();
+    const onFocus = () => reportInteraction();
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') reportInteraction();
+    };
+
+    reportInteraction();
+    window.addEventListener('pointerdown', onPointerDown, true);
+    window.addEventListener('keydown', onKeyDown, true);
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
+    return () => {
+      disposed = true;
+      window.removeEventListener('pointerdown', onPointerDown, true);
+      window.removeEventListener('keydown', onKeyDown, true);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      void clearWindowInteraction(currentWindowLabel);
+    };
+  }, [currentWindowLabel, isDragGhostWindow, isJsonAnalyzerWindow]);
 
   // Track if session initialization has been done to prevent duplicate execution
   const sessionInitialized = useRef(false);
@@ -1092,30 +1141,9 @@ function App() {
       if (!text) return;
 
       const layout = useWindowLayoutStore.getState();
-      const panes = layout.panes ?? [];
-      const focusedPaneId = layout.focusedPaneId;
-      const pane =
-        (focusedPaneId ? panes.find((p) => p.id === focusedPaneId) : null) ?? panes[0] ?? null;
-      const activeTabIdRaw =
-        pane?.activeTabId && pane.tabIds.includes(pane.activeTabId)
-          ? pane.activeTabId
-          : pane?.tabIds[0] ?? null;
-
       const sessionStore = useSessionStore.getState();
       const sessions = sessionStore.sessions;
-
-      const fromFocusedPane =
-        typeof activeTabIdRaw === 'string' && activeTabIdRaw.startsWith('chat:')
-          ? activeTabIdRaw.slice('chat:'.length)
-          : '';
-      const candidateSessionId = fromFocusedPane || sessionStore.activeSessionId || '';
-
-      const targetSessionId = (() => {
-        const sid = candidateSessionId.trim();
-        if (sid && sessions.has(sid)) return sid;
-        const first = sessions.keys().next().value as string | undefined;
-        return first && sessions.has(first) ? first : null;
-      })();
+      const targetSessionId = resolveChatDraftTargetSessionId();
 
       if (!targetSessionId) return;
 
@@ -1123,7 +1151,7 @@ function App() {
       const nextDraft = prevDraft ? `${prevDraft}${prevDraft.endsWith('\n') ? '' : '\n'}${text}` : text;
 
       sessionStore.setSessionDraftContent(targetSessionId, nextDraft);
-      useWindowLayoutStore.getState().openTabInFocusedPane(chatTabId(targetSessionId));
+      layout.openTabInPane(layout.getPreferredChatPaneId(), chatTabId(targetSessionId));
     })
       .then((fn) => {
         unlisten = fn;
@@ -1159,30 +1187,9 @@ function App() {
       if (!absPath) return;
 
       const layout = useWindowLayoutStore.getState();
-      const panes = layout.panes ?? [];
-      const focusedPaneId = layout.focusedPaneId;
-      const pane =
-        (focusedPaneId ? panes.find((p) => p.id === focusedPaneId) : null) ?? panes[0] ?? null;
-      const activeTabIdRaw =
-        pane?.activeTabId && pane.tabIds.includes(pane.activeTabId)
-          ? pane.activeTabId
-          : pane?.tabIds[0] ?? null;
-
       const sessionStore = useSessionStore.getState();
       const sessions = sessionStore.sessions;
-
-      const fromFocusedPane =
-        typeof activeTabIdRaw === 'string' && activeTabIdRaw.startsWith('chat:')
-          ? activeTabIdRaw.slice('chat:'.length)
-          : '';
-      const candidateSessionId = fromFocusedPane || sessionStore.activeSessionId || '';
-
-      const targetSessionId = (() => {
-        const sid = candidateSessionId.trim();
-        if (sid && sessions.has(sid)) return sid;
-        const first = sessions.keys().next().value as string | undefined;
-        return first && sessions.has(first) ? first : null;
-      })();
+      const targetSessionId = resolveChatDraftTargetSessionId();
 
       if (!targetSessionId) return;
 
@@ -1200,7 +1207,7 @@ function App() {
 
       sessionStore.setSessionDraftContent(targetSessionId, nextDraft);
       sessionStore.setSessionDraftWorkspaceMentions(targetSessionId, nextMentions);
-      useWindowLayoutStore.getState().openTabInFocusedPane(chatTabId(targetSessionId));
+      layout.openTabInPane(layout.getPreferredChatPaneId(), chatTabId(targetSessionId));
     })
       .then((fn) => {
         unlisten = fn;
@@ -1266,30 +1273,9 @@ function App() {
       };
 
       const layout = useWindowLayoutStore.getState();
-      const panes = layout.panes ?? [];
-      const focusedPaneId = layout.focusedPaneId;
-      const pane =
-        (focusedPaneId ? panes.find((p) => p.id === focusedPaneId) : null) ?? panes[0] ?? null;
-      const activeTabIdRaw =
-        pane?.activeTabId && pane.tabIds.includes(pane.activeTabId)
-          ? pane.activeTabId
-          : pane?.tabIds[0] ?? null;
-
       const sessionStore = useSessionStore.getState();
       const sessions = sessionStore.sessions;
-
-      const fromFocusedPane =
-        typeof activeTabIdRaw === 'string' && activeTabIdRaw.startsWith('chat:')
-          ? activeTabIdRaw.slice('chat:'.length)
-          : '';
-      const candidateSessionId = fromFocusedPane || sessionStore.activeSessionId || '';
-
-      const targetSessionId = (() => {
-        const sid = candidateSessionId.trim();
-        if (sid && sessions.has(sid)) return sid;
-        const first = sessions.keys().next().value as string | undefined;
-        return first && sessions.has(first) ? first : null;
-      })();
+      const targetSessionId = resolveChatDraftTargetSessionId();
 
       if (!targetSessionId) return;
 
@@ -1302,7 +1288,7 @@ function App() {
 
       sessionStore.setSessionDraftContent(targetSessionId, nextDraft);
       sessionStore.setSessionDraftCodeSnippets(targetSessionId, nextSnips);
-      useWindowLayoutStore.getState().openTabInFocusedPane(chatTabId(targetSessionId));
+      layout.openTabInPane(layout.getPreferredChatPaneId(), chatTabId(targetSessionId));
     })
       .then((fn) => {
         unlisten = fn;

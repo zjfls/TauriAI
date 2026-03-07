@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { arrayMove } from '@dnd-kit/sortable';
 import { getWindowLabelForStorage, getWindowScopedStorageKey, isMainWindowLabel } from '../utils/windowStorage';
+import { recordWindowInteraction } from '../utils/windowInteractionRouting';
 
 export type WindowTabId = string;
 
@@ -193,12 +194,98 @@ const findPaneIndexByTabId = (panes: WindowPane[], tabId: WindowTabId): number =
   return panes.findIndex((p) => p.tabIds.includes(tabId));
 };
 
+const isChatTabId = (tabId: WindowTabId | null | undefined): boolean => {
+  return typeof tabId === 'string' && tabId.startsWith('chat:');
+};
+
+const resolveInteractionTargets = (
+  panes: WindowPane[],
+  focusedPaneId: string | null,
+  lastUserPaneId: string | null,
+  lastUserChatPaneId: string | null
+): { lastUserPaneId: string | null; lastUserChatPaneId: string | null } => {
+  const resolvedFocusedPaneId =
+    focusedPaneId && panes.some((p) => p.id === focusedPaneId) ? focusedPaneId : panes[0]?.id ?? null;
+
+  const nextLastUserPaneId =
+    lastUserPaneId && panes.some((p) => p.id === lastUserPaneId)
+      ? lastUserPaneId
+      : resolvedFocusedPaneId;
+
+  const nextLastUserChatPaneId =
+    lastUserChatPaneId && panes.some((p) => p.id === lastUserChatPaneId && p.tabIds.some((id) => isChatTabId(id)))
+      ? lastUserChatPaneId
+      : panes.find((p) => p.tabIds.some((id) => isChatTabId(id)))?.id ?? null;
+
+  return {
+    lastUserPaneId: nextLastUserPaneId,
+    lastUserChatPaneId: nextLastUserChatPaneId,
+  };
+};
+
+const resolvePreferredChatPaneId = (
+  panes: WindowPane[],
+  focusedPaneId: string | null,
+  lastUserPaneId: string | null,
+  lastUserChatPaneId: string | null
+): string | null => {
+  if (lastUserChatPaneId && panes.some((p) => p.id === lastUserChatPaneId && p.tabIds.some((id) => isChatTabId(id)))) {
+    return lastUserChatPaneId;
+  }
+
+  if (lastUserPaneId) {
+    const pane = panes.find((p) => p.id === lastUserPaneId) ?? null;
+    if (pane && pane.tabIds.some((id) => isChatTabId(id))) return pane.id;
+  }
+
+  if (focusedPaneId) {
+    const pane = panes.find((p) => p.id === focusedPaneId) ?? null;
+    if (pane && pane.tabIds.some((id) => isChatTabId(id))) return pane.id;
+  }
+
+  return panes.find((p) => p.tabIds.some((id) => isChatTabId(id)))?.id ?? focusedPaneId ?? panes[0]?.id ?? null;
+};
+
+const resolvePreferredPaneId = (
+  panes: WindowPane[],
+  focusedPaneId: string | null,
+  lastUserPaneId: string | null,
+  lastUserChatPaneId: string | null,
+  tabId?: WindowTabId | null
+): string | null => {
+  if (tabId && isChatTabId(tabId)) {
+    return resolvePreferredChatPaneId(panes, focusedPaneId, lastUserPaneId, lastUserChatPaneId);
+  }
+
+  if (lastUserPaneId && panes.some((p) => p.id === lastUserPaneId)) return lastUserPaneId;
+  if (focusedPaneId && panes.some((p) => p.id === focusedPaneId)) return focusedPaneId;
+  return panes[0]?.id ?? null;
+};
+
+const resolveChatPaneForInteraction = (
+  panes: WindowPane[],
+  paneId: string,
+  tabId?: WindowTabId | null
+): string | null => {
+  const pane = panes.find((p) => p.id === paneId) ?? null;
+  if (!pane) return null;
+  const candidate = tabId && pane.tabIds.includes(tabId) ? tabId : pane.activeTabId ?? pane.tabIds[0] ?? null;
+  return isChatTabId(candidate) ? pane.id : null;
+};
+
 interface WindowLayoutState {
   panes: WindowPane[];
   focusedPaneId: string | null;
+  lastUserPaneId: string | null;
+  lastUserChatPaneId: string | null;
 
-  setFocusedPane: (paneId: string) => void;
-  setActiveTabInPane: (paneId: string, tabId: WindowTabId) => void;
+  setFocusedPane: (paneId: string, opts?: { trackUser?: boolean }) => void;
+  setActiveTabInPane: (paneId: string, tabId: WindowTabId, opts?: { trackUser?: boolean }) => void;
+  markUserPaneInteraction: (paneId: string, opts?: { tabId?: WindowTabId | null }) => void;
+  getPreferredPaneId: (opts?: { tabId?: WindowTabId | null }) => string | null;
+  getPreferredChatPaneId: () => string | null;
+  getActiveChatSessionId: () => string | null;
+  openTabInPane: (paneId: string | null, tabId: WindowTabId, opts?: { activate?: boolean }) => void;
   openTabInFocusedPane: (tabId: WindowTabId, opts?: { activate?: boolean }) => void;
   closeTabInLayout: (tabId: WindowTabId) => void;
   reorderTabInPane: (paneId: string, activeId: WindowTabId, overId: WindowTabId) => void;
@@ -216,17 +303,41 @@ export const useWindowLayoutStore = create<WindowLayoutState>((set, get) => {
   return {
     panes: initial.panes,
     focusedPaneId: initial.focusedPaneId,
+    lastUserPaneId: initial.focusedPaneId ?? initial.panes[0]?.id ?? null,
+    lastUserChatPaneId: initial.panes.find((p) => p.tabIds.some((id) => isChatTabId(id)))?.id ?? null,
 
-    setFocusedPane: (paneId) => {
-      if (get().focusedPaneId === paneId) return;
-      set({ focusedPaneId: paneId });
+    setFocusedPane: (paneId, opts) => {
+      const current = get();
+      const exists = current.panes.some((p) => p.id === paneId);
+      if (!exists) return;
+
+      const pane = current.panes.find((p) => p.id === paneId)!;
+      const nextInteraction = opts?.trackUser
+        ? {
+            lastUserPaneId: paneId,
+            lastUserChatPaneId: resolveChatPaneForInteraction(current.panes, paneId),
+          }
+        : {};
+
+      if (current.focusedPaneId === paneId && !opts?.trackUser) return;
+
+      set({ focusedPaneId: paneId, ...nextInteraction });
+
+      if (opts?.trackUser) {
+        void recordWindowInteraction({
+          paneId,
+          chatPaneId: resolveChatPaneForInteraction(current.panes, paneId, pane.activeTabId),
+        });
+      }
+
       scheduleFocusedPanePersist(() => {
         const state = get();
         return { panes: state.panes, focusedPaneId: state.focusedPaneId };
       });
     },
 
-    setActiveTabInPane: (paneId, tabId) => {
+    setActiveTabInPane: (paneId, tabId, opts) => {
+      let interactionPayload: { paneId: string; chatPaneId: string | null } | null = null;
       set((state) => {
         const basePanes = ensureAtLeastOnePane(state.panes ?? []);
         const nextPanes = basePanes.map((p) => ({
@@ -239,12 +350,69 @@ export const useWindowLayoutStore = create<WindowLayoutState>((set, get) => {
         if (!pane.tabIds.includes(tabId)) return {};
         pane.activeTabId = tabId;
         const next = { panes: normalizePaneWeights(nextPanes), focusedPaneId: paneId };
+        const interactionTargets = resolveInteractionTargets(
+          next.panes,
+          next.focusedPaneId,
+          opts?.trackUser ? paneId : state.lastUserPaneId,
+          opts?.trackUser ? resolveChatPaneForInteraction(next.panes, paneId, tabId) : state.lastUserChatPaneId
+        );
+        interactionPayload = opts?.trackUser
+          ? {
+              paneId,
+              chatPaneId: resolveChatPaneForInteraction(next.panes, paneId, tabId),
+            }
+          : null;
         persistLayout(next);
-        return next;
+        return { ...next, ...interactionTargets };
       });
+
+      if (interactionPayload) {
+        void recordWindowInteraction(interactionPayload);
+      }
     },
 
-    openTabInFocusedPane: (tabId, opts) => {
+    markUserPaneInteraction: (paneId, opts) => {
+      const state = get();
+      if (!state.panes.some((p) => p.id === paneId)) return;
+      const chatPaneId = resolveChatPaneForInteraction(state.panes, paneId, opts?.tabId ?? null);
+      set({
+        lastUserPaneId: paneId,
+        lastUserChatPaneId: chatPaneId ?? state.lastUserChatPaneId,
+      });
+      void recordWindowInteraction({ paneId, chatPaneId });
+    },
+
+    getPreferredPaneId: (opts) => {
+      const state = get();
+      return resolvePreferredPaneId(
+        state.panes,
+        state.focusedPaneId,
+        state.lastUserPaneId,
+        state.lastUserChatPaneId,
+        opts?.tabId ?? null
+      );
+    },
+
+    getPreferredChatPaneId: () => {
+      const state = get();
+      return resolvePreferredChatPaneId(state.panes, state.focusedPaneId, state.lastUserPaneId, state.lastUserChatPaneId);
+    },
+
+    getActiveChatSessionId: () => {
+      const state = get();
+      const preferredPaneId = resolvePreferredChatPaneId(
+        state.panes,
+        state.focusedPaneId,
+        state.lastUserPaneId,
+        state.lastUserChatPaneId
+      );
+      const pane = (preferredPaneId ? state.panes.find((p) => p.id === preferredPaneId) : null) ?? state.panes[0] ?? null;
+      if (!pane) return null;
+      const activeChatTab = [pane.activeTabId, ...pane.tabIds].find((id) => isChatTabId(id ?? null)) ?? null;
+      return activeChatTab && isChatTabId(activeChatTab) ? activeChatTab.slice('chat:'.length) : null;
+    },
+
+    openTabInPane: (paneId, tabId, opts) => {
       set((state) => {
         const basePanes = ensureAtLeastOnePane(state.panes ?? []);
         const nextPanes = basePanes.map((p) => ({
@@ -261,15 +429,22 @@ export const useWindowLayoutStore = create<WindowLayoutState>((set, get) => {
             panes: normalizePaneWeights(nextPanes),
             focusedPaneId: existing.id,
           };
+          const interactionTargets = resolveInteractionTargets(
+            next.panes,
+            next.focusedPaneId,
+            state.lastUserPaneId,
+            state.lastUserChatPaneId
+          );
           persistLayout(next);
-          return next;
+          return { ...next, ...interactionTargets };
         }
 
-        const focusedPaneId =
-          state.focusedPaneId && nextPanes.some((p) => p.id === state.focusedPaneId)
-            ? state.focusedPaneId
-            : nextPanes[0]!.id;
-        const idx = Math.max(0, nextPanes.findIndex((p) => p.id === focusedPaneId));
+        const resolvedPaneId =
+          paneId && nextPanes.some((p) => p.id === paneId)
+            ? paneId
+            : resolvePreferredPaneId(nextPanes, state.focusedPaneId, state.lastUserPaneId, state.lastUserChatPaneId, tabId) ??
+              nextPanes[0]!.id;
+        const idx = Math.max(0, nextPanes.findIndex((p) => p.id === resolvedPaneId));
         const pane = nextPanes[idx] ?? nextPanes[0]!;
         pane.tabIds.push(tabId);
         if (opts?.activate !== false) pane.activeTabId = tabId;
@@ -278,9 +453,19 @@ export const useWindowLayoutStore = create<WindowLayoutState>((set, get) => {
           panes: normalizePaneWeights(nextPanes),
           focusedPaneId: pane.id,
         };
+        const interactionTargets = resolveInteractionTargets(
+          next.panes,
+          next.focusedPaneId,
+          state.lastUserPaneId,
+          state.lastUserChatPaneId
+        );
         persistLayout(next);
-        return next;
+        return { ...next, ...interactionTargets };
       });
+    },
+
+    openTabInFocusedPane: (tabId, opts) => {
+      get().openTabInPane(get().focusedPaneId, tabId, opts);
     },
 
     closeTabInLayout: (tabId) => {
@@ -312,10 +497,16 @@ export const useWindowLayoutStore = create<WindowLayoutState>((set, get) => {
         }
 
         const compacted = compactEmptyPanes(nextPanes, state.focusedPaneId ?? null);
+        const interactionTargets = resolveInteractionTargets(
+          compacted.panes,
+          compacted.focusedPaneId,
+          state.lastUserPaneId,
+          state.lastUserChatPaneId
+        );
 
         const next = { panes: compacted.panes, focusedPaneId: compacted.focusedPaneId };
         persistLayout(next);
-        return next;
+        return { ...next, ...interactionTargets };
       });
     },
 
@@ -335,8 +526,14 @@ export const useWindowLayoutStore = create<WindowLayoutState>((set, get) => {
         if (oldIndex < 0 || newIndex < 0 || oldIndex === newIndex) return {};
         pane.tabIds = arrayMove(pane.tabIds, oldIndex, newIndex);
         const next = { panes: normalizePaneWeights(nextPanes), focusedPaneId: state.focusedPaneId ?? paneId };
+        const interactionTargets = resolveInteractionTargets(
+          next.panes,
+          next.focusedPaneId,
+          state.lastUserPaneId,
+          state.lastUserChatPaneId
+        );
         persistLayout(next);
-        return next;
+        return { ...next, ...interactionTargets };
       });
     },
 
@@ -365,8 +562,14 @@ export const useWindowLayoutStore = create<WindowLayoutState>((set, get) => {
         compacted = compactedState.panes;
 
         const next = { panes: compacted, focusedPaneId: compactedState.focusedPaneId };
+        const interactionTargets = resolveInteractionTargets(
+          next.panes,
+          next.focusedPaneId,
+          state.lastUserPaneId,
+          state.lastUserChatPaneId
+        );
         persistLayout(next);
-        return next;
+        return { ...next, ...interactionTargets };
       });
     },
 
@@ -400,8 +603,14 @@ export const useWindowLayoutStore = create<WindowLayoutState>((set, get) => {
         nextPanes.splice(insertAt, 0, newPane);
 
         const next = { panes: normalizePaneWeights(nextPanes), focusedPaneId: newPane.id };
+        const interactionTargets = resolveInteractionTargets(
+          next.panes,
+          next.focusedPaneId,
+          state.lastUserPaneId,
+          state.lastUserChatPaneId
+        );
         persistLayout(next);
-        return next;
+        return { ...next, ...interactionTargets };
       });
     },
 
@@ -444,8 +653,14 @@ export const useWindowLayoutStore = create<WindowLayoutState>((set, get) => {
         }
 
         const next = { panes: normalizePaneWeights(nextPanes), focusedPaneId };
+        const interactionTargets = resolveInteractionTargets(
+          next.panes,
+          next.focusedPaneId,
+          state.lastUserPaneId,
+          state.lastUserChatPaneId
+        );
         persistLayout(next);
-        return next;
+        return { ...next, ...interactionTargets };
       });
     },
 
@@ -459,7 +674,14 @@ export const useWindowLayoutStore = create<WindowLayoutState>((set, get) => {
           if (next === undefined) return p;
           return { ...p, weight: Number.isFinite(next) && next > 0 ? next : p.weight };
         });
-        return { panes: normalizePaneWeights(nextPanes) };
+        const panes = normalizePaneWeights(nextPanes);
+        const interactionTargets = resolveInteractionTargets(
+          panes,
+          state.focusedPaneId,
+          state.lastUserPaneId,
+          state.lastUserChatPaneId
+        );
+        return { panes, ...interactionTargets };
       });
     },
 
@@ -470,7 +692,17 @@ export const useWindowLayoutStore = create<WindowLayoutState>((set, get) => {
 
     replaceLayout: (next) => {
       const compacted = compactEmptyPanes(next.panes, next.focusedPaneId ?? null);
-      set({ panes: compacted.panes, focusedPaneId: compacted.focusedPaneId });
+      const interactionTargets = resolveInteractionTargets(
+        compacted.panes,
+        compacted.focusedPaneId,
+        get().lastUserPaneId,
+        get().lastUserChatPaneId
+      );
+      set({
+        panes: compacted.panes,
+        focusedPaneId: compacted.focusedPaneId,
+        ...interactionTargets,
+      });
       persistLayout(compacted);
     },
   };

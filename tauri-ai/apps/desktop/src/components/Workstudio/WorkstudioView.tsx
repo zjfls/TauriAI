@@ -4566,7 +4566,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       const shouldRecord = Boolean(prevLocation && isMeaningfulNavTransition(prevLocation, targetLocation));
 
       if (targetPaneId) {
-        state.setFocusedPane(targetPaneId);
+        state.setFocusedPane(targetPaneId, { trackUser: true });
       }
 
       const existing = openFilesRef.current.find((f) => f.id === normalizedPath);
@@ -5079,7 +5079,7 @@ type OpenFromLinkErrorInfo = {
 
       // VS Code-like：在跳转时把目标 Pane 设为聚焦（确保 editor mount / focus 链路稳定）
       if (useWindowLayoutStore.getState().focusedPaneId !== paneId) {
-        useWindowLayoutStore.getState().setFocusedPane(paneId);
+        useWindowLayoutStore.getState().setFocusedPane(paneId, { trackUser: true });
       }
 
       while (openLinkSeqRef.current === seq) {
@@ -5202,7 +5202,7 @@ type OpenFromLinkErrorInfo = {
 
     if (isUntitledPath(tabId)) {
       // 仅在“未保存文档”场景下使用：best-effort 激活 tab 并恢复光标。
-      state.setFocusedPane(paneId);
+      state.setFocusedPane(paneId, { trackUser: true });
       state.openTabInFocusedPane(tabId);
 
       const rawLine = typeof location.line === 'number' ? location.line : null;
@@ -5460,7 +5460,7 @@ type OpenFromLinkErrorInfo = {
         commitNavBackEntry(paneId, prevLocation);
       }
 
-      setFocusedPane(paneId);
+      setFocusedPane(paneId, { trackUser: true });
       editor.focus();
       editor.setSelection({
         startLineNumber: selectionStartLine,
@@ -8141,7 +8141,7 @@ type OpenFromLinkErrorInfo = {
     const targetLocation: NavLocation = { tabId };
     const shouldRecord = Boolean(prevLocation && isMeaningfulNavTransition(prevLocation, targetLocation));
 
-    setActiveTabInPane(paneId, tabId);
+    setActiveTabInPane(paneId, tabId, { trackUser: true });
     if (shouldRecord && prevLocation) commitNavBackEntry(paneId, prevLocation);
   }, [commitNavBackEntry, getCurrentNavLocationForPane, isMeaningfulNavTransition, setActiveTabInPane]);
 
@@ -9001,7 +9001,7 @@ type OpenFromLinkErrorInfo = {
             await refreshChatWithMarkersForPane(paneId);
           })();
         });
-        editor.onDidFocusEditorWidget(() => useWindowLayoutStore.getState().setFocusedPane(paneId));
+        editor.onDidFocusEditorWidget(() => useWindowLayoutStore.getState().setFocusedPane(paneId, { trackUser: true }));
         editor.onDidChangeModel(() => {
           void refreshChatWithMarkersForPane(paneId);
         });
@@ -13371,7 +13371,7 @@ type OpenFromLinkErrorInfo = {
                             isFocused ? 'bg-blue-50/30 dark:bg-blue-950/10' : '',
                           ].join(' ')}
                           style={{ flexGrow: pane.weight, flexBasis: 0 }}
-                          onPointerDownCapture={() => setFocusedPane(pane.id)}
+                          onPointerDownCapture={() => setFocusedPane(pane.id, { trackUser: true })}
                         >
                           <PaneDropZone paneId={pane.id}>
                             <div

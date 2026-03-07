@@ -21,6 +21,10 @@ pub mod storage;
 pub mod tray;
 pub mod workstudio_security;
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use std::collections::HashMap;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use tauri::Manager;
 use std::sync::Arc;
 use std::str::FromStr;
 
@@ -471,6 +475,221 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
 pub(crate) struct DesktopMenuSyncState(pub(crate) std::sync::Mutex<Option<String>>);
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[derive(Clone, Debug, Default)]
+struct WindowInteractionRouteEntry {
+    kind: String,
+    _last_pane_id: Option<String>,
+    _last_chat_pane_id: Option<String>,
+    updated_at_ms: u128,
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[derive(Clone, Debug, Default)]
+struct WindowInteractionRouteSnapshot {
+    last_window_label: Option<String>,
+    last_chat_window_label: Option<String>,
+    last_workstudio_window_label: Option<String>,
+    windows: HashMap<String, WindowInteractionRouteEntry>,
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+impl WindowInteractionRouteSnapshot {
+    fn latest_window_label(&self) -> Option<String> {
+        self.windows
+            .iter()
+            .max_by_key(|(_, entry)| entry.updated_at_ms)
+            .map(|(label, _)| label.clone())
+    }
+
+    fn latest_window_label_for_kind(&self, kind: &str) -> Option<String> {
+        self.windows
+            .iter()
+            .filter(|(_, entry)| entry.kind == kind)
+            .max_by_key(|(_, entry)| entry.updated_at_ms)
+            .map(|(label, _)| label.clone())
+    }
+
+    fn recompute(&mut self) {
+        self.last_window_label = self.latest_window_label();
+        self.last_chat_window_label = self.latest_window_label_for_kind("chat");
+        self.last_workstudio_window_label = self.latest_window_label_for_kind("workstudio");
+    }
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[derive(Default)]
+pub(crate) struct WindowInteractionRouteState(
+    pub(crate) std::sync::Mutex<WindowInteractionRouteSnapshot>,
+);
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn window_interaction_now_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn normalize_window_interaction_value(value: Option<String>) -> Option<String> {
+    value.and_then(|raw| {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn is_ignored_window_label(label: &str) -> bool {
+    label.starts_with("__tauriai_ghost__") || label.starts_with("view-json_analyzer")
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn is_chat_window_label(label: &str) -> bool {
+    (label == "main" || label.starts_with("view-chat-") || label.starts_with("workspace-"))
+        && !is_ignored_window_label(label)
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn is_workstudio_window_label(label: &str) -> bool {
+    (label.starts_with("view-workstudio-") || label.starts_with("view-workstudio-dir-"))
+        && !is_ignored_window_label(label)
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn is_chat_menu_target_label(label: &str) -> bool {
+    !is_ignored_window_label(label) && !label.starts_with("view-workstudio")
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn preferred_menu_target_label(
+    action_id: &str,
+    snapshot: &WindowInteractionRouteSnapshot,
+) -> Option<String> {
+    if action_id.starts_with("new_session_agent:")
+        || matches!(action_id, "open_settings" | "open_history" | "open_practice")
+    {
+        snapshot
+            .last_chat_window_label
+            .clone()
+            .or_else(|| snapshot.last_window_label.clone())
+    } else {
+        snapshot.last_window_label.clone()
+    }
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn menu_target_allowed(action_id: &str, label: &str) -> bool {
+    if action_id.starts_with("new_session_agent:")
+        || matches!(action_id, "open_settings" | "open_history" | "open_practice")
+    {
+        return is_chat_menu_target_label(label);
+    }
+    !is_ignored_window_label(label)
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn pick_routed_menu_target<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    action_id: &str,
+) -> Option<tauri::WebviewWindow<R>> {
+    if let Some(state) = app.try_state::<WindowInteractionRouteState>() {
+        if let Ok(snapshot) = state.0.lock() {
+            if let Some(label) = preferred_menu_target_label(action_id, &snapshot) {
+                if menu_target_allowed(action_id, &label) {
+                    if let Some(window) = app.get_webview_window(&label) {
+                        return Some(window);
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(window) = app
+        .webview_windows()
+        .into_values()
+        .find(|window| window.is_focused().unwrap_or(false) && menu_target_allowed(action_id, window.label()))
+    {
+        return Some(window);
+    }
+
+    if menu_target_allowed(action_id, "main") {
+        return app.get_webview_window("main");
+    }
+
+    None
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[tauri::command]
+fn record_window_interaction(
+    state: tauri::State<'_, WindowInteractionRouteState>,
+    label: String,
+    kind: String,
+    pane_id: Option<String>,
+    chat_pane_id: Option<String>,
+) -> Result<(), String> {
+    let label = label.trim().to_string();
+    if label.is_empty() || is_ignored_window_label(&label) {
+        return Ok(());
+    }
+
+    let normalized_kind = match kind.trim().to_ascii_lowercase().as_str() {
+        "chat" | "workstudio" => kind.trim().to_ascii_lowercase(),
+        _ if is_chat_window_label(&label) => "chat".to_string(),
+        _ if is_workstudio_window_label(&label) => "workstudio".to_string(),
+        _ => "other".to_string(),
+    };
+
+    let mut guard = state
+        .0
+        .lock()
+        .map_err(|_| "window interaction state poisoned".to_string())?;
+
+    guard.windows.insert(
+        label.clone(),
+        WindowInteractionRouteEntry {
+            kind: normalized_kind.clone(),
+            _last_pane_id: normalize_window_interaction_value(pane_id),
+            _last_chat_pane_id: normalize_window_interaction_value(chat_pane_id),
+            updated_at_ms: window_interaction_now_ms(),
+        },
+    );
+    guard.last_window_label = Some(label.clone());
+    if normalized_kind == "chat" {
+        guard.last_chat_window_label = Some(label.clone());
+    }
+    if normalized_kind == "workstudio" {
+        guard.last_workstudio_window_label = Some(label);
+    }
+
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[tauri::command]
+fn clear_window_interaction(
+    state: tauri::State<'_, WindowInteractionRouteState>,
+    label: String,
+) -> Result<(), String> {
+    let label = label.trim().to_string();
+    if label.is_empty() {
+        return Ok(());
+    }
+
+    let mut guard = state
+        .0
+        .lock()
+        .map_err(|_| "window interaction state poisoned".to_string())?;
+    guard.windows.remove(&label);
+    guard.recompute();
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub(crate) fn desktop_menu_signature(config: &crate::models::AppConfig) -> String {
     // Keep in sync with the behavior of `build_desktop_menu`:
     // - enabled non-workstudio agents only
@@ -571,33 +790,11 @@ fn run_desktop() {
 	            build_desktop_menu(app, &config)
 	        })
         .on_menu_event(|app, event| {
-            let pick_menu_target = || {
-                let focused = app
-                    .webview_windows()
-                    .into_values()
-                    .find(|w| {
-                        if !w.is_focused().unwrap_or(false) {
-                            return false;
-                        }
-                         let label = w.label();
-                         // 避免把菜单事件发给不初始化 chat runtime 的窗口：
-                         // - drag ghost window（__tauriai_ghost__*）
-                         // - workstudio window（view-workstudio*）
-                         // - json analyzer window（view-json_analyzer*）
-                         //
-                         // 注意：`workspace-*` 是“可聊天的工作区窗口”（standalone workspace container），
-                         // 需要接收菜单事件（例如新建会话）。因此不要在这里排除它。
-                         !label.starts_with("__tauriai_ghost__")
-                             && !label.starts_with("view-workstudio")
-                             && !label.starts_with("view-json_analyzer")
-                     });
-
-                focused.or_else(|| app.get_webview_window("main"))
-            };
+            let pick_menu_target = |action_id: &str| pick_routed_menu_target(app, action_id);
 
             match event.id().as_ref() {
                 "open_settings" => {
-                    if let Some(window) = pick_menu_target() {
+                    if let Some(window) = pick_menu_target("open_settings") {
                         println!(
                             "[Shortcut][menu] open_settings triggered; target_window={}",
                             window.label()
@@ -609,14 +806,14 @@ fn run_desktop() {
 	                    }
 	                }
 	                "open_practice" => {
-	                    if let Some(window) = pick_menu_target() {
+	                    if let Some(window) = pick_menu_target("open_practice") {
 	                        let _ = window.emit("menu:open_practice", ());
 	                    } else {
 	                        let _ = app.emit("menu:open_practice", ());
 	                    }
 	                }
 	                "open_history" => {
-	                    if let Some(window) = pick_menu_target() {
+	                    if let Some(window) = pick_menu_target("open_history") {
 	                        let _ = window.emit("menu:open_history", ());
 	                    } else {
 	                        let _ = app.emit("menu:open_history", ());
@@ -627,7 +824,7 @@ fn run_desktop() {
 	                    let agent_name = urlencoding::decode(raw)
 	                        .map(|s| s.into_owned())
 	                        .unwrap_or_else(|_| raw.to_string());
-	                    if let Some(window) = pick_menu_target() {
+	                    if let Some(window) = pick_menu_target(id) {
 	                        let _ = window.emit("menu:new_session_agent", agent_name);
 	                    } else {
 	                        let _ = app.emit("menu:new_session_agent", agent_name);
@@ -782,6 +979,7 @@ fn run_desktop() {
         .manage(config_manager)
         .manage(run_state)
         .manage(DesktopMenuSyncState::default())
+        .manage(WindowInteractionRouteState::default())
         .invoke_handler(tauri::generate_handler![
             // Runtime commands
             run_task,
@@ -895,6 +1093,8 @@ fn run_desktop() {
 	            // Window control
 	            close_invoking_window,
 	            hide_invoking_window,
+            record_window_interaction,
+            clear_window_interaction,
             // MCP commands
             list_mcp_servers,
             list_mcp_sets,
