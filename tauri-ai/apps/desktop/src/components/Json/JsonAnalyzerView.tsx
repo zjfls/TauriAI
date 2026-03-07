@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { Clipboard, Copy, FileUp, Wand2 } from 'lucide-react';
@@ -120,7 +119,8 @@ export const JsonAnalyzerView: React.FC = () => {
   useEffect(() => {
     if (!isTauri()) return;
     let unlisten: null | (() => void) = null;
-    void listen('menu:open_file', () => {
+    const currentWindow = getCurrentWebviewWindow();
+    void currentWindow.listen('menu:open_file', () => {
       void openFileIntoAnalyzer().catch((e) => {
         setError(e instanceof Error ? e.message : String(e));
       });

@@ -7,6 +7,7 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { PhysicalPosition, PhysicalSize } from '@tauri-apps/api/dpi';
+import { availableMonitors } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
@@ -42,11 +43,9 @@ import { getCurrentWindowLabelSafe, removeWindowPresence, writeWindowPresence } 
 import { clearWindowInteraction, recordWindowInteraction } from './utils/windowInteractionRouting';
 import type { CodeSnippetContentPart, WorkspaceMentionChip, Workstudio } from './types';
 import {
-  clearAppClosingIfStale,
-  isAppClosingRecently,
-  markAppClosing,
+  clampWindowBoundsToMonitors,
   readWindowLayout,
-  removeWindowRecord,
+  syncWindowLayoutFromBackend,
   upsertWindowRecord,
 } from './utils/windowLayout';
 import './App.css';
@@ -201,6 +200,11 @@ function App() {
         // ignore
       }
       try {
+        if (!windowLayoutHydratedRef.current) {
+          await syncWindowLayoutFromBackend().catch(() => readWindowLayout());
+          windowLayoutHydratedRef.current = true;
+        }
+        if (disposed) return;
         upsertWindowRecord({
           label: currentWindowLabel,
           title: nextTitle,
@@ -271,6 +275,29 @@ function App() {
   const initialStandaloneTabsAppliedRef = useRef(false);
   const chatKeepAliveLayerRef = useRef<HTMLDivElement>(null);
   const restoredWindowsRef = useRef(false);
+  const windowLayoutHydratedRef = useRef(false);
+  const mainWindowRestoreGateRef = useRef<{ promise: Promise<void>; resolve: () => void; resolved: boolean } | null>(null);
+
+  if (!mainWindowRestoreGateRef.current) {
+    let resolvePromise: (() => void) | null = null;
+    const promise = new Promise<void>((resolve) => {
+      resolvePromise = resolve;
+    });
+    mainWindowRestoreGateRef.current = {
+      promise,
+      resolve: () => {
+        resolvePromise?.();
+      },
+      resolved: false,
+    };
+  }
+
+  const resolveMainWindowRestoreGate = () => {
+    const gate = mainWindowRestoreGateRef.current;
+    if (!gate || gate.resolved) return;
+    gate.resolved = true;
+    gate.resolve();
+  };
 
   // Cross-window "open conversation" presence:
   // - 供 History 列表标记“该对话已在其他窗口打开”
@@ -380,21 +407,33 @@ function App() {
     if (!isTauri()) return;
     if (isDragGhostWindow) return;
 
-    clearAppClosingIfStale();
-
     const label = getCurrentWindowLabelSafe();
     const params = getViewWindowParams();
     const title = document.title || label;
-
-    // 先写一份最小记录，bounds 稍后异步补齐
-    upsertWindowRecord({ label, title, params, bounds: null });
-
     const win = getCurrentWebviewWindow();
+    const mainWindowRestoreGate = mainWindowRestoreGateRef.current;
+
     let disposed = false;
     let timer: number | null = null;
 
+    const ensureLayoutHydrated = async () => {
+      if (windowLayoutHydratedRef.current) return;
+      await syncWindowLayoutFromBackend().catch(() => readWindowLayout());
+      windowLayoutHydratedRef.current = true;
+    };
+
+    const waitForInitialRestoreIfNeeded = async () => {
+      if (label !== 'main' || isStandalone) return;
+      await mainWindowRestoreGate?.promise;
+    };
+
     const updateBounds = async () => {
       if (disposed) return;
+      await ensureLayoutHydrated();
+      if (disposed) return;
+      await waitForInitialRestoreIfNeeded();
+      if (disposed) return;
+
       try {
         const [pos, size] = await Promise.all([win.outerPosition().catch(() => null), win.outerSize().catch(() => null)]);
         if (!pos || !size) return;
@@ -427,7 +466,13 @@ function App() {
       await updateBounds();
     };
 
-    void updateBounds();
+    void (async () => {
+      await ensureLayoutHydrated();
+      if (disposed) return;
+
+      upsertWindowRecord({ label, title, params, bounds: null });
+      void updateBounds();
+    })();
 
     let unlistenMoved: null | (() => void) = null;
     let unlistenResized: null | (() => void) = null;
@@ -448,7 +493,6 @@ function App() {
       .catch(() => { });
 
     void listen('app:closing', () => {
-      markAppClosing();
       void flushBounds();
     })
       .then((fn) => {
@@ -468,14 +512,6 @@ function App() {
         if (label === 'main') {
           await invoke('hide_invoking_window').catch(() => { });
           return;
-        }
-
-        // 单独关闭某个窗口：从“下次启动恢复列表”移除（但应用退出时不移除）。
-        // 注意：整体退出时，非 main 窗口可能先于 main 收到 close 请求；若立刻删除会导致重启丢布局。
-        // 这里做一个极短延迟后二次检查，避免退出竞态误删。
-        if (!isAppClosingRecently()) {
-          await new Promise<void>((resolve) => window.setTimeout(resolve, 500));
-          if (!isAppClosingRecently()) removeWindowRecord(label);
         }
 
         await invoke('close_invoking_window').catch(() => { });
@@ -505,52 +541,66 @@ function App() {
     restoredWindowsRef.current = true;
     let disposed = false;
 
-    const layout = readWindowLayout();
-    const mainBounds = layout.windows.find((w) => w.label === 'main')?.bounds ?? null;
-    const records = layout.windows.filter((w) => w.label !== 'main' && w.params?.standalone && w.params?.view);
-    // 逐个恢复；openOrFocus 会自动去重（若窗口已存在则只聚焦）
-    if (mainBounds) {
-      const win = getCurrentWebviewWindow();
-      void (async () => {
-        try {
-          await win.setSize(new PhysicalSize(mainBounds.width, mainBounds.height));
-        } catch {
-          // ignore: best-effort restore
-        }
-        try {
-          await win.setPosition(new PhysicalPosition(mainBounds.x, mainBounds.y));
-        } catch {
-          // ignore: best-effort restore
-        }
-      })();
-    }
+    void (async () => {
+      try {
+        const layout = await syncWindowLayoutFromBackend().catch(() => readWindowLayout());
+        const mainBounds = layout.windows.find((w) => w.label === 'main')?.bounds ?? null;
+        const records = layout.windows.filter((w) => w.label !== 'main' && w.params?.standalone && w.params?.view);
+        const monitors = await availableMonitors().catch(() => []);
+        const resolveRestoreBounds = <T extends { x: number; y: number; width: number; height: number } | null | undefined>(
+          bounds: T
+        ) => {
+          if (!bounds) return null;
+          return clampWindowBoundsToMonitors(bounds, monitors);
+        };
 
-    for (const w of records) {
-      const view = w.params.view;
-      if (!view) continue;
-      void openOrFocusViewWindow(view, w.title || view, {
-        focus: false,
-        label: w.label,
-        noDefaultSession: w.params.noDefaultSession,
-        conversationId: w.params.conversationId ?? undefined,
-        runMode: w.params.runMode ?? undefined,
-        agentName: w.params.agentName ?? undefined,
-        documentPath: w.params.documentPath ?? undefined,
-        workstudioId: w.params.workstudioId ?? undefined,
-        webUrl: w.params.webUrl ?? undefined,
-        webTitle: w.params.webTitle ?? undefined,
-        terminalWorkdir: w.params.terminalWorkdir ?? undefined,
-        terminalTitle: w.params.terminalTitle ?? undefined,
-        filePath: w.params.filePath ?? undefined,
-        line: typeof w.params.line === 'number' ? w.params.line : undefined,
-        column: typeof w.params.column === 'number' ? w.params.column : undefined,
-        endLine: typeof w.params.endLine === 'number' ? w.params.endLine : undefined,
-        endColumn: typeof w.params.endColumn === 'number' ? w.params.endColumn : undefined,
-        window: w.bounds ?? undefined,
-      }).catch(() => {
-        // ignore: best-effort
-      });
-    }
+        const restoredMainBounds = resolveRestoreBounds(mainBounds);
+        if (restoredMainBounds) {
+          const win = getCurrentWebviewWindow();
+          try {
+            await win.setSize(new PhysicalSize(restoredMainBounds.width, restoredMainBounds.height));
+          } catch {
+            // ignore: best-effort restore
+          }
+          try {
+            await win.setPosition(new PhysicalPosition(restoredMainBounds.x, restoredMainBounds.y));
+          } catch {
+            // ignore: best-effort restore
+          }
+        }
+
+        for (const w of records) {
+          if (disposed) return;
+          const view = w.params.view;
+          if (!view) continue;
+          const restoredBounds = resolveRestoreBounds(w.bounds);
+          void openOrFocusViewWindow(view, w.title || view, {
+            focus: false,
+            label: w.label,
+            noDefaultSession: w.params.noDefaultSession,
+            conversationId: w.params.conversationId ?? undefined,
+            runMode: w.params.runMode ?? undefined,
+            agentName: w.params.agentName ?? undefined,
+            documentPath: w.params.documentPath ?? undefined,
+            workstudioId: w.params.workstudioId ?? undefined,
+            webUrl: w.params.webUrl ?? undefined,
+            webTitle: w.params.webTitle ?? undefined,
+            terminalWorkdir: w.params.terminalWorkdir ?? undefined,
+            terminalTitle: w.params.terminalTitle ?? undefined,
+            filePath: w.params.filePath ?? undefined,
+            line: typeof w.params.line === 'number' ? w.params.line : undefined,
+            column: typeof w.params.column === 'number' ? w.params.column : undefined,
+            endLine: typeof w.params.endLine === 'number' ? w.params.endLine : undefined,
+            endColumn: typeof w.params.endColumn === 'number' ? w.params.endColumn : undefined,
+            window: restoredBounds ?? undefined,
+          }).catch(() => {
+            // ignore: best-effort
+          });
+        }
+      } finally {
+        resolveMainWindowRestoreGate();
+      }
+    })();
 
     // 启动恢复后：优先把主聊天窗口保持在最前，避免被恢复出的 Workstudio 抢焦点。
     void (async () => {
@@ -585,6 +635,7 @@ function App() {
 
     return () => {
       disposed = true;
+      resolveMainWindowRestoreGate();
     };
   }, [isStandalone]);
 
@@ -599,8 +650,9 @@ function App() {
     let disposed = false;
     let unlistenNewAgent: null | (() => void) = null;
     let unlistenSettings: null | (() => void) = null;
+    const currentWindow = getCurrentWebviewWindow();
 
-    void listen<string>('menu:new_session_agent', (event) => {
+    void currentWindow.listen<string>('menu:new_session_agent', (event) => {
       const agentName = typeof event.payload === 'string' ? event.payload : '';
       if (!agentName) return;
       void useSessionStore
@@ -618,7 +670,7 @@ function App() {
       })
       .catch(() => { });
 
-    void listen('menu:open_settings', () => {
+    void currentWindow.listen('menu:open_settings', () => {
       console.log('[Shortcut][menu] menu:open_settings received in App; switching to settings view');
       useUIStore.getState().setActiveView('settings');
     })
@@ -649,8 +701,9 @@ function App() {
     let disposed = false;
     let unlistenHistory: null | (() => void) = null;
     let unlistenPractice: null | (() => void) = null;
+    const currentWindow = getCurrentWebviewWindow();
 
-    void listen('menu:open_history', () => {
+    void currentWindow.listen('menu:open_history', () => {
       useUIStore.getState().setActiveView('history');
     })
       .then((fn) => {
@@ -662,7 +715,7 @@ function App() {
       })
       .catch(() => { });
 
-    void listen('menu:open_practice', () => {
+    void currentWindow.listen('menu:open_practice', () => {
       useUIStore.getState().setActiveView('practice');
     })
       .then((fn) => {
@@ -692,8 +745,9 @@ function App() {
 
     let disposed = false;
     let unlisten: null | (() => void) = null;
+    const currentWindow = getCurrentWebviewWindow();
 
-    void listen('menu:open_file', async () => {
+    void currentWindow.listen('menu:open_file', async () => {
       try {
         const selected = await openDialog({
           title: '打开文件',
@@ -756,12 +810,13 @@ function App() {
 
     let disposed = false;
     let unlisten: null | (() => void) = null;
+    const currentWindow = getCurrentWebviewWindow();
 
-    void listen('menu:new_json_analyzer', () => {
+    void currentWindow.listen('menu:new_json_analyzer', () => {
       void (async () => {
         const bounds = await computePopoutWindowBoundsAtCursor({
           minWidth: 760,
-          minHeight: 520,
+          minHeight: 468,
           fallbackWidth: 1100,
           fallbackHeight: 780,
         }).catch(() => null);
@@ -799,8 +854,9 @@ function App() {
 
     let disposed = false;
     let unlisten: null | (() => void) = null;
+    const currentWindow = getCurrentWebviewWindow();
 
-    void listen('menu:new_richtxt', () => {
+    void currentWindow.listen('menu:new_richtxt', () => {
       const re = /^Untitled-(\d+)\.tauri\.richtxt$/i;
       const docs = useDocumentStore.getState().documents;
       let max = 0;
@@ -854,8 +910,9 @@ function App() {
 
     let disposed = false;
     let unlisten: null | (() => void) = null;
+    const currentWindow = getCurrentWebviewWindow();
 
-    void listen('menu:new_text', () => {
+    void currentWindow.listen('menu:new_text', () => {
       const re = /^Untitled-(\d+)\.txt$/i;
       const docs = useDocumentStore.getState().documents;
       let max = 0;
@@ -908,8 +965,9 @@ function App() {
 
     let disposed = false;
     let unlisten: null | (() => void) = null;
+    const currentWindow = getCurrentWebviewWindow();
 
-    void listen('menu:open_web_tab', () => {
+    void currentWindow.listen('menu:open_web_tab', () => {
       const id = useWebTabStore.getState().openWebTab('about:blank', { title: '网页', activate: true });
       useWindowLayoutStore.getState().openTabInFocusedPane(webTabId(id));
       useUIStore.getState().setActiveView('chat');
@@ -941,8 +999,9 @@ function App() {
 
     let disposed = false;
     let unlisten: null | (() => void) = null;
+    const currentWindow = getCurrentWebviewWindow();
 
-    void listen('menu:open_terminal_tab', () => {
+    void currentWindow.listen('menu:open_terminal_tab', () => {
       void (async () => {
         const workdir = await resolveActiveWorkstudioMainFolder();
         const id = useTerminalTabStore.getState().openTerminalTab({

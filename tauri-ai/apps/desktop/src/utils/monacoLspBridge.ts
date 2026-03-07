@@ -3,7 +3,7 @@ import type * as Monaco from 'monaco-editor';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
-import { astDocumentSymbols, lspNotify, lspRequest, lspShutdownWorkstudio } from '../services';
+import { astDocumentSymbols, lspNotify, lspRequest, lspShutdownWorkstudio, lspStatus } from '../services';
 import type { CodeIntelligenceSettings } from '../types';
 
 export type OpenInWorkstudioTarget = {
@@ -101,10 +101,62 @@ const getEnabledServerLanguageIds = (cfg: CodeIntelligenceSettings | null | unde
   return Array.from(out);
 };
 
+const LSP_SEMANTIC_TOKEN_TYPES = [
+  'namespace', 'type', 'class', 'enum', 'interface', 'struct', 'typeParameter',
+  'parameter', 'variable', 'property', 'enumMember', 'event', 'function', 'method',
+  'macro', 'keyword', 'modifier', 'comment', 'string', 'number', 'regexp', 'operator', 'decorator',
+];
+
+const LSP_SEMANTIC_TOKEN_MODIFIERS = [
+  'declaration', 'definition', 'readonly', 'static', 'deprecated', 'abstract',
+  'async', 'modification', 'documentation', 'defaultLibrary',
+];
+
+const semanticTokenTypeIndexByName = new Map(LSP_SEMANTIC_TOKEN_TYPES.map((name, index) => [name, index]));
+const semanticTokenModifierIndexByName = new Map(
+  LSP_SEMANTIC_TOKEN_MODIFIERS.map((name, index) => [name, index])
+);
+
+type VoidListener = () => void;
+
+const createVoidEmitter = () => {
+  const listeners = new Set<VoidListener>();
+  return {
+    event: (listener: VoidListener): Monaco.IDisposable => {
+      listeners.add(listener);
+      return {
+        dispose: () => {
+          listeners.delete(listener);
+        },
+      };
+    },
+    fire: () => {
+      for (const listener of Array.from(listeners)) {
+        listener();
+      }
+    },
+    dispose: () => {
+      listeners.clear();
+    },
+  };
+};
+
 const isCodeIntelEnabled = (cfg: CodeIntelligenceSettings | null | undefined) => Boolean(cfg?.enabled);
 
 const isLspCompletionEnabled = (cfg: CodeIntelligenceSettings | null | undefined) =>
   cfg?.lspCompletionEnabled !== false;
+
+const isLspInlayHintsEnabled = (cfg: CodeIntelligenceSettings | null | undefined) =>
+  cfg?.lspInlayHintsEnabled !== false;
+
+const isLspSemanticHighlightEnabled = (cfg: CodeIntelligenceSettings | null | undefined) =>
+  cfg?.lspSemanticHighlightEnabled !== false;
+
+const isLspDocumentHighlightEnabled = (cfg: CodeIntelligenceSettings | null | undefined) =>
+  cfg?.lspDocumentHighlightEnabled !== false;
+
+const isLspSignatureHelpEnabled = (cfg: CodeIntelligenceSettings | null | undefined) =>
+  cfg?.lspSignatureHelpEnabled !== false;
 
 const isLspEnabled = (
   cfg: CodeIntelligenceSettings | null | undefined,
@@ -135,6 +187,7 @@ export const attachMonacoLspBridge = (opts: {
   const openedUris = new Set<string>();
   const modelListeners = new Map<string, Monaco.IDisposable[]>();
   const modelWarmupInflight = new Map<string, Promise<void>>();
+  const registeredProviderLanguages = new Set<string>();
 
   const ensureModelReady = async (uri: Monaco.Uri) => {
     if (!uri) return;
@@ -360,8 +413,56 @@ export const attachMonacoLspBridge = (opts: {
     })
   );
 
-  // LSP -> Monaco notifications (diagnostics, logs, etc)
-  let unlisten: null | (() => void) = null;
+  const serverCapabilitiesByLanguage = new Map<string, any | null>();
+  const serverCapabilitiesInflight = new Map<string, Promise<any | null>>();
+  const inlayHintsChangeEmitter = createVoidEmitter();
+  const semanticTokensChangeEmitter = createVoidEmitter();
+
+  const setCapabilitiesFromStatuses = (statuses: Array<{ languageId?: string; capabilities?: any }> = []) => {
+    for (const status of statuses) {
+      const languageId = String(status?.languageId ?? '').trim();
+      if (!languageId) continue;
+      serverCapabilitiesByLanguage.set(languageId, status?.capabilities ?? null);
+    }
+  };
+
+  const getServerCapabilities = async (languageId: string) => {
+    const lang = String(languageId ?? '').trim();
+    if (!lang) return null;
+    if (serverCapabilitiesByLanguage.has(lang)) {
+      return serverCapabilitiesByLanguage.get(lang) ?? null;
+    }
+    const inflight = serverCapabilitiesInflight.get(lang);
+    if (inflight) return inflight;
+
+    const request = lspStatus(workstudioId)
+      .then((statuses) => {
+        setCapabilitiesFromStatuses(statuses as Array<{ languageId?: string; capabilities?: any }>);
+        return serverCapabilitiesByLanguage.get(lang) ?? null;
+      })
+      .catch(() => null)
+      .finally(() => {
+        serverCapabilitiesInflight.delete(lang);
+      });
+    serverCapabilitiesInflight.set(lang, request);
+    return request;
+  };
+
+  // LSP -> Monaco notifications (diagnostics, refresh, logs, etc)
+  let unlistenLsp: null | (() => void) = null;
+  let unlistenConfig: null | (() => void) = null;
+  void listen('app_config:changed', () => {
+    for (const languageId of getEnabledServerLanguageIds(getConfig())) {
+      registerProvidersForLanguage(languageId);
+    }
+    inlayHintsChangeEmitter.fire();
+    semanticTokensChangeEmitter.fire();
+  })
+    .then((fn) => {
+      unlistenConfig = fn;
+    })
+    .catch(() => {});
+
   void listen('lsp:event', (event) => {
     const payload = (event as any)?.payload as any;
     if (!payload) return;
@@ -372,10 +473,24 @@ export const attachMonacoLspBridge = (opts: {
       return;
     }
     if (payload.type === 'exited') {
+      const languageId = String(payload.languageId ?? '').trim();
+      if (languageId) {
+        serverCapabilitiesByLanguage.delete(languageId);
+      }
+      inlayHintsChangeEmitter.fire();
+      semanticTokensChangeEmitter.fire();
       console.warn('[LSP][exited]', payload);
       return;
     }
     if (payload.type !== 'notification') return;
+    if (payload.method === 'workspace/inlayHint/refresh') {
+      inlayHintsChangeEmitter.fire();
+      return;
+    }
+    if (payload.method === 'workspace/semanticTokens/refresh') {
+      semanticTokensChangeEmitter.fire();
+      return;
+    }
     if (payload.method === 'textDocument/publishDiagnostics') {
       const uriStr = String(payload.params?.uri ?? '');
       if (!uriStr) return;
@@ -411,14 +526,20 @@ export const attachMonacoLspBridge = (opts: {
     }
   })
     .then((fn) => {
-      unlisten = fn;
+      unlistenLsp = fn;
     })
     .catch(() => {});
+
+  const emptyInlayHintList = (): Monaco.languages.InlayHintList => ({
+    hints: [],
+    dispose: () => {},
+  });
 
   // Providers (Definition/References/Hover/Completion/etc)
   const registerProvidersForLanguage = (languageId: string) => {
     const lang = (languageId ?? '').trim();
-    if (!lang) return;
+    if (!lang || registeredProviderLanguages.has(lang)) return;
+    registeredProviderLanguages.add(lang);
 
     disposables.push(
       monaco.languages.registerDefinitionProvider(lang, {
@@ -439,9 +560,6 @@ export const attachMonacoLspBridge = (opts: {
               params: { textDocument: { uri }, position: lspPos(position) },
             });
             const def = toMonacoDefinition(monaco, result);
-            // Monaco standalone 在跨文件跳转时会先 createModelReference(targetUri)，
-            // 如果目标文件的 model 不存在就会抛 "Model not found"（并导致未处理的 Promise rejection）。
-            // 这里先把目标文件的 model best-effort warmup 出来，避免跳转链路中断。
             try {
               await warmupDefinitionTargets(def);
             } catch {
@@ -525,6 +643,36 @@ export const attachMonacoLspBridge = (opts: {
     );
 
     disposables.push(
+      monaco.languages.registerDocumentHighlightProvider(lang, {
+        provideDocumentHighlights: async (model, position, token) => {
+          if (token.isCancellationRequested) return [];
+          const cfg = getConfig();
+          if (!isLspDocumentHighlightEnabled(cfg)) return [];
+          if (!isLspEnabled(cfg, model.getLanguageId(), isLanguageEnabled)) return [];
+
+          const uri = model.uri.toString();
+          if (!isFileUri(uri)) return [];
+          await ensureOpen(model);
+
+          const capabilities = await getServerCapabilities(model.getLanguageId());
+          if (!capabilities?.documentHighlightProvider) return [];
+
+          try {
+            const result = await lspRequest<any>({
+              workstudioId,
+              languageId: model.getLanguageId(),
+              method: 'textDocument/documentHighlight',
+              params: { textDocument: { uri }, position: lspPos(position) },
+            });
+            return toMonacoDocumentHighlights(monaco, result);
+          } catch {
+            return [];
+          }
+        },
+      })
+    );
+
+    disposables.push(
       monaco.languages.registerHoverProvider(lang, {
         provideHover: async (model, position, token) => {
           if (token.isCancellationRequested) return null;
@@ -550,6 +698,46 @@ export const attachMonacoLspBridge = (opts: {
               contents: contents.map((c) => ({ value: c })),
               range,
             };
+          } catch {
+            return null;
+          }
+        },
+      })
+    );
+
+    disposables.push(
+      monaco.languages.registerSignatureHelpProvider(lang, {
+        signatureHelpTriggerCharacters: ['(', ',', '<'],
+        signatureHelpRetriggerCharacters: [',', ')'],
+        provideSignatureHelp: async (model, position, token, context) => {
+          if (token.isCancellationRequested) return null;
+          const cfg = getConfig();
+          if (!isLspSignatureHelpEnabled(cfg)) return null;
+          if (!isLspEnabled(cfg, model.getLanguageId(), isLanguageEnabled)) return null;
+
+          const uri = model.uri.toString();
+          if (!isFileUri(uri)) return null;
+          await ensureOpen(model);
+
+          const capabilities = await getServerCapabilities(model.getLanguageId());
+          if (!capabilities?.signatureHelpProvider) return null;
+
+          try {
+            const result = await lspRequest<any>({
+              workstudioId,
+              languageId: model.getLanguageId(),
+              method: 'textDocument/signatureHelp',
+              params: {
+                textDocument: { uri },
+                position: lspPos(position),
+                context: {
+                  triggerKind: Number(context?.triggerKind ?? 1),
+                  isRetrigger: Boolean(context?.isRetrigger),
+                  triggerCharacter: typeof context?.triggerCharacter === 'string' ? context.triggerCharacter : undefined,
+                },
+              },
+            });
+            return toMonacoSignatureHelp(result);
           } catch {
             return null;
           }
@@ -632,6 +820,93 @@ export const attachMonacoLspBridge = (opts: {
     );
 
     disposables.push(
+      monaco.languages.registerInlayHintsProvider(lang, {
+        onDidChangeInlayHints: inlayHintsChangeEmitter.event,
+        provideInlayHints: async (model, range, token) => {
+          if (token.isCancellationRequested) return emptyInlayHintList();
+          const cfg = getConfig();
+          if (!isLspInlayHintsEnabled(cfg)) return emptyInlayHintList();
+          if (!isLspEnabled(cfg, model.getLanguageId(), isLanguageEnabled)) return emptyInlayHintList();
+
+          const uri = model.uri.toString();
+          if (!isFileUri(uri)) return emptyInlayHintList();
+          await ensureOpen(model);
+
+          const capabilities = await getServerCapabilities(model.getLanguageId());
+          if (!capabilities?.inlayHintProvider) return emptyInlayHintList();
+
+          try {
+            const result = await lspRequest<any>({
+              workstudioId,
+              languageId: model.getLanguageId(),
+              method: 'textDocument/inlayHint',
+              params: {
+                textDocument: { uri },
+                range: lspRange(range),
+              },
+            });
+            return toMonacoInlayHintList(monaco, result);
+          } catch {
+            return emptyInlayHintList();
+          }
+        },
+      })
+    );
+
+    disposables.push(
+      monaco.languages.registerDocumentSemanticTokensProvider(lang, {
+        getLegend: () => ({
+          tokenTypes: LSP_SEMANTIC_TOKEN_TYPES,
+          tokenModifiers: LSP_SEMANTIC_TOKEN_MODIFIERS,
+        }),
+        onDidChange: semanticTokensChangeEmitter.event,
+        provideDocumentSemanticTokens: async (model, _lastResultId, token) => {
+          if (token.isCancellationRequested) {
+            return { data: new Uint32Array(0) };
+          }
+          const cfg = getConfig();
+          if (!isLspSemanticHighlightEnabled(cfg)) {
+            return { data: new Uint32Array(0) };
+          }
+          if (!isLspEnabled(cfg, model.getLanguageId(), isLanguageEnabled)) {
+            return { data: new Uint32Array(0) };
+          }
+
+          const uri = model.uri.toString();
+          if (!isFileUri(uri)) return { data: new Uint32Array(0) };
+          await ensureOpen(model);
+
+          const capabilities = await getServerCapabilities(model.getLanguageId());
+          const semanticCaps = capabilities?.semanticTokensProvider;
+          if (!semanticCaps) return { data: new Uint32Array(0) };
+
+          const useRangeRequest = !semanticCaps.full && semanticCaps.range;
+          const method = useRangeRequest
+            ? 'textDocument/semanticTokens/range'
+            : semanticCaps.full
+              ? 'textDocument/semanticTokens/full'
+              : '';
+          if (!method) return { data: new Uint32Array(0) };
+
+          try {
+            const result = await lspRequest<any>({
+              workstudioId,
+              languageId: model.getLanguageId(),
+              method,
+              params: useRangeRequest
+                ? { textDocument: { uri }, range: lspRange(model.getFullModelRange()) }
+                : { textDocument: { uri } },
+            });
+            return toMonacoSemanticTokens(result, semanticCaps.legend);
+          } catch {
+            return { data: new Uint32Array(0) };
+          }
+        },
+        releaseDocumentSemanticTokens: () => {},
+      })
+    );
+
+    disposables.push(
       monaco.languages.registerDocumentSymbolProvider(lang, {
         provideDocumentSymbols: async (model, _token) => {
           const cfg = getConfig();
@@ -682,7 +957,13 @@ export const attachMonacoLspBridge = (opts: {
       }
       modelListeners.clear();
       openedUris.clear();
-      unlisten?.();
+      registeredProviderLanguages.clear();
+      serverCapabilitiesByLanguage.clear();
+      serverCapabilitiesInflight.clear();
+      inlayHintsChangeEmitter.dispose();
+      semanticTokensChangeEmitter.dispose();
+      unlistenLsp?.();
+      unlistenConfig?.();
       void lspShutdownWorkstudio(workstudioId);
     },
   };
@@ -752,6 +1033,142 @@ const lspHoverToMarkdown = (contents: any): string[] => {
       .filter(Boolean);
   }
   return [];
+};
+
+const toMonacoMarkdownString = (value: any): Monaco.IMarkdownString | string | undefined => {
+  if (typeof value === 'string') return value;
+  if (value && typeof value.value === 'string') {
+    return { value: String(value.value) };
+  }
+  return undefined;
+};
+
+const toMonacoDocumentHighlights = (
+  monaco: typeof Monaco,
+  result: any
+): Monaco.languages.DocumentHighlight[] => {
+  const items = Array.isArray(result) ? result : [];
+  return items
+    .filter((item) => item?.range)
+    .map((item) => ({
+      range: monacoRangeFromLsp(item.range),
+      kind:
+        Number(item?.kind ?? 1) === 2
+          ? monaco.languages.DocumentHighlightKind.Read
+          : Number(item?.kind ?? 1) === 3
+            ? monaco.languages.DocumentHighlightKind.Write
+            : monaco.languages.DocumentHighlightKind.Text,
+    }));
+};
+
+const toMonacoSignatureHelp = (result: any): Monaco.languages.SignatureHelpResult | null => {
+  if (!result || !Array.isArray(result?.signatures) || result.signatures.length === 0) {
+    return null;
+  }
+
+  return {
+    value: {
+      signatures: result.signatures.map((signature: any) => ({
+        label: String(signature?.label ?? ''),
+        documentation: toMonacoMarkdownString(signature?.documentation),
+        parameters: Array.isArray(signature?.parameters)
+          ? signature.parameters.map((parameter: any) => ({
+              label: Array.isArray(parameter?.label) ? parameter.label : String(parameter?.label ?? ''),
+              documentation: toMonacoMarkdownString(parameter?.documentation),
+            }))
+          : [],
+        activeParameter:
+          typeof signature?.activeParameter === 'number' ? signature.activeParameter : undefined,
+      })),
+      activeSignature: Number(result?.activeSignature ?? 0),
+      activeParameter: Number(result?.activeParameter ?? 0),
+    },
+    dispose: () => {},
+  };
+};
+
+const toMonacoInlayHintList = (monaco: typeof Monaco, result: any): Monaco.languages.InlayHintList => {
+  const hints = (Array.isArray(result) ? result : [])
+    .filter((hint) => hint?.position)
+    .map((hint) => ({
+      label: Array.isArray(hint?.label)
+        ? hint.label.map((part: any) => ({
+            label: String(part?.value ?? part?.label ?? ''),
+            tooltip: toMonacoMarkdownString(part?.tooltip),
+            location:
+              part?.location?.uri && part?.location?.range
+                ? {
+                    uri: monacoUri(monaco, part.location.uri),
+                    range: monacoRangeFromLsp(part.location.range),
+                  }
+                : undefined,
+          }))
+        : String(hint?.label ?? ''),
+      tooltip: toMonacoMarkdownString(hint?.tooltip),
+      position: {
+        lineNumber: Number(hint?.position?.line ?? 0) + 1,
+        column: Number(hint?.position?.character ?? 0) + 1,
+      },
+      kind:
+        Number(hint?.kind ?? 0) === 2
+          ? monaco.languages.InlayHintKind.Parameter
+          : Number(hint?.kind ?? 0) === 1
+            ? monaco.languages.InlayHintKind.Type
+            : undefined,
+      paddingLeft: Boolean(hint?.paddingLeft),
+      paddingRight: Boolean(hint?.paddingRight),
+    } satisfies Monaco.languages.InlayHint));
+
+  return {
+    hints,
+    dispose: () => {},
+  };
+};
+
+const remapSemanticTokenModifiers = (
+  mask: number,
+  legend: { tokenModifiers?: string[] } | null | undefined
+) => {
+  if (!legend?.tokenModifiers?.length) return mask;
+  let nextMask = 0;
+  for (let bit = 0; bit < 31; bit += 1) {
+    if ((mask & (1 << bit)) === 0) continue;
+    const modifierName = legend.tokenModifiers[bit];
+    if (!modifierName) continue;
+    const mappedBit = semanticTokenModifierIndexByName.get(modifierName);
+    if (typeof mappedBit === 'number') {
+      nextMask |= 1 << mappedBit;
+    }
+  }
+  return nextMask;
+};
+
+const toMonacoSemanticTokens = (
+  result: any,
+  legend: { tokenTypes?: string[]; tokenModifiers?: string[] } | null | undefined
+): Monaco.languages.SemanticTokens => {
+  const rawData = Array.isArray(result?.data)
+    ? result.data
+    : result?.data instanceof Uint32Array
+      ? Array.from(result.data)
+      : [];
+  const data = new Uint32Array(rawData.length);
+
+  for (let index = 0; index + 4 < rawData.length; index += 5) {
+    data[index] = Number(rawData[index] ?? 0);
+    data[index + 1] = Number(rawData[index + 1] ?? 0);
+    data[index + 2] = Number(rawData[index + 2] ?? 0);
+
+    const tokenTypeIndex = Number(rawData[index + 3] ?? 0);
+    const tokenTypeName = legend?.tokenTypes?.[tokenTypeIndex] ?? null;
+    data[index + 3] = tokenTypeName ? (semanticTokenTypeIndexByName.get(tokenTypeName) ?? 0) : tokenTypeIndex;
+    data[index + 4] = remapSemanticTokenModifiers(Number(rawData[index + 4] ?? 0), legend);
+  }
+
+  return {
+    resultId: typeof result?.resultId === 'string' ? result.resultId : undefined,
+    data,
+  };
 };
 
 const lspCompletionKindToMonaco = (kind: any, monaco: typeof Monaco): Monaco.languages.CompletionItemKind => {

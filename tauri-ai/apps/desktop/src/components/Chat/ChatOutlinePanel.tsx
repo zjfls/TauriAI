@@ -12,13 +12,15 @@ export const ChatOutlinePanel: React.FC<{
   selectedMessageId: string | null;
   selectedFullText?: string | null;
   isOpen: boolean;
+  displayMode?: 'sidebar' | 'overlay';
   onToggle: () => void;
   onSelect: (messageId: string) => void;
-}> = ({ items, selectedMessageId, selectedFullText, isOpen, onToggle, onSelect }) => {
+}> = ({ items, selectedMessageId, selectedFullText, isOpen, displayMode = 'sidebar', onToggle, onSelect }) => {
   const selected = useMemo(() => {
     if (!selectedMessageId) return null;
     return items.find((i) => i.messageId === selectedMessageId) ?? null;
   }, [items, selectedMessageId]);
+  const isOverlay = displayMode === 'overlay';
 
   return (
     <div
@@ -27,7 +29,11 @@ export const ChatOutlinePanel: React.FC<{
         'flex-shrink-0 overflow-hidden h-full',
         'transition-[width] duration-200 ease-out',
         isOpen ? 'border-r border-gray-200 dark:border-gray-800' : 'border-r-0',
-        isOpen ? 'bg-white/70 dark:bg-gray-900/55 backdrop-blur' : 'bg-transparent',
+        isOpen
+          ? isOverlay
+            ? 'bg-white/70 shadow-xl dark:bg-gray-900/55 backdrop-blur'
+            : 'bg-white dark:bg-gray-900'
+          : 'bg-transparent',
         isOpen ? 'pointer-events-auto' : 'pointer-events-none',
         'flex min-h-0 flex-col',
       ].join(' ')}

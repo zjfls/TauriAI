@@ -1365,6 +1365,26 @@ export interface CodeIntelligenceSettings {
    */
   lspCompletionEnabled?: boolean;
   /**
+   * 是否启用 LSP inlay hints（参数名/类型等行内提示）。
+   * 默认为 true。
+   */
+  lspInlayHintsEnabled?: boolean;
+  /**
+   * 是否启用 LSP semantic highlighting（比基础语法高亮更细粒度的语义着色）。
+   * 默认为 true。
+   */
+  lspSemanticHighlightEnabled?: boolean;
+  /**
+   * 是否启用 LSP document highlight（光标所在符号的同文档高亮）。
+   * 默认为 true。
+   */
+  lspDocumentHighlightEnabled?: boolean;
+  /**
+   * 是否启用 LSP signature help（参数提示浮层）。
+   * 默认为 true。
+   */
+  lspSignatureHelpEnabled?: boolean;
+  /**
    * 是否启用 Monaco 内置的“词汇建议”（来自打开的文件内容，不依赖 LSP）。
    * 关闭后 Suggest 列表会更“干净”，便于调试 AI Completion。
    * 默认为 true。
@@ -1484,6 +1504,47 @@ export interface FolderAnalysisSettings {
   ignoreGlobs?: string[];
 }
 
+export interface LspSignatureHelpCapabilities {
+  triggerCharacters: string[];
+  retriggerCharacters: string[];
+}
+
+export interface LspSemanticTokensLegend {
+  tokenTypes: string[];
+  tokenModifiers: string[];
+}
+
+export interface LspSemanticTokensCapabilities {
+  full: boolean;
+  delta: boolean;
+  range: boolean;
+  legend: LspSemanticTokensLegend;
+}
+
+export interface LspCodeActionCapabilities {
+  resolveProvider: boolean;
+  codeActionKinds: string[];
+}
+
+export interface LspRenameCapabilities {
+  prepareProvider: boolean;
+}
+
+export interface LspServerCapabilitiesSnapshot {
+  definitionProvider: boolean;
+  typeDefinitionProvider: boolean;
+  referencesProvider: boolean;
+  hoverProvider: boolean;
+  completionProvider: boolean;
+  documentSymbolProvider: boolean;
+  documentHighlightProvider: boolean;
+  inlayHintProvider: boolean;
+  signatureHelpProvider?: LspSignatureHelpCapabilities;
+  semanticTokensProvider?: LspSemanticTokensCapabilities;
+  codeActionProvider?: LspCodeActionCapabilities;
+  renameProvider?: LspRenameCapabilities;
+}
+
 export interface LspServerStatus {
   workstudioId: string;
   languageId: string;
@@ -1492,6 +1553,7 @@ export interface LspServerStatus {
   command?: string;
   args?: string[];
   lastError?: string;
+  capabilities?: LspServerCapabilitiesSnapshot;
 }
 
 export interface LspDetectServerResult {

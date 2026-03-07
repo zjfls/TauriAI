@@ -607,6 +607,88 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
               />
             </div>
 
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-950">
+                <div className="min-w-0">
+                  <div className="text-xs text-gray-500 dark:text-gray-400">Inlay Hints</div>
+                  <div className="text-sm text-gray-800 dark:text-gray-100">参数/类型行内提示</div>
+                  <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                    显示 rust-analyzer / gopls 等返回的参数名、推断类型、生命周期等灰字提示。
+                  </div>
+                </div>
+                <Toggle
+                  checked={config.codeIntelligence?.lspInlayHintsEnabled ?? true}
+                  onChange={(lspInlayHintsEnabled) =>
+                    updateConfig((cfg) => ({
+                      ...cfg,
+                      codeIntelligence: { ...cfg.codeIntelligence, lspInlayHintsEnabled },
+                    }))
+                  }
+                  title="是否启用 LSP inlay hints"
+                />
+              </div>
+
+              <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-950">
+                <div className="min-w-0">
+                  <div className="text-xs text-gray-500 dark:text-gray-400">Semantic Tokens</div>
+                  <div className="text-sm text-gray-800 dark:text-gray-100">语义高亮</div>
+                  <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                    使用 LSP 返回的语义 token 做更细粒度着色，区分类型、参数、字段、宏等。
+                  </div>
+                </div>
+                <Toggle
+                  checked={config.codeIntelligence?.lspSemanticHighlightEnabled ?? true}
+                  onChange={(lspSemanticHighlightEnabled) =>
+                    updateConfig((cfg) => ({
+                      ...cfg,
+                      codeIntelligence: { ...cfg.codeIntelligence, lspSemanticHighlightEnabled },
+                    }))
+                  }
+                  title="是否启用 LSP semantic tokens 高亮"
+                />
+              </div>
+
+              <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-950">
+                <div className="min-w-0">
+                  <div className="text-xs text-gray-500 dark:text-gray-400">Document Highlight</div>
+                  <div className="text-sm text-gray-800 dark:text-gray-100">当前符号高亮</div>
+                  <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                    光标移动到符号上时，高亮当前文件中的读写位置。
+                  </div>
+                </div>
+                <Toggle
+                  checked={config.codeIntelligence?.lspDocumentHighlightEnabled ?? true}
+                  onChange={(lspDocumentHighlightEnabled) =>
+                    updateConfig((cfg) => ({
+                      ...cfg,
+                      codeIntelligence: { ...cfg.codeIntelligence, lspDocumentHighlightEnabled },
+                    }))
+                  }
+                  title="是否启用 LSP document highlight"
+                />
+              </div>
+
+              <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-950">
+                <div className="min-w-0">
+                  <div className="text-xs text-gray-500 dark:text-gray-400">Signature Help</div>
+                  <div className="text-sm text-gray-800 dark:text-gray-100">参数提示浮层</div>
+                  <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                    输入函数调用时显示签名、当前参数位置和文档说明。
+                  </div>
+                </div>
+                <Toggle
+                  checked={config.codeIntelligence?.lspSignatureHelpEnabled ?? true}
+                  onChange={(lspSignatureHelpEnabled) =>
+                    updateConfig((cfg) => ({
+                      ...cfg,
+                      codeIntelligence: { ...cfg.codeIntelligence, lspSignatureHelpEnabled },
+                    }))
+                  }
+                  title="是否启用 LSP signature help"
+                />
+              </div>
+            </div>
+
             <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-950">
               <div className="min-w-0">
                 <div className="text-xs text-gray-500 dark:text-gray-400">Monaco</div>
@@ -626,7 +708,6 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
                 title="是否启用 Monaco 内置的词汇建议（用于调试 AI Completion）"
               />
             </div>
-
 
             <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-950">
               <div className="min-w-0">

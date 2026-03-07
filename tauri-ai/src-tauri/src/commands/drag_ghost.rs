@@ -26,6 +26,8 @@ struct DragGhostFollowState {
     offset_y: i32,
     w: u32,
     h: u32,
+    raised_source_label: Option<String>,
+    raised_source_prev_always_on_top: Option<bool>,
 }
 
 fn follow_state() -> &'static Mutex<DragGhostFollowState> {
@@ -39,6 +41,76 @@ fn ghost_label_for_source(source_label: &str) -> String {
     // 这里始终返回同一个 label，避免多窗口创建带来的不稳定性。
     let _ = source_label;
     "__tauriai_ghost__global".to_string()
+}
+
+fn raise_source_window_for_drag(app: &tauri::AppHandle, source_label: &str) -> Result<(), String> {
+    let source = app
+        .get_webview_window(source_label)
+        .or_else(|| app.get_webview_window("main"))
+        .ok_or_else(|| format!("source window not found: {source_label}"))?;
+
+    let actual_label = source.label().to_string();
+    let was_always_on_top = source.is_always_on_top().map_err(|e| e.to_string())?;
+
+    let mut should_raise = true;
+    {
+        let mut st = follow_state()
+            .lock()
+            .map_err(|_| "follow state poisoned".to_string())?;
+
+        if st.raised_source_label.as_deref() == Some(actual_label.as_str()) {
+            if st.raised_source_prev_always_on_top.is_none() {
+                st.raised_source_prev_always_on_top = Some(was_always_on_top);
+            }
+            should_raise = false;
+        } else {
+            let previous = st
+                .raised_source_label
+                .clone()
+                .zip(st.raised_source_prev_always_on_top);
+            st.raised_source_label = Some(actual_label.clone());
+            st.raised_source_prev_always_on_top = Some(was_always_on_top);
+            drop(st);
+
+            if let Some((previous_label, previous_always_on_top)) = previous {
+                if previous_label != actual_label {
+                    if let Some(previous_window) = app.get_webview_window(&previous_label) {
+                        let _ = previous_window.set_always_on_top(previous_always_on_top);
+                    }
+                }
+            }
+        }
+    }
+
+    if should_raise {
+        source.set_always_on_top(true).map_err(|e| e.to_string())?;
+    }
+    let _ = source.set_focus();
+    Ok(())
+}
+
+fn restore_source_window_after_drag(app: &tauri::AppHandle) -> Result<(), String> {
+    let (label, previous_always_on_top) = {
+        let mut st = follow_state()
+            .lock()
+            .map_err(|_| "follow state poisoned".to_string())?;
+        let payload = st
+            .raised_source_label
+            .take()
+            .zip(st.raised_source_prev_always_on_top.take());
+        match payload {
+            Some(values) => values,
+            None => return Ok(()),
+        }
+    };
+
+    if let Some(source) = app.get_webview_window(&label) {
+        source
+            .set_always_on_top(previous_always_on_top)
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -61,6 +133,8 @@ pub fn drag_ghost_create(
         .get_webview_window(&source_label)
         .or_else(|| app.get_webview_window("main"))
         .ok_or_else(|| "main window not found".to_string())?;
+
+    raise_source_window_for_drag(&app, source.label().as_ref())?;
 
     let ghost_label = ghost_label_for_source(source.label().as_ref());
 
@@ -132,6 +206,7 @@ pub fn drag_ghost_create(
         return Ok(());
     }
 
+    let _ = restore_source_window_after_drag(&app);
     Err(format!(
         "ghost window not initialized (label={}); please restart app",
         ghost_label
@@ -483,6 +558,7 @@ pub fn drag_ghost_destroy(
 ) -> Result<(), String> {
     // best-effort stop follow loop first
     let _ = drag_ghost_follow_stop();
+    let _ = restore_source_window_after_drag(&app);
 
     let source_label = source_label.unwrap_or_else(|| "main".to_string());
     let source = app

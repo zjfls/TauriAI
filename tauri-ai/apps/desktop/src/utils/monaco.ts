@@ -4,9 +4,15 @@ import 'monaco-editor/esm/vs/basic-languages/cpp/cpp.contribution';
 import 'monaco-editor/esm/vs/basic-languages/go/go.contribution';
 import 'monaco-editor/esm/vs/basic-languages/lua/lua.contribution';
 import 'monaco-editor/esm/vs/basic-languages/python/python.contribution';
+import 'monaco-editor/esm/vs/editor/contrib/codeAction/browser/codeActionContributions';
 import 'monaco-editor/esm/vs/editor/contrib/gotoSymbol/browser/goToCommands';
 import 'monaco-editor/esm/vs/editor/contrib/gotoSymbol/browser/link/goToDefinitionAtPosition';
+import 'monaco-editor/esm/vs/editor/contrib/inlayHints/browser/inlayHintsContribution';
 import 'monaco-editor/esm/vs/editor/contrib/inlineCompletions/browser/inlineCompletions.contribution';
+import 'monaco-editor/esm/vs/editor/contrib/parameterHints/browser/parameterHints';
+import 'monaco-editor/esm/vs/editor/contrib/rename/browser/rename';
+import 'monaco-editor/esm/vs/editor/contrib/semanticTokens/browser/documentSemanticTokens';
+import 'monaco-editor/esm/vs/editor/contrib/wordHighlighter/browser/wordHighlighter';
 import 'monaco-editor/esm/vs/editor/standalone/browser/referenceSearch/standaloneReferenceSearch';
 import { setupMonacoEnvironment } from './monacoEnv';
 

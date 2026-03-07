@@ -3117,11 +3117,12 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
     }));
   }, [agents]);
 
-  // Check if we have selectors to show
-  const hasSelectors = agents.length > 0 || modelOptions.length > 0;
+  // Check if we have selectors / toggles to show
+  const hasAgentSelector = agents.length > 0 && Boolean(currentAgentName);
+  const hasModelSelector = modelOptions.length > 0 && Boolean(onModelSelect);
   const hasModeSelector = Boolean(onRunModeChange);
-  const hasFeatureToggles =
-    hasModeSelector || supportsThinking || supportsWebSearch || supportsVision || contextUsage || hasSelectors;
+  const hasBottomSelectors = hasAgentSelector || hasModeSelector || hasModelSelector;
+  const hasTopToolbar = Boolean(supportsThinking || supportsWebSearch || hasMcpSetBinding || contextUsage);
 
   return (
     <div
@@ -3129,64 +3130,10 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
       onDrop={handleDrop}
       onDragOver={handleDragOver}
     >
-      {/* Toolbar: Agent/Model selectors and feature toggles */}
-      {hasFeatureToggles && (
-        <div className="mb-2 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            {/* Agent selector - 放在最左边 */}
-            {agents.length > 0 && currentAgentName && (
-              onAgentSelect ? (
-                <CompactSelector
-                  icon={<Bot size={12} />}
-                  options={agentOptions}
-                  currentValue={currentAgentName}
-                  onSelect={onAgentSelect}
-                  disabled={isGenerating}
-                  placeholder="智能体"
-                />
-              ) : (
-                <div
-                  className={[
-                    'flex items-center gap-1.5 px-2 py-1 rounded-lg border',
-                    'bg-gray-50 dark:bg-gray-900 border-gray-200 dark:border-gray-700',
-                    'text-gray-700 dark:text-gray-200',
-                  ].join(' ')}
-                  title={currentAgent?.type ? `${currentAgent.displayName} (${currentAgent.type})` : (currentAgent?.displayName || currentAgentName)}
-                >
-                  <Bot size={12} className="text-gray-500 dark:text-gray-400" />
-                  <span className="text-xs font-medium max-w-32 truncate">
-                    {currentAgent?.displayName || currentAgentName}
-                    {currentAgent?.type ? ` (${currentAgent.type})` : ''}
-                  </span>
-                </div>
-              )
-            )}
-            {/* Run mode selector (menu) */}
-            {onRunModeChange && (
-              <CompactSelector
-                icon={<span className="text-[10px] text-gray-500 dark:text-gray-400">模式</span>}
-                options={RUN_MODE_OPTIONS}
-                currentValue={runMode}
-                onSelect={(value) => onRunModeChange(value as RunMode)}
-                disabled={disabled}
-                placeholder="模式"
-              />
-            )}
-            {/* Model selector */}
-            {modelOptions.length > 0 && onModelSelect && (
-              <CompactSelector
-                icon={<Cpu size={12} />}
-                options={modelOptions}
-                currentValue={currentModelRef}
-                onSelect={onModelSelect}
-                disabled={isGenerating}
-                placeholder="模型"
-              />
-            )}
-            {/* Divider if both selectors and toggles exist */}
-            {(agents.length > 0 || modelOptions.length > 0) && (supportsThinking || supportsWebSearch) && (
-              <div className="h-4 w-px bg-gray-300 dark:bg-gray-600 mx-1" />
-            )}
+      {/* Toolbar: feature toggles */}
+      {hasTopToolbar && (
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {/* Thinking selector - adaptive based on API protocol */}
             {supportsThinking && (
               <ThinkingSelector
@@ -3205,7 +3152,6 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
                 selected={selectedProvider}
                 onSelect={onProviderSelect}
                 disabled={isGenerating}
-
                 details={webSearchDetails}
               />
             )}
@@ -3538,6 +3484,63 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
           </button>
         </div>
       </div>
+
+      {hasBottomSelectors && (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          {/* Agent selector */}
+          {hasAgentSelector && currentAgentName && (
+            onAgentSelect ? (
+              <CompactSelector
+                icon={<Bot size={12} />}
+                options={agentOptions}
+                currentValue={currentAgentName}
+                onSelect={onAgentSelect}
+                disabled={isGenerating}
+                placeholder="智能体"
+              />
+            ) : (
+              <div
+                className={[
+                  'flex items-center gap-1.5 px-2 py-1 rounded-lg border',
+                  'bg-gray-50 dark:bg-gray-900 border-gray-200 dark:border-gray-700',
+                  'text-gray-700 dark:text-gray-200',
+                ].join(' ')}
+                title={currentAgent?.type ? `${currentAgent.displayName} (${currentAgent.type})` : (currentAgent?.displayName || currentAgentName)}
+              >
+                <Bot size={12} className="text-gray-500 dark:text-gray-400" />
+                <span className="text-xs font-medium max-w-32 truncate">
+                  {currentAgent?.displayName || currentAgentName}
+                  {currentAgent?.type ? ` (${currentAgent.type})` : ''}
+                </span>
+              </div>
+            )
+          )}
+
+          {/* Run mode selector */}
+          {hasModeSelector && (
+            <CompactSelector
+              icon={<span className="text-[10px] text-gray-500 dark:text-gray-400">模式</span>}
+              options={RUN_MODE_OPTIONS}
+              currentValue={runMode}
+              onSelect={(value) => onRunModeChange?.(value as RunMode)}
+              disabled={disabled}
+              placeholder="模式"
+            />
+          )}
+
+          {/* Model selector */}
+          {hasModelSelector && onModelSelect && (
+            <CompactSelector
+              icon={<Cpu size={12} />}
+              options={modelOptions}
+              currentValue={currentModelRef}
+              onSelect={onModelSelect}
+              disabled={isGenerating}
+              placeholder="模型"
+            />
+          )}
+        </div>
+      )}
 
       {/* Attachment menu + extra actions */}
       <div className="mt-1 flex items-center gap-3 text-xs">

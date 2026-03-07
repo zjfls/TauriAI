@@ -3,7 +3,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { openPath, revealItemInDir } from '@tauri-apps/plugin-opener';
-import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { WebviewWindow, getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import Editor, { type OnMount } from '@monaco-editor/react';
 import type * as Monaco from 'monaco-editor';
 import {
@@ -1708,22 +1708,36 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const symbolAnalysisThinkingLevel: ThinkingLevel = (codeIntelligenceConfig?.symbolAnalysis?.thinkingLevel ??
     null) as ThinkingLevel;
 
-  // 某些 Monaco 选项（如 suggest/wordBasedSuggestions）在 React wrapper 下更新不一定稳定，
+  // 某些 Monaco 选项在 React wrapper 下更新不一定稳定，
   // 这里显式对已挂载的 editor 实例执行 updateOptions，确保设置切换立即生效。
   useEffect(() => {
-    const enabled = codeIntelligenceConfig?.monacoWordSuggestionsEnabled !== false;
+    const wordSuggestionsEnabled = codeIntelligenceConfig?.monacoWordSuggestionsEnabled !== false;
+    const inlayHintsEnabled = codeIntelligenceConfig?.lspInlayHintsEnabled !== false;
+    const semanticHighlightEnabled = codeIntelligenceConfig?.lspSemanticHighlightEnabled !== false;
+    const documentHighlightEnabled = codeIntelligenceConfig?.lspDocumentHighlightEnabled !== false;
+    const signatureHelpEnabled = codeIntelligenceConfig?.lspSignatureHelpEnabled !== false;
     for (const editor of editorByPaneRef.current.values()) {
       try {
         editor.updateOptions({
-          suggest: { showWords: enabled },
-          wordBasedSuggestions: enabled ? 'matchingDocuments' : 'off',
+          suggest: { showWords: wordSuggestionsEnabled },
+          wordBasedSuggestions: wordSuggestionsEnabled ? 'matchingDocuments' : 'off',
           wordBasedSuggestionsOnlySameLanguage: true,
+          inlayHints: { enabled: inlayHintsEnabled ? 'on' : 'off' },
+          'semanticHighlighting.enabled': semanticHighlightEnabled,
+          occurrencesHighlight: documentHighlightEnabled ? 'singleFile' : 'off',
+          parameterHints: { enabled: signatureHelpEnabled },
         });
       } catch (err) {
         console.warn('[Workstudio] updateOptions failed:', err);
       }
     }
-  }, [codeIntelligenceConfig?.monacoWordSuggestionsEnabled]);
+  }, [
+    codeIntelligenceConfig?.lspDocumentHighlightEnabled,
+    codeIntelligenceConfig?.lspInlayHintsEnabled,
+    codeIntelligenceConfig?.lspSemanticHighlightEnabled,
+    codeIntelligenceConfig?.lspSignatureHelpEnabled,
+    codeIntelligenceConfig?.monacoWordSuggestionsEnabled,
+  ]);
 
   const shortcutPlatform = useMemo(() => detectShortcutPlatform(), []);
   const fileSearchShortcutLabel = useMemo(() => {
@@ -11551,7 +11565,8 @@ type OpenFromLinkErrorInfo = {
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | null = null;
-    void listen('menu:open_file', async () => {
+    const currentWindow = getCurrentWebviewWindow();
+    void currentWindow.listen('menu:open_file', async () => {
       try {
         await openFileFromDialog();
       } catch (error) {
@@ -11576,7 +11591,8 @@ type OpenFromLinkErrorInfo = {
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | null = null;
-    void listen('menu:new_richtxt', () => {
+    const currentWindow = getCurrentWebviewWindow();
+    void currentWindow.listen('menu:new_richtxt', () => {
       try {
         createUntitledRichTxt();
       } catch (error) {
@@ -11601,7 +11617,8 @@ type OpenFromLinkErrorInfo = {
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | null = null;
-    void listen('menu:new_text', () => {
+    const currentWindow = getCurrentWebviewWindow();
+    void currentWindow.listen('menu:new_text', () => {
       try {
         createUntitledText();
       } catch (error) {
@@ -13606,6 +13623,19 @@ type OpenFromLinkErrorInfo = {
                                               ? 'off'
                                               : 'matchingDocuments',
                                           wordBasedSuggestionsOnlySameLanguage: true,
+                                          inlayHints: {
+                                            enabled:
+                                              codeIntelligenceConfig?.lspInlayHintsEnabled === false ? 'off' : 'on',
+                                          },
+                                          'semanticHighlighting.enabled':
+                                            codeIntelligenceConfig?.lspSemanticHighlightEnabled !== false,
+                                          occurrencesHighlight:
+                                            codeIntelligenceConfig?.lspDocumentHighlightEnabled === false
+                                              ? 'off'
+                                              : 'singleFile',
+                                          parameterHints: {
+                                            enabled: codeIntelligenceConfig?.lspSignatureHelpEnabled !== false,
+                                          },
                                           inlineSuggest: { enabled: true },
                                           fontSize: editorFontSize,
                                           fontFamily:

@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 use config::ConfigManager;
 
@@ -517,6 +517,7 @@ struct WindowInteractionRouteEntry {
 struct WindowInteractionRouteSnapshot {
     last_window_label: Option<String>,
     last_chat_window_label: Option<String>,
+    last_main_host_window_label: Option<String>,
     last_workstudio_window_label: Option<String>,
     windows: HashMap<String, WindowInteractionRouteEntry>,
 }
@@ -541,6 +542,12 @@ impl WindowInteractionRouteSnapshot {
     fn recompute(&mut self) {
         self.last_window_label = self.latest_window_label();
         self.last_chat_window_label = self.latest_window_label_for_kind("chat");
+        self.last_main_host_window_label = self
+            .windows
+            .iter()
+            .filter(|(label, _)| is_main_host_window_label(label))
+            .max_by_key(|(_, entry)| entry.updated_at_ms)
+            .map(|(label, _)| label.clone());
         self.last_workstudio_window_label = self.latest_window_label_for_kind("workstudio");
     }
 }
@@ -583,6 +590,11 @@ fn is_chat_window_label(label: &str) -> bool {
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn is_main_host_window_label(label: &str) -> bool {
+    !is_ignored_window_label(label) && (label == "main" || label.starts_with("workspace-"))
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn is_workstudio_window_label(label: &str) -> bool {
     (label.starts_with("view-workstudio-") || label.starts_with("view-workstudio-dir-"))
         && !is_ignored_window_label(label)
@@ -594,19 +606,24 @@ fn is_chat_menu_target_label(label: &str) -> bool {
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn preferred_menu_target_label(
-    action_id: &str,
-    snapshot: &WindowInteractionRouteSnapshot,
-) -> Option<String> {
-    if action_id.starts_with("new_session_agent:")
+fn is_main_host_menu_action(action_id: &str) -> bool {
+    action_id.starts_with("new_session_agent:")
         || matches!(
             action_id,
             "open_settings" | "open_history" | "open_practice"
         )
-    {
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn preferred_menu_target_label(
+    action_id: &str,
+    snapshot: &WindowInteractionRouteSnapshot,
+) -> Option<String> {
+    if is_main_host_menu_action(action_id) {
         snapshot
-            .last_chat_window_label
+            .last_main_host_window_label
             .clone()
+            .or_else(|| snapshot.last_chat_window_label.clone())
             .or_else(|| snapshot.last_window_label.clone())
     } else {
         snapshot.last_window_label.clone()
@@ -615,13 +632,11 @@ fn preferred_menu_target_label(
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn menu_target_allowed(action_id: &str, label: &str) -> bool {
-    if action_id.starts_with("new_session_agent:")
-        || matches!(
-            action_id,
-            "open_settings" | "open_history" | "open_practice"
-        )
-    {
-        return is_chat_menu_target_label(label);
+    if is_main_host_menu_action(action_id) {
+        return is_main_host_window_label(label);
+    }
+    if is_chat_menu_target_label(label) {
+        return true;
     }
     !is_ignored_window_label(label)
 }
@@ -654,6 +669,25 @@ fn pick_routed_menu_target<R: tauri::Runtime>(
     }
 
     None
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn pick_focused_or_main_window<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Option<tauri::WebviewWindow<R>> {
+    app.webview_windows()
+        .into_values()
+        .find(|window| window.is_focused().unwrap_or(false))
+        .or_else(|| app.get_webview_window("main"))
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn emit_webview_window_event<R, S>(app: &tauri::AppHandle<R>, label: &str, event: &str, payload: S)
+where
+    R: tauri::Runtime,
+    S: serde::Serialize + Clone,
+{
+    let _ = app.emit_to(tauri::EventTarget::webview_window(label), event, payload);
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -694,6 +728,9 @@ fn record_window_interaction(
     guard.last_window_label = Some(label.clone());
     if normalized_kind == "chat" {
         guard.last_chat_window_label = Some(label.clone());
+    }
+    if is_main_host_window_label(&label) {
+        guard.last_main_host_window_label = Some(label.clone());
     }
     if normalized_kind == "workstudio" {
         guard.last_workstudio_window_label = Some(label);
@@ -828,116 +865,88 @@ fn run_desktop() {
             match event.id().as_ref() {
                 "open_settings" => {
                     if let Some(window) = pick_menu_target("open_settings") {
+                        let label = window.label().to_string();
                         println!(
                             "[Shortcut][menu] open_settings triggered; target_window={}",
-                            window.label()
+                            label
                         );
-                        let _ = window.emit("menu:open_settings", ());
+                        emit_webview_window_event(app, &label, "menu:open_settings", ());
                     } else {
-	                        println!("[Shortcut][menu] open_settings triggered; target_window=<broadcast>");
-	                        let _ = app.emit("menu:open_settings", ());
-	                    }
-	                }
-	                "open_practice" => {
-	                    if let Some(window) = pick_menu_target("open_practice") {
-	                        let _ = window.emit("menu:open_practice", ());
-	                    } else {
-	                        let _ = app.emit("menu:open_practice", ());
-	                    }
-	                }
-	                "open_history" => {
-	                    if let Some(window) = pick_menu_target("open_history") {
-	                        let _ = window.emit("menu:open_history", ());
-	                    } else {
-	                        let _ = app.emit("menu:open_history", ());
-	                    }
-	                }
-	                id if id.starts_with("new_session_agent:") => {
-	                    let raw = id.trim_start_matches("new_session_agent:");
-	                    let agent_name = urlencoding::decode(raw)
-	                        .map(|s| s.into_owned())
-	                        .unwrap_or_else(|_| raw.to_string());
-	                    if let Some(window) = pick_menu_target(id) {
-	                        let _ = window.emit("menu:new_session_agent", agent_name);
-	                    } else {
-	                        let _ = app.emit("menu:new_session_agent", agent_name);
-	                    }
-	                }
+                        println!("[Shortcut][menu] open_settings triggered; target_window=<none>");
+                    }
+                }
+                "open_practice" => {
+                    if let Some(window) = pick_menu_target("open_practice") {
+                        emit_webview_window_event(
+                            app,
+                            window.label(),
+                            "menu:open_practice",
+                            (),
+                        );
+                    }
+                }
+                "open_history" => {
+                    if let Some(window) = pick_menu_target("open_history") {
+                        emit_webview_window_event(app, window.label(), "menu:open_history", ());
+                    }
+                }
+                id if id.starts_with("new_session_agent:") => {
+                    let raw = id.trim_start_matches("new_session_agent:");
+                    let agent_name = urlencoding::decode(raw)
+                        .map(|s| s.into_owned())
+                        .unwrap_or_else(|_| raw.to_string());
+                    if let Some(window) = pick_menu_target(id) {
+                        emit_webview_window_event(
+                            app,
+                            window.label(),
+                            "menu:new_session_agent",
+                            agent_name,
+                        );
+                    }
+                }
                 "new_richtxt" => {
                     // Send event to create a new .tauri.richtxt file
-                    let focused = app
-                        .webview_windows()
-                        .into_values()
-                        .find(|w| w.is_focused().unwrap_or(false));
-
-                    if let Some(window) = focused.or_else(|| app.get_webview_window("main")) {
-                        let _ = window.emit("menu:new_richtxt", ());
-                    } else {
-                        let _ = app.emit("menu:new_richtxt", ());
+                    if let Some(window) = pick_focused_or_main_window(app) {
+                        emit_webview_window_event(app, window.label(), "menu:new_richtxt", ());
                     }
                 }
                 "new_text" => {
                     // Send event to create a new plain text file
-                    let focused = app
-                        .webview_windows()
-                        .into_values()
-                        .find(|w| w.is_focused().unwrap_or(false));
-
-                    if let Some(window) = focused.or_else(|| app.get_webview_window("main")) {
-                        let _ = window.emit("menu:new_text", ());
-                    } else {
-                        let _ = app.emit("menu:new_text", ());
+                    if let Some(window) = pick_focused_or_main_window(app) {
+                        emit_webview_window_event(app, window.label(), "menu:new_text", ());
                     }
                 }
                 "new_json_analyzer" => {
                     // Send event to create a new JSON analyzer window (handled by frontend).
                     // 只发送给聚焦窗口（fallback 到 main），避免 app.emit 广播导致多窗口同时打开。
-                    let focused = app
-                        .webview_windows()
-                        .into_values()
-                        .find(|w| w.is_focused().unwrap_or(false));
-
-                    if let Some(window) = focused.or_else(|| app.get_webview_window("main")) {
-                        let _ = window.emit("menu:new_json_analyzer", ());
-                    } else {
-                        let _ = app.emit("menu:new_json_analyzer", ());
+                    if let Some(window) = pick_focused_or_main_window(app) {
+                        emit_webview_window_event(
+                            app,
+                            window.label(),
+                            "menu:new_json_analyzer",
+                            (),
+                        );
                     }
                 }
                 "open_file" => {
                     // Send the event only to the focused window (fall back to main).
-                    let focused = app
-                        .webview_windows()
-                        .into_values()
-                        .find(|w| w.is_focused().unwrap_or(false));
-
-                    if let Some(window) = focused.or_else(|| app.get_webview_window("main")) {
-                        let _ = window.emit("menu:open_file", ());
-                    } else {
-                        let _ = app.emit("menu:open_file", ());
+                    if let Some(window) = pick_focused_or_main_window(app) {
+                        emit_webview_window_event(app, window.label(), "menu:open_file", ());
                     }
                 }
                 "open_web_tab" => {
-                    let focused = app
-                        .webview_windows()
-                        .into_values()
-                        .find(|w| w.is_focused().unwrap_or(false));
-
-                    if let Some(window) = focused.or_else(|| app.get_webview_window("main")) {
-                        let _ = window.emit("menu:open_web_tab", ());
-                    } else {
-                        let _ = app.emit("menu:open_web_tab", ());
+                    if let Some(window) = pick_focused_or_main_window(app) {
+                        emit_webview_window_event(app, window.label(), "menu:open_web_tab", ());
                     }
                 }
                 "open_terminal_tab" => {
-                    let focused = app
-                        .webview_windows()
-                        .into_values()
-                        .find(|w| w.is_focused().unwrap_or(false));
-
-                    if let Some(window) = focused.or_else(|| app.get_webview_window("main")) {
-                        let _ = window.emit("menu:open_terminal_tab", ());
-                    } else {
-                        let _ = app.emit("menu:open_terminal_tab", ());
+                    if let Some(window) = pick_focused_or_main_window(app) {
+                        emit_webview_window_event(
+                            app,
+                            window.label(),
+                            "menu:open_terminal_tab",
+                            (),
+                        );
                     }
                 }
                 "open_devtools" => {
@@ -1129,6 +1138,9 @@ fn run_desktop() {
 	            // Window control
 	            close_invoking_window,
 	            hide_invoking_window,
+            get_window_layout_state,
+            upsert_window_layout_record,
+            remove_window_layout_record,
             record_window_interaction,
             clear_window_interaction,
             // MCP commands
@@ -1322,17 +1334,41 @@ fn run_desktop() {
 
             Ok(())
         })
-        // 点击主窗口 close(X) 时只隐藏到托盘，不真正退出/销毁资源；可快速恢复。
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+        // 窗口几何与关闭状态由 Rust 统一持久化，避免 macOS 上前端 close/exit 时序不稳定。
+        .on_window_event(|window, event| match event {
+            tauri::WindowEvent::Moved(_)
+            | tauri::WindowEvent::Resized(_)
+            | tauri::WindowEvent::ScaleFactorChanged { .. } => {
+                schedule_persist_window_layout_snapshot(window.app_handle().clone(), window.label().to_string(), 220);
+            }
+            tauri::WindowEvent::CloseRequested { api, .. } => {
+                let _ = tauri::async_runtime::block_on(persist_window_layout_snapshot_now(&window.app_handle(), window.label()));
                 if window.label() == "main" {
                     api.prevent_close();
                     let _ = window.hide();
                 }
             }
+            tauri::WindowEvent::Destroyed => {
+                schedule_remove_window_layout_record_if_still_closed(
+                    window.app_handle().clone(),
+                    window.label().to_string(),
+                    2_000,
+                );
+            }
+            _ => {}
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            match event {
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+                    let _ = tauri::async_runtime::block_on(persist_all_open_window_layouts_now(app));
+                    let _ = app.emit("app:closing", ());
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                }
+                _ => {}
+            }
+        });
 }
 
 #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -1398,8 +1434,14 @@ fn run_mobile() {
             app.manage(Arc::new(ConfigManager::with_path(config_path)));
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
+                let _ = app.emit("app:closing", ());
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+        });
 }
 
 #[cfg_attr(

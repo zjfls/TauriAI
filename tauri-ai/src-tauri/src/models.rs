@@ -2285,6 +2285,18 @@ pub struct CodeIntelligenceSettings {
     /// 是否启用 LSP completion（建议列表）。关闭后仍可保留 hover/定义跳转/诊断等其它能力，便于调试 AI Completion。
     #[serde(default = "default_true")]
     pub lsp_completion_enabled: bool,
+    /// 是否启用 LSP inlay hints（参数名/类型等行内提示）。
+    #[serde(default = "default_true")]
+    pub lsp_inlay_hints_enabled: bool,
+    /// 是否启用 LSP semantic highlighting（更细粒度的语义着色）。
+    #[serde(default = "default_true")]
+    pub lsp_semantic_highlight_enabled: bool,
+    /// 是否启用 LSP document highlight（当前符号同文档高亮）。
+    #[serde(default = "default_true")]
+    pub lsp_document_highlight_enabled: bool,
+    /// 是否启用 LSP signature help（参数提示浮层）。
+    #[serde(default = "default_true")]
+    pub lsp_signature_help_enabled: bool,
     /// 是否启用 Monaco 内置“词汇建议”（来自打开的文件内容，不依赖 LSP）。关闭后 Suggest 列表更“干净”，便于调试 AI Completion。
     #[serde(default = "default_true")]
     pub monaco_word_suggestions_enabled: bool,
@@ -2310,6 +2322,10 @@ impl Default for CodeIntelligenceSettings {
         Self {
             enabled: true,
             lsp_completion_enabled: true,
+            lsp_inlay_hints_enabled: true,
+            lsp_semantic_highlight_enabled: true,
+            lsp_document_highlight_enabled: true,
+            lsp_signature_help_enabled: true,
             monaco_word_suggestions_enabled: true,
             outline_split_view_enabled: false,
             lsp_servers: vec![

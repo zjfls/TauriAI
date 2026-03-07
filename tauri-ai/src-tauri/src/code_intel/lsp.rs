@@ -13,7 +13,11 @@ use tokio::sync::{oneshot, Mutex};
 
 use crate::models::Workstudio;
 
-use super::types::{LspEvent, LspEventPayload, LspLaunchConfig, LspServerStatus, LSP_EVENT_NAME};
+use super::types::{
+    LspCodeActionCapabilities, LspEvent, LspEventPayload, LspLaunchConfig, LspRenameCapabilities,
+    LspSemanticTokensCapabilities, LspSemanticTokensLegend, LspServerCapabilitiesSnapshot,
+    LspServerStatus, LspSignatureHelpCapabilities, LSP_EVENT_NAME,
+};
 
 // Windows: prevent console window flashing for LSP child processes.
 #[cfg(windows)]
@@ -637,11 +641,128 @@ struct LspServerState {
     started: bool,
     initialized: bool,
     last_error: Option<String>,
+    server_capabilities: Option<LspServerCapabilitiesSnapshot>,
 }
 
 #[derive(Debug, Default)]
 struct PendingRequests {
     by_id: HashMap<i64, oneshot::Sender<serde_json::Value>>,
+}
+
+fn capability_supported(value: Option<&serde_json::Value>) -> bool {
+    match value {
+        Some(serde_json::Value::Bool(flag)) => *flag,
+        Some(serde_json::Value::Object(_)) => true,
+        _ => false,
+    }
+}
+
+fn parse_string_array(value: Option<&serde_json::Value>) -> Vec<String> {
+    value
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn parse_lsp_server_capabilities(value: &serde_json::Value) -> LspServerCapabilitiesSnapshot {
+    let signature_help_provider = value.get("signatureHelpProvider").and_then(|raw| {
+        if !capability_supported(Some(raw)) {
+            return None;
+        }
+        Some(LspSignatureHelpCapabilities {
+            trigger_characters: parse_string_array(raw.get("triggerCharacters")),
+            retrigger_characters: parse_string_array(raw.get("retriggerCharacters")),
+        })
+    });
+
+    let semantic_tokens_provider = value.get("semanticTokensProvider").and_then(|raw| {
+        let Some(map) = raw.as_object() else {
+            return None;
+        };
+        let legend_value = map
+            .get("legend")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let full = match map.get("full") {
+            Some(serde_json::Value::Bool(flag)) => *flag,
+            Some(serde_json::Value::Object(_)) => true,
+            _ => false,
+        };
+        let delta = match map.get("full") {
+            Some(serde_json::Value::Object(config)) => config
+                .get("delta")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+            _ => false,
+        };
+        let range = match map.get("range") {
+            Some(serde_json::Value::Bool(flag)) => *flag,
+            Some(serde_json::Value::Object(_)) => true,
+            _ => false,
+        };
+        Some(LspSemanticTokensCapabilities {
+            full,
+            delta,
+            range,
+            legend: LspSemanticTokensLegend {
+                token_types: parse_string_array(legend_value.get("tokenTypes")),
+                token_modifiers: parse_string_array(legend_value.get("tokenModifiers")),
+            },
+        })
+    });
+
+    let code_action_provider = value.get("codeActionProvider").and_then(|raw| match raw {
+        serde_json::Value::Bool(false) | serde_json::Value::Null => None,
+        serde_json::Value::Bool(true) => Some(LspCodeActionCapabilities::default()),
+        serde_json::Value::Object(map) => Some(LspCodeActionCapabilities {
+            resolve_provider: map
+                .get("resolveProvider")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+            code_action_kinds: parse_string_array(map.get("codeActionKinds")),
+        }),
+        _ => None,
+    });
+
+    let rename_provider = value.get("renameProvider").and_then(|raw| match raw {
+        serde_json::Value::Bool(false) | serde_json::Value::Null => None,
+        serde_json::Value::Bool(true) => Some(LspRenameCapabilities::default()),
+        serde_json::Value::Object(map) => Some(LspRenameCapabilities {
+            prepare_provider: map
+                .get("prepareProvider")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+        }),
+        _ => None,
+    });
+
+    LspServerCapabilitiesSnapshot {
+        definition_provider: capability_supported(value.get("definitionProvider")),
+        type_definition_provider: capability_supported(value.get("typeDefinitionProvider")),
+        references_provider: capability_supported(value.get("referencesProvider")),
+        hover_provider: capability_supported(value.get("hoverProvider")),
+        completion_provider: capability_supported(value.get("completionProvider")),
+        document_symbol_provider: capability_supported(value.get("documentSymbolProvider")),
+        document_highlight_provider: capability_supported(value.get("documentHighlightProvider")),
+        inlay_hint_provider: capability_supported(value.get("inlayHintProvider")),
+        signature_help_provider,
+        semantic_tokens_provider,
+        code_action_provider,
+        rename_provider,
+    }
+}
+
+fn should_forward_server_request_as_notification(method: &str) -> bool {
+    matches!(
+        method,
+        "workspace/semanticTokens/refresh" | "workspace/inlayHint/refresh"
+    )
 }
 
 pub struct LspManager {
@@ -816,6 +937,7 @@ impl LspServer {
             command: Some(self.launch.command.clone()),
             args: Some(self.launch.args.clone()),
             last_error: st.last_error.clone(),
+            capabilities: st.server_capabilities.clone(),
         }
     }
 
@@ -992,7 +1114,9 @@ impl LspServer {
             st.child = Some(child);
             st.stdin = Some(stdin);
             st.started = true;
+            st.initialized = false;
             st.last_error = None;
+            st.server_capabilities = None;
         }
 
         // Background tasks
@@ -1059,6 +1183,7 @@ impl LspServer {
                     "definition": { "dynamicRegistration": false, "linkSupport": true },
                     "typeDefinition": { "dynamicRegistration": false, "linkSupport": true },
                     "references": { "dynamicRegistration": false },
+                    "documentHighlight": { "dynamicRegistration": false },
                     "hover": { "dynamicRegistration": false, "contentFormat": ["markdown", "plaintext"] },
                     "completion": {
                         "dynamicRegistration": false,
@@ -1067,9 +1192,57 @@ impl LspServer {
                             "documentationFormat": ["markdown", "plaintext"]
                         }
                     },
+                    "signatureHelp": {
+                        "dynamicRegistration": false,
+                        "signatureInformation": {
+                            "documentationFormat": ["markdown", "plaintext"],
+                            "parameterInformation": {
+                                "labelOffsetSupport": true
+                            }
+                        }
+                    },
                     "documentSymbol": {
                         "dynamicRegistration": false,
                         "hierarchicalDocumentSymbolSupport": true
+                    },
+                    "codeAction": {
+                        "dynamicRegistration": false,
+                        "isPreferredSupport": true,
+                        "disabledSupport": true,
+                        "dataSupport": true,
+                        "resolveSupport": {
+                            "properties": ["edit", "command"]
+                        }
+                    },
+                    "rename": {
+                        "dynamicRegistration": false,
+                        "prepareSupport": true
+                    },
+                    "inlayHint": {
+                        "dynamicRegistration": false,
+                        "resolveSupport": {
+                            "properties": ["tooltip", "textEdits", "label.location", "label.command"]
+                        }
+                    },
+                    "semanticTokens": {
+                        "dynamicRegistration": false,
+                        "requests": {
+                            "full": { "delta": true },
+                            "range": true
+                        },
+                        "tokenTypes": [
+                            "namespace", "type", "class", "enum", "interface", "struct", "typeParameter",
+                            "parameter", "variable", "property", "enumMember", "event", "function", "method",
+                            "macro", "keyword", "modifier", "comment", "string", "number", "regexp",
+                            "operator", "decorator"
+                        ],
+                        "tokenModifiers": [
+                            "declaration", "definition", "readonly", "static", "deprecated", "abstract",
+                            "async", "modification", "documentation", "defaultLibrary"
+                        ],
+                        "formats": ["relative"],
+                        "overlappingTokenSupport": false,
+                        "multilineTokenSupport": false
                     }
                 }
             },
@@ -1079,13 +1252,19 @@ impl LspServer {
         });
 
         // initialize -> initialized
-        if let Err(e) = self
+        let initialize_result = match self
             .request("initialize", init_params, Some(Duration::from_secs(30)))
             .await
         {
-            self.set_last_error(e.clone()).await;
-            return Err(e);
-        }
+            Ok(result) => result,
+            Err(e) => {
+                self.set_last_error(e.clone()).await;
+                return Err(e);
+            }
+        };
+        let server_capabilities = initialize_result
+            .get("capabilities")
+            .map(parse_lsp_server_capabilities);
         if let Err(e) = self.notify("initialized", json!({})).await {
             self.set_last_error(e.clone()).await;
             return Err(e);
@@ -1103,6 +1282,7 @@ impl LspServer {
             let mut st = self.state.lock().await;
             st.initialized = true;
             st.last_error = None;
+            st.server_capabilities = server_capabilities;
         }
 
         Ok(())
@@ -1173,6 +1353,7 @@ impl LspServer {
         st.started = false;
         st.initialized = false;
         st.last_error = None;
+        st.server_capabilities = None;
         Ok(())
     }
 
@@ -1244,6 +1425,7 @@ impl LspServer {
                         st.stdin = None;
                         st.started = false;
                         st.initialized = false;
+                        st.server_capabilities = None;
                         Some(s)
                     }
                     Ok(None) => None,
@@ -1284,6 +1466,12 @@ impl LspServer {
                 .get("params")
                 .cloned()
                 .unwrap_or(serde_json::Value::Null);
+            if should_forward_server_request_as_notification(&method) {
+                self.emit(LspEvent::Notification {
+                    method: method.clone(),
+                    params: params.clone(),
+                });
+            }
             match self.handle_server_request(&method, params).await {
                 Ok(result) => {
                     let _ = self

@@ -1,9 +1,10 @@
 import { listen } from '@tauri-apps/api/event';
+import { PhysicalPosition, PhysicalSize } from '@tauri-apps/api/dpi';
 import { WebviewWindow, getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { cursorPosition } from '@tauri-apps/api/window';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import type { ActiveView, RunMode } from '../types';
-import { upsertWindowRecord } from './windowLayout';
+import { getWindowRecord, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH, type WindowBounds, upsertWindowRecord } from './windowLayout';
 import { normalizeChatWindowTitle, normalizeWorkstudioWindowTitle } from './windowBranding';
 
 type WorkstudioOpenPayload = {
@@ -74,6 +75,27 @@ const pointInRect = (p: { x: number; y: number }, r: PhysicalRect) => {
   return p.x >= r.x && p.y >= r.y && p.x <= r.x + r.width && p.y <= r.y + r.height;
 };
 
+const resolveInitialWindowBounds = (
+  label: string,
+  window?: { x?: number; y?: number; width?: number; height?: number }
+): WindowBounds | null => {
+  if (
+    typeof window?.x === 'number' &&
+    typeof window?.y === 'number' &&
+    typeof window?.width === 'number' &&
+    typeof window?.height === 'number'
+  ) {
+    return {
+      x: Math.floor(window.x),
+      y: Math.floor(window.y),
+      width: Math.max(MIN_WINDOW_WIDTH, Math.floor(window.width)),
+      height: Math.max(MIN_WINDOW_HEIGHT, Math.floor(window.height)),
+    };
+  }
+
+  return getWindowRecord(label)?.bounds ?? null;
+};
+
 const isWorkstudioViewWindowLabel = (label: string): boolean => {
   const v = (label ?? '').trim();
   if (!v) return false;
@@ -84,6 +106,40 @@ const normalizeWindowTitleForView = (view: ActiveView, title: string): string =>
   if (view === 'workstudio') return normalizeWorkstudioWindowTitle(title);
   if (view === 'chat') return normalizeChatWindowTitle(title);
   return title;
+};
+
+const applyWindowBoundsBestEffort = async (win: WebviewWindow, bounds: WindowBounds | null) => {
+  if (!bounds) return;
+
+  try {
+    await win.setSize(new PhysicalSize(bounds.width, bounds.height));
+  } catch {
+    // ignore
+  }
+
+  try {
+    await win.setPosition(new PhysicalPosition(bounds.x, bounds.y));
+  } catch {
+    // ignore
+  }
+};
+
+const scheduleWindowBoundsRestoreAfterCreate = (win: WebviewWindow, bounds: WindowBounds | null) => {
+  if (!bounds) return;
+
+  const apply = () => {
+    void applyWindowBoundsBestEffort(win, bounds);
+  };
+
+  try {
+    win.once('tauri://created', () => {
+      apply();
+      window.setTimeout(apply, 80);
+      window.setTimeout(apply, 220);
+    });
+  } catch {
+    // ignore
+  }
 };
 
 const isOpenFileDebugEnabled = () => {
@@ -128,8 +184,8 @@ export const computePopoutWindowBoundsAtCursor = async (opts?: {
   fallbackHeight?: number;
   fallbackOffsetPx?: { x: number; y: number };
 }): Promise<{ x?: number; y?: number; width: number; height: number }> => {
-  const minWidth = Math.max(240, Math.floor(opts?.minWidth ?? 720));
-  const minHeight = Math.max(160, Math.floor(opts?.minHeight ?? 520));
+  const minWidth = Math.max(MIN_WINDOW_WIDTH, Math.floor(opts?.minWidth ?? 720));
+  const minHeight = Math.max(MIN_WINDOW_HEIGHT, Math.floor(opts?.minHeight ?? 468));
   const fallbackWidth = Math.max(minWidth, Math.floor(opts?.fallbackWidth ?? 900));
   const fallbackHeight = Math.max(minHeight, Math.floor(opts?.fallbackHeight ?? 700));
 
@@ -463,6 +519,7 @@ export const openViewWindow = (
 ) => {
   const normalizedTitle = normalizeWindowTitleForView(view, title);
   const label = opts?.label ?? `view-${view}-${Date.now()}`;
+  const initialBounds = resolveInitialWindowBounds(label, opts?.window);
   // 注意：在 Tauri production（asset protocol）下，`/?query` 可能不会稳定映射到 `index.html`，
   // 导致“新窗口白屏/无内容”。显式使用 `index.html` 更稳。
   const viewParams: ViewWindowParams = {
@@ -493,18 +550,7 @@ export const openViewWindow = (
       label,
       title: normalizedTitle,
       params: viewParams,
-      bounds:
-        typeof opts?.window?.x === 'number' &&
-        typeof opts?.window?.y === 'number' &&
-        typeof opts?.window?.width === 'number' &&
-        typeof opts?.window?.height === 'number'
-          ? {
-              x: Math.floor(opts.window.x),
-              y: Math.floor(opts.window.y),
-              width: Math.floor(opts.window.width),
-              height: Math.floor(opts.window.height),
-            }
-          : null,
+      bounds: initialBounds,
     });
   } catch {
     // ignore
@@ -514,18 +560,14 @@ export const openViewWindow = (
     title: normalizedTitle,
     url,
     focus: opts?.focus ?? true,
-    width: Math.max(240, Math.floor(opts?.window?.width ?? 900)),
-    height: Math.max(160, Math.floor(opts?.window?.height ?? 700)),
-    ...(typeof opts?.window?.x === 'number' && typeof opts?.window?.y === 'number'
-      ? { x: Math.floor(opts.window.x), y: Math.floor(opts.window.y) }
-      : {}),
+    width: Math.max(MIN_WINDOW_WIDTH, Math.floor(initialBounds?.width ?? 900)),
+    height: Math.max(MIN_WINDOW_HEIGHT, Math.floor(initialBounds?.height ?? 700)),
+    ...(initialBounds ? { x: Math.floor(initialBounds.x), y: Math.floor(initialBounds.y) } : {}),
   });
 
   // 诊断日志（默认开启）：窗口创建的真实结果只会通过事件反映出来（很多时候不会 throw）。
   try {
-    win.once('tauri://created', () => {
-      // no-op (used to be debug logging)
-    });
+    scheduleWindowBoundsRestoreAfterCreate(win, initialBounds);
     win.once('tauri://error', (e) => {
       console.error('[openViewWindow] tauri://error', { label, view, url, payload: (e as any)?.payload });
     });
@@ -561,12 +603,21 @@ export const openOrFocusViewWindow = async (
 ) => {
   const normalizedTitle = normalizeWindowTitleForView(view, title);
   const label = opts?.label ?? `view-${view}-${Date.now()}`;
+  const initialBounds = resolveInitialWindowBounds(label, opts?.window);
   if (opts?.label) {
     try {
       const existing = await WebviewWindow.getByLabel(label);
       if (existing) {
         if (view === 'workstudio' || view === 'chat') {
           void existing.setTitle(normalizedTitle).catch(() => {});
+        }
+        const hasExplicitWindowBounds =
+          typeof opts?.window?.x === 'number' &&
+          typeof opts?.window?.y === 'number' &&
+          typeof opts?.window?.width === 'number' &&
+          typeof opts?.window?.height === 'number';
+        if (hasExplicitWindowBounds) {
+          await applyWindowBoundsBestEffort(existing, initialBounds);
         }
         if (opts?.focus !== false) {
           await existing.setFocus();
@@ -607,18 +658,7 @@ export const openOrFocusViewWindow = async (
       label,
       title: normalizedTitle,
       params: viewParams,
-      bounds:
-        typeof opts?.window?.x === 'number' &&
-        typeof opts?.window?.y === 'number' &&
-        typeof opts?.window?.width === 'number' &&
-        typeof opts?.window?.height === 'number'
-          ? {
-              x: Math.floor(opts.window.x),
-              y: Math.floor(opts.window.y),
-              width: Math.floor(opts.window.width),
-              height: Math.floor(opts.window.height),
-            }
-          : null,
+      bounds: initialBounds,
     });
   } catch {
     // ignore
@@ -628,18 +668,14 @@ export const openOrFocusViewWindow = async (
     title: normalizedTitle,
     url,
     focus: opts?.focus ?? true,
-    width: Math.max(240, Math.floor(opts?.window?.width ?? 900)),
-    height: Math.max(160, Math.floor(opts?.window?.height ?? 700)),
-    ...(typeof opts?.window?.x === 'number' && typeof opts?.window?.y === 'number'
-      ? { x: Math.floor(opts.window.x), y: Math.floor(opts.window.y) }
-      : {}),
+    width: Math.max(MIN_WINDOW_WIDTH, Math.floor(initialBounds?.width ?? 900)),
+    height: Math.max(MIN_WINDOW_HEIGHT, Math.floor(initialBounds?.height ?? 700)),
+    ...(initialBounds ? { x: Math.floor(initialBounds.x), y: Math.floor(initialBounds.y) } : {}),
   });
 
   // 诊断日志（默认开启）
   try {
-    win.once('tauri://created', () => {
-      // no-op (used to be debug logging)
-    });
+    scheduleWindowBoundsRestoreAfterCreate(win, initialBounds);
     win.once('tauri://error', (e) => {
       console.error('[openOrFocusViewWindow] tauri://error', { label, view, url, payload: (e as any)?.payload });
     });

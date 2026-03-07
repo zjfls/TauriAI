@@ -37,6 +37,8 @@ mod tools;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod window_control;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
+mod window_layout_state;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod workstudio;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod workstudio_fs;
@@ -119,6 +121,13 @@ pub use terminal::{
 pub use tools::{close_pty_session, list_pty_sessions};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use window_control::{close_invoking_window, hide_invoking_window};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub use window_layout_state::{
+    get_window_layout_state, persist_all_open_window_layouts_now,
+    persist_window_layout_snapshot_now, remove_window_layout_record,
+    schedule_persist_window_layout_snapshot, schedule_remove_window_layout_record_if_still_closed,
+    upsert_window_layout_record,
+};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use workstudio::{
     add_workstudio_folder, create_workstudio, ensure_workstudio_for_conversation, get_workstudio,

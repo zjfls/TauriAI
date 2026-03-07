@@ -50,6 +50,82 @@ pub enum LspEvent {
     },
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct LspSignatureHelpCapabilities {
+    #[serde(default)]
+    pub trigger_characters: Vec<String>,
+    #[serde(default)]
+    pub retrigger_characters: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct LspSemanticTokensLegend {
+    #[serde(default)]
+    pub token_types: Vec<String>,
+    #[serde(default)]
+    pub token_modifiers: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct LspSemanticTokensCapabilities {
+    #[serde(default)]
+    pub full: bool,
+    #[serde(default)]
+    pub delta: bool,
+    #[serde(default)]
+    pub range: bool,
+    #[serde(default)]
+    pub legend: LspSemanticTokensLegend,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct LspCodeActionCapabilities {
+    #[serde(default)]
+    pub resolve_provider: bool,
+    #[serde(default)]
+    pub code_action_kinds: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct LspRenameCapabilities {
+    #[serde(default)]
+    pub prepare_provider: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct LspServerCapabilitiesSnapshot {
+    #[serde(default)]
+    pub definition_provider: bool,
+    #[serde(default)]
+    pub type_definition_provider: bool,
+    #[serde(default)]
+    pub references_provider: bool,
+    #[serde(default)]
+    pub hover_provider: bool,
+    #[serde(default)]
+    pub completion_provider: bool,
+    #[serde(default)]
+    pub document_symbol_provider: bool,
+    #[serde(default)]
+    pub document_highlight_provider: bool,
+    #[serde(default)]
+    pub inlay_hint_provider: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature_help_provider: Option<LspSignatureHelpCapabilities>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_tokens_provider: Option<LspSemanticTokensCapabilities>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_action_provider: Option<LspCodeActionCapabilities>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rename_provider: Option<LspRenameCapabilities>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LspServerStatus {
@@ -63,4 +139,6 @@ pub struct LspServerStatus {
     pub args: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<LspServerCapabilitiesSnapshot>,
 }

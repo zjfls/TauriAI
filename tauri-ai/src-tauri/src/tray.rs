@@ -8,6 +8,7 @@ use tauri::{
 };
 use tokio::sync::Mutex as TokioMutex;
 
+use crate::commands::persist_all_open_window_layouts_now;
 use crate::config::ConfigManager;
 use crate::storage::Database;
 
@@ -145,7 +146,8 @@ fn save_state_and_exit<R: Runtime>(app: &AppHandle<R>) {
         let _ = database;
     }
 
-    // 退出应用
+    // 退出应用前由 Rust 统一落盘当前所有窗口状态，避免 macOS 上前端 close/exit 时序不稳定。
+    let _ = tauri::async_runtime::block_on(persist_all_open_window_layouts_now(app));
     let _ = app.emit("app:closing", ());
     std::thread::sleep(std::time::Duration::from_millis(250));
     app.exit(0);

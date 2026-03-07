@@ -543,7 +543,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
         const bounds = await computePopoutWindowBoundsAtCursor({
           clientPoint: clientPoint ?? null,
           minWidth: 900,
-          minHeight: 700,
+          minHeight: 630,
         });
         openViewWindow(
           'chat',
@@ -567,7 +567,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
         const bounds = await computePopoutWindowBoundsAtCursor({
           clientPoint: clientPoint ?? null,
           minWidth: 900,
-          minHeight: 700,
+          minHeight: 630,
         });
         const item = { kind: 'document' as const, title: doc.title, documentPath: doc.path };
         const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -590,7 +590,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
         const bounds = await computePopoutWindowBoundsAtCursor({
           clientPoint: clientPoint ?? null,
           minWidth: 900,
-          minHeight: 700,
+          minHeight: 630,
         });
         const item = { kind: 'web' as const, title: tab.title, webUrl: tab.url };
         const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -613,7 +613,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
         const bounds = await computePopoutWindowBoundsAtCursor({
           clientPoint: clientPoint ?? null,
           minWidth: 900,
-          minHeight: 700,
+          minHeight: 630,
         });
         const item = { kind: 'terminal' as const, title: tab.title, terminalWorkdir: tab.workdir ?? undefined };
         const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;

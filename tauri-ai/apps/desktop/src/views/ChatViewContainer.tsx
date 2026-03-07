@@ -660,7 +660,7 @@ const ChatViewContainerInner: React.FC = () => {
             const bounds = await computePopoutWindowBoundsAtCursor({
               clientPoint: clientPoint ?? null,
               minWidth: 900,
-              minHeight: 700,
+              minHeight: 630,
             });
             const { win, isExisting } = await openOrFocusConversationChatWindow(session.conversationId!, session.title, {
               runMode: session.runMode,
@@ -715,7 +715,7 @@ const ChatViewContainerInner: React.FC = () => {
             const bounds = await computePopoutWindowBoundsAtCursor({
               clientPoint: clientPoint ?? null,
               minWidth: 900,
-              minHeight: 700,
+              minHeight: 630,
             });
             const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
             const win = openViewWindow('chat', doc.title, { label, noDefaultSession: true, window: bounds });
@@ -752,7 +752,7 @@ const ChatViewContainerInner: React.FC = () => {
             const bounds = await computePopoutWindowBoundsAtCursor({
               clientPoint: clientPoint ?? null,
               minWidth: 900,
-              minHeight: 700,
+              minHeight: 630,
             });
             const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
             const win = openViewWindow('chat', tab.title || '网页', { label, noDefaultSession: true, window: bounds });
@@ -788,7 +788,7 @@ const ChatViewContainerInner: React.FC = () => {
           const bounds = await computePopoutWindowBoundsAtCursor({
             clientPoint: clientPoint ?? null,
             minWidth: 900,
-            minHeight: 700,
+            minHeight: 630,
           });
           const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
           const win = openViewWindow('chat', tab.title || '终端', { label, noDefaultSession: true, window: bounds });
