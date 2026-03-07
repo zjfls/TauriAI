@@ -14,8 +14,10 @@ use crate::ai_client::get_client;
 use crate::code_intel::ast::{AstDocumentSymbolsArgs, AstSymbol};
 use crate::code_intel::index_manager::{
     CodeIndexManager, CodeIndexRequestDocumentSymbolsArgs, CodeIndexRequestDocumentSymbolsResult,
-    CodeIndexStartWorkspaceScanArgs, CodeIndexStatus, CodeIndexSummary,
+    CodeIndexSearchWorkspaceSymbolsArgs, CodeIndexStartWorkspaceScanArgs, CodeIndexStatus,
+    CodeIndexSummary,
 };
+use crate::code_intel::index_types::CodeIndexWorkspaceSymbolSearchResult;
 use crate::code_intel::lsp::{resolve_lsp_spawn_program, LspManager};
 use crate::code_intel::types::{LspLaunchConfig, LspServerStatus};
 use crate::config::ConfigManager;
@@ -190,6 +192,14 @@ pub async fn code_index_start_workspace_scan(
     index: tauri::State<'_, Arc<CodeIndexManager>>,
 ) -> Result<(), String> {
     index.start_workspace_scan(args).await
+}
+
+#[tauri::command]
+pub async fn code_index_search_workspace_symbols(
+    args: CodeIndexSearchWorkspaceSymbolsArgs,
+    index: tauri::State<'_, Arc<CodeIndexManager>>,
+) -> Result<Vec<CodeIndexWorkspaceSymbolSearchResult>, String> {
+    index.search_workspace_symbols(args).await
 }
 
 #[tauri::command]

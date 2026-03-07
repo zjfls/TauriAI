@@ -36,6 +36,7 @@ import {
   ListTree,
   MessageSquare,
   RefreshCw,
+  Search,
   SlidersHorizontal,
   X,
 } from 'lucide-react';
@@ -62,6 +63,7 @@ import { SHORTCUT_ACTIONS, detectShortcutPlatform, normalizeKeybindingString } f
 import {
   astDocumentSymbols,
   codeIndexRequestDocumentSymbols,
+  codeIndexSearchWorkspaceSymbols,
   codeIndexSummary,
   codeIndexStartWorkspaceScan,
 	  deleteWorkstudioFolderAnalysis,
@@ -102,6 +104,15 @@ import { attachMonacoAiCompletionBridge } from '../../utils/monacoAiCompletionBr
 import { showGlobalError } from '../../utils/errorUtils';
 import { TerminalSurface, type TerminalSurfaceHandle } from '../Terminal/TerminalSurface';
 import { DeferredMarkdown } from '../Chat/DeferredMarkdown';
+import { SymbolSearchDialog } from './SymbolSearchDialog';
+import {
+  type SymbolSearchContext,
+  type SymbolSearchItem,
+  compareSymbolItemsByPosition,
+  filterOutlineSymbolTree,
+  flattenOutlineSymbolNodes,
+  rankSymbolSearchItems,
+} from './symbolSearch';
 import { useWorkstudioFsSync } from './useWorkstudioFsSync';
 
 type DirEntry = {
@@ -475,6 +486,13 @@ const basename = (p: string) => {
   const normalized = p.replace(/\\/g, '/');
   const segments = normalized.split('/').filter(Boolean);
   return segments.length === 0 ? p : segments[segments.length - 1];
+};
+
+const dirname = (p: string) => {
+  const normalized = p.replace(/\\/g, '/').replace(/\/+$/, '');
+  const index = normalized.lastIndexOf('/');
+  if (index <= 0) return '';
+  return normalized.slice(0, index);
 };
 
 const splitFsPathForBreadcrumb = (absPathRaw: string, rootsRaw: string[]): string[] => {
@@ -1531,6 +1549,9 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const openingPathsRef = useRef<Set<string>>(new Set());
   const externalApplyPathsRef = useRef<Set<string>>(new Set());
   const filePaletteInputRef = useRef<HTMLInputElement | null>(null);
+  const fileSymbolPaletteInputRef = useRef<HTMLInputElement | null>(null);
+  const workspaceSymbolPaletteInputRef = useRef<HTMLInputElement | null>(null);
+  const outlineSearchInputRef = useRef<HTMLInputElement | null>(null);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const terminalSurfaceRef = useRef<TerminalSurfaceHandle | null>(null);
   const [inlineChatComposer, setInlineChatComposer] = useState<{
@@ -1713,6 +1734,24 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         : keyboardShortcuts?.windows?.['workstudio.fileSearch'];
     const raw = userRaw ?? (shortcutPlatform === 'mac' ? def?.defaultMac : def?.defaultWindows) ?? (shortcutPlatform === 'mac' ? 'Cmd+P' : 'Ctrl+P');
     return normalizeKeybindingString(String(raw || ''), shortcutPlatform) ?? (shortcutPlatform === 'mac' ? 'Cmd+P' : 'Ctrl+P');
+  }, [keyboardShortcuts, shortcutPlatform]);
+  const fileSymbolSearchShortcutLabel = useMemo(() => {
+    const def = SHORTCUT_ACTIONS.find((a) => a.id === 'workstudio.fileSymbolSearch');
+    const userRaw =
+      shortcutPlatform === 'mac'
+        ? keyboardShortcuts?.mac?.['workstudio.fileSymbolSearch']
+        : keyboardShortcuts?.windows?.['workstudio.fileSymbolSearch'];
+    const raw = userRaw ?? (shortcutPlatform === 'mac' ? def?.defaultMac : def?.defaultWindows) ?? (shortcutPlatform === 'mac' ? 'Cmd+Shift+O' : 'Ctrl+Shift+O');
+    return normalizeKeybindingString(String(raw || ''), shortcutPlatform) ?? (shortcutPlatform === 'mac' ? 'Cmd+Shift+O' : 'Ctrl+Shift+O');
+  }, [keyboardShortcuts, shortcutPlatform]);
+  const workspaceSymbolSearchShortcutLabel = useMemo(() => {
+    const def = SHORTCUT_ACTIONS.find((a) => a.id === 'workstudio.workspaceSymbolSearch');
+    const userRaw =
+      shortcutPlatform === 'mac'
+        ? keyboardShortcuts?.mac?.['workstudio.workspaceSymbolSearch']
+        : keyboardShortcuts?.windows?.['workstudio.workspaceSymbolSearch'];
+    const raw = userRaw ?? (shortcutPlatform === 'mac' ? def?.defaultMac : def?.defaultWindows) ?? (shortcutPlatform === 'mac' ? 'Cmd+Shift+T' : 'Ctrl+Shift+T');
+    return normalizeKeybindingString(String(raw || ''), shortcutPlatform) ?? (shortcutPlatform === 'mac' ? 'Cmd+Shift+T' : 'Ctrl+Shift+T');
   }, [keyboardShortcuts, shortcutPlatform]);
   const navigateBackShortcutLabel = useMemo(() => {
     const def = SHORTCUT_ACTIONS.find((a) => a.id === 'workstudio.navigateBack');
@@ -1926,7 +1965,15 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   >(null);
   const outlineMenuRef = useRef<HTMLDivElement | null>(null);
   const [breadcrumbSymbolMenu, setBreadcrumbSymbolMenu] = useState<BreadcrumbSymbolMenuState | null>(null);
+  const [breadcrumbSymbolMenuQuery, setBreadcrumbSymbolMenuQuery] = useState('');
+  const [breadcrumbSymbolMenuIndex, setBreadcrumbSymbolMenuIndex] = useState(0);
   const breadcrumbSymbolMenuRef = useRef<HTMLDivElement | null>(null);
+  const breadcrumbSymbolMenuInputRef = useRef<HTMLInputElement | null>(null);
+  const closeBreadcrumbSymbolMenu = useCallback(() => {
+    setBreadcrumbSymbolMenu(null);
+    setBreadcrumbSymbolMenuQuery('');
+    setBreadcrumbSymbolMenuIndex(0);
+  }, []);
 
   useLayoutEffect(() => {
     if (!outlineMenu?.visible) return;
@@ -3260,6 +3307,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const [outlineAnalyzeAllPanelOpen, setOutlineAnalyzeAllPanelOpen] = useState(false);
   const [outlineAnalyzeAllExcludeVariables, setOutlineAnalyzeAllExcludeVariables] = useState(true);
   const [workstudioAiSettingsOpen, setWorkstudioAiSettingsOpen] = useState(false);
+  const [outlineSearchQuery, setOutlineSearchQuery] = useState('');
 
 
 
@@ -3406,6 +3454,15 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const [filePaletteResults, setFilePaletteResults] = useState<string[]>([]);
   const [filePaletteIndex, setFilePaletteIndex] = useState(0);
   const [filePaletteError, setFilePaletteError] = useState<string | null>(null);
+  const [fileSymbolPaletteOpen, setFileSymbolPaletteOpen] = useState(false);
+  const [fileSymbolPaletteQuery, setFileSymbolPaletteQuery] = useState('');
+  const [fileSymbolPaletteIndex, setFileSymbolPaletteIndex] = useState(0);
+  const [workspaceSymbolPaletteOpen, setWorkspaceSymbolPaletteOpen] = useState(false);
+  const [workspaceSymbolPaletteQuery, setWorkspaceSymbolPaletteQuery] = useState('');
+  const [workspaceSymbolPaletteResults, setWorkspaceSymbolPaletteResults] = useState<SymbolSearchItem[]>([]);
+  const [workspaceSymbolPaletteIndex, setWorkspaceSymbolPaletteIndex] = useState(0);
+  const [workspaceSymbolPaletteLoading, setWorkspaceSymbolPaletteLoading] = useState(false);
+  const [workspaceSymbolPaletteError, setWorkspaceSymbolPaletteError] = useState<string | null>(null);
 
   const saveStateTimerRef = useRef<number | null>(null);
   const paneRowRef = useRef<HTMLDivElement | null>(null);
@@ -3486,6 +3543,53 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     [activeTextFileInFocusedPane]
   );
 
+  const symbolSearchContext = useMemo<SymbolSearchContext>(() => ({
+    activeFilePath: activeFilePathInFocusedPane,
+    activeDirPath: activeFilePathInFocusedPane ? dirname(activeFilePathInFocusedPane) : null,
+    openFilePaths: openFiles.map((file) => normalizeFsPath(file.path)),
+  }), [activeFilePathInFocusedPane, openFiles]);
+  const currentFileSymbolItems = useMemo(() => {
+    const filePath = normalizeFsPath(activeTextFileInFocusedPane?.path ?? '');
+    if (!filePath || outlineItems.length === 0) return [];
+    return flattenOutlineSymbolNodes(outlineItems, filePath);
+  }, [activeTextFileInFocusedPane?.path, outlineItems]);
+  const fileSymbolPaletteResults = useMemo(() => {
+    const query = fileSymbolPaletteQuery.trim();
+    if (!query) return [...currentFileSymbolItems].sort(compareSymbolItemsByPosition);
+    return rankSymbolSearchItems(currentFileSymbolItems, query, symbolSearchContext);
+  }, [currentFileSymbolItems, fileSymbolPaletteQuery, symbolSearchContext]);
+  const breadcrumbSymbolMenuResults = useMemo(() => {
+    if (!breadcrumbSymbolMenu) return [] as OutlineItem[];
+    const query = breadcrumbSymbolMenuQuery.trim();
+    if (!query) return breadcrumbSymbolMenu.items;
+
+    const filePath = normalizeFsPath(
+      activeTextFileInFocusedPane?.path ?? activeFilePathInFocusedPane ?? '',
+    );
+    const searchItems: SymbolSearchItem[] = breadcrumbSymbolMenu.items.map((item) => ({
+      id: `breadcrumb:${filePath || 'current'}:${item.key}`,
+      name: item.name,
+      kind: item.kind,
+      detail: item.detail,
+      containerName: breadcrumbSymbolMenu.title,
+      filePath,
+      selectionLine: item.selectionLine,
+      selectionColumn: item.selectionColumn,
+      range: item.range,
+      outlineKey: item.key,
+    }));
+    const itemByKey = new Map(breadcrumbSymbolMenu.items.map((item) => [item.key, item]));
+    return rankSymbolSearchItems(searchItems, query, symbolSearchContext)
+      .map((item) => itemByKey.get(item.outlineKey ?? ''))
+      .filter((item): item is OutlineItem => Boolean(item));
+  }, [
+    activeFilePathInFocusedPane,
+    activeTextFileInFocusedPane?.path,
+    breadcrumbSymbolMenu,
+    breadcrumbSymbolMenuQuery,
+    symbolSearchContext,
+  ]);
+
   const outlineItemCount = useMemo(() => countOutlineItems(outlineItems), [outlineItems]);
   const outlineCollapsibleKeyCount = useMemo(() => collectOutlineCollapsibleKeys(outlineItems).length, [outlineItems]);
   const outlineSourceLabel = outlineSource === 'lsp' ? 'LSP' : outlineSource === 'ast' ? 'AST' : '';
@@ -3519,6 +3623,17 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     [outlineSortMode]
   );
   const outlineItemsForRender = useMemo(() => sortOutlineItemsForMode(outlineItems), [outlineItems, sortOutlineItemsForMode]);
+  const outlineSearchFilterResult = useMemo(() => {
+    const query = outlineSearchQuery.trim();
+    const filePath = normalizeFsPath(activeTextFileInFocusedPane?.path ?? '');
+    if (!query || !filePath) {
+      return { items: outlineItemsForRender, matchedKeys: new Set<string>(), matchCount: 0 };
+    }
+    return filterOutlineSymbolTree(outlineItemsForRender, filePath, query, symbolSearchContext);
+  }, [activeTextFileInFocusedPane?.path, outlineItemsForRender, outlineSearchQuery, symbolSearchContext]);
+  const outlineItemsForDisplay = outlineSearchQuery.trim() ? outlineSearchFilterResult.items : outlineItemsForRender;
+  const outlineSearchMatchedKeys = outlineSearchFilterResult.matchedKeys;
+  const outlineSearchMatchCount = outlineSearchFilterResult.matchCount;
   const outlineAnalyzeAllTargets = useMemo(() => {
     if (outlineItems.length === 0) return [];
     const flat = flattenOutlineItems(outlineItems);
@@ -3777,14 +3892,20 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     setOutlineSource('none');
     setOutlineError(null);
     setOutlineLoading(true);
+    setOutlineSearchQuery('');
   }, [activeTextFileInFocusedPane?.id]);
 
   useEffect(() => {
     if (outlineOpen) return;
     setOutlineToolsMenuOpen(false);
     setOutlineAnalyzeAllPanelOpen(false);
-    setBreadcrumbSymbolMenu(null);
-  }, [outlineOpen]);
+    closeBreadcrumbSymbolMenu();
+  }, [closeBreadcrumbSymbolMenu, outlineOpen]);
+
+  useEffect(() => {
+    if (!breadcrumbSymbolMenu) return;
+    setBreadcrumbSymbolMenuIndex((prev) => Math.min(prev, Math.max(0, breadcrumbSymbolMenuResults.length - 1)));
+  }, [breadcrumbSymbolMenu, breadcrumbSymbolMenuResults.length]);
 
   // 背景扫描（低优先级）：
   // - 只在用户打开 Outline 时启动一次（每个 workstudio 一次）
@@ -5206,10 +5327,14 @@ type OpenFromLinkErrorInfo = {
         selectedKey: activeBreadcrumbSymbolPath[0]?.key ?? outlineActiveKey,
       });
       if (!nextState) return;
+      const initialIndex = Math.max(0, nextState.items.findIndex((candidate) => candidate.key === nextState.selectedKey));
       setOutlineMenu(null);
       setOutlineToolsMenuOpen(false);
       setOutlineAnalyzeAllPanelOpen(false);
+      setBreadcrumbSymbolMenuQuery('');
+      setBreadcrumbSymbolMenuIndex(initialIndex);
       setBreadcrumbSymbolMenu(nextState);
+      window.setTimeout(() => breadcrumbSymbolMenuInputRef.current?.focus(), 0);
     },
     [
       activeBreadcrumbSymbolPath,
@@ -5242,17 +5367,21 @@ type OpenFromLinkErrorInfo = {
         selectedKey: showingChildren ? activeChild?.key ?? null : item.key,
       });
       if (!nextState) return;
+      const initialIndex = Math.max(0, nextState.items.findIndex((candidate) => candidate.key === nextState.selectedKey));
       setOutlineMenu(null);
       setOutlineToolsMenuOpen(false);
       setOutlineAnalyzeAllPanelOpen(false);
+      setBreadcrumbSymbolMenuQuery('');
+      setBreadcrumbSymbolMenuIndex(initialIndex);
       setBreadcrumbSymbolMenu(nextState);
+      window.setTimeout(() => breadcrumbSymbolMenuInputRef.current?.focus(), 0);
     },
     [activeBreadcrumbSymbolPath, buildBreadcrumbSymbolMenuState, outlineItems, sortOutlineItemsForMode]
   );
 
   useEffect(() => {
-    setBreadcrumbSymbolMenu(null);
-  }, [activeOutlineFilePath, outlineItems]);
+    closeBreadcrumbSymbolMenu();
+  }, [activeOutlineFilePath, closeBreadcrumbSymbolMenu, outlineItems]);
 
   const makeSymbolAnalysisCacheKey = useCallback(
     (filePathRaw: string, symbolKey: string) => {
@@ -7762,7 +7891,9 @@ type OpenFromLinkErrorInfo = {
 			        typeof document !== 'undefined' && Boolean(document.documentElement?.classList?.contains('dark'));
 		      const healthColor = healthLevel ? healthLevelToColor(healthLevel, isDark) : null;
 		      const hasChildren = item.children.length > 0;
-		      const collapsed = hasChildren && outlineCollapsedKeys.has(item.key);
+		      const searchActive = Boolean(outlineSearchQuery.trim());
+		      const directSearchMatch = searchActive && outlineSearchMatchedKeys.has(item.key);
+		      const collapsed = !searchActive && hasChildren && outlineCollapsedKeys.has(item.key);
 			      const title = (() => {
 			        const base = `${item.name} · ${item.kind} · ${item.selectionLine}:${item.selectionColumn}`;
 			        if (!hasAnalysis) return base;
@@ -7781,9 +7912,13 @@ type OpenFromLinkErrorInfo = {
             {hasChildren ? (
               <button
                 type="button"
-                className="rounded p-0.5 text-gray-500 hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
-                title={collapsed ? '展开' : '折叠'}
-                onClick={() => toggleOutlineCollapsed(item)}
+                className="rounded p-0.5 text-gray-500 hover:bg-gray-100 hover:text-gray-700 disabled:cursor-default disabled:hover:bg-transparent dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200 dark:disabled:hover:bg-transparent"
+                title={searchActive ? '搜索结果默认展开' : collapsed ? '展开' : '折叠'}
+                onClick={() => {
+                  if (searchActive) return;
+                  toggleOutlineCollapsed(item);
+                }}
+                disabled={searchActive}
               >
                 {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
               </button>
@@ -7797,7 +7932,11 @@ type OpenFromLinkErrorInfo = {
 		                'flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1 text-left text-xs',
 		                active
 		                  ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200'
-		                  : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800',
+		                  : directSearchMatch
+		                    ? 'bg-amber-50 text-amber-800 hover:bg-amber-100 dark:bg-amber-900/20 dark:text-amber-100 dark:hover:bg-amber-900/30'
+		                    : searchActive
+		                      ? 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800'
+		                      : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800',
 	              ].join(' ')}
 	              title={title}
 	              onClick={() => jumpToOutlineItem(item)}
@@ -7807,6 +7946,7 @@ type OpenFromLinkErrorInfo = {
 	                className={[
 	                  'min-w-0 flex-1 truncate font-medium',
 	                  hasAnalysis && !healthLevel && !active ? 'text-emerald-700 dark:text-emerald-300' : '',
+	                  searchActive && !directSearchMatch ? 'opacity-80' : '',
 	                ].join(' ')}
 	                style={
 	                  hasAnalysis && healthColor
@@ -10137,6 +10277,58 @@ type OpenFromLinkErrorInfo = {
     setEditorFontSizeFromUser(DEFAULT_EDITOR_FONT_SIZE);
   }, [setEditorFontSizeFromUser]);
 
+  const closeFilePalette = useCallback(() => {
+    setFilePaletteOpen(false);
+    setFilePaletteQuery('');
+    setFilePaletteResults([]);
+    setFilePaletteIndex(0);
+    setFilePaletteError(null);
+  }, []);
+
+  const closeFileSymbolPalette = useCallback(() => {
+    setFileSymbolPaletteOpen(false);
+    setFileSymbolPaletteQuery('');
+    setFileSymbolPaletteIndex(0);
+  }, []);
+
+  const closeWorkspaceSymbolPalette = useCallback(() => {
+    setWorkspaceSymbolPaletteOpen(false);
+    setWorkspaceSymbolPaletteQuery('');
+    setWorkspaceSymbolPaletteResults([]);
+    setWorkspaceSymbolPaletteIndex(0);
+    setWorkspaceSymbolPaletteLoading(false);
+    setWorkspaceSymbolPaletteError(null);
+  }, []);
+
+  const openFileSearchPalette = useCallback(() => {
+    closeFileSymbolPalette();
+    closeWorkspaceSymbolPalette();
+    setFilePaletteOpen(true);
+    window.setTimeout(() => filePaletteInputRef.current?.focus(), 0);
+  }, [closeFileSymbolPalette, closeWorkspaceSymbolPalette]);
+
+  const openFileSymbolPalette = useCallback(() => {
+    if (!activeTextFileInFocusedPane) {
+      showNavToast('当前没有可搜索符号的文本文件');
+      return;
+    }
+    closeFilePalette();
+    closeWorkspaceSymbolPalette();
+    setFileSymbolPaletteOpen(true);
+    window.setTimeout(() => fileSymbolPaletteInputRef.current?.focus(), 0);
+  }, [activeTextFileInFocusedPane, closeFilePalette, closeWorkspaceSymbolPalette, showNavToast]);
+
+  const openWorkspaceSymbolPalette = useCallback(() => {
+    closeFilePalette();
+    closeFileSymbolPalette();
+    setWorkspaceSymbolPaletteOpen(true);
+    setWorkspaceSymbolPaletteError(null);
+    window.setTimeout(() => workspaceSymbolPaletteInputRef.current?.focus(), 0);
+    if (ws?.id) {
+      void codeIndexStartWorkspaceScan({ workstudioId: ws.id, priority: CODE_INDEX_PRIORITY_BACKGROUND }).catch(() => {});
+    }
+  }, [closeFilePalette, closeFileSymbolPalette, ws?.id]);
+
   const onEditorWheelCapture = useCallback(
     (e: React.WheelEvent) => {
       // Ctrl/Cmd + Wheel: zoom editor font size (like VS Code / browsers).
@@ -10160,8 +10352,15 @@ type OpenFromLinkErrorInfo = {
         return;
       }
       if (action === 'workstudio.fileSearch') {
-        setFilePaletteOpen(true);
-        window.setTimeout(() => filePaletteInputRef.current?.focus(), 0);
+        openFileSearchPalette();
+        return;
+      }
+      if (action === 'workstudio.fileSymbolSearch') {
+        openFileSymbolPalette();
+        return;
+      }
+      if (action === 'workstudio.workspaceSymbolSearch') {
+        openWorkspaceSymbolPalette();
         return;
       }
       if (action === 'workstudio.triggerSuggest') {
@@ -10213,6 +10412,9 @@ type OpenFromLinkErrorInfo = {
     isStandaloneWorkstudioWindow,
     navigateBack,
     navigateForward,
+    openFileSearchPalette,
+    openFileSymbolPalette,
+    openWorkspaceSymbolPalette,
     peekDefinition,
     resetEditorFont,
     returnToMainWindow,
@@ -10249,21 +10451,101 @@ type OpenFromLinkErrorInfo = {
     };
   }, [filePaletteOpen]);
 
-  // Esc: close palette (local behavior)
+  useEffect(() => {
+    if (!fileSymbolPaletteOpen) return;
+    let disposed = false;
+    let attempts = 0;
+    const tryFocus = () => {
+      if (disposed) return;
+      attempts += 1;
+      const el = fileSymbolPaletteInputRef.current;
+      if (el) {
+        try {
+          el.focus();
+          el.select();
+        } catch {
+          // ignore
+        }
+        return;
+      }
+      if (attempts < 10) window.requestAnimationFrame(tryFocus);
+    };
+    window.requestAnimationFrame(tryFocus);
+    return () => {
+      disposed = true;
+    };
+  }, [fileSymbolPaletteOpen]);
+
+  useEffect(() => {
+    if (!workspaceSymbolPaletteOpen) return;
+    let disposed = false;
+    let attempts = 0;
+    const tryFocus = () => {
+      if (disposed) return;
+      attempts += 1;
+      const el = workspaceSymbolPaletteInputRef.current;
+      if (el) {
+        try {
+          el.focus();
+          el.select();
+        } catch {
+          // ignore
+        }
+        return;
+      }
+      if (attempts < 10) window.requestAnimationFrame(tryFocus);
+    };
+    window.requestAnimationFrame(tryFocus);
+    return () => {
+      disposed = true;
+    };
+  }, [workspaceSymbolPaletteOpen]);
+
   useEffect(() => {
     if (!filePaletteOpen) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       e.preventDefault();
-      setFilePaletteOpen(false);
-      setFilePaletteQuery('');
-      setFilePaletteResults([]);
-      setFilePaletteIndex(0);
-      setFilePaletteError(null);
+      closeFilePalette();
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [filePaletteOpen]);
+  }, [closeFilePalette, filePaletteOpen]);
+
+  useEffect(() => {
+    if (!fileSymbolPaletteOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      closeFileSymbolPalette();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [closeFileSymbolPalette, fileSymbolPaletteOpen]);
+
+  useEffect(() => {
+    if (!workspaceSymbolPaletteOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      closeWorkspaceSymbolPalette();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [closeWorkspaceSymbolPalette, workspaceSymbolPaletteOpen]);
+
+  useEffect(() => {
+    setFileSymbolPaletteIndex(0);
+  }, [fileSymbolPaletteOpen, fileSymbolPaletteQuery, activeTextFileInFocusedPane?.id]);
+
+  useEffect(() => {
+    setWorkspaceSymbolPaletteIndex(0);
+  }, [workspaceSymbolPaletteOpen, workspaceSymbolPaletteQuery]);
+
+  useEffect(() => {
+    if (activeTextFileInFocusedPane) return;
+    if (fileSymbolPaletteOpen) closeFileSymbolPalette();
+  }, [activeTextFileInFocusedPane, closeFileSymbolPalette, fileSymbolPaletteOpen]);
 
   // Esc: close LSP status menu
   useEffect(() => {
@@ -10305,6 +10587,70 @@ type OpenFromLinkErrorInfo = {
     }, 120);
     return () => window.clearTimeout(timer);
   }, [filePaletteOpen, filePaletteQuery, ws]);
+
+  useEffect(() => {
+    if (!workspaceSymbolPaletteOpen) return;
+    const q = workspaceSymbolPaletteQuery.trim();
+    if (!ws?.id) {
+      setWorkspaceSymbolPaletteResults([]);
+      setWorkspaceSymbolPaletteLoading(false);
+      setWorkspaceSymbolPaletteError(null);
+      return;
+    }
+    if (!q) {
+      setWorkspaceSymbolPaletteResults([]);
+      setWorkspaceSymbolPaletteLoading(false);
+      setWorkspaceSymbolPaletteError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setWorkspaceSymbolPaletteLoading(true);
+    const timer = window.setTimeout(() => {
+      void codeIndexSearchWorkspaceSymbols({
+        workstudioId: ws.id,
+        query: q,
+        limit: 400,
+      })
+        .then((res) => {
+          if (cancelled) return;
+          const ranked = rankSymbolSearchItems(
+            res.map((item) => ({
+              id: item.symbolId,
+              name: item.symbolName,
+              kind: item.symbolKind,
+              detail: item.detail ?? '',
+              containerName: item.containerName ?? '',
+              filePath: item.filePath,
+              selectionLine: item.selectionLine,
+              selectionColumn: item.selectionColumn,
+              range: {
+                startLine: item.rangeStartLine,
+                startColumn: item.rangeStartColumn,
+                endLine: item.rangeEndLine,
+                endColumn: item.rangeEndColumn,
+              },
+            })),
+            q,
+            symbolSearchContext
+          ).slice(0, 200);
+          setWorkspaceSymbolPaletteResults(ranked);
+          setWorkspaceSymbolPaletteError(null);
+          setWorkspaceSymbolPaletteLoading(false);
+        })
+        .catch((error) => {
+          if (cancelled) return;
+          setWorkspaceSymbolPaletteResults([]);
+          setWorkspaceSymbolPaletteError(toErrorMessage(error));
+          setWorkspaceSymbolPaletteLoading(false);
+        });
+    }, 140);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [symbolSearchContext, workspaceSymbolPaletteOpen, workspaceSymbolPaletteQuery, ws?.id]);
 
   useEffect(() => {
     if (!workstudioId) return;
@@ -11184,7 +11530,7 @@ type OpenFromLinkErrorInfo = {
       setTabMenu(null);
       setLspMenu(null);
       setOutlineMenu(null);
-      setBreadcrumbSymbolMenu(null);
+      closeBreadcrumbSymbolMenu();
       setOutlineToolsMenuOpen(false);
       setOutlineAnalyzeAllPanelOpen(false);
       setWorkstudioAiSettingsOpen(false);
@@ -12413,7 +12759,7 @@ type OpenFromLinkErrorInfo = {
                     setOutlineOpen((v) => !v);
                     setOutlineToolsMenuOpen(false);
                     setOutlineAnalyzeAllPanelOpen(false);
-                    setBreadcrumbSymbolMenu(null);
+                    closeBreadcrumbSymbolMenu();
                   }}
                   title={outlineOpen ? '折叠 Outline' : '展开 Outline'}
                 >
@@ -12455,7 +12801,7 @@ type OpenFromLinkErrorInfo = {
                           setOutlineToolsMenuOpen(false);
                           return;
                         }
-                        setBreadcrumbSymbolMenu(null);
+                        closeBreadcrumbSymbolMenu();
                         setOutlineAnalyzeAllPanelOpen(false);
                         setOutlineToolsMenuOpen(true);
                       }}
@@ -12700,6 +13046,41 @@ type OpenFromLinkErrorInfo = {
                     </div>
                   ) : (
                     <>
+                      <div className="sticky top-0 z-10 -mx-2 mb-2 border-b border-gray-200 bg-white/95 px-2 pb-2 pt-1 backdrop-blur dark:border-gray-800 dark:bg-gray-950/95">
+                        <div className="relative">
+                          <Search size={13} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                          <input
+                            ref={outlineSearchInputRef}
+                            value={outlineSearchQuery}
+                            onChange={(e) => setOutlineSearchQuery(e.target.value)}
+                            autoCorrect="off"
+                            autoCapitalize="off"
+                            autoComplete="off"
+                            spellCheck={false}
+                            placeholder="搜索当前文件符号..."
+                            className="w-full rounded-lg border border-gray-200 bg-white py-1.5 pl-8 pr-8 text-xs text-gray-900 outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                          />
+                          {outlineSearchQuery.trim() && (
+                            <button
+                              type="button"
+                              className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+                              onClick={() => {
+                                setOutlineSearchQuery('');
+                                outlineSearchInputRef.current?.focus();
+                              }}
+                              title="清空符号搜索"
+                            >
+                              <X size={12} />
+                            </button>
+                          )}
+                        </div>
+                        <div className="mt-1 px-1 text-[11px] text-gray-500 dark:text-gray-400">
+                          {outlineSearchQuery.trim()
+                            ? `匹配 ${outlineSearchMatchCount} / ${outlineItemCount} 个符号`
+                            : `当前文件共 ${outlineItemCount} 个符号`}
+                        </div>
+                      </div>
+
                       {outlineItems.length > 0 ? (
                         <div className="space-y-1">
                           {outlineLoading && (
@@ -12712,9 +13093,19 @@ type OpenFromLinkErrorInfo = {
                               {outlineError}
                             </div>
                           )}
-                          <div className="space-y-0.5">
-                            {renderOutlineNodes(outlineItemsForRender)}
-                          </div>
+                          {outlineItemsForDisplay.length > 0 ? (
+                            <div className="space-y-0.5">
+                              {renderOutlineNodes(outlineItemsForDisplay)}
+                            </div>
+                          ) : outlineSearchQuery.trim() ? (
+                            <div className="px-2 py-2 text-xs text-gray-500 dark:text-gray-400">
+                              未找到匹配符号。
+                            </div>
+                          ) : (
+                            <div className="px-2 py-2 text-xs text-gray-500 dark:text-gray-400">
+                              未检测到可展示的符号。
+                            </div>
+                          )}
                         </div>
                       ) : outlineLoading ? (
                         <div className="px-2 py-2 text-xs text-gray-500 dark:text-gray-400">
@@ -12792,6 +13183,24 @@ type OpenFromLinkErrorInfo = {
                 <span className={['h-2 w-2 rounded-full', lspSummary.dotClass].join(' ')} />
                 <span className="whitespace-nowrap">{lspSummary.label}</span>
                 <ChevronDown size={12} className="opacity-70" />
+              </button>
+              <button
+                type="button"
+                className="inline-flex items-center gap-2 rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                onClick={openFileSymbolPalette}
+                title={`当前文件符号搜索（${fileSymbolSearchShortcutLabel}）`}
+              >
+                <ListTree size={12} />
+                <span className="whitespace-nowrap">当前符号</span>
+              </button>
+              <button
+                type="button"
+                className="inline-flex items-center gap-2 rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                onClick={openWorkspaceSymbolPalette}
+                title={`全局符号搜索（${workspaceSymbolSearchShortcutLabel}）`}
+              >
+                <Search size={12} />
+                <span className="whitespace-nowrap">全局符号</span>
               </button>
               <div className="relative">
                 <button
@@ -13333,17 +13742,74 @@ type OpenFromLinkErrorInfo = {
         </div>
       </div>
 
+      {fileSymbolPaletteOpen && (
+        <SymbolSearchDialog
+          title="当前文件符号"
+          shortcutLabel={fileSymbolSearchShortcutLabel}
+          query={fileSymbolPaletteQuery}
+          onQueryChange={setFileSymbolPaletteQuery}
+          inputRef={fileSymbolPaletteInputRef}
+          placeholder="输入符号名、类型或容器名..."
+          items={fileSymbolPaletteResults}
+          selectedIndex={Math.min(fileSymbolPaletteIndex, Math.max(0, fileSymbolPaletteResults.length - 1))}
+          onSelectedIndexChange={setFileSymbolPaletteIndex}
+          onClose={closeFileSymbolPalette}
+          emptyText={
+            currentFileSymbolItems.length === 0
+              ? '当前文件暂无可搜索符号'
+              : fileSymbolPaletteQuery.trim()
+                ? '未找到匹配符号'
+                : '输入关键字开始筛选当前文件符号'
+          }
+          pathLabel={() => basename(activeTextFileInFocusedPane?.path ?? '')}
+          onPick={(item) => {
+            const path = item.outlineKey ? findOutlinePathByKey(outlineItems, item.outlineKey) : null;
+            const target = path && path.length > 0 ? path[path.length - 1] : null;
+            if (!target) return;
+            closeFileSymbolPalette();
+            jumpToOutlineItem(target);
+          }}
+        />
+      )}
+
+      {workspaceSymbolPaletteOpen && (
+        <SymbolSearchDialog
+          title="全局符号"
+          shortcutLabel={workspaceSymbolSearchShortcutLabel}
+          query={workspaceSymbolPaletteQuery}
+          onQueryChange={setWorkspaceSymbolPaletteQuery}
+          inputRef={workspaceSymbolPaletteInputRef}
+          placeholder="输入符号名、文件路径或容器名..."
+          items={workspaceSymbolPaletteResults}
+          selectedIndex={Math.min(workspaceSymbolPaletteIndex, Math.max(0, workspaceSymbolPaletteResults.length - 1))}
+          onSelectedIndexChange={setWorkspaceSymbolPaletteIndex}
+          onClose={closeWorkspaceSymbolPalette}
+          loading={workspaceSymbolPaletteLoading}
+          error={workspaceSymbolPaletteError}
+          helperText="搜索当前 Workstudio 中已索引的符号"
+          emptyText={workspaceSymbolPaletteQuery.trim() ? '未找到匹配符号' : '输入关键字开始搜索已索引符号'}
+          pathLabel={(item) => {
+            const parts = splitFsPathForBreadcrumb(item.filePath, rootFolders);
+            return parts.length > 0 ? parts.join('/') : item.filePath;
+          }}
+          onPick={(item) => {
+            closeWorkspaceSymbolPalette();
+            void openLinkTarget({
+              filePath: item.filePath,
+              line: item.selectionLine,
+              column: item.selectionColumn,
+              endLine: item.range.endLine,
+              endColumn: item.range.endColumn,
+            });
+          }}
+        />
+      )}
+
       {filePaletteOpen && (
       <div className="fixed inset-0 z-[210]">
         <div
           className="absolute inset-0 bg-black/25 backdrop-blur-[1px]"
-          onClick={() => {
-              setFilePaletteOpen(false);
-              setFilePaletteQuery('');
-              setFilePaletteResults([]);
-              setFilePaletteIndex(0);
-              setFilePaletteError(null);
-            }}
+          onClick={closeFilePalette}
           />
           <div className="absolute left-1/2 top-16 w-[720px] max-w-[92vw] -translate-x-1/2 rounded-2xl border border-gray-200 bg-white shadow-xl dark:border-gray-700 dark:bg-gray-900">
             <div className="border-b border-gray-200 px-4 py-3 dark:border-gray-700">
@@ -13365,7 +13831,7 @@ type OpenFromLinkErrorInfo = {
                 onKeyDown={(e) => {
                   if (e.key === 'Escape') {
                     e.preventDefault();
-                    setFilePaletteOpen(false);
+                    closeFilePalette();
                     return;
                   }
                   if (e.key === 'ArrowDown') {
@@ -13380,11 +13846,7 @@ type OpenFromLinkErrorInfo = {
                     e.preventDefault();
                     const picked = filePaletteResults[filePaletteIndex];
                     if (!picked) return;
-                    setFilePaletteOpen(false);
-                    setFilePaletteQuery('');
-                    setFilePaletteResults([]);
-                    setFilePaletteIndex(0);
-                    setFilePaletteError(null);
+                    closeFilePalette();
                     void openFileAtPath(picked);
                   }
                 }}
@@ -13412,11 +13874,7 @@ type OpenFromLinkErrorInfo = {
                       ].join(' ')}
                       onMouseEnter={() => setFilePaletteIndex(idx)}
                       onClick={() => {
-                        setFilePaletteOpen(false);
-                        setFilePaletteQuery('');
-                        setFilePaletteResults([]);
-                        setFilePaletteIndex(0);
-                        setFilePaletteError(null);
+                        closeFilePalette();
                         void openFileAtPath(p);
                       }}
                       title={p}
@@ -13766,60 +14224,113 @@ type OpenFromLinkErrorInfo = {
           style={{ left: breadcrumbSymbolMenu.x, top: breadcrumbSymbolMenu.y }}
           onMouseDown={(e) => e.stopPropagation()}
         >
-          <div className="flex items-start justify-between gap-3 border-b border-gray-200 px-3 py-2 dark:border-gray-700">
-            <div className="min-w-0">
-              <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">{breadcrumbSymbolMenu.title}</div>
-              <div className="mt-0.5 truncate text-[11px] text-gray-500 dark:text-gray-400">
-                {breadcrumbSymbolMenu.subtitle}
+          <div className="border-b border-gray-200 px-3 py-2 dark:border-gray-700">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">{breadcrumbSymbolMenu.title}</div>
+                <div className="mt-0.5 truncate text-[11px] text-gray-500 dark:text-gray-400">
+                  {breadcrumbSymbolMenu.subtitle}
+                </div>
               </div>
+              <button
+                type="button"
+                className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+                onClick={closeBreadcrumbSymbolMenu}
+                aria-label="关闭符号菜单"
+              >
+                <X size={14} />
+              </button>
             </div>
-            <button
-              type="button"
-              className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-200"
-              onClick={() => setBreadcrumbSymbolMenu(null)}
-              aria-label="关闭符号菜单"
-            >
-              <X size={14} />
-            </button>
+            <div className="relative mt-2">
+              <Search
+                size={14}
+                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"
+              />
+              <input
+                ref={breadcrumbSymbolMenuInputRef}
+                value={breadcrumbSymbolMenuQuery}
+                onChange={(event) => {
+                  setBreadcrumbSymbolMenuQuery(event.target.value);
+                  setBreadcrumbSymbolMenuIndex(0);
+                }}
+                autoCorrect="off"
+                autoCapitalize="off"
+                autoComplete="off"
+                spellCheck={false}
+                placeholder="输入符号名、类型或详情..."
+                className="w-full rounded-lg border border-gray-200 bg-white py-1.5 pl-9 pr-3 text-sm text-gray-900 outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape') {
+                    event.preventDefault();
+                    closeBreadcrumbSymbolMenu();
+                    return;
+                  }
+                  if (event.key === 'ArrowDown') {
+                    event.preventDefault();
+                    setBreadcrumbSymbolMenuIndex((prev) => Math.min(prev + 1, Math.max(0, breadcrumbSymbolMenuResults.length - 1)));
+                    return;
+                  }
+                  if (event.key === 'ArrowUp') {
+                    event.preventDefault();
+                    setBreadcrumbSymbolMenuIndex((prev) => Math.max(0, prev - 1));
+                    return;
+                  }
+                  if (event.key === 'Enter') {
+                    const target = breadcrumbSymbolMenuResults[breadcrumbSymbolMenuIndex] ?? null;
+                    if (!target) return;
+                    event.preventDefault();
+                    closeBreadcrumbSymbolMenu();
+                    jumpToOutlineItem(target);
+                  }
+                }}
+              />
+            </div>
           </div>
           <div className="max-h-[55vh] overflow-auto py-1">
-            {breadcrumbSymbolMenu.items.map((item) => {
-              const active = item.key === breadcrumbSymbolMenu.selectedKey || item.key === outlineActiveKey;
-              const hasChildren = item.children.length > 0;
-              return (
-                <button
-                  key={`breadcrumb-symbol-menu:${item.key}`}
-                  type="button"
-                  className={[
-                    'flex w-full items-center gap-3 px-3 py-2 text-left transition-colors',
-                    active
-                      ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
-                      : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800',
-                  ].join(' ')}
-                  onClick={() => {
-                    setBreadcrumbSymbolMenu(null);
-                    jumpToOutlineItem(item);
-                  }}
-                  title={`${item.name}（${normalizeOutlineKind(item.kind)}）${item.detail ? ` · ${item.detail}` : ''}`}
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-medium">{item.name}</div>
-                    <div className="mt-0.5 truncate text-[11px] text-gray-500 dark:text-gray-400">
-                      {normalizeOutlineKind(item.kind)}
-                      {item.detail ? ` · ${item.detail}` : ''}
+            {breadcrumbSymbolMenuResults.length === 0 ? (
+              <div className="px-3 py-3 text-sm text-gray-500 dark:text-gray-400">
+                {breadcrumbSymbolMenuQuery.trim() ? '未找到匹配符号' : '暂无可选符号'}
+              </div>
+            ) : (
+              breadcrumbSymbolMenuResults.map((item, index) => {
+                const active = index === breadcrumbSymbolMenuIndex;
+                const hasChildren = item.children.length > 0;
+                return (
+                  <button
+                    key={`breadcrumb-symbol-menu:${item.key}`}
+                    type="button"
+                    className={[
+                      'flex w-full items-center gap-3 px-3 py-2 text-left transition-colors',
+                      active
+                        ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
+                        : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800',
+                    ].join(' ')}
+                    onMouseEnter={() => setBreadcrumbSymbolMenuIndex(index)}
+                    onClick={() => {
+                      closeBreadcrumbSymbolMenu();
+                      jumpToOutlineItem(item);
+                    }}
+                    title={`${item.name}（${normalizeOutlineKind(item.kind)}）${item.detail ? ` · ${item.detail}` : ''}`}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm font-medium">{item.name}</div>
+                      <div className="mt-0.5 truncate text-[11px] text-gray-500 dark:text-gray-400">
+                        {normalizeOutlineKind(item.kind)}
+                        {item.detail ? ` · ${item.detail}` : ''}
+                      </div>
                     </div>
-                  </div>
-                  {hasChildren && (
-                    <span className="shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500 dark:bg-gray-800 dark:text-gray-300">
-                      {item.children.length}
+                    {hasChildren && (
+                      <span className="shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500 dark:bg-gray-800 dark:text-gray-300">
+                        {item.children.length}
+                      </span>
+                    )}
+                    <span className="shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-gray-500 dark:bg-gray-800 dark:text-gray-300">
+                      {item.kind}
                     </span>
-                  )}
-                  <span className="shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-gray-500 dark:bg-gray-800 dark:text-gray-300">
-                    {item.kind}
-                  </span>
-                </button>
-              );
-            })}
+                  </button>
+                );
+              })
+            )}
           </div>
         </div>
       )}

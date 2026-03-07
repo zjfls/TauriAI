@@ -8,14 +8,15 @@ use tokio::sync::{Mutex, Notify};
 
 use tauri::Emitter;
 
-use crate::code_intel::ast::{self, AstDocumentSymbolsArgs};
+use crate::code_intel::ast::{self, AstDocumentSymbolsArgs, AstSymbol};
 use crate::models::Workstudio;
 use crate::storage::async_db;
 use crate::storage::Database;
 
-use super::index_db::{CodeIndexDb, FileMeta};
+use super::index_db::{CodeIndexDb, FileMeta, StoredDocumentSymbolsRow};
 use super::index_types::{
-    CodeIndexDocumentSymbolsSnapshot, CodeIndexEvent, CodeIndexEventPayload, CODE_INDEX_EVENT_NAME,
+    CodeIndexDocumentSymbolsSnapshot, CodeIndexEvent, CodeIndexEventPayload,
+    CodeIndexWorkspaceSymbolSearchResult, CODE_INDEX_EVENT_NAME,
 };
 
 // -----------------------------------------------------------------------------
@@ -66,6 +67,15 @@ pub struct CodeIndexStartWorkspaceScanArgs {
     pub workstudio_id: String,
     #[serde(default)]
     pub priority: Option<i32>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeIndexSearchWorkspaceSymbolsArgs {
+    pub workstudio_id: String,
+    pub query: String,
+    #[serde(default)]
+    pub limit: Option<u32>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -222,7 +232,16 @@ impl CodeIndexManager {
 
         let force = args.force.unwrap_or(false);
         let priority = args.priority.unwrap_or(PRIORITY_OPEN_FILE);
-        let should_queue = force || cached.as_ref().map(|c| c.is_stale).unwrap_or(true);
+        let cached_is_fresh = cached.as_ref().map(|c| !c.is_stale).unwrap_or(false);
+        let has_workspace_symbols = if cached_is_fresh {
+            self.has_workspace_symbols_for_file(ws_id, &file_path)
+                .await?
+        } else {
+            false
+        };
+        let should_queue = force
+            || cached.as_ref().map(|c| c.is_stale).unwrap_or(true)
+            || (cached_is_fresh && !has_workspace_symbols);
 
         let queued = if should_queue {
             self.enqueue_index_document_symbols(ws_id, &file_path, language_id, priority, force)
@@ -232,6 +251,33 @@ impl CodeIndexManager {
         };
 
         Ok(CodeIndexRequestDocumentSymbolsResult { cached, queued })
+    }
+
+    pub async fn search_workspace_symbols(
+        &self,
+        args: CodeIndexSearchWorkspaceSymbolsArgs,
+    ) -> Result<Vec<CodeIndexWorkspaceSymbolSearchResult>, String> {
+        let ws_id = args.workstudio_id.trim();
+        if ws_id.is_empty() {
+            return Err("workstudioId 为空".to_string());
+        }
+
+        let query = args.query.trim();
+        if query.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        self.ensure_workspace_symbol_search_index(ws_id).await?;
+
+        let limit = args.limit.unwrap_or(200).clamp(1, 1000) as usize;
+        let dbh = self.get_db_handle(ws_id).await?;
+        let query_owned = query.to_string();
+        tokio::task::spawn_blocking(move || {
+            let guard = dbh.lock().map_err(|e| format!("索引 DB 锁失败: {e}"))?;
+            guard.search_workspace_symbols(&query_owned, limit)
+        })
+        .await
+        .map_err(|e| format!("查询符号搜索索引线程失败: {e}"))?
     }
 
     pub async fn start_workspace_scan(
@@ -589,6 +635,69 @@ impl CodeIndexManager {
         .map_err(|e| format!("读取索引 DB 线程失败: {e}"))?
     }
 
+    async fn has_workspace_symbols_for_file(
+        &self,
+        workstudio_id: &str,
+        file_path: &str,
+    ) -> Result<bool, String> {
+        let dbh = self.get_db_handle(workstudio_id).await?;
+        let file_path = file_path.to_string();
+        tokio::task::spawn_blocking(move || {
+            let guard = dbh.lock().map_err(|e| format!("索引 DB 锁失败: {e}"))?;
+            guard.has_workspace_symbols_for_file(&file_path)
+        })
+        .await
+        .map_err(|e| format!("检查符号搜索索引线程失败: {e}"))?
+    }
+
+    async fn ensure_workspace_symbol_search_index(
+        &self,
+        workstudio_id: &str,
+    ) -> Result<(), String> {
+        const BACKFILL_META_KEY: &str = "workspace_symbols_backfill_v1";
+
+        let dbh = self.get_db_handle(workstudio_id).await?;
+        tokio::task::spawn_blocking(move || {
+            let guard = dbh.lock().map_err(|e| format!("索引 DB 锁失败: {e}"))?;
+            if guard.get_meta(BACKFILL_META_KEY)?.as_deref() == Some("1") {
+                return Ok(());
+            }
+
+            let file_count = guard.count_file_symbols()?;
+            if file_count == 0 {
+                let _ = guard.set_meta(BACKFILL_META_KEY, "1");
+                return Ok(());
+            }
+
+            let rows = guard.list_document_symbols_for_backfill()?;
+            for StoredDocumentSymbolsRow {
+                file_path,
+                language_id,
+                source: _,
+                symbols_json,
+                updated_at_ms,
+            } in rows
+            {
+                let symbols = match serde_json::from_str::<Vec<AstSymbol>>(&symbols_json) {
+                    Ok(value) => value,
+                    Err(_) => continue,
+                };
+                let workspace_symbols = ast_symbols_to_workspace_search_results(
+                    &file_path,
+                    &language_id,
+                    updated_at_ms,
+                    &symbols,
+                );
+                guard.replace_workspace_symbols_for_file(&file_path, &workspace_symbols)?;
+            }
+
+            guard.set_meta(BACKFILL_META_KEY, "1")?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| format!("回填符号搜索索引线程失败: {e}"))?
+    }
+
     async fn process_index_document_symbols(
         &self,
         workstudio_id: &str,
@@ -600,10 +709,17 @@ impl CodeIndexManager {
         let cached = self
             .get_cached_document_symbols(workstudio_id, file_path, current_meta.as_ref())
             .await?;
+        let cached_is_fresh = cached.as_ref().map(|c| !c.is_stale).unwrap_or(false);
+        let has_workspace_symbols = if !force && cached_is_fresh {
+            self.has_workspace_symbols_for_file(workstudio_id, file_path)
+                .await?
+        } else {
+            false
+        };
 
         if !force {
             if let Some(c) = cached.as_ref() {
-                if !c.is_stale {
+                if !c.is_stale && has_workspace_symbols {
                     return Ok(());
                 }
             }
@@ -660,9 +776,15 @@ impl CodeIndexManager {
         };
 
         let symbols_json =
-            serde_json::to_value(symbols).map_err(|e| format!("symbols 序列化失败: {e}"))?;
+            serde_json::to_value(&symbols).map_err(|e| format!("symbols 序列化失败: {e}"))?;
 
         let updated_at_ms = now_ms();
+        let workspace_symbols = ast_symbols_to_workspace_search_results(
+            file_path,
+            language_id,
+            updated_at_ms,
+            &symbols,
+        );
         let dbh = self.get_db_handle(workstudio_id).await?;
         let fp = file_path.to_string();
         let lang = language_id.to_string();
@@ -678,7 +800,8 @@ impl CodeIndexManager {
                 &symbols_clone,
                 updated_at_ms,
                 meta.as_ref(),
-            )
+            )?;
+            guard.replace_workspace_symbols_for_file(&fp, &workspace_symbols)
         })
         .await
         .map_err(|e| format!("写入索引 DB 线程失败: {e}"))??;
@@ -1013,6 +1136,99 @@ fn should_skip_dir_name(name_lower: &str) -> bool {
             | ".tauri-ai"
             | ".tauriai"
     )
+}
+
+fn ast_symbols_to_workspace_search_results(
+    file_path: &str,
+    language_id: &str,
+    updated_at_ms: i64,
+    symbols: &[AstSymbol],
+) -> Vec<CodeIndexWorkspaceSymbolSearchResult> {
+    fn to_line(value: u32) -> u32 {
+        value.saturating_add(1)
+    }
+
+    fn walk(
+        out: &mut Vec<CodeIndexWorkspaceSymbolSearchResult>,
+        seen: &mut HashMap<String, usize>,
+        file_path: &str,
+        language_id: &str,
+        updated_at_ms: i64,
+        ancestors: &mut Vec<String>,
+        symbols: &[AstSymbol],
+    ) {
+        for symbol in symbols {
+            let name = symbol.name.trim();
+            if name.is_empty() {
+                continue;
+            }
+
+            let base_id = format!(
+                "{}::{}::{}::{}::{}",
+                file_path,
+                name,
+                to_line(symbol.selection_range.start.line),
+                to_line(symbol.selection_range.start.character),
+                symbol.kind.trim()
+            );
+            let next_count = seen.entry(base_id.clone()).or_insert(0);
+            *next_count += 1;
+            let symbol_id = if *next_count <= 1 {
+                base_id
+            } else {
+                format!("{}#{}", base_id, *next_count)
+            };
+
+            out.push(CodeIndexWorkspaceSymbolSearchResult {
+                symbol_id,
+                file_path: file_path.to_string(),
+                symbol_name: name.to_string(),
+                symbol_kind: symbol.kind.trim().to_string(),
+                detail: None,
+                container_name: if ancestors.is_empty() {
+                    None
+                } else {
+                    Some(ancestors.join(" › "))
+                },
+                selection_line: to_line(symbol.selection_range.start.line),
+                selection_column: to_line(symbol.selection_range.start.character),
+                range_start_line: to_line(symbol.range.start.line),
+                range_start_column: to_line(symbol.range.start.character),
+                range_end_line: to_line(symbol.range.end.line),
+                range_end_column: to_line(symbol.range.end.character),
+                language_id: language_id.to_string(),
+                updated_at_ms,
+            });
+
+            if !symbol.children.is_empty() {
+                ancestors.push(name.to_string());
+                walk(
+                    out,
+                    seen,
+                    file_path,
+                    language_id,
+                    updated_at_ms,
+                    ancestors,
+                    &symbol.children,
+                );
+                ancestors.pop();
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    let mut seen = HashMap::new();
+    let mut ancestors = Vec::new();
+    walk(
+        &mut out,
+        &mut seen,
+        file_path,
+        language_id,
+        updated_at_ms,
+        &mut ancestors,
+        symbols,
+    );
+    out
 }
 
 fn best_language_id_for_path(path: &str, hint_language_id: &str) -> Option<&'static str> {

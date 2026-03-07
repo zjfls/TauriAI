@@ -111,7 +111,8 @@ fn looks_like_utf8_text(bytes: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        infer_mime_from_filename, looks_like_utf8_text, read_local_file_base64, write_local_text_file,
+        infer_mime_from_filename, looks_like_utf8_text, read_local_file_base64,
+        write_local_text_file,
     };
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -163,9 +164,12 @@ mod tests {
             .expect("should create temp directory");
         let file_path = dir.join(".envrc");
 
-        write_local_text_file(file_path.to_string_lossy().to_string(), "echo ok\n".to_string())
-            .await
-            .expect("should write unknown extension text file");
+        write_local_text_file(
+            file_path.to_string_lossy().to_string(),
+            "echo ok\n".to_string(),
+        )
+        .await
+        .expect("should write unknown extension text file");
 
         let content = tokio::fs::read_to_string(&file_path)
             .await

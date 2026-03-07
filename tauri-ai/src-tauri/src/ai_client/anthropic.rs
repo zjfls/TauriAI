@@ -1712,14 +1712,22 @@ mod tests {
             AnthropicContent::Blocks(blocks) => {
                 assert_eq!(blocks.len(), 2);
                 match &blocks[0] {
-                    AnthropicContentBlock::ToolResult { tool_use_id, content, .. } => {
+                    AnthropicContentBlock::ToolResult {
+                        tool_use_id,
+                        content,
+                        ..
+                    } => {
                         assert_eq!(tool_use_id, "call_1");
                         assert_eq!(content, "tool result 1");
                     }
                     _ => panic!("Expected first block to be tool_result"),
                 }
                 match &blocks[1] {
-                    AnthropicContentBlock::ToolResult { tool_use_id, content, .. } => {
+                    AnthropicContentBlock::ToolResult {
+                        tool_use_id,
+                        content,
+                        ..
+                    } => {
                         assert_eq!(tool_use_id, "call_2");
                         assert_eq!(content, "tool result 2");
                     }

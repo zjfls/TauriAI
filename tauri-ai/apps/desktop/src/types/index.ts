@@ -1290,6 +1290,8 @@ export type KeyboardShortcutActionId =
   | 'workstudio.closeAllWindows'
   | 'workstudio.backToMain'
   | 'workstudio.fileSearch'
+  | 'workstudio.fileSymbolSearch'
+  | 'workstudio.workspaceSymbolSearch'
   | 'workstudio.triggerSuggest'
   | 'workstudio.navigateBack'
   | 'workstudio.navigateForward'
@@ -1368,6 +1370,8 @@ export interface CodeIntelligenceSettings {
    * 默认为 true。
    */
   monacoWordSuggestionsEnabled?: boolean;
+  /** 是否启用 Outline 分栏视图。 */
+  outlineSplitViewEnabled?: boolean;
   /** AI 辅助补全（幽灵补全 + Ctrl+Space 建议列表） */
   aiCompletion?: AiCompletionSettings;
   /** Workstudio 符号分析（Outline 右键“分析类/函数/变量”等） */

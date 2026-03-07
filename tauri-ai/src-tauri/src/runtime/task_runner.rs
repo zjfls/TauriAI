@@ -3893,7 +3893,6 @@ fn resolve_shell_tools_in_allow_list(
         }
     }
 }
-
 async fn build_tooling_for_run(
     tools_enabled: bool,
     config: &crate::models::AppConfig,
@@ -4032,7 +4031,6 @@ async fn build_tooling_for_run(
                             continue;
                         }
                     };
-
                     let mut tools = tools;
                     if !set_server.enabled_tools.is_empty() {
                         let allow: std::collections::HashSet<&str> = set_server
@@ -4143,7 +4141,6 @@ async fn build_tooling_for_run(
                         ));
                     }
                 }
-
                 if !effective_servers.is_empty() {
                     let servers = Arc::new(effective_servers);
                     registry.register(Arc::new(
@@ -4316,7 +4313,6 @@ fn build_message_db_fields(
         Err(err) => Err(AppErrorCode::UnknownError(err.to_string()).into()),
     }
 }
-
 async fn persist_assistant_message(
     db: &Arc<Mutex<Database>>,
     conversation_id: &str,

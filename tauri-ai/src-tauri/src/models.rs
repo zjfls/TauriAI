@@ -2288,6 +2288,9 @@ pub struct CodeIntelligenceSettings {
     /// 是否启用 Monaco 内置“词汇建议”（来自打开的文件内容，不依赖 LSP）。关闭后 Suggest 列表更“干净”，便于调试 AI Completion。
     #[serde(default = "default_true")]
     pub monaco_word_suggestions_enabled: bool,
+    /// Workstudio 左侧栏是否启用 Explorer/Outline 上下拆分视图。默认 false（使用平级标签页）。
+    #[serde(default)]
+    pub outline_split_view_enabled: bool,
     #[serde(default)]
     pub lsp_servers: Vec<LspServerConfig>,
     /// AI 辅助补全（幽灵补全 + Ctrl+Space 建议列表）
@@ -2308,6 +2311,7 @@ impl Default for CodeIntelligenceSettings {
             enabled: true,
             lsp_completion_enabled: true,
             monaco_word_suggestions_enabled: true,
+            outline_split_view_enabled: false,
             lsp_servers: vec![
                 LspServerConfig {
                     language_id: "rust".to_string(),

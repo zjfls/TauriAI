@@ -1046,6 +1046,7 @@ fn run_desktop() {
             ast_document_symbols,
             // Code index (workstudio-scoped persisted cache)
             code_index_request_document_symbols,
+            code_index_search_workspace_symbols,
             code_index_start_workspace_scan,
             code_index_status,
             code_index_summary,
@@ -1070,7 +1071,7 @@ fn run_desktop() {
             // Workstudio terminal (UI)
             workstudio_terminal_create,
             workstudio_terminal_write,
-	            workstudio_terminal_resize,
+            workstudio_terminal_resize,
 	            workstudio_terminal_read,
 	            workstudio_terminal_read_base64,
 	            workstudio_terminal_close,

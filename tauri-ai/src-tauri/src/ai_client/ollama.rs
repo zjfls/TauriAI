@@ -496,8 +496,7 @@ impl AiClient for OllamaClient {
                 if let Ok(stream_response) = serde_json::from_str::<StreamResponse>(&line) {
                     if let Some(message) = stream_response.message {
                         if !message.tool_calls.is_empty() {
-                            let calls =
-                                convert_ollama_tool_calls(&message.tool_calls, line_count);
+                            let calls = convert_ollama_tool_calls(&message.tool_calls, line_count);
                             if !calls.is_empty() {
                                 if let Some(existing) = tool_calls_to_emit.as_mut() {
                                     existing.extend(calls);
