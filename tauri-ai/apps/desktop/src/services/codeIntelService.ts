@@ -136,6 +136,38 @@ export const codeIndexStartWorkspaceScan = async (args: CodeIndexStartWorkspaceS
   await invoke<void>('code_index_start_workspace_scan', { args });
 };
 
+export type CodeIndexSearchWorkspaceSymbolsArgs = {
+  workstudioId: string;
+  query: string;
+  limit?: number;
+};
+
+export type CodeIndexWorkspaceSymbolSearchResult = {
+  symbolId: string;
+  filePath: string;
+  symbolName: string;
+  symbolKind: string;
+  detail?: string | null;
+  containerName?: string | null;
+  selectionLine: number;
+  selectionColumn: number;
+  rangeStartLine: number;
+  rangeStartColumn: number;
+  rangeEndLine: number;
+  rangeEndColumn: number;
+  languageId: string;
+  updatedAtMs: number;
+};
+
+export const codeIndexSearchWorkspaceSymbols = async (
+  args: CodeIndexSearchWorkspaceSymbolsArgs
+): Promise<CodeIndexWorkspaceSymbolSearchResult[]> => {
+  if (!isTauri()) {
+    throw new Error('Not running in Tauri');
+  }
+  return invoke<CodeIndexWorkspaceSymbolSearchResult[]>('code_index_search_workspace_symbols', { args });
+};
+
 export type CodeIndexStatus = {
   pendingJobs: number;
   runningJob?: string | null;

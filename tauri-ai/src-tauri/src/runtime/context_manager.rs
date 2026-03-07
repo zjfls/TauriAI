@@ -294,8 +294,10 @@ fn estimate_content_parts_tokens(parts: &[ContentPart]) -> u32 {
     for part in parts {
         let part_tokens = match part {
             ContentPart::Text { text } => approx_tokens_for_text(text.as_str()),
-            ContentPart::TextFile { filename, content } => approx_tokens_for_text(filename.as_str())
-                .saturating_add(approx_tokens_for_text(content.as_str())),
+            ContentPart::TextFile { filename, content } => {
+                approx_tokens_for_text(filename.as_str())
+                    .saturating_add(approx_tokens_for_text(content.as_str()))
+            }
             ContentPart::FileRef { path, label } => approx_tokens_for_text(path.as_str())
                 .saturating_add(
                     label
@@ -605,9 +607,8 @@ pub fn trim_runtime_messages_to_hard_limit(
     let keep_end = units[units.len().saturating_sub(1)].end;
     let removed = keep_start.saturating_sub(system_prefix_len);
 
-    let mut trimmed_messages: Vec<Message> = Vec::with_capacity(
-        system_prefix_len.saturating_add(keep_end.saturating_sub(keep_start)),
-    );
+    let mut trimmed_messages: Vec<Message> =
+        Vec::with_capacity(system_prefix_len.saturating_add(keep_end.saturating_sub(keep_start)));
     trimmed_messages.extend(messages[..system_prefix_len].iter().cloned());
     trimmed_messages.extend(messages[keep_start..keep_end].iter().cloned());
 

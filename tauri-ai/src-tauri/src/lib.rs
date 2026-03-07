@@ -23,10 +23,10 @@ pub mod workstudio_security;
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::collections::HashMap;
+use std::str::FromStr;
+use std::sync::Arc;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tauri::Manager;
-use std::sync::Arc;
-use std::str::FromStr;
 
 use config::ConfigManager;
 
@@ -121,7 +121,13 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
         let raw = platform_map
             .get(action_id)
             .map(String::as_str)
-            .unwrap_or_else(|| if cfg!(target_os = "macos") { default_mac } else { default_windows })
+            .unwrap_or_else(|| {
+                if cfg!(target_os = "macos") {
+                    default_mac
+                } else {
+                    default_windows
+                }
+            })
             .trim();
 
         if raw.is_empty() {
@@ -243,15 +249,22 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
     )?;
     let new_text = MenuItem::with_id(app, "new_text", "新建文本文件", true, None::<&str>)?;
 
-    let new_json_analyzer =
-        MenuItem::with_id(app, "new_json_analyzer", "新建 JSON 分析窗口", true, None::<&str>)?;
+    let new_json_analyzer = MenuItem::with_id(
+        app,
+        "new_json_analyzer",
+        "新建 JSON 分析窗口",
+        true,
+        None::<&str>,
+    )?;
 
     // Session/app actions (moved from top-right toolbar to system menu bar)
     // 只保留“按 Agent 新建会话”，并把快捷键绑定到默认 Agent 的菜单项。
     let new_session_shortcut = configured_shortcut(config, "session.new", "Cmd+T", "Ctrl+T");
     let open_settings_shortcut = configured_shortcut(config, "app.openSettings", "Cmd+,", "Ctrl+,");
-    let open_history_shortcut = configured_shortcut(config, "app.openHistory", "Cmd+Y", "Ctrl+Shift+H");
-    let open_devtools_shortcut = configured_shortcut(config, "app.openDevtools", "Cmd+Option+I", "Ctrl+Shift+I");
+    let open_history_shortcut =
+        configured_shortcut(config, "app.openHistory", "Cmd+Y", "Ctrl+Shift+H");
+    let open_devtools_shortcut =
+        configured_shortcut(config, "app.openDevtools", "Cmd+Option+I", "Ctrl+Shift+I");
 
     let new_session_by_agent: Submenu<R> = if has_agents {
         let mut items: Vec<MenuItem<R>> = Vec::new();
@@ -284,8 +297,13 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
         Submenu::with_items(app, "新建会话（按 Agent）", false, &[&empty])?
     };
 
-    let open_settings =
-        MenuItem::with_id(app, "open_settings", "设置…", true, open_settings_shortcut.as_deref())?;
+    let open_settings = MenuItem::with_id(
+        app,
+        "open_settings",
+        "设置…",
+        true,
+        open_settings_shortcut.as_deref(),
+    )?;
     let open_practice = MenuItem::with_id(app, "open_practice", "练习", true, None::<&str>)?;
     let view_settings_separator = PredefinedMenuItem::separator(app)?;
 
@@ -299,8 +317,13 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
     )?;
 
     // View: switch main content view (history, chat, etc.)
-    let open_history =
-        MenuItem::with_id(app, "open_history", "历史", true, open_history_shortcut.as_deref())?;
+    let open_history = MenuItem::with_id(
+        app,
+        "open_history",
+        "历史",
+        true,
+        open_history_shortcut.as_deref(),
+    )?;
     let session_history_separator = PredefinedMenuItem::separator(app)?;
 
     // View: open web/terminal as tabs inside the workspace (not standalone windows).
@@ -358,7 +381,13 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
             app,
             "File",
             true,
-            &[&new_richtxt, &new_text, &new_json_analyzer, &open_file, &test_window],
+            &[
+                &new_richtxt,
+                &new_text,
+                &new_json_analyzer,
+                &open_file,
+                &test_window,
+            ],
         )?;
         // On macOS, index 0 is the app menu. Insert after it.
         let pos = if cfg!(target_os = "macos") { 1 } else { 0 };
@@ -570,7 +599,10 @@ fn preferred_menu_target_label(
     snapshot: &WindowInteractionRouteSnapshot,
 ) -> Option<String> {
     if action_id.starts_with("new_session_agent:")
-        || matches!(action_id, "open_settings" | "open_history" | "open_practice")
+        || matches!(
+            action_id,
+            "open_settings" | "open_history" | "open_practice"
+        )
     {
         snapshot
             .last_chat_window_label
@@ -584,7 +616,10 @@ fn preferred_menu_target_label(
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn menu_target_allowed(action_id: &str, label: &str) -> bool {
     if action_id.starts_with("new_session_agent:")
-        || matches!(action_id, "open_settings" | "open_history" | "open_practice")
+        || matches!(
+            action_id,
+            "open_settings" | "open_history" | "open_practice"
+        )
     {
         return is_chat_menu_target_label(label);
     }
@@ -608,11 +643,9 @@ fn pick_routed_menu_target<R: tauri::Runtime>(
         }
     }
 
-    if let Some(window) = app
-        .webview_windows()
-        .into_values()
-        .find(|window| window.is_focused().unwrap_or(false) && menu_target_allowed(action_id, window.label()))
-    {
+    if let Some(window) = app.webview_windows().into_values().find(|window| {
+        window.is_focused().unwrap_or(false) && menu_target_allowed(action_id, window.label())
+    }) {
         return Some(window);
     }
 
@@ -1013,6 +1046,7 @@ fn run_desktop() {
 	            ast_document_symbols,
 	            // Code index (workstudio-scoped persisted cache)
 	            code_index_request_document_symbols,
+	            code_index_search_workspace_symbols,
 	            code_index_start_workspace_scan,
 	            code_index_status,
 	            code_index_summary,

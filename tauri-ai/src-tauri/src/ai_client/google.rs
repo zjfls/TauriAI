@@ -68,10 +68,7 @@ enum GeminiPart {
     FunctionCall {
         #[serde(rename = "functionCall")]
         function_call: GeminiFunctionCall,
-        #[serde(
-            rename = "thoughtSignature",
-            skip_serializing_if = "Option::is_none"
-        )]
+        #[serde(rename = "thoughtSignature", skip_serializing_if = "Option::is_none")]
         thought_signature: Option<String>,
     },
     /// Tool/function response provided by the user/runtime
@@ -388,15 +385,14 @@ fn convert_messages(
         }
     };
 
-    let flush_pending_tool_parts =
-        |out: &mut Vec<GeminiContent>, pending: &mut Vec<GeminiPart>| {
-            if !pending.is_empty() {
-                out.push(GeminiContent {
-                    role: "user".to_string(),
-                    parts: std::mem::take(pending),
-                });
-            }
-        };
+    let flush_pending_tool_parts = |out: &mut Vec<GeminiContent>, pending: &mut Vec<GeminiPart>| {
+        if !pending.is_empty() {
+            out.push(GeminiContent {
+                role: "user".to_string(),
+                parts: std::mem::take(pending),
+            });
+        }
+    };
 
     for msg in messages.iter().filter(|m| m.role != MessageRole::System) {
         match msg.role {

@@ -1276,6 +1276,8 @@ export type KeyboardShortcutActionId =
   | 'workstudio.closeAllWindows'
   | 'workstudio.backToMain'
   | 'workstudio.fileSearch'
+  | 'workstudio.fileSymbolSearch'
+  | 'workstudio.workspaceSymbolSearch'
   | 'workstudio.triggerSuggest'
   | 'workstudio.navigateBack'
   | 'workstudio.navigateForward'

@@ -626,6 +626,27 @@ export const CodeIntelligenceConfigForm: React.FC = () => {
                 title="是否启用 Monaco 内置的词汇建议（用于调试 AI Completion）"
               />
             </div>
+
+
+            <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-950">
+              <div className="min-w-0">
+                <div className="text-xs text-gray-500 dark:text-gray-400">Workstudio</div>
+                <div className="text-sm text-gray-800 dark:text-gray-100">Outline 使用拆分视图</div>
+                <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                  关闭时 Explorer / Outline 使用平级标签页；开启后左侧同时显示 Explorer 和 Outline 两个区域。
+                </div>
+              </div>
+              <Toggle
+                checked={config.codeIntelligence?.outlineSplitViewEnabled ?? false}
+                onChange={(outlineSplitViewEnabled) =>
+                  updateConfig((cfg) => ({
+                    ...cfg,
+                    codeIntelligence: { ...cfg.codeIntelligence, outlineSplitViewEnabled },
+                  }))
+                }
+                title="是否将 Workstudio 左侧栏切换为 Explorer/Outline 上下拆分视图"
+              />
+            </div>
           </div>
 
           {/* AI Completion */}

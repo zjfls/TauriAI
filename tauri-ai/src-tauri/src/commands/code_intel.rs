@@ -14,8 +14,10 @@ use crate::ai_client::get_client;
 use crate::code_intel::ast::{AstDocumentSymbolsArgs, AstSymbol};
 use crate::code_intel::index_manager::{
     CodeIndexManager, CodeIndexRequestDocumentSymbolsArgs, CodeIndexRequestDocumentSymbolsResult,
-    CodeIndexStartWorkspaceScanArgs, CodeIndexStatus, CodeIndexSummary,
+    CodeIndexSearchWorkspaceSymbolsArgs, CodeIndexStartWorkspaceScanArgs, CodeIndexStatus,
+    CodeIndexSummary,
 };
+use crate::code_intel::index_types::CodeIndexWorkspaceSymbolSearchResult;
 use crate::code_intel::lsp::{resolve_lsp_spawn_program, LspManager};
 use crate::code_intel::types::{LspLaunchConfig, LspServerStatus};
 use crate::config::ConfigManager;
@@ -189,6 +191,14 @@ pub async fn code_index_start_workspace_scan(
     index: tauri::State<'_, Arc<CodeIndexManager>>,
 ) -> Result<(), String> {
     index.start_workspace_scan(args).await
+}
+
+#[tauri::command]
+pub async fn code_index_search_workspace_symbols(
+    args: CodeIndexSearchWorkspaceSymbolsArgs,
+    index: tauri::State<'_, Arc<CodeIndexManager>>,
+) -> Result<Vec<CodeIndexWorkspaceSymbolSearchResult>, String> {
+    index.search_workspace_symbols(args).await
 }
 
 #[tauri::command]
@@ -1463,11 +1473,9 @@ pub async fn delete_workstudio_chat_with_record(
         return Err("id 为空".to_string());
     }
 
-    async_db::with_db(
-        db.inner(),
-        "delete_workstudio_chat_with_record",
-        |db| db.delete_workstudio_chat_with_record(ws_id, id),
-    )
+    async_db::with_db(db.inner(), "delete_workstudio_chat_with_record", |db| {
+        db.delete_workstudio_chat_with_record(ws_id, id)
+    })
     .await
     .map_err(|e| e.to_string())
 }

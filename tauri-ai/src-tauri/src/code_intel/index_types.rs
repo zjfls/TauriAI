@@ -63,3 +63,24 @@ pub struct CodeIndexDocumentSymbolsSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file_size_bytes: Option<i64>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeIndexWorkspaceSymbolSearchResult {
+    pub symbol_id: String,
+    pub file_path: String,
+    pub symbol_name: String,
+    pub symbol_kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub container_name: Option<String>,
+    pub selection_line: u32,
+    pub selection_column: u32,
+    pub range_start_line: u32,
+    pub range_start_column: u32,
+    pub range_end_line: u32,
+    pub range_end_column: u32,
+    pub language_id: String,
+    pub updated_at_ms: i64,
+}

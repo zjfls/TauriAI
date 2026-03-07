@@ -1217,7 +1217,10 @@ impl Database {
         let now = Utc::now().to_rfc3339();
 
         // Clearing is always allowed.
-        let Some(new_id) = cutoff_message_id.map(|v| v.trim()).filter(|v| !v.is_empty()) else {
+        let Some(new_id) = cutoff_message_id
+            .map(|v| v.trim())
+            .filter(|v| !v.is_empty())
+        else {
             let rows = conn.execute(
                 "UPDATE conversations
                  SET prompt_cutoff_message_id = NULL,
@@ -1263,8 +1266,7 @@ impl Database {
                 )
                 .ok();
 
-            if let (Some(old_time), Some(new_time)) = (old_time.as_deref(), new_time.as_deref())
-            {
+            if let (Some(old_time), Some(new_time)) = (old_time.as_deref(), new_time.as_deref()) {
                 if let (Ok(old_dt), Ok(new_dt)) = (
                     DateTime::parse_from_rfc3339(old_time),
                     DateTime::parse_from_rfc3339(new_time),

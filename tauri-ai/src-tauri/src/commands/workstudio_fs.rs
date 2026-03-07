@@ -219,7 +219,12 @@ fn ensure_root_watcher(
     let _ = watcher.configure(notify::Config::default().with_poll_interval(Duration::from_secs(2)));
     watcher
         .watch(watch_path, RecursiveMode::Recursive)
-        .map_err(|e| format!("watch workstudio root failed ({}): {e}", watch_path.display()))?;
+        .map_err(|e| {
+            format!(
+                "watch workstudio root failed ({}): {e}",
+                watch_path.display()
+            )
+        })?;
 
     inner.watchers.insert(
         root_key.to_string(),
@@ -285,7 +290,8 @@ fn normalize_watch_roots(roots: &[String]) -> HashMap<String, PathBuf> {
 }
 
 fn normalize_open_paths(paths: &[String]) -> HashSet<String> {
-    paths.iter()
+    paths
+        .iter()
         .map(|path| canonicalize_best_effort(path))
         .filter(|path| !path.is_empty() && !should_ignore_path(path))
         .collect()
@@ -340,11 +346,13 @@ fn normalize_fs_path(input: &str) -> String {
     }
 
     if path.len() > 1 && path.ends_with('/') {
-        let is_windows_drive_root = path.len() == 3 && path.as_bytes()[1] == b':' && path.as_bytes()[2] == b'/';
+        let is_windows_drive_root =
+            path.len() == 3 && path.as_bytes()[1] == b':' && path.as_bytes()[2] == b'/';
         let is_unc_root = path == "//";
         if !is_windows_drive_root && !is_unc_root {
             while path.len() > 1 && path.ends_with('/') {
-                let is_root = path.len() == 3 && path.as_bytes()[1] == b':' && path.as_bytes()[2] == b'/';
+                let is_root =
+                    path.len() == 3 && path.as_bytes()[1] == b':' && path.as_bytes()[2] == b'/';
                 if is_root {
                     break;
                 }
@@ -404,7 +412,9 @@ pub async fn workstudio_fs_unwatch(
 }
 
 #[tauri::command]
-pub async fn get_local_file_snapshots(paths: Vec<String>) -> Result<Vec<LocalFileSnapshot>, String> {
+pub async fn get_local_file_snapshots(
+    paths: Vec<String>,
+) -> Result<Vec<LocalFileSnapshot>, String> {
     let mut out = Vec::with_capacity(paths.len());
     for raw in paths {
         let normalized = canonicalize_best_effort(&raw);

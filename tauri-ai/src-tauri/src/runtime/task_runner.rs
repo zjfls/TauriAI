@@ -260,10 +260,7 @@ fn build_tool_call_block_meta_for_call(call: &ToolCall) -> Option<serde_json::Va
         .map(|sig| serde_json::json!({ "thought_signature": sig }))
 }
 
-fn merge_tool_call_block_meta(
-    existing: &mut Option<serde_json::Value>,
-    patch: &serde_json::Value,
-) {
+fn merge_tool_call_block_meta(existing: &mut Option<serde_json::Value>, patch: &serde_json::Value) {
     match existing {
         Some(current) => {
             if let (Some(dst), Some(src)) = (current.as_object_mut(), patch.as_object()) {
@@ -3895,7 +3892,7 @@ fn resolve_shell_tools_in_allow_list(
             tool_names.insert(insert_at + 1, WRITE_STDIN_PERSISTENT.to_string());
         }
     }
-}
+}
 async fn build_tooling_for_run(
     tools_enabled: bool,
     config: &crate::models::AppConfig,
@@ -4027,19 +4024,28 @@ async fn build_tooling_for_run(
                     {
                         Ok(t) => t,
                         Err(err) => {
-                            eprintln!("[MCP] list_tools failed server={} err={}", set_server.server, err);
+                            eprintln!(
+                                "[MCP] list_tools failed server={} err={}",
+                                set_server.server, err
+                            );
                             continue;
                         }
-                    };
+                    };
                     let mut tools = tools;
                     if !set_server.enabled_tools.is_empty() {
-                        let allow: std::collections::HashSet<&str> =
-                            set_server.enabled_tools.iter().map(|s| s.as_str()).collect();
+                        let allow: std::collections::HashSet<&str> = set_server
+                            .enabled_tools
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect();
                         tools.retain(|t| allow.contains(t.name.as_ref()));
                     }
                     if !set_server.disabled_tools.is_empty() {
-                        let deny: std::collections::HashSet<&str> =
-                            set_server.disabled_tools.iter().map(|s| s.as_str()).collect();
+                        let deny: std::collections::HashSet<&str> = set_server
+                            .disabled_tools
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect();
                         tools.retain(|t| !deny.contains(t.name.as_ref()));
                     }
 
@@ -4134,7 +4140,7 @@ async fn build_tooling_for_run(
                             },
                         ));
                     }
-                }
+                }
                 if !effective_servers.is_empty() {
                     let servers = Arc::new(effective_servers);
                     registry.register(Arc::new(
@@ -4237,18 +4243,16 @@ async fn build_tooling_for_run(
         allowed_tool_names.contains("apply_patch_unified_diff");
     let enable_write_file_replace_string_tool_prompt =
         allowed_tool_names.contains("write_file") || allowed_tool_names.contains("replace_string");
-    let (enable_apply_patch_tool_prompt, enable_apply_patch_unified_diff_tool_prompt) =
-        match (
-            enable_apply_patch_tool_prompt,
-            enable_apply_patch_unified_diff_tool_prompt,
-        ) {
-            (true, true) => (true, false),
-            other => other,
-        };
-    let enable_write_file_replace_string_tool_prompt =
-        enable_write_file_replace_string_tool_prompt
-            && !enable_apply_patch_tool_prompt
-            && !enable_apply_patch_unified_diff_tool_prompt;
+    let (enable_apply_patch_tool_prompt, enable_apply_patch_unified_diff_tool_prompt) = match (
+        enable_apply_patch_tool_prompt,
+        enable_apply_patch_unified_diff_tool_prompt,
+    ) {
+        (true, true) => (true, false),
+        other => other,
+    };
+    let enable_write_file_replace_string_tool_prompt = enable_write_file_replace_string_tool_prompt
+        && !enable_apply_patch_tool_prompt
+        && !enable_apply_patch_unified_diff_tool_prompt;
     let task_agent_tool_prompt = allowed_tool_names
         .contains(AGENT_TASK_TOOL_NAME)
         .then(|| render_task_agent_tool_prompt(config));
@@ -4308,7 +4312,7 @@ fn build_message_db_fields(
         }),
         Err(err) => Err(AppErrorCode::UnknownError(err.to_string()).into()),
     }
-}
+}
 async fn persist_assistant_message(
     db: &Arc<Mutex<Database>>,
     conversation_id: &str,
@@ -4327,9 +4331,14 @@ async fn persist_assistant_message(
     allow_fallback_fields: bool,
 ) -> Result<(), SerializableError> {
     let existing: Option<Message> = if reuse_assistant_message_id {
-        async_db::read_message(db, trace_get_existing, conversation_id, assistant_message_id)
-            .await
-            .ok()
+        async_db::read_message(
+            db,
+            trace_get_existing,
+            conversation_id,
+            assistant_message_id,
+        )
+        .await
+        .ok()
     } else {
         None
     };
@@ -4590,9 +4599,7 @@ async fn finalize_task_outcome(
             Ok(())
         }
     }
-}
-
-
+}
 
 struct SkillResolution {
     app_skills_dir: Option<std::path::PathBuf>,
@@ -4688,7 +4695,6 @@ fn resolve_skill_context(
         enabled_skills_meta,
     }
 }
-
 
 async fn run_task_inner(
     app: Option<AppHandle>,

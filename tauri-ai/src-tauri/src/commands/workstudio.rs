@@ -35,7 +35,9 @@ fn normalize_root_path(input: &str) -> String {
 
 fn join_fs_path(base_dir: &str, relative: &str) -> String {
     let base = normalize_root_path(base_dir);
-    let rel = normalize_fs_path(relative).trim_start_matches('/').to_string();
+    let rel = normalize_fs_path(relative)
+        .trim_start_matches('/')
+        .to_string();
     match (base.is_empty(), rel.is_empty()) {
         (true, true) => String::new(),
         (true, false) => rel,
@@ -109,7 +111,8 @@ fn canonicalized_roots(roots: &[String]) -> Vec<String> {
 fn workstudio_roots(ws: &Workstudio) -> Vec<String> {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
-    for raw in std::iter::once(ws.main_folder.as_str()).chain(ws.folders.iter().map(String::as_str)) {
+    for raw in std::iter::once(ws.main_folder.as_str()).chain(ws.folders.iter().map(String::as_str))
+    {
         let normalized = normalize_root_path(raw);
         if normalized.is_empty() {
             continue;
@@ -240,7 +243,9 @@ fn pick_best_search_candidate(
                     continue;
                 }
                 let tail = format!("/{variant_lower}");
-                if rels_lower.iter().any(|rel| rel.ends_with(&tail)) || candidate_lower.ends_with(&tail) {
+                if rels_lower.iter().any(|rel| rel.ends_with(&tail))
+                    || candidate_lower.ends_with(&tail)
+                {
                     score = score.max(100);
                     strategy = "suffix_search";
                     continue;
@@ -250,7 +255,9 @@ fn pick_best_search_candidate(
                     strategy = "suffix_search";
                     continue;
                 }
-                if variant_bases.get(idx).is_some_and(|base| !base.is_empty() && candidate_base == base.to_ascii_lowercase()) {
+                if variant_bases.get(idx).is_some_and(|base| {
+                    !base.is_empty() && candidate_base == base.to_ascii_lowercase()
+                }) {
                     score = score.max(60);
                 }
             }
@@ -260,7 +267,13 @@ fn pick_best_search_candidate(
             }
 
             let shortest_rel = rels.iter().map(|v| v.len()).min().unwrap_or(usize::MAX);
-            Some((candidate_norm, strategy, score, shortest_rel, candidate_lower.len()))
+            Some((
+                candidate_norm,
+                strategy,
+                score,
+                shortest_rel,
+                candidate_lower.len(),
+            ))
         })
         .max_by(|a, b| {
             a.2.cmp(&b.2)
@@ -590,8 +603,12 @@ pub async fn resolve_workstudio_file_target(
         return Err("targetPath 为空".to_string());
     }
 
-    let ws = get_workstudio_by_id(&db, workstudio_id, "resolve_workstudio_file_target:get_workstudio")
-        .await?;
+    let ws = get_workstudio_by_id(
+        &db,
+        workstudio_id,
+        "resolve_workstudio_file_target:get_workstudio",
+    )
+    .await?;
     let roots = workstudio_roots(&ws);
     let root_checks = canonicalized_roots(&roots);
     let limit = args.limit.unwrap_or(50).max(1).min(200) as usize;
@@ -694,8 +711,12 @@ pub async fn workstudio_find_files(
         return Ok(Vec::new());
     }
     let limit = args.limit.unwrap_or(100).max(1).min(2000) as usize;
-    let ws = get_workstudio_by_id(&db, &args.workstudio_id, "workstudio_find_files:get_workstudio")
-        .await?;
+    let ws = get_workstudio_by_id(
+        &db,
+        &args.workstudio_id,
+        "workstudio_find_files:get_workstudio",
+    )
+    .await?;
     let roots = workstudio_roots(&ws);
     find_matching_files_in_roots(&roots, &query, limit).await
 }
