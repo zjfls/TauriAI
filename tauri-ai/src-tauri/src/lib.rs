@@ -157,7 +157,7 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
                 "period" => key = ".".to_string(),
                 "minus" | "_" | "–" | "－" => key = "-".to_string(),
                 "equal" => key = "=".to_string(),
-                other => key = part.to_string().replace("Option", "Alt"),
+                _ => key = part.to_string().replace("Option", "Alt"),
             }
         }
 

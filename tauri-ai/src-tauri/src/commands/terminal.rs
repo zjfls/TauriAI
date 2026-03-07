@@ -64,6 +64,9 @@ fn conv_key(scope: &TerminalScope) -> String {
 }
 
 fn default_shell_command(is_dark: Option<bool>) -> Vec<String> {
+    #[cfg(not(windows))]
+    let _ = is_dark;
+
     #[cfg(windows)]
     {
         // Windows UI terminal 固定走 PowerShell 体系（不再回退到 cmd）。
