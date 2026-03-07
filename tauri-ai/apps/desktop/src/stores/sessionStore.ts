@@ -53,7 +53,7 @@ import { chatTabId, docTabId, terminalTabId, useWorkspaceTabStore, webTabId, typ
 // Constants for persistence
 const SESSION_STORAGE_KEY_PREFIX = 'tauri-ai:sessions:v3';
 const LEGACY_SESSION_STORAGE_KEY = 'tauri-ai:sessions';
-const PERSISTENCE_VERSION = 2;
+const PERSISTENCE_VERSION = 3;
 const MAX_SESSIONS = 20;
 const DRAFT_PERSIST_DEBOUNCE_MS = 500;
 const MAX_PERSISTED_DRAFT_CODE_SNIPPET_CHARS = 200_000;
@@ -228,6 +228,86 @@ const serializeSessionPanesToWindowPanes = (panes: SessionPane[]): WindowPane[] 
   }));
 };
 
+const restoreStoredSessionPanes = (
+  storedPanes: PersistedSessionState['panes'],
+  sessions: Map<string, AgentSession>,
+  storedActiveSessionId: string | null
+): SessionPane[] => {
+  const allSessionIds = Array.from(sessions.keys());
+  const nextPanes: SessionPane[] = [];
+  const assigned = new Set<string>();
+
+  for (const pane of Array.isArray(storedPanes) ? storedPanes : []) {
+    const paneId = typeof pane.id === 'string' && pane.id ? pane.id : crypto.randomUUID();
+    const sessionIds = Array.isArray(pane.sessionIds)
+      ? pane.sessionIds.filter((sessionId) => typeof sessionId === 'string' && sessions.has(sessionId) && !assigned.has(sessionId))
+      : [];
+    for (const sessionId of sessionIds) assigned.add(sessionId);
+
+    const activeSessionId =
+      typeof pane.activeSessionId === 'string' && sessionIds.includes(pane.activeSessionId)
+        ? pane.activeSessionId
+        : sessionIds[0] ?? null;
+
+    nextPanes.push({
+      id: paneId,
+      sessionIds,
+      activeSessionId,
+      weight: typeof pane.weight === 'number' && pane.weight > 0 ? pane.weight : 1,
+    });
+  }
+
+  const unassignedSessionIds = allSessionIds.filter((sessionId) => !assigned.has(sessionId));
+  if (unassignedSessionIds.length > 0) {
+    if (nextPanes.length === 0) {
+      nextPanes.push({ id: crypto.randomUUID(), sessionIds: [], activeSessionId: null, weight: 1 });
+    }
+    nextPanes[0]!.sessionIds.push(...unassignedSessionIds);
+    if (!nextPanes[0]!.activeSessionId) {
+      nextPanes[0]!.activeSessionId = storedActiveSessionId && nextPanes[0]!.sessionIds.includes(storedActiveSessionId)
+        ? storedActiveSessionId
+        : nextPanes[0]!.sessionIds[0] ?? null;
+    }
+  }
+
+  return normalizePaneWeights(ensureAtLeastOnePane(nextPanes.filter((pane) => pane.sessionIds.length > 0 || nextPanes.length === 1)));
+};
+
+const mergeStoredSessionPanesIntoWindowLayout = (
+  layoutState: Pick<ReturnType<typeof useWindowLayoutStore.getState>, 'panes' | 'focusedPaneId'>,
+  panes: SessionPane[],
+  focusedPaneId: string | null
+): { panes: WindowPane[]; focusedPaneId: string | null } => {
+  const restoredWindowPanes = serializeSessionPanesToWindowPanes(panes);
+  const existingPanes = Array.isArray(layoutState.panes)
+    ? layoutState.panes
+        .map((pane) => ({
+          ...pane,
+          tabIds: [...pane.tabIds],
+        }))
+        .filter((pane) => pane.tabIds.length > 0)
+    : [];
+
+  if (existingPanes.length === 0) {
+    return {
+      panes: restoredWindowPanes,
+      focusedPaneId: focusedPaneId && restoredWindowPanes.some((pane) => pane.id === focusedPaneId)
+        ? focusedPaneId
+        : restoredWindowPanes[0]?.id ?? null,
+    };
+  }
+
+  return {
+    panes: [...existingPanes, ...restoredWindowPanes],
+    focusedPaneId:
+      focusedPaneId && restoredWindowPanes.some((pane) => pane.id === focusedPaneId)
+        ? focusedPaneId
+        : layoutState.focusedPaneId && existingPanes.some((pane) => pane.id === layoutState.focusedPaneId)
+          ? layoutState.focusedPaneId
+          : existingPanes[0]?.id ?? restoredWindowPanes[0]?.id ?? null,
+  };
+};
+
 const deriveSessionPanesFromWindowLayout = (
   sessions: Map<string, AgentSession>,
   layoutState = useWindowLayoutStore.getState()
@@ -323,13 +403,6 @@ const getSessionPaneLocation = (
   const pane = paneIndex >= 0 ? panes[paneIndex]! : null;
   const tabIndex = pane ? pane.sessionIds.indexOf(sessionId) : -1;
   return { panes, paneIndex, pane, tabIndex };
-};
-
-const applySessionPaneLayout = (panes: SessionPane[], focusedPaneId: string | null) => {
-  useWindowLayoutStore.getState().replaceLayout({
-    panes: serializeSessionPanesToWindowPanes(panes),
-    focusedPaneId,
-  });
 };
 
 const coerceThinkingModeForProtocol = (
@@ -988,15 +1061,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   sanitizeLayoutState: () => {
     const state = get();
-    const layout = useWindowLayoutStore.getState();
-    const panes = deriveSessionPanesFromWindowLayout(state.sessions, layout);
-    const sanitized = sanitizePanesForSessions(panes, state.sessions);
-    const focusedPaneId = resolveFocusedPaneIdForSessionPanes(
-      sanitized.panes,
-      layout.focusedPaneId,
-      state.activeSessionId
-    );
-    applySessionPaneLayout(sanitized.panes, focusedPaneId);
     set({
       activeSessionId: deriveActiveSessionIdFromWindowLayout(state.sessions, state.activeSessionId),
     });
@@ -2280,9 +2344,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    */
 		  saveSessionState: async () => {
 		    const { sessions, activeSessionId } = get();
-    const layout = useWindowLayoutStore.getState();
-    const panes = deriveSessionPanesFromWindowLayout(sessions, layout);
-    const focusedPaneId = resolveFocusedPaneIdForSessionPanes(panes, layout.focusedPaneId, activeSessionId);
 
 		    const persistedSessions: PersistedSession[] = Array.from(sessions.values()).map((session) => {
 		      const rawMentions = Array.isArray(session.draftWorkspaceMentions) ? session.draftWorkspaceMentions : [];
@@ -2339,13 +2400,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       version: PERSISTENCE_VERSION,
       sessions: persistedSessions,
       activeSessionId,
-      panes: normalizePaneWeights(ensureAtLeastOnePane(panes)).map((p) => ({
-        id: p.id,
-        sessionIds: [...p.sessionIds],
-        activeSessionId: p.activeSessionId,
-        weight: p.weight,
-      })),
-      focusedPaneId: focusedPaneId ?? null,
     };
 
     try {
@@ -2482,100 +2536,29 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
       const allSessionIds = Array.from(newSessions.keys());
 
-      // panes: v2 优先使用存储的 panes；v1 则降级为单 pane
-      let panes: SessionPane[] = [];
-      if (storedPanes && storedPanes.length > 0) {
-        const assigned = new Set<string>();
-        for (const p of storedPanes) {
-          const paneId = typeof p.id === 'string' && p.id ? p.id : crypto.randomUUID();
-          const ids = Array.isArray(p.sessionIds)
-            ? p.sessionIds.filter((sid) => typeof sid === 'string' && newSessions.has(sid) && !assigned.has(sid))
-            : [];
-          for (const sid of ids) assigned.add(sid);
+      const layoutState = useWindowLayoutStore.getState();
+      const hasStoredChatTabs =
+        Array.isArray(layoutState.panes) &&
+        layoutState.panes.some((pane) => pane.tabIds.some((tabId) => isChatWorkspaceTabId(tabId)));
 
-          const active =
-            typeof p.activeSessionId === 'string' && ids.includes(p.activeSessionId)
-              ? p.activeSessionId
-              : ids[0] ?? null;
-          const weight = typeof p.weight === 'number' && p.weight > 0 ? p.weight : 1;
-
-          panes.push({
-            id: paneId,
-            sessionIds: ids,
-            activeSessionId: active,
-            weight,
-          });
-        }
-
-        // 把未归属的 session 补到第一个 pane
-        const unassigned = allSessionIds.filter((sid) => !assigned.has(sid));
-        if (unassigned.length > 0) {
-          if (panes.length === 0) {
-            panes.push({ id: crypto.randomUUID(), sessionIds: [], activeSessionId: null, weight: 1 });
-          }
-          panes[0]!.sessionIds.push(...unassigned);
-          if (!panes[0]!.activeSessionId) panes[0]!.activeSessionId = panes[0]!.sessionIds[0] ?? null;
-        }
-
-        // 清理空 pane（但至少保留一个）
-        panes = panes.filter((p) => p.sessionIds.length > 0 || panes.length === 1);
-      } else {
-        // v1 迁移：尽量沿用全局 tabOrder 的 chat 顺序
-        const orderedFromTabs: string[] = [];
-        if (canUseSharedWorkspaceTabs) {
-          for (const tid of useWorkspaceTabStore.getState().tabOrder) {
-            if (typeof tid !== 'string') continue;
-            if (!tid.startsWith('chat:')) continue;
-            const sid = tid.slice('chat:'.length);
-            if (!newSessions.has(sid)) continue;
-            if (orderedFromTabs.includes(sid)) continue;
-            orderedFromTabs.push(sid);
-          }
-        }
-
-        const remaining = allSessionIds.filter((sid) => !orderedFromTabs.includes(sid));
-        remaining.sort((a, b) => {
-          const sa = newSessions.get(a);
-          const sb = newSessions.get(b);
-          const ta = sa ? new Date(sa.createdAt).getTime() : 0;
-          const tb = sb ? new Date(sb.createdAt).getTime() : 0;
-          return ta - tb;
-        });
-
-        const sessionIds = [...orderedFromTabs, ...remaining];
-
-        panes = [
-          {
-            id: crypto.randomUUID(),
-            sessionIds,
-            activeSessionId: storedActiveSessionId && sessionIds.includes(storedActiveSessionId) ? storedActiveSessionId : sessionIds[0] ?? null,
-            weight: 1,
-          },
-        ];
+      if (storedPanes && storedPanes.length > 0 && !hasStoredChatTabs) {
+        const restoredPanes = restoreStoredSessionPanes(storedPanes, newSessions, storedActiveSessionId);
+        const restoredFocusedPaneId = resolveFocusedPaneIdForSessionPanes(
+          restoredPanes,
+          storedFocusedPaneId,
+          storedActiveSessionId
+        );
+        useWindowLayoutStore
+          .getState()
+          .replaceLayout(mergeStoredSessionPanesIntoWindowLayout(layoutState, restoredPanes, restoredFocusedPaneId));
       }
 
-      panes = normalizePaneWeights(ensureAtLeastOnePane(panes));
-
-      // focused pane
-      let focusedPaneId =
-        storedFocusedPaneId && panes.some((p) => p.id === storedFocusedPaneId) ? storedFocusedPaneId : null;
-      if (!focusedPaneId && storedActiveSessionId) {
-        const idx = findPaneIndexBySessionId(panes, storedActiveSessionId);
-        if (idx >= 0) focusedPaneId = panes[idx]!.id;
-      }
-      if (!focusedPaneId) focusedPaneId = panes[0]!.id;
-
-      // global active session：代表“聚焦 pane 的 active tab”
-      let activeSessionId: string | null =
-        storedActiveSessionId && newSessions.has(storedActiveSessionId) ? storedActiveSessionId : null;
-      if (!activeSessionId) {
-        const fp = panes.find((p) => p.id === focusedPaneId) ?? panes[0]!;
-        activeSessionId = fp.activeSessionId ?? fp.sessionIds[0] ?? null;
-      }
-      if (activeSessionId) {
-        const idx = findPaneIndexBySessionId(panes, activeSessionId);
-        if (idx >= 0) panes[idx]!.activeSessionId = activeSessionId;
-      }
+      const effectiveLayoutState = useWindowLayoutStore.getState();
+      const activeSessionId = deriveActiveSessionIdFromWindowLayout(
+        newSessions,
+        storedActiveSessionId,
+        effectiveLayoutState
+      );
 
       set({
         sessions: newSessions,
@@ -2584,25 +2567,22 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       });
 
       void syncUnreadCompletionBadge(countUnreadCompletions(newSessions));
-      applySessionPaneLayout(panes, focusedPaneId);
 
       // App/session 启动阶段：预热 MCP（Codex-like），让后续 tool 注入走缓存而不是每次请求 tools/list。
       // Best-effort：不阻塞 UI hydration。
       invoke('warmup_mcp_servers').catch((e) => console.warn('warmup_mcp_servers failed:', e));
-
-      if (loadedFromLegacy) {
-        try {
-          storage?.setItem(nextKey, stored);
-        } catch {
-          // ignore
-        }
-      }
 
       // 让全局 tabOrder（用于文档/历史）保持整洁：移除不存在的 chat
       if (canUseSharedWorkspaceTabs) {
         useWorkspaceTabStore
           .getState()
           .syncTabs(allSessionIds, useDocumentStore.getState().documents.map((d) => d.id), [], []);
+      }
+
+      const needsPersistenceMigration =
+        loadedFromLegacy || storedVersion !== PERSISTENCE_VERSION || Boolean(storedPanes?.length) || storedFocusedPaneId !== null;
+      if (needsPersistenceMigration) {
+        void get().saveSessionState();
       }
 
       if (storedVersion !== PERSISTENCE_VERSION) {

@@ -24,7 +24,16 @@ import { useSessionStore, type SessionStreamVisibilityTier } from '../stores/ses
 import { useTerminalTabStore } from '../stores/terminalTabStore';
 import { useWebTabStore } from '../stores/webTabStore';
 import { type WindowPane, useWindowLayoutStore } from '../stores/windowLayoutStore';
-import { chatTabId, parseWorkspaceTabId, type WorkspaceTabId } from '../stores/workspaceTabStore';
+import {
+  chatTabId,
+  docTabId,
+  parseWorkspaceTabId,
+  terminalTabId,
+  useWorkspaceTabStore,
+  webTabId,
+  type WorkspaceTabId,
+} from '../stores/workspaceTabStore';
+import { reconcileWindowPaneLayoutSnapshot } from '../utils/windowPaneLayout';
 import { useDragGhostSession } from '../hooks/useDragGhostSession';
 import { useRemoteDragSplitPreview } from '../hooks/useRemoteDragSplitPreview';
 import { endChatOpenProfile, getActiveChatOpenProfile, markChatOpenProfile } from '../utils/chatOpenProfile';
@@ -173,6 +182,8 @@ const ChatViewContainerInner: React.FC = () => {
   const panes = useWindowLayoutStore((state) => state.panes);
   const focusedPaneId = useWindowLayoutStore((state) => state.focusedPaneId);
   const setFocusedPane = useWindowLayoutStore((state) => state.setFocusedPane);
+  const lastUserPaneId = useWindowLayoutStore((state) => state.lastUserPaneId);
+  const lastUserChatPaneId = useWindowLayoutStore((state) => state.lastUserChatPaneId);
   const setActiveTabInPane = useWindowLayoutStore((state) => state.setActiveTabInPane);
   const closePaneAndMerge = useWindowLayoutStore((state) => state.closePaneAndMerge);
   const reorderTabInPane = useWindowLayoutStore((state) => state.reorderTabInPane);
@@ -181,7 +192,7 @@ const ChatViewContainerInner: React.FC = () => {
   const setPaneWeights = useWindowLayoutStore((state) => state.setPaneWeights);
   const saveLayout = useWindowLayoutStore((state) => state.saveLayout);
   const closeTabInLayout = useWindowLayoutStore((state) => state.closeTabInLayout);
-  const replaceLayout = useWindowLayoutStore((state) => state.replaceLayout);
+  const reconcileLayout = useWindowLayoutStore((state) => state.reconcileLayout);
 
   const sessionsMap = useSessionStore((state) => state.sessions);
   const activeSessionId = useSessionStore((state) => state.activeSessionId);
@@ -201,6 +212,8 @@ const ChatViewContainerInner: React.FC = () => {
   const closeTerminalTab = useTerminalTabStore((s) => s.closeTerminalTab);
   const setActiveTerminalTab = useTerminalTabStore((s) => s.setActiveTerminalTab);
 
+  const workspaceTabOrder = useWorkspaceTabStore((state) => state.tabOrder);
+
   const layerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const paneRootRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const paneTabStripRefs = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -214,78 +227,82 @@ const ChatViewContainerInner: React.FC = () => {
   const validTabIds = useMemo(() => {
     const set = new Set<WorkspaceTabId>();
     for (const sid of sessionsMap.keys()) set.add(chatTabId(sid));
-    for (const d of documents) set.add(`doc:${d.id}` as WorkspaceTabId);
-    for (const w of webTabs) set.add(`web:${w.id}` as WorkspaceTabId);
-    for (const t of terminalTabs) set.add(`term:${t.id}` as WorkspaceTabId);
+    for (const d of documents) set.add(docTabId(d.id));
+    for (const w of webTabs) set.add(webTabId(w.id));
+    for (const t of terminalTabs) set.add(terminalTabId(t.id));
     return set;
-  }, [documents, panes, sessionsMap, terminalTabs, webTabs]);
+  }, [documents, sessionsMap, terminalTabs, webTabs]);
 
-  const resolvedPanes = useMemo((): WorkspaceWindowPane[] => {
-    const base: WindowPane[] =
-      panes.length > 0
-        ? panes
-        : [
-            {
-              id: fallbackPaneIdRef.current,
-              tabIds: [],
-              activeTabId: null,
-              weight: 1,
-            } satisfies WindowPane,
-          ];
+  const orderedValidTabIds = useMemo(() => {
+    const ordered: WorkspaceTabId[] = [];
+    const seen = new Set<WorkspaceTabId>();
+    const push = (tabId: WorkspaceTabId) => {
+      if (!validTabIds.has(tabId)) return;
+      if (seen.has(tabId)) return;
+      seen.add(tabId);
+      ordered.push(tabId);
+    };
 
-    const assigned = new Set<WorkspaceTabId>();
-    const cleaned: WorkspaceWindowPane[] = base.map((p) => {
-      const filtered: WorkspaceTabId[] = [];
-      for (const rawTid of p.tabIds) {
-        const tid = rawTid as WorkspaceTabId;
-        if (!validTabIds.has(tid)) continue;
-        if (assigned.has(tid)) continue;
-        assigned.add(tid);
-        filtered.push(tid);
-      }
-      const rawActive = typeof p.activeTabId === 'string' ? (p.activeTabId as WorkspaceTabId) : null;
-      const active = rawActive && filtered.includes(rawActive) ? rawActive : filtered[0] ?? null;
-      return {
-        ...p,
-        tabIds: filtered,
-        activeTabId: active,
-        weight: Number.isFinite(p.weight) && p.weight > 0 ? p.weight : 1,
-      };
-    });
+    for (const tabId of workspaceTabOrder) push(tabId);
+    for (const sid of sessionsMap.keys()) push(chatTabId(sid));
+    for (const d of documents) push(docTabId(d.id));
+    for (const w of webTabs) push(webTabId(w.id));
+    for (const t of terminalTabs) push(terminalTabId(t.id));
 
-    const nonEmpty = cleaned.filter((p) => p.tabIds.length > 0);
-    if (nonEmpty.length > 0) return nonEmpty;
+    return ordered;
+  }, [documents, sessionsMap, terminalTabs, validTabIds, webTabs, workspaceTabOrder]);
 
-    if (sessionsMap.size > 0) {
-      const ids = Array.from(sessionsMap.keys());
-      const tabs = ids.map((sid) => chatTabId(sid));
-      const preferred = (() => {
-        const profile = getActiveChatOpenProfile();
-        const fromProfile = profile?.sessionId ? chatTabId(profile.sessionId) : null;
-        if (fromProfile && validTabIds.has(fromProfile)) return fromProfile;
-        if (activeSessionId) return chatTabId(activeSessionId);
-        return tabs[0] ?? null;
-      })();
+  const preferredFallbackTabId = useMemo((): WorkspaceTabId | null => {
+    const profile = getActiveChatOpenProfile();
+    const fromProfile = profile?.sessionId ? chatTabId(profile.sessionId) : null;
+    if (fromProfile && validTabIds.has(fromProfile)) return fromProfile;
+    const activeChatTabId = activeSessionId ? chatTabId(activeSessionId) : null;
+    if (activeChatTabId && validTabIds.has(activeChatTabId)) return activeChatTabId;
+    return orderedValidTabIds[0] ?? null;
+  }, [activeSessionId, orderedValidTabIds, validTabIds]);
 
-      return [
+  const resolvedLayout = useMemo(
+    () =>
+      reconcileWindowPaneLayoutSnapshot(
         {
-          id: fallbackPaneIdRef.current,
-          tabIds: tabs,
-          activeTabId: preferred,
-          weight: 1,
+          panes,
+          focusedPaneId,
+          lastUserPaneId,
+          lastUserChatPaneId,
         },
-      ];
-    }
+        {
+          validTabIds: orderedValidTabIds,
+          requiredTabIds: orderedValidTabIds,
+          fallbackPaneId: fallbackPaneIdRef.current,
+          fallbackTabIds: orderedValidTabIds,
+          fallbackActiveTabId: preferredFallbackTabId,
+        }
+      ),
+    [focusedPaneId, lastUserChatPaneId, lastUserPaneId, orderedValidTabIds, panes, preferredFallbackTabId]
+  );
 
-    return [
-      {
-        id: fallbackPaneIdRef.current,
-        tabIds: [],
-        activeTabId: null,
-        weight: 1,
-      },
-    ];
-  }, [activeSessionId, panes, sessionsMap, validTabIds]);
+  const resolvedPanes = useMemo(
+    (): WorkspaceWindowPane[] =>
+      resolvedLayout.panes.map((pane) => ({
+        ...pane,
+        tabIds: pane.tabIds as WorkspaceTabId[],
+        activeTabId: pane.activeTabId as WorkspaceTabId | null,
+      })),
+    [resolvedLayout.panes]
+  );
+
+  const resolvedFocusedPaneId = resolvedLayout.focusedPaneId;
+
+  useEffect(() => {
+    if (!sessionsHydrated) return;
+    reconcileLayout({
+      validTabIds: orderedValidTabIds,
+      requiredTabIds: orderedValidTabIds,
+      fallbackPaneId: fallbackPaneIdRef.current,
+      fallbackTabIds: orderedValidTabIds,
+      fallbackActiveTabId: preferredFallbackTabId,
+    });
+  }, [orderedValidTabIds, preferredFallbackTabId, reconcileLayout, sessionsHydrated]);
 
   // Standalone "popout" window: when it becomes empty (all tabs closed), close the window itself.
   // 说明：这类窗口通常通过“拖拽/弹出”产生，用完即走：
@@ -307,33 +324,6 @@ const ChatViewContainerInner: React.FC = () => {
     if (hasAnyTabsNow) return;
     void closeCurrentWindow().catch(() => {});
   }, [hasAnyTabsNow, isStandaloneWindow, shouldCloseOnEmpty]);
-
-  const resolvedFocusedPaneId = useMemo(() => {
-    if (focusedPaneId && resolvedPanes.some((p) => p.id === focusedPaneId)) return focusedPaneId;
-    return resolvedPanes[0]?.id ?? null;
-  }, [focusedPaneId, resolvedPanes]);
-
-  useEffect(() => {
-    if (!sessionsHydrated) return;
-    if (!resolvedFocusedPaneId) return;
-    if (focusedPaneId === resolvedFocusedPaneId) return;
-    setFocusedPane(resolvedFocusedPaneId);
-  }, [focusedPaneId, resolvedFocusedPaneId, sessionsHydrated, setFocusedPane]);
-
-  const resolvedLayoutKey = useMemo(() => {
-    return `${resolvedFocusedPaneId ?? ''}|${resolvedPanes
-      .map((p) => `${p.id}:${p.activeTabId ?? ''}:${p.tabIds.join(',')}:${p.weight}`)
-      .join('|')}`;
-  }, [resolvedFocusedPaneId, resolvedPanes]);
-  const storedLayoutKey = useMemo(() => {
-    return `${focusedPaneId ?? ''}|${panes.map((p) => `${p.id}:${p.activeTabId ?? ''}:${p.tabIds.join(',')}:${p.weight}`).join('|')}`;
-  }, [focusedPaneId, panes]);
-  useEffect(() => {
-    if (!sessionsHydrated) return;
-    if (!resolvedFocusedPaneId) return;
-    if (resolvedLayoutKey === storedLayoutKey) return;
-    replaceLayout({ panes: resolvedPanes, focusedPaneId: resolvedFocusedPaneId });
-  }, [replaceLayout, resolvedFocusedPaneId, resolvedLayoutKey, resolvedPanes, sessionsHydrated, storedLayoutKey]);
 
   const visibleTabKey = useMemo(() => resolvedPanes.map((p) => p.activeTabId ?? '').join('|'), [resolvedPanes]);
   useEffect(() => {

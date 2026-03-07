@@ -1324,8 +1324,6 @@ function App() {
       // Restore previous sessions from localStorage
       try {
         await restoreSessionState();
-        // 防御：历史/边界情况下可能残留空 pane 或失效 activeSessionId，统一在启动时修复一次。
-        useSessionStore.getState().sanitizeLayoutState();
       } catch (err) {
         console.error('Failed to restore session state:', err);
       }

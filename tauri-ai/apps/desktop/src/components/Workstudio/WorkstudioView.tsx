@@ -87,6 +87,7 @@ import {
 import { useConfigStore } from '../../stores/configStore';
 import { useTerminalSessionStore } from '../../stores/terminalSessionStore';
 import { type WindowPane, useWindowLayoutStore } from '../../stores/windowLayoutStore';
+import { reconcileWindowPaneLayoutSnapshot } from '../../utils/windowPaneLayout';
 import { useRemoteDragSplitPreview } from '../../hooks/useRemoteDragSplitPreview';
 import { useDragGhostSession } from '../../hooks/useDragGhostSession';
 import { focusMainWindow, getViewWindowParams } from '../../utils/viewWindow';
@@ -2152,6 +2153,8 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const panes = useWindowLayoutStore((s) => s.panes);
   const focusedPaneId = useWindowLayoutStore((s) => s.focusedPaneId);
   const setFocusedPane = useWindowLayoutStore((s) => s.setFocusedPane);
+  const lastUserPaneId = useWindowLayoutStore((s) => s.lastUserPaneId);
+  const lastUserChatPaneId = useWindowLayoutStore((s) => s.lastUserChatPaneId);
   const setActiveTabInPane = useWindowLayoutStore((s) => s.setActiveTabInPane);
   const closePaneAndMerge = useWindowLayoutStore((s) => s.closePaneAndMerge);
   const reorderTabInPane = useWindowLayoutStore((s) => s.reorderTabInPane);
@@ -2159,6 +2162,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const splitTabToNewPane = useWindowLayoutStore((s) => s.splitTabToNewPane);
   const setPaneWeights = useWindowLayoutStore((s) => s.setPaneWeights);
   const closeTabInLayout = useWindowLayoutStore((s) => s.closeTabInLayout);
+  const reconcileLayout = useWindowLayoutStore((s) => s.reconcileLayout);
   const replaceLayout = useWindowLayoutStore((s) => s.replaceLayout);
   const fallbackPaneIdRef = useRef<string>(crypto.randomUUID());
 
@@ -3709,93 +3713,41 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     prevCursor: string;
   } | null>(null);
 
-  const validFileIds = useMemo(() => new Set(openFiles.map((f) => f.id)), [openFiles]);
+  const orderedOpenFileIds = useMemo(() => openFiles.map((file) => file.id), [openFiles]);
 
-  const resolvedPanes = useMemo((): WindowPane[] => {
-    const base: WindowPane[] =
-      panes.length > 0
-        ? panes
-        : [
-          {
-            id: fallbackPaneIdRef.current,
-            tabIds: [],
-            activeTabId: null,
-            weight: 1,
-          } satisfies WindowPane,
-        ];
-
-    const assigned = new Set<string>();
-    const cleaned: WindowPane[] = base.map((p) => {
-      const filtered: string[] = [];
-      for (const tid of p.tabIds) {
-        if (!validFileIds.has(tid)) continue;
-        if (assigned.has(tid)) continue;
-        assigned.add(tid);
-        filtered.push(tid);
-      }
-      const rawActive = typeof p.activeTabId === 'string' ? p.activeTabId : null;
-      const active = rawActive && filtered.includes(rawActive) ? rawActive : filtered[0] ?? null;
-      return {
-        ...p,
-        tabIds: filtered,
-        activeTabId: active,
-        weight: Number.isFinite(p.weight) && p.weight > 0 ? p.weight : 1,
-      };
-    });
-
-    const nonEmpty = cleaned.filter((p) => p.tabIds.length > 0);
-    if (nonEmpty.length > 0) return nonEmpty;
-
-    if (openFiles.length > 0) {
-      const tabs = openFiles.map((f) => f.id);
-      return [
+  const resolvedLayout = useMemo(
+    () =>
+      reconcileWindowPaneLayoutSnapshot(
         {
-          id: fallbackPaneIdRef.current,
-          tabIds: tabs,
-          activeTabId: tabs[0] ?? null,
-          weight: 1,
+          panes,
+          focusedPaneId,
+          lastUserPaneId,
+          lastUserChatPaneId,
         },
-      ];
-    }
+        {
+          validTabIds: orderedOpenFileIds,
+          requiredTabIds: orderedOpenFileIds,
+          fallbackPaneId: fallbackPaneIdRef.current,
+          fallbackTabIds: orderedOpenFileIds,
+          fallbackActiveTabId: orderedOpenFileIds[0] ?? null,
+        }
+      ),
+    [focusedPaneId, lastUserChatPaneId, lastUserPaneId, orderedOpenFileIds, panes]
+  );
 
-    return [
-      {
-        id: fallbackPaneIdRef.current,
-        tabIds: [],
-        activeTabId: null,
-        weight: 1,
-      },
-    ];
-  }, [openFiles, panes, validFileIds]);
-
-  const resolvedFocusedPaneId = useMemo(() => {
-    if (focusedPaneId && resolvedPanes.some((p) => p.id === focusedPaneId)) return focusedPaneId;
-    return resolvedPanes[0]?.id ?? null;
-  }, [focusedPaneId, resolvedPanes]);
+  const resolvedPanes = resolvedLayout.panes;
+  const resolvedFocusedPaneId = resolvedLayout.focusedPaneId;
 
   useEffect(() => {
     if (!uiStateRestored) return;
-    if (!resolvedFocusedPaneId) return;
-    if (focusedPaneId === resolvedFocusedPaneId) return;
-    setFocusedPane(resolvedFocusedPaneId);
-  }, [focusedPaneId, resolvedFocusedPaneId, setFocusedPane, uiStateRestored]);
-
-  const resolvedLayoutKey = useMemo(() => {
-    return `${resolvedFocusedPaneId ?? ''}|${resolvedPanes
-      .map((p) => `${p.id}:${p.activeTabId ?? ''}:${p.tabIds.join(',')}:${p.weight}`)
-      .join('|')}`;
-  }, [resolvedFocusedPaneId, resolvedPanes]);
-
-  const storedLayoutKey = useMemo(() => {
-    return `${focusedPaneId ?? ''}|${panes.map((p) => `${p.id}:${p.activeTabId ?? ''}:${p.tabIds.join(',')}:${p.weight}`).join('|')}`;
-  }, [focusedPaneId, panes]);
-
-  useEffect(() => {
-    if (!uiStateRestored) return;
-    if (!resolvedFocusedPaneId) return;
-    if (resolvedLayoutKey === storedLayoutKey) return;
-    replaceLayout({ panes: resolvedPanes, focusedPaneId: resolvedFocusedPaneId });
-  }, [replaceLayout, resolvedFocusedPaneId, resolvedLayoutKey, resolvedPanes, storedLayoutKey, uiStateRestored]);
+    reconcileLayout({
+      validTabIds: orderedOpenFileIds,
+      requiredTabIds: orderedOpenFileIds,
+      fallbackPaneId: fallbackPaneIdRef.current,
+      fallbackTabIds: orderedOpenFileIds,
+      fallbackActiveTabId: orderedOpenFileIds[0] ?? null,
+    });
+  }, [orderedOpenFileIds, reconcileLayout, uiStateRestored]);
 
   const focusedPane = useMemo(
     () => resolvedPanes.find((p) => p.id === resolvedFocusedPaneId) ?? resolvedPanes[0] ?? null,

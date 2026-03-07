@@ -1790,8 +1790,8 @@ export interface PersistedSessionState {
   version: number;                    // Version number for migration support
   sessions: PersistedSession[];       // Array of persisted sessions
   activeSessionId: string | null;     // ID of the active session
-  panes?: PersistedSessionPane[];     // Optional: v2+ pane layout
-  focusedPaneId?: string | null;      // Optional: v2+ focused pane
+  panes?: PersistedSessionPane[];     // Optional: legacy pane layout (migration only)
+  focusedPaneId?: string | null;      // Optional: legacy focused pane (migration only)
 }
 
 // ============================================================================
