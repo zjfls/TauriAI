@@ -2694,14 +2694,23 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
     ]);
     const isCommonEnvVar = (name: string) => COMMON_ENV_VARS.has(name.toUpperCase());
 
-    const mentionClass =
-      'rounded-sm bg-purple-200/70 text-purple-950 font-medium dark:bg-purple-900/40 dark:text-purple-100';
+    const mentionVisibleClass =
+      'absolute inset-0 overflow-hidden whitespace-nowrap text-ellipsis rounded-sm bg-purple-200/70 text-purple-950 dark:bg-purple-900/40 dark:text-purple-100 pointer-events-none';
 
     const nodes: React.ReactNode[] = [];
 
     const flushText = (start: number, end: number) => {
       if (end <= start) return;
       nodes.push(<span key={`t-${start}`}>{text.slice(start, end)}</span>);
+    };
+
+    const pushInlineMentionPlaceholder = (key: string, raw: string, displayText?: string) => {
+      nodes.push(
+        <span key={key} className="relative align-baseline">
+          <span className="text-transparent">{raw}</span>
+          <span className={mentionVisibleClass}>{displayText ?? raw}</span>
+        </span>
+      );
     };
 
     let i = 0;
@@ -2800,7 +2809,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
 	      }
 
 	      // Linked mention: [${name}](mcp://...) / [${name}](app://...) / skill links
-	      // We only highlight the `$name` portion to keep caret alignment stable.
+	      // 仅高亮 `$name` 部分，但保留 raw token 占位，避免 caret 与 overlay 文本宽度不一致。
 	      if (text[i] === '[' && text[i + 1] === '$') {
         const nameStart = i + 2;
         let nameEnd = nameStart;
@@ -2809,11 +2818,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
           const name = text.slice(nameStart, nameEnd);
           if (!isCommonEnvVar(name)) {
             flushText(lastTextStart, i + 1); // include '['
-            nodes.push(
-              <span key={`link-$-${i}`} className={mentionClass}>
-                {text.slice(i + 1, nameEnd)}
-              </span>
-            );
+            pushInlineMentionPlaceholder(`link-$-${i}`, text.slice(i + 1, nameEnd));
             i = nameEnd;
             lastTextStart = i;
             continue;
@@ -2821,7 +2826,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
         }
       }
 
-      // Plain $mention
+	      // Plain $mention
       if (text[i] === '$') {
         const prev = i > 0 ? text[i - 1] : '';
         // Avoid highlighting in the middle of a larger token like `$foo_bar` when cursor is at `bar`.
@@ -2831,18 +2836,14 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
           while (nameEnd < text.length && isDollarMentionChar(text[nameEnd]!)) nameEnd++;
           const name = text.slice(nameStart, nameEnd);
           // Avoid `$1` / `$0` etc (shell positional params) and common env vars.
-          const hasLetter = /[a-zA-Z_]/.test(name);
-          if (name && hasLetter && !isCommonEnvVar(name)) {
-            flushText(lastTextStart, i);
-            nodes.push(
-              <span key={`$-${i}`} className={mentionClass}>
-                {text.slice(i, nameEnd)}
-              </span>
-            );
-            i = nameEnd;
-            lastTextStart = i;
-            continue;
-          }
+	          const hasLetter = /[a-zA-Z_]/.test(name);
+	          if (name && hasLetter && !isCommonEnvVar(name)) {
+	            flushText(lastTextStart, i);
+	            pushInlineMentionPlaceholder(`$-${i}`, text.slice(i, nameEnd));
+	            i = nameEnd;
+	            lastTextStart = i;
+	            continue;
+	          }
         }
       }
 
